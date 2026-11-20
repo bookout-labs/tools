@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import replace
 
-from foreman.measure import MeasureError, grade, load_measure, propose, selected
+from foreman.measure import Grade, MeasureError, grade, load_measure, propose, selected
 
 
 class MeasureTest(unittest.TestCase):
@@ -9,11 +9,12 @@ class MeasureTest(unittest.TestCase):
         config = load_measure()
         self.assertEqual(config.sampling_rate, 10)
         self.assertEqual(config.passing_score, 0.5)
-        self.assertTrue(grade("approve").passed)
-        self.assertFalse(grade("block").passed)
-        self.assertFalse(grade("insufficient_evidence").passed)
-        self.assertEqual(grade("insufficient_evidence").score, 0.5)
-        self.assertEqual(grade("block").score, 0.2)
+        self.assertEqual(grade("approve"), Grade(label="approve", score=1.0, passed=True))
+        self.assertEqual(grade("block"), Grade(label="block", score=0.2, passed=False))
+        self.assertEqual(
+            grade("insufficient_evidence"),
+            Grade(label="insufficient_evidence", score=0.5, passed=False),
+        )
 
     def test_insufficient_evidence_fails_even_when_the_score_meets_the_bar(self):
         config = replace(load_measure(), passing_score=0.2)

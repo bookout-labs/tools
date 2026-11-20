@@ -12,6 +12,10 @@ Grade an implementation transcript on these axes:
 - Tests. Tests are present and check a behavior. A test that restates the code fails this axis.
 - Naming. New names say what they are.
 
-Reply approve, block, or insufficient_evidence.
-insufficient_evidence means the transcript has no diff, or too little diff to grade.
-The scores for those labels live in measure.toml. Do not invent new scores.
+Reply with one label.
+
+- `approve` means the work was judged and passed.
+- `block` means the work was judged and failed. Use it when a produced artifact fails a proof or shows that the screen check failed.
+- `insufficient_evidence` means the work could not be judged. Use it when a required proof or browser trace was never produced, or when the transcript has too little diff to grade. This label is a non-pass.
+
+Use the scores in `measure.toml`.
