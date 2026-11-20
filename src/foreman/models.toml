@@ -3,7 +3,11 @@
 
 max_review_rounds = 3
 
-[nodes.intake]
+[nodes.triage]
+role = "coordinator"
+models = ["claude-opus-5-5-high", "grok-4.7-high", "gpt-6.1-sol-high"]
+
+[nodes.research]
 role = "coordinator"
 models = ["claude-opus-5-5-high", "grok-4.7-high", "gpt-6.1-sol-high"]
 

@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: Delivery graph and scorer contract. No model is called.
+
+prompts:
+  - "{{case}}"
+
+providers:
+  - id: file://provider.py
+    label: delivery-graph
+
+tests:
+  - description: A clear change is implemented and the check passes
+    vars:
+      case: clear
+    assert:
+      - type: equals
+        value: verified
+  - description: An approved spec is implemented
+    vars:
+      case: spec-ready
+    assert:
+      - type: equals
+        value: verified
+  - description: An open product choice stops for a person
+    vars:
+      case: spec-gate
+    assert:
+      - type: equals
+        value: needs_human
+  - description: A question is answered and does not change code
+    vars:
+      case: question
+    assert:
+      - type: equals
+        value: answered
+  - description: The verdict stays the same when the first model is exhausted
+    vars:
+      case: failover
+    assert:
+      - type: equals
+        value: verified
+  - description: An approve score passes
+    vars:
+      case: score-approve
+    assert:
+      - type: equals
+        value: pass
+  - description: A block score fails the bar
+    vars:
+      case: score-block
+    assert:
+      - type: equals
+        value: fail
+  - description: A thin transcript meets the bar and does not count as a pass or a block
+    vars:
+      case: score-thin
+    assert:
+      - type: equals
+        value: pass
+  - description: One run in ten is graded
+    vars:
+      case: sample
+    assert:
+      - type: equals
+        value: yes
+  - description: A failing score proposes a skill change and leaves the model list alone
+    vars:
+      case: proposal
+    assert:
+      - type: contains
+        value: skills/code-quality.md
+      - type: contains
+        value: does not change models.toml or max_review_rounds
+      - type: contains
+        value: A person opens the pull request.
