@@ -626,6 +626,7 @@ def run(args, cwd):
 sys.exit(main(
     sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]), github=FakeGitHub(),
     run_gh=lambda args: 0, find_pr=lambda repo: OPEN_PR, inspect_worktree=clean_worktree,
+    resolve=lambda route, _effort: route,
     read_merge_hold=lambda repo: None,
 ))
 """
