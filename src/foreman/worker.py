@@ -33,6 +33,16 @@ PROOF_PROMPT = (
     "For required properties, report formal_proof with ran and constraints, a list of "
     "constraint and rejected results. Report evidence you actually collected."
 )
+EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
+
+
+def model_and_effort(model: str) -> tuple[str, str | None]:
+    slug, sep, effort = model.rpartition("-")
+    if sep and slug and effort in EFFORTS:
+        return slug, effort
+    return model, None
+
+
 QUOTA = re.compile(
     r"quota|rate.limit|usage limit|hit your limit|resource_exhausted|too many requests|\b429\b|"
     r"model[^\n]*(?:not (?:available|found|supported)|does not exist|unsupported)|"
@@ -78,17 +88,21 @@ class CliWorker:
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
         provider = family(model)
+        slug, effort = model_and_effort(model)
         edit = node == "implement"
         if provider == "gpt":
             sandbox = "workspace-write" if edit else "read-only"
-            args = ["codex", "exec", "-m", model, "--color", "never", "-s", sandbox, prompt]
+            effort_args = ["-c", f"model_reasoning_effort={effort}"] if effort else []
+            args = ["codex", "exec", "-m", slug, *effort_args, "--color", "never", "-s", sandbox, prompt]
         else:
             mode = "acceptEdits" if edit else "plan"
             options = ["--output-format", "json", "--permission-mode", mode]
             if provider == "claude":
-                args = ["claude", "--model", model, *options, "-p", prompt]
+                effort_args = ["--effort", effort] if effort else []
+                args = ["claude", "--model", slug, *effort_args, *options, "-p", prompt]
             else:
-                args = ["grok", "-m", model, *options, "--no-subagents", "-p", prompt]
+                effort_args = ["--reasoning-effort", effort] if effort else []
+                args = ["grok", "-m", slug, *effort_args, *options, "--no-subagents", "-p", prompt]
 
         try:
             process = self.run(args, self.cwd)
@@ -101,7 +115,7 @@ class CliWorker:
 
         if provider == "gpt":
             reported = re.findall(r"^model:[ \t]*(\S+)[ \t]*$", process.stderr, re.MULTILINE)
-            if reported != [model] or re.search(r"^model rerouted:", process.stderr, re.MULTILINE):
+            if reported != [slug] or re.search(r"^model rerouted:", process.stderr, re.MULTILINE):
                 raise QuotaExhausted(model)
             body = process.stdout
         else:
@@ -111,7 +125,7 @@ class CliWorker:
                     raise QuotaExhausted(model)
                 raise InvalidOutput(f"{provider} worker reported an error")
             usage = envelope.get("modelUsage")
-            if not isinstance(usage, dict) or usage.keys() != {model}:
+            if not isinstance(usage, dict) or usage.keys() != {slug}:
                 raise QuotaExhausted(model)
             body = envelope.get("result" if provider == "claude" else "text")
 
