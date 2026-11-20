@@ -28,9 +28,16 @@ MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
 
 def _print_run(result: dict) -> None:
     models = result.get("models_used", {})
+    exits = result.get("check_exits") if isinstance(result.get("check_exits"), list) else []
+    verify_index = 0
     for node in result["path"]:
         if node == "verify":
-            print(f"verify {result.get('check') or '(no check)'}")
+            label = result.get("check") or "(no check)"
+            if verify_index < len(exits):
+                print(f"verify {label} exit {exits[verify_index]}")
+            else:
+                print(f"verify {label}")
+            verify_index += 1
         elif node == "done":
             if "check_exit_code" in result:
                 print(f"check exit {result['check_exit_code']}")
@@ -39,6 +46,8 @@ def _print_run(result: dict) -> None:
             print(f"done {result['stop']}")
             if detail := result.get("halt_detail"):
                 print(detail)
+            elif result.get("stop") == "review_cap" and (note := result.get("review_note")):
+                print(f"review note: {note}")
             if proposal := result.get("proposal"):
                 print(proposal["summary"].rstrip())
         elif node == "merge":
@@ -60,6 +69,8 @@ def _print_run(result: dict) -> None:
             fields = [node]
             if model := models.get(node):
                 fields.append(model)
+            if node == "review" and (verdict := result.get("review")):
+                fields.append(verdict)
             if node == "review" and (risk := result.get("risk")):
                 fields.extend(("risk", risk["level"]))
             print(" ".join(fields))

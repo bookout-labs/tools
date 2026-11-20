@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from foreman.cli import main
+from foreman.cli import _print_run, main
 from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
 from foreman.runner import comment_on_pull_request, commit_implementation, publish_reviewed_branch, run_live_delivery
@@ -384,9 +384,63 @@ class LiveRunnerTest(unittest.TestCase):
     def test_nonzero_check_exit_consumes_the_cap_without_dispatched_verify_or_review(self):
         result = self.walk([{"triage": "implement"}] + [{"implementation": "built"}] * 3, check="exit 17")
         self.assertEqual(result["check_exit_code"], 17)
+        self.assertEqual(result["check_exits"], [17, 17, 17])
         self.assertEqual(result["stop"], "verify_cap")
         self.assertEqual(self.calls, ["claude", "codex", "codex", "codex"])
         self.assertNotIn("merge", result["path"])
+
+    def test_missing_check_program_stops_once_without_using_a_review_round(self):
+        for code, reason in ((127, "was not found"), (126, "could not run")):
+            with self.subTest(code=code), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "runs.sqlite3"
+                self.calls = []
+                result = self.walk(
+                    [{"triage": "implement"}, {"implementation": "built"}],
+                    check=f"exit {code}",
+                )
+                self.assertEqual(result["stop"], "check_unavailable")
+                self.assertEqual(result["path"], ["triage", "implement", "verify", "done"])
+                self.assertEqual(result.get("review_rounds", 0), 0)
+                self.assertEqual(result["check_exit_code"], code)
+                self.assertEqual(result["check_exits"], [code])
+                self.assertNotIn("review", result["path"])
+                self.assertEqual(
+                    result["halt_detail"],
+                    f"the check exited {code} because a program it runs {reason}",
+                )
+                self.assertEqual(result["proposal"]["kind"], "setup")
+                self.assertFalse(result["proposal"]["file_issue"])
+                self.assertIn("No graph change.", result["proposal"]["summary"])
+                self.assertEqual(self.calls, ["claude", "codex"])
+
+    def test_log_names_each_verify_exit_and_the_review_verdict(self):
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            _print_run({
+                "path": [
+                    "triage", "implement", "verify", "implement", "verify",
+                    "implement", "verify", "review", "done",
+                ],
+                "check": "npm run check",
+                "check_exit_code": 0,
+                "check_exits": [127, 127, 0],
+                "models_used": {
+                    "triage": "claude-opus-5-5-high",
+                    "implement": "gpt-6.2-sol-high",
+                    "review": "gpt-6.2-sol-high",
+                },
+                "review": "changes",
+                "review_note": "Add a hermetic RPC-first regression test.",
+                "risk": {"level": "low"},
+                "stop": "review_cap",
+                "merge_armed": False,
+            })
+        text = stdout.getvalue()
+        self.assertEqual(text.count("verify npm run check exit 127"), 2)
+        self.assertIn("verify npm run check exit 0", text)
+        self.assertIn("review gpt-6.2-sol-high changes risk low", text)
+        self.assertIn("check exit 0", text)
+        self.assertIn("done review_cap", text)
+        self.assertIn("review note: Add a hermetic RPC-first regression test.", text)
 
     def test_both_proofs_pass_before_review_and_record_the_merge_command(self):
         self.github.body = slice_body(SLICE)

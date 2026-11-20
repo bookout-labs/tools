@@ -70,6 +70,26 @@ def _make_graph_proposal(title: str, target: str, cause: str, evidence: str) -> 
     }
 
 
+def _make_setup_proposal(title: str, cause: str, evidence: str) -> Proposal:
+    summary = (
+        f"Setup report: {title}\n"
+        f"Cause: {cause}\n"
+        f"Evidence: {evidence}\n"
+        "No graph change.\n"
+        "Install the programs the check runs, then rerun this issue.\n"
+        "This proposal does not change models.toml or max_review_rounds.\n"
+        "It does not edit the graph, merge, or launch a coding agent."
+    )
+    return {
+        "kind": "setup",
+        "title": title,
+        "target": "",
+        "evidence": evidence,
+        "summary": summary,
+        "file_issue": False,
+    }
+
+
 def _make_quota_proposal(title: str, cause: str, evidence: str) -> Proposal:
     summary = (
         f"Quota report: {title}\n"
@@ -216,6 +236,12 @@ def watch_run(state: dict, stop: str) -> Proposal | None:
             "Fix missing proof evidence from implement",
             "src/foreman/stages/implement.md",
             "Implementation finished without required browser or formal proof evidence.",
+            evidence,
+        )
+    if stop == "check_unavailable":
+        return _make_setup_proposal(
+            "The check program was not installed",
+            "The check could not start, so this run did not use a review round.",
             evidence,
         )
     if stop == "verify_cap":

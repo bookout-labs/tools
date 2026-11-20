@@ -30,6 +30,8 @@ RISK_FIELDS = ("alignment", "impact", "verification", "rollback", "error_detecti
 RISK_LEVELS = {"low", "medium", "high"}
 TEXT_FIELDS = {"implement": "implementation", "research": "research"}
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+# 127: the shell could not find a program. 126: it found one that could not start.
+UNAVAILABLE_CHECK = {126: "could not run", 127: "was not found"}
 
 
 class SliceProperty(TypedDict):
@@ -52,6 +54,7 @@ class DeliveryState(TypedDict, total=False):
     workspace: str
     check: str
     check_exit_code: int
+    check_exits: Annotated[list[int], operator.add]
     triage: str
     spec: str
     spec_gate: str
@@ -427,11 +430,21 @@ def compile_delivery(
                 return {"path": ["verify"], "halt": "dirty_worktree"}
             checked = {"head_sha": head, "head_checked": True}
         exit_code = run_check(state["check"])
+        recorded = {"check_exit_code": exit_code, "check_exits": [exit_code], "proof_labels": {}}
+        if exit_code in UNAVAILABLE_CHECK:
+            return {
+                "path": ["verify"],
+                "halt": "check_unavailable",
+                "halt_detail": (
+                    f"the check exited {exit_code} because a program it runs {UNAVAILABLE_CHECK[exit_code]}"
+                ),
+                "verify": "fail",
+                **recorded,
+            }
         verdict = "pass" if exit_code == 0 else "fail"
         return {
             **read_output("verify", {"verify": verdict}, state),
-            "check_exit_code": exit_code,
-            "proof_labels": {},
+            **recorded,
             **(checked if exit_code == 0 else {}),
         }
 

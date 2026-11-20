@@ -105,6 +105,30 @@ class WatcherTest(unittest.TestCase):
                 self.assertNotIn("/private/workspace/path", proposal["summary"])
                 self.assertIn("DoctorCRE/doctorcre-engine#874", proposal["evidence"])
 
+    def test_missing_check_program_reports_setup_without_a_graph_issue(self):
+        proposal = watch_run(
+            {
+                "repo": "DoctorCRE/doctorcre-engine",
+                "issue": 876,
+                "halt": "check_unavailable",
+                "halt_detail": "the check exited 127 because a program it runs was not found",
+                "path": ["triage", "implement", "verify", "done"],
+                "attempts": [{"node": "implement", "model": "gpt-6.2-sol-high", "status": "ran", "detail": ""}],
+                "request": "PRIVATE_REQUEST_TEXT_NEVER_LEAK",
+                "workspace": "/private/workspace/path",
+            },
+            "check_unavailable",
+        )
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal["kind"], "setup")
+        self.assertEqual(proposal["target"], "")
+        self.assertFalse(proposal["file_issue"])
+        self.assertIn("No graph change.", proposal["summary"])
+        self.assertIn("Install the programs the check runs, then rerun this issue.", proposal["summary"])
+        self.assertIn("the check exited 127", proposal["evidence"])
+        self.assertNotIn("PRIVATE_REQUEST_TEXT_NEVER_LEAK", proposal["summary"])
+        self.assertNotIn("/private/workspace/path", proposal["summary"])
+
     def test_file_proposal_issue_skips_duplicate_titles(self):
         proposal = watch_run(
             {

@@ -27,7 +27,7 @@ flowchart TD
   proof -->|blocked, under the cap| implement
   proof -->|missing evidence or cap reached| done
   verify -->|fail, under the cap| implement
-  verify -->|dirty worktree, invalid HEAD, or cap reached| done
+  verify -->|dirty worktree, missing program, invalid HEAD, or cap reached| done
   review -->|approve| merge
   review -->|changes, under the cap| implement
   review -->|cap reached or no reviewer| done
@@ -41,7 +41,7 @@ Review is a new session and starts with the first configured reviewer, including
 
 Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs use a scripted verdict. When the check passes, the graph evaluates the browser and formal evidence required by the slice. Missing evidence stops the run. A failed proof consumes a round and sends the slice back to implement while rounds remain.
 
-The cap is three failures across verify, proof, and review. It is config. A node cannot raise it.
+The cap is three failures across verify, proof, and review. It is config. A node cannot raise it. A check that exits 126 or 127 stops once as `check_unavailable` and does not use a review round: the shell could not find a program the check runs, or that program could not start. Install it and rerun. A failing check still shares the cap.
 
 After approval, the live run reads the GitHub repository variable `FOREMAN_MERGE_HOLD` on the target engine repository. A non-empty value halts `merge_held` with that text and does not push or arm merge (`gh variable set` sets the hold and `gh variable delete` clears it). When unset or empty, the worktree must be clean and at the SHA from verify. The live run then pushes that slice branch, opens its pull request against `main`, and runs `gh pr merge --auto --match-head-commit <sha>`. The head branch must start with the issue number and a hyphen. If the branch is not pushed, the pull request is not open at that SHA, or the merge command fails, the run stops `unpublished` and does not report verified. The pull request body is `Closes #<issue>`. Before arming merge, the live run comments the reviewer, verdict, and risk on that pull request. A failed comment stops `review_unrecorded` and does not arm merge.
 
