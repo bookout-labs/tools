@@ -1,30 +1,46 @@
 """Command line for the foreman tool."""
 
 import argparse
+import os
 from pathlib import Path
+import re
+import shlex
 import sys
 
 import yaml
 
 from foreman.accept import AcceptError, accept_event
 from foreman.delivery import GRAPH_NAME, diagram, run_delivery
-from foreman.dispatch import FailoverDispatcher
+from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
+from foreman.runner import run_live_delivery
+from foreman.worker import CliWorker, CommandRunner, run_worker_command
 
 
 def _print_run(result: dict) -> None:
-    models = result["models_used"]
+    models = result.get("models_used", {})
     for node in result["path"]:
         if node == "verify":
             print(f"verify {result.get('check') or '(no check)'}")
         elif node == "done":
+            if "check_exit_code" in result:
+                print(f"check exit {result['check_exit_code']}")
+            for proof, label in result.get("proof_labels", {}).items():
+                print(f"{proof} proof {label}")
             print(f"done {result['stop']}")
             if detail := result.get("halt_detail"):
                 print(detail)
         elif node == "merge":
-            print("merge armed" if result["merge_armed"] else "merge unarmed")
+            if result["merge_armed"]:
+                print("merge armed")
+            elif result.get("merge_args"):
+                print("merge arm recorded")
+            else:
+                print("merge unarmed")
+            if args := result.get("merge_args"):
+                print(shlex.join(args))
         else:
             fields = [node]
             if model := models.get(node):
@@ -32,9 +48,17 @@ def _print_run(result: dict) -> None:
             if node == "review" and (risk := result.get("risk")):
                 fields.extend(("risk", risk["level"]))
             print(" ".join(fields))
+    if result.get("stop") == "needs_human" and "done" not in result["path"]:
+        print("paused needs_human")
+        print(result["halt_detail"])
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    worker_runner: CommandRunner | None = run_worker_command,
+    checkpoint: Path | None = None,
+) -> int:
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -47,9 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     run = commands.add_parser("run", help="walk a graph")
     run.add_argument("graph")
     run.add_argument("--repo", required=True)
-    run.add_argument("--request", required=True)
+    run.add_argument("--issue", type=int)
+    run.add_argument("--request")
     run.add_argument("--check", default="")
     run.add_argument("--dry-run", action="store_true")
+    run.add_argument("--answer")
 
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")
     accept.add_argument("path")
@@ -98,14 +124,40 @@ def main(argv: list[str] | None = None) -> int:
     if args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
         return 2
-    if not args.dry_run:
-        print("A live dispatcher is not configured. Pass --dry-run to walk the graph.", file=sys.stderr)
-        return 2
-    result = run_delivery(
-        FailoverDispatcher(ScriptHandler()),
-        repo=args.repo,
-        request=args.request,
-        check=args.check,
-    )
+    if args.dry_run:
+        if args.answer is not None:
+            run.error("--answer requires a live run")
+        if args.request is None and args.issue is None:
+            run.error("a dry run requires --request or --issue")
+        result = run_delivery(
+            FailoverDispatcher(ScriptHandler()),
+            repo=args.repo,
+            request=args.request or f"Issue #{args.issue}",
+            check=args.check,
+        )
+    else:
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
+            run.error("--repo must be OWNER/NAME")
+        if args.issue is None or args.issue < 1 or not args.check.strip():
+            run.error("a live run requires a positive --issue and a --check command")
+        if checkpoint is None:
+            state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+            checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
+        cwd = Path.cwd()
+        dispatcher = FailoverDispatcher(CliWorker(cwd, worker_runner)) if worker_runner else None
+        try:
+            result = run_live_delivery(
+                repo=args.repo,
+                issue=args.issue,
+                check=args.check,
+                cwd=cwd,
+                checkpoint=checkpoint,
+                dispatcher=dispatcher,
+                request=args.request or "",
+                answer=args.answer,
+            )
+        except (OSError, QuotaExhausted, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     _print_run(result)
     return 0

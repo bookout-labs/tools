@@ -12,12 +12,19 @@ flowchart TD
   triage -->|clear change| implement
   triage -->|parent, larger change, or open choice| spec
   triage -->|question| research
-  triage -->|needs a person| done
+  triage -->|needs a person| needs_human
+  needs_human -->|answer to triage| triage
+  needs_human -->|answer to spec| spec
   spec -->|slice ready| implement
-  spec -->|parent sliced or needs a person| done
+  spec -->|needs a person| needs_human
+  spec -->|parent sliced| done
   research --> done
   implement --> verify
-  verify -->|pass| review
+  verify -->|pass with proof obligations| proof
+  verify -->|pass without proof obligations| review
+  proof -->|accepted| review
+  proof -->|blocked, under the cap| implement
+  proof -->|missing evidence or cap reached| done
   verify -->|fail, under the cap| implement
   verify -->|cap reached| done
   review -->|approve| merge
@@ -31,13 +38,15 @@ The edges are code. The model list is `src/foreman/models.toml`. Quota exhaustio
 
 Review uses a different model family from the model that implemented the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If the builder model is missing or every eligible reviewer is unavailable, the run stops with `no_reviewer`. The record includes `halt_detail` for both stops.
 
-The check command comes from the engine's pointer and is attached to verify. Verify has no model and records its result before review. A live run is not connected, so dry runs use a scripted result. After approval, the merge node records `merge_armed` when verify passed and implement reported a `head_sha`. Arming is a record update only.
+Verify runs the check command in the engine checkout and uses its exit code. Dry runs use a scripted verdict. When the check passes, the graph evaluates the browser and formal evidence required by the slice. Missing evidence stops the run. A failed proof consumes a round and sends the slice back to implement while rounds remain.
 
-The cap is three review or verify failures. It is config. A node cannot raise it.
+The cap is three failures across verify, proof, and review. It is config. A node cannot raise it.
+
+After approval, the merge node records `gh pr merge --auto --match-head-commit <sha>` if the builder reported a full head SHA. The CLI records the command locally. The runner can pass those arguments to an injected GitHub command handler.
 
 Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 
-A clear change on a slice goes straight to implement. Parent issues and changes that need more than one pull request route to spec even when the decisions are settled. A ready parent spec records its slices and stops as `sliced`. Each slice records its title, acceptance, dependency titles, screen path or empty string, and named property constraints. These fields record proof obligations for later executors. An open product choice stops for a person. An informational request routes to research.
+A clear change on a slice goes straight to implement. Parent issues and changes that need more than one pull request route to spec even when the decisions are settled. A ready parent spec records its slices and stops as `sliced`. Each slice records its title, acceptance, dependency titles, screen path or empty string, and named property constraints. An open product choice pauses a live run for a person's answer. An informational request routes to research.
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 
@@ -110,7 +119,13 @@ Print the graph:
 foreman diagram delivery
 ```
 
-A run without `--dry-run` stops. No live model dispatcher is connected yet.
+Start a live run from the root of the engine checkout. Use `--request` to supply the issue text when it is not available in the checkout.
+
+```sh
+foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm run check" --request "Add a field"
+```
+
+The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request and check command.
 
 ## Tests
 

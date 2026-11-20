@@ -2,14 +2,17 @@
 
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from typing import Annotated, TypedDict
+from typing import Annotated, Callable, TypedDict
 import operator
 import re
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.proof import browser_proof_label, formal_proof_label
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -43,16 +46,26 @@ class Slice(TypedDict):
 class DeliveryState(TypedDict, total=False):
     request: str
     repo: str
+    issue: int
+    workspace: str
     check: str
+    check_exit_code: int
     triage: str
     spec: str
     spec_gate: str
     slices: list[Slice]
+    slice: Slice
     issue_kind: str
     research: str
     implementation: str
     head_sha: str | None
     merge_armed: bool
+    merge_args: list[str]
+    browser_proof: dict | None
+    formal_proof: dict | None
+    proof_labels: dict[str, str]
+    human_question: str
+    human_answers: list[str]
     review: str
     risk: dict[str, str]
     verify: str
@@ -161,6 +174,9 @@ def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
         if name == "implement":
             head = raw.get("head_sha")
             update["head_sha"] = (head.strip() or None) if isinstance(head, str) else None
+            for field in ("browser_proof", "formal_proof"):
+                artifact = raw.get(field)
+                update[field] = artifact if isinstance(artifact, dict) else None
     elif name == "verify":
         verdict = choice(raw.get("verify"), VERIFY_OUTCOMES, "verify")
         update["verify"] = verdict
@@ -172,6 +188,12 @@ def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
         update["risk"] = clean_risk(raw.get("risk"))
         if verdict == "changes":
             update["review_rounds"] = state.get("review_rounds", 0) + 1
+    if name in {"triage", "spec"}:
+        question = raw.get("human_question")
+        update["human_question"] = question if isinstance(question, str) else ""
+        ready = update.get("triage") == "implement" or update.get("spec_gate") == "ready"
+        if ready and state.get("issue_kind") == "slice" and "slice" not in state and "slice" in raw:
+            update["slice"] = clean_slices([raw["slice"]])[0]
     model = raw.get("model")
     if model:
         update["models_used"] = {**state.get("models_used", {}), name: model}
@@ -196,7 +218,14 @@ def stop_reason(state: DeliveryState) -> str:
     return "stopped"
 
 
-def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = None):
+def compile_delivery(
+    dispatcher: FailoverDispatcher | None,
+    config: Config | None = None,
+    *,
+    checkpointer: BaseCheckpointSaver | None = None,
+    run_check: Callable[[str], int] | None = None,
+    run_gh: Callable[[list[str]], int] | None = None,
+):
     config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
@@ -205,11 +234,18 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
 
     def bind(name: str):
         def node(state: DeliveryState) -> dict:
+            if dispatcher is None:
+                return {"path": [name], "halt": "no_dispatcher"}
             try:
                 models = order_for(name, config, state.get("models_used") or {})
             except ConfigError as exc:
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
             instruction = prompts[name]
+            if name == "implement" and (slice := state.get("slice")):
+                for field, skill in (("screen", "browser-proof"), ("properties", "formal-proof")):
+                    if slice[field]:
+                        proof = (PACKAGE / "skills" / f"{skill}.md").read_text().strip()
+                        instruction = f"{instruction}\n\n{proof}"
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
@@ -225,12 +261,43 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
 
         return node
 
+    def verify(state: DeliveryState) -> dict:
+        assert run_check is not None
+        exit_code = run_check(state["check"])
+        verdict = "pass" if exit_code == 0 else "fail"
+        return {
+            **read_output("verify", {"verify": verdict}, state),
+            "check_exit_code": exit_code,
+            "proof_labels": {},
+        }
+
+    def prove(state: DeliveryState) -> dict:
+        slice = state["slice"]
+        labels = {
+            "browser": browser_proof_label(slice, state.get("browser_proof")),
+            "formal": formal_proof_label(slice, state.get("formal_proof")),
+        }
+        update = {"path": ["proof"], "proof_labels": {key: label for key, label in labels.items() if label}}
+        if "insufficient_evidence" in labels.values():
+            update["halt"] = "insufficient_evidence"
+        elif "block" in labels.values():
+            update["review_rounds"] = state.get("review_rounds", 0) + 1
+            if update["review_rounds"] >= config.max_review_rounds:
+                update["halt"] = "review_cap"
+        return update
+
+    def needs_human(state: DeliveryState) -> dict:
+        stage = state["path"][-1]
+        question = state.get("human_question") or "What should Foreman know to continue?"
+        answer = interrupt({"stage": stage, "question": question})
+        return {"human_answers": [*state.get("human_answers", []), answer]}
+
     def after_triage(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
         decision = state.get("triage")
         if decision == "needs_human":
-            return "done"
+            return "needs_human" if checkpointer is not None else "done"
         if state.get("issue_kind") == "parent":
             return "spec"
         if decision == "question":
@@ -240,6 +307,8 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
     def after_spec(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
+        if state.get("spec_gate") == "needs_human" and checkpointer is not None:
+            return "needs_human"
         if state.get("issue_kind") == "parent":
             return "done"
         return "implement" if state.get("spec_gate") == "ready" else "done"
@@ -257,33 +326,53 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
         if state.get("halt"):
             return "done"
         if state.get("verify") == "pass":
+            slice = state.get("slice")
+            if slice and (slice["screen"] or slice["properties"]):
+                return "proof"
             return "review"
         if state.get("review_rounds", 0) < config.max_review_rounds:
             return "implement"
         return "done"
 
+    def after_proof(state: DeliveryState) -> str:
+        if state.get("halt"):
+            return "done"
+        return "implement" if state.get("proof_labels") else "review"
+
     def after_implement(state: DeliveryState) -> str:
         return "done" if state.get("halt") else "verify"
 
     def arm_merge(state: DeliveryState) -> dict:
-        armed = state.get("review") == "approve" and state.get("verify") == "pass" and bool(state.get("head_sha"))
-        return {"merge_armed": armed, "path": ["merge"]}
+        head = state.get("head_sha")
+        if not head or not re.fullmatch(r"[0-9a-fA-F]{40}", head):
+            return {"merge_armed": False, "path": ["merge"]}
+        args = ["gh", "pr", "merge", "--auto", "--match-head-commit", head]
+        armed = run_gh(args) == 0 if run_gh is not None else run_check is None
+        return {"merge_armed": armed, "merge_args": args, "path": ["merge"]}
 
     def finish(state: DeliveryState) -> dict:
         return {"stop": stop_reason(state), "path": ["done"]}
 
     builder = StateGraph(DeliveryState)
     for name in REQUIRED_NODES:
-        builder.add_node(name, bind(name))
+        builder.add_node(name, verify if name == "verify" and run_check is not None else bind(name))
+    builder.add_node("proof", prove)
+    builder.add_node("needs_human", needs_human)
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_edge(START, "triage")
     builder.add_conditional_edges(
         "triage",
         after_triage,
-        {"implement": "implement", "spec": "spec", "research": "research", "done": "done"},
+        {"implement": "implement", "spec": "spec", "research": "research",
+         "needs_human": "needs_human", "done": "done"},
     )
-    builder.add_conditional_edges("spec", after_spec, {"implement": "implement", "done": "done"})
+    builder.add_conditional_edges(
+        "spec", after_spec, {"implement": "implement", "needs_human": "needs_human", "done": "done"},
+    )
+    builder.add_conditional_edges(
+        "needs_human", lambda state: state["path"][-1], {"triage": "triage", "spec": "spec"},
+    )
     builder.add_edge("research", "done")
     builder.add_conditional_edges("implement", after_implement, {"verify": "verify", "done": "done"})
     builder.add_conditional_edges(
@@ -294,11 +383,14 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
     builder.add_conditional_edges(
         "verify",
         after_verify,
-        {"review": "review", "implement": "implement", "done": "done"},
+        {"proof": "proof", "review": "review", "implement": "implement", "done": "done"},
+    )
+    builder.add_conditional_edges(
+        "proof", after_proof, {"review": "review", "implement": "implement", "done": "done"},
     )
     builder.add_edge("merge", "done")
     builder.add_edge("done", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
 def run_delivery(
