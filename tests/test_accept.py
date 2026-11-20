@@ -29,12 +29,11 @@ class AcceptTest(unittest.TestCase):
         )
         self.assertFalse(decision["start"])
 
-    def test_alert_starts_a_run(self):
+    def test_alert_is_ignored(self):
         decision = accept_event(
             {"source": "alert", "title": "Invalid time value", "body": "stack"}
         )
-        self.assertTrue(decision["start"])
-        self.assertEqual(decision["source"], "alert")
+        self.assertEqual(decision, {"start": False})
 
     def test_unknown_source_is_rejected(self):
         with self.assertRaises(AcceptError):

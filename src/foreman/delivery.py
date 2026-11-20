@@ -1,18 +1,20 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, TypedDict
 import operator
+import re
 
 from langgraph.graph import END, START, StateGraph
 
 from foreman.config import Config, ConfigError, load_config, order_for
-from foreman.dispatch import FailoverDispatcher
+from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
-REQUIRED_NODES = ("triage", "research", "spec", "implement", "review", "verify")
-STAGE_ORDER = REQUIRED_NODES
+REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
+STAGE_ORDER = REQUIRED_NODES + ("merge",)
 SKILLS_FOR = {
     "review": ("review-quality", "merge-risk"),
 }
@@ -22,7 +24,20 @@ REVIEW_OUTCOMES = {"approve", "changes"}
 VERIFY_OUTCOMES = {"pass", "fail"}
 RISK_FIELDS = ("alignment", "impact", "verification", "rollback", "error_detection")
 RISK_LEVELS = {"low", "medium", "high"}
-TEXT_FIELDS = {"spec": "spec", "implement": "implementation", "research": "research"}
+TEXT_FIELDS = {"implement": "implementation", "research": "research"}
+
+
+class SliceProperty(TypedDict):
+    name: str
+    constraint: str
+
+
+class Slice(TypedDict):
+    title: str
+    acceptance: str
+    depends_on: list[str]
+    screen: str
+    properties: list[SliceProperty]
 
 
 class DeliveryState(TypedDict, total=False):
@@ -32,16 +47,19 @@ class DeliveryState(TypedDict, total=False):
     triage: str
     spec: str
     spec_gate: str
-    slices: list[dict[str, str | list[str]]]
+    slices: list[Slice]
     issue_kind: str
     research: str
     implementation: str
+    head_sha: str | None
+    merge_armed: bool
     review: str
     risk: dict[str, str]
     verify: str
     review_rounds: int
     models_used: dict[str, str]
     halt: str
+    halt_detail: str
     stop: str
     path: Annotated[list[str], operator.add]
 
@@ -55,85 +73,126 @@ def stage_text(name: str) -> str:
     return text
 
 
+def required_text(value: object, detail: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidOutput(detail)
+    return value
+
+
+def choice(value: object, options: set[str], field: str) -> str:
+    if not isinstance(value, str) or value not in options:
+        raise InvalidOutput(f"{field} must be one of {', '.join(sorted(options))}")
+    return value
+
+
 def clean_risk(raw: object) -> dict[str, str]:
     if not isinstance(raw, dict):
-        raise ValueError("review did not report merge risk")
-    risk: dict[str, str] = {}
-    for field in RISK_FIELDS:
-        value = raw.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"review risk is missing {field}")
-        risk[field] = value.strip()
-    level = raw.get("level")
-    if level not in RISK_LEVELS:
-        raise ValueError("review risk level must be low, medium, or high")
-    risk["level"] = level
+        raise InvalidOutput("review did not report merge risk")
+    risk = {
+        field: required_text(raw.get(field), f"review risk is missing {field}").strip()
+        for field in RISK_FIELDS
+    }
+    risk["level"] = choice(raw.get("level"), RISK_LEVELS, "review risk level")
     return risk
 
 
-def clean_slices(raw: object) -> list[dict[str, str | list[str]]]:
+def clean_slices(raw: object) -> list[Slice]:
     if not isinstance(raw, list) or not raw:
-        raise ValueError("spec did not return slices")
-    cleaned: list[dict[str, str | list[str]]] = []
+        raise InvalidOutput("spec did not return slices")
+    cleaned: list[Slice] = []
     for item in raw:
-        if not isinstance(item, dict):
-            raise ValueError("slice must be a mapping")
-        title = item.get("title")
-        acceptance = item.get("acceptance")
-        depends = item.get("depends_on", [])
-        if not isinstance(title, str) or not title.strip():
-            raise ValueError("slice needs a title")
-        if not isinstance(acceptance, str) or not acceptance.strip():
-            raise ValueError("slice needs acceptance")
-        if not isinstance(depends, list) or not all(isinstance(dep, str) and dep.strip() for dep in depends):
-            raise ValueError("slice dependencies must be titles")
-        cleaned.append(
-            {
-                "title": title.strip(),
-                "acceptance": acceptance.strip(),
-                "depends_on": [dep.strip() for dep in depends],
-            }
-        )
-    known = {str(item["title"]) for item in cleaned}
-    if len(known) != len(cleaned):
-        raise ValueError("slice titles must be unique")
-    graph = {str(item["title"]): item["depends_on"] for item in cleaned}
-    visiting: set[str] = set()
-    visited: set[str] = set()
-
-    def walk(name: str) -> None:
-        if name in visiting:
-            raise ValueError("slice dependencies cycle")
-        if name in visited:
-            return
-        visiting.add(name)
-        for dep in graph[name]:
-            if not isinstance(dep, str) or dep not in known:
-                raise ValueError(f"unknown dependency {dep}")
-            walk(dep)
-        visiting.remove(name)
-        visited.add(name)
-
-    for name in graph:
-        walk(name)
+        if not isinstance(item, dict) or item.keys() != Slice.__required_keys__:
+            raise InvalidOutput("slice needs exactly title, acceptance, depends_on, screen, and properties")
+        title = required_text(item["title"], "slice needs a title").strip()
+        acceptance = required_text(item["acceptance"], "slice needs acceptance").strip()
+        depends = item["depends_on"]
+        if not isinstance(depends, list):
+            raise InvalidOutput("slice dependencies must be a list of titles")
+        screen = item["screen"]
+        if not isinstance(screen, str) or (
+            screen and (".." in screen or not re.fullmatch(r"docs/screens/[^/\\\x00-\x1f]+\.md", screen))
+        ):
+            raise InvalidOutput("slice screen must be empty or a docs/screens/<file>.md path without '..'")
+        properties = item["properties"]
+        if not isinstance(properties, list):
+            raise InvalidOutput("slice properties must be a list")
+        cleaned_properties: list[SliceProperty] = []
+        for prop in properties:
+            if not isinstance(prop, dict) or prop.keys() != SliceProperty.__required_keys__:
+                raise InvalidOutput("slice property needs exactly name and constraint")
+            cleaned_properties.append({
+                "name": required_text(prop["name"], "slice property needs a name").strip(),
+                "constraint": required_text(prop["constraint"], "slice property needs a constraint").strip(),
+            })
+        cleaned.append({
+            "title": title,
+            "acceptance": acceptance,
+            "depends_on": [required_text(dep, "slice dependency needs a title").strip() for dep in depends],
+            "screen": screen,
+            "properties": cleaned_properties,
+        })
+    graph = {item["title"]: item["depends_on"] for item in cleaned}
+    if len(graph) != len(cleaned):
+        raise InvalidOutput("slice titles must be unique")
+    for deps in graph.values():
+        for dep in deps:
+            if dep not in graph:
+                raise InvalidOutput(f"unknown dependency {dep}")
+    try:
+        TopologicalSorter(graph).prepare()
+    except CycleError as exc:
+        raise InvalidOutput("slice dependencies cycle") from exc
     return cleaned
 
 
-def stop_reason(state: dict) -> str:
-    if state.get("halt") == "no_reviewer":
-        return "no_reviewer"
+def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
+    update: dict = {"path": [name]}
+    if name == "triage":
+        update["triage"] = choice(raw.get("triage"), TRIAGE_OUTCOMES, "triage")
+    elif name == "spec":
+        gate = choice(raw.get("spec_gate"), SPEC_GATES, "spec gate")
+        update["spec"] = required_text(raw.get("spec"), "spec did not return text")
+        update["spec_gate"] = gate
+        if state.get("issue_kind") == "parent" and gate == "ready":
+            update["slices"] = clean_slices(raw.get("slices"))
+    elif name in TEXT_FIELDS:
+        key = TEXT_FIELDS[name]
+        update[key] = required_text(raw.get(key), f"{name} did not return text")
+        if name == "implement":
+            head = raw.get("head_sha")
+            update["head_sha"] = (head.strip() or None) if isinstance(head, str) else None
+    elif name == "verify":
+        verdict = choice(raw.get("verify"), VERIFY_OUTCOMES, "verify")
+        update["verify"] = verdict
+        if verdict == "fail":
+            update["review_rounds"] = state.get("review_rounds", 0) + 1
+    elif name == "review":
+        verdict = choice(raw.get("review"), REVIEW_OUTCOMES, "review")
+        update["review"] = verdict
+        update["risk"] = clean_risk(raw.get("risk"))
+        if verdict == "changes":
+            update["review_rounds"] = state.get("review_rounds", 0) + 1
+    model = raw.get("model")
+    if model:
+        update["models_used"] = {**state.get("models_used", {}), name: model}
+    return update
+
+
+def stop_reason(state: DeliveryState) -> str:
+    if halt := state.get("halt"):
+        return halt
     if state.get("triage") == "needs_human" or state.get("spec_gate") == "needs_human":
         return "needs_human"
     if state.get("issue_kind") == "parent" and state.get("spec_gate") == "ready":
         return "sliced"
     if state.get("triage") == "question":
         return "answered"
-    if state.get("verify") == "pass":
-        return "verified"
     if state.get("verify") == "fail":
         return "verify_cap"
     if state.get("review") == "changes":
         return "review_cap"
+    if state.get("verify") == "pass":
+        return "verified"
     return "stopped"
 
 
@@ -154,53 +213,15 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
-            raw = dispatcher.run(name, models, state, instruction)
-            update: dict = {"path": [name]}
-            if name == "triage":
-                value = raw.get("triage")
-                if value not in TRIAGE_OUTCOMES:
-                    raise ValueError(f"triage returned {value!r}")
-                update["triage"] = value
-            elif name == "spec":
-                text = raw.get("spec")
-                gate = raw.get("spec_gate")
-                if not isinstance(text, str) or not text.strip():
-                    raise ValueError("spec did not return text")
-                if gate not in SPEC_GATES:
-                    raise ValueError(f"spec returned {gate!r}")
-                update["spec"] = text
-                update["spec_gate"] = gate
-                if state.get("issue_kind") == "parent" and gate == "ready":
-                    update["slices"] = clean_slices(raw.get("slices"))
-            elif name in TEXT_FIELDS:
-                key = TEXT_FIELDS[name]
-                text = raw.get(key)
-                if not isinstance(text, str) or not text.strip():
-                    raise ValueError(f"{name} did not return text")
-                update[key] = text
-            elif name == "review":
-                verdict = raw.get("review")
-                if verdict not in REVIEW_OUTCOMES:
-                    raise ValueError(f"review returned {verdict!r}")
-                update["review"] = verdict
-                update["risk"] = clean_risk(raw.get("risk"))
-                if verdict == "changes":
-                    update["review_rounds"] = state.get("review_rounds", 0) + 1
-            elif name == "verify":
-                verdict = raw.get("verify")
-                if verdict not in VERIFY_OUTCOMES:
-                    raise ValueError(f"verify returned {verdict!r}")
-                update["verify"] = verdict
-                if verdict == "fail":
-                    update["review_rounds"] = state.get("review_rounds", 0) + 1
-            else:
-                raise ValueError(f"unknown node {name}")
-            model = raw.get("model")
-            if model:
-                used = dict(state.get("models_used") or {})
-                used[name] = model
-                update["models_used"] = used
-            return update
+            try:
+                raw = dispatcher.run(name, models, state, instruction)
+                return read_output(name, raw, state)
+            except InvalidOutput as exc:
+                return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
+            except QuotaExhausted as exc:
+                if name != "review":
+                    raise
+                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {exc}"}
 
         return node
 
@@ -210,6 +231,8 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
         decision = state.get("triage")
         if decision == "needs_human":
             return "done"
+        if state.get("issue_kind") == "parent":
+            return "spec"
         if decision == "question":
             return "research"
         return decision or "done"
@@ -225,7 +248,7 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
         if state.get("halt"):
             return "done"
         if state.get("review") == "approve":
-            return "verify"
+            return "merge"
         if state.get("review_rounds", 0) < config.max_review_rounds:
             return "implement"
         return "done"
@@ -234,10 +257,17 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
         if state.get("halt"):
             return "done"
         if state.get("verify") == "pass":
-            return "done"
+            return "review"
         if state.get("review_rounds", 0) < config.max_review_rounds:
             return "implement"
         return "done"
+
+    def after_implement(state: DeliveryState) -> str:
+        return "done" if state.get("halt") else "verify"
+
+    def arm_merge(state: DeliveryState) -> dict:
+        armed = state.get("review") == "approve" and state.get("verify") == "pass" and bool(state.get("head_sha"))
+        return {"merge_armed": armed, "path": ["merge"]}
 
     def finish(state: DeliveryState) -> dict:
         return {"stop": stop_reason(state), "path": ["done"]}
@@ -245,6 +275,7 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
     builder = StateGraph(DeliveryState)
     for name in REQUIRED_NODES:
         builder.add_node(name, bind(name))
+    builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_edge(START, "triage")
     builder.add_conditional_edges(
@@ -254,17 +285,18 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
     )
     builder.add_conditional_edges("spec", after_spec, {"implement": "implement", "done": "done"})
     builder.add_edge("research", "done")
-    builder.add_edge("implement", "review")
+    builder.add_conditional_edges("implement", after_implement, {"verify": "verify", "done": "done"})
     builder.add_conditional_edges(
         "review",
         after_review,
-        {"verify": "verify", "implement": "implement", "done": "done"},
+        {"merge": "merge", "implement": "implement", "done": "done"},
     )
     builder.add_conditional_edges(
         "verify",
         after_verify,
-        {"done": "done", "implement": "implement"},
+        {"review": "review", "implement": "implement", "done": "done"},
     )
+    builder.add_edge("merge", "done")
     builder.add_edge("done", END)
     return builder.compile()
 

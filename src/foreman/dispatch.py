@@ -9,6 +9,10 @@ class QuotaExhausted(Exception):
         super().__init__(model or "no model")
 
 
+class InvalidOutput(ValueError):
+    pass
+
+
 class Handler(Protocol):
     def __call__(self, node: str, model: str | None, state: dict, instruction: str) -> dict:
         pass
@@ -28,7 +32,7 @@ class FailoverDispatcher:
                 last = exc
                 continue
             if not isinstance(update, dict):
-                raise TypeError(f"{node} returned {type(update).__name__}")
+                raise InvalidOutput(f"{node} returned {type(update).__name__}")
             result = dict(update)
             result["model"] = model
             return result

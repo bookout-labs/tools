@@ -31,5 +31,5 @@ def accept_event(event: dict) -> dict:
             return {"start": False}
         return {"start": True, "source": "github", "request": _request(event.get("title"), event.get("body"))}
     if source == "alert":
-        return {"start": True, "source": "alert", "request": _request(event.get("title"), event.get("body"))}
+        return {"start": False}
     raise AcceptError(f"unknown event source {source}")

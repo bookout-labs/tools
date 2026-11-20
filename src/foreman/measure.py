@@ -8,7 +8,7 @@ DEFAULT_PATH = Path(__file__).with_name("measure.toml")
 LABELS = ("approve", "block", "insufficient_evidence")
 PROPOSALS = {
     "redundant-tests": (
-        "skills/code-quality.md",
+        "stages/implement.md",
         "Tell the builder to add a test only when it checks a behavior the change can break.",
     ),
     "code-quality": (
@@ -71,7 +71,8 @@ def grade(label: str, config: MeasureConfig | None = None) -> Grade:
     if label not in config.labels:
         raise MeasureError(f"unknown label {label}")
     score = config.labels[label]
-    return Grade(label=label, score=score, passed=score > config.passing_score)
+    passed = label != "insufficient_evidence" and score >= config.passing_score
+    return Grade(label=label, score=score, passed=passed)
 
 
 def selected(run_index: int, config: MeasureConfig | None = None) -> bool:

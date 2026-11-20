@@ -21,7 +21,7 @@ tests:
     assert:
       - type: equals
         value: verified
-  - description: A parent issue stops once spec has named the slices
+  - description: A parent issue reaches spec and stops sliced even when triage says implement
     vars:
       case: parent
     assert:
@@ -69,12 +69,12 @@ tests:
     assert:
       - type: equals
         value: yes
-  - description: A failing score proposes a skill change and leaves the model list alone
+  - description: A redundant-test score proposes a builder instruction change
     vars:
       case: proposal
     assert:
       - type: contains
-        value: skills/code-quality.md
+        value: stages/implement.md
       - type: contains
         value: does not change models.toml or max_review_rounds
       - type: contains

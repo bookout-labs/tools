@@ -77,11 +77,12 @@ def load_config(path: Path | None = None) -> Config:
 def order_for(node: str, config: Config, models_used: dict[str, str]) -> list[str]:
     spec = config.nodes[node]
     models = list(spec.models)
-    if not spec.other_family_from:
+    source = "implement" if node == "review" else spec.other_family_from
+    if not source:
         return models
-    used = models_used.get(spec.other_family_from)
+    used = models_used.get(source)
     if not used:
-        raise ConfigError(f"{node} needs the {spec.other_family_from} model")
+        raise ConfigError(f"{node} needs the {source} model")
     same = family(used)
     others = [model for model in models if family(model) != same]
     if not others:

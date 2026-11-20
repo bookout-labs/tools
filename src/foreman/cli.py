@@ -15,15 +15,23 @@ from foreman.pointer import PointerError, load_pointer
 
 
 def _print_run(result: dict) -> None:
+    models = result["models_used"]
     for node in result["path"]:
         if node == "verify":
             print(f"verify {result.get('check') or '(no check)'}")
         elif node == "done":
             print(f"done {result['stop']}")
-        elif node == "review":
-            print(f"review {result['models_used'][node]} risk {result['risk']['level']}")
+            if detail := result.get("halt_detail"):
+                print(detail)
+        elif node == "merge":
+            print("merge armed" if result["merge_armed"] else "merge unarmed")
         else:
-            print(f"{node} {result['models_used'][node]}")
+            fields = [node]
+            if model := models.get(node):
+                fields.append(model)
+            if node == "review" and (risk := result.get("risk")):
+                fields.extend(("risk", risk["level"]))
+            print(" ".join(fields))
 
 
 def main(argv: list[str] | None = None) -> int:

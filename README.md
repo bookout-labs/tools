@@ -10,33 +10,34 @@ Shared tools for the engine repositories. This repo lives in the bookout-labs or
 flowchart TD
   __start__([start]) --> triage
   triage -->|clear change| implement
-  triage -->|open product choice| spec
+  triage -->|parent, larger change, or open choice| spec
   triage -->|question| research
   triage -->|needs a person| done
-  spec -->|ready| implement
-  spec -->|needs a person| done
+  spec -->|slice ready| implement
+  spec -->|parent sliced or needs a person| done
   research --> done
-  implement --> review
-  review -->|approve| verify
-  review -->|changes, under the cap| implement
-  review -->|cap reached| done
-  verify -->|pass| done
+  implement --> verify
+  verify -->|pass| review
   verify -->|fail, under the cap| implement
   verify -->|cap reached| done
+  review -->|approve| merge
+  review -->|changes, under the cap| implement
+  review -->|cap reached or no reviewer| done
+  merge --> done
   done --> __end__([end])
 ```
 
 The edges are code. The model list is `src/foreman/models.toml`. Quota exhaustion tries the next model in that list. A node does not edit the list, and it does not decide the next node.
 
-Review uses a different model family from the model that implemented the change. A review also reports merge risk: alignment, impact, verification, rollback, and error detection, plus a level of low, medium, or high. A review without that report does not continue.
+Review uses a different model family from the model that implemented the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If the builder model is missing or every eligible reviewer is unavailable, the run stops with `no_reviewer`. The record includes `halt_detail` for both stops.
 
-The check command comes from the engine's pointer and is attached to verify. Verify has no model. A live run is not connected, so this node does not execute the command yet.
+The check command comes from the engine's pointer and is attached to verify. Verify has no model and records its result before review. A live run is not connected, so dry runs use a scripted result. After approval, the merge node records `merge_armed` when verify passed and implement reported a `head_sha`. Arming is a record update only.
 
 The cap is three review or verify failures. It is config. A node cannot raise it.
 
-Stage prompts live in `src/foreman/stages/`. The code-quality skill is attached to implement. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
+Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 
-A clear change on a slice goes straight to implement. A parent issue stops after spec returns its slices. The runner files those issues. The parent is not implemented. A product choice stops on the spec until it is ready. A question is answered and does not change code.
+A clear change on a slice goes straight to implement. Parent issues and changes that need more than one pull request route to spec even when the decisions are settled. A ready parent spec records its slices and stops as `sliced`. Each slice records its title, acceptance, dependency titles, screen path or empty string, and named property constraints. These fields record proof obligations for later executors. An open product choice stops for a person. An informational request routes to research.
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 
@@ -44,7 +45,7 @@ A coordinator session reads `src/foreman/roles/coordinator.md` from the tools re
 
 `foreman accept` reads one event and either ignores it or prints the request. It does not call a model.
 
-A GitHub event starts when it is `issue_labeled` and the labels include `factory`. An alert starts from a title and a body. Anything else is ignored or rejected.
+A GitHub event starts when it is `issue_labeled` and the labels include `factory`. The command ignores alerts and other GitHub events. It rejects unknown sources.
 
 ```yaml
 source: github
@@ -60,9 +61,9 @@ foreman accept event.yaml
 
 ## Scoring
 
-`src/foreman/measure.toml` holds the sampling rate, the passing bar, and the label scores. One implementation run in every ten is graded. `approve` scores 1 and passes. `block` scores 0.2 and fails. `insufficient_evidence` scores 0.5 and is reported on its own. It is not evidence of good work.
+`src/foreman/measure.toml` holds the sampling rate, the passing bar, and the label scores. One implementation run in every ten is graded. `approve` scores 1 and passes. `block` scores 0.2 and fails. `insufficient_evidence` scores 0.5 and always fails, regardless of the passing bar.
 
-`foreman improve` turns a known failure into a proposed skill change. The proposal does not change `models.toml` or the review cap. A person opens the pull request.
+`foreman improve` proposes a change for a known scoring failure. For redundant tests, it targets the builder instructions in `src/foreman/stages/implement.md`. The proposal does not change `models.toml` or the review cap. A person opens the pull request.
 
 ```sh
 foreman improve redundant-tests

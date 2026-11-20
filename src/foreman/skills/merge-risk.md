@@ -1,6 +1,6 @@
 # Merge risk
 
-Score the pull request before a person merges it.
+Assess the pull request before auto-merge is armed. Use the verification result in the delivery state.
 
 - Alignment. The code matches the request and the spec. Call out drive-by fixes.
 - Impact. Name the blast radius and any sensitive path: auth, permissions, payments, personal data, or secrets.

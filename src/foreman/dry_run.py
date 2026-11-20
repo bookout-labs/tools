@@ -22,6 +22,7 @@ class ScriptHandler:
         implementation: str = "diff",
         research: str = "answer",
         risk: dict | None = None,
+        head_sha: str | None = None,
     ):
         self.triage = triage
         self.spec_gate = spec_gate
@@ -30,6 +31,7 @@ class ScriptHandler:
         self.spec = spec
         self.slices = slices
         self.implementation = implementation
+        self.head_sha = head_sha
         self.research = research
         self.risk = dict(DEFAULT_RISK if risk is None else risk)
         self.calls: list[dict[str, str | None]] = []
@@ -44,7 +46,7 @@ class ScriptHandler:
                 payload["slices"] = self.slices
             return payload
         if node == "implement":
-            return {"implementation": self.implementation}
+            return {"implementation": self.implementation, "head_sha": self.head_sha}
         if node == "research":
             return {"research": self.research}
         if node == "review":

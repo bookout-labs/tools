@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from foreman.measure import MeasureError, grade, load_measure, propose, selected
 
@@ -14,6 +15,11 @@ class MeasureTest(unittest.TestCase):
         self.assertEqual(grade("insufficient_evidence").score, 0.5)
         self.assertEqual(grade("block").score, 0.2)
 
+    def test_insufficient_evidence_fails_even_when_the_score_meets_the_bar(self):
+        config = replace(load_measure(), passing_score=0.2)
+        self.assertFalse(grade("insufficient_evidence", config).passed)
+        self.assertTrue(grade("block", config).passed)
+
     def test_one_run_in_ten_is_graded(self):
         self.assertTrue(selected(0))
         self.assertFalse(selected(1))
@@ -21,7 +27,8 @@ class MeasureTest(unittest.TestCase):
 
     def test_proposal_leaves_the_model_list_alone(self):
         text = propose("redundant-tests")
-        self.assertIn("skills/code-quality.md", text)
+        self.assertIn("stages/implement.md", text)
+        self.assertNotIn("skills/code-quality.md", text)
         self.assertIn("does not change models.toml or max_review_rounds", text)
         self.assertIn("A person opens the pull request.", text)
 

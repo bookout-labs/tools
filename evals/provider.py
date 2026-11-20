@@ -55,18 +55,22 @@ def call_api(prompt, options, context):
     elif case == "parent":
         output = _stop(
             ScriptHandler(
-                triage="spec",
+                triage="implement",
                 spec_gate="ready",
                 slices=[
                     {
                         "title": "Board lists the deals",
                         "acceptance": "The board shows the deals.",
                         "depends_on": [],
+                        "screen": "docs/screens/deals.md",
+                        "properties": [{"name": "Visibility", "constraint": "Every open deal appears once."}],
                     },
                     {
                         "title": "Board saves a move",
                         "acceptance": "A move is stored.",
                         "depends_on": ["Board lists the deals"],
+                        "screen": "",
+                        "properties": [],
                     },
                 ],
             ),
