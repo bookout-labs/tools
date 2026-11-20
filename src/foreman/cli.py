@@ -20,6 +20,7 @@ from foreman.github import GhClient, GitHub
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.runner import WorktreeInspector, run_live_delivery
+from foreman.scoring import JudgeRunner, ScorerError, calibration_report, load_scorers, score_run
 from foreman.telemetry import TelemetryStore, default_telemetry_path, load_pricing, render_stats_html, render_stats_text
 from foreman.watcher import TOOLS_REPO, file_proposal_issue
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
@@ -132,6 +133,7 @@ def main(
     argv: list[str] | None = None,
     *,
     worker_runner: CommandRunner | None = run_worker_command,
+    judge_runner: JudgeRunner | None = None,
     checkpoint: Path | None = None,
     telemetry_path: Path | None = None,
     github: GitHub | None = None,
@@ -161,12 +163,26 @@ def main(
     run.add_argument("--telemetry", help="SQLite telemetry database path")
     run.add_argument("--budget-usd", type=float, help="hard per-run USD ceiling")
     run.add_argument("--budget-tokens", type=int, help="hard per-run token ceiling")
+    run.add_argument("--score", action="store_true", help="score the completed run with configured LLM scorers")
 
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")
     accept.add_argument("path")
 
     improve = commands.add_parser("improve", help="propose a change from a failing score")
     improve.add_argument("failure")
+
+    scorers_cmd = commands.add_parser("scorers", help="list configured LLM scorer rubrics")
+    scorers_cmd.add_argument("--json", action="store_true")
+
+    score_cmd = commands.add_parser("score", help="run LLM scorers against recorded telemetry runs")
+    score_cmd.add_argument("run_id_pos", nargs="?")
+    score_cmd.add_argument("--run", dest="run_id")
+    score_cmd.add_argument("--all", action="store_true", help="score recent unscored runs")
+    score_cmd.add_argument("--db", help="SQLite telemetry database path")
+    score_cmd.add_argument("--scorer", action="append", dest="scorer_names", help="specific scorer name(s)")
+    score_cmd.add_argument("--force", action="store_true", help="re-score even if scores already exist")
+    score_cmd.add_argument("--all-samples", action="store_true", help="ignore samplingRate and score every selected run")
+    score_cmd.add_argument("--calibration", action="store_true", help="print scorer calibration vs GitHub outcomes")
 
     stats_cmd = commands.add_parser("stats", help="summarize run telemetry, spend, and autonomy")
     stats_cmd.add_argument("--db", help="SQLite telemetry database path")
@@ -190,6 +206,83 @@ def main(
     tel_import.add_argument("--db", help="SQLite telemetry database path")
 
     args = parser.parse_args(argv)
+    if args.command == "scorers":
+        try:
+            loaded = load_scorers()
+        except ScorerError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        if args.json:
+            payload = [
+                {
+                    "name": s.name,
+                    "description": s.description,
+                    "stages": list(s.stages),
+                    "passingScore": s.passing_score,
+                    "samplingRate": s.sampling_rate,
+                    "model": s.model,
+                    "selfImprovement": s.self_improvement,
+                    "labels": list(s.labels.keys()),
+                }
+                for s in loaded.values()
+            ]
+            print(json.dumps(payload, indent=2))
+        else:
+            for s in loaded.values():
+                print(
+                    f"{s.name:<22} model={s.model:<20} pass>={s.passing_score} "
+                    f"sample={s.sampling_rate} stages={','.join(s.stages)}"
+                )
+        return 0
+    if args.command == "score":
+        db = Path(args.db) if args.db else (telemetry_path or default_telemetry_path())
+        store = TelemetryStore(db)
+        if args.calibration:
+            rep = calibration_report(store)
+            print("Calibration:")
+            for sname, bucket in sorted(rep["scorers"].items()):
+                gh_pct = f"{bucket['github_agreement'] * 100:.1f}%" if bucket["github_agreement"] is not None else "n/a"
+                print(
+                    f"  {sname:<22} total={bucket['total']} insuf={bucket['insufficient_evidence']} "
+                    f"gh_cmp={bucket['github_compared']} gh_agree={gh_pct}"
+                )
+            return 0
+        try:
+            all_scorers = load_scorers()
+            if args.scorer_names:
+                missing = [n for n in args.scorer_names if n not in all_scorers]
+                if missing:
+                    raise ScorerError(f"unknown scorer(s): {', '.join(missing)}")
+                selected_specs = [all_scorers[n] for n in args.scorer_names]
+            else:
+                selected_specs = list(all_scorers.values())
+            target_id = args.run_id or args.run_id_pos
+            if args.all:
+                target_ids = [r["run_id"] for r in store.list_runs(limit=100)]
+            elif target_id:
+                target_ids = [target_id]
+            else:
+                recent = store.list_runs(limit=1)
+                if not recent:
+                    print("no telemetry runs recorded", file=sys.stderr)
+                    return 1
+                target_ids = [recent[0]["run_id"]]
+            for rid in target_ids:
+                results = score_run(
+                    store,
+                    rid,
+                    selected_specs,
+                    judge=judge_runner,
+                    force=args.force,
+                    respect_sampling=not args.all_samples,
+                )
+                for row in results:
+                    status = "PASS" if row["passed"] else "FAIL"
+                    print(f"{row['run_id']} {row['scorer']}={row['label']} ({status}, {row['score']}) [{row['judge_model']}]")
+        except ScorerError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return 0
     if args.command == "stats":
         db = Path(args.db) if args.db else (telemetry_path or default_telemetry_path())
         store = TelemetryStore(db)
@@ -354,6 +447,15 @@ def main(
         if warning := result.get("budget_warning"):
             print(f"warning: {warning}", file=sys.stderr)
         _print_run(result)
+        if args.score and (rid := result.get("run_id")):
+            try:
+                store = TelemetryStore(effective_telemetry)
+                scored = score_run(store, rid, judge=judge_runner)
+                for row in scored:
+                    status = "PASS" if row["passed"] else "FAIL"
+                    print(f"score {row['scorer']}={row['label']} ({status}) [{row['judge_model']}]")
+            except (ScorerError, ValueError) as exc:
+                print(f"scorer: {exc}", file=sys.stderr)
         if (proposal := result.get("proposal")) and proposal.get("file_issue"):
             try:
                 issue_number = file_proposal_issue(proposal, github or GhClient())
