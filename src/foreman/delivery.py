@@ -304,6 +304,7 @@ def compile_delivery(
     resolve: Callable[[str, str], str] | None = None,
     save_config: SaveConfig | None = None,
     save_run: Callable | None = None,
+    commit_worktree: Callable[[str], str] | None = None,
     read_merge_hold: Callable[[str], str | None] | None = None,
 ):
     config = config or load_config()
@@ -365,7 +366,29 @@ def compile_delivery(
                 raw = dispatcher.run(name, resolved, call_state, instruction, attempts=recorded)
                 update = read_output(name, raw, state)
                 update["attempts"] = recorded
-                if name == "implement" and inspect_worktree is not None:
+                if name == "implement" and commit_worktree is not None:
+                    request = state.get("request")
+                    title = request.strip().splitlines()[0] if isinstance(request, str) and request.strip() else ""
+                    try:
+                        update["head_sha"] = commit_worktree(title)
+                        update["head_checked"] = False
+                    except InvalidOutput as exc:
+                        if recorded and recorded[-1]["status"] == "ran":
+                            recorded[-1] = {
+                                "node": name,
+                                "model": recorded[-1]["model"],
+                                "status": "stopped",
+                                "detail": str(exc),
+                            }
+                        halted = {
+                            "path": [name], "attempts": recorded,
+                            "halt": "invalid_output", "halt_detail": str(exc),
+                        }
+                        model = raw.get("model") if isinstance(raw, dict) else None
+                        if isinstance(model, str) and model:
+                            halted["models_used"] = {**(state.get("models_used") or {}), name: model}
+                        return halted
+                elif name == "implement" and inspect_worktree is not None:
                     update.update(head_sha=None, head_checked=False)
                 used = raw.get("model")
                 if used:

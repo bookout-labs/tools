@@ -11,7 +11,7 @@ from unittest.mock import patch
 from foreman.cli import main
 from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
-from foreman.runner import run_live_delivery
+from foreman.runner import commit_implementation, run_live_delivery
 from foreman.worker import CliWorker
 
 
@@ -758,3 +758,113 @@ sys.exit(main(
             self.assertIn("A person opens the pull request.", second)
             self.assertNotIn("watcher issue", second)
             self.assertEqual(len(self.github.tools_issues), 1)
+
+
+def git_repo(path: Path) -> str:
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True)
+
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    (path / "README").write_text("base\n")
+    git("add", "README")
+    git("commit", "-m", "base")
+    return git("rev-parse", "HEAD").stdout.strip()
+
+
+class CommitImplementationTest(unittest.TestCase):
+    def test_runner_commits_a_dirty_slice_branch_and_leaves_main(self):
+        with TemporaryDirectory() as directory:
+            repo = Path(directory)
+            base = git_repo(repo)
+            (repo / "note.txt").write_text("release\n")
+            sha = commit_implementation(repo, 875, "The health check names the running release")
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            main = subprocess.run(
+                ["git", "rev-parse", "main"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            status = subprocess.run(
+                ["git", "status", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout
+            message = subprocess.run(
+                ["git", "log", "-1", "--format=%s"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertEqual(sha, head)
+            self.assertNotEqual(sha, base)
+            self.assertEqual(main, base)
+            self.assertEqual(branch, "875-the-health-check-names-the-running")
+            self.assertEqual(status, "")
+            self.assertEqual(message, "The health check names the running release (#875)")
+            self.assertEqual(commit_implementation(repo, 875, "The health check names the running release"), sha)
+
+    def test_runner_keeps_an_existing_slice_branch_and_a_clean_commit(self):
+        with TemporaryDirectory() as directory:
+            repo = Path(directory)
+            git_repo(repo)
+            subprocess.run(["git", "checkout", "-b", "875-health-release"], cwd=repo, check=True, capture_output=True)
+            (repo / "note.txt").write_text("release\n")
+            sha = commit_implementation(repo, 875, "Issue title")
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertEqual(branch, "875-health-release")
+            self.assertIn("#875", subprocess.run(
+                ["git", "log", "-1", "--format=%s"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout)
+            (repo / ".git" / "hooks" / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+            (repo / ".git" / "hooks" / "pre-commit").chmod(0o755)
+            (repo / "note.txt").write_text("again\n")
+            with self.assertRaises(InvalidOutput) as caught:
+                commit_implementation(repo, 875, "Issue title")
+            self.assertIn("implement could not commit", str(caught.exception))
+            again = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertEqual(again, sha)
+
+    def test_live_run_commits_before_verify(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            repo.mkdir()
+            base = git_repo(repo)
+            checkpoint = root / "runs.sqlite3"
+
+            def handler(node, model, state, instruction):
+                if node == "implement":
+                    (repo / "note.txt").write_text("release\n")
+                    return {"implementation": "Added the release."}
+                if node == "review":
+                    return {"review": "approve", "risk": DEFAULT_RISK}
+                return {"triage": "implement"}
+
+            result = run_live_delivery(
+                repo="Example/Engine", issue=875, check="touch checked", cwd=repo,
+                checkpoint=checkpoint, dispatcher=FailoverDispatcher(handler),
+                github=FakeGitHub(),
+            )
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            main = subprocess.run(
+                ["git", "rev-parse", "main"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            committed = subprocess.run(
+                ["git", "show", "HEAD:note.txt"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout
+            self.assertEqual(result["stop"], "verified")
+            self.assertNotIn("halt", result)
+            self.assertIn("verify", result["path"])
+            self.assertTrue((repo / "checked").exists())
+            self.assertEqual(branch, "875-issue-title")
+            self.assertEqual(main, base)
+            self.assertEqual(committed, "release\n")
+            self.assertEqual(result["head_sha"], subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip())

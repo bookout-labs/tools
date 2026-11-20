@@ -74,6 +74,7 @@ class WatcherTest(unittest.TestCase):
             ("invalid_output", "claude usage reported claude-haiku-5-5, expected claude-opus-5-5", ["triage", "done"], "src/foreman/worker.py"),
             ("invalid_output", "codex rerouted gpt-6.1-sol: gpt-6.1-sol -> gpt-other", ["implement", "done"], "src/foreman/worker.py"),
             ("invalid_output", "spec did not return text", ["triage", "spec", "done"], "src/foreman/stages/spec.md"),
+            ("invalid_output", "implement could not commit: hook declined", ["triage", "implement", "done"], "src/foreman/runner.py"),
             ("invalid_output", "slice property needs exactly name and constraint", ["triage", "spec", "done"], "src/foreman/stages/spec.md"),
             ("cli_missing", "codex CLI is not installed", ["implement", "done"], "src/foreman/worker.py"),
             ("merge_held", "could not read FOREMAN_MERGE_HOLD: auth failed", ["triage", "implement", "verify", "review", "merge", "done"], "src/foreman/cli.py"),

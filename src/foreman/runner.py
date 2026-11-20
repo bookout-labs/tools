@@ -1,6 +1,7 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -31,6 +32,69 @@ def _inspect_worktree(cwd: Path) -> tuple[str, bool]:
     return head.stdout.strip(), head.returncode == status.returncode == 0 and not status.stdout
 
 
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    return subprocess.run(
+        ["git", *args], cwd=cwd, shell=False, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL, env=env,
+    )
+
+
+def _branch_slug(title: str) -> str:
+    words = re.findall(r"[a-z0-9]+", title.lower())
+    slug = "-".join(words)
+    if len(slug) > 40:
+        slug = slug[:40].rsplit("-", 1)[0]
+    return slug or "change"
+
+
+def commit_implementation(cwd: Path, issue: int, title: str) -> str:
+    """Record the implementation on its slice branch.
+
+    A linked worktree keeps its git directory outside the worker sandbox, so
+    the worker can edit files and still be unable to write the index. This
+    process can. A clean worktree already has the worker's commit.
+    """
+    branch = _git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch.returncode != 0:
+        raise InvalidOutput("implement worktree is not a git checkout")
+    name = branch.stdout.strip()
+    if name == "HEAD" or not name.startswith(f"{issue}-"):
+        name = f"{issue}-{_branch_slug(title)}"
+        created = _git(cwd, "checkout", "-b", name)
+        if created.returncode != 0:
+            detail = " ".join((created.stderr or created.stdout).split())
+            raise InvalidOutput(f"implement could not create branch {name}: {detail}")
+    status = _git(cwd, "status", "--porcelain")
+    head = _git(cwd, "rev-parse", "HEAD")
+    if status.returncode != 0 or head.returncode != 0:
+        raise InvalidOutput("implement could not read the worktree")
+    current = head.stdout.strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", current):
+        raise InvalidOutput("implement HEAD is not a commit")
+    if not status.stdout:
+        return current
+    subject = title.strip() or f"Implement #{issue}"
+    if f"#{issue}" not in subject:
+        subject = f"{subject} (#{issue})"
+    staged = _git(cwd, "add", "-A")
+    if staged.returncode != 0:
+        detail = " ".join((staged.stderr or staged.stdout).split())
+        raise InvalidOutput(f"implement could not stage the change: {detail}")
+    committed = _git(cwd, "commit", "-m", subject)
+    if committed.returncode != 0:
+        detail = " ".join((committed.stderr or committed.stdout).split())
+        raise InvalidOutput(f"implement could not commit: {detail}")
+    status = _git(cwd, "status", "--porcelain")
+    head = _git(cwd, "rev-parse", "HEAD")
+    if status.returncode != 0 or status.stdout or head.returncode != 0:
+        raise InvalidOutput("implement commit left the worktree dirty")
+    current = head.stdout.strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", current):
+        raise InvalidOutput("implement HEAD is not a commit")
+    return current
+
+
 def run_live_delivery(
     *,
     repo: str,
@@ -47,6 +111,7 @@ def run_live_delivery(
     resolve: Callable[[str, str], str] | None = None,
     save_config: SaveConfig | None = None,
     save_run: Callable | None = None,
+    commit_worktree: Callable[[str], str] | None = None,
     read_merge_hold: Callable[[str], str | None] | None = None,
 ) -> dict:
     def run_check(command: str) -> int:
@@ -56,11 +121,16 @@ def run_live_delivery(
     config = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(cwd.resolve())
     inspect = inspect_worktree or _inspect_worktree
+    finish_commit = commit_worktree
+    if finish_commit is None and inspect_worktree is None:
+        def finish_commit(title: str) -> str:
+            return commit_implementation(cwd, issue, title)
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         graph = compile_delivery(
             dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
             inspect_worktree=lambda: inspect(cwd), resolve=resolve,
-            save_config=save_config, save_run=save_run, read_merge_hold=read_merge_hold,
+            save_config=save_config, save_run=save_run, commit_worktree=finish_commit,
+            read_merge_hold=read_merge_hold,
         )
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")
