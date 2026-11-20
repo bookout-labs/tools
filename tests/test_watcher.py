@@ -151,6 +151,26 @@ class WatcherTest(unittest.TestCase):
         self.assertIsNone(file_proposal_issue(proposal, duplicate))
         self.assertEqual(duplicate.created, [])
 
+    def test_env_unavailable_and_budget_exceeded_report_setup_with_scrubbed_pii(self):
+        for halt_name in ("env_unavailable", "budget_exceeded"):
+            with self.subTest(halt=halt_name):
+                proposal = watch_run(
+                    {
+                        "repo": "DoctorCRE/doctorcre-engine",
+                        "issue": 876,
+                        "halt": halt_name,
+                        "halt_detail": "No PostgreSQL server answered for owner@example.invalid (555) 234-5678",
+                        "path": ["triage", "implement", "verify", "done"],
+                        "attempts": [{"node": "implement", "model": "gpt-6.2-sol-high", "status": "ran", "detail": ""}],
+                    },
+                    halt_name,
+                )
+                self.assertIsNotNone(proposal)
+                self.assertEqual(proposal["kind"], "setup")
+                self.assertFalse(proposal["file_issue"])
+                self.assertNotIn("owner@example.invalid", proposal["evidence"])
+                self.assertNotIn("(555) 234-5678", proposal["evidence"])
+
 
 if __name__ == "__main__":
     unittest.main()

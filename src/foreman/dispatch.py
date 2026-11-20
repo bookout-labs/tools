@@ -36,6 +36,7 @@ class Handler(Protocol):
 class FailoverDispatcher:
     def __init__(self, handler: Handler):
         self.handler = handler
+        self.last_meta: list[dict] = []
 
     def run(
         self,
@@ -46,15 +47,24 @@ class FailoverDispatcher:
         *,
         attempts: list[Attempt] | None = None,
     ) -> dict:
+        self.last_meta = []
         candidates: list[str | None] = list(models) or [None]
         last_quota: QuotaExhausted | None = None
         last_missing: CliMissing | None = None
         for model in candidates:
+            if hasattr(self.handler, "last_meta"):
+                try:
+                    self.handler.last_meta = None  # type: ignore[attr-defined]
+                except AttributeError:
+                    pass
             try:
                 update = self.handler(node, model, state, instruction)
             except QuotaExhausted as exc:
                 if attempts is not None:
                     attempts.append({"node": node, "model": model, "status": "quota", "detail": str(exc)})
+                meta = getattr(self.handler, "last_meta", None)
+                if isinstance(meta, dict):
+                    self.last_meta.append({**meta, "node": node, "model": model, "status": "quota"})
                 last_quota = exc
                 continue
             except CliMissing as exc:
@@ -65,7 +75,13 @@ class FailoverDispatcher:
             except InvalidOutput as exc:
                 if attempts is not None:
                     attempts.append({"node": node, "model": model, "status": "stopped", "detail": str(exc)})
+                meta = getattr(self.handler, "last_meta", None)
+                if isinstance(meta, dict):
+                    self.last_meta.append({**meta, "node": node, "model": model, "status": "stopped"})
                 raise
+            meta = getattr(self.handler, "last_meta", None)
+            if isinstance(meta, dict):
+                self.last_meta.append({**meta, "node": node, "model": model, "status": "ran"})
             if not isinstance(update, dict):
                 detail = f"{node} returned {type(update).__name__}"
                 if attempts is not None:

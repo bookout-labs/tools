@@ -13,6 +13,7 @@ from langgraph.types import interrupt
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import Attempt, CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.proof import browser_proof_label, formal_proof_label
+from foreman.redaction import redact_text
 from foreman.watcher import Proposal, watch_run
 
 GRAPH_NAME = "delivery"
@@ -32,6 +33,11 @@ TEXT_FIELDS = {"implement": "implementation", "research": "research"}
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 # 127: the shell could not find a program. 126: it found one that could not start.
 UNAVAILABLE_CHECK = {126: "could not run", 127: "was not found"}
+ENV_FAILURE_PATTERNS = re.compile(
+    r"No PostgreSQL server answered|could not connect to server|ECONNREFUSED|"
+    r"database [\"']?\S+[\"']? does not exist|ENOSPC|ENOMEM|Cannot connect to the Docker daemon",
+    re.IGNORECASE,
+)
 
 
 class SliceProperty(TypedDict):
@@ -54,6 +60,7 @@ class DeliveryState(TypedDict, total=False):
     workspace: str
     check: str
     check_exit_code: int
+    check_output: str
     check_exits: Annotated[list[int], operator.add]
     review_log: Annotated[list[dict[str, str]], operator.add]
     triage: str
@@ -65,6 +72,7 @@ class DeliveryState(TypedDict, total=False):
     issue_kind: str
     research: str
     implementation: str
+    pr_summary: str
     head_sha: str | None
     head_checked: bool
     merge_armed: bool
@@ -77,15 +85,21 @@ class DeliveryState(TypedDict, total=False):
     human_answers: list[str]
     review: str
     review_note: str
+    review_comments: list[dict]
     risk: dict[str, str]
     verify: str
+    verify_rounds: int
     review_rounds: int
     models_used: dict[str, str]
     implement_models: list[str]
+    sessions: dict[str, str]
+    usage_records: Annotated[list[dict], operator.add]
     attempts: Annotated[list[Attempt], operator.add]
     proposal: Proposal | None
     halt: str
     halt_detail: str
+    failure_phase: str
+    failure_reason: str
     stop: str
     path: Annotated[list[str], operator.add]
 
@@ -182,7 +196,40 @@ def review_comment(state: DeliveryState) -> str:
     note = state.get("review_note")
     if isinstance(note, str) and note.strip():
         lines.extend(["", note.strip()])
-    return "\n".join(lines)
+    return redact_text("\n".join(lines), redact_pii=True)
+
+
+def render_pr_body(state: DeliveryState, issue: int) -> str:
+    """Build a public-safe pull request body with summary, verification, and merge risk."""
+    sections = [f"Closes #{issue}"]
+    pr_summary = state.get("pr_summary")
+    if isinstance(pr_summary, str) and pr_summary.strip():
+        summary = pr_summary.strip()
+    elif isinstance(state.get("slice"), dict) and isinstance(state["slice"].get("title"), str):
+        summary = f"Implements slice: {state['slice']['title'].strip()}"
+    else:
+        summary = f"Implements requested changes for #{issue}."
+    sections.append(f"## Summary\n{summary}")
+
+    check_cmd = state.get("check") or "configured check"
+    exit_code = state.get("check_exit_code")
+    head = state.get("head_sha") or "unknown"
+    ver_lines = [f"- Check `{check_cmd}` exit `{exit_code}` at `{head}`"]
+    proof_labels = state.get("proof_labels") or {}
+    for proof_kind, label in sorted(proof_labels.items()):
+        ver_lines.append(f"- Proof `{proof_kind}`: `{label}`")
+    sections.append("## Verification\n" + "\n".join(ver_lines))
+
+    risk = state.get("risk") or {}
+    if risk.get("level") in RISK_LEVELS:
+        risk_lines = [f"- **Level:** `{risk['level']}`"]
+        for field in RISK_FIELDS:
+            val = risk.get(field)
+            if isinstance(val, str) and val.strip():
+                risk_lines.append(f"- **{field.replace('_', ' ').title()}:** {val.strip()}")
+        sections.append("## Merge Risk\n" + "\n".join(risk_lines))
+
+    return redact_text("\n\n".join(sections), redact_pii=True)
 
 
 def clean_risk(raw: object) -> dict[str, str]:
@@ -261,6 +308,9 @@ def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
         if name == "implement":
             head = raw.get("head_sha")
             update["head_sha"] = (head.strip() or None) if isinstance(head, str) else None
+            pr_summary = raw.get("pr_summary")
+            if isinstance(pr_summary, str) and pr_summary.strip():
+                update["pr_summary"] = pr_summary.strip()
             for field in ("browser_proof", "formal_proof"):
                 artifact = raw.get(field)
                 update[field] = artifact if isinstance(artifact, dict) else None
@@ -268,12 +318,18 @@ def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
         verdict = choice(raw.get("verify"), VERIFY_OUTCOMES, "verify")
         update["verify"] = verdict
         if verdict == "fail":
-            update["review_rounds"] = state.get("review_rounds", 0) + 1
+            update["verify_rounds"] = state.get("verify_rounds", 0) + 1
     elif name == "review":
         verdict, note = review_verdict(raw.get("review"))
+        explicit_note = raw.get("review_note")
+        if not note and isinstance(explicit_note, str) and explicit_note.strip():
+            note = explicit_note.strip()
         update["review"] = verdict
         update["review_note"] = note
         update["risk"] = clean_risk(raw.get("risk"))
+        comments = raw.get("comments")
+        if isinstance(comments, list):
+            update["review_comments"] = [c for c in comments if isinstance(c, dict)]
         if verdict == "changes":
             update["review_rounds"] = state.get("review_rounds", 0) + 1
     if name in {"triage", "spec"}:
@@ -325,13 +381,14 @@ def compile_delivery(
     config: Config | None = None,
     *,
     checkpointer: BaseCheckpointSaver | None = None,
-    run_check: Callable[[str], int] | None = None,
+    run_check: Callable[[str], int | tuple[int, str]] | None = None,
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
     commit_worktree: Callable[[str], str] | None = None,
     publish_worktree: Callable[[str], str] | None = None,
     record_review: Callable[[DeliveryState, str], None] | None = None,
     read_merge_hold: Callable[[str], str | None] | None = None,
+    preflight: Callable[[], tuple[bool, str]] | None = None,
 ):
     config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
@@ -341,12 +398,28 @@ def compile_delivery(
 
     def bind(name: str):
         def node(state: DeliveryState) -> dict:
+            if name == "implement" and preflight is not None:
+                ok, detail = preflight()
+                if not ok:
+                    return {
+                        "path": [name],
+                        "halt": "env_unavailable",
+                        "halt_detail": redact_text(detail or "environment preflight failed", redact_pii=True),
+                        "failure_phase": "preflight",
+                        "failure_reason": "env_unavailable",
+                    }
             if dispatcher is None:
-                return {"path": [name], "halt": "no_dispatcher"}
+                return {"path": [name], "halt": "no_dispatcher", "failure_phase": "setup", "failure_reason": "no_dispatcher"}
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
-                return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
+                return {
+                    "path": [name],
+                    "halt": "no_reviewer",
+                    "halt_detail": str(exc),
+                    "failure_phase": "setup",
+                    "failure_reason": "no_reviewer",
+                }
             instruction = prompts[name]
             if name == "implement" and (slice := state.get("slice")):
                 for field, skill in (("screen", "browser-proof"), ("properties", "formal-proof")):
@@ -362,6 +435,12 @@ def compile_delivery(
                 raw = dispatcher.run(name, models, state, instruction, attempts=recorded)
                 update = read_output(name, raw, state)
                 update["attempts"] = recorded
+                metas = list(getattr(dispatcher, "last_meta", None) or [])
+                if metas:
+                    update["usage_records"] = metas
+                    last_sid = next((m.get("session_id") for m in reversed(metas) if m.get("session_id")), "")
+                    if last_sid:
+                        update["sessions"] = {**(state.get("sessions") or {}), name: last_sid}
                 if name == "implement" and commit_worktree is not None:
                     request = state.get("request")
                     title = request.strip().splitlines()[0] if isinstance(request, str) and request.strip() else ""
@@ -379,7 +458,10 @@ def compile_delivery(
                         halted = {
                             "path": [name], "attempts": recorded,
                             "halt": "invalid_output", "halt_detail": str(exc),
+                            "failure_phase": "git", "failure_reason": "invalid_output",
                         }
+                        if metas:
+                            halted["usage_records"] = metas
                         model = raw.get("model") if isinstance(raw, dict) else None
                         if isinstance(model, str) and model:
                             halted["models_used"] = {**(state.get("models_used") or {}), name: model}
@@ -395,38 +477,49 @@ def compile_delivery(
                         "status": "stopped",
                         "detail": str(exc),
                     }
-                halted = {"path": [name], "attempts": recorded, "halt": "invalid_output", "halt_detail": str(exc)}
+                halted = {
+                    "path": [name], "attempts": recorded, "halt": "invalid_output", "halt_detail": str(exc),
+                    "failure_phase": "harness", "failure_reason": "invalid_output",
+                }
+                metas = list(getattr(dispatcher, "last_meta", None) or [])
+                if metas:
+                    halted["usage_records"] = metas
                 model = raw.get("model") if isinstance(raw, dict) else (recorded[-1]["model"] if recorded else None)
                 if isinstance(model, str) and model:
                     halted["models_used"] = {**(state.get("models_used") or {}), name: model}
                 return halted
             except QuotaExhausted as exc:
+                metas = list(getattr(dispatcher, "last_meta", None) or [])
+                base_halt: dict = {"path": [name], "attempts": recorded, "failure_phase": "harness"}
+                if metas:
+                    base_halt["usage_records"] = metas
                 if name == "review":
                     return {
-                        "path": [name],
-                        "attempts": recorded,
+                        **base_halt,
                         "halt": "no_reviewer",
                         "halt_detail": f"review quota exhausted: {exc}",
+                        "failure_reason": "no_reviewer",
                     }
                 return {
-                    "path": [name],
-                    "attempts": recorded,
+                    **base_halt,
                     "halt": "quota_exhausted",
                     "halt_detail": f"{name} quota exhausted: {exc}",
+                    "failure_reason": "quota_exhausted",
                 }
             except CliMissing as exc:
+                base_halt = {"path": [name], "attempts": recorded, "failure_phase": "setup"}
                 if name == "review":
                     return {
-                        "path": [name],
-                        "attempts": recorded,
+                        **base_halt,
                         "halt": "no_reviewer",
                         "halt_detail": f"review CLI missing: {exc}",
+                        "failure_reason": "cli_missing",
                     }
                 return {
-                    "path": [name],
-                    "attempts": recorded,
+                    **base_halt,
                     "halt": "cli_missing",
                     "halt_detail": str(exc),
+                    "failure_reason": "cli_missing",
                 }
 
         return node
@@ -437,10 +530,27 @@ def compile_delivery(
         if inspect_worktree is not None:
             head, clean = inspect_worktree()
             if not clean or not FULL_SHA.fullmatch(head):
-                return {"path": ["verify"], "halt": "dirty_worktree"}
+                return {
+                    "path": ["verify"],
+                    "halt": "dirty_worktree",
+                    "failure_phase": "verify",
+                    "failure_reason": "dirty_worktree",
+                }
             checked = {"head_sha": head, "head_checked": True}
-        exit_code = run_check(state["check"])
-        recorded = {"check_exit_code": exit_code, "check_exits": [exit_code], "proof_labels": {}}
+        outcome = run_check(state["check"])
+        if isinstance(outcome, tuple):
+            exit_code = int(outcome[0])
+            raw_output = str(outcome[1] or "")
+        else:
+            exit_code = int(outcome)
+            raw_output = ""
+        check_output = redact_text(raw_output)[-4000:] if raw_output else ""
+        recorded = {
+            "check_exit_code": exit_code,
+            "check_output": check_output if exit_code != 0 else "",
+            "check_exits": [exit_code],
+            "proof_labels": {},
+        }
         if exit_code in UNAVAILABLE_CHECK:
             return {
                 "path": ["verify"],
@@ -448,6 +558,19 @@ def compile_delivery(
                 "halt_detail": (
                     f"the check exited {exit_code} because a program it runs {UNAVAILABLE_CHECK[exit_code]}"
                 ),
+                "failure_phase": "verify",
+                "failure_reason": "check_unavailable",
+                "verify": "fail",
+                **recorded,
+            }
+        if exit_code != 0 and check_output and ENV_FAILURE_PATTERNS.search(check_output):
+            detail = " ".join(check_output.splitlines()[-4:]).strip()[:240]
+            return {
+                "path": ["verify"],
+                "halt": "env_unavailable",
+                "halt_detail": redact_text(f"the check hit an environment error (exit {exit_code}): {detail}", redact_pii=True),
+                "failure_phase": "verify",
+                "failure_reason": "env_unavailable",
                 "verify": "fail",
                 **recorded,
             }
@@ -467,10 +590,14 @@ def compile_delivery(
         update = {"path": ["proof"], "proof_labels": {key: label for key, label in labels.items() if label}}
         if "insufficient_evidence" in labels.values():
             update["halt"] = "insufficient_evidence"
+            update["failure_phase"] = "proof"
+            update["failure_reason"] = "insufficient_evidence"
         elif "block" in labels.values():
             update["review_rounds"] = state.get("review_rounds", 0) + 1
             if update["review_rounds"] >= config.max_review_rounds:
                 update["halt"] = "review_cap"
+                update["failure_phase"] = "proof"
+                update["failure_reason"] = "review_cap"
         return update
 
     def needs_human(state: DeliveryState) -> dict:
@@ -519,7 +646,7 @@ def compile_delivery(
             if slice and (slice["screen"] or slice["properties"]):
                 return "proof"
             return "review"
-        if state.get("review_rounds", 0) < config.max_review_rounds:
+        if state.get("verify_rounds", 0) < config.max_review_rounds:
             return "implement"
         return "done"
 
@@ -591,7 +718,11 @@ def compile_delivery(
 
     def finish(state: DeliveryState) -> dict:
         stop = stop_reason(state)
-        return {"stop": stop, "proposal": watch_run(state, stop), "path": ["done"]}
+        out: dict = {"stop": stop, "proposal": watch_run(state, stop), "path": ["done"]}
+        if not state.get("failure_reason") and stop in {"verify_cap", "review_cap"}:
+            out["failure_phase"] = "verify" if stop == "verify_cap" else "review"
+            out["failure_reason"] = stop
+        return out
 
     builder = StateGraph(DeliveryState)
     for name in REQUIRED_NODES:
@@ -654,8 +785,11 @@ def run_delivery(
             "request": request,
             "check": check,
             "issue_kind": issue_kind,
+            "verify_rounds": 0,
             "review_rounds": 0,
             "models_used": {},
+            "sessions": {},
+            "usage_records": [],
             "attempts": [],
             "path": [],
         }

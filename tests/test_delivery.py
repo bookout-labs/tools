@@ -3,7 +3,15 @@ import unittest
 from dataclasses import replace
 
 from foreman.config import NodeConfig, load_config
-from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, review_comment, run_delivery, stage_text
+from foreman.delivery import (
+    REQUIRED_NODES,
+    compile_delivery,
+    diagram,
+    render_pr_body,
+    review_comment,
+    run_delivery,
+    stage_text,
+)
 from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 
@@ -703,6 +711,143 @@ class DeliveryTest(unittest.TestCase):
             self.assertIn(name, picture)
         self.assertNotIn("claude-opus", picture)
         compile_delivery(FailoverDispatcher(ScriptHandler()), load_config())
+
+    def test_verify_and_review_round_caps_are_independent_876_regression(self):
+        verify_calls = 0
+        review_calls = 0
+        implement_calls = 0
+
+        def handler(node, model, state, instruction):
+            nonlocal review_calls, implement_calls
+            if node == "triage":
+                return {"triage": "implement"}
+            if node == "implement":
+                implement_calls += 1
+                return {"implementation": f"impl-{implement_calls}", "head_sha": HEAD_SHA}
+            if node == "review":
+                review_calls += 1
+                if review_calls == 1:
+                    return {"review": "changes", "review_note": "Fix edge case", "risk": DEFAULT_RISK}
+                return {"review": "approve", "risk": DEFAULT_RISK}
+            return {}
+
+        def run_check(cmd):
+            nonlocal verify_calls
+            verify_calls += 1
+            if verify_calls <= 2:
+                return 1, f"FAIL secret=tok-secret-example-value\nerror #{verify_calls}"
+            return 0, "ok"
+
+        with unittest.mock.patch.dict("os.environ", {"TEST_API_TOKEN": "tok-secret-example-value"}):
+            result = compile_delivery(
+                FailoverDispatcher(handler),
+                load_config(),
+                run_check=run_check,
+            ).invoke({
+                "repo": "DoctorCRE/doctorcre-engine",
+                "issue": 876,
+                "request": "Fix board",
+                "check": "npm run check",
+                "issue_kind": "slice",
+                "verify_rounds": 0,
+                "review_rounds": 0,
+                "models_used": {},
+                "sessions": {},
+                "usage_records": [],
+                "attempts": [],
+                "path": [],
+            })
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(implement_calls, 4)
+        self.assertEqual(verify_calls, 4)
+        self.assertEqual(review_calls, 2)
+        self.assertEqual(result["verify_rounds"], 2)
+        self.assertEqual(result["review_rounds"], 1)
+        self.assertEqual(result["check_output"], "")
+
+    def test_verify_env_unavailable_and_preflight_halt_before_burning_rounds(self):
+        preflight_calls = 0
+        implement_calls = 0
+
+        def handler(node, model, state, instruction):
+            nonlocal implement_calls
+            if node == "triage":
+                return {"triage": "implement"}
+            implement_calls += 1
+            return {"implementation": "ok", "head_sha": HEAD_SHA}
+
+        halted = compile_delivery(
+            FailoverDispatcher(handler),
+            load_config(),
+            run_check=lambda cmd: (1, "No PostgreSQL server answered at localhost:5432"),
+        ).invoke({
+            "repo": "DoctorCRE/doctorcre-engine",
+            "issue": 876,
+            "request": "Run check",
+            "check": "npm run check",
+            "issue_kind": "slice",
+            "verify_rounds": 0,
+            "review_rounds": 0,
+            "models_used": {},
+            "sessions": {},
+            "usage_records": [],
+            "attempts": [],
+            "path": [],
+        })
+        self.assertEqual(halted["stop"], "env_unavailable")
+        self.assertEqual(halted["failure_phase"], "verify")
+        self.assertEqual(halted["failure_reason"], "env_unavailable")
+        self.assertEqual(implement_calls, 1)
+        self.assertIn("No PostgreSQL server answered", halted["check_output"])
+
+        def fail_preflight():
+            nonlocal preflight_calls
+            preflight_calls += 1
+            return False, "db down for owner@example.invalid"
+
+        implement_calls = 0
+        pre = compile_delivery(
+            FailoverDispatcher(handler),
+            load_config(),
+            preflight=fail_preflight,
+        ).invoke({
+            "repo": "DoctorCRE/doctorcre-engine",
+            "issue": 876,
+            "request": "Run check",
+            "check": "npm run check",
+            "issue_kind": "slice",
+            "verify_rounds": 0,
+            "review_rounds": 0,
+            "models_used": {},
+            "sessions": {},
+            "usage_records": [],
+            "attempts": [],
+            "path": [],
+        })
+        self.assertEqual(preflight_calls, 1)
+        self.assertEqual(implement_calls, 0)
+        self.assertEqual(pre["stop"], "env_unavailable")
+        self.assertEqual(pre["failure_phase"], "preflight")
+        self.assertNotIn("owner@example.invalid", pre["halt_detail"])
+
+    def test_render_pr_body_includes_verification_risk_and_redacts_pii(self):
+        body = render_pr_body(
+            {
+                "pr_summary": "Updated query for owner@example.invalid",
+                "check": "npm run check",
+                "check_exit_code": 0,
+                "head_sha": HEAD_SHA,
+                "proof_labels": {"formal": "verified"},
+                "risk": {**DEFAULT_RISK, "level": "medium"},
+            },
+            875,
+        )
+        self.assertIn("Closes #875", body)
+        self.assertIn("## Summary", body)
+        self.assertIn("## Verification", body)
+        self.assertIn("## Merge Risk", body)
+        self.assertIn("**Level:** `medium`", body)
+        self.assertNotIn("owner@example.invalid", body)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import re
 from typing import TypedDict
 
 from foreman.github import GitHub
+from foreman.redaction import redact_text
 
 TOOLS_REPO = "bookout-labs/tools"
 
@@ -34,7 +35,7 @@ def _format_evidence(state: dict, stop: str) -> str:
         ref = f"{repo}#{issue}" if isinstance(issue, int) and not isinstance(issue, bool) and issue > 0 else repo
         parts.append(ref)
     parts.append(f"stop={stop}")
-    detail = " ".join(str(state.get("halt_detail") or "").split())[:200]
+    detail = redact_text(" ".join(str(state.get("halt_detail") or "").split()), redact_pii=True)[:200]
     if detail:
         parts.append(f"detail={detail}")
     attempts = state.get("attempts") or []
@@ -44,8 +45,8 @@ def _format_evidence(state: dict, stop: str) -> str:
         else [a for a in attempts if a.get("status") != "ran"]
     )
     if selected:
-        parts.append("attempts=" + ", ".join(_format_attempt(a) for a in selected))
-    return "; ".join(parts)
+        parts.append("attempts=" + ", ".join(redact_text(_format_attempt(a), redact_pii=True) for a in selected))
+    return redact_text("; ".join(parts), redact_pii=True)
 
 
 def _make_graph_proposal(title: str, target: str, cause: str, evidence: str) -> Proposal:
@@ -242,6 +243,18 @@ def watch_run(state: dict, stop: str) -> Proposal | None:
         return _make_setup_proposal(
             "The check program was not installed",
             "The check could not start, so this run did not use a review round.",
+            evidence,
+        )
+    if stop == "env_unavailable":
+        return _make_setup_proposal(
+            "Required runtime environment or database was unavailable",
+            "An environment dependency failed before or during verification, so this run did not burn retry rounds.",
+            evidence,
+        )
+    if stop == "budget_exceeded":
+        return _make_setup_proposal(
+            "Run budget cap exceeded",
+            "The run stopped because cumulative usage exceeded the configured budget ceiling.",
             evidence,
         )
     if stop == "verify_cap":

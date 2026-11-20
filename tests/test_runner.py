@@ -936,12 +936,18 @@ class CommitImplementationTest(unittest.TestCase):
 
             order = []
 
-            def publish(cwd, repo_name, issue, sha):
+            def publish(cwd, repo_name, issue, sha, *, body=None):
                 order.append("publish")
                 self.assertEqual((repo_name, issue), ("Example/Engine", 875))
                 self.assertEqual(sha, subprocess.run(
                     ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
                 ).stdout.strip())
+                self.assertIsNotNone(body)
+                self.assertIn("Closes #875", body)
+                self.assertIn("## Summary", body)
+                self.assertIn("## Verification", body)
+                self.assertIn("## Merge Risk", body)
+                self.assertNotIn("Issue title", body)
                 return "https://github.com/Example/Engine/pull/21"
 
             recorded = []
@@ -1162,3 +1168,101 @@ class PublishReviewedBranchTest(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
         self.assertEqual(run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(run.call_args.args[0], ["git", "rev-parse", "--abbrev-ref", "HEAD"])
+
+
+class Phase1WorkerAndPreflightTest(unittest.TestCase):
+    def test_native_schema_flags_codex_jsonl_and_meta_collection(self):
+        seen_args = []
+
+        def run(args, cwd):
+            seen_args.append(list(args))
+            if args[0] == "claude":
+                self.assertIn("--json-schema", args)
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    json.dumps({
+                        "structured_output": {"triage": "implement"},
+                        "session_id": "sess-claude-1",
+                        "duration_ms": 1200,
+                        "num_turns": 2,
+                        "total_cost_usd": 0.42,
+                        "modelUsage": {"claude-opus-5-5": {"inputTokens": 100, "outputTokens": 25}},
+                    }),
+                    "",
+                )
+            self.assertIn("--json", args)
+            self.assertIn("--output-schema", args)
+            out_path = Path(args[args.index("-o") + 1])
+            schema_path = Path(args[args.index("--output-schema") + 1])
+            self.assertTrue(schema_path.exists())
+            out_path.write_text(json.dumps({"implementation": "Updated file.", "pr_summary": "Ready"}), encoding="utf-8")
+            events = "\n".join([
+                json.dumps({"type": "thread.started", "thread_id": "thread-codex-9"}),
+                json.dumps({"type": "turn.completed", "usage": {"input_tokens": 200, "output_tokens": 50}}),
+            ])
+            return subprocess.CompletedProcess(args, 0, events, "model: gpt-6.2-sol\n")
+
+        dispatcher = FailoverDispatcher(CliWorker(Path("."), run))
+        triage_out = dispatcher.run("triage", ["claude-opus-5-5-high"], {"issue": 1}, "Triage")
+        self.assertEqual(triage_out, {"triage": "implement", "model": "claude-opus-5-5-high"})
+        self.assertEqual(dispatcher.last_meta[0]["session_id"], "sess-claude-1")
+        self.assertEqual(dispatcher.last_meta[0]["total_cost_usd"], 0.42)
+
+        impl_out = dispatcher.run("implement", ["gpt-6.2-sol-high"], {"issue": 1}, "Build")
+        self.assertEqual(impl_out["implementation"], "Updated file.")
+        self.assertEqual(dispatcher.last_meta[0]["session_id"], "thread-codex-9")
+        self.assertEqual(
+            dispatcher.last_meta[0]["model_usage"]["gpt-6.2-sol"],
+            {"input_tokens": 200, "output_tokens": 50},
+        )
+        self.assertEqual(len(seen_args), 2)
+
+    def test_implement_resume_used_only_for_matching_model(self):
+        recorded_args = []
+
+        def run(args, cwd):
+            recorded_args.append(list(args))
+            return worker_reply(args, {"implementation": "Revised"})
+
+        worker = CliWorker(Path("."), run)
+        state = {"models_used": {"implement": "gpt-6.2-sol-high"}, "sessions": {"implement": "thread-99"}}
+        worker("implement", "gpt-6.2-sol-high", state, "Fix review")
+        self.assertEqual(recorded_args[0][:4], ["codex", "exec", "resume", "thread-99"])
+
+        worker("implement", "claude-opus-5-5-high", state, "Fix review")
+        self.assertNotIn("--resume", recorded_args[1])
+
+        worker("implement", "claude-opus-5-5-high", {
+            "models_used": {"implement": "claude-opus-5-5-high"},
+            "sessions": {"implement": "sess-cl-2"},
+        }, "Fix review")
+        self.assertIn("--resume", recorded_args[2])
+        self.assertEqual(recorded_args[2][recorded_args[2].index("--resume") + 1], "sess-cl-2")
+
+    def test_cli_preflight_halts_with_env_unavailable_before_implement(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "runs.sqlite3"
+            calls = []
+
+            def run_worker(args, cwd):
+                calls.append(args[0])
+                return worker_reply(args, {"triage": "implement"})
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(
+                    ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
+                     "--check", "exit 0", "--preflight", "echo 'db down' >&2; exit 2"],
+                    worker_runner=run_worker,
+                    checkpoint=checkpoint,
+                    github=FakeGitHub(),
+                    run_gh=lambda cmd: 0,
+                    inspect_worktree=clean_worktree,
+                    read_merge_hold=lambda repo: None,
+                )
+            self.assertEqual(code, 0)
+            self.assertEqual(calls, ["claude"])
+            self.assertIn("done env_unavailable", out.getvalue())
+

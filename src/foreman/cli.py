@@ -155,6 +155,7 @@ def main(
     run.add_argument("--check", default="")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
+    run.add_argument("--preflight", help="optional shell check run before implementation")
 
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")
     accept.add_argument("path")
@@ -245,6 +246,14 @@ def main(
             return merge(command)
 
         hold_reader = _read_merge_hold if read_merge_hold is None else read_merge_hold
+        preflight_fn = None
+        if args.preflight:
+            def preflight_fn() -> tuple[bool, str]:
+                proc = subprocess.run(
+                    args.preflight, shell=True, cwd=cwd, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+                return proc.returncode == 0, (proc.stdout or "").strip()
         try:
             result = run_live_delivery(
                 repo=args.repo,
@@ -259,6 +268,7 @@ def main(
                 answer=args.answer,
                 inspect_worktree=inspect_worktree,
                 read_merge_hold=hold_reader,
+                preflight=preflight_fn,
             )
         except (OSError, QuotaExhausted, ValueError) as exc:
             print(str(exc), file=sys.stderr)
