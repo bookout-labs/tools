@@ -43,6 +43,7 @@ def run_live_delivery(
     answer: str | None = None,
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: WorktreeInspector | None = None,
+    read_merge_hold: Callable[[str], str | None] | None = None,
 ) -> dict:
     def run_check(command: str) -> int:
         return subprocess.run(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL).returncode
@@ -54,7 +55,7 @@ def run_live_delivery(
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         graph = compile_delivery(
             dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
-            inspect_worktree=lambda: inspect(cwd),
+            inspect_worktree=lambda: inspect(cwd), read_merge_hold=read_merge_hold,
         )
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")
@@ -76,6 +77,7 @@ def run_live_delivery(
                 "request": text,
                 "check": check,
                 "issue_kind": "slice" if "slice" in loaded["labels"] else "parent",
+                "attempts": [],
             }
             if initial["issue_kind"] == "slice":
                 try:

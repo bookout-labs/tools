@@ -9,7 +9,7 @@ Each slice has exactly these keys.
 - `acceptance` states how to check the outcome.
 - `depends_on` lists other slice titles that must land first. Use an empty list when independent.
 - `screen` gives the proof obligation as a path like `docs/screens/deals.md`. Use an empty string for work without a screen. Use a Markdown file directly under `docs/screens/` and omit any `..` from the path.
-- `properties` lists the properties that need formal proof. For each property, supply a non-empty `name` and `constraint`. Use an empty list when there are no properties to prove.
+- `properties` lists named PostgreSQL constraints only. For each property, supply a non-empty `name` and `constraint`. A response check stays in `acceptance`. Use an empty list when the issue adds no database rule.
 
 The graph records the slices and stops the parent run.
 

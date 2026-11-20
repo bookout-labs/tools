@@ -14,6 +14,7 @@ class Issue(TypedDict):
 class GitHub(Protocol):
     def load_issue(self, repo: str, number: int) -> Issue: ...
     def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int: ...
+    def open_issue_titles(self, repo: str) -> list[str]: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
 
@@ -32,6 +33,17 @@ class GhClient:
             args.extend(["--label", label])
         url = subprocess.check_output(args, text=True).strip()
         return int(url.rsplit("/", 1)[-1])
+
+    def open_issue_titles(self, repo: str) -> list[str]:
+        output = subprocess.check_output(
+            ["gh", "issue", "list", "--repo", repo, "--state", "open", "--limit", "200", "--json", "title"],
+            text=True,
+        )
+        return [
+            item["title"]
+            for item in json.loads(output)
+            if isinstance(item, dict) and isinstance(item.get("title"), str)
+        ]
 
     def is_merged(self, repo: str, number: int) -> bool:
         issue = json.loads(subprocess.check_output(

@@ -26,3 +26,12 @@ class GhClientTest(unittest.TestCase):
     def test_add_label_preserves_existing_labels(self, run):
         GhClient().add_label("Example/Engine", 2, "factory")
         run.assert_called_once_with(["gh", "issue", "edit", "2", "--repo", "Example/Engine", "--add-label", "factory"], text=True)
+
+    @patch("foreman.github.subprocess.check_output")
+    def test_open_issue_titles_reads_open_issue_titles(self, run):
+        run.return_value = json.dumps([{"title": "First"}, {"title": "Second"}])
+        self.assertEqual(GhClient().open_issue_titles("bookout-labs/tools"), ["First", "Second"])
+        run.assert_called_once_with(
+            ["gh", "issue", "list", "--repo", "bookout-labs/tools", "--state", "open", "--limit", "200", "--json", "title"],
+            text=True,
+        )

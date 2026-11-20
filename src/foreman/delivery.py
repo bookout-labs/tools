@@ -11,8 +11,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from foreman.config import Config, ConfigError, load_config, order_for
-from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.dispatch import Attempt, CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.proof import browser_proof_label, formal_proof_label
+from foreman.watcher import Proposal, watch_run
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -75,6 +76,8 @@ class DeliveryState(TypedDict, total=False):
     review_rounds: int
     models_used: dict[str, str]
     implement_models: list[str]
+    attempts: Annotated[list[Attempt], operator.add]
+    proposal: Proposal | None
     halt: str
     halt_detail: str
     stop: str
@@ -253,6 +256,7 @@ def compile_delivery(
     run_check: Callable[[str], int] | None = None,
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
+    read_merge_hold: Callable[[str], str | None] | None = None,
 ):
     config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
@@ -278,22 +282,55 @@ def compile_delivery(
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
             raw = None
+            recorded: list[Attempt] = []
             try:
-                raw = dispatcher.run(name, models, state, instruction)
+                raw = dispatcher.run(name, models, state, instruction, attempts=recorded)
                 update = read_output(name, raw, state)
+                update["attempts"] = recorded
                 if name == "implement" and inspect_worktree is not None:
                     update.update(head_sha=None, head_checked=False)
                 return update
             except InvalidOutput as exc:
-                halted = {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
-                model = raw.get("model") if isinstance(raw, dict) else None
+                if recorded and recorded[-1]["status"] == "ran":
+                    recorded[-1] = {
+                        "node": name,
+                        "model": recorded[-1]["model"],
+                        "status": "stopped",
+                        "detail": str(exc),
+                    }
+                halted = {"path": [name], "attempts": recorded, "halt": "invalid_output", "halt_detail": str(exc)}
+                model = raw.get("model") if isinstance(raw, dict) else (recorded[-1]["model"] if recorded else None)
                 if isinstance(model, str) and model:
                     halted["models_used"] = {**(state.get("models_used") or {}), name: model}
                 return halted
             except QuotaExhausted as exc:
-                if name != "review":
-                    raise
-                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {exc}"}
+                if name == "review":
+                    return {
+                        "path": [name],
+                        "attempts": recorded,
+                        "halt": "no_reviewer",
+                        "halt_detail": f"review quota exhausted: {exc}",
+                    }
+                return {
+                    "path": [name],
+                    "attempts": recorded,
+                    "halt": "quota_exhausted",
+                    "halt_detail": f"{name} quota exhausted: {exc}",
+                }
+            except CliMissing as exc:
+                if name == "review":
+                    return {
+                        "path": [name],
+                        "attempts": recorded,
+                        "halt": "no_reviewer",
+                        "halt_detail": f"review CLI missing: {exc}",
+                    }
+                return {
+                    "path": [name],
+                    "attempts": recorded,
+                    "halt": "cli_missing",
+                    "halt_detail": str(exc),
+                }
 
         return node
 
@@ -341,6 +378,8 @@ def compile_delivery(
         decision = state.get("triage")
         if decision == "needs_human":
             return "needs_human" if checkpointer is not None else "done"
+        if decision == "implement":
+            return "implement"
         if state.get("issue_kind") == "parent":
             return "spec"
         if decision == "question":
@@ -387,9 +426,21 @@ def compile_delivery(
 
     def arm_merge(state: DeliveryState) -> dict:
         head = state.get("head_sha")
-        if not head or not FULL_SHA.fullmatch(head):
+        args = ["gh", "pr", "merge", "--auto", "--match-head-commit", head] if head and FULL_SHA.fullmatch(head) else None
+        if read_merge_hold is not None:
+            hold = read_merge_hold(state["repo"])
+            if isinstance(hold, str) and hold.strip():
+                halted: dict = {
+                    "merge_armed": False,
+                    "halt": "merge_held",
+                    "halt_detail": hold.strip(),
+                    "path": ["merge"],
+                }
+                if args is not None:
+                    halted["merge_args"] = args
+                return halted
+        if args is None:
             return {"merge_armed": False, "path": ["merge"]}
-        args = ["gh", "pr", "merge", "--auto", "--match-head-commit", head]
         if inspect_worktree is not None:
             current, clean = inspect_worktree()
             if not state.get("head_checked") or not clean or current != head:
@@ -398,7 +449,8 @@ def compile_delivery(
         return {"merge_armed": armed, "merge_args": args, "path": ["merge"]}
 
     def finish(state: DeliveryState) -> dict:
-        return {"stop": stop_reason(state), "path": ["done"]}
+        stop = stop_reason(state)
+        return {"stop": stop, "proposal": watch_run(state, stop), "path": ["done"]}
 
     builder = StateGraph(DeliveryState)
     for name in REQUIRED_NODES:
@@ -450,10 +502,11 @@ def run_delivery(
     check: str = "",
     config: Config | None = None,
     issue_kind: str = "slice",
+    read_merge_hold: Callable[[str], str | None] | None = None,
 ) -> dict:
     if issue_kind not in {"parent", "slice"}:
         raise ValueError(f"unknown issue kind {issue_kind}")
-    graph = compile_delivery(dispatcher, config)
+    graph = compile_delivery(dispatcher, config, read_merge_hold=read_merge_hold)
     return graph.invoke(
         {
             "repo": repo,
@@ -462,6 +515,7 @@ def run_delivery(
             "issue_kind": issue_kind,
             "review_rounds": 0,
             "models_used": {},
+            "attempts": [],
             "path": [],
         }
     )

@@ -1,8 +1,7 @@
 Read the request. Reply with one word:
 
-- implement, when a slice fits in one pull request and the behavior is decided
-- spec, when the issue is a parent, the change needs more than one pull request, or a product choice is open
-  Parent issues and changes that need multiple pull requests go to spec even when the decisions are settled.
+- implement, when the change fits in one pull request (about 400 changed lines or fewer) and the behavior is decided, even on a parent issue
+- spec, when the change needs more than one pull request, needs slicing, or a product choice is open
 - question, when the request asks for information and not a change
 - needs_human, when you cannot tell which of those it is
 
