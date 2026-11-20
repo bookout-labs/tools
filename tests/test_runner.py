@@ -16,6 +16,7 @@ from foreman.worker import CliWorker
 
 
 HEAD = "a" * 40
+OPEN_PR = {"number": 12, "state": "OPEN", "headRefOid": HEAD.upper()}
 ARM_ARGS = ["gh", "pr", "merge", "--auto", "--match-head-commit", HEAD]
 SLICE = {
     "title": "List items once",
@@ -283,28 +284,72 @@ class LiveRunnerTest(unittest.TestCase):
             self.assertEqual(_run_gh(ARM_ARGS), 1)
         run.assert_called_once_with(ARM_ARGS, shell=False, stdin=subprocess.DEVNULL)
 
+    def test_default_pr_lookup_handles_gh_responses(self):
+        from foreman.cli import _find_pr
+
+        args = ["gh", "pr", "view", "--repo", "Example/Engine", "--json", "number,state,headRefOid", ""]
+        for exit_code, output, expected in (
+            (0, json.dumps(OPEN_PR), OPEN_PR),
+            (1, json.dumps(OPEN_PR), None),
+            (0, "invalid JSON", None),
+            (0, "[]", None),
+        ):
+            with self.subTest(exit_code=exit_code, output=output), patch(
+                "foreman.cli.subprocess.run", return_value=subprocess.CompletedProcess(args, exit_code, output),
+            ) as run:
+                self.assertEqual(_find_pr("Example/Engine"), expected)
+                run.assert_called_once_with(
+                    args, shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, text=True,
+                )
+
+    def run_main_merge(self, checkpoint, find_pr, run_gh):
+        replies = iter([{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}, APPROVE])
+
+        def worker(args, cwd):
+            return worker_reply(args, next(replies))
+
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                worker_runner=worker, checkpoint=checkpoint, github=self.github, run_gh=run_gh, find_pr=find_pr,
+            )
+        self.assertEqual(code, 0)
+        self.assertIn(" ".join(ARM_ARGS), stdout.getvalue())
+        return stdout.getvalue()
+
     def test_main_arms_or_records_merge_using_injected_runner(self):
         for exit_code in (0, 1):
             with self.subTest(exit_code=exit_code), TemporaryDirectory(dir=self.cwd) as directory:
-                replies = iter([{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}, APPROVE])
                 calls = []
 
-                def worker(args, cwd):
-                    return worker_reply(args, next(replies))
+                def find_pr(repo):
+                    self.assertEqual(repo, "Example/Engine")
+                    return OPEN_PR
 
                 def gh(args):
                     calls.append(args)
                     return exit_code
 
-                with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
-                    code = main(
-                        ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
-                        worker_runner=worker, checkpoint=Path(directory) / "run.sqlite3", github=self.github, run_gh=gh,
-                    )
-                self.assertEqual(code, 0)
+                result = self.run_main_merge(Path(directory) / "run.sqlite3", find_pr, gh)
                 self.assertEqual(calls, [ARM_ARGS])
-                self.assertIn("merge armed" if exit_code == 0 else "merge arm recorded", stdout.getvalue())
-                self.assertIn(" ".join(ARM_ARGS), stdout.getvalue())
+                self.assertIn("merge armed" if exit_code == 0 else "merge arm recorded", result)
+
+    def test_main_records_merge_when_there_is_no_pull_request(self):
+        self.assert_merge_recorded_without_calling_gh(None)
+
+    def test_main_records_merge_when_the_pull_request_head_differs(self):
+        self.assert_merge_recorded_without_calling_gh({**OPEN_PR, "headRefOid": "b" * 40})
+
+    def test_main_records_merge_when_the_pull_request_is_closed(self):
+        self.assert_merge_recorded_without_calling_gh({**OPEN_PR, "state": "CLOSED"})
+
+    def assert_merge_recorded_without_calling_gh(self, pr):
+        def unexpected_merge(args):
+            self.fail(f"unexpected merge command {args}")
+
+        result = self.run_main_merge(self.checkpoint, lambda repo: pr, unexpected_merge)
+        self.assertIn("merge arm recorded", result)
 
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
         script = """
@@ -312,7 +357,7 @@ import json
 from pathlib import Path
 import sys
 from foreman.cli import main
-from test_runner import APPROVE, HEAD, FakeGitHub, worker_reply
+from test_runner import APPROVE, HEAD, OPEN_PR, FakeGitHub, worker_reply
 
 def run(args, cwd):
     prompt = args[-1]
@@ -333,7 +378,10 @@ def run(args, cwd):
         return worker_reply(args, {"implementation": "built", "head_sha": HEAD})
     return worker_reply(args, APPROVE)
 
-sys.exit(main(sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]), github=FakeGitHub(), run_gh=lambda args: 0))
+sys.exit(main(
+    sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]), github=FakeGitHub(),
+    run_gh=lambda args: 0, find_pr=lambda repo: OPEN_PR,
+))
 """
         def invoke(*flags):
             bootstrap = f"import sys; sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n"
@@ -350,6 +398,7 @@ sys.exit(main(sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]), git
         completed = invoke("--answer", "Only open items")
         self.assertEqual(completed.count("triage "), 1)
         self.assertEqual(completed.count("spec "), 2)
+        self.assertIn("merge armed", completed)
         self.assertIn(" ".join(ARM_ARGS), completed)
         self.assertIn("done verified", completed)
         self.assertEqual(invoke(), completed)

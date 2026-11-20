@@ -1,6 +1,7 @@
 """Command line for the foreman tool."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -60,6 +61,21 @@ def _run_gh(args: list[str]) -> int:
     return subprocess.run(args, shell=False, stdin=subprocess.DEVNULL).returncode
 
 
+def _find_pr(repo: str) -> dict[str, object] | None:
+    # An empty selector keeps current-branch lookup while satisfying gh's --repo argument check.
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", "--repo", repo, "--json", "number,state,headRefOid", ""],
+            shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+        if result.returncode != 0:
+            return None
+        pr = json.loads(result.stdout)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return pr if isinstance(pr, dict) else None
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -67,6 +83,7 @@ def main(
     checkpoint: Path | None = None,
     github: GitHub | None = None,
     run_gh: Callable[[list[str]], int] | None = None,
+    find_pr: Callable[[str], dict[str, object] | None] | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -154,6 +171,23 @@ def main(
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
         cwd = Path.cwd()
         dispatcher = FailoverDispatcher(CliWorker(cwd, worker_runner)) if worker_runner else None
+        lookup = _find_pr if find_pr is None else find_pr
+        merge = _run_gh if run_gh is None else run_gh
+
+        def merge_if_matching_pr(command: list[str]) -> int:
+            if command[:-1] != ["gh", "pr", "merge", "--auto", "--match-head-commit"]:
+                return 1
+            sha = command[-1]
+            if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+                return 1
+            pr = lookup(args.repo)
+            if pr is None or pr.get("state") != "OPEN":
+                return 1
+            head = pr.get("headRefOid")
+            if not isinstance(head, str) or head.lower() != sha.lower():
+                return 1
+            return merge(command)
+
         try:
             result = run_live_delivery(
                 repo=args.repo,
@@ -164,7 +198,7 @@ def main(
                 dispatcher=dispatcher,
                 request=args.request,
                 github=github,
-                run_gh=run_gh if run_gh is not None else _run_gh,
+                run_gh=merge_if_matching_pr,
                 answer=args.answer,
             )
         except (OSError, QuotaExhausted, ValueError) as exc:
