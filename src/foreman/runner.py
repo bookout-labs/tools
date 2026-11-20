@@ -69,6 +69,12 @@ def run_live_delivery(
                 labels = ["slice"] + ([] if item["depends_on"] else ["factory"])
                 numbers.append(client.create_issue(repo, item["title"], body, labels))
                 graph.update_state(config, {"child_issue_numbers": numbers})
+            siblings = {item["title"]: number for item, number in zip(saved.values["slices"], numbers)}
+            for item, number in zip(saved.values["slices"], numbers):
+                deps = item["depends_on"]
+                if (deps and all(title in siblings and client.is_merged(repo, siblings[title]) for title in deps)
+                        and "factory" not in client.load_issue(repo, number)["labels"]):
+                    client.add_label(repo, number, "factory")
             saved = graph.get_state(config)
         if saved.interrupts:
             question = saved.interrupts[0].value["question"]

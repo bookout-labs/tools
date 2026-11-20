@@ -44,13 +44,25 @@ class FakeGitHub:
     def __init__(self, labels=None):
         self.labels = labels if labels is not None else ["slice"]
         self.created = []
+        self.merged = set()
+        self.label_calls = []
+        self.issue_labels = {}
 
     def load_issue(self, repo, number):
-        return {"title": "Issue title", "body": "Issue body", "labels": self.labels}
+        return {"title": "Issue title", "body": "Issue body", "labels": self.issue_labels.get(number, self.labels)}
 
     def create_issue(self, repo, title, body, labels):
         self.created.append((title, body, labels))
-        return 100 + len(self.created)
+        number = 100 + len(self.created)
+        self.issue_labels[number] = list(labels)
+        return number
+
+    def is_merged(self, repo, number):
+        return number in self.merged
+
+    def add_label(self, repo, number, label):
+        self.label_calls.append((repo, number, label))
+        self.issue_labels[number].append(label)
 
 
 class CliWorkerTest(unittest.TestCase):
@@ -149,6 +161,19 @@ class LiveRunnerTest(unittest.TestCase):
         resumed = self.walk([])
         self.assertEqual(resumed["child_issue_numbers"], [101, 102])
         self.assertEqual(len(self.github.created), 2)
+        self.assertEqual(self.github.label_calls, [])
+        self.github.merged.add(101)
+        self.walk([])
+        self.walk([])
+        self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
+
+    def test_unknown_dependency_does_not_label(self):
+        self.github = FakeGitHub(["factory"])
+        second = {**SLICE, "title": "Finish items", "depends_on": ["Missing"]}
+        with patch("foreman.delivery.clean_slices", return_value=[SLICE, second]):
+            self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [SLICE, second]}])
+        self.walk([])
+        self.assertEqual(self.github.label_calls, [])
 
     def test_injected_workers_reach_merge_after_a_real_check_in_the_repo(self):
         (self.cwd / "expected").touch()
