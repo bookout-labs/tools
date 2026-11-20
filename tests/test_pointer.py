@@ -24,6 +24,16 @@ class PointerTest(unittest.TestCase):
         self.assertEqual(set(schema["properties"]), set(REQUIRED) | set(OPTIONAL))
         self.assertEqual(tuple(schema["properties"]["graph"]["enum"]), KNOWN_GRAPHS)
 
+    def test_four_field_pointer_still_loads(self):
+        path = ROOT / "examples" / "plain.yaml"
+        path.write_text("source: bookout-labs/tools\nref: delivery-1\ngraph: delivery\ncheck: npm run check\n")
+        try:
+            pointer = load_pointer(path)
+            self.assertNotIn("save", pointer)
+            self.assertEqual(pointer["ref"], "delivery-1")
+        finally:
+            path.unlink()
+
     def test_bad_pointer_is_rejected(self):
         path = ROOT / "examples" / "missing.yaml"
         path.write_text("source: bookout-labs\nref: main\ngraph: delivery\n")

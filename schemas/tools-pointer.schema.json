@@ -20,6 +20,56 @@
     "check": {
       "type": "string",
       "minLength": 1
+    },
+    "save": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [{ "required": ["repo"] }, { "required": ["board_repo"] }],
+      "properties": {
+        "app": {
+          "anyOf": [
+            { "type": "string", "enum": ["none"] },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "installation", "key"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "installation": { "type": "string", "minLength": 1 },
+                "key": { "type": "string", "minLength": 1 }
+              }
+            }
+          ]
+        },
+        "privacy": { "type": "string", "minLength": 1 },
+        "work_id_pattern": { "type": "string", "minLength": 1 },
+        "board_repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "proof": { "type": "string", "enum": ["required", "optional"] },
+        "queue": { "type": "boolean" },
+        "hooks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pre_save": { "type": "string", "minLength": 1 },
+            "post_save": { "type": "string", "minLength": 1 }
+          }
+        },
+        "paths": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "system": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
     }
   }
 }

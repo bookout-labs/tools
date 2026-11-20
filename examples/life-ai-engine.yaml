@@ -2,3 +2,45 @@ source: bookout-labs/tools
 ref: main
 graph: delivery
 check: npm run check
+save:
+  app:
+    id: "5673796"
+    installation: "180008533"
+    key: ~/.config/life-ai/app.pem
+  privacy: ~/.config/life-ai/personal-terms
+  work_id_pattern: '^[A-Z]+(\.\d+)+$'
+  board_repo: bookout-labs/life-ai-engine
+  repo: bookout-labs/life-ai-engine
+  proof: required
+  queue: true
+  paths:
+    code:
+      - apps/
+      - packages/
+      - db/
+      - .agents/scripts/
+      - .agents/hooks/
+      - .github/
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - neon.ts
+      - knip.json
+      - biome.json
+      - t3.json
+      - .mcp.json
+    system:
+      - docs/
+      - .claude/
+      - .codex/
+      - .agents/rules/
+      - .agents/rules.ts
+      - .agents/jobs/
+      - .agents/skills/
+      - .vale/
+      - .vale.ini
+      - AGENTS.md
+      - CLAUDE.md
+      - README.md
+      - LICENSE
+      - .gitignore

@@ -2,3 +2,9 @@ source: bookout-labs/tools
 ref: main
 graph: delivery
 check: npm run check
+save:
+  app: none
+  privacy: none
+  proof: optional
+  queue: true
+  repo: DoctorCRE/doctorcre-engine

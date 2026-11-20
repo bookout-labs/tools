@@ -6,7 +6,10 @@ import tomllib
 
 DEFAULT_PATH = Path(__file__).with_name("models.toml")
 ROLES = {"coordinator", "builder", "verifier", "check"}
-FAMILIES = {"claude", "gpt", "grok"}
+EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
+# Route names in models.toml. sol and terra are the same provider family.
+ROUTES = {"sol": "gpt", "terra": "gpt", "opus": "claude", "grok": "grok"}
+FAMILIES = set(ROUTES.values())
 
 
 class ConfigError(ValueError):
@@ -24,9 +27,12 @@ class NodeConfig:
 class Config:
     max_review_rounds: int
     nodes: dict[str, NodeConfig]
+    effort: str = "high"
 
 
 def family(model: str) -> str:
+    if model in ROUTES:
+        return ROUTES[model]
     prefix = model.split("-", 1)[0]
     if prefix not in FAMILIES:
         raise ConfigError(f"unknown model family: {model}")
@@ -39,6 +45,9 @@ def parse_config(data: dict) -> Config:
     rounds = data.get("max_review_rounds")
     if not isinstance(rounds, int) or rounds < 1:
         raise ConfigError("max_review_rounds must be an integer of at least 1")
+    effort = data.get("effort", "high")
+    if effort not in EFFORTS:
+        raise ConfigError("effort must be low, medium, high, xhigh, max, or ultra")
     raw_nodes = data.get("nodes")
     if not isinstance(raw_nodes, dict) or not raw_nodes:
         raise ConfigError("nodes must be a non-empty table")
@@ -65,7 +74,7 @@ def parse_config(data: dict) -> Config:
     for name, node in nodes.items():
         if node.other_family_from and node.other_family_from not in nodes:
             raise ConfigError(f"{name} refers to a missing node {node.other_family_from}")
-    return Config(max_review_rounds=rounds, nodes=nodes)
+    return Config(max_review_rounds=rounds, nodes=nodes, effort=effort)
 
 
 def load_config(path: Path | None = None) -> Config:

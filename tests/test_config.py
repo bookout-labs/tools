@@ -1,6 +1,6 @@
 import unittest
 
-from foreman.config import ConfigError, family, load_config, order_for, parse_config
+from foreman.config import DEFAULT_PATH, ConfigError, family, load_config, order_for, parse_config
 
 
 class ConfigTest(unittest.TestCase):
@@ -8,7 +8,11 @@ class ConfigTest(unittest.TestCase):
         config = load_config()
         self.assertEqual(config.max_review_rounds, 3)
         self.assertEqual(config.nodes["verify"].models, ())
-        self.assertEqual(config.nodes["implement"].models[0], "gpt-6.1-sol-high")
+        self.assertEqual(config.effort, "high")
+        self.assertEqual(config.nodes["implement"].models, ("sol", "terra", "opus", "grok"))
+        text = DEFAULT_PATH.read_text()
+        for banned in ("gpt-", "claude-", "grok-"):
+            self.assertNotIn(banned, text)
 
     def test_review_uses_the_other_family(self):
         config = load_config()

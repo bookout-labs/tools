@@ -19,12 +19,16 @@ from foreman.dry_run import ScriptHandler
 from foreman.github import GitHub
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
+from foreman.resolve import Cmd, cache_resolve, resolve_route, run_cmd
 from foreman.runner import WorktreeInspector, run_live_delivery
+from foreman.save import SaveError, SaveRequest, config_from_pointer, run_save
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 
 
 def _print_run(result: dict) -> None:
     models = result.get("models_used", {})
+    choices = list(result.get("model_choices") or [])
+    cursor = 0
     for node in result["path"]:
         if node == "verify":
             print(f"verify {result.get('check') or '(no check)'}")
@@ -47,8 +51,15 @@ def _print_run(result: dict) -> None:
                 print(shlex.join(args))
         else:
             fields = [node]
-            if model := models.get(node):
+            choice = None
+            if cursor < len(choices) and choices[cursor].get("node") == node:
+                choice = choices[cursor]
+                cursor += 1
+            model = choice.get("model") if choice else models.get(node)
+            if model:
                 fields.append(model)
+            if choice and choice.get("reason"):
+                fields.append(choice["reason"])
             if node == "review" and (risk := result.get("risk")):
                 fields.extend(("risk", risk["level"]))
             print(" ".join(fields))
@@ -85,6 +96,8 @@ def main(
     run_gh: Callable[[list[str]], int] | None = None,
     find_pr: Callable[[str], dict[str, object] | None] | None = None,
     inspect_worktree: WorktreeInspector | None = None,
+    resolve=None,
+    save_run=None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -110,6 +123,16 @@ def main(
     improve = commands.add_parser("improve", help="propose a change from a failing score")
     improve.add_argument("failure")
 
+    save = commands.add_parser("save", help="commit, push, and open a pull request")
+    save.add_argument("--work", default="")
+    save.add_argument("-m", "--message", default="")
+    save.add_argument("--agent")
+    save.add_argument("--proof", default="")
+    save.add_argument("--issue")
+    save.add_argument("--regroup")
+    save.add_argument("--config", default="tools.yaml")
+    save.add_argument("paths", nargs="*")
+
     args = parser.parse_args(argv)
     if args.command == "diagram":
         if args.graph != GRAPH_NAME:
@@ -127,6 +150,8 @@ def main(
             print(f"{key} {pointer[key]}")
         if "check" in pointer:
             print(f"check {pointer['check']}")
+        if "save" in pointer:
+            print("save configured")
         return 0
     if args.command == "accept":
         try:
@@ -147,6 +172,35 @@ def main(
         except MeasureError as exc:
             print(str(exc), file=sys.stderr)
             return 2
+        return 0
+    if args.command == "save":
+        try:
+            pointer = load_pointer(Path(args.config))
+            config = config_from_pointer(pointer)
+        except (OSError, PointerError, SaveError) as exc:
+            print(f"save: {exc}", file=sys.stderr)
+            return 1
+        request = SaveRequest(
+            work=args.work, message=args.message, agent=args.agent, proof=args.proof,
+            issue=args.issue, regroup=args.regroup, paths=tuple(args.paths),
+        )
+
+        def default_save_run(command: list[str], overlay: dict | None):
+            merged = None if overlay is None else {**os.environ, **overlay}
+            try:
+                result = subprocess.run(
+                    command, cwd=Path.cwd(), env=merged, stdin=subprocess.DEVNULL,
+                    capture_output=True, text=True, shell=False,
+                )
+            except FileNotFoundError as exc:
+                return Cmd(127, "", str(exc))
+            return Cmd(result.returncode, result.stdout, result.stderr)
+
+        try:
+            print(run_save(config, request, save_run or default_save_run, cwd=Path.cwd()))
+        except SaveError as exc:
+            print(f"save: {exc}", file=sys.stderr)
+            return 1
         return 0
     if args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
@@ -205,6 +259,9 @@ def main(
                 run_gh=merge_if_matching_pr,
                 answer=args.answer,
                 inspect_worktree=inspect_worktree,
+                resolve=resolve if resolve is not None else cache_resolve(
+                    lambda route, effort: resolve_route(route, effort, run_cmd)
+                ),
             )
         except (OSError, QuotaExhausted, ValueError) as exc:
             print(str(exc), file=sys.stderr)

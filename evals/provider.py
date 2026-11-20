@@ -27,7 +27,7 @@ def _with_quota_gap() -> str:
     handler = ScriptHandler()
 
     def exhaust_claude(node, model, state, instruction):
-        if model == "claude-opus-5-5-high":
+        if model == "opus":
             raise QuotaExhausted(model)
         return handler(node, model, state, instruction)
 
@@ -37,9 +37,10 @@ def _with_quota_gap() -> str:
         request="Add a field",
         check="npm run check",
     )
+    from foreman.config import family
     implement = result["models_used"]["implement"]
     review = result["models_used"]["review"]
-    if implement.split("-", 1)[0] == review.split("-", 1)[0]:
+    if family(implement) == family(review):
         return "same-family"
     return result["stop"]
 

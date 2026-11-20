@@ -2,7 +2,7 @@ import unittest
 
 from dataclasses import replace
 
-from foreman.config import NodeConfig, load_config
+from foreman.config import family, NodeConfig, load_config
 from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
@@ -59,8 +59,10 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["risk"]["level"], "low")
         self.assertTrue(result["merge_armed"])
         self.assertEqual(result["head_sha"], HEAD_SHA)
-        self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
-        self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
+        self.assertEqual(result["models_used"]["implement"], "terra")
+        self.assertEqual(result["models_used"]["review"], "opus")
+        implement = next(choice for choice in result["model_choices"] if choice["node"] == "implement")
+        self.assertEqual(implement["reason"], "small scoped build")
         self.assertNotIn("verify", result["models_used"])
 
     def test_ready_spec_is_implemented(self):
@@ -148,13 +150,13 @@ class DeliveryTest(unittest.TestCase):
                 handler = ScriptHandler(reviews=["changes", "approve"], head_sha=HEAD_SHA)
 
                 def switch_builder(node, model, state, instruction):
-                    if node == "implement" and state.get("review") == "changes" and model.startswith("gpt-"):
+                    if node == "implement" and state.get("review") == "changes" and family(model) == "gpt":
                         raise QuotaExhausted(model)
                     return handler(node, model, state, instruction)
 
                 result = walk(switch_builder, config=config)
                 reviewers = [call["model"] for call in handler.calls if call["node"] == "review"]
-                self.assertEqual(result["models_used"]["implement"], "claude-opus-5-5-high")
+                self.assertEqual(result["models_used"]["implement"], "opus")
                 if "grok-4.7-high" in review_models:
                     self.assertEqual(reviewers, ["claude-opus-5-5-high", "grok-4.7-high"])
                     self.assertEqual(result["stop"], "verified")
@@ -162,7 +164,7 @@ class DeliveryTest(unittest.TestCase):
                     self.assertEqual(reviewers, ["claude-opus-5-5-high"])
                     self.assertEqual(result["stop"], "no_reviewer")
                     self.assertNotIn("merge", result["path"])
-                self.assertEqual(result["implement_models"], ["gpt-6.1-sol-high", "claude-opus-5-5-high"])
+                self.assertEqual(result["implement_models"], ["terra", "opus"])
 
     def test_review_cap_stops_without_arming(self):
         result = walk(ScriptHandler(reviews=[], head_sha=HEAD_SHA))
@@ -232,7 +234,7 @@ class DeliveryTest(unittest.TestCase):
         config = load_config()
         config.nodes["review"] = replace(config.nodes["review"], other_family_from=None)
         result = walk(exhaust_review, config=config)
-        self.assertEqual(offered, ["claude-opus-5-5-high", "grok-4.7-high"])
+        self.assertEqual(offered, ["opus", "grok"])
         self.assertEqual(result["stop"], "no_reviewer")
         self.assertIn("quota exhausted", result["halt_detail"])
         self.assertNotIn("merge", result["path"])
@@ -241,16 +243,16 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler()
 
         def exhaust_claude(node, model, state, instruction):
-            if model == "claude-opus-5-5-high":
+            if model == "opus":
                 raise QuotaExhausted(model)
             return handler(node, model, state, instruction)
 
         result = walk(exhaust_claude)
-        self.assertEqual(result["models_used"]["triage"], "grok-4.7-high")
-        self.assertEqual(result["models_used"]["review"], "grok-4.7-high")
+        self.assertEqual(result["models_used"]["triage"], "grok")
+        self.assertEqual(result["models_used"]["review"], "grok")
         self.assertNotEqual(
-            result["models_used"]["implement"].split("-", 1)[0],
-            result["models_used"]["review"].split("-", 1)[0],
+            family(result["models_used"]["implement"]),
+            family(result["models_used"]["review"]),
         )
 
     def test_every_model_exhausted_raises(self):

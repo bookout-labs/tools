@@ -35,7 +35,7 @@ flowchart TD
   done --> __end__([end])
 ```
 
-The edges are code. The model list is `src/foreman/models.toml`. Quota exhaustion tries the next model in that list. A node does not edit the list, and it does not decide the next node.
+The edges are code. `src/foreman/models.toml` names model families and one effort. A router sends a small build to terra and a large, empty, risky, or retried build to sol. Quota exhaustion tries the next family. A live run asks the installed CLI for the newest model in the chosen family. A node does not edit the list, and it does not decide the next node. A dry run prints the family and the reason for each model node.
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If the builder model is missing or every eligible reviewer is unavailable, the run stops with `no_reviewer`. The record includes `halt_detail` for both stops.
 
@@ -126,7 +126,13 @@ Start a live run from the root of the engine checkout. Use `--request` to supply
 foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm run check" --request "Add a field"
 ```
 
-The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request and check command.
+The runner resolves each family with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request and check command.
+
+`foreman save` commits the named files, pushes the branch, and opens or updates a pull request. The optional `save` block in `tools.yaml` supplies the GitHub App, the privacy list, the work-id pattern, the board repository, whether proof is required, and whether to queue the pull request. A pointer without `save` still validates. Repositories that leave `app` unset use the ambient `gh` login. This command is separate from the delivery graph's `gh pr merge --auto --match-head-commit` arm.
+
+```sh
+foreman save --work LAB.1.3 -m "what changed" --issue 2 --proof "Shown on the board." docs/note.md
+```
 
 ## Tests
 

@@ -387,7 +387,7 @@ class LiveRunnerTest(unittest.TestCase):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
                 worker_runner=worker, checkpoint=checkpoint, github=self.github, run_gh=run_gh, find_pr=find_pr,
-                inspect_worktree=clean_worktree,
+                inspect_worktree=clean_worktree, resolve=lambda route, _effort: route,
             )
         self.assertEqual(code, 0)
         self.assertIn(" ".join(ARM_ARGS), stdout.getvalue())

@@ -6,7 +6,7 @@ import re
 import subprocess
 from typing import Callable
 
-from foreman.config import family
+from foreman.config import ROUTES, family
 from foreman.dispatch import InvalidOutput, QuotaExhausted
 
 CommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
@@ -33,6 +33,18 @@ PROOF_PROMPT = (
     "For required properties, report formal_proof with ran and constraints, a list of "
     "constraint and rejected results. Report evidence you actually collected."
 )
+def _usage_matches(model: str, usage: object) -> bool:
+    if not isinstance(usage, dict) or not usage:
+        return False
+    if set(usage) == {model}:
+        return True
+    # An alias such as opus comes back as the CLI's concrete slug.
+    if model not in ROUTES:
+        return False
+    expected = family(model)
+    return all(isinstance(key, str) and family(key) == expected and model in key.split("-") for key in usage)
+
+
 QUOTA = re.compile(
     r"quota|rate.limit|usage limit|hit your limit|resource_exhausted|too many requests|\b429\b|"
     r"model[^\n]*(?:not (?:available|found|supported)|does not exist|unsupported)|"
@@ -79,16 +91,18 @@ class CliWorker:
 
         provider = family(model)
         edit = node == "implement"
+        effort = state.get("effort") if isinstance(state.get("effort"), str) else None
         if provider == "gpt":
             sandbox = "workspace-write" if edit else "read-only"
             args = ["codex", "exec", "-m", model, "--color", "never", "-s", sandbox, prompt]
         else:
             mode = "acceptEdits" if edit else "plan"
             options = ["--output-format", "json", "--permission-mode", mode]
+            effort_args = ["--effort", effort] if effort else []
             if provider == "claude":
-                args = ["claude", "--model", model, *options, "-p", prompt]
+                args = ["claude", "--model", model, *effort_args, *options, "-p", prompt]
             else:
-                args = ["grok", "-m", model, *options, "--no-subagents", "-p", prompt]
+                args = ["grok", "-m", model, *effort_args, *options, "--no-subagents", "-p", prompt]
 
         try:
             process = self.run(args, self.cwd)
@@ -111,7 +125,7 @@ class CliWorker:
                     raise QuotaExhausted(model)
                 raise InvalidOutput(f"{provider} worker reported an error")
             usage = envelope.get("modelUsage")
-            if not isinstance(usage, dict) or usage.keys() != {model}:
+            if not _usage_matches(model, usage):
                 raise QuotaExhausted(model)
             body = envelope.get("result" if provider == "claude" else "text")
 

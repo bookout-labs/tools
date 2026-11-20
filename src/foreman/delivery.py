@@ -10,9 +10,10 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from foreman.config import Config, ConfigError, load_config, order_for
+from foreman.config import Config, ConfigError, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.proof import browser_proof_label, formal_proof_label
+from foreman.router import choose_order
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -75,6 +76,9 @@ class DeliveryState(TypedDict, total=False):
     review_rounds: int
     models_used: dict[str, str]
     implement_models: list[str]
+    model_choices: Annotated[list[dict], operator.add]
+    labels: list[str]
+    files: list[str]
     halt: str
     halt_detail: str
     stop: str
@@ -235,12 +239,14 @@ def compile_delivery(
     run_check: Callable[[str], int] | None = None,
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
+    resolve: Callable[[str, str], str] | None = None,
 ):
     config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
+    identity = lambda route, _effort: route
 
     def bind(name: str):
         def node(state: DeliveryState) -> dict:
@@ -248,6 +254,11 @@ def compile_delivery(
                 return {"path": [name], "halt": "no_dispatcher"}
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
+            except ConfigError as exc:
+                return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
+            ordered, reason, inputs = choose_order(name, models, state)
+            try:
+                resolved = [(resolve or identity)(route, config.effort) for route in ordered]
             except ConfigError as exc:
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
             instruction = prompts[name]
@@ -259,11 +270,33 @@ def compile_delivery(
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
+            call_state = dict(state)
+            call_state["effort"] = config.effort
             try:
-                raw = dispatcher.run(name, models, state, instruction)
+                raw = dispatcher.run(name, resolved, call_state, instruction)
                 update = read_output(name, raw, state)
                 if name == "implement" and inspect_worktree is not None:
                     update.update(head_sha=None, head_checked=False)
+                used = raw.get("model")
+                if used:
+                    route = ordered[0] if ordered else used
+                    for route_name, slug in zip(ordered, resolved):
+                        if slug == used:
+                            route = route_name
+                            break
+                    record = {
+                        "node": name,
+                        "inputs": inputs,
+                        "route": route,
+                        "family": family(used),
+                        "model": used,
+                        "reason": reason if not resolved or used == resolved[0] else "quota fallback",
+                        "outcome": "ran",
+                    }
+                    usage = raw.get("usage")
+                    if isinstance(usage, dict):
+                        record["tokens"] = usage
+                    update["model_choices"] = [record]
                 return update
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
@@ -427,21 +460,28 @@ def run_delivery(
     check: str = "",
     config: Config | None = None,
     issue_kind: str = "slice",
+    labels: list[str] | None = None,
+    files: list[str] | None = None,
+    resolve: Callable[[str, str], str] | None = None,
 ) -> dict:
     if issue_kind not in {"parent", "slice"}:
         raise ValueError(f"unknown issue kind {issue_kind}")
-    graph = compile_delivery(dispatcher, config)
-    return graph.invoke(
-        {
-            "repo": repo,
-            "request": request,
-            "check": check,
-            "issue_kind": issue_kind,
-            "review_rounds": 0,
-            "models_used": {},
-            "path": [],
-        }
-    )
+    graph = compile_delivery(dispatcher, config, resolve=resolve)
+    initial: dict = {
+        "repo": repo,
+        "request": request,
+        "check": check,
+        "issue_kind": issue_kind,
+        "review_rounds": 0,
+        "models_used": {},
+        "model_choices": [],
+        "path": [],
+    }
+    if labels is not None:
+        initial["labels"] = list(labels)
+    if files is not None:
+        initial["files"] = list(files)
+    return graph.invoke(initial)
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
