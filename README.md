@@ -11,8 +11,8 @@ flowchart TD
   __start__([start]) --> triage
   __start__ -->|missing or invalid live slice| done
   triage -->|clear change| implement
-  triage -->|parent, larger change, or open choice| spec
-  triage -->|question| research
+  triage -->|larger change, open choice, or parent question| spec
+  triage -->|slice question| research
   triage -->|needs a person| needs_human
   needs_human -->|answer to triage| triage
   needs_human -->|answer to spec| spec
@@ -38,7 +38,7 @@ flowchart TD
   done --> __end__([end])
 ```
 
-The edges are code. `src/foreman/models.toml` names model families and one effort. A router sends a small build to terra and a large, empty, risky, or retried build to sol. Quota exhaustion tries the next family. A live run asks the installed CLI for the newest model in the chosen family. A node does not edit the list, and it does not decide the next node. A dry run prints the family and the reason for each model node.
+The edges are code. `src/foreman/models.toml` names model families and one effort. A router sends a small build to terra and a large, empty, risky, or retried build to sol. Quota exhaustion tries the next family, and if every model reports quota, the run halts with `quota_exhausted`. A missing CLI records `cli_missing` and may try the next installed CLI. Usage-name mismatches, Codex reroutes, and unrecognized errors never silently count as quota; they stop immediately as `invalid_output` and name what came back. Every model attempt (`ran`, `quota`, `cli_missing`, `stopped`) is recorded on the run. A live run asks the installed CLI for the newest model in the chosen family. A node does not edit the list, and it does not decide the next node. A dry run prints the family and the reason for each model node.
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If the builder model is missing or every eligible reviewer is unavailable, the run stops with `no_reviewer`. The record includes `halt_detail` for both stops.
 
@@ -46,11 +46,13 @@ Live verify stops with `dirty_worktree` if the checkout has changes or Git canno
 
 The cap is three failures across verify, proof, and review. It is config. A node cannot raise it.
 
-After approval, a pointer with a save block pushes that clean reviewed HEAD and opens or updates the pull request. The commit stays the one verify recorded. The live merge node then records `gh pr merge --auto --match-head-commit <sha>` with that SHA. A pointer without a save block goes from approval to the merge node. The worktree must still be clean and at that SHA for the command to run. The CLI also requires an open pull request at that SHA with a head branch starting with the issue number and a hyphen and a base branch of `main`.
+After approval, a pointer with a save block pushes that clean reviewed HEAD and opens or updates the pull request. The commit stays the one verify recorded. Before the live merge node records `gh pr merge --auto --match-head-commit <sha>` with that SHA, it reads the GitHub repository variable `FOREMAN_MERGE_HOLD` on the target engine repository. A non-empty value halts `merge_held` with that text and does not arm merge (`gh variable set` sets the hold and `gh variable delete` clears it). When unset or empty, a pointer without a save block goes from approval to the merge node, the worktree must still be clean and at that SHA for the command to run, and the CLI also requires an open pull request at that SHA with a head branch starting with the issue number and a hyphen and a base branch of `main`.
 
 Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 
-A clear change on a slice goes straight to implement. Parent issues and changes that need more than one pull request route to spec even when the decisions are settled. A ready parent spec records its slices and stops as `sliced`. Each child issue includes a fenced JSON object with its title, acceptance, dependency titles, screen path or empty string, and named property constraints. Live runs load that object as the slice for the run. A `slice`-labelled issue with a missing or invalid object stops at `missing_slice`. An open product choice pauses a live run for a person's answer. An informational request routes to research.
+A clear change that fits in one pull request goes straight to implement, even on a parent issue, and finishes as one pull request without filing slices. Changes that need more than one pull request or have an open product choice route to spec; parent issues whose triage is `spec` or `question` also route to spec. A ready parent spec records its slices and stops as `sliced`. Each child issue includes a fenced JSON object with its title, acceptance, dependency titles, screen path or empty string, and named PostgreSQL property constraints (`properties` holds named PostgreSQL constraints only; response checks stay in `acceptance`). Live runs load that object as the slice for the run. A `slice`-labelled issue with a missing or invalid object stops at `missing_slice`. An open product choice pauses a live run for a person's answer. An informational request on a slice routes to research.
+
+When a run finishes with a halt, a failover, or an odd attempt (`stopped` or `cli_missing`), `finish()` stores a watcher proposal naming the evidence and file to change, stating that a person opens the pull request without editing the graph, merging, launching a coding agent, or changing `models.toml` or `max_review_rounds`. Quota failovers are reported as quota with no graph change. Clean runs file nothing. The live CLI prints the proposal and files one deduplicated open issue on `bookout-labs/tools` for graph-fix proposals.
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 

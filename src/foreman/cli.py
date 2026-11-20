@@ -17,13 +17,16 @@ from foreman.accept import AcceptError, accept_event
 from foreman.delivery import GRAPH_NAME, diagram, run_delivery
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
-from foreman.github import GitHub
+from foreman.github import GhClient, GitHub
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.resolve import Cmd, cache_resolve, resolve_route, run_cmd
 from foreman.runner import WorktreeInspector, run_live_delivery
 from foreman.save import SaveConfig, SaveError, SaveRequest, config_from_pointer, run_save
+from foreman.watcher import TOOLS_REPO, file_proposal_issue
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
+
+MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
 
 
 def _print_run(result: dict) -> None:
@@ -41,12 +44,16 @@ def _print_run(result: dict) -> None:
             print(f"done {result['stop']}")
             if detail := result.get("halt_detail"):
                 print(detail)
+            if proposal := result.get("proposal"):
+                print(proposal["summary"].rstrip())
         elif node == "save":
             print("save")
             if report := result.get("save_report"):
                 print(report)
         elif node == "merge":
-            if result["merge_armed"]:
+            if result.get("halt") == "merge_held":
+                print("merge held")
+            elif result["merge_armed"]:
                 print("merge armed")
             elif result.get("merge_args"):
                 print("merge arm recorded")
@@ -71,6 +78,23 @@ def _print_run(result: dict) -> None:
     if result.get("stop") == "needs_human" and "done" not in result["path"]:
         print("paused needs_human")
         print(result["halt_detail"])
+
+
+def _read_merge_hold(repo: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["gh", "variable", "get", MERGE_HOLD_VARIABLE, "--repo", repo],
+            shell=False, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        )
+    except OSError as exc:
+        return f"could not read {MERGE_HOLD_VARIABLE}: {exc}"
+    if result.returncode == 0:
+        return result.stdout.strip() or None
+    detail = " ".join(f"{result.stderr}\n{result.stdout}".split())
+    lower = detail.lower()
+    if "was not found" in lower or "404" in lower:
+        return None
+    return f"could not read {MERGE_HOLD_VARIABLE}: {detail or f'gh exited {result.returncode}'}"
 
 
 def _default_save_run(command: list[str], overlay: dict | None):
@@ -125,6 +149,7 @@ def main(
     inspect_worktree: WorktreeInspector | None = None,
     resolve=None,
     save_run=None,
+    read_merge_hold: Callable[[str], str | None] | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -267,6 +292,7 @@ def main(
                 return 1
             return merge(command)
 
+        hold_reader = _read_merge_hold if read_merge_hold is None else read_merge_hold
         try:
             result = run_live_delivery(
                 repo=args.repo,
@@ -285,9 +311,20 @@ def main(
                 ),
                 save_config=save_config,
                 save_run=save_run or _default_save_run,
+                read_merge_hold=hold_reader,
             )
         except (OSError, QuotaExhausted, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
+        _print_run(result)
+        if (proposal := result.get("proposal")) and proposal.get("file_issue"):
+            try:
+                issue_number = file_proposal_issue(proposal, github or GhClient())
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"watcher: could not file issue: {exc}", file=sys.stderr)
+            else:
+                if issue_number is not None:
+                    print(f"watcher issue {TOOLS_REPO}#{issue_number}")
+        return 0
     _print_run(result)
     return 0

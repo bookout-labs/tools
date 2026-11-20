@@ -7,7 +7,7 @@ import subprocess
 from typing import Callable
 
 from foreman.config import ConfigError, EFFORTS, ROUTES, family
-from foreman.dispatch import InvalidOutput, QuotaExhausted
+from foreman.dispatch import CliMissing, InvalidOutput, QuotaExhausted
 
 CommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
 
@@ -43,15 +43,17 @@ def model_and_effort(model: str, requested: object = None) -> tuple[str, str | N
 
 
 def _requested_model_ran(slug: str, usage: object) -> bool:
-    """Fail over only when a usage report shows the requested model did not run.
+    """Stop unless the usage report confirms the requested model ran.
 
-    No report is not quota. A CLI suffix such as grok-4.7-build is still the
+    No report is accepted. A CLI suffix such as grok-4.7-build is still the
     requested model. A route alias matches the concrete slug that contains it.
     An extra model from the same provider stays only when the requested model
     is in the report. Another provider does not.
     """
-    if not isinstance(usage, dict) or not usage:
+    if usage is None or usage == {}:
         return True
+    if not isinstance(usage, dict):
+        return False
     try:
         expected = family(slug)
     except ConfigError:
@@ -72,11 +74,15 @@ def _requested_model_ran(slug: str, usage: object) -> bool:
 
 
 QUOTA = re.compile(
-    r"quota|rate.limit|usage limit|hit your limit|resource_exhausted|too many requests|\b429\b|"
-    r"model[^\n]*(?:not (?:available|found|supported)|does not exist|unsupported)|"
-    r"(?:unknown|unsupported|invalid) model",
+    r"quota|rate.limit|usage limit|hit your limit|resource_exhausted|too many requests|\b429\b",
     re.IGNORECASE,
 )
+
+
+def _detail(text: object, limit: int = 200) -> str:
+    if text is None:
+        return ""
+    return " ".join(str(text).split())[:limit]
 
 
 def run_worker_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -84,12 +90,17 @@ def run_worker_command(args: list[str], cwd: Path) -> subprocess.CompletedProces
 
 
 def json_object(text: str) -> dict:
+    snippet = _detail(text)
     try:
         result = json.loads(text)
     except (TypeError, ValueError) as exc:
-        raise InvalidOutput("worker did not return a JSON object") from exc
+        raise InvalidOutput(
+            f"worker did not return a JSON object: {snippet}" if snippet else "worker did not return a JSON object"
+        ) from exc
     if not isinstance(result, dict):
-        raise InvalidOutput("worker did not return a JSON object")
+        raise InvalidOutput(
+            f"worker did not return a JSON object: {snippet}" if snippet else "worker did not return a JSON object"
+        )
     return result
 
 
@@ -140,28 +151,46 @@ class CliWorker:
         try:
             process = self.run(args, self.cwd)
         except FileNotFoundError as exc:
-            raise QuotaExhausted(model) from exc
+            raise CliMissing(model, f"{args[0]} CLI is not installed") from exc
         if process.returncode != 0:
-            if QUOTA.search(f"{process.stderr}\n{process.stdout}"):
-                raise QuotaExhausted(model)
-            raise InvalidOutput(f"{provider} worker exited {process.returncode}")
+            combined = f"{process.stderr}\n{process.stdout}"
+            if QUOTA.search(combined):
+                raise QuotaExhausted(model, _detail(combined))
+            detail = _detail(combined)
+            raise InvalidOutput(
+                f"{provider} worker exited {process.returncode}: {detail}" if detail
+                else f"{provider} worker exited {process.returncode}"
+            )
 
         if provider == "gpt":
+            reroute = re.search(r"^model rerouted:[ \t]*(.+)$", process.stderr, re.MULTILINE)
+            if reroute:
+                raise InvalidOutput(f"codex rerouted {slug}: {reroute.group(1).strip()}")
             reported = re.findall(r"^model:[ \t]*(\S+)[ \t]*$", process.stderr, re.MULTILINE)
-            if reported != [slug] or re.search(r"^model rerouted:", process.stderr, re.MULTILINE):
-                raise QuotaExhausted(model)
+            if reported != [slug]:
+                got = ", ".join(reported) if reported else "none"
+                raise InvalidOutput(f"codex reported model {got}, expected {slug}")
             body = process.stdout
         else:
             envelope = json_object(process.stdout)
             if envelope.get("is_error") or envelope.get("type") == "error":
                 if QUOTA.search(process.stdout):
-                    raise QuotaExhausted(model)
-                raise InvalidOutput(f"{provider} worker reported an error")
-            if not _requested_model_ran(slug, envelope.get("modelUsage")):
-                raise QuotaExhausted(model)
+                    raise QuotaExhausted(model, _detail(process.stdout))
+                detail = _detail(
+                    envelope.get("result") or envelope.get("error") or envelope.get("message") or process.stdout
+                )
+                raise InvalidOutput(
+                    f"{provider} worker reported an error: {detail}" if detail
+                    else f"{provider} worker reported an error"
+                )
+            usage = envelope.get("modelUsage")
+            if not _requested_model_ran(slug, usage):
+                reported = ", ".join(str(k) for k in usage) if isinstance(usage, dict) else _detail(usage)
+                raise InvalidOutput(f"{provider} usage reported {reported}, expected {slug}")
             body = envelope.get("result" if provider == "claude" else "text")
 
         result = json_object(body)
         if not set(required) <= result.keys() <= set(required + optional):
-            raise InvalidOutput(f"{node} response keys do not match the stage")
+            got = ", ".join(sorted(str(k) for k in result.keys())) or "none"
+            raise InvalidOutput(f"{node} response keys do not match the stage: got {got}")
         return result

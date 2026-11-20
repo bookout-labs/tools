@@ -47,6 +47,7 @@ def run_live_delivery(
     resolve: Callable[[str, str], str] | None = None,
     save_config: SaveConfig | None = None,
     save_run: Callable | None = None,
+    read_merge_hold: Callable[[str], str | None] | None = None,
 ) -> dict:
     def run_check(command: str) -> int:
         return subprocess.run(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL).returncode
@@ -59,7 +60,7 @@ def run_live_delivery(
         graph = compile_delivery(
             dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
             inspect_worktree=lambda: inspect(cwd), resolve=resolve,
-            save_config=save_config, save_run=save_run,
+            save_config=save_config, save_run=save_run, read_merge_hold=read_merge_hold,
         )
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")
@@ -83,6 +84,7 @@ def run_live_delivery(
                 "issue_kind": "slice" if "slice" in loaded["labels"] else "parent",
                 "labels": list(loaded["labels"]),
                 "model_choices": [],
+                "attempts": [],
             }
             if initial["issue_kind"] == "slice":
                 try:

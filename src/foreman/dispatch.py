@@ -1,12 +1,27 @@
 """Try the configured models in order. Quota exhaustion is not a rule change."""
 
-from typing import Protocol
+from typing import Protocol, TypedDict
+
+
+class Attempt(TypedDict):
+    node: str
+    model: str | None
+    status: str
+    detail: str
 
 
 class QuotaExhausted(Exception):
-    def __init__(self, model: str | None):
+    def __init__(self, model: str | None, detail: str = ""):
         self.model = model
-        super().__init__(model or "no model")
+        self.detail = detail or (model or "no model")
+        super().__init__(self.detail)
+
+
+class CliMissing(Exception):
+    def __init__(self, model: str | None, detail: str = ""):
+        self.model = model
+        self.detail = detail or (f"{model} CLI is not installed" if model else "CLI is not installed")
+        super().__init__(self.detail)
 
 
 class InvalidOutput(ValueError):
@@ -22,18 +37,47 @@ class FailoverDispatcher:
     def __init__(self, handler: Handler):
         self.handler = handler
 
-    def run(self, node: str, models: list[str], state: dict, instruction: str) -> dict:
+    def run(
+        self,
+        node: str,
+        models: list[str],
+        state: dict,
+        instruction: str,
+        *,
+        attempts: list[Attempt] | None = None,
+    ) -> dict:
         candidates: list[str | None] = list(models) or [None]
-        last: QuotaExhausted | None = None
+        last_quota: QuotaExhausted | None = None
+        last_missing: CliMissing | None = None
         for model in candidates:
             try:
                 update = self.handler(node, model, state, instruction)
             except QuotaExhausted as exc:
-                last = exc
+                if attempts is not None:
+                    attempts.append({"node": node, "model": model, "status": "quota", "detail": str(exc)})
+                last_quota = exc
                 continue
+            except CliMissing as exc:
+                if attempts is not None:
+                    attempts.append({"node": node, "model": model, "status": "cli_missing", "detail": str(exc)})
+                last_missing = exc
+                continue
+            except InvalidOutput as exc:
+                if attempts is not None:
+                    attempts.append({"node": node, "model": model, "status": "stopped", "detail": str(exc)})
+                raise
             if not isinstance(update, dict):
-                raise InvalidOutput(f"{node} returned {type(update).__name__}")
+                detail = f"{node} returned {type(update).__name__}"
+                if attempts is not None:
+                    attempts.append({"node": node, "model": model, "status": "stopped", "detail": detail})
+                raise InvalidOutput(detail)
+            if attempts is not None:
+                attempts.append({"node": node, "model": model, "status": "ran", "detail": ""})
             result = dict(update)
             result["model"] = model
             return result
-        raise last or QuotaExhausted(None)
+        if last_quota is not None:
+            raise last_quota
+        if last_missing is not None:
+            raise last_missing
+        raise QuotaExhausted(None)

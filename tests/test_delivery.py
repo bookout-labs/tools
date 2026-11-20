@@ -6,9 +6,9 @@ import unittest
 from dataclasses import replace
 
 from foreman.cli import _print_run
-from foreman.config import family, NodeConfig, load_config
+from foreman.config import ConfigError, family, NodeConfig, load_config
 from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
-from foreman.dispatch import FailoverDispatcher, QuotaExhausted
+from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from foreman.pointer import load_pointer
 from foreman.resolve import Cmd
@@ -38,7 +38,7 @@ PUBLISHED = "b" * 40
 ROOT = Path(__file__).parents[1]
 
 
-def walk(handler, check="npm run check", issue_kind="slice", config=None):
+def walk(handler, check="npm run check", issue_kind="slice", config=None, read_merge_hold=None):
     return run_delivery(
         FailoverDispatcher(handler),
         repo="DoctorCRE/doctorcre-engine",
@@ -46,6 +46,7 @@ def walk(handler, check="npm run check", issue_kind="slice", config=None):
         check=check,
         issue_kind=issue_kind,
         config=config,
+        read_merge_hold=read_merge_hold,
     )
 
 
@@ -82,13 +83,27 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
 
-    def test_a_parent_routes_to_spec_even_when_triage_says_implement(self):
-        for triage in ("implement", "spec"):
-            with self.subTest(triage=triage):
-                result = walk(ScriptHandler(triage=triage, slices=SLICES), issue_kind="parent")
-                self.assertEqual(result["path"], ["triage", "spec", "done"])
-                self.assertEqual(result["stop"], "sliced")
-                self.assertEqual(result["slices"], SLICES)
+    def test_small_parent_that_triages_implement_skips_spec(self):
+        result = walk(ScriptHandler(triage="implement", head_sha=HEAD_SHA), issue_kind="parent")
+        self.assertEqual(
+            result["path"],
+            ["triage", "implement", "verify", "review", "merge", "done"],
+        )
+        self.assertEqual(result["stop"], "verified")
+        self.assertNotIn("slices", result)
+        self.assertTrue(result["merge_armed"])
+        self.assertIsNone(result["proposal"])
+
+    def test_parent_that_triages_spec_slices_and_stops(self):
+        result = walk(ScriptHandler(triage="spec", slices=SLICES), issue_kind="parent")
+        self.assertEqual(result["path"], ["triage", "spec", "done"])
+        self.assertEqual(result["stop"], "sliced")
+        self.assertEqual(result["slices"], SLICES)
+
+    def test_parent_that_triages_question_still_routes_to_spec(self):
+        result = walk(ScriptHandler(triage="question", spec_gate="ready", slices=SLICES), issue_kind="parent")
+        self.assertEqual(result["path"], ["triage", "spec", "done"])
+        self.assertEqual(result["stop"], "sliced")
 
     def test_a_parent_stops_on_malformed_slices(self):
         first, second = SLICES
@@ -107,7 +122,7 @@ class DeliveryTest(unittest.TestCase):
         }
         for case, slices in cases.items():
             with self.subTest(case=case):
-                result = walk(ScriptHandler(slices=slices), issue_kind="parent")
+                result = walk(ScriptHandler(triage="spec", slices=slices), issue_kind="parent")
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "invalid_output")
                 self.assertTrue(result["halt_detail"])
@@ -310,12 +325,170 @@ class DeliveryTest(unittest.TestCase):
             family(result["models_used"]["review"]),
         )
 
-    def test_every_model_exhausted_raises(self):
+    def test_every_model_exhausted_halts_so_watcher_sees_it(self):
         def exhaust(node, model, state, instruction):
-            raise QuotaExhausted(model)
+            raise QuotaExhausted(model, f"{model} hit 429")
 
-        with self.assertRaises(QuotaExhausted):
-            walk(exhaust)
+        result = walk(exhaust)
+        self.assertEqual(result["path"], ["triage", "done"])
+        self.assertEqual(result["stop"], "quota_exhausted")
+        self.assertEqual([item["status"] for item in result["attempts"]], ["quota", "quota", "quota"])
+        self.assertEqual(result["proposal"]["kind"], "quota")
+        self.assertFalse(result["proposal"]["file_issue"])
+        self.assertEqual(result["proposal"]["target"], "")
+
+    def test_attempts_are_recorded_on_clean_run(self):
+        result = walk(ScriptHandler(head_sha=HEAD_SHA))
+        self.assertEqual(result["stop"], "verified")
+        self.assertIsNone(result["proposal"])
+        self.assertEqual(
+            [(item["node"], item["status"]) for item in result["attempts"]],
+            [("triage", "ran"), ("implement", "ran"), ("verify", "ran"), ("review", "ran")],
+        )
+
+    def test_quota_failover_records_attempts_and_quota_proposal(self):
+        handler = ScriptHandler(head_sha=HEAD_SHA)
+
+        def exhaust_claude(node, model, state, instruction):
+            if model == "opus":
+                raise QuotaExhausted(model, "429 quota")
+            return handler(node, model, state, instruction)
+
+        result = walk(exhaust_claude)
+        self.assertEqual(result["stop"], "verified")
+        self.assertTrue(any(a["status"] == "quota" for a in result["attempts"]))
+        self.assertEqual(result["proposal"]["kind"], "quota")
+        self.assertFalse(result["proposal"]["file_issue"])
+        self.assertIn("No graph change.", result["proposal"]["summary"])
+
+    def test_cli_missing_failover_and_all_missing_halt(self):
+        handler = ScriptHandler(head_sha=HEAD_SHA)
+
+        def missing_claude(node, model, state, instruction):
+            if model == "opus":
+                raise CliMissing(model, "claude CLI is not installed")
+            return handler(node, model, state, instruction)
+
+        recovered = walk(missing_claude)
+        self.assertEqual(recovered["stop"], "verified")
+        self.assertTrue(any(a["status"] == "cli_missing" for a in recovered["attempts"]))
+        self.assertEqual(recovered["proposal"]["kind"], "graph_fix")
+        self.assertEqual(recovered["proposal"]["target"], "src/foreman/worker.py")
+        self.assertTrue(recovered["proposal"]["file_issue"])
+
+        def all_missing(node, model, state, instruction):
+            raise CliMissing(model, f"{model} CLI is not installed")
+
+        halted = walk(all_missing)
+        self.assertEqual(halted["path"], ["triage", "done"])
+        self.assertEqual(halted["stop"], "cli_missing")
+        self.assertEqual([a["status"] for a in halted["attempts"]], ["cli_missing", "cli_missing", "cli_missing"])
+        self.assertEqual(halted["proposal"]["kind"], "graph_fix")
+        self.assertEqual(halted["proposal"]["target"], "src/foreman/worker.py")
+
+    def test_missing_cli_during_route_resolution_records_cli_missing_and_falls_back(self):
+        def resolve(route, effort):
+            if route == "opus":
+                raise ConfigError("claude CLI is not installed")
+            return route
+
+        result = run_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
+            repo="DoctorCRE/doctorcre-engine",
+            request="Add a field",
+            check="npm run check",
+            resolve=resolve,
+        )
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["models_used"]["triage"], "grok")
+        self.assertEqual(result["models_used"]["review"], "grok")
+        self.assertTrue(any(a["status"] == "cli_missing" and a["model"] == "opus" for a in result["attempts"]))
+        self.assertEqual(result["proposal"]["kind"], "graph_fix")
+        self.assertEqual(result["proposal"]["target"], "src/foreman/worker.py")
+        triage_choice = next(c for c in result["model_choices"] if c["node"] == "triage")
+        self.assertEqual(triage_choice["reason"], "cli_missing fallback")
+
+    def test_invalid_output_stops_immediately_without_failover(self):
+        seen = []
+        handler = ScriptHandler()
+
+        def bad_triage(node, model, state, instruction):
+            seen.append((node, model))
+            if node == "triage":
+                raise InvalidOutput("claude usage reported claude-haiku-5-5, expected opus")
+            return handler(node, model, state, instruction)
+
+        result = walk(bad_triage)
+        self.assertEqual(seen, [("triage", "opus")])
+        self.assertEqual(result["path"], ["triage", "done"])
+        self.assertEqual(result["stop"], "invalid_output")
+        self.assertEqual(
+            result["attempts"],
+            [{"node": "triage", "model": "opus", "status": "stopped", "detail": result["halt_detail"]}],
+        )
+        self.assertEqual(result["proposal"]["target"], "src/foreman/worker.py")
+        self.assertTrue(result["proposal"]["file_issue"])
+
+    def test_merge_hold_stops_before_arming_and_empty_hold_arms(self):
+        gh_calls = []
+
+        def run_gh(args):
+            gh_calls.append(args)
+            return 0
+
+        graph = compile_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
+            run_gh=run_gh,
+            read_merge_hold=lambda repo: "production switch",
+        )
+        held = graph.invoke({
+            "repo": "DoctorCRE/doctorcre-engine",
+            "request": "Add a field",
+            "check": "npm run check",
+            "issue_kind": "slice",
+            "review_rounds": 0,
+            "models_used": {},
+            "model_choices": [],
+            "attempts": [],
+            "path": [],
+        })
+        self.assertEqual(gh_calls, [])
+        self.assertFalse(held["merge_armed"])
+        self.assertEqual(held["stop"], "merge_held")
+        self.assertEqual(held["halt_detail"], "production switch")
+        self.assertEqual(held["merge_args"], ["gh", "pr", "merge", "--auto", "--match-head-commit", HEAD_SHA])
+        self.assertIsNone(held["proposal"])
+
+        for empty in ("", "   ", None):
+            with self.subTest(hold=empty):
+                gh_calls.clear()
+                unheld_graph = compile_delivery(
+                    FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
+                    run_gh=run_gh,
+                    read_merge_hold=lambda repo, value=empty: value,
+                )
+                armed = unheld_graph.invoke({
+                    "repo": "DoctorCRE/doctorcre-engine",
+                    "request": "Add a field",
+                    "check": "npm run check",
+                    "issue_kind": "slice",
+                    "review_rounds": 0,
+                    "models_used": {},
+                    "model_choices": [],
+                    "attempts": [],
+                    "path": [],
+                })
+                self.assertEqual(len(gh_calls), 1)
+                self.assertTrue(armed["merge_armed"])
+                self.assertEqual(armed["stop"], "verified")
+
+    def test_stage_prompts_cover_small_parent_and_postgres_properties(self):
+        triage_prompt = stage_text("triage")
+        self.assertIn("even on a parent issue", triage_prompt)
+        self.assertNotIn("Parent issues and changes that need multiple pull requests go to spec even when", triage_prompt)
+        spec_prompt = stage_text("spec")
+        self.assertIn("named PostgreSQL constraints only", spec_prompt)
+        self.assertIn("A response check stays in `acceptance`", spec_prompt)
 
     def test_node_instruction_comes_from_the_stage_file(self):
         handler = ScriptHandler(triage="spec")

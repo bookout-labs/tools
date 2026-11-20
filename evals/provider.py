@@ -54,9 +54,11 @@ def call_api(prompt, options, context):
     elif case == "spec-gate":
         output = _stop(ScriptHandler(triage="spec", spec_gate="needs_human"))
     elif case == "parent":
+        output = _stop(ScriptHandler(triage="implement"), issue_kind="parent")
+    elif case == "parent-spec":
         output = _stop(
             ScriptHandler(
-                triage="implement",
+                triage="spec",
                 spec_gate="ready",
                 slices=[
                     {

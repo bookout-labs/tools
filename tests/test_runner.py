@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from foreman.cli import main
-from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
 from foreman.runner import run_live_delivery
 from foreman.worker import CliWorker
@@ -58,6 +58,7 @@ class FakeGitHub:
         self.labels = labels if labels is not None else ["slice"]
         self.body = slice_body(EMPTY_SLICE) if "slice" in self.labels else "Issue body"
         self.created = []
+        self.tools_issues = []
         self.merged = set()
         self.label_calls = []
         self.issue_labels = {}
@@ -69,10 +70,18 @@ class FakeGitHub:
         return {"title": "Issue title", "body": self.body, "labels": self.labels}
 
     def create_issue(self, repo, title, body, labels):
+        if repo == "bookout-labs/tools":
+            self.tools_issues.append((title, body, labels))
+            return 200 + len(self.tools_issues)
         self.created.append((title, body, labels))
         number = 100 + len(self.created)
         self.issue_labels[number] = list(labels)
         return number
+
+    def open_issue_titles(self, repo):
+        if repo == "bookout-labs/tools":
+            return [title for title, _, _ in self.tools_issues]
+        return [title for title, _, _ in self.created]
 
     def is_merged(self, repo, number):
         return number in self.merged
@@ -125,30 +134,50 @@ class CliWorkerTest(unittest.TestCase):
                 worker = CliWorker(Path("."), lambda args, cwd: worker_reply(args, reply))
                 worker("triage", "gpt-6.1-sol-high", {}, "")
 
-    def test_model_mismatch_and_quota_trigger_failover(self):
+    def test_quota_triggers_failover_and_records_attempts(self):
         calls = []
+        attempts = []
 
         def run(args, cwd):
             calls.append(args[0])
-            if args[0] == "codex":
-                return worker_reply(args, {"triage": "implement"}, "gpt-other")
             if args[0] == "claude":
                 return subprocess.CompletedProcess(args, 1, "", "API error 429: quota exceeded")
             return worker_reply(args, {"triage": "implement"})
 
         dispatcher = FailoverDispatcher(CliWorker(Path("."), run))
-        result = dispatcher.run("triage", ["gpt-first", "claude-second", "grok-third"], {}, "")
-        self.assertEqual(calls, ["codex", "claude", "grok"])
-        self.assertEqual(result, {"triage": "implement", "model": "grok-third"})
+        result = dispatcher.run("triage", ["claude-first", "grok-second"], {}, "", attempts=attempts)
+        self.assertEqual(calls, ["claude", "grok"])
+        self.assertEqual(result, {"triage": "implement", "model": "grok-second"})
+        self.assertEqual([a["status"] for a in attempts], ["quota", "ran"])
 
-    def test_codex_reroute_is_rejected_even_with_the_requested_banner(self):
+    def test_codex_model_mismatch_stops_as_invalid_output_without_failover(self):
+        calls = []
+        attempts = []
+
+        def run(args, cwd):
+            calls.append(args[0])
+            return worker_reply(args, {"triage": "implement"}, "gpt-other")
+
+        dispatcher = FailoverDispatcher(CliWorker(Path("."), run))
+        with self.assertRaises(InvalidOutput) as ctx:
+            dispatcher.run("triage", ["gpt-first", "claude-second"], {}, "", attempts=attempts)
+        self.assertEqual(calls, ["codex"])
+        self.assertIn("gpt-other", str(ctx.exception))
+        self.assertIn("gpt-first", str(ctx.exception))
+        self.assertEqual(
+            attempts,
+            [{"node": "triage", "model": "gpt-first", "status": "stopped", "detail": str(ctx.exception)}],
+        )
+
+    def test_codex_reroute_stops_as_invalid_output_even_with_the_requested_banner(self):
         def run(args, cwd):
             return subprocess.CompletedProcess(
                 args, 0, '{"triage":"implement"}', "model: gpt-first\nmodel rerouted: gpt-first -> gpt-other\n"
             )
 
-        with self.assertRaises(QuotaExhausted):
+        with self.assertRaises(InvalidOutput) as ctx:
             CliWorker(Path("."), run)("triage", "gpt-first", {}, "")
+        self.assertIn("gpt-first -> gpt-other", str(ctx.exception))
 
     def test_same_provider_tool_router_still_counts_as_the_requested_model(self):
         def run(args, cwd):
@@ -173,15 +202,17 @@ class CliWorkerTest(unittest.TestCase):
         result = CliWorker(Path("."), run)("triage", "opus", {"effort": "high"}, "")
         self.assertEqual(result, {"triage": "implement"})
 
-    def test_a_tool_router_without_the_requested_model_fails_over(self):
+    def test_a_tool_router_without_the_requested_model_stops_as_invalid_output(self):
         def run(args, cwd):
             return subprocess.CompletedProcess(args, 0, json.dumps({
                 "result": json.dumps({"triage": "implement"}),
                 "modelUsage": {"claude-haiku-5-5": {}},
             }), "")
 
-        with self.assertRaises(QuotaExhausted):
+        with self.assertRaises(InvalidOutput) as ctx:
             CliWorker(Path("."), run)("triage", "claude-opus-5-5-high", {}, "")
+        self.assertIn("claude-haiku-5-5", str(ctx.exception))
+        self.assertIn("claude-opus-5-5", str(ctx.exception))
 
     def test_grok_build_id_is_the_requested_model(self):
         def run(args, cwd):
@@ -195,13 +226,13 @@ class CliWorkerTest(unittest.TestCase):
         result = CliWorker(Path("."), run)("triage", "grok-4.7-high", {}, "")
         self.assertEqual(result, {"triage": "implement"})
 
-    def test_another_provider_or_a_different_id_fails_over(self):
+    def test_another_provider_or_a_different_id_stops_as_invalid_output(self):
         cases = (
-            ("grok-4.7-high", {"grok-4.70": {}}),
-            ("claude-opus-5-5-high", {"claude-opus-5-5": {}, "gpt-6.1-sol": {}}),
-            ("claude-opus-5-5-high", {"gpt-6.1-sol": {}}),
+            ("grok-4.7-high", {"grok-4.70": {}}, "grok-4.70"),
+            ("claude-opus-5-5-high", {"claude-opus-5-5": {}, "gpt-6.1-sol": {}}, "gpt-6.1-sol"),
+            ("claude-opus-5-5-high", {"gpt-6.1-sol": {}}, "gpt-6.1-sol"),
         )
-        for model, usage in cases:
+        for model, usage, expected_name in cases:
             with self.subTest(model=model, usage=sorted(usage)):
                 def run(args, cwd, usage=usage):
                     field = "result" if args[0] == "claude" else "text"
@@ -210,8 +241,34 @@ class CliWorkerTest(unittest.TestCase):
                         "modelUsage": usage,
                     }), "")
 
-                with self.assertRaises(QuotaExhausted):
+                with self.assertRaises(InvalidOutput) as ctx:
                     CliWorker(Path("."), run)("triage", model, {}, "")
+                self.assertIn(expected_name, str(ctx.exception))
+
+    def test_unrecognized_error_exit_stops_as_invalid_output_and_names_response(self):
+        for message in ("unknown model: claude-bad", "model claude-bad not available"):
+            with self.subTest(message=message):
+                def run(args, cwd, message=message):
+                    return subprocess.CompletedProcess(args, 1, "", message)
+
+                with self.assertRaises(InvalidOutput) as ctx:
+                    CliWorker(Path("."), run)("triage", "claude-opus-5-5-high", {}, "")
+                self.assertIn(message, str(ctx.exception))
+
+    def test_missing_cli_raises_cli_missing_and_tries_next_installed_cli(self):
+        attempts = []
+
+        def run(args, cwd):
+            if args[0] == "codex":
+                raise FileNotFoundError("codex")
+            return worker_reply(args, {"triage": "implement"})
+
+        with self.assertRaises(CliMissing):
+            CliWorker(Path("."), run)("triage", "gpt-6.1-sol-high", {}, "")
+        dispatcher = FailoverDispatcher(CliWorker(Path("."), run))
+        result = dispatcher.run("triage", ["gpt-6.1-sol-high", "claude-opus-5-5-high"], {}, "", attempts=attempts)
+        self.assertEqual(result, {"triage": "implement", "model": "claude-opus-5-5-high"})
+        self.assertEqual([a["status"] for a in attempts], ["cli_missing", "ran"])
 
     def test_a_successful_body_without_a_usage_report_is_not_quota(self):
         def run(args, cwd):
@@ -483,7 +540,7 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertTrue(all(call.kwargs["shell"] is False for call in run.call_args_list))
                 self.assertTrue(all(call.kwargs["cwd"] == self.cwd for call in run.call_args_list))
 
-    def run_main_merge(self, checkpoint, find_pr, run_gh):
+    def run_main_merge(self, checkpoint, find_pr, run_gh, *, read_merge_hold=lambda repo: None):
         replies = iter([{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}, APPROVE])
 
         def worker(args, cwd):
@@ -494,6 +551,7 @@ class LiveRunnerTest(unittest.TestCase):
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
                 worker_runner=worker, checkpoint=checkpoint, github=self.github, run_gh=run_gh, find_pr=find_pr,
                 inspect_worktree=clean_worktree, resolve=lambda route, _effort: route,
+                read_merge_hold=read_merge_hold,
             )
         self.assertEqual(code, 0)
         self.assertIn(" ".join(ARM_ARGS), stdout.getvalue())
@@ -568,6 +626,7 @@ def run(args, cwd):
 sys.exit(main(
     sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]), github=FakeGitHub(),
     run_gh=lambda args: 0, find_pr=lambda repo: OPEN_PR, inspect_worktree=clean_worktree,
+    read_merge_hold=lambda repo: None,
 ))
 """
         def invoke(*flags):
@@ -590,3 +649,96 @@ sys.exit(main(
         self.assertIn("done verified", completed)
         self.assertEqual(invoke(), completed)
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
+
+    def test_default_merge_hold_reader_handles_gh_variable_states(self):
+        from foreman.cli import _read_merge_hold
+
+        args = ["gh", "variable", "get", "FOREMAN_MERGE_HOLD", "--repo", "Example/Engine"]
+        for exit_code, stdout, stderr, expected in (
+            (0, "production switch\n", "", "production switch"),
+            (0, "   \n", "", None),
+            (1, "", "variable FOREMAN_MERGE_HOLD was not found\n", None),
+            (1, "", "HTTP 404: Not Found\n", None),
+            (1, "", "auth required\n", "could not read FOREMAN_MERGE_HOLD: auth required"),
+        ):
+            with self.subTest(exit_code=exit_code, stdout=stdout, stderr=stderr), patch(
+                "foreman.cli.subprocess.run", return_value=subprocess.CompletedProcess(args, exit_code, stdout, stderr),
+            ) as run:
+                self.assertEqual(_read_merge_hold("Example/Engine"), expected)
+                run.assert_called_once_with(
+                    args, shell=False, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                )
+        with patch("foreman.cli.subprocess.run", side_effect=OSError("gh missing")):
+            self.assertEqual(_read_merge_hold("Example/Engine"), "could not read FOREMAN_MERGE_HOLD: gh missing")
+
+    def test_main_holds_merge_without_arming_when_variable_is_set(self):
+        def unexpected_merge(args):
+            self.fail(f"unexpected merge command {args}")
+
+        output = self.run_main_merge(
+            self.checkpoint, lambda repo: OPEN_PR, unexpected_merge,
+            read_merge_hold=lambda repo: "production switch",
+        )
+        self.assertIn("merge held", output)
+        self.assertIn("done merge_held\nproduction switch", output)
+        self.assertEqual(self.github.tools_issues, [])
+
+    def test_live_cli_watcher_clean_run_and_quota_failover_file_nothing(self):
+        clean_output = self.run_main_merge(self.checkpoint, lambda repo: OPEN_PR, lambda args: 0)
+        self.assertIn("done verified", clean_output)
+        self.assertEqual(self.github.tools_issues, [])
+
+        with TemporaryDirectory(dir=self.cwd) as directory:
+            replies = iter([
+                {"triage": "implement"},
+                {"implementation": "built", "head_sha": HEAD},
+                APPROVE,
+            ])
+
+            def quota_once(args, cwd):
+                if args[0] == "claude" and not getattr(quota_once, "tripped", False):
+                    quota_once.tripped = True
+                    return subprocess.CompletedProcess(args, 1, "", "429 quota exceeded")
+                return worker_reply(args, next(replies))
+
+            with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
+                code = main(
+                    ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                    worker_runner=quota_once, checkpoint=Path(directory) / "run.sqlite3",
+                    github=self.github, run_gh=lambda args: 0, find_pr=lambda repo: OPEN_PR,
+                    inspect_worktree=clean_worktree, resolve=lambda route, _effort: route,
+                    read_merge_hold=lambda repo: None,
+                )
+            self.assertEqual(code, 0)
+            self.assertIn("No graph change.", stdout.getvalue())
+            self.assertEqual(self.github.tools_issues, [])
+
+    def test_live_cli_watcher_prints_and_deduplicates_graph_fix_issues(self):
+        def run_failure(checkpoint_path):
+            def mismatch_worker(args, cwd):
+                return subprocess.CompletedProcess(args, 0, json.dumps({
+                    "result": json.dumps({"triage": "implement"}),
+                    "modelUsage": {"claude-haiku-5-5": {}},
+                }), "")
+
+            with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
+                code = main(
+                    ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                    worker_runner=mismatch_worker, checkpoint=checkpoint_path,
+                    github=self.github, inspect_worktree=clean_worktree,
+                    resolve=lambda route, _effort: route, read_merge_hold=lambda repo: None,
+                )
+            self.assertEqual(code, 0)
+            return stdout.getvalue()
+
+        with TemporaryDirectory(dir=self.cwd) as dir1, TemporaryDirectory(dir=self.cwd) as dir2:
+            first = run_failure(Path(dir1) / "run.sqlite3")
+            self.assertIn("done invalid_output", first)
+            self.assertIn("File to change: src/foreman/worker.py", first)
+            self.assertIn("A person opens the pull request.", first)
+            self.assertIn("watcher issue bookout-labs/tools#201", first)
+            self.assertEqual(len(self.github.tools_issues), 1)
+            second = run_failure(Path(dir2) / "run.sqlite3")
+            self.assertIn("A person opens the pull request.", second)
+            self.assertNotIn("watcher issue", second)
+            self.assertEqual(len(self.github.tools_issues), 1)

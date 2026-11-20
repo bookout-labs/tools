@@ -21,9 +21,15 @@ tests:
     assert:
       - type: equals
         value: verified
-  - description: A parent issue reaches spec and stops sliced even when triage says implement
+  - description: A small parent issue that triages implement skips spec and finishes verified
     vars:
       case: parent
+    assert:
+      - type: equals
+        value: verified
+  - description: A parent issue that triages spec reaches spec and stops sliced
+    vars:
+      case: parent-spec
     assert:
       - type: equals
         value: sliced
