@@ -137,6 +137,52 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "needs_human")
         self.assertNotIn("implement", result["path"])
 
+    def test_a_sectioned_spec_is_stored_as_one_document(self):
+        def handler(node, model, state, instruction):
+            if node == "triage":
+                return {"triage": "spec"}
+            self.assertIn("one document", instruction)
+            return {
+                "spec": {
+                    "behavior": "Keep GET /health public.",
+                    "current_state": "src/worker.ts already returns version.",
+                },
+                "spec_gate": "needs_human",
+                "human_question": "Which clock?",
+            }
+
+        result = walk(handler, issue_kind="parent")
+        self.assertEqual(result["path"], ["triage", "spec", "done"])
+        self.assertEqual(result["stop"], "needs_human")
+        self.assertEqual(
+            result["spec"],
+            "behavior\nKeep GET /health public.\n\ncurrent_state\nsrc/worker.ts already returns version.",
+        )
+        self.assertEqual(result["human_question"], "Which clock?")
+        self.assertEqual(result["models_used"]["spec"], "opus")
+        self.assertNotIn("implement", result["path"])
+
+    def test_a_spec_that_is_not_a_document_records_the_model(self):
+        shapes = (
+            ["Keep GET /health public."],
+            {"behavior": {"text": "Keep GET /health public."}},
+            {"behavior": "  "},
+            {},
+            "  ",
+        )
+        for spec in shapes:
+            with self.subTest(spec=spec):
+                def handler(node, model, state, instruction, spec=spec):
+                    if node == "triage":
+                        return {"triage": "spec"}
+                    return {"spec": spec, "spec_gate": "needs_human", "human_question": "Which clock?"}
+
+                result = walk(handler, issue_kind="parent")
+                self.assertEqual(result["stop"], "invalid_output")
+                self.assertEqual(result["halt_detail"], "spec did not return text")
+                self.assertEqual(result["models_used"]["triage"], "opus")
+                self.assertEqual(result["models_used"]["spec"], "opus")
+
     def test_question_is_answered_without_a_change(self):
         result = walk(ScriptHandler(triage="question"))
         self.assertEqual(result["path"], ["triage", "research", "done"])

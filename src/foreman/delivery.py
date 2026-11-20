@@ -103,6 +103,24 @@ def required_text(value: object, detail: str) -> str:
     return value
 
 
+def spec_document(value: object) -> str:
+    """The graph stores one spec document.
+
+    A string is that document. An object of strings is the same document split
+    into sections. Lists, nested values, and blank sections are not a document.
+    """
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict) or not value:
+        raise InvalidOutput("spec did not return text")
+    parts: list[str] = []
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str) or not item.strip():
+            raise InvalidOutput("spec did not return text")
+        parts.append(f"{key}\n{item.strip()}")
+    return "\n\n".join(parts)
+
+
 def choice(value: object, options: set[str], field: str) -> str:
     if not isinstance(value, str) or value not in options:
         raise InvalidOutput(f"{field} must be one of {', '.join(sorted(options))}")
@@ -175,7 +193,7 @@ def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
         update["triage"] = choice(raw.get("triage"), TRIAGE_OUTCOMES, "triage")
     elif name == "spec":
         gate = choice(raw.get("spec_gate"), SPEC_GATES, "spec gate")
-        update["spec"] = required_text(raw.get("spec"), "spec did not return text")
+        update["spec"] = required_text(spec_document(raw.get("spec")), "spec did not return text")
         update["spec_gate"] = gate
         if state.get("issue_kind") == "parent" and gate == "ready":
             update["slices"] = clean_slices(raw.get("slices"))
@@ -314,6 +332,7 @@ def compile_delivery(
                 instruction = f"{instruction}\n\nCommand: {command}"
             call_state = dict(state)
             call_state["effort"] = config.effort
+            raw = None
             try:
                 raw = dispatcher.run(name, resolved, call_state, instruction)
                 update = read_output(name, raw, state)
@@ -341,7 +360,11 @@ def compile_delivery(
                     update["model_choices"] = [record]
                 return update
             except InvalidOutput as exc:
-                return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
+                halted = {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
+                model = raw.get("model") if isinstance(raw, dict) else None
+                if isinstance(model, str) and model:
+                    halted["models_used"] = {**(state.get("models_used") or {}), name: model}
+                return halted
             except QuotaExhausted as exc:
                 if name != "review":
                     raise
