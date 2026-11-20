@@ -326,11 +326,8 @@ def build_run_evidence(
     if isinstance(top_sid, str) and not session_sources.get(top_sid.strip()):
         providers = {_transcript_provider(model) for model in models.values()}
         add_session(top_sid, providers.pop() if len(providers) == 1 else None)
-    targets = [
-        (sid, provider)
-        for sid, providers in session_sources.items()
-        for provider in sorted(providers) or [None]
-    ]
+    # A session with no known provider is never searched across every provider's transcripts.
+    targets = [(sid, provider) for sid, providers in session_sources.items() for provider in sorted(providers)]
 
     for sid, provider in targets[:4]:
         path = locate_session_transcript(sid, provider=provider, search_roots=search_roots)

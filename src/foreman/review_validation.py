@@ -52,6 +52,34 @@ DIFF_PREFIX = re.compile(r"^[ab]/")
 DiffHunkMap = dict[str, dict[str, dict[int, int]]]
 
 
+OCTAL_ESCAPE = re.compile(r"[0-3][0-7]{2}")
+GIT_C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+
+def _unquote_git_path(path: str) -> str:
+    """Decode Git's C-style quoted path, whose octal escapes are UTF-8 bytes."""
+    if len(path) < 2 or not (path.startswith('"') and path.endswith('"')):
+        return path
+    body, out, i = path[1:-1], bytearray(), 0
+    while i < len(body):
+        ch = body[i]
+        if ch != "\\" or i + 1 == len(body):
+            out += ch.encode("utf-8")
+            i += 1
+        elif OCTAL_ESCAPE.fullmatch(octal := body[i + 1:i + 4]):
+            out.append(int(octal, 8))
+            i += 4
+        else:
+            nxt = body[i + 1]
+            out += bytes([GIT_C_ESCAPES[nxt]]) if nxt in GIT_C_ESCAPES else nxt.encode("utf-8")
+            i += 2
+    return out.decode("utf-8", errors="replace")
+
+
+def _diff_header_path(raw_line: str) -> str:
+    return DIFF_PREFIX.sub("", _unquote_git_path(raw_line[4:].strip()))
+
+
 def normalize_review_path(value: Any) -> str:
     return str(value or "").strip().removeprefix("./")
 
@@ -133,12 +161,12 @@ def _build_diff_maps(diff_text: str) -> tuple[
             old_path = ""
             continue
         if raw_line.startswith("--- "):
-            candidate = raw_line[4:].strip()
-            old_path = "" if candidate == "/dev/null" else DIFF_PREFIX.sub("", candidate)
+            candidate = _diff_header_path(raw_line)
+            old_path = "" if candidate == "/dev/null" else candidate
             continue
         if raw_line.startswith("+++ "):
-            candidate = raw_line[4:].strip()
-            current_path = old_path if candidate == "/dev/null" else DIFF_PREFIX.sub("", candidate)
+            candidate = _diff_header_path(raw_line)
+            current_path = old_path if candidate == "/dev/null" else candidate
             if current_path:
                 diff_line_map.setdefault(current_path, {"LEFT": set(), "RIGHT": set()})
                 diff_content_map.setdefault(current_path, {"LEFT": {}, "RIGHT": {}})

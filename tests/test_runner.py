@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from foreman.cli import _print_run, main
-from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.dispatch import BudgetExceeded, CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
 from foreman.runner import (
     _read_branch_diff,
@@ -1420,6 +1420,83 @@ class Phase1WorkerAndPreflightTest(unittest.TestCase):
                         with self.assertRaisesRegex(InvalidOutput, error):
                             worker("triage", f"{slug}-high", {}, "Triage")
 
+    def test_codex_without_banner_rejects_missing_empty_or_ambiguous_rollout(self):
+        slug = "gpt-6.2-sol"
+
+        def run_with(stdout):
+            def run(args, cwd):
+                Path(args[args.index("-o") + 1]).write_text(json.dumps({"triage": "implement"}))
+                return subprocess.CompletedProcess(args, 0, stdout, "")
+            return run
+
+        started = json.dumps({"type": "thread.started", "thread_id": "sid-strict"})
+        no_session = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}})
+        with TemporaryDirectory() as tempdir, patch.dict("os.environ", {"CODEX_HOME": tempdir}):
+            sessions = Path(tempdir) / "sessions"
+            (sessions / "a").mkdir(parents=True)
+            (sessions / "b").mkdir()
+            for stdout in (started, no_session):
+                with self.subTest(stdout=stdout), self.assertRaisesRegex(InvalidOutput, "missing or ambiguous"):
+                    CliWorker(Path("."), run_with(stdout))("triage", f"{slug}-high", {}, "Triage")
+            context = json.dumps({"type": "turn_context", "payload": {"model": slug}})
+            for folder in ("a", "b"):
+                (sessions / folder / "rollout-sid-strict.jsonl").write_text(context)
+            with self.assertRaisesRegex(InvalidOutput, "missing or ambiguous"):
+                CliWorker(Path("."), run_with(started))("triage", f"{slug}-high", {}, "Triage")
+            (sessions / "b" / "rollout-sid-strict.jsonl").unlink()
+            self.assertEqual(
+                CliWorker(Path("."), run_with(started))("triage", f"{slug}-high", {}, "Triage"),
+                {"triage": "implement"},
+            )
+
+    def test_codex_failed_attempt_reads_rollout_usage_so_budget_counts_spend(self):
+        model, slug = "gpt-6.2-sol-high", "gpt-6.2-sol"
+        spent = {"input_tokens": 900, "output_tokens": 100, "total_tokens": 1000}
+        prior = {"input_tokens": 400, "output_tokens": 50, "total_tokens": 450}
+        with TemporaryDirectory() as tempdir, patch.dict("os.environ", {"CODEX_HOME": tempdir}):
+            sessions = Path(tempdir) / "sessions"
+            sessions.mkdir()
+            (sessions / "rollout-sid-quota.jsonl").write_text("\n".join(json.dumps(ev) for ev in (
+                {"type": "turn_context", "payload": {"model": slug}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": prior}}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": spent}}},
+            )))
+
+            def quota_exit(args, cwd):
+                return subprocess.CompletedProcess(
+                    args, 1, "", f"model: {slug}\nsession id: sid-quota\nERROR: You've hit your usage limit.\n"
+                )
+
+            def turn_failed(args, cwd):
+                stdout = "\n".join(json.dumps(ev) for ev in (
+                    {"type": "thread.started", "thread_id": "sid-quota"},
+                    {"type": "turn.failed", "error": {"message": "stream disconnected"}},
+                ))
+                return subprocess.CompletedProcess(args, 0, stdout, f"model: {slug}\n")
+
+            worker = CliWorker(Path("."), quota_exit)
+            with self.assertRaises(QuotaExhausted):
+                worker("triage", model, {}, "Triage")
+            self.assertEqual(worker.last_meta["session_id"], "sid-quota")
+            self.assertEqual(worker.last_meta["model_usage"], {slug: spent})
+
+            worker = CliWorker(Path("."), turn_failed)
+            with self.assertRaisesRegex(InvalidOutput, "stream disconnected"):
+                worker("implement", model, {
+                    "models_used": {"implement": model},
+                    "sessions": {"implement": "sid-quota"},
+                    "usage_records": [{"session_id": "sid-quota", "model_usage": {slug: prior}}],
+                }, "Build")
+            self.assertEqual(worker.last_meta["model_usage"][slug]["total_tokens"], 550)
+
+            dispatcher = FailoverDispatcher(CliWorker(Path("."), quota_exit))
+            over = lambda metas: "over budget" if sum(
+                u.get("total_tokens", 0) for m in metas for u in m["model_usage"].values()
+            ) > 500 else None
+            with self.assertRaisesRegex(BudgetExceeded, "over budget"):
+                dispatcher.run("triage", [model, model], {}, "Triage", budget_check=over)
+            self.assertEqual(len(dispatcher.last_meta), 1)
+
     def test_cli_preflight_halts_with_env_unavailable_before_implement(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1550,4 +1627,3 @@ class Phase1WorkerAndPreflightTest(unittest.TestCase):
                     Path("engine"), "Example/Engine", "https://github.com/Example/Engine/pull/42", [comment],
                     commit_id=commit_id, run=lambda *_: self.fail("invalid commit reached GitHub"),
                 )
-

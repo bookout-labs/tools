@@ -55,6 +55,21 @@ diff --git a/app.py b/app.py
         result = validate_review_comments(comments, line_map)
         self.assertEqual([item["path"] for item in result.comments], ["a/app.py", "app.py"])
 
+    def test_git_quoted_paths_with_utf8_octal_escapes_are_decoded(self):
+        diff = (
+            'diff --git "a/src/caf\\303\\251.py" "b/src/caf\\303\\251.py"\n'
+            '--- "a/src/caf\\303\\251.py"\n'
+            '+++ "b/src/caf\\303\\251.py"\n'
+            "@@ -1,1 +1,1 @@\n"
+            "-old\n"
+            "+new\n"
+        )
+        line_map, _ = build_diff_maps_from_annotated_diff(annotate_unified_diff(diff))
+        self.assertEqual(list(line_map), ["src/café.py"])
+        self.assertEqual(list(build_diff_hunk_maps(diff)), ["src/café.py"])
+        tab_diff = '--- "a/a\\tb"\n+++ "b/a\\tb"\n@@ -1 +1 @@\n-x\n+y\n'
+        self.assertEqual(list(build_diff_hunk_maps(tab_diff)), ["a\tb"])
+
     def test_multiline_anchors_must_be_in_the_same_hunk(self):
         sample = """--- a/app.py
 +++ b/app.py

@@ -195,6 +195,15 @@ class TranscriptsTest(unittest.TestCase):
             self.assertIn("Built feature", scoped)
             self.assertNotIn("Unrelated Claude transcript", scoped)
 
+            # Mixed builder families leave the run's session unscoped, so no provider is searched.
+            unscoped = build_run_evidence(
+                {"session_id": "grok-sess-7",
+                 "models_used": {"implement": "gpt-6.2-sol-high", "review": "claude-opus-5-5-high"}},
+                search_roots=roots,
+            )
+            self.assertNotIn("Reviewed cleanly", unscoped)
+            self.assertNotIn("Transcript (", unscoped)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -228,6 +228,55 @@ class BenchmarksTest(unittest.TestCase):
             out = run_isolated_worker_command(["sh", "-c", probe], Path(tmpdir)).stdout.strip()
         self.assertEqual(out, "|0|1")
 
+    def test_isolated_env_strips_git_overrides_and_ignores_user_git_config(self):
+        from foreman.benchmarks import isolated_env
+
+        leaked = {
+            "GH_ENTERPRISE_TOKEN": "t", "GH_HOST": "h", "GH_CONFIG_DIR": "d", "SSH_AGENT_PID": "1",
+            "GIT_SSH": "s", "GIT_SSH_COMMAND": "s", "GIT_CREDENTIAL_HELPER": "c", "GIT_DIR": "g",
+            "GIT_WORK_TREE": "w", "GIT_INDEX_FILE": "i", "GIT_COMMON_DIR": "c", "GIT_CONFIG_PARAMETERS": "p",
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "store",
+        }
+        with mock.patch.dict("os.environ", leaked):
+            env = isolated_env()
+        self.assertFalse(set(leaked) & set(env))
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], "/dev/null")
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+
+    def test_cli_bench_runs_workers_with_isolated_env_by_default(self):
+        from foreman import benchmarks
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            repo.mkdir()
+            head = git_repo(repo)
+            suite_dir = root / "suite"
+            (suite_dir / "tasks").mkdir(parents=True)
+            (suite_dir / "suite.yaml").write_text("name: s\nconfigs:\n  - name: cfg\n", encoding="utf-8")
+            (suite_dir / "tasks/t1.yaml").write_text(
+                f"id: t1\nbase_sha: {head}\nrequest: Test change\ncheck: exit 0\n", encoding="utf-8"
+            )
+            worker_envs = []
+            real_run = subprocess.run
+
+            def spy_run(args, *pargs, **kwargs):
+                if isinstance(args, list) and args and args[0] in ("claude", "codex", "grok"):
+                    worker_envs.append(kwargs.get("env"))
+                    return worker_reply(args, {"triage": "ask", "question": "Which file?"})
+                return real_run(args, *pargs, **kwargs)
+
+            with mock.patch.dict("os.environ", {"GH_TOKEN": "gho_" + "x" * 30}), \
+                    mock.patch.object(benchmarks.subprocess, "run", spy_run), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                main(["bench", str(suite_dir), "--repo-path", str(repo), "--format", "json"])
+            self.assertTrue(worker_envs)
+            for env in worker_envs:
+                self.assertIsNotNone(env)
+                self.assertNotIn("GH_TOKEN", env)
+                self.assertEqual(env["GIT_CONFIG_GLOBAL"], "/dev/null")
+
 
 if __name__ == "__main__":
     unittest.main()

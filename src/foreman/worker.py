@@ -324,24 +324,52 @@ def _parse_codex_events(stdout: str, slug: str) -> tuple[str | None, dict]:
     }
 
 
-def _verify_codex_rollout_model(session_id: str, slug: str) -> None:
-    """Verify the Codex session rollout file on disk matches the requested slug when present."""
-    if not session_id:
-        return
-    path = locate_session_transcript(session_id, provider="codex")
+CODEX_SESSION_BANNER = re.compile(r"^session id:[ \t]*([A-Za-z0-9_-]+)[ \t]*$", re.MULTILINE | re.IGNORECASE)
+CODEX_USAGE_EVENTS = {"token_count", "token_usage_record"}
+
+
+def _codex_rollout_events(session_id: str) -> list[dict] | None:
+    """Parsed events of the one rollout file for this session, or None when missing or ambiguous."""
+    path = locate_session_transcript(session_id, provider="codex") if session_id else None
     if path is None:
-        return
-    seen_models: list[str] = []
+        return None
+    events = []
     for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        stripped = raw_line.strip()
-        if not stripped:
-            continue
         try:
-            ev = json.loads(stripped)
+            ev = json.loads(raw_line)
         except ValueError:
             continue
-        if not isinstance(ev, dict) or not isinstance(payload := ev.get("payload"), dict):
+        if isinstance(ev, dict) and isinstance(ev.get("payload"), dict):
+            events.append(ev)
+    return events
+
+
+def _codex_rollout_usage(session_id: str) -> dict:
+    """Latest cumulative token usage a Codex rollout recorded, so failed attempts still count spend."""
+    usage: dict = {}
+    for ev in _codex_rollout_events(session_id) or []:
+        payload = ev["payload"]
+        if payload.get("type") not in CODEX_USAGE_EVENTS:
             continue
+        info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+        found = info.get("total_token_usage") or payload.get("usage")
+        if isinstance(found, dict) and found:
+            usage = found
+    return usage
+
+
+def _verify_codex_rollout_model(session_id: str, slug: str, *, required: bool) -> None:
+    """Check the session rollout's model; without a stderr banner the rollout is the only evidence."""
+    events = _codex_rollout_events(session_id)
+    if events is None:
+        if required:
+            raise InvalidOutput(
+                f"codex rollout for session {_detail(session_id) or 'none'} is missing or ambiguous, expected {slug}"
+            )
+        return
+    seen_models: list[str] = []
+    for ev in events:
+        payload = ev["payload"]
         if ev.get("type") == "turn_context":
             model = payload.get("model")
         elif ev.get("type") == "world_state":
@@ -481,8 +509,12 @@ class CliWorker:
 
             if provider == "gpt":
                 event_body, codex_meta = _parse_codex_events(process.stdout, slug)
-                session_id = codex_meta["session_id"] or resume_id or ""
+                banner = CODEX_SESSION_BANNER.search(f"{process.stderr}\n{process.stdout}")
+                session_id = codex_meta["session_id"] or (banner.group(1) if banner else "") or resume_id or ""
                 usage = codex_meta["model_usage"]
+                if not usage and (process.returncode != 0 or codex_meta["failed_error"]):
+                    if rollout_usage := _codex_rollout_usage(session_id):
+                        usage = {slug: rollout_usage}
                 if resume_id and usage:
                     usage = {slug: _codex_resume_usage(usage[slug], slug, session_id, state.get("usage_records") or [])}
                 if process.returncode == 0 or usage:
@@ -529,7 +561,7 @@ class CliWorker:
                         raise InvalidOutput(f"codex reported model {got}, expected {slug}")
                 elif not codex_meta.get("parsed_events"):
                     raise InvalidOutput(f"codex reported model none, expected {slug}")
-                _verify_codex_rollout_model(session_id, slug)
+                _verify_codex_rollout_model(session_id, slug, required=not reported)
                 file_body = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
                 body: object = file_body if file_body.strip() else (event_body if event_body is not None else process.stdout)
                 result = json_object(body)

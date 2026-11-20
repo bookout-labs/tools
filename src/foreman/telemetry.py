@@ -251,15 +251,14 @@ def _sanitize_state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {key: redact_value(state[key], redact_pii=True) for key in safe_keys if key in state}
     if "request" in state and isinstance(state["request"], str):
         first_line = state["request"].strip().splitlines()[0] if state["request"].strip() else ""
-        out["request_title"] = redact_text(first_line[:160], redact_pii=True)
+        # Redact before clipping so a secret straddling the cut is never left half-visible.
+        out["request_title"] = redact_text(first_line, redact_pii=True)[:160]
     return out
 
 
 def _scrub_export_row(payload: dict[str, Any]) -> dict[str, Any]:
-    """Re-redact free text on the way out so rows stored before a redaction fix never leak."""
-    for key in ("failure_reason", "reason", "halt_detail", "check_output", "session_id"):
-        if isinstance(payload.get(key), str):
-            payload[key] = redact_text(payload[key], redact_pii=True)
+    """Re-redact every field on the way out so rows stored before a redaction fix never leak."""
+    payload = redact_value(payload, redact_pii=True)
     if isinstance(payload.get("state_json"), str):
         try:
             state = json.loads(payload["state_json"])
@@ -729,6 +728,11 @@ class TelemetryStore:
     ) -> int:
         fetch = fetcher or _default_gh_pr_fetcher
         runs = self.list_runs(repo=repo, limit=1000)
+        newest_heads: dict[str, str] = {}
+        for run in runs:  # newest first, so later runs on a shared PR set the head
+            pr_url, head = str(run.get("pr_url") or "").strip(), str(run.get("head_sha") or "").strip()
+            if pr_url and head:
+                newest_heads.setdefault(pr_url, head)
         updated = 0
         now = utcnow_iso()
         with self._connect() as conn:
@@ -760,7 +764,7 @@ class TelemetryStore:
                     and is_human_actor(author_login(rv))
                     and not is_foreman_body(rv.get("body"))
                 )
-                human_commits = human_followup_commits(payload.get("commits"), run.get("head_sha"))
+                human_commits = human_followup_commits(payload.get("commits"), newest_heads.get(pr_url))
 
                 additions = payload.get("additions") if isinstance(payload.get("additions"), int) else None
                 deletions = payload.get("deletions") if isinstance(payload.get("deletions"), int) else None
@@ -823,7 +827,7 @@ class TelemetryStore:
         with self._connect() as conn:
             for rid in run_ids:
                 for row in conn.execute("SELECT * FROM stage_calls WHERE run_id = ? ORDER BY seq ASC", (rid,)):
-                    payload = dict(row)
+                    payload = _scrub_export_row(dict(row))
                     payload["type"] = "stage_call"
                     lines.append(json.dumps(payload, sort_keys=True))
                 for row in conn.execute("SELECT * FROM scores WHERE run_id = ? ORDER BY scorer ASC", (rid,)):
@@ -838,35 +842,39 @@ class TelemetryStore:
 
     def import_jsonl(self, source: Path | str) -> dict[str, int]:
         raw = source.read_text(encoding="utf-8") if isinstance(source, Path) else str(source)
+        items = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        rows = {kind: [i for i in items if isinstance(i, dict) and i.get("type") == kind]
+                for kind in ("run", "stage_call", "score")}
         counts = {"runs": 0, "stage_calls": 0, "scores": 0}
         with self._connect() as conn:
-            for line in raw.splitlines():
-                stripped = line.strip()
-                if not stripped:
+            # Runs go first, whatever the line order, so stage calls can follow their run's freshness.
+            fresh_runs: set[str] = set()
+            for item in rows["run"]:
+                existing = conn.execute(
+                    "SELECT finished_at FROM runs WHERE run_id = ?", (item.get("run_id"),)
+                ).fetchone()
+                if existing is None or str(item.get("finished_at") or "") >= str(existing[0] or ""):
+                    fresh_runs.add(str(item.get("run_id")))
+                conn.execute(
+                    IMPORT_RUN_SQL,
+                    [item.get("run_id")]
+                    + [item.get(c, RUN_DEFAULTS.get(c)) for c in RUN_CORE_COLUMNS + RUN_GH_COLUMNS],
+                )
+                counts["runs"] += 1
+            for item in rows["stage_call"]:
+                if str(item.get("run_id")) not in fresh_runs:
                     continue
-                item = json.loads(stripped)
-                if not isinstance(item, dict):
-                    continue
-                kind = item.get("type")
-                if kind == "run":
-                    conn.execute(
-                        IMPORT_RUN_SQL,
-                        [item.get("run_id")]
-                        + [item.get(c, RUN_DEFAULTS.get(c)) for c in RUN_CORE_COLUMNS + RUN_GH_COLUMNS],
-                    )
-                    counts["runs"] += 1
-                elif kind == "stage_call":
-                    conn.execute(
-                        f"INSERT OR REPLACE INTO stage_calls ({', '.join(STAGE_CALL_COLUMNS)}) "
-                        f"VALUES ({', '.join(['?'] * len(STAGE_CALL_COLUMNS))})",
-                        [item.get(c) for c in STAGE_CALL_COLUMNS],
-                    )
-                    counts["stage_calls"] += 1
-                elif kind == "score":
-                    vals = {c: item.get(c) for c in SCORE_COLUMNS}
-                    vals["passed"] = _stored_passed(vals["label"], vals["passed"])
-                    conn.execute(IMPORT_SCORE_SQL, [vals[c] for c in SCORE_COLUMNS])
-                    counts["scores"] += 1
+                conn.execute(
+                    f"INSERT OR REPLACE INTO stage_calls ({', '.join(STAGE_CALL_COLUMNS)}) "
+                    f"VALUES ({', '.join(['?'] * len(STAGE_CALL_COLUMNS))})",
+                    [item.get(c) for c in STAGE_CALL_COLUMNS],
+                )
+                counts["stage_calls"] += 1
+            for item in rows["score"]:
+                vals = {c: item.get(c) for c in SCORE_COLUMNS}
+                vals["passed"] = _stored_passed(vals["label"], vals["passed"])
+                conn.execute(IMPORT_SCORE_SQL, [vals[c] for c in SCORE_COLUMNS])
+                counts["scores"] += 1
         return counts
 
     def compute_stats(

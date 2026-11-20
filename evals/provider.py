@@ -136,7 +136,10 @@ def call_api(prompt, options, context):
     elif case == "scorer-insufficient":
         with TemporaryDirectory() as td:
             store = TelemetryStore(_Path(td) / "tel.sqlite3")
-            rid = store.record_run({"repo": "Example/Engine", "issue": 1, "stop": "verified"})
+            rid = store.record_run({
+                "repo": "Example/Engine", "issue": 1, "stop": "verified",
+                "path": ["triage", "implement", "verify", "review", "done"],
+            })
             spec = load_scorers()["task-compliance"]
             rows = score_run(
                 store,

@@ -204,7 +204,7 @@ def select_judge_model(
             cand_family = _safe_family(cand)
             if cand_family and cand_family not in exclusions:
                 return cand
-    return scorer.model
+    raise ScorerError("no independent judge family available outside builder families")
 
 
 def default_judge_runner(cwd: Path | None = None, run: CommandRunner = run_worker_command) -> JudgeRunner:
@@ -318,7 +318,7 @@ def score_run(
     for spec in specs:
         if not force and spec.name in existing:
             continue
-        if observed and not observed.intersection(spec.stages):
+        if not observed.intersection(spec.stages):
             continue
         if respect_sampling and not force and not should_sample(run_id, spec):
             continue

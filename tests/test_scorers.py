@@ -74,10 +74,12 @@ class ScorersTest(unittest.TestCase):
                 "pr_url": "https://github.com/Example/Engine/pull/1",
                 "pull_request": "https://github.com/Example/Engine/pull/1",
                 "models_used": {"implement": "gpt-6.2-sol-high"},
+                "path": ["triage", "implement", "verify", "review", "done"],
             }, host="studio")
             r2 = store.record_run({
                 "repo": "Example/Engine", "issue": 2, "stop": "verified",
                 "models_used": {"implement": "gpt-6.2-sol-high"},
+                "path": ["triage", "implement", "verify", "review", "done"],
             }, host="studio")
             store.enrich_github_outcomes(lambda *a: {
                 "state": "MERGED", "createdAt": "2026-11-20T10:00:00Z", "mergedAt": "2026-11-20T10:05:00Z",
@@ -154,6 +156,25 @@ class ScorersTest(unittest.TestCase):
             self.assertIn("task-compliance", names)
             self.assertEqual(dict(calls)["task-compliance"], "grok-4.7-high")
 
+    def test_judge_refuses_when_every_family_built_the_change(self):
+        tc = load_scorers()["task-compliance"]
+        builders = ["claude-opus-5-5-high", "gpt-6.2-sol-high", "grok-4.7-high"]
+        with self.assertRaisesRegex(ScorerError, "no independent judge family"):
+            select_judge_model(tc, {"implement": "gpt-6.2-sol-high"}, implement_models=builders)
+
+    def test_run_without_observed_stages_skips_stage_scoped_scorers(self):
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            rid = store.record_run({"repo": "Example/Engine", "issue": 4, "stop": "verified"})
+            calls = []
+
+            def judge(model, prompt, schema):
+                calls.append(prompt)
+                return {"label": "pass", "reason": "ok"}
+
+            self.assertEqual(score_run(store, rid, judge=judge, respect_sampling=False), [])
+            self.assertEqual(calls, [])
+
     def test_calibration_only_compares_terminal_pull_requests(self):
         with TemporaryDirectory() as tmpdir:
             store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
@@ -188,7 +209,8 @@ class ScorersTest(unittest.TestCase):
             commit("later.txt", "later-change\n")
             db = root / "tel.sqlite3"
             rid = TelemetryStore(db).record_run(
-                {"repo": "Example/Engine", "issue": 8, "stop": "verified", "head_sha": pinned}
+                {"repo": "Example/Engine", "issue": 8, "stop": "verified", "head_sha": pinned,
+                 "path": ["triage", "implement", "verify", "review", "done"],}
             )
             prompts: list[str] = []
 

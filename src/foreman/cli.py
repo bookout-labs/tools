@@ -28,6 +28,7 @@ from foreman.github import GhClient, GitHub
 from foreman.improve import ObserverRunner, WriteSurfaceError, run_self_improvement
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
+from foreman.redaction import redact_text
 from foreman.runner import WorktreeInspector, _read_branch_diff, run_live_delivery
 from foreman.scoring import JudgeRunner, ScorerError, calibration_report, load_scorers, score_run
 from foreman.telemetry import TelemetryStore, default_telemetry_path, load_pricing, render_stats_html, render_stats_text
@@ -253,7 +254,7 @@ def main(
                 suite,
                 repo_path=Path(args.repo_path) if args.repo_path else None,
                 dry_run=args.dry_run,
-                worker_runner=worker_runner or run_worker_command,
+                worker_runner=None if worker_runner is run_worker_command else worker_runner,
                 judge_runner=judge_runner,
                 score_trials=args.score,
             )
@@ -455,7 +456,7 @@ def main(
             print(f"{status}: {outcome.get('title', '')}")
             for diff_text in (outcome.get("diffs") or {}).values():
                 if diff_text:
-                    print(diff_text, end="")
+                    print(redact_text(diff_text, redact_pii=True), end="")
             if pr_body := outcome.get("pr_body"):
                 print(pr_body)
             if pr_url := outcome.get("pr_url"):

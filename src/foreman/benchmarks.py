@@ -122,14 +122,23 @@ def load_suite(path: Path) -> dict[str, Any]:
     }
 
 
-CREDENTIAL_ENV = ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT", "GIT_ASKPASS", "SSH_AUTH_SOCK")
+CREDENTIAL_ENV = frozenset({
+    "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GH_HOST", "GH_CONFIG_DIR", "GITHUB_PAT",
+    "GIT_ASKPASS", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_CREDENTIAL_HELPER",
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+})
+CREDENTIAL_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 
 
 def isolated_env() -> dict[str, str]:
-    """Environment for trial commands: no push credentials, no prompts, no system git config."""
-    env = {k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV}
-    env["GIT_TERMINAL_PROMPT"] = "0"
+    """Environment for trial commands: no credentials, no repo overrides, no prompts, no user or system git config."""
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in CREDENTIAL_ENV and not k.startswith(CREDENTIAL_ENV_PREFIXES)
+    }
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_TERMINAL_PROMPT"] = "0"
     return env
 
 
@@ -223,7 +232,7 @@ def _run_live_trial(
     cfg: dict[str, Any],
     worktree: Path | None,
     *,
-    worker_runner: CommandRunner = run_isolated_worker_command,
+    worker_runner: CommandRunner | None = None,
     judge_runner: JudgeRunner | None = None,
     score_trials: bool = False,
 ) -> dict[str, Any]:
@@ -247,7 +256,7 @@ def _run_live_trial(
         return proc.returncode, redacted[-4000:]
 
     config = _config_for_trial(cfg)
-    dispatcher = FailoverDispatcher(CliWorker(worktree, worker_runner))
+    dispatcher = FailoverDispatcher(CliWorker(worktree, worker_runner or run_isolated_worker_command))
     graph = compile_delivery(
         dispatcher,
         config,
@@ -365,7 +374,7 @@ def run_benchmark(
     trial_runner: TrialRunner | None = None,
     worktree_root: Path | None = None,
     dry_run: bool = False,
-    worker_runner: CommandRunner = run_isolated_worker_command,
+    worker_runner: CommandRunner | None = None,
     judge_runner: JudgeRunner | None = None,
     score_trials: bool = False,
 ) -> list[dict[str, Any]]:

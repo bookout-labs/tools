@@ -140,6 +140,10 @@ def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _inside_git_worktree(repo_root: Path) -> bool:
+    return _git(repo_root, "rev-parse", "--is-inside-work-tree").returncode == 0
+
+
 def _assert_clean_worktree(repo_root: Path) -> None:
     status = _git(repo_root, "status", "--porcelain")
     if status.returncode != 0:
@@ -258,15 +262,18 @@ def collect_improvement_bundle(
 
     # Feedback from PRs and issues foreman never touched says nothing about its prompts.
     tracked = store.list_runs(repo=repo, limit=10000) if repo else []
-    known_pr_urls = {str(r["pr_url"]) for r in tracked if r.get("pr_url")} if tracked else None
-    head_shas = {str(r["pr_url"]): str(r["head_sha"]) for r in tracked if r.get("pr_url") and r.get("head_sha")}
-    known_issues = {r["issue"] for r in tracked if isinstance(r.get("issue"), int)} if tracked else None
+    known_pr_urls = {str(r["pr_url"]) for r in tracked if r.get("pr_url")}
+    head_shas: dict[str, str] = {}
+    for r in tracked:  # newest first, so the newest run's head wins for a shared PR
+        if r.get("pr_url") and r.get("head_sha"):
+            head_shas.setdefault(str(r["pr_url"]), str(r["head_sha"]))
+    known_issues = {r["issue"] for r in tracked if isinstance(r.get("issue"), int)}
 
     rev_items: list[dict[str, Any]] = []
     if mode in {"all", "review"}:
         if review_feedback is not None:
             rev_items = list(review_feedback)
-        elif repo:
+        elif repo and known_pr_urls:
             rev_items = collect_review_feedback(
                 repo,
                 since_days=max(days, 14),
@@ -279,7 +286,7 @@ def collect_improvement_bundle(
     if mode in {"all", "triage"}:
         if triage_feedback is not None:
             tri_items = list(triage_feedback)
-        elif repo:
+        elif repo and known_issues:
             tri_items = collect_triage_feedback(
                 repo, since_days=max(days, 14), runner=gh_runner, known_issues=known_issues
             )
@@ -488,7 +495,8 @@ def run_self_improvement(
             fromfile=f"a/{rel_path}",
             tofile=f"b/{rel_path}",
         )
-        diffs[rel_path] = "".join(diff_lines)
+        # Context and removed lines come from files already on disk, so scrub the whole diff.
+        diffs[rel_path] = redact_text("".join(diff_lines), redact_pii=True)
 
     title = redact_text(str(decision.get("title") or "Tighten foreman instructions").strip(), redact_pii=True)
     pr_body = render_improvement_pr_body(decision, validated_paths)
@@ -502,7 +510,7 @@ def run_self_improvement(
             "pr_body": pr_body,
         }
 
-    if open_pr:
+    if open_pr or _inside_git_worktree(repo_root):
         _assert_clean_worktree(repo_root)
     for rel_path, (_, new_content) in zip(validated_paths, cleaned_edits):
         dest = _assert_contained_path(repo_root, rel_path)

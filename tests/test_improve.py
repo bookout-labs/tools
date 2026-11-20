@@ -316,6 +316,87 @@ class ImproveGuardAndLoopTest(unittest.TestCase):
             self.assertIn("followup_commits:1", bundle["review_feedback"][0]["signals"])
             self.assertEqual([i["number"] for i in bundle["triage_feedback"]], [7])
 
+    def test_preview_diff_redacts_existing_file_lines(self):
+        secret = "ghp_0123456789abcdefghij0123456789"
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            stages = root / "repo/src/foreman/stages"
+            stages.mkdir(parents=True)
+            (stages / "implement.md").write_text(
+                f"Keep {secret} away.\nMail owner@example.invalid.\nStay.\n", encoding="utf-8"
+            )
+            db = root / "tel.sqlite3"
+            store = TelemetryStore(db)
+            observer = _propose("src/foreman/stages/implement.md", "Stay.\n")
+            result = self._improve(store, root / "repo", observer, dry_run=True)
+            diff = result["diffs"]["src/foreman/stages/implement.md"]
+            self.assertIn("-Keep [REDACTED] away.", diff)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["improve", "--run", "--db", str(db), "--workdir", str(root / "repo"),
+                             "--now", "--dry-run", "--mode", "scorer"], observer_runner=observer)
+            self.assertEqual(code, 0)
+            for text in (diff, out.getvalue()):
+                self.assertNotIn(secret, text)
+                self.assertNotIn("owner@example.invalid", text)
+
+    def test_apply_rejects_dirty_git_checkout_before_writing(self):
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir()
+            git_repo(repo_root)
+            stages = repo_root / "src/foreman/stages"
+            stages.mkdir(parents=True)
+            (stages / "implement.md").write_text("Old.\n", encoding="utf-8")
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            with self.assertRaises(WriteSurfaceError):
+                self._improve(store, repo_root, _propose("src/foreman/stages/implement.md", "New.\n"),
+                              dry_run=False, open_pr=False)
+            self.assertEqual((stages / "implement.md").read_text(encoding="utf-8"), "Old.\n")
+
+            _git(repo_root, "add", "-A")
+            _git(repo_root, "commit", "-m", "stages")
+            result = self._improve(store, repo_root, _propose("src/foreman/stages/implement.md", "New.\n"),
+                                   dry_run=False, open_pr=False)
+            self.assertEqual(result["status"], "applied")
+            self.assertEqual((stages / "implement.md").read_text(encoding="utf-8"), "New.\n")
+
+    def test_bundle_skips_repo_wide_github_feedback_without_tracked_runs(self):
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            gh_calls = []
+
+            def gh(args):
+                gh_calls.append(args)
+                return subprocess.CompletedProcess(args, 0, "[]", "")
+
+            bundle = collect_improvement_bundle(store, repo="Example/Engine", days=3650, gh_runner=gh)
+            self.assertEqual((bundle["review_feedback"], bundle["triage_feedback"]), ([], []))
+            self.assertEqual(gh_calls, [])
+
+            # A run with an issue but no PR allows triage feedback only.
+            store.record_run({"repo": "Example/Engine", "issue": 7, "stop": "verified"})
+            collect_improvement_bundle(store, repo="Example/Engine", days=3650, gh_runner=gh)
+            self.assertEqual([args[1] for args in gh_calls], ["issue"])
+
+    def test_bundle_uses_newest_run_head_for_a_shared_pr(self):
+        pr = "https://github.com/Example/Engine/pull/41"
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            for head, finished in (("h1", "2026-11-20T09:00:00Z"), ("h2", "2026-11-20T10:00:00Z")):
+                store.record_run({"repo": "Example/Engine", "issue": 7, "stop": "verified",
+                                  "pull_request": pr, "head_sha": head}, finished_at=finished)
+            prs = [{"number": 41, "url": pr, "state": "CLOSED", "closedAt": "2026-11-20T10:00:00Z",
+                    "mergedAt": None, "commits": [
+                        {"oid": oid, "authors": [{"login": "owner"}]} for oid in ("h1", "h2", "h3")
+                    ]}]
+
+            def gh(args):
+                return subprocess.CompletedProcess(args, 0, json.dumps(prs if args[1] == "pr" else []), "")
+
+            bundle = collect_improvement_bundle(store, repo="Example/Engine", days=3650, gh_runner=gh)
+            self.assertIn("followup_commits:1", bundle["review_feedback"][0]["signals"])
+
 
 if __name__ == "__main__":
     unittest.main()
