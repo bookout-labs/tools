@@ -42,8 +42,12 @@ def _print_run(result: dict) -> None:
             if proposal := result.get("proposal"):
                 print(proposal["summary"].rstrip())
         elif node == "merge":
+            if url := result.get("pull_request"):
+                print(url)
             if result.get("halt") == "merge_held":
                 print("merge held")
+            elif result.get("halt") == "unpublished":
+                print("merge not armed")
             elif result["merge_armed"]:
                 print("merge armed")
             elif result.get("merge_args"):

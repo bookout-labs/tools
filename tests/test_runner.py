@@ -11,7 +11,7 @@ from unittest.mock import patch
 from foreman.cli import main
 from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
-from foreman.runner import commit_implementation, run_live_delivery
+from foreman.runner import commit_implementation, publish_reviewed_branch, run_live_delivery
 from foreman.worker import CliWorker
 
 
@@ -476,13 +476,15 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(result["merge_args"], ARM_ARGS)
                 self.assertFalse(result["merge_armed"])
 
-    def test_failed_gh_leaves_the_exact_command_recorded_but_unarmed(self):
+    def test_failed_merge_stops_unpublished(self):
         result = self.walk(
             [{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}, APPROVE],
             run_gh=lambda args: 1,
         )
         self.assertFalse(result["merge_armed"])
         self.assertEqual(result["merge_args"], ARM_ARGS)
+        self.assertEqual(result["stop"], "unpublished")
+        self.assertEqual(result["halt_detail"], "the reviewed commit has no open pull request")
 
     def test_default_merge_runner_discards_stdin_and_returns_exit_code(self):
         from foreman.cli import _run_gh
@@ -559,29 +561,45 @@ class LiveRunnerTest(unittest.TestCase):
 
                 result = self.run_main_merge(Path(directory) / "run.sqlite3", find_pr, gh)
                 self.assertEqual(calls, [ARM_ARGS])
-                self.assertIn("merge armed" if exit_code == 0 else "merge arm recorded", result)
+                if exit_code == 0:
+                    self.assertIn("merge armed", result)
+                    self.assertIn("done verified", result)
+                    self.assertEqual(self.github.tools_issues, [])
+                else:
+                    self.assertIn("merge not armed", result)
+                    self.assertIn("done unpublished", result)
+                    self.assertNotIn("done verified", result)
+                    self.assertNotIn("merge arm recorded", result)
+                    self.assertEqual(
+                        self.github.tools_issues[-1][0], "Publish the reviewed branch before merge",
+                    )
 
-    def test_main_records_merge_when_there_is_no_pull_request(self):
-        self.assert_merge_recorded_without_calling_gh(None)
+    def test_main_does_not_arm_when_there_is_no_pull_request(self):
+        self.assert_merge_stays_unarmed(None)
 
-    def test_main_records_merge_when_the_pull_request_head_differs(self):
-        self.assert_merge_recorded_without_calling_gh({**OPEN_PR, "headRefOid": "b" * 40})
+    def test_main_does_not_arm_when_the_pull_request_head_differs(self):
+        self.assert_merge_stays_unarmed({**OPEN_PR, "headRefOid": "b" * 40})
 
-    def test_main_records_merge_when_the_pull_request_is_closed(self):
-        self.assert_merge_recorded_without_calling_gh({**OPEN_PR, "state": "CLOSED"})
+    def test_main_does_not_arm_when_the_pull_request_is_closed(self):
+        self.assert_merge_stays_unarmed({**OPEN_PR, "state": "CLOSED"})
 
-    def test_main_records_merge_when_the_pull_request_is_for_another_issue(self):
-        self.assert_merge_recorded_without_calling_gh({**OPEN_PR, "headRefName": "80-list-items"})
+    def test_main_does_not_arm_when_the_pull_request_is_for_another_issue(self):
+        self.assert_merge_stays_unarmed({**OPEN_PR, "headRefName": "80-list-items"})
 
-    def test_main_records_merge_when_the_pull_request_targets_another_branch(self):
-        self.assert_merge_recorded_without_calling_gh({**OPEN_PR, "baseRefName": "pr-match"})
+    def test_main_does_not_arm_when_the_pull_request_targets_another_branch(self):
+        self.assert_merge_stays_unarmed({**OPEN_PR, "baseRefName": "pr-match"})
 
-    def assert_merge_recorded_without_calling_gh(self, pr):
+    def assert_merge_stays_unarmed(self, pr):
         def unexpected_merge(args):
             self.fail(f"unexpected merge command {args}")
 
         result = self.run_main_merge(self.checkpoint, lambda repo: pr, unexpected_merge)
-        self.assertIn("merge arm recorded", result)
+        self.assertIn("merge not armed", result)
+        self.assertIn("done unpublished", result)
+        self.assertIn("the reviewed commit has no open pull request", result)
+        self.assertNotIn("done verified", result)
+        self.assertNotIn("merge arm recorded", result)
+        self.assertEqual(self.github.tools_issues[-1][0], "Publish the reviewed branch before merge")
 
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
         script = """
@@ -813,11 +831,26 @@ class CommitImplementationTest(unittest.TestCase):
                     return {"review": "approve", "risk": DEFAULT_RISK}
                 return {"triage": "implement"}
 
-            result = run_live_delivery(
-                repo="Example/Engine", issue=875, check="touch checked", cwd=repo,
-                checkpoint=checkpoint, dispatcher=FailoverDispatcher(handler),
-                github=FakeGitHub(),
-            )
+            order = []
+
+            def publish(cwd, repo_name, issue, sha):
+                order.append("publish")
+                self.assertEqual((repo_name, issue), ("Example/Engine", 875))
+                self.assertEqual(sha, subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+                ).stdout.strip())
+                return "https://github.com/Example/Engine/pull/21"
+
+            def run_gh(args):
+                order.append(list(args))
+                return 0
+
+            with patch("foreman.runner.publish_reviewed_branch", side_effect=publish):
+                result = run_live_delivery(
+                    repo="Example/Engine", issue=875, check="exit 0", cwd=repo,
+                    checkpoint=checkpoint, dispatcher=FailoverDispatcher(handler),
+                    github=FakeGitHub(), run_gh=run_gh,
+                )
             branch = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
             ).stdout.strip()
@@ -830,10 +863,141 @@ class CommitImplementationTest(unittest.TestCase):
             self.assertEqual(result["stop"], "verified")
             self.assertNotIn("halt", result)
             self.assertIn("verify", result["path"])
-            self.assertTrue((repo / "checked").exists())
+            self.assertEqual(result["check_exit_code"], 0)
             self.assertEqual(branch, "875-issue-title")
             self.assertEqual(main, base)
             self.assertEqual(committed, "release\n")
             self.assertEqual(result["head_sha"], subprocess.run(
                 ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
             ).stdout.strip())
+            self.assertEqual(order, [
+                "publish",
+                ["gh", "pr", "merge", "--auto", "--match-head-commit", result["head_sha"]],
+            ])
+            self.assertEqual(result["pull_request"], "https://github.com/Example/Engine/pull/21")
+            self.assertTrue(result["merge_armed"])
+
+
+def _completed(stdout="", code=0, stderr=""):
+    return subprocess.CompletedProcess([], code, stdout, stderr)
+
+
+class PublishReviewedBranchTest(unittest.TestCase):
+    def publish(self, replies, *, sha=HEAD, issue=875):
+        calls = []
+        pending = list(replies)
+
+        def execute(args, cwd):
+            calls.append(list(args))
+            self.assertEqual(cwd, Path("engine"))
+            if not pending:
+                self.fail(f"unexpected command {args}")
+            return pending.pop(0)
+
+        try:
+            url = publish_reviewed_branch(Path("engine"), "Example/Engine", issue, sha, run=execute)
+        except InvalidOutput:
+            self.assertEqual(pending, [])
+            for args in calls:
+                self.assertNotIn("--force", args)
+            raise
+        self.assertEqual(pending, [])
+        for args in calls:
+            self.assertNotIn("--force", args)
+        return url, calls
+
+    def ready(self, branch="875-health-release", sha=HEAD):
+        return [_completed(f"{branch}\n"), _completed(""), _completed(f"{sha}\n")]
+
+    def test_push_then_open_uses_the_commit_subject(self):
+        url, calls = self.publish(self.ready() + [
+            _completed(),
+            _completed(code=1, stderr="no pull request\n"),
+            _completed("The health check names the running release (#875)\n"),
+            _completed("https://github.com/Example/Engine/pull/21\n"),
+        ])
+        self.assertEqual(url, "https://github.com/Example/Engine/pull/21")
+        self.assertEqual(
+            calls[3],
+            ["git", "push", "--set-upstream", "origin", "HEAD:refs/heads/875-health-release"],
+        )
+        self.assertEqual(calls[-1], [
+            "gh", "pr", "create", "--repo", "Example/Engine", "--base", "main",
+            "--head", "875-health-release",
+            "--title", "The health check names the running release (#875)",
+            "--body", "Refs #875",
+        ])
+
+    def test_existing_pull_request_at_the_sha_is_reused(self):
+        payload = json.dumps({
+            "url": "https://github.com/Example/Engine/pull/21",
+            "state": "OPEN",
+            "headRefOid": HEAD.upper(),
+            "headRefName": "875-health-release",
+            "baseRefName": "main",
+        })
+        url, calls = self.publish(self.ready() + [_completed(), _completed(payload)])
+        self.assertEqual(url, "https://github.com/Example/Engine/pull/21")
+        self.assertFalse(any(args[:3] == ["gh", "pr", "create"] for args in calls))
+
+    def test_open_pull_request_at_another_sha_is_not_replaced(self):
+        payload = json.dumps({
+            "url": "https://github.com/Example/Engine/pull/21",
+            "state": "OPEN",
+            "headRefOid": "b" * 40,
+            "headRefName": "875-health-release",
+            "baseRefName": "main",
+        })
+        with self.assertRaises(InvalidOutput) as caught:
+            self.publish(self.ready() + [_completed(), _completed(payload)])
+        self.assertIn("not the reviewed commit", str(caught.exception))
+
+    def test_dirty_tree_wrong_branch_and_wrong_head_do_not_push(self):
+        with self.assertRaises(InvalidOutput):
+            self.publish([_completed("main\n")])
+        with self.assertRaises(InvalidOutput):
+            self.publish([_completed("health-release\n")])
+        with self.assertRaises(InvalidOutput):
+            self.publish([
+                _completed("875-health-release\n"),
+                _completed(" M src/worker.ts\n"),
+                _completed(HEAD + "\n"),
+            ])
+        with self.assertRaises(InvalidOutput):
+            self.publish([
+                _completed("875-health-release\n"),
+                _completed(""),
+                _completed(("b" * 40) + "\n"),
+            ])
+        with self.assertRaises(InvalidOutput) as caught:
+            self.publish([], sha="abc")
+        self.assertIn("not a full SHA", str(caught.exception))
+
+    def test_push_failure_names_the_branch(self):
+        with self.assertRaises(InvalidOutput) as caught:
+            self.publish(self.ready() + [_completed(code=1, stderr="non-fast-forward\n")])
+        self.assertEqual(str(caught.exception), "could not push 875-health-release: non-fast-forward")
+
+    def test_create_must_return_an_https_url(self):
+        with self.assertRaises(InvalidOutput) as caught:
+            self.publish(self.ready() + [
+                _completed(),
+                _completed(code=1),
+                _completed("Subject\n"),
+                _completed("created the pull request\n"),
+            ])
+        self.assertEqual(str(caught.exception), "could not open the pull request")
+
+    def test_default_runner_refuses_main_without_a_shell(self):
+        with patch(
+            "foreman.runner.subprocess.run",
+            return_value=subprocess.CompletedProcess(["git"], 0, "main\n", ""),
+        ) as run:
+            with self.assertRaises(InvalidOutput) as caught:
+                publish_reviewed_branch(Path("engine"), "Example/Engine", 875, HEAD)
+        self.assertIn("could not publish from main", str(caught.exception))
+        run.assert_called_once()
+        self.assertIs(run.call_args.kwargs["shell"], False)
+        self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(run.call_args.args[0], ["git", "rev-parse", "--abbrev-ref", "HEAD"])

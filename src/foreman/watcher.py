@@ -246,6 +246,13 @@ def watch_run(state: dict, stop: str) -> Proposal | None:
             "Run started without a configured worker dispatcher.",
             evidence,
         )
+    if stop == "unpublished":
+        return _make_graph_proposal(
+            "Publish the reviewed branch before merge",
+            "src/foreman/runner.py",
+            "The reviewed commit was not on an open pull request, so merge was not armed.",
+            evidence,
+        )
     if stop == "save_failed":
         return _make_graph_proposal(
             "Fix reviewed commit publish step",

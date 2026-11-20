@@ -31,12 +31,20 @@ def _inspect_worktree(cwd: Path) -> tuple[str, bool]:
     return head.stdout.strip(), head.returncode == status.returncode == 0 and not status.stdout
 
 
-def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     return subprocess.run(
-        ["git", *args], cwd=cwd, shell=False, capture_output=True, text=True,
+        args, cwd=cwd, shell=False, capture_output=True, text=True,
         stdin=subprocess.DEVNULL, env=env,
     )
+
+
+def _execute(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return _run(cwd, args)
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return _run(cwd, ["git", *args])
 
 
 def _branch_slug(title: str) -> str:
@@ -94,6 +102,70 @@ def commit_implementation(cwd: Path, issue: int, title: str) -> str:
     return current
 
 
+def _command_detail(result: subprocess.CompletedProcess[str]) -> str:
+    return " ".join((result.stderr or result.stdout).split())
+
+
+def publish_reviewed_branch(
+    cwd: Path,
+    repo: str,
+    issue: int,
+    sha: str,
+    run: Callable[[list[str], Path], subprocess.CompletedProcess[str]] | None = None,
+) -> str:
+    """Push the reviewed slice branch and open its pull request.
+
+    The merge arm runs only after this returns. A missing pull request is not
+    an armed merge.
+    """
+    execute = run or _execute
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+        raise InvalidOutput("the reviewed commit is not a full SHA")
+    branch = execute(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    name = branch.stdout.strip()
+    if branch.returncode != 0 or name in {"", "HEAD", "main", "master"} or not name.startswith(f"{issue}-"):
+        raise InvalidOutput(f"could not publish from {name or 'this checkout'}")
+    status = execute(["git", "status", "--porcelain"], cwd)
+    head = execute(["git", "rev-parse", "HEAD"], cwd)
+    if status.returncode != 0 or head.returncode != 0 or status.stdout or head.stdout.strip().lower() != sha.lower():
+        raise InvalidOutput("the reviewed commit is not the clean HEAD")
+    pushed = execute(["git", "push", "--set-upstream", "origin", f"HEAD:refs/heads/{name}"], cwd)
+    if pushed.returncode != 0:
+        raise InvalidOutput(f"could not push {name}: {_command_detail(pushed)}")
+    view_args = [
+        "gh", "pr", "view", "--repo", repo, "--json",
+        "url,state,headRefOid,headRefName,baseRefName", "",
+    ]
+    viewed = execute(view_args, cwd)
+    if viewed.returncode == 0:
+        try:
+            payload = json.loads(viewed.stdout)
+        except json.JSONDecodeError as exc:
+            raise InvalidOutput("could not read the pull request") from exc
+        if not isinstance(payload, dict):
+            raise InvalidOutput("could not read the pull request")
+        if payload.get("state") == "OPEN" and payload.get("headRefName") == name and payload.get("baseRefName") == "main":
+            current = payload.get("headRefOid")
+            if not isinstance(current, str) or current.lower() != sha.lower():
+                raise InvalidOutput("the open pull request is not the reviewed commit")
+            url = payload.get("url")
+            if not isinstance(url, str) or not url.strip():
+                raise InvalidOutput("could not read the pull request")
+            return url.strip()
+    subject = execute(["git", "log", "-1", "--format=%s"], cwd)
+    title = subject.stdout.strip().splitlines()[0] if subject.returncode == 0 and subject.stdout.strip() else f"Implement #{issue}"
+    created = execute([
+        "gh", "pr", "create", "--repo", repo, "--base", "main", "--head", name,
+        "--title", title, "--body", f"Refs #{issue}",
+    ], cwd)
+    if created.returncode != 0:
+        raise InvalidOutput(f"could not open the pull request: {_command_detail(created)}")
+    url = created.stdout.strip().splitlines()[-1] if created.stdout.strip() else ""
+    if not url.startswith("https://"):
+        raise InvalidOutput("could not open the pull request")
+    return url
+
+
 def run_live_delivery(
     *,
     repo: str,
@@ -108,6 +180,7 @@ def run_live_delivery(
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: WorktreeInspector | None = None,
     commit_worktree: Callable[[str], str] | None = None,
+    publish_worktree: Callable[[str], str] | None = None,
     read_merge_hold: Callable[[str], str | None] | None = None,
 ) -> dict:
     def run_check(command: str) -> int:
@@ -121,11 +194,15 @@ def run_live_delivery(
     if finish_commit is None and inspect_worktree is None:
         def finish_commit(title: str) -> str:
             return commit_implementation(cwd, issue, title)
+    finish_publish = publish_worktree
+    if finish_publish is None and inspect_worktree is None:
+        def finish_publish(sha: str) -> str:
+            return publish_reviewed_branch(cwd, repo, issue, sha)
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         graph = compile_delivery(
             dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
             inspect_worktree=lambda: inspect(cwd), commit_worktree=finish_commit,
-            read_merge_hold=read_merge_hold,
+            publish_worktree=finish_publish, read_merge_hold=read_merge_hold,
         )
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")

@@ -43,7 +43,7 @@ Live verify stops with `dirty_worktree` if the checkout has changes or Git canno
 
 The cap is three failures across verify, proof, and review. It is config. A node cannot raise it.
 
-After approval, the live merge node reads the GitHub repository variable `FOREMAN_MERGE_HOLD` on the target engine repository before recording `gh pr merge --auto --match-head-commit <sha>` with the SHA from verify. A non-empty value halts `merge_held` with that text and does not arm merge (`gh variable set` sets the hold and `gh variable delete` clears it). When unset or empty, the worktree must still be clean and at that SHA for the command to run, and the CLI also requires an open pull request at that SHA with a head branch starting with the issue number and a hyphen and a base branch of `main`.
+After approval, the live run reads the GitHub repository variable `FOREMAN_MERGE_HOLD` on the target engine repository. A non-empty value halts `merge_held` with that text and does not push or arm merge (`gh variable set` sets the hold and `gh variable delete` clears it). When unset or empty, the worktree must be clean and at the SHA from verify. The live run then pushes that slice branch, opens its pull request against `main`, and runs `gh pr merge --auto --match-head-commit <sha>`. The head branch must start with the issue number and a hyphen. If the branch is not pushed, the pull request is not open at that SHA, or the merge command fails, the run stops `unpublished` and does not report verified.
 
 Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 

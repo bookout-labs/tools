@@ -65,6 +65,7 @@ class DeliveryState(TypedDict, total=False):
     head_checked: bool
     merge_armed: bool
     merge_args: list[str]
+    pull_request: str
     browser_proof: dict | None
     formal_proof: dict | None
     proof_labels: dict[str, str]
@@ -278,6 +279,7 @@ def compile_delivery(
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
     commit_worktree: Callable[[str], str] | None = None,
+    publish_worktree: Callable[[str], str] | None = None,
     read_merge_hold: Callable[[str], str | None] | None = None,
 ):
     config = config or load_config()
@@ -489,8 +491,33 @@ def compile_delivery(
             current, clean = inspect_worktree()
             if not state.get("head_checked") or not clean or current != head:
                 return {"merge_armed": False, "merge_args": args, "path": ["merge"]}
+        if publish_worktree is not None:
+            try:
+                published = publish_worktree(head)
+            except InvalidOutput as exc:
+                return {
+                    "merge_armed": False, "merge_args": args, "path": ["merge"],
+                    "halt": "unpublished", "halt_detail": str(exc),
+                }
+            if not isinstance(published, str) or not published.strip():
+                return {
+                    "merge_armed": False, "merge_args": args, "path": ["merge"],
+                    "halt": "unpublished", "halt_detail": "could not open the pull request",
+                }
+        else:
+            published = None
         armed = run_gh(args) == 0 if run_gh is not None else run_check is None
-        return {"merge_armed": armed, "merge_args": args, "path": ["merge"]}
+        result = {"merge_armed": armed, "merge_args": args, "path": ["merge"]}
+        if published:
+            result["pull_request"] = published
+        if run_gh is not None and not armed:
+            result["halt"] = "unpublished"
+            result["halt_detail"] = (
+                "merge was not armed for the open pull request"
+                if published
+                else "the reviewed commit has no open pull request"
+            )
+        return result
 
     def finish(state: DeliveryState) -> dict:
         stop = stop_reason(state)

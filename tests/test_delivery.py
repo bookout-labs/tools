@@ -549,6 +549,87 @@ class DeliveryTest(unittest.TestCase):
                 self.assertTrue(armed["merge_armed"])
                 self.assertEqual(armed["stop"], "verified")
 
+    def test_publish_precedes_merge_and_a_miss_stays_unpublished(self):
+        payload = {
+            "repo": "DoctorCRE/doctorcre-engine",
+            "request": "Add a field",
+            "check": "npm run check",
+            "issue_kind": "slice",
+            "review_rounds": 0,
+            "models_used": {},
+            "attempts": [],
+            "path": [],
+        }
+        order = []
+
+        def publish(sha):
+            order.append(("publish", sha))
+            return "https://github.com/DoctorCRE/doctorcre-engine/pull/875"
+
+        def run_gh(args):
+            order.append(("merge", tuple(args)))
+            return 0
+
+        armed = compile_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
+            run_gh=run_gh,
+            publish_worktree=publish,
+            read_merge_hold=lambda repo: None,
+        ).invoke(payload)
+        self.assertEqual(order, [
+            ("publish", HEAD_SHA),
+            ("merge", ("gh", "pr", "merge", "--auto", "--match-head-commit", HEAD_SHA)),
+        ])
+        self.assertEqual(armed["pull_request"], "https://github.com/DoctorCRE/doctorcre-engine/pull/875")
+        self.assertTrue(armed["merge_armed"])
+        self.assertEqual(armed["stop"], "verified")
+        self.assertIsNone(armed["proposal"])
+
+        def rejected(sha):
+            raise InvalidOutput("could not push 875-health-release: rejected")
+
+        missed = compile_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
+            run_gh=lambda args: self.fail(f"unexpected merge command {args}"),
+            publish_worktree=rejected,
+            read_merge_hold=lambda repo: None,
+        ).invoke(payload)
+        self.assertEqual(missed["stop"], "unpublished")
+        self.assertFalse(missed["merge_armed"])
+        self.assertEqual(missed["halt_detail"], "could not push 875-health-release: rejected")
+        self.assertEqual(missed["proposal"]["target"], "src/foreman/runner.py")
+        self.assertTrue(missed["proposal"]["file_issue"])
+
+        blank = compile_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
+            run_gh=lambda args: self.fail(f"unexpected merge command {args}"),
+            publish_worktree=lambda sha: "  ",
+            read_merge_hold=lambda repo: None,
+        ).invoke(payload)
+        self.assertEqual(blank["stop"], "unpublished")
+        self.assertEqual(blank["halt_detail"], "could not open the pull request")
+
+        held = compile_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
+            run_gh=lambda args: self.fail(f"unexpected merge command {args}"),
+            publish_worktree=lambda sha: self.fail("published during a hold"),
+            read_merge_hold=lambda repo: "production switch",
+        ).invoke(payload)
+        self.assertEqual(held["stop"], "merge_held")
+        self.assertFalse(held["merge_armed"])
+        self.assertIsNone(held["proposal"])
+
+        failed_merge = compile_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
+            run_gh=lambda args: 1,
+            publish_worktree=lambda sha: "https://github.com/DoctorCRE/doctorcre-engine/pull/875",
+            read_merge_hold=lambda repo: None,
+        ).invoke(payload)
+        self.assertEqual(failed_merge["stop"], "unpublished")
+        self.assertFalse(failed_merge["merge_armed"])
+        self.assertEqual(failed_merge["pull_request"], "https://github.com/DoctorCRE/doctorcre-engine/pull/875")
+        self.assertEqual(failed_merge["halt_detail"], "merge was not armed for the open pull request")
+
     def test_stage_prompts_cover_small_parent_and_postgres_properties(self):
         triage_prompt = stage_text("triage")
         self.assertIn("even on a parent issue", triage_prompt)
