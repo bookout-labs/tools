@@ -79,6 +79,7 @@ class WatcherTest(unittest.TestCase):
             ("cli_missing", "codex CLI is not installed", ["implement", "done"], "src/foreman/worker.py"),
             ("merge_held", "could not read FOREMAN_MERGE_HOLD: auth failed", ["triage", "implement", "verify", "review", "merge", "done"], "src/foreman/cli.py"),
             ("unpublished", "could not push 875-health-release: rejected", ["triage", "implement", "verify", "review", "merge", "done"], "src/foreman/runner.py"),
+            ("review_unrecorded", "could not record the review: denied", ["triage", "implement", "verify", "review", "merge", "done"], "src/foreman/runner.py"),
         )
         for stop, detail, path, expected_target in cases:
             with self.subTest(stop=stop, detail=detail):

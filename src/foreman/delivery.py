@@ -144,6 +144,43 @@ def review_verdict(value: object) -> tuple[str, str]:
     return match.group(1).lower(), (match.group(2) or "").strip()
 
 
+def review_comment(state: DeliveryState) -> str:
+    """The pull-request record of who reviewed this commit and what they decided.
+
+    The issue request stays out of the comment. The pull request is public.
+    """
+    model = (state.get("models_used") or {}).get("review")
+    if not isinstance(model, str) or not model.strip():
+        raise InvalidOutput("the review model was not recorded")
+    verdict = state.get("review")
+    if verdict not in REVIEW_OUTCOMES:
+        raise InvalidOutput("the review verdict was not recorded")
+    risk = state.get("risk") or {}
+    level = risk.get("level")
+    if level not in RISK_LEVELS:
+        raise InvalidOutput("the review risk was not recorded")
+    lines = [
+        f"Reviewed by {model.strip()}.",
+        f"Verdict: {verdict}.",
+        f"Risk: {level}.",
+    ]
+    labels = {
+        "alignment": "Alignment",
+        "impact": "Impact",
+        "verification": "Verification",
+        "rollback": "Rollback",
+        "error_detection": "Error detection",
+    }
+    for field, label in labels.items():
+        text = risk.get(field)
+        if isinstance(text, str) and text.strip():
+            lines.append(f"{label}: {text.strip()}")
+    note = state.get("review_note")
+    if isinstance(note, str) and note.strip():
+        lines.extend(["", note.strip()])
+    return "\n".join(lines)
+
+
 def clean_risk(raw: object) -> dict[str, str]:
     if not isinstance(raw, dict):
         raise InvalidOutput("review did not report merge risk")
@@ -280,6 +317,7 @@ def compile_delivery(
     inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
     commit_worktree: Callable[[str], str] | None = None,
     publish_worktree: Callable[[str], str] | None = None,
+    record_review: Callable[[DeliveryState, str], None] | None = None,
     read_merge_hold: Callable[[str], str | None] | None = None,
 ):
     config = config or load_config()
@@ -504,6 +542,15 @@ def compile_delivery(
                     "merge_armed": False, "merge_args": args, "path": ["merge"],
                     "halt": "unpublished", "halt_detail": "could not open the pull request",
                 }
+            published = published.strip()
+            if record_review is not None:
+                try:
+                    record_review(state, published)
+                except InvalidOutput as exc:
+                    return {
+                        "merge_armed": False, "merge_args": args, "path": ["merge"],
+                        "pull_request": published, "halt": "review_unrecorded", "halt_detail": str(exc),
+                    }
         else:
             published = None
         armed = run_gh(args) == 0 if run_gh is not None else run_check is None

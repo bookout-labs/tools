@@ -3,9 +3,9 @@ import unittest
 from dataclasses import replace
 
 from foreman.config import NodeConfig, load_config
-from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
+from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, review_comment, run_delivery, stage_text
 from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 
 
 SLICES = [
@@ -566,6 +566,11 @@ class DeliveryTest(unittest.TestCase):
             order.append(("publish", sha))
             return "https://github.com/DoctorCRE/doctorcre-engine/pull/875"
 
+        def record(state, url):
+            order.append(("record", url))
+            self.assertEqual(state["review"], "approve")
+            self.assertTrue(state["models_used"]["review"])
+
         def run_gh(args):
             order.append(("merge", tuple(args)))
             return 0
@@ -574,10 +579,12 @@ class DeliveryTest(unittest.TestCase):
             FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
             run_gh=run_gh,
             publish_worktree=publish,
+            record_review=record,
             read_merge_hold=lambda repo: None,
         ).invoke(payload)
         self.assertEqual(order, [
             ("publish", HEAD_SHA),
+            ("record", "https://github.com/DoctorCRE/doctorcre-engine/pull/875"),
             ("merge", ("gh", "pr", "merge", "--auto", "--match-head-commit", HEAD_SHA)),
         ])
         self.assertEqual(armed["pull_request"], "https://github.com/DoctorCRE/doctorcre-engine/pull/875")
@@ -629,6 +636,41 @@ class DeliveryTest(unittest.TestCase):
         self.assertFalse(failed_merge["merge_armed"])
         self.assertEqual(failed_merge["pull_request"], "https://github.com/DoctorCRE/doctorcre-engine/pull/875")
         self.assertEqual(failed_merge["halt_detail"], "merge was not armed for the open pull request")
+
+        def denied(state, url):
+            raise InvalidOutput("could not record the review: denied")
+
+        unrecorded = compile_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
+            run_gh=lambda args: self.fail(f"unexpected merge command {args}"),
+            publish_worktree=lambda sha: "https://github.com/DoctorCRE/doctorcre-engine/pull/875",
+            record_review=denied,
+            read_merge_hold=lambda repo: None,
+        ).invoke(payload)
+        self.assertEqual(unrecorded["stop"], "review_unrecorded")
+        self.assertFalse(unrecorded["merge_armed"])
+        self.assertEqual(unrecorded["pull_request"], "https://github.com/DoctorCRE/doctorcre-engine/pull/875")
+        self.assertEqual(unrecorded["halt_detail"], "could not record the review: denied")
+        self.assertEqual(unrecorded["proposal"]["target"], "src/foreman/runner.py")
+
+    def test_review_comment_names_the_reviewer_and_leaves_the_request_out(self):
+        text = review_comment({
+            "request": "PRIVATE_REQUEST_TEXT_NEVER_LEAK",
+            "workspace": "/private/workspace/path",
+            "review": "approve",
+            "review_note": "The date on decision 190 is later than this slice.",
+            "models_used": {"implement": "gpt-6.2-sol-high", "review": "gpt-6.2-sol-high"},
+            "risk": DEFAULT_RISK,
+        })
+        self.assertEqual(text.splitlines()[0], "Reviewed by gpt-6.2-sol-high.")
+        self.assertIn("Verdict: approve.", text)
+        self.assertIn("Risk: low.", text)
+        self.assertIn("Alignment: The change matches the request.", text)
+        self.assertIn("The date on decision 190 is later than this slice.", text)
+        self.assertNotIn("PRIVATE_REQUEST_TEXT_NEVER_LEAK", text)
+        self.assertNotIn("/private/workspace/path", text)
+        with self.assertRaises(InvalidOutput):
+            review_comment({"review": "approve", "risk": DEFAULT_RISK, "models_used": {}})
 
     def test_stage_prompts_cover_small_parent_and_postgres_properties(self):
         triage_prompt = stage_text("triage")

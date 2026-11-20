@@ -11,7 +11,7 @@ from unittest.mock import patch
 from foreman.cli import main
 from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
-from foreman.runner import commit_implementation, publish_reviewed_branch, run_live_delivery
+from foreman.runner import comment_on_pull_request, commit_implementation, publish_reviewed_branch, run_live_delivery
 from foreman.worker import CliWorker
 
 
@@ -841,11 +841,21 @@ class CommitImplementationTest(unittest.TestCase):
                 ).stdout.strip())
                 return "https://github.com/Example/Engine/pull/21"
 
+            recorded = []
+
             def run_gh(args):
                 order.append(list(args))
                 return 0
 
-            with patch("foreman.runner.publish_reviewed_branch", side_effect=publish):
+            def record(cwd, repo_name, url, body, run=None):
+                order.append("record")
+                self.assertEqual((repo_name, url), ("Example/Engine", "https://github.com/Example/Engine/pull/21"))
+                recorded.append(body)
+
+            with (
+                patch("foreman.runner.publish_reviewed_branch", side_effect=publish),
+                patch("foreman.runner.comment_on_pull_request", side_effect=record),
+            ):
                 result = run_live_delivery(
                     repo="Example/Engine", issue=875, check="exit 0", cwd=repo,
                     checkpoint=checkpoint, dispatcher=FailoverDispatcher(handler),
@@ -872,8 +882,13 @@ class CommitImplementationTest(unittest.TestCase):
             ).stdout.strip())
             self.assertEqual(order, [
                 "publish",
+                "record",
                 ["gh", "pr", "merge", "--auto", "--match-head-commit", result["head_sha"]],
             ])
+            self.assertTrue(recorded[0].startswith(f"Reviewed by {result['models_used']['review']}."))
+            self.assertIn("Verdict: approve.", recorded[0])
+            self.assertIn("Risk: low.", recorded[0])
+            self.assertNotIn("Issue title", recorded[0])
             self.assertEqual(result["pull_request"], "https://github.com/Example/Engine/pull/21")
             self.assertTrue(result["merge_armed"])
 
@@ -925,13 +940,14 @@ class PublishReviewedBranchTest(unittest.TestCase):
             "gh", "pr", "create", "--repo", "Example/Engine", "--base", "main",
             "--head", "875-health-release",
             "--title", "The health check names the running release (#875)",
-            "--body", "Refs #875",
+            "--body", "Closes #875",
         ])
 
     def test_existing_pull_request_at_the_sha_is_reused(self):
         payload = json.dumps({
             "url": "https://github.com/Example/Engine/pull/21",
             "state": "OPEN",
+            "body": "Closes #875",
             "headRefOid": HEAD.upper(),
             "headRefName": "875-health-release",
             "baseRefName": "main",
@@ -939,6 +955,48 @@ class PublishReviewedBranchTest(unittest.TestCase):
         url, calls = self.publish(self.ready() + [_completed(), _completed(payload)])
         self.assertEqual(url, "https://github.com/Example/Engine/pull/21")
         self.assertFalse(any(args[:3] == ["gh", "pr", "create"] for args in calls))
+        self.assertFalse(any(args[:3] == ["gh", "pr", "edit"] for args in calls))
+
+    def test_existing_pull_request_body_becomes_closes(self):
+        payload = json.dumps({
+            "url": "https://github.com/Example/Engine/pull/21",
+            "state": "OPEN",
+            "body": "Refs #875",
+            "headRefOid": HEAD.upper(),
+            "headRefName": "875-health-release",
+            "baseRefName": "main",
+        })
+        url, calls = self.publish(self.ready() + [_completed(), _completed(payload), _completed()])
+        self.assertEqual(url, "https://github.com/Example/Engine/pull/21")
+        self.assertEqual(calls[-1], [
+            "gh", "pr", "edit", "https://github.com/Example/Engine/pull/21",
+            "--repo", "Example/Engine", "--body", "Closes #875",
+        ])
+        self.assertFalse(any(args[:3] == ["gh", "pr", "create"] for args in calls))
+
+    def test_comment_posts_the_review_as_one_argument(self):
+        calls = []
+
+        def execute(args, cwd):
+            calls.append(list(args))
+            self.assertEqual(cwd, Path("engine"))
+            return _completed()
+
+        comment_on_pull_request(
+            Path("engine"), "Example/Engine", "https://github.com/Example/Engine/pull/21",
+            "Reviewed by gpt-6.2-sol-high.\nVerdict: approve.", run=execute,
+        )
+        self.assertEqual(calls, [[
+            "gh", "pr", "comment", "https://github.com/Example/Engine/pull/21",
+            "--repo", "Example/Engine", "--body", "Reviewed by gpt-6.2-sol-high.\nVerdict: approve.",
+        ]])
+        with self.assertRaises(InvalidOutput) as caught:
+            comment_on_pull_request(
+                Path("engine"), "Example/Engine", "https://github.com/Example/Engine/pull/21",
+                "Reviewed by gpt-6.2-sol-high.",
+                run=lambda args, cwd: _completed(code=1, stderr="denied\n"),
+            )
+        self.assertEqual(str(caught.exception), "could not record the review: denied")
 
     def test_open_pull_request_at_another_sha_is_not_replaced(self):
         payload = json.dumps({

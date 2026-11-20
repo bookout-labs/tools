@@ -253,6 +253,13 @@ def watch_run(state: dict, stop: str) -> Proposal | None:
             "The reviewed commit was not on an open pull request, so merge was not armed.",
             evidence,
         )
+    if stop == "review_unrecorded":
+        return _make_graph_proposal(
+            "Record the review on the pull request",
+            "src/foreman/runner.py",
+            "The review verdict was not commented on the pull request, so merge was not armed.",
+            evidence,
+        )
     if stop == "save_failed":
         return _make_graph_proposal(
             "Fix reviewed commit publish step",

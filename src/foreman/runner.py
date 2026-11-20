@@ -10,7 +10,7 @@ from typing import Callable
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from foreman.delivery import DeliveryState, Slice, clean_slices, compile_delivery
+from foreman.delivery import DeliveryState, Slice, clean_slices, compile_delivery, review_comment
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.github import GhClient, GitHub
 
@@ -106,6 +106,40 @@ def _command_detail(result: subprocess.CompletedProcess[str]) -> str:
     return " ".join((result.stderr or result.stdout).split())
 
 
+def _pull_request_closes(body: object, issue: int) -> bool:
+    return isinstance(body, str) and re.search(rf"(?i)\bCloses #{issue}\b", body) is not None
+
+
+def _ensure_closes(execute, cwd: Path, repo: str, issue: int, url: str, body: object) -> None:
+    if _pull_request_closes(body, issue):
+        return
+    edited = execute(
+        ["gh", "pr", "edit", url, "--repo", repo, "--body", f"Closes #{issue}"],
+        cwd,
+    )
+    if edited.returncode != 0:
+        raise InvalidOutput(f"could not set the pull request body: {_command_detail(edited)}")
+
+
+def comment_on_pull_request(
+    cwd: Path,
+    repo: str,
+    url: str,
+    body: str,
+    run: Callable[[list[str], Path], subprocess.CompletedProcess[str]] | None = None,
+) -> None:
+    """Comment the review on the pull request. The body is one argument, never a shell."""
+    execute = run or _execute
+    if not isinstance(url, str) or not url.startswith("https://") or not isinstance(body, str) or not body.strip():
+        raise InvalidOutput("could not record the review")
+    commented = execute(
+        ["gh", "pr", "comment", url, "--repo", repo, "--body", body.strip()],
+        cwd,
+    )
+    if commented.returncode != 0:
+        raise InvalidOutput(f"could not record the review: {_command_detail(commented)}")
+
+
 def publish_reviewed_branch(
     cwd: Path,
     repo: str,
@@ -134,7 +168,7 @@ def publish_reviewed_branch(
         raise InvalidOutput(f"could not push {name}: {_command_detail(pushed)}")
     view_args = [
         "gh", "pr", "view", "--repo", repo, "--json",
-        "url,state,headRefOid,headRefName,baseRefName", "",
+        "url,state,body,headRefOid,headRefName,baseRefName", "",
     ]
     viewed = execute(view_args, cwd)
     if viewed.returncode == 0:
@@ -151,12 +185,14 @@ def publish_reviewed_branch(
             url = payload.get("url")
             if not isinstance(url, str) or not url.strip():
                 raise InvalidOutput("could not read the pull request")
-            return url.strip()
+            url = url.strip()
+            _ensure_closes(execute, cwd, repo, issue, url, payload.get("body"))
+            return url
     subject = execute(["git", "log", "-1", "--format=%s"], cwd)
     title = subject.stdout.strip().splitlines()[0] if subject.returncode == 0 and subject.stdout.strip() else f"Implement #{issue}"
     created = execute([
         "gh", "pr", "create", "--repo", repo, "--base", "main", "--head", name,
-        "--title", title, "--body", f"Refs #{issue}",
+        "--title", title, "--body", f"Closes #{issue}",
     ], cwd)
     if created.returncode != 0:
         raise InvalidOutput(f"could not open the pull request: {_command_detail(created)}")
@@ -181,6 +217,7 @@ def run_live_delivery(
     inspect_worktree: WorktreeInspector | None = None,
     commit_worktree: Callable[[str], str] | None = None,
     publish_worktree: Callable[[str], str] | None = None,
+    record_review: Callable[[DeliveryState, str], None] | None = None,
     read_merge_hold: Callable[[str], str | None] | None = None,
 ) -> dict:
     def run_check(command: str) -> int:
@@ -198,11 +235,16 @@ def run_live_delivery(
     if finish_publish is None and inspect_worktree is None:
         def finish_publish(sha: str) -> str:
             return publish_reviewed_branch(cwd, repo, issue, sha)
+    finish_record = record_review
+    if finish_record is None and inspect_worktree is None:
+        def finish_record(state: DeliveryState, url: str) -> None:
+            comment_on_pull_request(cwd, repo, url, review_comment(state))
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         graph = compile_delivery(
             dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
             inspect_worktree=lambda: inspect(cwd), commit_worktree=finish_commit,
-            publish_worktree=finish_publish, read_merge_hold=read_merge_hold,
+            publish_worktree=finish_publish, record_review=finish_record,
+            read_merge_hold=read_merge_hold,
         )
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")

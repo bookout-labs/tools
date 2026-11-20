@@ -46,7 +46,7 @@ def _print_run(result: dict) -> None:
                 print(url)
             if result.get("halt") == "merge_held":
                 print("merge held")
-            elif result.get("halt") == "unpublished":
+            elif result.get("halt") in {"unpublished", "review_unrecorded"}:
                 print("merge not armed")
             elif result["merge_armed"]:
                 print("merge armed")
