@@ -88,7 +88,9 @@ def order_for(
 ) -> list[str]:
     spec = config.nodes[node]
     models = list(spec.models)
-    source = "implement" if node == "review" else spec.other_family_from
+    if node == "review" and not (implement_models or models_used.get("implement")):
+        raise ConfigError("review needs the implement model")
+    source = spec.other_family_from
     if not source:
         return models
     latest = models_used.get(source)

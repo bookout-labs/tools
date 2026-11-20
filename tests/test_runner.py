@@ -400,7 +400,7 @@ class LiveRunnerTest(unittest.TestCase):
             [{"triage": "implement"}, {"implementation": "built", "head_sha": "b" * 40}, APPROVE],
             check="test -f expected", run_gh=gh,
         )
-        self.assertEqual(self.calls, ["claude", "codex", "claude"])
+        self.assertEqual(self.calls, ["claude", "codex", "codex"])
         self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "merge", "done"])
         self.assertEqual(result["check_exit_code"], 0)
         self.assertEqual(result["head_sha"], HEAD)

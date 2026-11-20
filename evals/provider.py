@@ -37,11 +37,6 @@ def _with_quota_gap() -> str:
         request="Add a field",
         check="npm run check",
     )
-    from foreman.config import family
-    implement = result["models_used"]["implement"]
-    review = result["models_used"]["review"]
-    if family(implement) == family(review):
-        return "same-family"
     return result["stop"]
 
 

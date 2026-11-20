@@ -23,8 +23,7 @@ models = ["sol", "terra", "opus", "grok"]
 
 [nodes.review]
 role = "verifier"
-other_family_from = "implement"
-models = ["opus", "sol", "grok"]
+models = ["sol", "terra", "grok"]
 
 [nodes.verify]
 role = "check"

@@ -42,7 +42,7 @@ class RouterTest(unittest.TestCase):
         self.assertEqual((retry[0], retry_reason), ("sol", "retry after failure"))
         self.assertEqual(choose_order("triage", ["opus", "grok"], {"request": "Add a field"})[1], "configured order")
 
-    def test_quota_fallback_keeps_a_different_family_for_review(self):
+    def test_quota_fallback_is_reviewed_by_a_fresh_sol_session(self):
         handler = ScriptHandler()
 
         def exhaust_terra(node, model, state, instruction):
@@ -54,17 +54,15 @@ class RouterTest(unittest.TestCase):
         choice = next(item for item in result["model_choices"] if item["node"] == "implement")
         self.assertEqual(choice["model"], "sol")
         self.assertEqual(choice["reason"], "quota fallback")
-        self.assertEqual(result["models_used"]["review"], "opus")
-        self.assertNotEqual(family("sol"), family("opus"))
+        self.assertEqual(result["models_used"]["review"], "sol")
         self.assertNotIn("terra", [call["model"] for call in handler.calls if call["node"] == "review"])
 
-    def test_a_sol_build_is_not_reviewed_by_terra(self):
+    def test_a_sol_build_is_reviewed_by_a_fresh_sol_session(self):
         handler = ScriptHandler()
         result = walk(handler, request="x" * 500)
         self.assertEqual(result["models_used"]["implement"], "sol")
-        self.assertEqual(result["models_used"]["review"], "opus")
+        self.assertEqual(result["models_used"]["review"], "sol")
         self.assertEqual(family("sol"), family("terra"))
-        self.assertNotEqual(family(result["models_used"]["implement"]), family(result["models_used"]["review"]))
 
     def test_dry_run_prints_the_model_and_reason(self):
         stdout = io.StringIO()
@@ -77,7 +75,7 @@ class RouterTest(unittest.TestCase):
         text = stdout.getvalue()
         self.assertIn("implement terra small scoped build", text)
         self.assertIn("triage opus configured order", text)
-        self.assertIn("review opus configured order", text)
+        self.assertIn("review sol configured order", text)
 
 
 if __name__ == "__main__":

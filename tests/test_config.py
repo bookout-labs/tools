@@ -1,6 +1,6 @@
 import unittest
 
-from foreman.config import DEFAULT_PATH, ConfigError, family, load_config, order_for, parse_config
+from foreman.config import DEFAULT_PATH, ConfigError, load_config, order_for, parse_config
 
 
 class ConfigTest(unittest.TestCase):
@@ -14,12 +14,12 @@ class ConfigTest(unittest.TestCase):
         for banned in ("gpt-", "claude-", "grok-"):
             self.assertNotIn(banned, text)
 
-    def test_review_uses_the_other_family(self):
+    def test_review_starts_with_a_fresh_sol_session(self):
         config = load_config()
-        gpt_first = order_for("review", config, {"implement": "gpt-6.1-sol-high"})
-        claude_first = order_for("review", config, {"implement": "claude-opus-5-5-high"})
-        self.assertEqual([family(model) for model in gpt_first], ["claude", "grok"])
-        self.assertEqual([family(model) for model in claude_first], ["gpt", "grok"])
+        for builder in ("sol", "opus"):
+            order = order_for("review", config, {"implement": builder})
+            self.assertEqual(order[0], "sol")
+            self.assertNotIn("opus", order)
 
     def test_review_without_a_builder_stops(self):
         config = load_config()
