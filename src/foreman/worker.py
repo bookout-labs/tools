@@ -6,7 +6,7 @@ import re
 import subprocess
 from typing import Callable
 
-from foreman.config import family
+from foreman.config import ConfigError, family
 from foreman.dispatch import InvalidOutput, QuotaExhausted
 
 CommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
@@ -41,6 +41,34 @@ def model_and_effort(model: str) -> tuple[str, str | None]:
     if sep and slug and effort in EFFORTS:
         return slug, effort
     return model, None
+
+
+def _requested_model_ran(slug: str, usage: object) -> bool:
+    """Fail over only when a usage report shows the requested model did not run.
+
+    No report is not quota. A CLI suffix such as grok-4.7-build is still the
+    requested model. An extra model from the same provider stays only when the
+    requested model is in the report. Another provider does not.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return True
+    try:
+        expected = family(slug)
+    except ConfigError:
+        return False
+    matched = False
+    for key in usage:
+        if not isinstance(key, str):
+            return False
+        try:
+            reported = family(key)
+        except ConfigError:
+            return False
+        if reported != expected:
+            return False
+        if key == slug or key.startswith(f"{slug}-"):
+            matched = True
+    return matched
 
 
 QUOTA = re.compile(
@@ -81,6 +109,11 @@ class CliWorker:
             "Write stage decisions as values of their corresponding keys. "
             "Do not arm a merge."
         )
+        if node == "spec":
+            prompt += (
+                " The spec value is one document: a string, or an object whose values are"
+                " the sections of that document."
+            )
         if node in {"triage", "spec"} and state.get("issue_kind") == "slice" and "slice" not in state:
             prompt += f" Use needs_human if you cannot determine the issue requirements. {SLICE_PROMPT}"
         if node == "implement":
@@ -124,8 +157,7 @@ class CliWorker:
                 if QUOTA.search(process.stdout):
                     raise QuotaExhausted(model)
                 raise InvalidOutput(f"{provider} worker reported an error")
-            usage = envelope.get("modelUsage")
-            if not isinstance(usage, dict) or usage.keys() != {slug}:
+            if not _requested_model_ran(slug, envelope.get("modelUsage")):
                 raise QuotaExhausted(model)
             body = envelope.get("result" if provider == "claude" else "text")
 

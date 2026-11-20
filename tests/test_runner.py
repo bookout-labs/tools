@@ -133,6 +133,83 @@ class CliWorkerTest(unittest.TestCase):
         with self.assertRaises(QuotaExhausted):
             CliWorker(Path("."), run)("triage", "gpt-first", {}, "")
 
+    def test_same_provider_tool_router_still_counts_as_the_requested_model(self):
+        def run(args, cwd):
+            self.assertEqual(args[:5], ["claude", "--model", "claude-opus-5-5", "--effort", "high"])
+            self.assertNotIn("-high", " ".join(args[:-1]))
+            return subprocess.CompletedProcess(args, 0, json.dumps({
+                "result": json.dumps({"triage": "implement"}),
+                "modelUsage": {"claude-opus-5-5": {}, "claude-haiku-5-5": {}},
+            }), "")
+
+        result = CliWorker(Path("."), run)("triage", "claude-opus-5-5-high", {}, "")
+        self.assertEqual(result, {"triage": "implement"})
+
+    def test_a_tool_router_without_the_requested_model_fails_over(self):
+        def run(args, cwd):
+            return subprocess.CompletedProcess(args, 0, json.dumps({
+                "result": json.dumps({"triage": "implement"}),
+                "modelUsage": {"claude-haiku-5-5": {}},
+            }), "")
+
+        with self.assertRaises(QuotaExhausted):
+            CliWorker(Path("."), run)("triage", "claude-opus-5-5-high", {}, "")
+
+    def test_grok_build_id_is_the_requested_model(self):
+        def run(args, cwd):
+            self.assertEqual(args[:5], ["grok", "-m", "grok-4.7", "--reasoning-effort", "high"])
+            self.assertNotIn("-high", " ".join(args[:-1]))
+            return subprocess.CompletedProcess(args, 0, json.dumps({
+                "text": json.dumps({"triage": "implement"}),
+                "modelUsage": {"grok-4.7-build": {}},
+            }), "")
+
+        result = CliWorker(Path("."), run)("triage", "grok-4.7-high", {}, "")
+        self.assertEqual(result, {"triage": "implement"})
+
+    def test_another_provider_or_a_different_id_fails_over(self):
+        cases = (
+            ("grok-4.7-high", {"grok-4.70": {}}),
+            ("claude-opus-5-5-high", {"claude-opus-5-5": {}, "gpt-6.1-sol": {}}),
+            ("claude-opus-5-5-high", {"gpt-6.1-sol": {}}),
+        )
+        for model, usage in cases:
+            with self.subTest(model=model, usage=sorted(usage)):
+                def run(args, cwd, usage=usage):
+                    field = "result" if args[0] == "claude" else "text"
+                    return subprocess.CompletedProcess(args, 0, json.dumps({
+                        field: json.dumps({"triage": "implement"}),
+                        "modelUsage": usage,
+                    }), "")
+
+                with self.assertRaises(QuotaExhausted):
+                    CliWorker(Path("."), run)("triage", model, {}, "")
+
+    def test_a_successful_body_without_a_usage_report_is_not_quota(self):
+        def run(args, cwd):
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"result": json.dumps({"triage": "implement"})}), ""
+            )
+
+        result = CliWorker(Path("."), run)("triage", "claude-opus-5-5-high", {}, "")
+        self.assertEqual(result, {"triage": "implement"})
+
+    def test_spec_prompt_states_the_document_shape(self):
+        seen = []
+
+        def run(args, cwd):
+            seen.append(args)
+            return worker_reply(args, {"spec": "Plan", "spec_gate": "needs_human"})
+
+        result = CliWorker(Path("."), run)("spec", "gpt-6.1-sol-high", {}, "Write the spec.")
+        self.assertEqual(
+            seen[0][:6],
+            ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"],
+        )
+        self.assertNotIn("-high", " ".join(seen[0][:-1]))
+        self.assertIn("The spec value is one document", seen[0][-1])
+        self.assertEqual(result["spec"], "Plan")
+
 
 class LiveRunnerTest(unittest.TestCase):
     def setUp(self):
