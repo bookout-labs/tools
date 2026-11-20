@@ -173,3 +173,27 @@ def redact_text(
     return SecretRedactor.from_environ(env=env, extra_secrets=extra_secrets).redact(
         text, redact_pii=redact_pii
     )
+
+
+def redact_value(
+    value: object,
+    *,
+    extra_secrets: Iterable[str] = (),
+    env: Mapping[str, str] | None = None,
+    redact_pii: bool = False,
+) -> object:
+    """Scrub nested string values while preserving dictionary keys and container types."""
+    redactor = SecretRedactor.from_environ(env=env, extra_secrets=extra_secrets)
+
+    def scrub(item: object) -> object:
+        if isinstance(item, str):
+            return redactor.redact(item, redact_pii=redact_pii)
+        if isinstance(item, list):
+            return [scrub(element) for element in item]
+        if isinstance(item, tuple):
+            return tuple(scrub(element) for element in item)
+        if isinstance(item, dict):
+            return {key: scrub(element) for key, element in item.items()}
+        return item
+
+    return scrub(value)

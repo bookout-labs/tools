@@ -1,6 +1,9 @@
 import unittest
 
 from dataclasses import replace
+from unittest.mock import Mock
+
+from langgraph.checkpoint.memory import InMemorySaver
 
 from foreman.config import NodeConfig, load_config
 from foreman.delivery import (
@@ -858,7 +861,7 @@ class DeliveryTest(unittest.TestCase):
             "@@ -1,2 +1,3 @@\n"
             " x = 1\n"
             "+y = 2\n"
-            " z = 3\n"
+            " owner@example.invalid\n"
         )
 
         def handler(node, model, state, instruction):
@@ -875,6 +878,8 @@ class DeliveryTest(unittest.TestCase):
                 "comments": [
                     {"path": "b/src/app.py", "line": 2, "side": "RIGHT", "body": "Valid comment."},
                     {"path": "src/app.py", "line": 999, "side": "RIGHT", "body": "Out of diff."},
+                    {"path": "src/app.py", "line": 2, "side": "RIGHT",
+                     "body": "```suggestion\ny = 4\nowner@example.invalid\n```"},
                 ],
             }
 
@@ -895,11 +900,123 @@ class DeliveryTest(unittest.TestCase):
             "path": [],
         })
         self.assertIn("[NEW:2] y = 2", seen_instructions["review"])
+        self.assertNotIn("owner@example.invalid", seen_instructions["review"])
         self.assertEqual(
             result["review_comments"],
             [{"path": "src/app.py", "line": 2, "side": "RIGHT", "body": "Valid comment."}],
         )
-        self.assertEqual(len(result["review_validation_errors"]), 1)
+        self.assertEqual(len(result["review_validation_errors"]), 2)
+        self.assertIn("duplicates context", result["review_validation_errors"][1])
+
+    def test_empty_diff_drops_comments_and_next_review_clears_validation_errors(self):
+        review_inputs = []
+
+        def handler(node, model, state, instruction):
+            if node != "review":
+                return script(node, model, state, instruction)
+            review_inputs.append(state)
+            if len(review_inputs) == 1:
+                return {"review": "changes", "risk": DEFAULT_RISK, "comments": [
+                    {"path": "app.py", "line": 4, "side": "RIGHT", "body": "Review this line."},
+                ]}
+            return {"review": "approve", "risk": DEFAULT_RISK}
+
+        script = ScriptHandler(head_sha=HEAD_SHA)
+        graph = compile_delivery(FailoverDispatcher(handler), read_diff=lambda: "")
+        result = graph.invoke({
+            "repo": "Example/Engine", "request": "Add a field", "issue_kind": "slice",
+            "review_comments": [{"body": "Stale comment"}],
+        })
+        self.assertEqual(len(review_inputs), 2)
+        self.assertEqual(review_inputs[1]["review_comments"], [])
+        self.assertIn("not in the diff", review_inputs[1]["review_validation_errors"][0])
+        self.assertEqual(result["review_comments"], [])
+        self.assertEqual(result["review_validation_errors"], [])
+
+    def test_omitting_comments_on_a_later_review_clears_previous_valid_comments(self):
+        script = ScriptHandler(reviews=["changes", "approve"], head_sha=HEAD_SHA)
+        comment = {"path": "app.py", "line": 1, "side": "RIGHT", "body": "Review this line."}
+        previous_comments = []
+
+        def handler(node, model, state, instruction):
+            reply = script(node, model, state, instruction)
+            if node == "review":
+                previous_comments.append(state.get("review_comments"))
+                if reply["review"] == "changes":
+                    reply["comments"] = [comment]
+            return reply
+
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
+        graph = compile_delivery(FailoverDispatcher(handler), read_diff=lambda: diff)
+        result = graph.invoke({"repo": "Example/Engine", "request": "Change a field", "issue_kind": "slice"})
+        self.assertEqual(previous_comments, [None, [comment]])
+        self.assertEqual(result["review_comments"], [])
+
+    def test_approving_review_that_crosses_hard_budget_cannot_reach_merge(self):
+        class DispatcherWithoutCallback(FailoverDispatcher):
+            def run(self, node, models, state, instruction, *, attempts=None, budget_check=None):
+                return super().run(node, models, state, instruction, attempts=attempts)
+
+        for dispatcher_class in (FailoverDispatcher, DispatcherWithoutCallback):
+            with self.subTest(dispatcher=dispatcher_class.__name__):
+                script = ScriptHandler()
+
+                def handler(node, model, state, instruction):
+                    spend = {"triage": 0.4, "review": 0.6}.get(node, 0)
+                    handler.last_meta = {"total_cost_usd": spend}
+                    return script(node, model, state, instruction)
+
+                publish = Mock(return_value="https://github.com/Example/Engine/pull/1")
+                record, run_gh = Mock(), Mock(return_value=0)
+                graph = compile_delivery(
+                    dispatcher_class(handler), run_check=lambda _: 0,
+                    inspect_worktree=lambda: (HEAD_SHA, True), commit_worktree=lambda _: HEAD_SHA,
+                    publish_worktree=publish, record_review=record, run_gh=run_gh, budget={"hard_usd": 1},
+                )
+                result = graph.invoke({
+                    "repo": "Example/Engine", "request": "Add a field", "issue_kind": "slice", "check": "exit 0",
+                })
+                self.assertEqual(result["stop"], "budget_exceeded")
+                self.assertEqual(result["failure_phase"], "budget")
+                self.assertEqual(result["failure_reason"], "budget_exceeded")
+                self.assertEqual(result["usage_records"][-1]["total_cost_usd"], 0.6)
+                self.assertEqual(result["attempts"][-1]["status"], "ran")
+                self.assertNotIn("merge", result["path"])
+                for callback in (publish, record, run_gh):
+                    callback.assert_not_called()
+
+    def test_quota_attempt_that_crosses_hard_budget_stops_failover(self):
+        calls = []
+
+        def handler(node, model, state, instruction):
+            calls.append(model)
+            handler.last_meta = {"input_tokens": 10}
+            raise QuotaExhausted(model, "quota")
+
+        graph = compile_delivery(FailoverDispatcher(handler), budget={"hard_tokens": 10})
+        result = graph.invoke({"repo": "Example/Engine", "request": "Add a field"})
+        self.assertEqual(result["stop"], "budget_exceeded")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["attempts"][-1]["status"], "quota")
+        self.assertEqual(result["usage_records"][-1]["input_tokens"], 10)
+
+    def test_merge_rechecks_spend_when_resuming_a_pending_merge(self):
+        publish = Mock(return_value="https://github.com/Example/Engine/pull/1")
+        record, run_gh = Mock(), Mock(return_value=0)
+        graph = compile_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=HEAD_SHA)),
+            checkpointer=InMemorySaver(), budget={"hard_tokens": 10},
+            publish_worktree=publish, record_review=record, run_gh=run_gh,
+        )
+        config = {"configurable": {"thread_id": "pending-merge"}}
+        graph.invoke({"repo": "Example/Engine", "request": "Add a field"}, config, interrupt_before=["merge"])
+        self.assertEqual(graph.get_state(config).next, ("merge",))
+        graph.update_state(config, {"usage_records": [{"input_tokens": 10}]}, as_node="review")
+        result = graph.invoke(None, config)
+        self.assertEqual(result["stop"], "budget_exceeded")
+        self.assertFalse(result["merge_armed"])
+        for callback in (publish, record, run_gh):
+            callback.assert_not_called()
 
 
 if __name__ == "__main__":

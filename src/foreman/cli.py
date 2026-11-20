@@ -28,13 +28,24 @@ from foreman.github import GhClient, GitHub
 from foreman.improve import ObserverRunner, WriteSurfaceError, run_self_improvement
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
-from foreman.runner import WorktreeInspector, run_live_delivery
+from foreman.runner import WorktreeInspector, _read_branch_diff, run_live_delivery
 from foreman.scoring import JudgeRunner, ScorerError, calibration_report, load_scorers, score_run
 from foreman.telemetry import TelemetryStore, default_telemetry_path, load_pricing, render_stats_html, render_stats_text
 from foreman.watcher import TOOLS_REPO, file_proposal_issue
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
+
+
+def _pinned_diff(cwd: Path, head_sha: object) -> str:
+    """Diff of the exact commit a run delivered, or empty when this checkout lacks that commit."""
+    if not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", head_sha):
+        return ""
+    present = subprocess.run(
+        ["git", "cat-file", "-e", f"{head_sha}^{{commit}}"],
+        cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
+    )
+    return _read_branch_diff(cwd, head_sha=head_sha) if present.returncode == 0 else ""
 
 
 def _print_run(result: dict) -> None:
@@ -326,6 +337,7 @@ def main(
                     return 1
                 target_ids = [recent[0]["run_id"]]
             for rid in target_ids:
+                recorded = store.get_run(rid)
                 results = score_run(
                     store,
                     rid,
@@ -333,6 +345,7 @@ def main(
                     judge=judge_runner,
                     force=args.force,
                     respect_sampling=not args.all_samples,
+                    diff_text=_pinned_diff(Path.cwd(), recorded.get("head_sha") if recorded else None),
                 )
                 for row in results:
                     status = "PASS" if row["passed"] else "FAIL"
@@ -548,7 +561,9 @@ def main(
         if args.score and (rid := result.get("run_id")):
             try:
                 store = TelemetryStore(effective_telemetry)
-                scored = score_run(store, rid, judge=judge_runner)
+                scored = score_run(
+                    store, rid, judge=judge_runner, diff_text=_pinned_diff(cwd, result.get("head_sha"))
+                )
                 for row in scored:
                     status = "PASS" if row["passed"] else "FAIL"
                     print(f"score {row['scorer']}={row['label']} ({status}) [{row['judge_model']}]")

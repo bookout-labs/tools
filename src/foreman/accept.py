@@ -23,6 +23,21 @@ def _request(title: object, body: object) -> str:
     return f"{title.strip()}\n\n{body.strip()}"
 
 
+def _alert_dedupe_key(event: dict) -> str:
+    # Hash the raw seed before redaction so the key never echoes secrets or collapses on placeholders.
+    seed = next(
+        (
+            str(event[key]).strip()
+            for key in ("event_id", "alert_id", "fingerprint", "dedupe_key")
+            if event.get(key) is not None and str(event[key]).strip()
+        ),
+        None,
+    )
+    if seed is None:
+        seed = f"{str(event.get('service') or 'service').strip()}:{str(event.get('title')).strip()}"
+    return f"alert:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}"
+
+
 def accept_event(event: dict) -> dict:
     if not isinstance(event, dict):
         raise AcceptError("event must be a mapping")
@@ -41,20 +56,11 @@ def accept_event(event: dict) -> dict:
         if severity in {"info", "debug"}:
             return {"start": False}
         raw_req = _request(event.get("title"), event.get("body"))
-        scrubbed_req = redact_text(raw_req, redact_pii=True)
-        service = redact_text(str(event.get("service") or "service"), redact_pii=True).strip()
-        raw_fp = event.get("dedupe_key") or event.get("fingerprint") or scrubbed_req.splitlines()[0]
-        scrubbed_fp = redact_text(str(raw_fp), redact_pii=True).strip()
-        if event.get("dedupe_key"):
-            dedupe_key = scrubbed_fp
-        else:
-            digest = hashlib.sha256(f"{service}:{scrubbed_fp}".encode("utf-8")).hexdigest()[:16]
-            dedupe_key = f"alert:{digest}"
         return {
             "start": True,
             "source": "alert_webhook",
             "draft_only": True,
-            "dedupe_key": dedupe_key,
-            "request": scrubbed_req,
+            "dedupe_key": _alert_dedupe_key(event),
+            "request": redact_text(raw_req, redact_pii=True),
         }
     raise AcceptError(f"unknown event source {source}")

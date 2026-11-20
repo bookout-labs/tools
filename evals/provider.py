@@ -120,8 +120,8 @@ def call_api(prompt, options, context):
         dispatcher = FailoverDispatcher(handler)
         orig_run = dispatcher.run
 
-        def pricey(node, models, state, instruction, *, attempts=None):
-            res = orig_run(node, models, state, instruction, attempts=attempts)
+        def pricey(node, models, state, instruction, *, attempts=None, **kwargs):
+            res = orig_run(node, models, state, instruction, attempts=attempts, **kwargs)
             dispatcher.last_meta = [{"node": node, "model": res["model"], "status": "ran", "total_cost_usd": 60.0}]
             return res
 

@@ -14,6 +14,48 @@ from foreman.transcripts import (
 
 
 class TranscriptsTest(unittest.TestCase):
+    def test_lookup_is_exact_provider_scoped_and_rejects_ambiguity(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            claude, codex, grok = (root / name for name in ("claude", "codex", "grok"))
+            (claude / "project").mkdir(parents=True)
+            (codex / "date").mkdir(parents=True)
+            (grok / "nested" / "session-one").mkdir(parents=True)
+            roots = {"claude": claude, "codex": codex, "grok": grok}
+            claude_file = claude / "project" / "session-one.jsonl"
+            codex_file = codex / "date" / "rollout-session-one.jsonl"
+            grok_file = grok / "nested" / "session-one" / "chat_history.jsonl"
+            for path in (claude_file, codex_file, grok_file, codex / "prefixsession-one-extra.jsonl"):
+                path.touch()
+            for token in (".", "..", "ab", "with.dot"):
+                (codex / f"{token}.jsonl").touch()
+                self.assertIsNone(locate_session_transcript(token, provider="codex", search_roots=roots))
+            self.assertEqual(locate_session_transcript("session-one", provider="gpt", search_roots=roots), codex_file)
+            self.assertEqual(locate_session_transcript("session-one", provider="claude", search_roots=roots), claude_file)
+            self.assertEqual(locate_session_transcript("session-one", provider="grok", search_roots=roots), grok_file)
+            self.assertIsNone(locate_session_transcript("session-one", search_roots=roots))
+            (codex / "session-one.jsonl").touch()
+            self.assertIsNone(locate_session_transcript("session-one", provider="codex", search_roots=roots))
+            self.assertIsNone(locate_session_transcript("session-one-extra", provider="codex", search_roots=roots))
+
+    def test_lookup_rejects_symlinked_files_and_directories(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            grok = root / "grok"
+            grok.mkdir()
+            safe = grok / "safe"
+            safe.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "chat_history.jsonl").touch()
+            (safe / "chat_history.jsonl").touch()
+            (grok / "outside-dir").symlink_to(outside, target_is_directory=True)
+            (grok / "inside-dir").symlink_to(safe, target_is_directory=True)
+            (grok / "linked-file").mkdir()
+            (grok / "linked-file" / "chat_history.jsonl").symlink_to(safe / "chat_history.jsonl")
+            for sid in ("outside-dir", "inside-dir", "linked-file"):
+                self.assertIsNone(locate_session_transcript(sid, provider="grok", search_roots={"grok": grok}))
+
     def test_condense_all_three_dialects_and_redact_secrets_and_pii(self):
         claude_jsonl = "\n".join([
             json.dumps({
@@ -103,6 +145,12 @@ class TranscriptsTest(unittest.TestCase):
             self.assertEqual(locate_session_transcript("codex-99", search_roots=roots), session_file)
             self.assertEqual(locate_session_transcript("grok-sess-7", search_roots=roots), grok_file)
             self.assertIn("Reviewed cleanly", condense_transcript(grok_file))
+            (claude_dir / "codex-99.jsonl").write_text(
+                json.dumps({"type": "assistant", "message": {
+                    "role": "assistant", "content": "Unrelated Claude transcript",
+                }}) + "\n",
+                encoding="utf-8",
+            )
 
             evidence = build_run_evidence(
                 {
@@ -125,8 +173,27 @@ class TranscriptsTest(unittest.TestCase):
             )
             self.assertIn("Transcript (codex-99):", evidence)
             self.assertIn("Built feature", evidence)
+            self.assertNotIn("Unrelated Claude transcript", evidence)
             self.assertIn("Diff excerpt:", evidence)
             self.assertNotIn("owner@example.invalid", evidence)
+
+            fallback = build_run_evidence(
+                {"state": {"sessions": {"implement": "codex-99"}, "models_used": {"implement": "gpt-6.2-sol-high"}}},
+                search_roots=roots,
+            )
+            self.assertIn("Built feature", fallback)
+            primary = build_run_evidence(
+                {"session_id": "codex-99", "models_used": {"implement": "gpt-6.2-sol-high"}},
+                search_roots=roots,
+            )
+            self.assertIn("Built feature", primary)
+            scoped = build_run_evidence(
+                {"state": {"sessions": {"implement": "codex-99"}, "models_used": {"implement": "claude-opus-5-5-high"}}},
+                stage_calls=[{"node": "implement", "session_id": "codex-99", "provider": "gpt"}],
+                search_roots=roots,
+            )
+            self.assertIn("Built feature", scoped)
+            self.assertNotIn("Unrelated Claude transcript", scoped)
 
 
 if __name__ == "__main__":

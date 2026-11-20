@@ -75,7 +75,6 @@ NON_INFRA_FAIL_STOPS = {
     "verify_cap",
     "review_cap",
     "invalid_output",
-    "insufficient_evidence",
     "no_reviewer",
     "missing_slice",
     "dirty_worktree",
@@ -110,6 +109,43 @@ def check_write_surface(paths: Iterable[str]) -> list[str]:
             )
         normalized.append(path)
     return normalized
+
+
+def _assert_contained_path(repo_root: Path, rel_path: str) -> Path:
+    """Resolve rel_path under repo_root, refusing symlinked components or escapes."""
+    root = repo_root.resolve(strict=True)
+    current = root
+    for part in Path(rel_path).parts:
+        current = current / part
+        if current.is_symlink():
+            raise WriteSurfaceError(f"path traverses a symlink: {rel_path}")
+    if not current.resolve().is_relative_to(root):
+        raise WriteSurfaceError(f"path escapes repository root: {rel_path}")
+    return current
+
+
+def _assert_public_safe(text: str, what: str) -> None:
+    if redact_text(text, redact_pii=True) != text:
+        raise WriteSurfaceError(f"{what} contains sensitive secret or PII pattern")
+
+
+def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        shell=False,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _assert_clean_worktree(repo_root: Path) -> None:
+    status = _git(repo_root, "status", "--porcelain")
+    if status.returncode != 0:
+        raise WriteSurfaceError("could not read git status before improvement edits")
+    if status.stdout.strip():
+        raise WriteSurfaceError("worktree has uncommitted changes; improvement PR needs a clean checkout")
 
 
 @contextlib.contextmanager
@@ -220,19 +256,33 @@ def collect_improvement_bundle(
                 "reason": redact_text(sc.get("reason") or "", redact_pii=True),
             })
 
+    # Feedback from PRs and issues foreman never touched says nothing about its prompts.
+    tracked = store.list_runs(repo=repo, limit=10000) if repo else []
+    known_pr_urls = {str(r["pr_url"]) for r in tracked if r.get("pr_url")} if tracked else None
+    head_shas = {str(r["pr_url"]): str(r["head_sha"]) for r in tracked if r.get("pr_url") and r.get("head_sha")}
+    known_issues = {r["issue"] for r in tracked if isinstance(r.get("issue"), int)} if tracked else None
+
     rev_items: list[dict[str, Any]] = []
     if mode in {"all", "review"}:
         if review_feedback is not None:
             rev_items = list(review_feedback)
         elif repo:
-            rev_items = collect_review_feedback(repo, since_days=max(days, 14), runner=gh_runner)
+            rev_items = collect_review_feedback(
+                repo,
+                since_days=max(days, 14),
+                runner=gh_runner,
+                known_pr_urls=known_pr_urls,
+                head_shas=head_shas,
+            )
 
     tri_items: list[dict[str, Any]] = []
     if mode in {"all", "triage"}:
         if triage_feedback is not None:
             tri_items = list(triage_feedback)
         elif repo:
-            tri_items = collect_triage_feedback(repo, since_days=max(days, 14), runner=gh_runner)
+            tri_items = collect_triage_feedback(
+                repo, since_days=max(days, 14), runner=gh_runner, known_issues=known_issues
+            )
 
     return {
         "mode": mode,
@@ -425,10 +475,12 @@ def run_self_improvement(
         cleaned_edits.append((p, item["content"]))
 
     validated_paths = check_write_surface(edit_paths)
+    targets = [_assert_contained_path(repo_root, rel_path) for rel_path in validated_paths]
+    for rel_path, (_, new_content) in zip(validated_paths, cleaned_edits):
+        _assert_public_safe(new_content, f"proposed edit {rel_path}")
 
     diffs: dict[str, str] = {}
-    for rel_path, new_content in zip(validated_paths, [c for _, c in cleaned_edits]):
-        target = repo_root / rel_path
+    for rel_path, target, (_, new_content) in zip(validated_paths, targets, cleaned_edits):
         before = target.read_text(encoding="utf-8") if target.exists() else ""
         diff_lines = difflib.unified_diff(
             before.splitlines(keepends=True),
@@ -450,14 +502,18 @@ def run_self_improvement(
             "pr_body": pr_body,
         }
 
+    if open_pr:
+        _assert_clean_worktree(repo_root)
     for rel_path, (_, new_content) in zip(validated_paths, cleaned_edits):
-        dest = repo_root / rel_path
+        dest = _assert_contained_path(repo_root, rel_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(new_content, encoding="utf-8")
 
     pr_url = ""
     if open_pr:
-        pr_url = _open_improvement_pr(repo_root, repo=repo, title=title, pr_body=pr_body, gh_runner=gh_runner)
+        pr_url = _open_improvement_pr(
+            repo_root, validated_paths, repo=repo, title=title, pr_body=pr_body, gh_runner=gh_runner
+        )
 
     record_improvement_run(
         store.path,
@@ -480,44 +536,34 @@ def run_self_improvement(
 
 def _open_improvement_pr(
     repo_root: Path,
+    paths: list[str],
     *,
     repo: str | None,
     title: str,
     pr_body: str,
     gh_runner: GhRunner | None = None,
 ) -> str:
-    def _git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=repo_root,
-            shell=False,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-        )
-
-    changed = _git("diff", "--name-only")
-    untracked = _git("ls-files", "--others", "--exclude-standard")
-    dirty_files = [
-        ln.strip()
-        for ln in f"{changed.stdout}\n{untracked.stdout}".splitlines()
-        if ln.strip()
-    ]
-    if not dirty_files:
-        raise WriteSurfaceError("no changed files to open improvement PR")
-    check_write_surface(dirty_files)
-
-    branch = f"improve/{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
-    if _git("checkout", "-b", branch).returncode != 0:
+    branch = f"improve/{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    if _git(repo_root, "checkout", "-b", branch).returncode != 0:
         raise RuntimeError("could not create improvement branch")
-    _git("add", *dirty_files)
-    if _git("commit", "-m", title).returncode != 0:
+    if _git(repo_root, "add", "--", *paths).returncode != 0:
+        raise RuntimeError("could not stage improvement edits")
+    staged = _git(repo_root, "diff", "--cached", "--name-only")
+    staged_paths = {ln.strip() for ln in staged.stdout.splitlines() if ln.strip()}
+    if staged.returncode != 0 or staged_paths != set(paths):
+        raise WriteSurfaceError(f"staged paths do not match validated edits: {sorted(staged_paths)}")
+    check_write_surface(sorted(staged_paths))
+    staged_diff = _git(repo_root, "diff", "--cached", "--no-color")
+    if staged_diff.returncode != 0:
+        raise RuntimeError("could not read staged improvement diff")
+    _assert_public_safe(staged_diff.stdout, "staged improvement diff")
+    if _git(repo_root, "commit", "-m", title).returncode != 0:
         raise RuntimeError("could not commit improvement edits")
 
     run_gh = gh_runner or (
         lambda cmd: subprocess.run(cmd, cwd=repo_root, shell=False, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     )
-    if _git("push", "-u", "origin", branch).returncode != 0:
+    if _git(repo_root, "push", "-u", "origin", branch).returncode != 0:
         raise RuntimeError("could not push improvement branch")
     cmd = ["gh", "pr", "create"]
     if repo:

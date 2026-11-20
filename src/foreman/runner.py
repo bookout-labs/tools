@@ -7,11 +7,12 @@ import re
 import subprocess
 import time
 from typing import Callable
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from foreman.delivery import DeliveryState, Slice, clean_slices, compile_delivery, render_pr_body, review_comment
+from foreman.delivery import FULL_SHA, DeliveryState, Slice, clean_slices, compile_delivery, render_pr_body, review_comment
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.github import GhClient, GitHub
 from foreman.redaction import SecretRedactor, redact_text
@@ -144,10 +145,11 @@ def comment_on_pull_request(
         raise InvalidOutput(f"could not record the review: {_command_detail(commented)}")
 
 
-def _read_branch_diff(cwd: Path) -> str:
-    for rev_range in ("origin/main...HEAD", "main...HEAD", "HEAD~1..HEAD"):
-        diff = _git(cwd, "diff", "--no-color", "--unified=3", rev_range)
-        if diff.returncode == 0 and diff.stdout.strip():
+def _read_branch_diff(cwd: Path, head_sha: str | None = None) -> str:
+    head = head_sha if head_sha and FULL_SHA.fullmatch(head_sha) else "HEAD"
+    for rev_range in (f"origin/main...{head}", f"main...{head}", f"{head}~1..{head}"):
+        diff = _git(cwd, "diff", "--no-color", "--unified=3", rev_range, "--")
+        if diff.returncode == 0:
             return diff.stdout
     return ""
 
@@ -157,6 +159,8 @@ def post_inline_review_comments(
     repo: str,
     url: str,
     comments: list[dict],
+    *,
+    commit_id: str | None = None,
     run: Callable[[list[str], Path, str], subprocess.CompletedProcess[str]] | None = None,
 ) -> None:
     """Post validated inline PR review comments via GitHub API without a shell."""
@@ -183,7 +187,9 @@ def post_inline_review_comments(
         cleaned_comments.append(entry)
     if not cleaned_comments:
         return
-    payload = json.dumps({"event": "COMMENT", "body": "", "comments": cleaned_comments})
+    if not isinstance(commit_id, str) or not FULL_SHA.fullmatch(commit_id):
+        raise InvalidOutput("inline review comments require the full reviewed commit SHA")
+    payload = json.dumps({"event": "COMMENT", "body": "", "commit_id": commit_id, "comments": cleaned_comments})
     args = ["gh", "api", f"repos/{repo}/pulls/{pr_number}/reviews", "--method", "POST", "--input", "-"]
     if run is not None:
         proc = run(args, cwd, payload)
@@ -291,6 +297,8 @@ def run_live_delivery(
 ) -> dict:
     started_at = utcnow_iso()
     started_clock = time.monotonic()
+    graph_ran = False
+
     def run_check(command: str) -> tuple[int, str]:
         proc = subprocess.run(
             command,
@@ -318,19 +326,24 @@ def run_live_delivery(
         def finish_record(state: DeliveryState, url: str) -> None:
             comment_on_pull_request(cwd, repo, url, review_comment(state))
             if comments := state.get("review_comments"):
-                post_inline_review_comments(cwd, repo, url, comments)
+                post_inline_review_comments(cwd, repo, url, comments, commit_id=state.get("head_sha"))
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         graph_ref: list = []
         if finish_publish is None and inspect_worktree is None:
             def finish_publish(sha: str) -> str:
                 current = dict(graph_ref[0].get_state(config).values or {}) if graph_ref else {}
                 return publish_reviewed_branch(cwd, repo, issue, sha, body=render_pr_body(current, issue))
+
+        def read_review_diff() -> str:
+            head = graph_ref[0].get_state(config).values.get("head_sha")
+            return _read_branch_diff(cwd, head)
+
         graph = compile_delivery(
             dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
             inspect_worktree=lambda: inspect(cwd), commit_worktree=finish_commit,
             publish_worktree=finish_publish, record_review=finish_record,
             read_merge_hold=read_merge_hold, preflight=preflight, budget=budget,
-            read_diff=(lambda: _read_branch_diff(cwd)) if inspect_worktree is None else None,
+            read_diff=read_review_diff if inspect_worktree is None else None,
         )
         graph_ref.append(graph)
         saved = graph.get_state(config)
@@ -343,10 +356,13 @@ def run_live_delivery(
             if not answer.strip():
                 raise ValueError("The answer must contain text.")
             graph.invoke(Command(resume=answer), config, durability="sync")
+            graph_ran = True
         elif not saved.values:
             loaded = (github or GhClient()).load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
+                "run_id": uuid4().hex,
+                "started_at": started_at,
                 "repo": repo,
                 "issue": issue,
                 "workspace": workspace,
@@ -361,8 +377,10 @@ def run_live_delivery(
                 except (InvalidOutput, json.JSONDecodeError) as exc:
                     initial.update(halt="missing_slice", halt_detail=str(exc))
             graph.invoke(initial, config, durability="sync")
+            graph_ran = True
         elif saved.next and not saved.interrupts:
             graph.invoke(None, config, durability="sync")
+            graph_ran = True
 
         saved = graph.get_state(config)
         if saved.values.get("stop") == "sliced":
@@ -389,12 +407,18 @@ def run_live_delivery(
             return {**saved.values, "stop": "needs_human", "halt_detail": question}
         final_state = dict(saved.values)
         if telemetry_path is not None:
-            elapsed_ms = int((time.monotonic() - started_clock) * 1000)
-            rid = TelemetryStore(telemetry_path).record_run(
-                final_state,
-                started_at=started_at,
-                finished_at=utcnow_iso(),
-                duration_ms=elapsed_ms if elapsed_ms > 0 else None,
-            )
-            final_state["run_id"] = rid
+            if not final_state.get("run_id"):
+                # Checkpoints written before run identity was saved still need a stable telemetry key.
+                final_state["run_id"] = uuid5(NAMESPACE_URL, f"{checkpoint.resolve()}:{repo.lower()}#{issue}").hex
+                final_state["started_at"] = saved.created_at or started_at
+            store = TelemetryStore(telemetry_path)
+            if graph_ran or store.get_run(final_state["run_id"]) is None:
+                elapsed_ms = int((time.monotonic() - started_clock) * 1000)
+                store.record_run(
+                    final_state,
+                    run_id=final_state.get("run_id"),
+                    started_at=final_state.get("started_at"),
+                    finished_at=utcnow_iso(),
+                    duration_ms=elapsed_ms if elapsed_ms > 0 else None,
+                )
         return final_state

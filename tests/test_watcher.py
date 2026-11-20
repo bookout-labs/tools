@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from foreman.watcher import TOOLS_REPO, file_proposal_issue, watch_run
 
@@ -27,6 +28,18 @@ class StubGitHub:
 
 
 class WatcherTest(unittest.TestCase):
+    def test_evidence_redacts_secrets_before_whitespace_normalization_and_clipping(self):
+        secret = "secret-start  remaining-secret"
+        state = {
+            "halt": "budget_exceeded",
+            "halt_detail": "x" * 185 + " " + secret,
+            "attempts": [{"node": "review", "status": "ran", "detail": "x" * 85 + " " + secret}],
+        }
+        with patch.dict("os.environ", {"FOREMAN_TEST_TOKEN": secret}):
+            proposal = watch_run(state, "budget_exceeded")
+        self.assertEqual(proposal["evidence"].count("[REDACTED]"), 2)
+        self.assertNotIn("secret-start", proposal["evidence"])
+
     def test_clean_run_and_intentional_merge_hold_return_none(self):
         base = {
             "repo": "DoctorCRE/doctorcre-engine",

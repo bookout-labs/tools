@@ -49,29 +49,49 @@ class AcceptTest(unittest.TestCase):
         info = accept_event({"source": "alert_webhook", "severity": "info", "title": "Heartbeat"})
         self.assertEqual(info, {"start": False})
 
+        secret = "ghp_0123456789abcdefghij0123456789"
         ev1 = accept_event({
             "source": "alert_webhook",
             "severity": "error",
             "service": "api",
             "title": "500 on /deals for owner@example.invalid",
-            "body": "token=ghp_0123456789abcdefghij0123456789 phone=(555) 234-5678",
+            "body": f"token={secret} phone=(555) 234-5678",
         })
         ev2 = accept_event({
             "source": "alert_webhook",
             "severity": "error",
             "service": "api",
-            "title": "500 on /deals for other@example.invalid",
+            "title": "500 on /deals for owner@example.invalid",
             "body": "retry",
         })
         self.assertTrue(ev1["start"])
         self.assertEqual(ev1["source"], "alert_webhook")
         self.assertTrue(ev1["draft_only"])
-        self.assertTrue(ev1["dedupe_key"].startswith("alert:"))
+        self.assertRegex(ev1["dedupe_key"], r"^alert:[0-9a-f]{16}$")
         self.assertEqual(ev1["dedupe_key"], ev2["dedupe_key"])
         self.assertNotIn("owner@example.invalid", ev1["request"])
-        self.assertNotIn("ghp_0123456789abcdefghij0123456789", ev1["request"])
+        self.assertNotIn(secret, ev1["request"])
         self.assertNotIn("(555) 234-5678", ev1["request"])
 
+    def test_alert_dedupe_key_hashes_raw_seed_before_redaction(self):
+        def key(**fields):
+            return accept_event({"source": "alert_webhook", "service": "api", **fields})["dedupe_key"]
+
+        # Different secrets redact to the same placeholder, so a post-redaction hash would collide.
+        first = key(title="Leaked ghp_0123456789abcdefghij0123456789")
+        second = key(title="Leaked ghp_9876543210zyxwvutsrqp9876543210")
+        self.assertNotEqual(first, second)
+
+        raw_id = "evt-ghp_0123456789abcdefghij0123456789"
+        by_id = key(title="Anything", event_id=raw_id)
+        self.assertEqual(by_id, key(title="Other title", event_id=raw_id))
+        self.assertNotIn("ghp_", by_id)
+        self.assertNotIn("REDACTED", by_id)
+        explicit = key(title="Worker OOM", dedupe_key="worker:oom-1")
+        self.assertRegex(explicit, r"^alert:[0-9a-f]{16}$")
+        self.assertNotIn("worker:oom-1", explicit)
+
+    def test_cli_accept_prints_opaque_alert_key(self):
         with TemporaryDirectory() as tmpdir:
             ev_path = Path(tmpdir) / "alert.yaml"
             ev_path.write_text(yaml.safe_dump({
@@ -87,7 +107,8 @@ class AcceptTest(unittest.TestCase):
             rendered = out.getvalue()
             self.assertIn("start alert_webhook", rendered)
             self.assertIn("draft_only true", rendered)
-            self.assertIn("dedupe_key worker:oom-1", rendered)
+            self.assertRegex(rendered, r"dedupe_key alert:[0-9a-f]{16}")
+            self.assertNotIn("worker:oom-1", rendered)
 
 
 if __name__ == "__main__":

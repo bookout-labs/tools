@@ -7,7 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 import yaml
 
 from foreman.config import ConfigError, family
@@ -185,35 +185,24 @@ def select_judge_model(
     scorer: ScorerSpec,
     models_used: Mapping[str, str] | None = None,
     *,
+    implement_models: Iterable[str] | None = None,
     fallback_order: tuple[str, ...] = ("claude-sonnet-5-5-high", "grok-4.7-high", "gpt-6.2-sol-high"),
 ) -> str:
-    """Pick a judge model from a different provider family than the code author."""
+    """Pick a judge model from a different provider family than every code author."""
     used = models_used or {}
-    impl_family = _safe_family(used.get("implement"))
+    builders = [*(implement_models or ()), used.get("implement")]
+    impl_families = {fam for fam in (_safe_family(m) for m in builders) if fam}
     review_family = _safe_family(used.get("review"))
 
-    avoid: set[str] = set()
-    if impl_family:
-        avoid.add(impl_family)
+    avoid = set(impl_families)
     if review_family and ("review" in scorer.stages or scorer.name == "review-quality"):
         avoid.add(review_family)
 
-    scorer_family = _safe_family(scorer.model)
-    if scorer_family and scorer_family not in avoid:
-        return scorer.model
-
-    for cand in fallback_order:
-        cand_family = _safe_family(cand)
-        if cand_family and cand_family not in avoid:
-            return cand
-
-    # If excluding both implement and review left zero families, at minimum avoid implement.
-    if impl_family:
-        if scorer_family and scorer_family != impl_family:
-            return scorer.model
-        for cand in fallback_order:
+    candidates = (scorer.model, *fallback_order)
+    for exclusions in (avoid, impl_families):
+        for cand in candidates:
             cand_family = _safe_family(cand)
-            if cand_family and cand_family != impl_family:
+            if cand_family and cand_family not in exclusions:
                 return cand
     return scorer.model
 
@@ -322,13 +311,20 @@ def score_run(
     )
     runner = judge or default_judge_runner()
     recorded: list[dict[str, Any]] = []
+    state = run.get("state") or {}
+    path = state.get("path") if isinstance(state.get("path"), list) else []
+    observed = {str(node) for node in path} | {str(c.get("node")) for c in calls if c.get("node")}
 
     for spec in specs:
         if not force and spec.name in existing:
             continue
+        if observed and not observed.intersection(spec.stages):
+            continue
         if respect_sampling and not force and not should_sample(run_id, spec):
             continue
-        judge_model = select_judge_model(spec, run.get("models_used"))
+        judge_model = select_judge_model(
+            spec, run.get("models_used"), implement_models=state.get("implement_models")
+        )
         prompt = _format_judge_prompt(spec, evidence)
         raw_result = runner(judge_model, prompt, SCORE_SCHEMA)
         if not isinstance(raw_result, dict):
@@ -406,9 +402,11 @@ def calibration_report(
                 bucket["human_agreed"] += 1
 
         run = runs_by_id.get(rid)
-        if run and run.get("gh_merged") is not None:
+        # Open PRs have no outcome yet; comparing them would score the judge against noise.
+        if run and run.get("gh_state") in {"MERGED", "CLOSED"}:
             zero_touch = (
-                run.get("gh_merged") == 1
+                run.get("gh_state") == "MERGED"
+                and run.get("gh_merged") == 1
                 and (run.get("gh_human_comments") or 0) == 0
                 and (run.get("gh_review_changes") or 0) == 0
                 and (run.get("gh_human_commits") or 0) == 0

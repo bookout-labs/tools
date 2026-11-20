@@ -1,10 +1,11 @@
-"""Isolated git-worktree benchmark runner, Pareto frontier analysis, and scatter HTML charts."""
+"""Disposable-clone benchmark runner, Pareto frontier analysis, and scatter HTML charts."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 import html
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -22,7 +23,7 @@ from foreman.redaction import SecretRedactor
 from foreman.runner import _inspect_worktree
 from foreman.scoring import JudgeRunner, load_scorers, score_run
 from foreman.telemetry import TelemetryStore, state_usage_summary
-from foreman.worker import CliWorker, CommandRunner, run_worker_command
+from foreman.worker import CliWorker, CommandRunner
 
 FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 
@@ -121,6 +122,23 @@ def load_suite(path: Path) -> dict[str, Any]:
     }
 
 
+CREDENTIAL_ENV = ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT", "GIT_ASKPASS", "SSH_AUTH_SOCK")
+
+
+def isolated_env() -> dict[str, str]:
+    """Environment for trial commands: no push credentials, no prompts, no system git config."""
+    env = {k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    return env
+
+
+def run_isolated_worker_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=isolated_env()
+    )
+
+
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
@@ -129,7 +147,30 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        env=isolated_env(),
     )
+
+
+def _create_trial_repo(repo_path: Path, trial_dir: Path, base_sha: str) -> None:
+    """Clone a standalone repo with no remotes so a trial can never touch or push from the source."""
+    source, target = str(repo_path.resolve()), str(trial_dir.resolve())
+    steps = (
+        (trial_dir.parent, ("clone", "--no-hardlinks", "--no-checkout", source, target)),
+        (trial_dir, ("remote", "remove", "origin")),
+        (trial_dir, ("checkout", "--detach", base_sha)),
+        (trial_dir, ("config", "user.name", "Foreman Benchmark")),
+        (trial_dir, ("config", "user.email", "benchmark@foreman.invalid")),
+    )
+    for cwd, args in steps:
+        done = _git(cwd, *args)
+        if done.returncode != 0:
+            raise BenchmarkError(f"could not prepare benchmark trial (git {args[0]}): {done.stderr.strip()}")
+
+
+def _remove_trial_repo(trial_dir: Path) -> None:
+    shutil.rmtree(trial_dir, ignore_errors=True)
+    if trial_dir.exists():
+        raise RuntimeError(f"benchmark trial directory was not removed: {trial_dir}")
 
 
 BENCHMARK_LOCKOUT_KWARGS: dict[str, Any] = {
@@ -153,7 +194,7 @@ def _config_for_trial(cfg: dict[str, Any]) -> Config:
 
 
 def _commit_detached_trial(worktree: Path, title: str) -> str:
-    """Commit worktree edits onto detached HEAD so no branch ref leaks into the main repo."""
+    """Commit trial edits and leave HEAD detached even if the worker checked out a branch."""
     status = _git(worktree, "status", "--porcelain")
     if status.returncode != 0:
         raise InvalidOutput("benchmark worktree status failed")
@@ -163,6 +204,9 @@ def _commit_detached_trial(worktree: Path, title: str) -> str:
         msg = title.strip() or "Benchmark trial commit"
         if _git(worktree, "commit", "-m", msg).returncode != 0:
             raise InvalidOutput("benchmark commit failed")
+    if _git(worktree, "symbolic-ref", "-q", "HEAD").returncode == 0:
+        if _git(worktree, "checkout", "--detach", "HEAD").returncode != 0:
+            raise InvalidOutput("benchmark could not detach HEAD")
     head = _git(worktree, "rev-parse", "HEAD")
     if head.returncode != 0 or not FULL_SHA.fullmatch(head.stdout.strip()):
         raise InvalidOutput("benchmark worktree HEAD invalid")
@@ -179,13 +223,13 @@ def _run_live_trial(
     cfg: dict[str, Any],
     worktree: Path | None,
     *,
-    worker_runner: CommandRunner = run_worker_command,
+    worker_runner: CommandRunner = run_isolated_worker_command,
     judge_runner: JudgeRunner | None = None,
     score_trials: bool = False,
 ) -> dict[str, Any]:
-    """Run a live delivery trial inside an isolated detached worktree with publish/merge disabled."""
+    """Run a live delivery trial inside a disposable clone with publish/merge disabled."""
     if worktree is None:
-        raise BenchmarkError("live benchmark trial requires an isolated worktree")
+        raise BenchmarkError("live benchmark trial requires a disposable trial repository")
     t0 = time.monotonic()
 
     def run_check(command: str) -> tuple[int, str]:
@@ -197,6 +241,7 @@ def _run_live_trial(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=isolated_env(),
         )
         redacted = SecretRedactor.from_environ().redact(proc.stdout or "")
         return proc.returncode, redacted[-4000:]
@@ -242,35 +287,38 @@ def _run_live_trial(
     usage = state_usage_summary(result.get("usage_records"))
     passed = result.get("stop") == task.get("expected_stop", "verified")
 
+    # Delivery success and judge quality stay separate; unscored or all-insufficient trials have no quality.
     quality_score: float | None = None
-    quality_label = "pass" if passed else "fail"
+    judge_passed: bool | None = None
+    quality_label = "unscored"
     if score_trials or judge_runner is not None:
         with TemporaryDirectory(prefix="foreman_bench_score_") as td:
             store = TelemetryStore(Path(td) / "bench.sqlite3")
             rid = store.record_run(result, duration_ms=elapsed_ms)
-            diff_text = _read_worktree_diff(worktree, task["base_sha"])
             scored = score_run(
                 store,
                 rid,
                 list(load_scorers().values()),
                 judge=judge_runner,
                 respect_sampling=False,
-                diff_text=diff_text,
+                diff_text=_read_worktree_diff(worktree, task["base_sha"]),
             )
-            evaluable = [s["score"] for s in scored if s["label"] != "insufficient_evidence"]
-            if evaluable:
-                quality_score = round(sum(evaluable) / len(evaluable), 4)
-                quality_label = "pass" if all(s["passed"] for s in scored if s["label"] != "insufficient_evidence") else "fail"
-            elif scored:
-                quality_score = 0.5
-                quality_label = "insufficient_evidence"
+        evaluable = [s for s in scored if s["label"] != "insufficient_evidence"]
+        if evaluable:
+            quality_score = round(sum(s["score"] for s in evaluable) / len(evaluable), 4)
+            judge_passed = all(s["passed"] for s in evaluable)
+            quality_label = "pass" if judge_passed else "fail"
+        elif scored:
+            quality_label = "insufficient_evidence"
 
     return {
         "task_id": task["id"],
         "config": cfg["name"],
         "stop": result.get("stop"),
         "passed": passed,
-        "quality_score": quality_score if quality_score is not None else (1.0 if passed else 0.0),
+        "delivery_passed": passed,
+        "quality_score": quality_score,
+        "judge_passed": judge_passed,
         "quality_label": quality_label,
         "cost_usd": usage["cost_usd"],
         "duration_ms": elapsed_ms,
@@ -292,13 +340,17 @@ def _default_dry_trial(task: dict[str, Any], cfg: dict[str, Any], worktree: Path
     )
     elapsed_ms = max(1, int((time.monotonic() - t0) * 1000))
     passed = res.get("stop") == task.get("expected_stop", "verified")
+    synthetic = cfg.get("synthetic_quality")
+    quality = float(synthetic) if isinstance(synthetic, (int, float)) and not isinstance(synthetic, bool) else None
     return {
         "task_id": task["id"],
         "config": cfg["name"],
         "stop": res.get("stop"),
         "passed": passed,
-        "quality_score": float(cfg.get("synthetic_quality", 1.0 if passed else 0.2)),
-        "quality_label": "pass" if passed else "fail",
+        "delivery_passed": passed,
+        "quality_score": quality,
+        "judge_passed": None,
+        "quality_label": "synthetic" if quality is not None else "unscored",
         "cost_usd": float(cfg.get("synthetic_cost_usd", 0.15)),
         "duration_ms": int(cfg.get("synthetic_duration_ms", elapsed_ms)),
         "tokens": int(cfg.get("synthetic_tokens", 1200)),
@@ -313,11 +365,11 @@ def run_benchmark(
     trial_runner: TrialRunner | None = None,
     worktree_root: Path | None = None,
     dry_run: bool = False,
-    worker_runner: CommandRunner = run_worker_command,
+    worker_runner: CommandRunner = run_isolated_worker_command,
     judge_runner: JudgeRunner | None = None,
     score_trials: bool = False,
 ) -> list[dict[str, Any]]:
-    """Execute suite configs x tasks in isolated detached worktrees with guaranteed cleanup."""
+    """Execute suite configs x tasks, each in its own disposable clone that is always deleted."""
     results: list[dict[str, Any]] = []
     if trial_runner is not None:
         runner = trial_runner
@@ -332,56 +384,43 @@ def run_benchmark(
                 score_trials=score_trials,
             )
 
-    for cfg in suite["configs"]:
-        for task in suite["tasks"]:
-            if dry_run and trial_runner is None and repo_path is None:
+    trials = [(cfg, task) for cfg in suite["configs"] for task in suite["tasks"]]
+    for idx, (cfg, task) in enumerate(trials):
+        if repo_path is None:
+            if not dry_run:
+                raise BenchmarkError("live benchmark trials require repo_path")
+            results.append(runner(task, cfg, None))
+            continue
+
+        # In --dry-run, only clone a trial repo when the commit exists locally.
+        if _git(repo_path, "cat-file", "-e", f"{task['base_sha']}^{{commit}}").returncode != 0:
+            if dry_run:
                 results.append(runner(task, cfg, None))
                 continue
+            raise BenchmarkError(f"base_sha {task['base_sha']} for task {task['id']} not found in {repo_path}")
 
-            if repo_path is None:
-                if not dry_run:
-                    raise BenchmarkError("live benchmark trials require repo_path")
-                results.append(runner(task, cfg, None))
-                continue
-
-            with TemporaryDirectory(prefix="foreman_bench_", dir=worktree_root) as tmpdir:
-                wt_dir = Path(tmpdir) / f"{cfg['name']}-{task['id']}"
-                # In --dry-run, only create detached worktree when the commit exists locally.
-                has_commit = _git(repo_path, "cat-file", "-e", f"{task['base_sha']}^{{commit}}").returncode == 0
-                if not has_commit:
-                    if dry_run:
-                        results.append(runner(task, cfg, None))
-                        continue
-                    raise BenchmarkError(
-                        f"base_sha {task['base_sha']} for task {task['id']} not found in {repo_path}"
-                    )
-                created = _git(repo_path, "worktree", "add", "--detach", str(wt_dir), task["base_sha"])
-                if created.returncode != 0:
-                    raise BenchmarkError(f"could not create detached worktree: {created.stderr.strip()}")
-                try:
-                    # Compile-time publish/merge lockout guarantee if runner inspects env/locks.
-                    trial = runner(task, cfg, wt_dir)
-                    results.append(trial)
-                finally:
-                    _git(repo_path, "worktree", "remove", "--force", str(wt_dir))
-                    _git(repo_path, "worktree", "prune")
-                    if wt_dir.exists():
-                        shutil.rmtree(wt_dir, ignore_errors=True)
+        with TemporaryDirectory(prefix="foreman_bench_", dir=worktree_root) as tmpdir:
+            trial_dir = Path(tmpdir) / f"trial-{idx:03d}"
+            try:
+                _create_trial_repo(repo_path, trial_dir, task["base_sha"])
+                results.append(runner(task, cfg, trial_dir))
+            finally:
+                _remove_trial_repo(trial_dir)
     return results
 
 
 def _dominates(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    aq = a["avg_quality"] if a["avg_quality"] is not None else a["pass_rate"]
-    bq = b["avg_quality"] if b["avg_quality"] is not None else b["pass_rate"]
+    aq, bq = a["avg_quality"], b["avg_quality"]
+    quality_known = aq is not None and bq is not None
     better_or_eq = (
         a["pass_rate"] >= b["pass_rate"]
-        and aq >= bq
+        and (not quality_known or aq >= bq)
         and a["avg_cost_usd"] <= b["avg_cost_usd"]
         and a["avg_duration_ms"] <= b["avg_duration_ms"]
     )
     strictly_better = (
         a["pass_rate"] > b["pass_rate"]
-        or aq > bq
+        or (quality_known and aq > bq)
         or a["avg_cost_usd"] < b["avg_cost_usd"]
         or a["avg_duration_ms"] < b["avg_duration_ms"]
     )
@@ -389,7 +428,7 @@ def _dominates(a: dict[str, Any], b: dict[str, Any]) -> bool:
 
 
 def summarize_benchmark(raw_results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Compute per-config averages (excluding insufficient_evidence) and Pareto frontier."""
+    """Compute per-config delivery pass rate, judge quality (evaluable scores only), and Pareto frontier."""
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in raw_results:
         grouped.setdefault(str(row["config"]), []).append(row)
@@ -428,21 +467,12 @@ def summarize_benchmark(raw_results: list[dict[str, Any]]) -> dict[str, Any]:
         if not dominated:
             frontier.append(cand["config"])
 
-    def _quality_key(c: dict[str, Any]) -> tuple[float, float, float]:
-        q = c["avg_quality"] if c["avg_quality"] is not None else c["pass_rate"]
-        return (q, c["pass_rate"], -c["avg_cost_usd"])
-
-    highest_quality = max(configs, key=_quality_key)["config"] if configs else None
+    scored = [c for c in configs if c["avg_quality"] is not None]
+    highest_quality = (
+        max(scored, key=lambda c: (c["avg_quality"], c["pass_rate"], -c["avg_cost_usd"]))["config"] if scored else None
+    )
     most_efficient = (
-        max(
-            configs,
-            key=lambda c: (
-                (c["avg_quality"] if c["avg_quality"] is not None else c["pass_rate"])
-                / max(c["avg_cost_usd"], 0.0001)
-            ),
-        )["config"]
-        if configs
-        else None
+        max(scored, key=lambda c: c["avg_quality"] / max(c["avg_cost_usd"], 0.0001))["config"] if scored else None
     )
     passing_cfgs = [c for c in configs if c["pass_rate"] >= 1.0] or [c for c in configs if c["pass_rate"] > 0]
     lowest_cost_passing = (
@@ -488,7 +518,9 @@ def render_benchmark_html(summary: dict[str, Any], *, title: str = "Foreman Benc
 
     dots: list[str] = []
     for c in configs:
-        q = c["avg_quality"] if c["avg_quality"] is not None else c["pass_rate"]
+        q = c["avg_quality"]
+        if q is None:
+            continue
         x = 60 + int((c["avg_cost_usd"] / max_cost) * 520)
         y = 240 - int(q * 200)
         color = "#22d3ee" if c.get("pareto") else "#94a3b8"

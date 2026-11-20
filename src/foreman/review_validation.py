@@ -48,11 +48,12 @@ ANNOTATED_NEW_PATTERN = re.compile(r"^\[NEW:(?P<new>\d+)\] ?(?P<text>.*)$")
 ANNOTATED_CONTEXT_PATTERN = re.compile(
     r"^\[OLD:(?P<old>\d+),NEW:(?P<new>\d+)\] ?(?P<text>.*)$"
 )
+DIFF_PREFIX = re.compile(r"^[ab]/")
+DiffHunkMap = dict[str, dict[str, dict[int, int]]]
 
 
 def normalize_review_path(value: Any) -> str:
-    path = str(value or "").strip()
-    return re.sub(r"^(a/|b/|\./)", "", path)
+    return str(value or "").strip().removeprefix("./")
 
 
 def annotate_unified_diff(diff_text: str) -> str:
@@ -60,25 +61,18 @@ def annotate_unified_diff(diff_text: str) -> str:
     if not diff_text:
         return ""
     out: list[str] = []
-    old_line: int | None = None
-    new_line: int | None = None
+    old_line = new_line = old_rem = new_rem = 0
 
     for raw_line in diff_text.splitlines():
-        if raw_line.startswith(("diff --git ", "index ", "--- ", "+++ ", "new file ", "deleted file ")):
-            old_line = None
-            new_line = None
-            out.append(raw_line)
-            continue
         hunk = HUNK_HEADER_PATTERN.match(raw_line)
         if hunk:
             old_line = int(hunk.group("old_start"))
             new_line = int(hunk.group("new_start"))
+            old_rem = int(hunk.group("old_count") or 1)
+            new_rem = int(hunk.group("new_count") or 1)
             out.append(raw_line)
             continue
-        if old_line is None or new_line is None:
-            out.append(raw_line)
-            continue
-        if raw_line.startswith("\\"):
+        if old_rem <= 0 and new_rem <= 0:
             out.append(raw_line)
             continue
         marker = raw_line[:1]
@@ -86,15 +80,21 @@ def annotate_unified_diff(diff_text: str) -> str:
         if marker == "-":
             out.append(f"[OLD:{old_line}] {text}")
             old_line += 1
+            old_rem -= 1
         elif marker == "+":
             out.append(f"[NEW:{new_line}] {text}")
             new_line += 1
+            new_rem -= 1
         elif marker == " ":
             out.append(f"[OLD:{old_line},NEW:{new_line}] {text}")
             old_line += 1
             new_line += 1
+            old_rem -= 1
+            new_rem -= 1
         else:
             out.append(raw_line)
+            if raw_line.startswith("diff --git "):
+                old_rem = new_rem = 0
     return "\n".join(out)
 
 
@@ -102,14 +102,30 @@ def build_diff_maps_from_annotated_diff(
     diff_text: str,
 ) -> tuple[dict[str, dict[str, set[int]]], dict[str, dict[str, dict[int, str]]]]:
     """Build valid commentable-line and line-content maps from an annotated diff."""
+    line_map, content_map, _ = _build_diff_maps(diff_text)
+    return line_map, content_map
+
+
+def build_diff_hunk_maps(diff_text: str) -> DiffHunkMap:
+    """Map each commentable line to its hunk within the file."""
+    _, _, hunk_map = _build_diff_maps(annotate_unified_diff(diff_text))
+    return hunk_map
+
+
+def _build_diff_maps(diff_text: str) -> tuple[
+    dict[str, dict[str, set[int]]], dict[str, dict[str, dict[int, str]]], DiffHunkMap,
+]:
     diff_line_map: dict[str, dict[str, set[int]]] = {}
     diff_content_map: dict[str, dict[str, dict[int, str]]] = {}
+    diff_hunk_map: DiffHunkMap = {}
     current_path = ""
     old_path = ""
+    hunk_index = 0
 
-    def ensure_path(path: str) -> None:
-        diff_line_map.setdefault(path, {"LEFT": set(), "RIGHT": set()})
-        diff_content_map.setdefault(path, {"LEFT": {}, "RIGHT": {}})
+    def put(side: str, line: int, text: str) -> None:
+        diff_line_map[current_path][side].add(line)
+        diff_content_map[current_path][side][line] = text
+        diff_hunk_map[current_path][side][line] = hunk_index
 
     for raw_line in diff_text.splitlines():
         if raw_line.startswith("diff --git "):
@@ -118,34 +134,29 @@ def build_diff_maps_from_annotated_diff(
             continue
         if raw_line.startswith("--- "):
             candidate = raw_line[4:].strip()
-            old_path = "" if candidate == "/dev/null" else normalize_review_path(candidate)
+            old_path = "" if candidate == "/dev/null" else DIFF_PREFIX.sub("", candidate)
             continue
         if raw_line.startswith("+++ "):
             candidate = raw_line[4:].strip()
-            current_path = old_path if candidate == "/dev/null" else normalize_review_path(candidate)
+            current_path = old_path if candidate == "/dev/null" else DIFF_PREFIX.sub("", candidate)
             if current_path:
-                ensure_path(current_path)
+                diff_line_map.setdefault(current_path, {"LEFT": set(), "RIGHT": set()})
+                diff_content_map.setdefault(current_path, {"LEFT": {}, "RIGHT": {}})
+                diff_hunk_map.setdefault(current_path, {"LEFT": {}, "RIGHT": {}})
             continue
         if not current_path:
             continue
-        if match := ANNOTATED_OLD_PATTERN.match(raw_line):
-            line = int(match.group("old"))
-            diff_line_map[current_path]["LEFT"].add(line)
-            diff_content_map[current_path]["LEFT"][line] = match.group("text")
+        if HUNK_HEADER_PATTERN.match(raw_line):
+            hunk_index += 1
+        elif match := ANNOTATED_OLD_PATTERN.match(raw_line):
+            put("LEFT", int(match.group("old")), match.group("text"))
         elif match := ANNOTATED_NEW_PATTERN.match(raw_line):
-            line = int(match.group("new"))
-            diff_line_map[current_path]["RIGHT"].add(line)
-            diff_content_map[current_path]["RIGHT"][line] = match.group("text")
+            put("RIGHT", int(match.group("new")), match.group("text"))
         elif match := ANNOTATED_CONTEXT_PATTERN.match(raw_line):
-            old_line = int(match.group("old"))
-            new_line = int(match.group("new"))
-            text = match.group("text")
-            diff_line_map[current_path]["LEFT"].add(old_line)
-            diff_line_map[current_path]["RIGHT"].add(new_line)
-            diff_content_map[current_path]["LEFT"][old_line] = text
-            diff_content_map[current_path]["RIGHT"][new_line] = text
+            put("LEFT", int(match.group("old")), match.group("text"))
+            put("RIGHT", int(match.group("new")), match.group("text"))
 
-    return diff_line_map, diff_content_map
+    return diff_line_map, diff_content_map, diff_hunk_map
 
 
 def _validate_suggestion_blocks(
@@ -193,6 +204,7 @@ def validate_review_comments(
     diff_content_map: dict[str, dict[str, dict[int, str]]] | None = None,
     *,
     body: str = "",
+    diff_hunk_map: DiffHunkMap | None = None,
 ) -> ReviewValidationResult:
     """Validate inline review comments against diff_line_map and diff_content_map."""
     if not isinstance(raw_comments, list):
@@ -207,6 +219,8 @@ def validate_review_comments(
             continue
 
         path = normalize_review_path(raw_comment.get("path"))
+        if path not in diff_line_map and (stripped := DIFF_PREFIX.sub("", path)) in diff_line_map:
+            path = stripped
         line = raw_comment.get("line")
         raw_body = raw_comment.get("body")
         comment_body = raw_body.strip() if isinstance(raw_body, str) else ""
@@ -248,6 +262,13 @@ def validate_review_comments(
             if start_line not in diff_line_map[path][start_side]:
                 errors.append(f"comments[{index}] start_line {path}:{start_line} on {start_side} is not commentable.")
                 continue
+            if diff_hunk_map is not None:
+                hunks = diff_hunk_map.get(path, {})
+                start_hunk = hunks.get(start_side, {}).get(start_line)
+                end_hunk = hunks.get(side, {}).get(line)
+                if start_hunk is None or start_hunk != end_hunk:
+                    errors.append(f"comments[{index}] for {path} must start and end in the same hunk.")
+                    continue
             item["start_line"] = start_line
             item["start_side"] = start_side
         elif raw_comment.get("start_side") is not None:

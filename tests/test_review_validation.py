@@ -3,6 +3,7 @@ import unittest
 from foreman.review_validation import (
     annotate_unified_diff,
     build_diff_maps_from_annotated_diff,
+    build_diff_hunk_maps,
     validate_review_comments,
     validate_review_payload,
 )
@@ -29,6 +30,49 @@ deleted file mode 100644
 
 
 class ReviewValidationTest(unittest.TestCase):
+    def test_header_like_hunk_lines_and_literal_directory_prefixes(self):
+        sample = """--- a/a/app.py
++++ b/a/app.py
+@@ -1 +1,2 @@
+--- removed
++++ added
++another line
+diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1 +1 @@
+-old
++new
+"""
+        annotated = annotate_unified_diff(sample)
+        line_map, content_map = build_diff_maps_from_annotated_diff(annotated)
+        self.assertEqual(content_map["a/app.py"]["LEFT"][1], "-- removed")
+        self.assertEqual(content_map["a/app.py"]["RIGHT"][1], "++ added")
+        comments = [
+            {"path": "./a/app.py", "line": 2, "side": "RIGHT", "body": "literal directory"},
+            {"path": "./b/app.py", "line": 1, "side": "RIGHT", "body": "diff prefix"},
+        ]
+        result = validate_review_comments(comments, line_map)
+        self.assertEqual([item["path"] for item in result.comments], ["a/app.py", "app.py"])
+
+    def test_multiline_anchors_must_be_in_the_same_hunk(self):
+        sample = """--- a/app.py
++++ b/app.py
+@@ -1,0 +2,2 @@
++one
++two
+@@ -20,0 +22 @@
++three
+"""
+        line_map, _ = build_diff_maps_from_annotated_diff(annotate_unified_diff(sample))
+        comment = {"path": "app.py", "line": 3, "side": "RIGHT", "body": "Range",
+                   "start_line": 2, "start_side": "RIGHT"}
+        result = validate_review_comments(
+            [comment, {**comment, "line": 22}], line_map, diff_hunk_map=build_diff_hunk_maps(sample),
+        )
+        self.assertEqual(result.comments, [comment])
+        self.assertIn("same hunk", result.errors[0])
+
     def test_annotate_and_build_maps_for_modified_and_deleted_files(self):
         annotated = annotate_unified_diff(SAMPLE_DIFF)
         self.assertIn("[OLD:10,NEW:10]     base = x + 1", annotated)

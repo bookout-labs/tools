@@ -12,12 +12,14 @@ from foreman.cli import _print_run, main
 from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
 from foreman.runner import (
+    _read_branch_diff,
     comment_on_pull_request,
     commit_implementation,
     post_inline_review_comments,
     publish_reviewed_branch,
     run_live_delivery,
 )
+from foreman.telemetry import TelemetryStore
 from foreman.worker import CliWorker, stage_schema
 
 
@@ -98,6 +100,40 @@ class FakeGitHub:
 
 
 class CliWorkerTest(unittest.TestCase):
+    def test_error_details_redact_the_full_response_before_clipping(self):
+        secret = "secret-start  remaining-secret"
+
+        def run(args, cwd):
+            return subprocess.CompletedProcess(args, 1, "", "x" * 185 + " " + secret)
+
+        with patch.dict("os.environ", {"FOREMAN_TEST_TOKEN": secret}):
+            with self.assertRaises(InvalidOutput) as ctx:
+                CliWorker(Path("."), run)("triage", "gpt-6.2-sol-high", {}, "Triage")
+        self.assertIn("[REDACTED]", str(ctx.exception))
+        self.assertNotIn("secret-start", str(ctx.exception))
+
+    def test_quota_errors_keep_reported_usage_for_budget_checks(self):
+        usage = {"input_tokens": 25, "output_tokens": 5}
+        cases = (
+            ("claude-opus-5-5-high", "claude-opus-5-5", 1, {
+                "is_error": True, "result": "quota exhausted", "usage": usage,
+            }),
+            ("grok-4.7-high", "grok-4.7", 0, {
+                "type": "error", "message": "quota exhausted", "usage": usage,
+            }),
+            ("gpt-6.2-sol-high", "gpt-6.2-sol", 1, {"type": "turn.failed", "usage": usage}),
+        )
+        for model, slug, code, body in cases:
+            with self.subTest(model=model):
+                def run(args, cwd):
+                    stderr = "quota exhausted" if code else ""
+                    return subprocess.CompletedProcess(args, code, json.dumps(body), stderr)
+
+                worker = CliWorker(Path("."), run)
+                with self.assertRaises(QuotaExhausted):
+                    worker("triage", model, {}, "Triage")
+                self.assertEqual(worker.last_meta["model_usage"][slug], usage)
+
     def test_all_three_commands_pin_the_configured_slug_and_parse_the_final_result(self):
         models = {
             "gpt-6.2-sol-high": ["codex", "exec", "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=high"],
@@ -311,6 +347,48 @@ class LiveRunnerTest(unittest.TestCase):
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
             run_gh=run_gh, github=self.github, inspect_worktree=inspect_worktree,
         )
+
+    def test_checkpoint_run_identity_survives_resume_and_telemetry_is_written_once(self):
+        telemetry_path = self.cwd / "telemetry.sqlite3"
+        calls = []
+
+        def handler(node, model, state, instruction):
+            calls.append(node)
+            handler.last_meta = {"input_tokens": 10}
+            if node == "triage" and not state.get("human_answers"):
+                return {"triage": "needs_human", "human_question": "What should be listed?"}
+            return {"triage": "implement"} if node == "triage" else (
+                {"implementation": "Built."} if node == "implement" else APPROVE
+            )
+
+        args = dict(
+            repo="Example/Engine", issue=8, check="exit 0", cwd=self.cwd, checkpoint=self.checkpoint,
+            dispatcher=FailoverDispatcher(handler), github=self.github, inspect_worktree=clean_worktree,
+            telemetry_path=telemetry_path,
+        )
+        start = "2026-01-01T00:00:00+00:00"
+        with patch("foreman.runner.utcnow_iso", return_value=start):
+            paused = run_live_delivery(**args)
+        self.assertEqual(paused["stop"], "needs_human")
+        self.assertTrue(paused["run_id"])
+
+        with patch("foreman.runner.utcnow_iso", return_value="2026-01-01T00:01:00+00:00"):
+            completed = run_live_delivery(**args, answer="Open items")
+        store = TelemetryStore(telemetry_path)
+        first = store.get_run(completed["run_id"])
+        stage_calls = store.list_stage_calls(completed["run_id"])
+        self.assertEqual(completed["run_id"], paused["run_id"])
+        self.assertEqual(first["started_at"], start)
+        self.assertEqual(first["total_tokens"], 40)
+        self.assertEqual(len(stage_calls), 4)
+
+        with patch("foreman.runner.utcnow_iso", return_value="2026-01-01T00:02:00+00:00"):
+            replayed = run_live_delivery(**args)
+        self.assertEqual(replayed["run_id"], completed["run_id"])
+        self.assertEqual(replayed["started_at"], start)
+        self.assertEqual(store.list_runs(), [first])
+        self.assertEqual(store.list_stage_calls(completed["run_id"]), stage_calls)
+        self.assertEqual(calls, ["triage", "triage", "implement", "review"])
 
     def test_load_slice_issue(self):
         result = self.walk([{"triage": "question"}, {"research": "answer"}])
@@ -870,6 +948,24 @@ def git_repo(path: Path) -> str:
 
 
 class CommitImplementationTest(unittest.TestCase):
+    def test_review_diff_uses_the_specified_commit_even_after_head_moves(self):
+        with TemporaryDirectory() as directory:
+            repo = Path(directory)
+            git_repo(repo)
+
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+            git("switch", "-c", "review")
+            (repo / "README").write_text("reviewed change\n")
+            git("commit", "-am", "reviewable")
+            head = git("rev-parse", "HEAD")
+            (repo / "README").write_text("later change\n")
+            git("commit", "-am", "later")
+
+            self.assertIn("+reviewed change", _read_branch_diff(repo, head))
+            self.assertNotIn("later change", _read_branch_diff(repo, head))
+
     def test_runner_commits_a_dirty_slice_branch_and_leaves_main(self):
         with TemporaryDirectory() as directory:
             repo = Path(directory)
@@ -937,7 +1033,10 @@ class CommitImplementationTest(unittest.TestCase):
                     (repo / "note.txt").write_text("release\n")
                     return {"implementation": "Added the release."}
                 if node == "review":
-                    return {"review": "approve", "risk": DEFAULT_RISK}
+                    self.assertIn("[NEW:1] release", instruction)
+                    return {**APPROVE, "comments": [
+                        {"path": "note.txt", "line": 1, "side": "RIGHT", "body": "Checked."},
+                    ]}
                 return {"triage": "implement"}
 
             order = []
@@ -970,6 +1069,7 @@ class CommitImplementationTest(unittest.TestCase):
             with (
                 patch("foreman.runner.publish_reviewed_branch", side_effect=publish),
                 patch("foreman.runner.comment_on_pull_request", side_effect=record),
+                patch("foreman.runner.post_inline_review_comments") as inline_review,
             ):
                 result = run_live_delivery(
                     repo="Example/Engine", issue=875, check="exit 0", cwd=repo,
@@ -1006,6 +1106,10 @@ class CommitImplementationTest(unittest.TestCase):
             self.assertNotIn("Issue title", recorded[0])
             self.assertEqual(result["pull_request"], "https://github.com/Example/Engine/pull/21")
             self.assertTrue(result["merge_armed"])
+            inline_review.assert_called_once_with(
+                repo, "Example/Engine", result["pull_request"], result["review_comments"],
+                commit_id=result["head_sha"],
+            )
 
 
 def _completed(stdout="", code=0, stderr=""):
@@ -1248,6 +1352,74 @@ class Phase1WorkerAndPreflightTest(unittest.TestCase):
         self.assertIn("--resume", recorded_args[2])
         self.assertEqual(recorded_args[2][recorded_args[2].index("--resume") + 1], "sess-cl-2")
 
+    def test_codex_resume_records_usage_delta_for_only_the_resumed_session(self):
+        model = "gpt-6.2-sol-high"
+        slug = "gpt-6.2-sol"
+        session_id = "test-resume-session"
+        cumulative = {
+            "input_tokens": 80, "cached_input_tokens": 30, "cache_write_input_tokens": 5,
+            "output_tokens": 20, "reasoning_output_tokens": 6, "total_tokens": 105,
+        }
+        first = {
+            "input_tokens": 50, "cached_input_tokens": 20, "cache_write_input_tokens": 7,
+            "output_tokens": 10, "reasoning_output_tokens": 3, "total_tokens": 67,
+        }
+        second = {"input_tokens": 20, "cached_input_tokens": 5, "total_tokens": 25}
+
+        def run(args, cwd):
+            self.assertEqual(args[:3], ["codex", "exec", "resume"])
+            Path(args[args.index("-o") + 1]).write_text(json.dumps({"implementation": "Updated."}))
+            stdout = json.dumps({"type": "turn.completed", "usage": cumulative})
+            return subprocess.CompletedProcess(args, 0, stdout, f"model: {slug}\n")
+
+        worker = CliWorker(Path("."), run)
+        with TemporaryDirectory() as codex_root, patch.dict("os.environ", {"CODEX_HOME": codex_root}):
+            worker("implement", model, {
+                "models_used": {"implement": model},
+                "sessions": {"implement": session_id},
+                "usage_records": [
+                    {"session_id": session_id, "model_usage": {slug: first}},
+                    {"session_id": session_id, "model_usage": {slug: second}},
+                    {"session_id": "other-session", "model_usage": {slug: cumulative}},
+                ],
+            }, "Update.")
+        self.assertEqual(worker.last_meta["session_id"], session_id)
+        self.assertEqual(worker.last_meta["model_usage"][slug], {
+            "input_tokens": 10, "cached_input_tokens": 5, "cache_write_input_tokens": 0,
+            "output_tokens": 10, "reasoning_output_tokens": 3, "total_tokens": 13,
+        })
+
+    def test_codex_rollout_requires_consistent_model_metadata_even_with_banner(self):
+        slug = "gpt-6.2-sol"
+        turn_context = {"type": "turn_context", "payload": {"model": slug}}
+
+        def world_state(model):
+            return {"type": "world_state", "payload": {"state": {"collaboration_mode": {"model": model}}}}
+
+        with TemporaryDirectory() as tempdir, patch.dict("os.environ", {"CODEX_HOME": tempdir}):
+            session_dir = Path(tempdir) / "sessions"
+            session_dir.mkdir()
+            rollout = session_dir / "rollout-sid-test.jsonl"
+
+            def run(args, cwd):
+                Path(args[args.index("-o") + 1]).write_text(json.dumps({"triage": "implement"}))
+                stdout = json.dumps({"type": "thread.started", "thread_id": "sid-test"})
+                return subprocess.CompletedProcess(args, 0, stdout, f"model: {slug}\n")
+
+            worker = CliWorker(Path("."), run)
+            for events, error in (
+                ([world_state(f"{slug}-build")], None),
+                ([turn_context, world_state("gpt-other")], "gpt-other"),
+                ([{"type": "session_meta"}], "no model metadata"),
+            ):
+                with self.subTest(events=events):
+                    rollout.write_text("\n".join(map(json.dumps, events)))
+                    if error is None:
+                        self.assertEqual(worker("triage", f"{slug}-high", {}, "Triage"), {"triage": "implement"})
+                    else:
+                        with self.assertRaisesRegex(InvalidOutput, error):
+                            worker("triage", f"{slug}-high", {}, "Triage")
+
     def test_cli_preflight_halts_with_env_unavailable_before_implement(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1359,12 +1531,23 @@ class Phase1WorkerAndPreflightTest(unittest.TestCase):
                 "side": "RIGHT",
                 "body": "Avoid logging owner@example.invalid token=ghp_0123456789abcdefghij0123456789",
             }],
+            commit_id=HEAD,
             run=fake_run,
         )
         self.assertEqual(len(calls), 1)
         args, cwd, payload = calls[0]
         self.assertEqual(args, ["gh", "api", "repos/Example/Engine/pulls/42/reviews", "--method", "POST", "--input", "-"])
         self.assertEqual(payload["event"], "COMMENT")
+        self.assertEqual(payload["commit_id"], HEAD)
         self.assertNotIn("owner@example.invalid", payload["comments"][0]["body"])
         self.assertNotIn("ghp_0123456789abcdefghij0123456789", payload["comments"][0]["body"])
+
+    def test_post_inline_review_comments_rejects_missing_or_invalid_commit(self):
+        comment = {"path": "src/app.py", "line": 12, "side": "RIGHT", "body": "Checked."}
+        for commit_id in (None, "abc123", "x" * 40):
+            with self.subTest(commit_id=commit_id), self.assertRaisesRegex(InvalidOutput, "full reviewed commit"):
+                post_inline_review_comments(
+                    Path("engine"), "Example/Engine", "https://github.com/Example/Engine/pull/42", [comment],
+                    commit_id=commit_id, run=lambda *_: self.fail("invalid commit reached GitHub"),
+                )
 

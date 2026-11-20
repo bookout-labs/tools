@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
+from unittest import mock
 
 from foreman.benchmarks import (
     BenchmarkError,
@@ -59,9 +60,17 @@ class BenchmarksTest(unittest.TestCase):
 
             seen_paths: list[Path] = []
 
+            def git_out(cwd, *args):
+                return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
             def failing_runner(task, cfg, wt):
                 self.assertIsNotNone(wt)
                 self.assertTrue(wt.exists())
+                self.assertEqual(wt.name, f"trial-{len(seen_paths):03d}")
+                self.assertTrue((wt / ".git").is_dir())
+                self.assertEqual(git_out(wt, "remote"), "")
+                self.assertEqual(git_out(wt, "rev-parse", "HEAD"), head)
+                self.assertNotEqual(subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=wt).returncode, 0)
                 seen_paths.append(wt)
                 if cfg["name"] == "cfg-b":
                     raise RuntimeError("boom inside trial")
@@ -86,6 +95,30 @@ class BenchmarksTest(unittest.TestCase):
                 ["git", "worktree", "list", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True
             ).stdout
             self.assertEqual(wt_list.count("worktree "), 1)
+            self.assertEqual(git_out(repo, "branch", "--list"), "* main")
+
+    def test_summarize_keeps_delivery_and_judge_quality_separate(self):
+        unscored = summarize_benchmark([
+            {"config": "a", "passed": True, "quality_score": None, "quality_label": "unscored", "cost_usd": 0.1, "duration_ms": 100},
+            {"config": "b", "passed": False, "quality_score": None, "quality_label": "insufficient_evidence", "cost_usd": 0.2, "duration_ms": 100},
+        ])
+        self.assertEqual({c["config"]: c["avg_quality"] for c in unscored["configs"]}, {"a": None, "b": None})
+        self.assertIsNone(unscored["recommendations"]["highest_quality"])
+        self.assertIsNone(unscored["recommendations"]["most_efficient"])
+        self.assertEqual(unscored["recommendations"]["lowest_cost_passing"], "a")
+        self.assertIn("quality=n/a", render_benchmark_text(unscored))
+        self.assertIn("<svg", render_benchmark_html(unscored))
+
+        mixed = summarize_benchmark([
+            {"config": "unjudged", "passed": True, "quality_score": None, "quality_label": "unscored", "cost_usd": 0.1, "duration_ms": 100},
+            {"config": "unjudged", "passed": False, "quality_score": None, "quality_label": "unscored", "cost_usd": 0.1, "duration_ms": 100},
+            {"config": "judged", "passed": True, "quality_score": 0.9, "quality_label": "pass", "cost_usd": 0.1, "duration_ms": 100},
+            {"config": "judged", "passed": False, "quality_score": 0.9, "quality_label": "pass", "cost_usd": 0.1, "duration_ms": 100},
+        ])
+        # A missing judge score is not replaced by delivery pass rate in ranking or dominance.
+        self.assertEqual(mixed["recommendations"]["highest_quality"], "judged")
+        self.assertEqual(mixed["recommendations"]["most_efficient"], "judged")
+        self.assertEqual(sorted(mixed["pareto_frontier"]), ["judged", "unjudged"])
 
     def test_summarize_excludes_insufficient_evidence_and_cli_bench_renders_html(self):
         summary = summarize_benchmark([
@@ -119,13 +152,18 @@ class BenchmarksTest(unittest.TestCase):
                 encoding="utf-8",
             )
             (suite_dir / "tasks/t1.yaml").write_text(
-                f"id: t1\ntitle: Live fix\nbase_sha: {head}\nrequest: Create artifact\ncheck: test -f artifact.txt\n",
+                f"id: t1\ntitle: Live fix\nbase_sha: {head}\nrequest: Create artifact\n"
+                "check: test -f artifact.txt && test -z \"$GH_TOKEN\" && test \"$GIT_TERMINAL_PROMPT\" = 0\n",
                 encoding="utf-8",
             )
             suite = load_suite(suite_dir)
 
+            seen_env = []
+
             def fake_worker(args, cwd):
                 if "Implement" in args[-1] or ("required" in args[-1] and "review" not in args[-1].lower()):
+                    # A worker that wanders onto a named branch must not leave the trial on it.
+                    subprocess.run(["git", "checkout", "-q", "-b", "leak"], cwd=cwd, check=True)
                     (cwd / "artifact.txt").write_text("ok\n", encoding="utf-8")
                     return worker_reply(args, {"implementation": "Created artifact."})
                 if "Review" in args[-1] or "review" in args[-1].lower() and args[0] == "codex":
@@ -143,16 +181,30 @@ class BenchmarksTest(unittest.TestCase):
                 sname = prompt.split("`")[1]
                 return {"label": next(iter(scorers_by_name[sname].labels)), "reason": "verified"}
 
-            results = run_benchmark(
-                suite,
-                repo_path=repo,
-                dry_run=False,
-                worker_runner=fake_worker,
-                judge_runner=matched_judge,
-                score_trials=True,
-            )
+            from foreman import benchmarks
+            real_commit = benchmarks._commit_detached_trial
+
+            def commit_and_check(worktree, title):
+                sha = real_commit(worktree, title)
+                seen_env.append(subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=worktree).returncode)
+                return sha
+
+            with mock.patch.dict("os.environ", {"GH_TOKEN": "gho_" + "x" * 30}), \
+                    mock.patch.object(benchmarks, "_commit_detached_trial", commit_and_check):
+                results = run_benchmark(
+                    suite,
+                    repo_path=repo,
+                    dry_run=False,
+                    worker_runner=fake_worker,
+                    judge_runner=matched_judge,
+                    score_trials=True,
+                )
             self.assertEqual(len(results), 1)
+            self.assertTrue(seen_env)
+            self.assertTrue(all(code != 0 for code in seen_env))
             self.assertTrue(results[0]["passed"])
+            self.assertTrue(results[0]["delivery_passed"])
+            self.assertTrue(results[0]["judge_passed"])
             self.assertEqual(results[0]["stop"], "verified")
             self.assertFalse(results[0]["merge_armed"])
             self.assertEqual(results[0]["quality_score"], 1.0)
@@ -165,6 +217,16 @@ class BenchmarksTest(unittest.TestCase):
                 ["git", "worktree", "list", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True
             ).stdout
             self.assertEqual(wt_list.count("worktree "), 1)
+
+
+    def test_default_worker_runner_strips_push_credentials(self):
+        from foreman.benchmarks import run_isolated_worker_command
+
+        leaked = {name: "secret-value-123" for name in ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT", "GIT_ASKPASS", "SSH_AUTH_SOCK")}
+        probe = 'echo "${GITHUB_TOKEN:-}${GH_TOKEN:-}${GITHUB_PAT:-}${GIT_ASKPASS:-}${SSH_AUTH_SOCK:-}|$GIT_TERMINAL_PROMPT|$GIT_CONFIG_NOSYSTEM"'
+        with TemporaryDirectory() as tmpdir, mock.patch.dict("os.environ", leaked):
+            out = run_isolated_worker_command(["sh", "-c", probe], Path(tmpdir)).stdout.strip()
+        self.assertEqual(out, "|0|1")
 
 
 if __name__ == "__main__":

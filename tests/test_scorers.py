@@ -1,10 +1,12 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
+from unittest import mock
 
 from foreman.cli import main
 from foreman.scoring import (
@@ -126,6 +128,85 @@ class ScorersTest(unittest.TestCase):
             self.assertEqual(len(store.list_scores(run_id=r2)), 1)
             self.assertEqual(store.list_scores(run_id=r2)[0]["label"], "fail")
 
+    def test_judge_avoids_every_builder_family_and_skips_unobserved_stages(self):
+        tc = load_scorers()["task-compliance"]
+        builders = ["claude-opus-5-5-high", "gpt-6.2-sol-high"]
+        self.assertEqual(select_judge_model(tc, {"implement": "gpt-6.2-sol-high"}, implement_models=builders), "grok-4.7-high")
+
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            rid = store.record_run({
+                "repo": "Example/Engine", "issue": 3, "stop": "verified",
+                "models_used": {"implement": "gpt-6.2-sol-high"},
+                "implement_models": builders,
+                "path": ["triage", "implement", "verify", "done"],
+            })
+            calls = []
+
+            def judge(model, prompt, schema):
+                name = prompt.split("`")[1]
+                calls.append((name, model))
+                return {"label": next(iter(load_scorers()[name].labels)), "reason": "ok"}
+
+            scored = score_run(store, rid, judge=judge, respect_sampling=False)
+            names = {row["scorer"] for row in scored}
+            self.assertNotIn("review-quality", names)
+            self.assertIn("task-compliance", names)
+            self.assertEqual(dict(calls)["task-compliance"], "grok-4.7-high")
+
+    def test_calibration_only_compares_terminal_pull_requests(self):
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            outcomes = {"1": "OPEN", "2": "CLOSED", "3": "MERGED"}
+            for n in outcomes:
+                rid = store.record_run({
+                    "repo": "Example/Engine", "issue": int(n), "stop": "verified",
+                    "pull_request": f"https://github.com/Example/Engine/pull/{n}",
+                }, run_id=f"run-{n}")
+                store.upsert_score(run_id=rid, scorer="s", label="pass", score=1.0, passed=True)
+            store.enrich_github_outcomes(lambda repo, url: {"state": outcomes[url.rsplit("/", 1)[1]]})
+            bucket = calibration_report(store)["scorers"]["s"]
+            self.assertEqual(bucket["github_compared"], 2)
+            self.assertEqual(bucket["github_agreed"], 1)
+
+    def test_score_command_reads_the_runs_pinned_head_not_the_checkout(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            repo.mkdir()
+            git_repo(repo)
+
+            def commit(name, text):
+                (repo / name).write_text(text, encoding="utf-8")
+                subprocess.run(["git", "add", name], cwd=repo, check=True)
+                subprocess.run(["git", "commit", "-q", "-m", name], cwd=repo, check=True)
+                return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            subprocess.run(["git", "checkout", "-q", "-b", "8-feature"], cwd=repo, check=True)
+            pinned = commit("delivered.txt", "delivered-change\n")
+            commit("later.txt", "later-change\n")
+            db = root / "tel.sqlite3"
+            rid = TelemetryStore(db).record_run(
+                {"repo": "Example/Engine", "issue": 8, "stop": "verified", "head_sha": pinned}
+            )
+            prompts: list[str] = []
+
+            def judge(model, prompt, schema):
+                prompts.append(prompt)
+                return {"label": next(iter(load_scorers()[prompt.split("`")[1]].labels)), "reason": "ok"}
+
+            prev = Path.cwd()
+            try:
+                os.chdir(repo)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(["score", rid, "--db", str(db), "--all-samples"], judge_runner=judge), 0)
+            finally:
+                os.chdir(prev)
+            self.assertTrue(prompts)
+            self.assertTrue(all("delivered-change" in p for p in prompts))
+            self.assertFalse(any("later-change" in p for p in prompts))
+
     def test_cli_scorers_and_score_and_run_with_score_flag(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -154,21 +235,27 @@ class ScorersTest(unittest.TestCase):
                     out_path.write_text(json.dumps({"review": "approve", "risk": {"alignment": "ok", "impact": "low", "verification": "ok", "rollback": "easy", "error_detection": "ok", "level": "low"}}), encoding="utf-8")
                 return subprocess.CompletedProcess(args, 0, "", "model: gpt-6.2-sol\n")
 
+            prompts: list[str] = []
+
+            def judge(model, prompt, schema):
+                prompts.append(prompt)
+                return {"label": next(iter(load_scorers()[prompt.split("`")[1]].labels)), "reason": "ok"}
+
             out_list = io.StringIO()
             with contextlib.redirect_stdout(out_list):
                 self.assertEqual(main(["scorers", "--json"]), 0)
             self.assertEqual(len(json.loads(out_list.getvalue())), 5)
 
-            import os
             prev = Path.cwd()
             try:
                 os.chdir(repo)
-                with contextlib.redirect_stdout(io.StringIO()):
+                pinned = lambda cwd, sha: f"diff --git a/x b/x\n+PINNED-DIFF-{sha}\n"
+                with contextlib.redirect_stdout(io.StringIO()), mock.patch("foreman.cli._pinned_diff", pinned):
                     code = main(
                         ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
                          "--check", "exit 0", "--telemetry", str(db), "--score"],
                         worker_runner=worker,
-                        judge_runner=lambda m, p, s: {"label": "pass" if "pass" in json.dumps(p) else "compliant", "reason": "ok"} if False else {"label": next(iter(load_scorers()[p.split("`")[1]].labels)), "reason": "ok"},
+                        judge_runner=judge,
                         checkpoint=ckpt,
                         github=FakeGitHub(),
                         run_gh=lambda cmd: 0,
@@ -184,6 +271,7 @@ class ScorersTest(unittest.TestCase):
             self.assertEqual(len(runs), 1)
             scores = store.list_scores(run_id=runs[0]["run_id"])
             self.assertGreaterEqual(len(scores), 4)
+            self.assertTrue(any("PINNED-DIFF-" + "a" * 40 in p for p in prompts))
 
             out_cal = io.StringIO()
             with contextlib.redirect_stdout(out_cal):

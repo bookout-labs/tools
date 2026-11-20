@@ -1,6 +1,6 @@
 """Try the configured models in order. Quota exhaustion is not a rule change."""
 
-from typing import Protocol, TypedDict
+from typing import Callable, Protocol, TypedDict
 
 
 class Attempt(TypedDict):
@@ -28,6 +28,10 @@ class InvalidOutput(ValueError):
     pass
 
 
+class BudgetExceeded(Exception):
+    pass
+
+
 class Handler(Protocol):
     def __call__(self, node: str, model: str | None, state: dict, instruction: str) -> dict:
         pass
@@ -46,6 +50,7 @@ class FailoverDispatcher:
         instruction: str,
         *,
         attempts: list[Attempt] | None = None,
+        budget_check: Callable[[list[dict]], str | None] | None = None,
     ) -> dict:
         self.last_meta = []
         candidates: list[str | None] = list(models) or [None]
@@ -65,6 +70,8 @@ class FailoverDispatcher:
                 meta = getattr(self.handler, "last_meta", None)
                 if isinstance(meta, dict):
                     self.last_meta.append({**meta, "node": node, "model": model, "status": "quota"})
+                if budget_check is not None and (detail := budget_check(self.last_meta)):
+                    raise BudgetExceeded(detail) from exc
                 last_quota = exc
                 continue
             except CliMissing as exc:
@@ -82,6 +89,10 @@ class FailoverDispatcher:
             meta = getattr(self.handler, "last_meta", None)
             if isinstance(meta, dict):
                 self.last_meta.append({**meta, "node": node, "model": model, "status": "ran"})
+            if budget_check is not None and (detail := budget_check(self.last_meta)):
+                if attempts is not None:
+                    attempts.append({"node": node, "model": model, "status": "ran", "detail": ""})
+                raise BudgetExceeded(detail)
             if not isinstance(update, dict):
                 detail = f"{node} returned {type(update).__name__}"
                 if attempts is not None:

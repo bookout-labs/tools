@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import subprocess
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from foreman.redaction import redact_text
 
@@ -40,16 +40,62 @@ def _within_window(record: dict[str, Any], cutoff: datetime) -> bool:
     return True
 
 
-def _is_human_comment(login: object, body: object) -> bool:
-    if not isinstance(body, str) or not body.strip():
+def is_human_actor(login: object) -> bool:
+    if not isinstance(login, str) or not login.strip():
         return False
-    if body.lstrip().startswith("Reviewed by "):
-        return False
-    if isinstance(login, str):
-        lower = login.lower()
-        if lower.endswith("[bot]") or lower.startswith("app/") or "foreman" in lower:
-            return False
-    return True
+    lower = login.strip().lower()
+    return not (lower.endswith("[bot]") or lower.startswith("app/") or "foreman" in lower)
+
+
+def is_foreman_body(body: object) -> bool:
+    return isinstance(body, str) and body.lstrip().startswith("Reviewed by ")
+
+
+def author_login(record: dict[str, Any]) -> object:
+    author = record.get("author")
+    return author.get("login") if isinstance(author, dict) else None
+
+
+def _is_human_comment(record: dict[str, Any]) -> bool:
+    body = record.get("body")
+    return (
+        is_human_actor(author_login(record))
+        and isinstance(body, str)
+        and bool(body.strip())
+        and not is_foreman_body(body)
+    )
+
+
+def _commit_authors(commit: dict[str, Any]) -> list[dict[str, Any]]:
+    authors = commit.get("authors")
+    people = [a for a in authors if isinstance(a, dict)] if isinstance(authors, list) else []
+    if isinstance(commit.get("author"), dict):
+        people.append(commit["author"])
+    return people
+
+
+def _commit_is_human(commit: dict[str, Any]) -> bool:
+    for author in _commit_authors(commit):
+        login = author.get("login")
+        if isinstance(login, str) and login.strip():
+            if is_human_actor(login):
+                return True
+            continue
+        email = str(author.get("email") or "").lower()
+        if email and "[bot]" not in email and "foreman" not in email:
+            return True
+    return False
+
+
+def human_followup_commits(commits: object, head_sha: str | None = None) -> int:
+    """Count commits a person added: after the run's head when known, else by human authorship."""
+    items = [c for c in commits if isinstance(c, dict)] if isinstance(commits, list) else []
+    oids = [str(c.get("oid") or "").lower() for c in items]
+    head = (head_sha or "").strip().lower()
+    if head and head in oids:
+        later = items[oids.index(head) + 1 :]
+        return sum(1 for c in later if not _commit_authors(c) or _commit_is_human(c))
+    return sum(1 for c in items if _commit_is_human(c))
 
 
 def collect_review_feedback(
@@ -57,8 +103,14 @@ def collect_review_feedback(
     *,
     since_days: int = 14,
     runner: GhRunner | None = None,
+    known_pr_urls: set[str] | None = None,
+    head_shas: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Gather human PR review overrides, follow-up commits, and closed-unmerged PRs."""
+    """Gather human PR review overrides, follow-up commits, and closed-unmerged PRs.
+
+    ``known_pr_urls`` limits results to PRs foreman opened; ``head_shas`` maps a PR URL to the
+    head foreman pushed so later commits count as human follow-ups.
+    """
     run = runner or _default_gh_runner
     proc = run([
         "gh", "pr", "list", "--repo", repo, "--state", "all", "--limit", "30",
@@ -75,6 +127,9 @@ def collect_review_feedback(
     for pr in prs:
         if not isinstance(pr, dict) or not _within_window(pr, cutoff):
             continue
+        url = str(pr.get("url") or "")
+        if known_pr_urls is not None and url not in known_pr_urls:
+            continue
         signals: list[str] = []
         notes: list[str] = []
 
@@ -82,31 +137,27 @@ def collect_review_feedback(
             signals.append("closed_without_merge")
 
         for rev in pr.get("reviews") or []:
-            if not isinstance(rev, dict):
+            if not isinstance(rev, dict) or str(rev.get("state") or "").upper() != "CHANGES_REQUESTED":
                 continue
-            login = ((rev.get("author") or {}) if isinstance(rev.get("author"), dict) else {}).get("login")
-            if str(rev.get("state") or "").upper() == "CHANGES_REQUESTED" and _is_human_comment(login, rev.get("body") or " "):
+            if is_human_actor(author_login(rev)) and not is_foreman_body(rev.get("body")):
                 signals.append("changes_requested")
-                if rev.get("body"):
-                    notes.append(redact_text(str(rev["body"])[:300], redact_pii=True))
+                if isinstance(rev.get("body"), str) and rev["body"].strip():
+                    notes.append(redact_text(rev["body"][:300], redact_pii=True))
 
         for comment in pr.get("comments") or []:
-            if not isinstance(comment, dict):
-                continue
-            login = ((comment.get("author") or {}) if isinstance(comment.get("author"), dict) else {}).get("login")
-            if _is_human_comment(login, comment.get("body")):
+            if isinstance(comment, dict) and _is_human_comment(comment):
                 signals.append("human_comment")
                 notes.append(redact_text(str(comment["body"])[:300], redact_pii=True))
 
-        commits = pr.get("commits") or []
-        if isinstance(commits, list) and len(commits) > 1:
-            signals.append(f"followup_commits:{len(commits) - 1}")
+        followups = human_followup_commits(pr.get("commits"), (head_shas or {}).get(url))
+        if followups:
+            signals.append(f"followup_commits:{followups}")
 
         if signals:
             items.append({
                 "kind": "pr_feedback",
                 "number": pr.get("number"),
-                "url": str(pr.get("url") or ""),
+                "url": url,
                 "title": redact_text(str(pr.get("title") or ""), redact_pii=True),
                 "signals": sorted(set(signals)),
                 "notes": notes[:5],
@@ -119,8 +170,12 @@ def collect_triage_feedback(
     *,
     since_days: int = 14,
     runner: GhRunner | None = None,
+    known_issues: set[int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Gather relabelled, reopened, or closed-not-planned issue triage signals."""
+    """Gather relabelled, reopened, or closed-not-planned issue triage signals.
+
+    ``known_issues`` limits results to issues foreman ran.
+    """
     run = runner or _default_gh_runner
     proc = run([
         "gh", "issue", "list", "--repo", repo, "--state", "all", "--limit", "40",
@@ -136,6 +191,8 @@ def collect_triage_feedback(
     items: list[dict[str, Any]] = []
     for issue in issues:
         if not isinstance(issue, dict) or not _within_window(issue, cutoff):
+            continue
+        if known_issues is not None and issue.get("number") not in known_issues:
             continue
         labels = [
             str(lbl.get("name") or "").lower()
@@ -157,9 +214,8 @@ def collect_triage_feedback(
         for comment in issue.get("comments") or []:
             if not isinstance(comment, dict):
                 continue
-            login = ((comment.get("author") or {}) if isinstance(comment.get("author"), dict) else {}).get("login")
             body = str(comment.get("body") or "")
-            if _is_human_comment(login, body) and any(
+            if _is_human_comment(comment) and any(
                 kw in body.lower() for kw in ("reopen", "wrong slice", "misrouted", "split", "spec")
             ):
                 signals.append("human_triage_note")

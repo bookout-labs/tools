@@ -10,7 +10,12 @@ from typing import Any, Mapping
 
 from foreman.redaction import SecretRedactor, redact_text
 
-SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,}$")
+PROVIDER_ROOT = {"gpt": "codex", "codex": "codex", "claude": "claude", "grok": "grok"}
+
+
+def _transcript_provider(model: object) -> str | None:
+    return PROVIDER_ROOT.get(model.split("-", 1)[0]) if isinstance(model, str) else None
 
 
 def default_transcript_roots() -> dict[str, Path]:
@@ -25,29 +30,37 @@ def default_transcript_roots() -> dict[str, Path]:
 def locate_session_transcript(
     session_id: str,
     *,
+    provider: str | None = None,
     search_roots: Mapping[str, Path] | None = None,
 ) -> Path | None:
     """Safely resolve a session transcript file under provider roots without traversal."""
-    if not isinstance(session_id, str) or not session_id or not SAFE_SESSION_ID.fullmatch(session_id):
+    if not isinstance(session_id, str) or not SAFE_SESSION_ID.fullmatch(session_id):
         return None
     roots = search_roots if search_roots is not None else default_transcript_roots()
-    for provider, root in roots.items():
-        if not root.exists():
+    provider = "codex" if provider == "gpt" else provider
+    patterns = {
+        "claude": (f"{session_id}.jsonl",),
+        "codex": (f"{session_id}.jsonl", f"*-{session_id}.jsonl"),
+        "grok": (f"{session_id}/chat_history.jsonl",),
+    }
+    found: Path | None = None
+    for name, root in roots.items():
+        if (provider is not None and name != provider) or root.is_symlink() or not root.is_dir():
             continue
-        if provider == "grok":
-            candidates = [
-                root / session_id / "chat_history.jsonl",
-                *sorted(root.glob(f"*/{session_id}/chat_history.jsonl")),
-            ]
-            for cand in candidates:
-                if cand.is_file():
-                    return cand
-        for pattern in (f"*{session_id}*.jsonl", f"**/*{session_id}*.jsonl"):
-            matches = sorted(root.glob(pattern))
-            for cand in matches:
-                if cand.is_file():
-                    return cand
-    return None
+        resolved_root = root.resolve()
+        for pattern in patterns.get(name, ()):
+            for candidate in root.rglob(pattern):
+                try:
+                    if any(path.is_symlink() for path in (candidate, *candidate.parents) if path.is_relative_to(root)):
+                        continue
+                    if not candidate.is_file() or not candidate.resolve().is_relative_to(resolved_root):
+                        continue
+                except (OSError, RuntimeError):
+                    continue
+                if found is not None and candidate != found:
+                    return None
+                found = candidate
+    return found
 
 
 def _clip_line(text: object, limit: int = 240) -> str:
@@ -291,23 +304,36 @@ def build_run_evidence(
         ]
         parts.append("Stage calls:\n" + "\n".join(call_lines))
 
-    seen_sessions: set[str] = set()
-    session_ids: list[str] = []
-    for c in stage_calls or []:
-        sid = str(c.get("session_id") or "").strip()
-        if sid and sid not in seen_sessions:
-            seen_sessions.add(sid)
-            session_ids.append(sid)
-    for sid in ((state.get("sessions") or {}).values() if isinstance(state.get("sessions"), dict) else []):
-        if isinstance(sid, str) and sid.strip() and sid.strip() not in seen_sessions:
-            seen_sessions.add(sid.strip())
-            session_ids.append(sid.strip())
-    if top_sid := str(run.get("session_id") or "").strip():
-        if top_sid not in seen_sessions:
-            session_ids.append(top_sid)
+    models = run.get("models_used") or state.get("models_used") or {}
+    if not isinstance(models, dict):
+        models = {}
+    sessions = state.get("sessions") if isinstance(state.get("sessions"), dict) else {}
+    session_sources: dict[str, set[str]] = {}
 
-    for sid in session_ids[:4]:
-        path = locate_session_transcript(sid, search_roots=search_roots)
+    def add_session(sid: object, model: object) -> None:
+        if not isinstance(sid, str) or not sid.strip():
+            return
+        providers = session_sources.setdefault(sid.strip(), set())
+        if provider := _transcript_provider(model):
+            providers.add(provider)
+
+    for call in stage_calls or []:
+        add_session(call.get("session_id"), call.get("provider") or call.get("model") or models.get(call.get("node")))
+    for node, sid in sessions.items():
+        if isinstance(sid, str) and not session_sources.get(sid.strip()):
+            add_session(sid, models.get(node))
+    top_sid = run.get("session_id")
+    if isinstance(top_sid, str) and not session_sources.get(top_sid.strip()):
+        providers = {_transcript_provider(model) for model in models.values()}
+        add_session(top_sid, providers.pop() if len(providers) == 1 else None)
+    targets = [
+        (sid, provider)
+        for sid, providers in session_sources.items()
+        for provider in sorted(providers) or [None]
+    ]
+
+    for sid, provider in targets[:4]:
+        path = locate_session_transcript(sid, provider=provider, search_roots=search_roots)
         if path is not None:
             condensed = condense_transcript(path, max_chars=3000)
             if condensed:

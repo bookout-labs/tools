@@ -11,11 +11,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from foreman.config import Config, ConfigError, load_config, order_for
-from foreman.dispatch import Attempt, CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.dispatch import Attempt, BudgetExceeded, CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.proof import browser_proof_label, formal_proof_label
 from foreman.redaction import redact_text
 from foreman.review_validation import (
     annotate_unified_diff,
+    build_diff_hunk_maps,
     build_diff_maps_from_annotated_diff,
     validate_review_comments,
 )
@@ -60,6 +61,8 @@ class Slice(TypedDict):
 
 
 class DeliveryState(TypedDict, total=False):
+    run_id: str
+    started_at: str
     request: str
     repo: str
     issue: int
@@ -336,8 +339,8 @@ def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
         update["review_note"] = note
         update["risk"] = clean_risk(raw.get("risk"))
         comments = raw.get("comments")
-        if isinstance(comments, list):
-            update["review_comments"] = [c for c in comments if isinstance(c, dict)]
+        update["review_comments"] = [c for c in comments if isinstance(c, dict)] if isinstance(comments, list) else []
+        update["review_validation_errors"] = []
         if verdict == "changes":
             update["review_rounds"] = state.get("review_rounds", 0) + 1
     if name in {"triage", "spec"}:
@@ -384,6 +387,27 @@ def stop_reason(state: DeliveryState) -> str:
     return "stopped"
 
 
+def _budget_exceeded_detail(usage_records: list[dict], budget: dict | None, pricing_data: dict | None) -> str | None:
+    if budget is None:
+        return None
+    usage = state_usage_summary(usage_records, pricing_data)
+    hard_usd = float(budget.get("hard_usd") or 0)
+    hard_tokens = int(budget.get("hard_tokens") or 0)
+    if (hard_usd > 0 and usage["cost_usd"] >= hard_usd) or (hard_tokens > 0 and usage["total_tokens"] >= hard_tokens):
+        return f"run budget ceiling reached: ${usage['cost_usd']:.2f} / {usage['total_tokens']} tokens"
+    return None
+
+
+def _budget_halt(name: str, detail: str) -> dict:
+    return {
+        "path": [name],
+        "halt": "budget_exceeded",
+        "halt_detail": detail,
+        "failure_phase": "budget",
+        "failure_reason": "budget_exceeded",
+    }
+
+
 def compile_delivery(
     dispatcher: FailoverDispatcher | None,
     config: Config | None = None,
@@ -409,24 +433,13 @@ def compile_delivery(
 
     def bind(name: str):
         def node(state: DeliveryState) -> dict:
-            if budget is not None:
-                prior_usage = state.get("usage_records") or []
-                usage_now = state_usage_summary(prior_usage, pricing_data)
-                hard_usd = float(budget.get("hard_usd") or 0)
-                hard_tokens = int(budget.get("hard_tokens") or 0)
-                if (hard_usd > 0 and usage_now["cost_usd"] >= hard_usd) or (
-                    hard_tokens > 0 and usage_now["total_tokens"] >= hard_tokens
-                ):
-                    return {
-                        "path": [name],
-                        "halt": "budget_exceeded",
-                        "halt_detail": (
-                            f"run budget ceiling reached before {name}: "
-                            f"${usage_now['cost_usd']:.2f} / {usage_now['total_tokens']} tokens"
-                        ),
-                        "failure_phase": "budget",
-                        "failure_reason": "budget_exceeded",
-                    }
+            prior_usage = state.get("usage_records") or []
+            if detail := _budget_exceeded_detail(prior_usage, budget, pricing_data):
+                return _budget_halt(name, detail)
+
+            def budget_check(metas: list[dict]) -> str | None:
+                return _budget_exceeded_detail([*prior_usage, *metas], budget, pricing_data)
+
             if name == "implement" and preflight is not None:
                 ok, detail = preflight()
                 if not ok:
@@ -460,32 +473,41 @@ def compile_delivery(
                 instruction = f"{instruction}\n\nCommand: {command}"
             diff_line_map = None
             diff_content_map = None
+            diff_hunk_map = None
             if name == "review" and read_diff is not None:
                 raw_diff = read_diff() or ""
+                annotated_diff = annotate_unified_diff(raw_diff)
+                diff_line_map, diff_content_map = build_diff_maps_from_annotated_diff(annotated_diff)
+                diff_hunk_map = build_diff_hunk_maps(raw_diff)
                 if raw_diff.strip():
-                    annotated_diff = redact_text(annotate_unified_diff(raw_diff), redact_pii=True)
-                    diff_line_map, diff_content_map = build_diff_maps_from_annotated_diff(annotated_diff)
+                    prompt_diff = redact_text(annotated_diff, redact_pii=True)
                     instruction = (
                         f"{instruction}\n\n"
                         "Annotated diff (use [NEW:line] on side RIGHT and [OLD:line] on side LEFT):\n"
-                        f"{annotated_diff[:20000]}"
+                        f"{prompt_diff[:20000]}"
                     )
             raw = None
             recorded: list[Attempt] = []
             try:
-                raw = dispatcher.run(name, models, state, instruction, attempts=recorded)
+                raw = dispatcher.run(
+                    name, models, state, instruction, attempts=recorded,
+                    budget_check=budget_check if budget is not None else None,
+                )
+                metas = list(dispatcher.last_meta)
+                if budget is not None and (detail := budget_check(metas)):
+                    raise BudgetExceeded(detail)
                 update = read_output(name, raw, state)
                 if name == "review" and diff_line_map is not None and update.get("review_comments"):
                     validated = validate_review_comments(
                         update["review_comments"],
                         diff_line_map,
                         diff_content_map,
+                        diff_hunk_map=diff_hunk_map,
                     )
                     update["review_comments"] = list(validated.comments)
                     if validated.errors:
                         update["review_validation_errors"] = list(validated.errors)
                 update["attempts"] = recorded
-                metas = list(getattr(dispatcher, "last_meta", None) or [])
                 if metas:
                     update["usage_records"] = metas
                     last_sid = next((m.get("session_id") for m in reversed(metas) if m.get("session_id")), "")
@@ -494,7 +516,7 @@ def compile_delivery(
                     if budget is not None:
                         soft_usd = float(budget.get("soft_usd") or 0)
                         if soft_usd > 0:
-                            combined = [*(state.get("usage_records") or []), *metas]
+                            combined = [*prior_usage, *metas]
                             after = state_usage_summary(combined, pricing_data)
                             if after["cost_usd"] >= soft_usd:
                                 update["budget_warning"] = (
@@ -528,6 +550,8 @@ def compile_delivery(
                 elif name == "implement" and inspect_worktree is not None:
                     update.update(head_sha=None, head_checked=False)
                 return update
+            except BudgetExceeded as exc:
+                return {**_budget_halt(name, str(exc)), "attempts": recorded, "usage_records": list(dispatcher.last_meta)}
             except InvalidOutput as exc:
                 if recorded and recorded[-1]["status"] == "ran":
                     recorded[-1] = {
@@ -718,6 +742,8 @@ def compile_delivery(
         return "done" if state.get("halt") else "verify"
 
     def arm_merge(state: DeliveryState) -> dict:
+        if detail := _budget_exceeded_detail(state.get("usage_records") or [], budget, pricing_data):
+            return {**_budget_halt("merge", detail), "merge_armed": False}
         head = state.get("head_sha")
         args = ["gh", "pr", "merge", "--auto", "--match-head-commit", head] if head and FULL_SHA.fullmatch(head) else None
         if read_merge_hold is not None:

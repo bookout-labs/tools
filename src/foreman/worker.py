@@ -10,6 +10,7 @@ from typing import Callable
 
 from foreman.config import ConfigError, family
 from foreman.dispatch import CliMissing, InvalidOutput, QuotaExhausted
+from foreman.redaction import redact_text
 from foreman.transcripts import locate_session_transcript
 
 CommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
@@ -251,9 +252,7 @@ QUOTA = re.compile(
 
 
 def _detail(text: object, limit: int = 200) -> str:
-    if text is None:
-        return ""
-    return " ".join(str(text).split())[:limit]
+    return " ".join(redact_text(text, redact_pii=True).split())[:limit]
 
 
 def run_worker_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -311,11 +310,8 @@ def _parse_codex_events(stdout: str, slug: str) -> tuple[str | None, dict]:
             last_message = item["text"]
         elif isinstance(event.get("last_message"), str):
             last_message = event["last_message"]
-        ev_usage = (
-            event.get("usage")
-            or payload.get("usage")
-            or (payload.get("info") or {}).get("total_token_usage")
-        )
+        info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+        ev_usage = event.get("usage") or payload.get("usage") or info.get("total_token_usage")
         if isinstance(ev_usage, dict) and ev_usage:
             usage = ev_usage
     if not parsed_any_event:
@@ -332,7 +328,7 @@ def _verify_codex_rollout_model(session_id: str, slug: str) -> None:
     """Verify the Codex session rollout file on disk matches the requested slug when present."""
     if not session_id:
         return
-    path = locate_session_transcript(session_id)
+    path = locate_session_transcript(session_id, provider="codex")
     if path is None:
         return
     seen_models: list[str] = []
@@ -344,13 +340,59 @@ def _verify_codex_rollout_model(session_id: str, slug: str) -> None:
             ev = json.loads(stripped)
         except ValueError:
             continue
-        if isinstance(ev, dict) and ev.get("type") == "turn_context":
-            payload = ev.get("payload")
-            if isinstance(payload, dict) and isinstance(payload.get("model"), str):
-                seen_models.append(payload["model"])
+        if not isinstance(ev, dict) or not isinstance(payload := ev.get("payload"), dict):
+            continue
+        if ev.get("type") == "turn_context":
+            model = payload.get("model")
+        elif ev.get("type") == "world_state":
+            state = payload.get("state")
+            mode = state.get("collaboration_mode") if isinstance(state, dict) else None
+            model = mode.get("model") if isinstance(mode, dict) else None
+        else:
+            continue
+        if isinstance(model, str) and model:
+            seen_models.append(model)
+    if not seen_models:
+        raise InvalidOutput(f"codex rollout has no model metadata, expected {slug}")
     for recorded_model in seen_models:
         if recorded_model != slug and not recorded_model.startswith(f"{slug}-"):
-            raise InvalidOutput(f"codex rollout reported model {recorded_model}, expected {slug}")
+            raise InvalidOutput(f"codex rollout reported model {_detail(recorded_model)}, expected {slug}")
+
+
+def _codex_resume_usage(usage: dict, slug: str, session_id: str, records: list[dict]) -> dict:
+    prior_usage = [
+        record["model_usage"][slug]
+        for record in records
+        if isinstance(record, dict)
+        and record.get("session_id") == session_id
+        and isinstance(record.get("model_usage"), dict)
+        and isinstance(record["model_usage"].get(slug), dict)
+    ]
+    delta = dict(usage)
+    for key in (
+        "input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+        "output_tokens", "reasoning_output_tokens", "total_tokens",
+    ):
+        if isinstance(current := usage.get(key), int):
+            already_recorded = sum(entry[key] for entry in prior_usage if isinstance(entry.get(key), int))
+            delta[key] = max(0, current - already_recorded)
+    return delta
+
+
+def _envelope_meta(envelope: dict, provider: str, model: str, slug: str, elapsed_ms: int) -> dict:
+    usage = envelope.get("modelUsage")
+    return {
+        "provider": provider,
+        "model": model,
+        "slug": slug,
+        "session_id": envelope.get("session_id") or envelope.get("sessionId") or "",
+        "duration_ms": envelope.get("duration_ms") or elapsed_ms,
+        "num_turns": envelope.get("num_turns"),
+        "total_cost_usd": envelope.get("total_cost_usd") or envelope.get("cost_usd"),
+        "model_usage": usage if isinstance(usage, dict) else (
+            {slug: envelope["usage"]} if isinstance(envelope.get("usage"), dict) else {}
+        ),
+    }
 
 
 class CliWorker:
@@ -437,9 +479,34 @@ class CliWorker:
                 raise CliMissing(model, f"{args[0]} CLI is not installed") from exc
             elapsed_ms = int((time.monotonic() - started) * 1000)
 
+            if provider == "gpt":
+                event_body, codex_meta = _parse_codex_events(process.stdout, slug)
+                session_id = codex_meta["session_id"] or resume_id or ""
+                usage = codex_meta["model_usage"]
+                if resume_id and usage:
+                    usage = {slug: _codex_resume_usage(usage[slug], slug, session_id, state.get("usage_records") or [])}
+                if process.returncode == 0 or usage:
+                    self.last_meta = {
+                        "provider": provider,
+                        "model": model,
+                        "slug": slug,
+                        "session_id": session_id,
+                        "duration_ms": elapsed_ms,
+                        "num_turns": 1,
+                        "total_cost_usd": None,
+                        "model_usage": usage,
+                    }
+
             if process.returncode != 0:
                 combined = f"{process.stderr}\n{process.stdout}"
                 if QUOTA.search(combined):
+                    if provider != "gpt":
+                        try:
+                            envelope = json.loads(process.stdout)
+                        except ValueError:
+                            envelope = None
+                        if isinstance(envelope, dict):
+                            self.last_meta = _envelope_meta(envelope, provider, model, slug, elapsed_ms)
                     raise QuotaExhausted(model, _detail(combined))
                 detail = _detail(combined)
                 raise InvalidOutput(
@@ -452,36 +519,25 @@ class CliWorker:
                 if reroute:
                     raise InvalidOutput(f"codex rerouted {slug}: {reroute.group(1).strip()}")
                 reported = re.findall(r"^model:[ \t]*(\S+)[ \t]*$", process.stderr, re.MULTILINE)
-                event_body, codex_meta = _parse_codex_events(process.stdout, slug)
+                if err_msg := codex_meta.get("failed_error"):
+                    if QUOTA.search(err_msg):
+                        raise QuotaExhausted(model, _detail(err_msg))
+                    raise InvalidOutput(f"codex worker failed: {_detail(err_msg)}")
                 if reported:
                     if reported != [slug]:
                         got = ", ".join(reported)
                         raise InvalidOutput(f"codex reported model {got}, expected {slug}")
-                elif codex_meta.get("parsed_events"):
-                    if err_msg := codex_meta.get("failed_error"):
-                        if QUOTA.search(err_msg):
-                            raise QuotaExhausted(model, _detail(err_msg))
-                        raise InvalidOutput(f"codex worker failed: {_detail(err_msg)}")
-                    _verify_codex_rollout_model(codex_meta.get("session_id", ""), slug)
-                else:
+                elif not codex_meta.get("parsed_events"):
                     raise InvalidOutput(f"codex reported model none, expected {slug}")
+                _verify_codex_rollout_model(session_id, slug)
                 file_body = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
                 body: object = file_body if file_body.strip() else (event_body if event_body is not None else process.stdout)
-                self.last_meta = {
-                    "provider": provider,
-                    "model": model,
-                    "slug": slug,
-                    "session_id": codex_meta.get("session_id", ""),
-                    "duration_ms": elapsed_ms,
-                    "num_turns": 1,
-                    "total_cost_usd": None,
-                    "model_usage": codex_meta.get("model_usage", {}),
-                }
                 result = json_object(body)
             else:
                 envelope = json_object(process.stdout)
                 if envelope.get("is_error") or envelope.get("type") == "error":
                     if QUOTA.search(process.stdout):
+                        self.last_meta = _envelope_meta(envelope, provider, model, slug, elapsed_ms)
                         raise QuotaExhausted(model, _detail(process.stdout))
                     detail = _detail(
                         envelope.get("result") or envelope.get("error") or envelope.get("message") or process.stdout
@@ -494,19 +550,7 @@ class CliWorker:
                 if not _requested_model_ran(slug, usage):
                     reported = ", ".join(str(k) for k in usage) if isinstance(usage, dict) else _detail(usage)
                     raise InvalidOutput(f"{provider} usage reported {reported}, expected {slug}")
-                raw_usage = usage if isinstance(usage, dict) else (
-                    {slug: envelope["usage"]} if isinstance(envelope.get("usage"), dict) else {}
-                )
-                self.last_meta = {
-                    "provider": provider,
-                    "model": model,
-                    "slug": slug,
-                    "session_id": envelope.get("session_id") or envelope.get("sessionId") or "",
-                    "duration_ms": envelope.get("duration_ms") or elapsed_ms,
-                    "num_turns": envelope.get("num_turns"),
-                    "total_cost_usd": envelope.get("total_cost_usd") or envelope.get("cost_usd"),
-                    "model_usage": raw_usage,
-                }
+                self.last_meta = _envelope_meta(envelope, provider, model, slug, elapsed_ms)
                 structured = (
                     envelope.get("structured_output")
                     if envelope.get("structured_output") is not None

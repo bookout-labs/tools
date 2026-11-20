@@ -2,10 +2,18 @@ import os
 import unittest
 from urllib.parse import quote_plus
 
-from foreman.redaction import MAX_SECRET_BYTES, SecretRedactor, redact_text
+from foreman.redaction import MAX_SECRET_BYTES, SecretRedactor, redact_text, redact_value
 
 
 class RedactionTest(unittest.TestCase):
+    def test_nested_string_values_are_scrubbed_without_changing_keys_or_types(self):
+        value = {"key-test-secret": [("key-test-secret", {"email": "owner@example.invalid"}), 7, None]}
+        self.assertEqual(
+            redact_value(value, extra_secrets=["key-test-secret"], env={}, redact_pii=True),
+            {"key-test-secret": [("[REDACTED]", {"email": "[REDACTED_EMAIL]"}), 7, None]},
+        )
+        self.assertEqual(value["key-test-secret"][0][0], "key-test-secret")
+
     def test_from_environ_adds_sensitive_vars_and_skips_safe_or_trivial_values(self):
         env = {
             "PATH": "/usr/local/bin:/usr/bin",

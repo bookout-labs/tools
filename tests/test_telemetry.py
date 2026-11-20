@@ -33,7 +33,7 @@ class TelemetryPricingTest(unittest.TestCase):
             "total_cost_usd": None,
             "model_usage": {
                 "gpt-6.2-sol": {
-                    "input_tokens": 1000,
+                    "input_tokens": 5000,
                     "cached_input_tokens": 4000,
                     "output_tokens": 500,
                 }
@@ -42,7 +42,14 @@ class TelemetryPricingTest(unittest.TestCase):
         cost, toks, estimated = estimate_usage_cost(codex_meta, pricing)
         self.assertTrue(estimated)
         self.assertEqual(toks["total_tokens"], 5500)
-        self.assertGreater(cost, 0.0)
+        self.assertEqual(toks["input_tokens"], 1000)
+        self.assertEqual(toks["cached_input_tokens"], 4000)
+        rate = pricing["models"].get("gpt-6.2-sol") or pricing["families"]["gpt"]
+        expected = (1000 * rate["input_per_mtok"] + 4000 * rate["cached_input_per_mtok"] + 500 * rate["output_per_mtok"]) / 1e6
+        self.assertAlmostEqual(cost, round(expected, 6))
+        # A provider hint alone marks Codex usage as cache-inclusive.
+        hinted = extract_usage_tokens({"input_tokens": 5000, "cached_tokens": 4000, "output_tokens": 500}, provider="gpt")
+        self.assertEqual((hinted["input_tokens"], hinted["total_tokens"]), (1000, 5500))
 
         claude_meta = {
             "provider": "claude",
@@ -63,6 +70,8 @@ class TelemetryPricingTest(unittest.TestCase):
         self.assertFalse(c_est)
         self.assertEqual(c_cost, 0.42)
         self.assertEqual(c_toks["cached_input_tokens"], 800)
+        self.assertEqual(c_toks["input_tokens"], 200)
+        self.assertEqual(c_toks["total_tokens"], 1150)
         self.assertEqual(extract_usage_tokens(None)["total_tokens"], 0)
 
     def test_pr_size_buckets(self):
@@ -106,7 +115,7 @@ class TelemetryStoreAndSyncTest(unittest.TestCase):
                     "duration_ms": 2400,
                     "total_cost_usd": None,
                     "session_id": "thread-123",
-                    "model_usage": {"gpt-6.2-sol": {"input_tokens": 1000, "cached_input_tokens": 3000, "output_tokens": 400}},
+                    "model_usage": {"gpt-6.2-sol": {"input_tokens": 4000, "cached_input_tokens": 3000, "output_tokens": 400}},
                 },
             ],
             "attempts": [],
@@ -191,6 +200,107 @@ class TelemetryStoreAndSyncTest(unittest.TestCase):
             self.assertIn("Autonomy", html_out)
             self.assertNotIn("cdn.", html_out)
 
+    def test_nested_state_redaction_and_export_rescrub(self):
+        secret = "ghp_0123456789abcdefghij0123456789"
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            rid = store.record_run({
+                "repo": "Example/Engine",
+                "issue": 3,
+                "stop": "verify_cap",
+                "attempts": [{"node": "implement", "detail": f"used {secret}"}],
+                "risk": {"alignment": "ask owner@example.invalid"},
+                "review_comments": [{"path": "a.py", "body": "call (555) 234-5678"}],
+                "sessions": {"implement": f"s-{secret}"},
+            })
+            saved = json.dumps(store.get_run(rid)["state"])
+            for leaked in (secret, "owner@example.invalid", "(555) 234-5678"):
+                self.assertNotIn(leaked, saved)
+
+            # Rows written before a redaction fix must still leave the host scrubbed.
+            raw_state = json.dumps({"halt_detail": f"halt {secret}", "check_output": "mail owner@example.invalid"})
+            with store._connect() as conn:
+                conn.execute(
+                    "UPDATE runs SET state_json = ?, failure_reason = ? WHERE run_id = ?",
+                    (raw_state, f"reason {secret}", rid),
+                )
+                conn.execute(
+                    "INSERT INTO scores (run_id, scorer, label, score, passed, reason, judge_model, scored_at)"
+                    " VALUES (?, 's', 'fail', 0.0, 0, ?, 'm', '2026-11-20T00:00:00Z')",
+                    (rid, f"judge saw {secret}"),
+                )
+            exported = store.export_jsonl()
+            self.assertNotIn(secret, exported)
+            self.assertNotIn("owner@example.invalid", exported)
+            self.assertIn("[REDACTED]", exported)
+
+    def test_insufficient_evidence_never_stored_as_passed(self):
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            rid = store.record_run({"repo": "Example/Engine", "issue": 4, "stop": "verified"})
+            store.upsert_score(run_id=rid, scorer="a", label="insufficient_evidence", score=0.5, passed=True)
+            store.import_jsonl(json.dumps({
+                "type": "score", "run_id": rid, "scorer": "b", "label": "insufficient_evidence",
+                "score": 0.5, "passed": 1, "reason": "", "judge_model": "m", "scored_at": "2026-11-20T00:00:00Z",
+            }))
+            self.assertEqual([row["passed"] for row in store.list_scores(run_id=rid)], [0, 0])
+
+    def test_import_keeps_fresher_local_runs_enrichment_and_scores(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            local = TelemetryStore(root / "local.sqlite3")
+            rid = local.record_run(
+                {"repo": "Example/Engine", "issue": 5, "stop": "verified",
+                 "pull_request": "https://github.com/Example/Engine/pull/5"},
+                run_id="run-5", finished_at="2026-11-20T10:00:00Z",
+            )
+            local.enrich_github_outcomes(lambda *a: {"state": "MERGED", "mergedAt": "2026-11-20T11:00:00Z"})
+            local.upsert_score(run_id=rid, scorer="s", label="pass", score=1.0, passed=True,
+                               scored_at="2026-11-20T12:00:00Z")
+            fresh = local.get_run(rid)
+
+            stale_run = {k: v for k, v in fresh.items() if k not in {"models_used", "state"}}
+            stale_run.update(type="run", stop="verify_cap", finished_at="2026-11-20T09:00:00Z",
+                             gh_state="OPEN", gh_merged=0, gh_enriched_at="2026-01-01T00:00:00Z")
+            stale_score = {"type": "score", "run_id": rid, "scorer": "s", "label": "fail", "score": 0.0,
+                           "passed": 0, "reason": "", "judge_model": "m", "scored_at": "2026-11-20T08:00:00Z"}
+            local.import_jsonl("\n".join(json.dumps(x) for x in (stale_run, stale_score)))
+            kept = local.get_run(rid)
+            self.assertEqual((kept["stop"], kept["gh_state"], kept["gh_merged"]), ("verified", "MERGED", 1))
+            self.assertEqual(local.list_scores(run_id=rid)[0]["label"], "pass")
+
+            newer_core = dict(stale_run, stop="needs_human", finished_at="2026-11-21T00:00:00Z")
+            newer_gh = dict(newer_core, gh_state="CLOSED", gh_merged=0, gh_enriched_at="2099-01-01T00:00:00Z")
+            local.import_jsonl(json.dumps(newer_core))
+            self.assertEqual((local.get_run(rid)["stop"], local.get_run(rid)["gh_state"]), ("needs_human", "MERGED"))
+            local.import_jsonl(json.dumps(newer_gh))
+            self.assertEqual(local.get_run(rid)["gh_state"], "CLOSED")
+            local.import_jsonl(json.dumps(dict(stale_score, scored_at="2026-11-21T00:00:00Z")))
+            self.assertEqual(local.list_scores(run_id=rid)[0]["label"], "fail")
+
+    def test_enrich_counts_bodyless_change_requests_and_commits_after_head(self):
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            rid = store.record_run({
+                "repo": "Example/Engine", "issue": 6, "stop": "verified", "head_sha": "b" * 40,
+                "pull_request": "https://github.com/Example/Engine/pull/6",
+            })
+            store.enrich_github_outcomes(lambda *a: {
+                "state": "MERGED",
+                "reviews": [
+                    {"author": {"login": "reviewer"}, "state": "CHANGES_REQUESTED", "body": ""},
+                    {"author": {"login": "foreman-bot"}, "state": "CHANGES_REQUESTED", "body": ""},
+                ],
+                "comments": [],
+                "commits": [
+                    {"oid": "a" * 40, "authors": [{"login": "owner"}]},
+                    {"oid": "b" * 40, "authors": [{"login": "owner"}]},
+                    {"oid": "c" * 40, "authors": [{"login": "owner"}]},
+                ],
+            })
+            run = store.get_run(rid)
+            self.assertEqual((run["gh_review_changes"], run["gh_human_commits"]), (1, 1))
+
 
 class BudgetGuardAndCliStatsTest(unittest.TestCase):
     def test_budget_soft_warning_and_hard_halt_in_delivery(self):
@@ -209,8 +319,8 @@ class BudgetGuardAndCliStatsTest(unittest.TestCase):
         dispatcher = FailoverDispatcher(handler)
         orig_run = dispatcher.run
 
-        def tracked_run(node, models, state, instruction, *, attempts=None):
-            res = orig_run(node, models, state, instruction, attempts=attempts)
+        def tracked_run(node, models, state, instruction, **kwargs):
+            res = orig_run(node, models, state, instruction, **kwargs)
             model_name = res["model"] or ""
             dispatcher.last_meta = [{
                 "node": node,

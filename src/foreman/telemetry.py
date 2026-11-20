@@ -17,7 +17,8 @@ from typing import Any, Callable
 import uuid
 
 from foreman.config import ConfigError, family
-from foreman.redaction import redact_text
+from foreman.feedback import author_login, human_followup_commits, is_foreman_body, is_human_actor
+from foreman.redaction import redact_text, redact_value
 
 PACKAGE = Path(__file__).parent
 PRICING_PATH = PACKAGE / "pricing.toml"
@@ -73,8 +74,11 @@ def _int_metric(mapping: dict[str, Any], *keys: str) -> int:
     return 0
 
 
-def extract_usage_tokens(usage_entry: Any) -> dict[str, int]:
-    """Normalize token counters across Claude, Codex, and Grok usage dictionaries."""
+def extract_usage_tokens(usage_entry: Any, *, provider: str = "") -> dict[str, int]:
+    """Normalize token counters across Claude, Codex, and Grok usage dictionaries.
+
+    ``input_tokens`` in the result is always uncached input, so cached reads are billed once.
+    """
     if not isinstance(usage_entry, dict):
         return {
             "input_tokens": 0,
@@ -83,7 +87,7 @@ def extract_usage_tokens(usage_entry: Any) -> dict[str, int]:
             "output_tokens": 0,
             "total_tokens": 0,
         }
-    inp = _int_metric(usage_entry, "input_tokens", "inputTokens", "prompt_tokens")
+    raw_input = _int_metric(usage_entry, "input_tokens", "inputTokens", "prompt_tokens")
     cached = _int_metric(
         usage_entry,
         "cached_input_tokens",
@@ -100,10 +104,16 @@ def extract_usage_tokens(usage_entry: Any) -> dict[str, int]:
     out = _int_metric(usage_entry, "output_tokens", "outputTokens", "completion_tokens")
     if out == 0:
         out = _int_metric(usage_entry, "reasoning_output_tokens")
-    computed_total = inp + cached + cache_write + out
     reported_total = _int_metric(usage_entry, "total_tokens", "totalTokens")
+    # Codex reports input_tokens inclusive of cached_input_tokens; Claude reports them separately.
+    if "cached_input_tokens" in usage_entry or provider == "gpt":
+        uncached = max(0, raw_input - cached)
+        computed_total = raw_input + cache_write + out
+    else:
+        uncached = raw_input
+        computed_total = raw_input + cached + cache_write + out
     return {
-        "input_tokens": inp,
+        "input_tokens": uncached,
         "cached_input_tokens": cached,
         "cache_write_tokens": cache_write,
         "output_tokens": out,
@@ -131,10 +141,11 @@ def estimate_usage_cost(
     estimated_cost = 0.0
     model_usage = record.get("model_usage")
     fallback_slug = str(record.get("slug") or record.get("model") or "")
+    provider = str(record.get("provider") or "")
 
     if isinstance(model_usage, dict) and model_usage:
         for model_key, raw_usage in model_usage.items():
-            toks = extract_usage_tokens(raw_usage)
+            toks = extract_usage_tokens(raw_usage, provider=provider)
             for k, v in toks.items():
                 totals[k] += v
             rate = _rate_for_model(str(model_key or fallback_slug), pricing_data)
@@ -145,7 +156,7 @@ def estimate_usage_cost(
                 + toks["output_tokens"] * float(rate.get("output_per_mtok", 0.0))
             ) / 1_000_000.0
     else:
-        direct_tokens = extract_usage_tokens(record)
+        direct_tokens = extract_usage_tokens(record, provider=provider)
         totals = direct_tokens
         if any(direct_tokens.values()):
             rate = _rate_for_model(fallback_slug, pricing_data)
@@ -220,6 +231,7 @@ def _sanitize_state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
         "verify",
         "review",
         "review_note",
+        "review_comments",
         "pr_summary",
         "pull_request",
         "head_sha",
@@ -236,19 +248,25 @@ def _sanitize_state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
         "path",
         "sessions",
     )
-    out: dict[str, Any] = {}
-    for key in safe_keys:
-        if key not in state:
-            continue
-        value = state[key]
-        if isinstance(value, str):
-            out[key] = redact_text(value, redact_pii=True)
-        else:
-            out[key] = value
+    out: dict[str, Any] = {key: redact_value(state[key], redact_pii=True) for key in safe_keys if key in state}
     if "request" in state and isinstance(state["request"], str):
         first_line = state["request"].strip().splitlines()[0] if state["request"].strip() else ""
         out["request_title"] = redact_text(first_line[:160], redact_pii=True)
     return out
+
+
+def _scrub_export_row(payload: dict[str, Any]) -> dict[str, Any]:
+    """Re-redact free text on the way out so rows stored before a redaction fix never leak."""
+    for key in ("failure_reason", "reason", "halt_detail", "check_output", "session_id"):
+        if isinstance(payload.get(key), str):
+            payload[key] = redact_text(payload[key], redact_pii=True)
+    if isinstance(payload.get("state_json"), str):
+        try:
+            state = json.loads(payload["state_json"])
+        except ValueError:
+            state = {}
+        payload["state_json"] = json.dumps(redact_value(state, redact_pii=True), sort_keys=True)
+    return payload
 
 
 def _parse_iso(ts: str) -> datetime | None:
@@ -258,16 +276,6 @@ def _parse_iso(ts: str) -> datetime | None:
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
         return None
-
-
-def _is_foreman_or_bot(login: object, body: object) -> bool:
-    if isinstance(body, str) and body.lstrip().startswith("Reviewed by "):
-        return True
-    if isinstance(login, str):
-        lower = login.lower()
-        if lower.endswith("[bot]") or lower.startswith("app/") or "foreman" in lower:
-            return True
-    return False
 
 
 def _default_gh_pr_fetcher(pr_repo: str, pr_url: str) -> dict[str, Any]:
@@ -287,6 +295,65 @@ def _default_gh_pr_fetcher(pr_repo: str, pr_url: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise RuntimeError("gh pr view did not return an object")
     return data
+
+
+def _stored_passed(label: object, passed: object) -> int | None:
+    # Warp invariant: insufficient_evidence never passes, whatever the writer claimed.
+    if label == "insufficient_evidence":
+        return 0
+    return None if passed is None else (1 if passed else 0)
+
+
+RUN_CORE_COLUMNS = (
+    "host", "repo", "issue", "started_at", "finished_at", "duration_ms", "stop",
+    "failure_phase", "failure_reason", "verify_rounds", "review_rounds", "pr_url", "head_sha",
+    "cost_usd", "cost_estimated", "input_tokens", "cached_input_tokens", "cache_write_tokens",
+    "output_tokens", "total_tokens", "session_id", "models_json", "state_json",
+)
+RUN_GH_COLUMNS = (
+    "gh_merged", "gh_state", "gh_human_comments", "gh_review_changes", "gh_human_commits",
+    "gh_additions", "gh_deletions", "gh_changed_files", "gh_size_bucket",
+    "gh_merged_at", "gh_created_at", "gh_cycle_seconds", "gh_enriched_at",
+)
+RUN_DEFAULTS: dict[str, Any] = {
+    "host": "unknown", "repo": "unknown/repo", "started_at": "", "finished_at": "",
+    "duration_ms": 0, "stop": "unknown", "failure_phase": "", "failure_reason": "",
+    "verify_rounds": 0, "review_rounds": 0, "pr_url": "", "head_sha": "",
+    "cost_usd": 0.0, "cost_estimated": 0, "input_tokens": 0,
+    "cached_input_tokens": 0, "cache_write_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+    "session_id": "", "models_json": "{}", "state_json": "{}",
+    "gh_state": "", "gh_human_comments": 0, "gh_review_changes": 0, "gh_human_commits": 0,
+    "gh_size_bucket": "", "gh_merged_at": "", "gh_created_at": "", "gh_enriched_at": "",
+}
+SCORE_COLUMNS = ("run_id", "scorer", "label", "score", "passed", "reason", "judge_model", "scored_at")
+STAGE_CALL_COLUMNS = (
+    "call_id", "run_id", "host", "seq", "node", "model", "provider", "status",
+    "duration_ms", "num_turns", "session_id", "cost_usd",
+    "input_tokens", "cached_input_tokens", "cache_write_tokens",
+    "output_tokens", "total_tokens",
+)
+
+
+def _fresher(column: str, stamp: str) -> str:
+    return f"{column}=CASE WHEN COALESCE(excluded.{stamp}, '') >= COALESCE(runs.{stamp}, '') THEN excluded.{column} ELSE runs.{column} END"
+
+
+# Imports from other hosts must never roll back a newer local run or GitHub enrichment.
+IMPORT_RUN_SQL = (
+    f"INSERT INTO runs (run_id, {', '.join(RUN_CORE_COLUMNS + RUN_GH_COLUMNS)}) "
+    f"VALUES ({', '.join(['?'] * (1 + len(RUN_CORE_COLUMNS) + len(RUN_GH_COLUMNS)))}) "
+    "ON CONFLICT(run_id) DO UPDATE SET "
+    + ", ".join(
+        [_fresher(c, "finished_at") for c in RUN_CORE_COLUMNS]
+        + [_fresher(c, "gh_enriched_at") for c in RUN_GH_COLUMNS]
+    )
+)
+IMPORT_SCORE_SQL = (
+    f"INSERT INTO scores ({', '.join(SCORE_COLUMNS)}) VALUES ({', '.join(['?'] * len(SCORE_COLUMNS))}) "
+    "ON CONFLICT(run_id, scorer) DO UPDATE SET "
+    + ", ".join(f"{c}=excluded.{c}" for c in SCORE_COLUMNS[2:])
+    + " WHERE COALESCE(excluded.scored_at, '') >= COALESCE(scores.scored_at, '')"
+)
 
 
 class TelemetryStore:
@@ -647,7 +714,7 @@ class TelemetryStore:
                     scorer,
                     label,
                     score,
-                    None if passed is None else (1 if passed else 0),
+                    _stored_passed(label, passed),
                     redact_text(reason, redact_pii=True),
                     judge_model,
                     now,
@@ -680,24 +747,20 @@ class TelemetryStore:
                 if dt_c and dt_m:
                     cycle_seconds = max(0.0, (dt_m - dt_c).total_seconds())
 
-                human_comments = 0
-                for c in payload.get("comments") or []:
-                    if not isinstance(c, dict):
-                        continue
-                    login = ((c.get("author") or {}) if isinstance(c.get("author"), dict) else {}).get("login")
-                    if not _is_foreman_or_bot(login, c.get("body")):
-                        human_comments += 1
-
-                review_changes = 0
-                for rv in payload.get("reviews") or []:
-                    if not isinstance(rv, dict):
-                        continue
-                    login = ((rv.get("author") or {}) if isinstance(rv.get("author"), dict) else {}).get("login")
-                    if str(rv.get("state") or "").upper() == "CHANGES_REQUESTED" and not _is_foreman_or_bot(login, rv.get("body")):
-                        review_changes += 1
-
-                commits = payload.get("commits") or []
-                human_commits = max(0, len(commits) - 1) if isinstance(commits, list) and commits else 0
+                human_comments = sum(
+                    1
+                    for c in payload.get("comments") or []
+                    if isinstance(c, dict) and is_human_actor(author_login(c)) and not is_foreman_body(c.get("body"))
+                )
+                review_changes = sum(
+                    1
+                    for rv in payload.get("reviews") or []
+                    if isinstance(rv, dict)
+                    and str(rv.get("state") or "").upper() == "CHANGES_REQUESTED"
+                    and is_human_actor(author_login(rv))
+                    and not is_foreman_body(rv.get("body"))
+                )
+                human_commits = human_followup_commits(payload.get("commits"), run.get("head_sha"))
 
                 additions = payload.get("additions") if isinstance(payload.get("additions"), int) else None
                 deletions = payload.get("deletions") if isinstance(payload.get("deletions"), int) else None
@@ -754,7 +817,7 @@ class TelemetryStore:
         run_ids: list[str] = []
         for run in reversed(runs):
             run_ids.append(run["run_id"])
-            payload = {k: v for k, v in run.items() if k not in {"models_used", "state"}}
+            payload = _scrub_export_row({k: v for k, v in run.items() if k not in {"models_used", "state"}})
             payload["type"] = "run"
             lines.append(json.dumps(payload, sort_keys=True))
         with self._connect() as conn:
@@ -764,7 +827,7 @@ class TelemetryStore:
                     payload["type"] = "stage_call"
                     lines.append(json.dumps(payload, sort_keys=True))
                 for row in conn.execute("SELECT * FROM scores WHERE run_id = ? ORDER BY scorer ASC", (rid,)):
-                    payload = dict(row)
+                    payload = _scrub_export_row(dict(row))
                     payload["type"] = "score"
                     lines.append(json.dumps(payload, sort_keys=True))
         text = ("\n".join(lines) + "\n") if lines else ""
@@ -786,56 +849,23 @@ class TelemetryStore:
                     continue
                 kind = item.get("type")
                 if kind == "run":
-                    cols = [
-                        "run_id", "host", "repo", "issue", "started_at", "finished_at", "duration_ms", "stop",
-                        "failure_phase", "failure_reason", "verify_rounds", "review_rounds", "pr_url", "head_sha",
-                        "cost_usd", "cost_estimated", "input_tokens", "cached_input_tokens", "cache_write_tokens",
-                        "output_tokens", "total_tokens", "session_id", "models_json", "state_json",
-                        "gh_merged", "gh_state", "gh_human_comments", "gh_review_changes", "gh_human_commits",
-                        "gh_additions", "gh_deletions", "gh_changed_files", "gh_size_bucket",
-                        "gh_merged_at", "gh_created_at", "gh_cycle_seconds", "gh_enriched_at",
-                    ]
-                    defaults = {
-                        "host": "unknown", "repo": "unknown/repo", "started_at": "", "finished_at": "",
-                        "duration_ms": 0, "stop": "unknown", "failure_phase": "", "failure_reason": "",
-                        "verify_rounds": 0, "review_rounds": 0, "pr_url": "", "head_sha": "",
-                        "cost_usd": 0.0, "cost_estimated": 0, "input_tokens": 0,
-                        "cached_input_tokens": 0, "cache_write_tokens": 0, "output_tokens": 0, "total_tokens": 0,
-                        "session_id": "", "models_json": "{}", "state_json": "{}",
-                        "gh_state": "", "gh_human_comments": 0, "gh_review_changes": 0, "gh_human_commits": 0,
-                        "gh_size_bucket": "", "gh_merged_at": "", "gh_created_at": "", "gh_enriched_at": "",
-                    }
-                    vals = [item.get(c, defaults.get(c)) for c in cols]
-                    placeholders = ", ".join(["?"] * len(cols))
                     conn.execute(
-                        f"INSERT OR REPLACE INTO runs ({', '.join(cols)}) VALUES ({placeholders})",
-                        vals,
+                        IMPORT_RUN_SQL,
+                        [item.get("run_id")]
+                        + [item.get(c, RUN_DEFAULTS.get(c)) for c in RUN_CORE_COLUMNS + RUN_GH_COLUMNS],
                     )
                     counts["runs"] += 1
                 elif kind == "stage_call":
-                    cols = [
-                        "call_id", "run_id", "host", "seq", "node", "model", "provider", "status",
-                        "duration_ms", "num_turns", "session_id", "cost_usd",
-                        "input_tokens", "cached_input_tokens", "cache_write_tokens",
-                        "output_tokens", "total_tokens",
-                    ]
-                    vals = [item.get(c) for c in cols]
-                    placeholders = ", ".join(["?"] * len(cols))
                     conn.execute(
-                        f"INSERT OR REPLACE INTO stage_calls ({', '.join(cols)}) VALUES ({placeholders})",
-                        vals,
+                        f"INSERT OR REPLACE INTO stage_calls ({', '.join(STAGE_CALL_COLUMNS)}) "
+                        f"VALUES ({', '.join(['?'] * len(STAGE_CALL_COLUMNS))})",
+                        [item.get(c) for c in STAGE_CALL_COLUMNS],
                     )
                     counts["stage_calls"] += 1
                 elif kind == "score":
-                    cols = [
-                        "run_id", "scorer", "label", "score", "passed", "reason", "judge_model", "scored_at",
-                    ]
-                    vals = [item.get(c) for c in cols]
-                    placeholders = ", ".join(["?"] * len(cols))
-                    conn.execute(
-                        f"INSERT OR REPLACE INTO scores ({', '.join(cols)}) VALUES ({placeholders})",
-                        vals,
-                    )
+                    vals = {c: item.get(c) for c in SCORE_COLUMNS}
+                    vals["passed"] = _stored_passed(vals["label"], vals["passed"])
+                    conn.execute(IMPORT_SCORE_SQL, [vals[c] for c in SCORE_COLUMNS])
                     counts["scores"] += 1
         return counts
 
