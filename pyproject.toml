@@ -1,0 +1,23 @@
+[project]
+name = "bookout-tools"
+version = "0.1.0"
+description = "Shared tools the engine repositories point at."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph==1.2.24",
+  "pyyaml>=6.0.2,<7",
+]
+
+[project.scripts]
+foreman = "foreman.cli:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+foreman = ["models.toml"]

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Engine pointer at bookout-labs/tools",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source", "ref", "graph"],
+  "properties": {
+    "source": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "graph": {
+      "type": "string",
+      "enum": ["delivery"]
+    },
+    "check": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
