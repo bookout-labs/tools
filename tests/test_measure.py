@@ -10,7 +10,8 @@ class MeasureTest(unittest.TestCase):
         self.assertEqual(config.passing_score, 0.5)
         self.assertTrue(grade("approve").passed)
         self.assertFalse(grade("block").passed)
-        self.assertTrue(grade("insufficient_evidence").passed)
+        self.assertFalse(grade("insufficient_evidence").passed)
+        self.assertEqual(grade("insufficient_evidence").score, 0.5)
         self.assertEqual(grade("block").score, 0.2)
 
     def test_one_run_in_ten_is_graded(self):

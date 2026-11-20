@@ -71,7 +71,7 @@ def grade(label: str, config: MeasureConfig | None = None) -> Grade:
     if label not in config.labels:
         raise MeasureError(f"unknown label {label}")
     score = config.labels[label]
-    return Grade(label=label, score=score, passed=score >= config.passing_score)
+    return Grade(label=label, score=score, passed=score > config.passing_score)
 
 
 def selected(run_index: int, config: MeasureConfig | None = None) -> bool:

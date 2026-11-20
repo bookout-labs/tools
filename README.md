@@ -36,7 +36,9 @@ The cap is three review or verify failures. It is config. A node cannot raise it
 
 Stage prompts live in `src/foreman/stages/`. The code-quality skill is attached to implement. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 
-A clear change goes straight to implement. A product choice stops on the spec until it is ready. A question is answered and does not change code.
+A clear change on a slice goes straight to implement. A parent issue stops after spec returns its slices. The runner files those issues. The parent is not implemented. A product choice stops on the spec until it is ready. A question is answered and does not change code.
+
+A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 
 ## What enters the graph
 
@@ -58,7 +60,7 @@ foreman accept event.yaml
 
 ## Scoring
 
-`src/foreman/measure.toml` holds the sampling rate, the passing bar, and the label scores. One implementation run in every ten is graded. `approve` scores 1. `block` scores 0.2 and fails the bar. `insufficient_evidence` scores 0.5 and meets the bar.
+`src/foreman/measure.toml` holds the sampling rate, the passing bar, and the label scores. One implementation run in every ten is graded. `approve` scores 1 and passes. `block` scores 0.2 and fails. `insufficient_evidence` scores 0.5 and is reported on its own. It is not evidence of good work.
 
 `foreman improve` turns a known failure into a proposed skill change. The proposal does not change `models.toml` or the review cap. A person opens the pull request.
 

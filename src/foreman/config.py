@@ -81,8 +81,9 @@ def order_for(node: str, config: Config, models_used: dict[str, str]) -> list[st
         return models
     used = models_used.get(spec.other_family_from)
     if not used:
-        return models
+        raise ConfigError(f"{node} needs the {spec.other_family_from} model")
     same = family(used)
     others = [model for model in models if family(model) != same]
-    rest = [model for model in models if family(model) == same]
-    return others + rest
+    if not others:
+        raise ConfigError(f"no {node} model outside the {same} family")
+    return others

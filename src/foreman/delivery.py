@@ -6,7 +6,7 @@ import operator
 
 from langgraph.graph import END, START, StateGraph
 
-from foreman.config import Config, load_config, order_for
+from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher
 
 GRAPH_NAME = "delivery"
@@ -14,8 +14,7 @@ PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "review", "verify")
 STAGE_ORDER = REQUIRED_NODES
 SKILLS_FOR = {
-    "implement": ("code-quality",),
-    "review": ("merge-risk",),
+    "review": ("review-quality", "merge-risk"),
 }
 TRIAGE_OUTCOMES = {"implement", "spec", "question", "needs_human"}
 SPEC_GATES = {"ready", "needs_human"}
@@ -33,6 +32,8 @@ class DeliveryState(TypedDict, total=False):
     triage: str
     spec: str
     spec_gate: str
+    slices: list[dict[str, str | list[str]]]
+    issue_kind: str
     research: str
     implementation: str
     review: str
@@ -40,6 +41,7 @@ class DeliveryState(TypedDict, total=False):
     verify: str
     review_rounds: int
     models_used: dict[str, str]
+    halt: str
     stop: str
     path: Annotated[list[str], operator.add]
 
@@ -69,9 +71,61 @@ def clean_risk(raw: object) -> dict[str, str]:
     return risk
 
 
+def clean_slices(raw: object) -> list[dict[str, str | list[str]]]:
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("spec did not return slices")
+    cleaned: list[dict[str, str | list[str]]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("slice must be a mapping")
+        title = item.get("title")
+        acceptance = item.get("acceptance")
+        depends = item.get("depends_on", [])
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("slice needs a title")
+        if not isinstance(acceptance, str) or not acceptance.strip():
+            raise ValueError("slice needs acceptance")
+        if not isinstance(depends, list) or not all(isinstance(dep, str) and dep.strip() for dep in depends):
+            raise ValueError("slice dependencies must be titles")
+        cleaned.append(
+            {
+                "title": title.strip(),
+                "acceptance": acceptance.strip(),
+                "depends_on": [dep.strip() for dep in depends],
+            }
+        )
+    known = {str(item["title"]) for item in cleaned}
+    if len(known) != len(cleaned):
+        raise ValueError("slice titles must be unique")
+    graph = {str(item["title"]): item["depends_on"] for item in cleaned}
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def walk(name: str) -> None:
+        if name in visiting:
+            raise ValueError("slice dependencies cycle")
+        if name in visited:
+            return
+        visiting.add(name)
+        for dep in graph[name]:
+            if not isinstance(dep, str) or dep not in known:
+                raise ValueError(f"unknown dependency {dep}")
+            walk(dep)
+        visiting.remove(name)
+        visited.add(name)
+
+    for name in graph:
+        walk(name)
+    return cleaned
+
+
 def stop_reason(state: dict) -> str:
+    if state.get("halt") == "no_reviewer":
+        return "no_reviewer"
     if state.get("triage") == "needs_human" or state.get("spec_gate") == "needs_human":
         return "needs_human"
+    if state.get("issue_kind") == "parent" and state.get("spec_gate") == "ready":
+        return "sliced"
     if state.get("triage") == "question":
         return "answered"
     if state.get("verify") == "pass":
@@ -92,7 +146,10 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
 
     def bind(name: str):
         def node(state: DeliveryState) -> dict:
-            models = order_for(name, config, state.get("models_used") or {})
+            try:
+                models = order_for(name, config, state.get("models_used") or {})
+            except ConfigError as exc:
+                return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
             instruction = prompts[name]
             if name == "verify":
                 command = state.get("check") or "(none)"
@@ -113,6 +170,8 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
                     raise ValueError(f"spec returned {gate!r}")
                 update["spec"] = text
                 update["spec_gate"] = gate
+                if state.get("issue_kind") == "parent" and gate == "ready":
+                    update["slices"] = clean_slices(raw.get("slices"))
             elif name in TEXT_FIELDS:
                 key = TEXT_FIELDS[name]
                 text = raw.get(key)
@@ -146,6 +205,8 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
         return node
 
     def after_triage(state: DeliveryState) -> str:
+        if state.get("halt"):
+            return "done"
         decision = state.get("triage")
         if decision == "needs_human":
             return "done"
@@ -154,9 +215,15 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
         return decision or "done"
 
     def after_spec(state: DeliveryState) -> str:
+        if state.get("halt"):
+            return "done"
+        if state.get("issue_kind") == "parent":
+            return "done"
         return "implement" if state.get("spec_gate") == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
+        if state.get("halt"):
+            return "done"
         if state.get("review") == "approve":
             return "verify"
         if state.get("review_rounds", 0) < config.max_review_rounds:
@@ -164,6 +231,8 @@ def compile_delivery(dispatcher: FailoverDispatcher, config: Config | None = Non
         return "done"
 
     def after_verify(state: DeliveryState) -> str:
+        if state.get("halt"):
+            return "done"
         if state.get("verify") == "pass":
             return "done"
         if state.get("review_rounds", 0) < config.max_review_rounds:
@@ -207,13 +276,17 @@ def run_delivery(
     request: str,
     check: str = "",
     config: Config | None = None,
+    issue_kind: str = "slice",
 ) -> dict:
+    if issue_kind not in {"parent", "slice"}:
+        raise ValueError(f"unknown issue kind {issue_kind}")
     graph = compile_delivery(dispatcher, config)
     return graph.invoke(
         {
             "repo": repo,
             "request": request,
             "check": check,
+            "issue_kind": issue_kind,
             "review_rounds": 0,
             "models_used": {},
             "path": [],

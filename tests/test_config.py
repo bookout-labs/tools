@@ -14,10 +14,30 @@ class ConfigTest(unittest.TestCase):
         config = load_config()
         gpt_first = order_for("review", config, {"implement": "gpt-6.1-sol-high"})
         claude_first = order_for("review", config, {"implement": "claude-opus-5-5-high"})
-        self.assertEqual(family(gpt_first[0]), "claude")
-        self.assertEqual(family(gpt_first[-1]), "gpt")
-        self.assertEqual(family(claude_first[0]), "gpt")
-        self.assertEqual(family(claude_first[-1]), "claude")
+        self.assertEqual([family(model) for model in gpt_first], ["claude", "grok"])
+        self.assertEqual([family(model) for model in claude_first], ["gpt", "grok"])
+
+    def test_review_without_a_builder_stops(self):
+        config = load_config()
+        with self.assertRaises(ConfigError):
+            order_for("review", config, {})
+
+    def test_review_refuses_the_builder_family(self):
+        config = parse_config(
+            {
+                "max_review_rounds": 3,
+                "nodes": {
+                    "implement": {"role": "builder", "models": ["gpt-6.1-sol-high"]},
+                    "review": {
+                        "role": "verifier",
+                        "other_family_from": "implement",
+                        "models": ["gpt-6.1-terra-high"],
+                    },
+                },
+            }
+        )
+        with self.assertRaises(ConfigError):
+            order_for("review", config, {"implement": "gpt-6.1-sol-high"})
 
     def test_unknown_family_is_rejected(self):
         with self.assertRaises(ConfigError):

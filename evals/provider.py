@@ -12,12 +12,13 @@ from foreman.dry_run import ScriptHandler  # noqa: E402
 from foreman.measure import grade, propose, selected  # noqa: E402
 
 
-def _stop(handler) -> str:
+def _stop(handler, issue_kind="slice") -> str:
     result = run_delivery(
         FailoverDispatcher(handler),
         repo="DoctorCRE/doctorcre-engine",
         request="Add a field",
         check="npm run check",
+        issue_kind=issue_kind,
     )
     return result["stop"]
 
@@ -51,6 +52,26 @@ def call_api(prompt, options, context):
         output = _stop(ScriptHandler(triage="spec", spec_gate="ready"))
     elif case == "spec-gate":
         output = _stop(ScriptHandler(triage="spec", spec_gate="needs_human"))
+    elif case == "parent":
+        output = _stop(
+            ScriptHandler(
+                triage="spec",
+                spec_gate="ready",
+                slices=[
+                    {
+                        "title": "Board lists the deals",
+                        "acceptance": "The board shows the deals.",
+                        "depends_on": [],
+                    },
+                    {
+                        "title": "Board saves a move",
+                        "acceptance": "A move is stored.",
+                        "depends_on": ["Board lists the deals"],
+                    },
+                ],
+            ),
+            issue_kind="parent",
+        )
     elif case == "question":
         output = _stop(ScriptHandler(triage="question"))
     elif case == "failover":
@@ -63,7 +84,7 @@ def call_api(prompt, options, context):
         output = "fail" if not graded.passed and graded.score == 0.2 else "pass"
     elif case == "score-thin":
         graded = grade("insufficient_evidence")
-        output = "pass" if graded.passed and graded.score == 0.5 else "fail"
+        output = "insufficient_evidence" if not graded.passed and graded.score == 0.5 else "fail"
     elif case == "sample":
         output = "yes" if selected(0) and selected(10) and not selected(1) else "no"
     elif case == "proposal":

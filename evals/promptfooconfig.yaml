@@ -21,6 +21,12 @@ tests:
     assert:
       - type: equals
         value: verified
+  - description: A parent issue stops once spec has named the slices
+    vars:
+      case: parent
+    assert:
+      - type: equals
+        value: sliced
   - description: An open product choice stops for a person
     vars:
       case: spec-gate
@@ -51,12 +57,12 @@ tests:
     assert:
       - type: equals
         value: fail
-  - description: A thin transcript meets the bar and does not count as a pass or a block
+  - description: A thin transcript is reported separately and does not count as good work
     vars:
       case: score-thin
     assert:
       - type: equals
-        value: pass
+        value: insufficient_evidence
   - description: One run in ten is graded
     vars:
       case: sample

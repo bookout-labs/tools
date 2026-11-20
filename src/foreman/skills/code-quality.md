@@ -1,5 +1,7 @@
 # Code quality
 
+This file is for the scorer. A review does not use these labels.
+
 Grade an implementation transcript on these axes:
 
 - Design. The shape of the change fits the codebase.

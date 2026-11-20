@@ -18,6 +18,7 @@ class ScriptHandler:
         reviews: list[str] | None = None,
         verify: str = "pass",
         spec: str = "Behavior, decisions, and technical design.",
+        slices: list | None = None,
         implementation: str = "diff",
         research: str = "answer",
         risk: dict | None = None,
@@ -27,6 +28,7 @@ class ScriptHandler:
         self.reviews = list(reviews if reviews is not None else ["approve"])
         self.verify = verify
         self.spec = spec
+        self.slices = slices
         self.implementation = implementation
         self.research = research
         self.risk = dict(DEFAULT_RISK if risk is None else risk)
@@ -37,7 +39,10 @@ class ScriptHandler:
         if node == "triage":
             return {"triage": self.triage}
         if node == "spec":
-            return {"spec": self.spec, "spec_gate": self.spec_gate}
+            payload = {"spec": self.spec, "spec_gate": self.spec_gate}
+            if self.slices is not None:
+                payload["slices"] = self.slices
+            return payload
         if node == "implement":
             return {"implementation": self.implementation}
         if node == "research":
