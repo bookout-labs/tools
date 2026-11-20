@@ -20,6 +20,7 @@ from foreman.github import GhClient, GitHub
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.runner import WorktreeInspector, run_live_delivery
+from foreman.telemetry import TelemetryStore, default_telemetry_path, load_pricing, render_stats_html, render_stats_text
 from foreman.watcher import TOOLS_REPO, file_proposal_issue
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 
@@ -132,6 +133,7 @@ def main(
     *,
     worker_runner: CommandRunner | None = run_worker_command,
     checkpoint: Path | None = None,
+    telemetry_path: Path | None = None,
     github: GitHub | None = None,
     run_gh: Callable[[list[str]], int] | None = None,
     find_pr: Callable[[str], dict[str, object] | None] | None = None,
@@ -156,6 +158,9 @@ def main(
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
     run.add_argument("--preflight", help="optional shell check run before implementation")
+    run.add_argument("--telemetry", help="SQLite telemetry database path")
+    run.add_argument("--budget-usd", type=float, help="hard per-run USD ceiling")
+    run.add_argument("--budget-tokens", type=int, help="hard per-run token ceiling")
 
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")
     accept.add_argument("path")
@@ -163,7 +168,66 @@ def main(
     improve = commands.add_parser("improve", help="propose a change from a failing score")
     improve.add_argument("failure")
 
+    stats_cmd = commands.add_parser("stats", help="summarize run telemetry, spend, and autonomy")
+    stats_cmd.add_argument("--db", help="SQLite telemetry database path")
+    stats_cmd.add_argument("--repo")
+    stats_cmd.add_argument("--host")
+    stats_cmd.add_argument("--days", type=int)
+    stats_cmd.add_argument("--refresh", action="store_true", help="refresh GitHub PR outcome fields via gh")
+    stats_cmd.add_argument("--format", choices=("text", "json", "html"), default="text")
+    stats_cmd.add_argument("--out", help="optional file path to write formatted stats")
+
+    tel_cmd = commands.add_parser("telemetry", help="export or import multi-host telemetry JSONL")
+    tel_sub = tel_cmd.add_subparsers(dest="telemetry_action", required=True)
+    tel_export = tel_sub.add_parser("export", help="export runs, stage calls, and scores as JSONL")
+    tel_export.add_argument("--db", help="SQLite telemetry database path")
+    tel_export.add_argument("--out", help="output JSONL file path (defaults to stdout)")
+    tel_export.add_argument("--since")
+    tel_export.add_argument("--host")
+
+    tel_import = tel_sub.add_parser("import", help="import one or more JSONL telemetry snapshots")
+    tel_import.add_argument("paths", nargs="+")
+    tel_import.add_argument("--db", help="SQLite telemetry database path")
+
     args = parser.parse_args(argv)
+    if args.command == "stats":
+        db = Path(args.db) if args.db else (telemetry_path or default_telemetry_path())
+        store = TelemetryStore(db)
+        if args.refresh:
+            store.enrich_github_outcomes(repo=args.repo)
+        stats = store.compute_stats(repo=args.repo, host=args.host, days=args.days)
+        if args.format == "json":
+            rendered = json.dumps(stats, indent=2, sort_keys=True)
+        elif args.format == "html":
+            rendered = render_stats_html(stats)
+        else:
+            rendered = render_stats_text(stats)
+        if args.out:
+            out_path = Path(args.out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(rendered + ("\n" if not rendered.endswith("\n") else ""), encoding="utf-8")
+            print(str(out_path))
+        else:
+            print(rendered)
+        return 0
+    if args.command == "telemetry":
+        db = Path(args.db) if args.db else (telemetry_path or default_telemetry_path())
+        store = TelemetryStore(db)
+        if args.telemetry_action == "export":
+            out_path = Path(args.out) if args.out else None
+            text = store.export_jsonl(out_path, since=args.since, host=args.host)
+            if out_path is None:
+                print(text, end="")
+            else:
+                print(str(out_path))
+            return 0
+        totals = {"runs": 0, "stage_calls": 0, "scores": 0}
+        for src in args.paths:
+            counts = store.import_jsonl(Path(src))
+            for key, val in counts.items():
+                totals[key] += val
+        print(f"imported runs={totals['runs']} stage_calls={totals['stage_calls']} scores={totals['scores']}")
+        return 0
     if args.command == "diagram":
         if args.graph != GRAPH_NAME:
             print(f"unknown graph {args.graph}", file=sys.stderr)
@@ -223,6 +287,18 @@ def main(
         if checkpoint is None:
             state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
+            effective_telemetry = Path(args.telemetry) if args.telemetry else (telemetry_path or default_telemetry_path())
+        else:
+            effective_telemetry = (
+                Path(args.telemetry)
+                if args.telemetry
+                else (telemetry_path or checkpoint.with_name("telemetry.sqlite3"))
+            )
+        budget = dict(load_pricing().get("budget") or {})
+        if args.budget_usd is not None:
+            budget["hard_usd"] = args.budget_usd
+        if args.budget_tokens is not None:
+            budget["hard_tokens"] = args.budget_tokens
         cwd = Path.cwd()
         dispatcher = FailoverDispatcher(CliWorker(cwd, worker_runner)) if worker_runner else None
         lookup = _find_pr if find_pr is None else find_pr
@@ -269,10 +345,14 @@ def main(
                 inspect_worktree=inspect_worktree,
                 read_merge_hold=hold_reader,
                 preflight=preflight_fn,
+                telemetry_path=effective_telemetry,
+                budget=budget,
             )
         except (OSError, QuotaExhausted, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
+        if warning := result.get("budget_warning"):
+            print(f"warning: {warning}", file=sys.stderr)
         _print_run(result)
         if (proposal := result.get("proposal")) and proposal.get("file_issue"):
             try:

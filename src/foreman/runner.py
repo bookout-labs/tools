@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import time
 from typing import Callable
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -14,6 +15,7 @@ from foreman.delivery import DeliveryState, Slice, clean_slices, compile_deliver
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.github import GhClient, GitHub
 from foreman.redaction import SecretRedactor, redact_text
+from foreman.telemetry import TelemetryStore, utcnow_iso
 
 WorktreeInspector = Callable[[Path], tuple[str, bool]]
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
@@ -227,7 +229,11 @@ def run_live_delivery(
     record_review: Callable[[DeliveryState, str], None] | None = None,
     read_merge_hold: Callable[[str], str | None] | None = None,
     preflight: Callable[[], tuple[bool, str]] | None = None,
+    telemetry_path: Path | None = None,
+    budget: dict | None = None,
 ) -> dict:
+    started_at = utcnow_iso()
+    started_clock = time.monotonic()
     def run_check(command: str) -> tuple[int, str]:
         proc = subprocess.run(
             command,
@@ -264,7 +270,7 @@ def run_live_delivery(
             dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
             inspect_worktree=lambda: inspect(cwd), commit_worktree=finish_commit,
             publish_worktree=finish_publish, record_review=finish_record,
-            read_merge_hold=read_merge_hold, preflight=preflight,
+            read_merge_hold=read_merge_hold, preflight=preflight, budget=budget,
         )
         graph_ref.append(graph)
         saved = graph.get_state(config)
@@ -321,4 +327,14 @@ def run_live_delivery(
         if saved.interrupts:
             question = saved.interrupts[0].value["question"]
             return {**saved.values, "stop": "needs_human", "halt_detail": question}
-        return dict(saved.values)
+        final_state = dict(saved.values)
+        if telemetry_path is not None:
+            elapsed_ms = int((time.monotonic() - started_clock) * 1000)
+            rid = TelemetryStore(telemetry_path).record_run(
+                final_state,
+                started_at=started_at,
+                finished_at=utcnow_iso(),
+                duration_ms=elapsed_ms if elapsed_ms > 0 else None,
+            )
+            final_state["run_id"] = rid
+        return final_state

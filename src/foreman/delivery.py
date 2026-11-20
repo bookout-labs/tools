@@ -14,6 +14,7 @@ from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import Attempt, CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.proof import browser_proof_label, formal_proof_label
 from foreman.redaction import redact_text
+from foreman.telemetry import load_pricing, state_usage_summary
 from foreman.watcher import Proposal, watch_run
 
 GRAPH_NAME = "delivery"
@@ -100,6 +101,7 @@ class DeliveryState(TypedDict, total=False):
     halt_detail: str
     failure_phase: str
     failure_reason: str
+    budget_warning: str
     stop: str
     path: Annotated[list[str], operator.add]
 
@@ -389,15 +391,35 @@ def compile_delivery(
     record_review: Callable[[DeliveryState, str], None] | None = None,
     read_merge_hold: Callable[[str], str | None] | None = None,
     preflight: Callable[[], tuple[bool, str]] | None = None,
+    budget: dict | None = None,
 ):
     config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
+    pricing_data = load_pricing() if budget is not None else None
 
     def bind(name: str):
         def node(state: DeliveryState) -> dict:
+            if budget is not None:
+                prior_usage = state.get("usage_records") or []
+                usage_now = state_usage_summary(prior_usage, pricing_data)
+                hard_usd = float(budget.get("hard_usd") or 0)
+                hard_tokens = int(budget.get("hard_tokens") or 0)
+                if (hard_usd > 0 and usage_now["cost_usd"] >= hard_usd) or (
+                    hard_tokens > 0 and usage_now["total_tokens"] >= hard_tokens
+                ):
+                    return {
+                        "path": [name],
+                        "halt": "budget_exceeded",
+                        "halt_detail": (
+                            f"run budget ceiling reached before {name}: "
+                            f"${usage_now['cost_usd']:.2f} / {usage_now['total_tokens']} tokens"
+                        ),
+                        "failure_phase": "budget",
+                        "failure_reason": "budget_exceeded",
+                    }
             if name == "implement" and preflight is not None:
                 ok, detail = preflight()
                 if not ok:
@@ -441,6 +463,15 @@ def compile_delivery(
                     last_sid = next((m.get("session_id") for m in reversed(metas) if m.get("session_id")), "")
                     if last_sid:
                         update["sessions"] = {**(state.get("sessions") or {}), name: last_sid}
+                    if budget is not None:
+                        soft_usd = float(budget.get("soft_usd") or 0)
+                        if soft_usd > 0:
+                            combined = [*(state.get("usage_records") or []), *metas]
+                            after = state_usage_summary(combined, pricing_data)
+                            if after["cost_usd"] >= soft_usd:
+                                update["budget_warning"] = (
+                                    f"run spend reached ${after['cost_usd']:.2f} (soft limit ${soft_usd:.2f})"
+                                )
                 if name == "implement" and commit_worktree is not None:
                     request = state.get("request")
                     title = request.strip().splitlines()[0] if isinstance(request, str) and request.strip() else ""
@@ -775,10 +806,11 @@ def run_delivery(
     config: Config | None = None,
     issue_kind: str = "slice",
     read_merge_hold: Callable[[str], str | None] | None = None,
+    budget: dict | None = None,
 ) -> dict:
     if issue_kind not in {"parent", "slice"}:
         raise ValueError(f"unknown issue kind {issue_kind}")
-    graph = compile_delivery(dispatcher, config, read_merge_hold=read_merge_hold)
+    graph = compile_delivery(dispatcher, config, read_merge_hold=read_merge_hold, budget=budget)
     return graph.invoke(
         {
             "repo": repo,

@@ -1,0 +1,323 @@
+import contextlib
+import io
+import json
+from pathlib import Path
+import subprocess
+from tempfile import TemporaryDirectory
+import unittest
+
+from foreman.cli import main
+from foreman.delivery import compile_delivery, run_delivery
+from foreman.dispatch import FailoverDispatcher
+from foreman.dry_run import DEFAULT_RISK
+from foreman.telemetry import (
+    TelemetryStore,
+    estimate_usage_cost,
+    extract_usage_tokens,
+    load_pricing,
+    pr_size_bucket,
+    render_stats_html,
+    render_stats_text,
+)
+from tests.test_runner import FakeGitHub, clean_worktree, git_repo, worker_reply
+
+
+class TelemetryPricingTest(unittest.TestCase):
+    def test_extract_tokens_and_estimate_cost_for_claude_and_codex(self):
+        pricing = load_pricing()
+        codex_meta = {
+            "provider": "gpt",
+            "model": "gpt-6.2-sol-high",
+            "slug": "gpt-6.2-sol",
+            "duration_ms": 1500,
+            "total_cost_usd": None,
+            "model_usage": {
+                "gpt-6.2-sol": {
+                    "input_tokens": 1000,
+                    "cached_input_tokens": 4000,
+                    "output_tokens": 500,
+                }
+            },
+        }
+        cost, toks, estimated = estimate_usage_cost(codex_meta, pricing)
+        self.assertTrue(estimated)
+        self.assertEqual(toks["total_tokens"], 5500)
+        self.assertGreater(cost, 0.0)
+
+        claude_meta = {
+            "provider": "claude",
+            "model": "claude-opus-5-5-high",
+            "slug": "claude-opus-5-5",
+            "duration_ms": 900,
+            "total_cost_usd": 0.42,
+            "model_usage": {
+                "claude-opus-5-5": {
+                    "inputTokens": 200,
+                    "cacheReadInputTokens": 800,
+                    "cacheCreationInputTokens": 100,
+                    "outputTokens": 50,
+                }
+            },
+        }
+        c_cost, c_toks, c_est = estimate_usage_cost(claude_meta, pricing)
+        self.assertFalse(c_est)
+        self.assertEqual(c_cost, 0.42)
+        self.assertEqual(c_toks["cached_input_tokens"], 800)
+        self.assertEqual(extract_usage_tokens(None)["total_tokens"], 0)
+
+    def test_pr_size_buckets(self):
+        self.assertEqual(pr_size_bucket(None, None), "unknown")
+        self.assertEqual(pr_size_bucket(10, 5, 1), "S")
+        self.assertEqual(pr_size_bucket(120, 40, 4), "M")
+        self.assertEqual(pr_size_bucket(300, 100, 12), "L")
+        self.assertEqual(pr_size_bucket(700, 200, 5), "XL")
+
+
+class TelemetryStoreAndSyncTest(unittest.TestCase):
+    def _sample_state(self, *, issue=10, pr_url="", request="Fix bug for owner@example.invalid"):
+        return {
+            "repo": "Example/Engine",
+            "issue": issue,
+            "request": request,
+            "stop": "verified",
+            "verify_rounds": 1,
+            "review_rounds": 0,
+            "pull_request": pr_url,
+            "head_sha": "a" * 40,
+            "models_used": {"triage": "claude-opus-5-5-high", "implement": "gpt-6.2-sol-high"},
+            "sessions": {"implement": "thread-123"},
+            "usage_records": [
+                {
+                    "node": "triage",
+                    "model": "claude-opus-5-5-high",
+                    "slug": "claude-opus-5-5",
+                    "provider": "claude",
+                    "status": "ran",
+                    "duration_ms": 1100,
+                    "total_cost_usd": 0.15,
+                    "model_usage": {"claude-opus-5-5": {"inputTokens": 500, "cacheReadInputTokens": 1500, "outputTokens": 100}},
+                },
+                {
+                    "node": "implement",
+                    "model": "gpt-6.2-sol-high",
+                    "slug": "gpt-6.2-sol",
+                    "provider": "gpt",
+                    "status": "ran",
+                    "duration_ms": 2400,
+                    "total_cost_usd": None,
+                    "session_id": "thread-123",
+                    "model_usage": {"gpt-6.2-sol": {"input_tokens": 1000, "cached_input_tokens": 3000, "output_tokens": 400}},
+                },
+            ],
+            "attempts": [],
+            "path": ["triage", "implement", "verify", "review", "merge", "done"],
+        }
+
+    def test_record_enrich_sync_and_render_stats(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            studio_db = TelemetryStore(root / "studio.sqlite3")
+            laptop_db = TelemetryStore(root / "laptop.sqlite3")
+
+            rid1 = studio_db.record_run(
+                self._sample_state(issue=10, pr_url="https://github.com/Example/Engine/pull/10"),
+                host="mac-studio",
+                started_at="2026-11-20T10:00:00Z",
+                finished_at="2026-11-20T10:05:00Z",
+            )
+            rid2 = laptop_db.record_run(
+                self._sample_state(issue=11, pr_url="https://github.com/Example/Engine/pull/11"),
+                host="macbook-pro",
+                started_at="2026-11-20T11:00:00Z",
+                finished_at="2026-11-20T11:06:00Z",
+            )
+            saved1 = studio_db.get_run(rid1)
+            self.assertNotIn("owner@example.invalid", json.dumps(saved1["state"]))
+            self.assertEqual(len(studio_db.list_stage_calls(rid1)), 2)
+
+            def fake_pr_fetcher(pr_repo, pr_url):
+                if pr_url.endswith("/10"):
+                    return {
+                        "state": "MERGED",
+                        "createdAt": "2026-11-20T10:02:00Z",
+                        "mergedAt": "2026-11-20T10:12:00Z",
+                        "additions": 25,
+                        "deletions": 10,
+                        "changedFiles": 2,
+                        "commits": [{"oid": "a" * 40}],
+                        "comments": [{"author": {"login": "bot-user"}, "body": "Reviewed by gpt-6.2-sol-high.\nVerdict: approve."}],
+                        "reviews": [],
+                    }
+                return {
+                    "state": "MERGED",
+                    "createdAt": "2026-11-20T11:02:00Z",
+                    "mergedAt": "2026-11-20T11:32:00Z",
+                    "additions": 140,
+                    "deletions": 50,
+                    "changedFiles": 4,
+                    "commits": [{"oid": "a" * 40}, {"oid": "b" * 40}],
+                    "comments": [{"author": {"login": "reviewer"}, "body": "Please rename this helper."}],
+                    "reviews": [{"author": {"login": "reviewer"}, "state": "CHANGES_REQUESTED", "body": "Fix name"}],
+                }
+
+            self.assertEqual(studio_db.enrich_github_outcomes(fake_pr_fetcher), 1)
+            self.assertEqual(laptop_db.enrich_github_outcomes(fake_pr_fetcher), 1)
+
+            sync_file = root / "sync.jsonl"
+            laptop_db.export_jsonl(sync_file)
+            imported = studio_db.import_jsonl(sync_file)
+            self.assertEqual(imported["runs"], 1)
+            self.assertEqual(imported["stage_calls"], 2)
+            # Re-importing the same JSONL is idempotent
+            studio_db.import_jsonl(sync_file)
+            self.assertEqual(len(studio_db.list_runs()), 2)
+            self.assertIsNotNone(studio_db.get_run(rid2))
+
+            stats = studio_db.compute_stats()
+            self.assertEqual(stats["total_runs"], 2)
+            self.assertEqual(stats["merged_runs"], 2)
+            self.assertEqual(stats["zero_touch_runs"], 1)
+            self.assertEqual(stats["autonomy_rate"], 0.5)
+            self.assertEqual(stats["by_size_bucket"]["S"]["zero_touch"], 1)
+            self.assertEqual(stats["by_size_bucket"]["M"]["zero_touch"], 0)
+            self.assertIn("mac-studio", stats["by_host"])
+            self.assertIn("macbook-pro", stats["by_host"])
+
+            text = render_stats_text(stats)
+            self.assertIn("Zero-touch: 1 (50.0%)", text)
+            self.assertIn("gpt-6.2-sol-high", text)
+            html_out = render_stats_html(stats)
+            self.assertIn("<svg", html_out)
+            self.assertIn("Autonomy", html_out)
+            self.assertNotIn("cdn.", html_out)
+
+
+class BudgetGuardAndCliStatsTest(unittest.TestCase):
+    def test_budget_soft_warning_and_hard_halt_in_delivery(self):
+        calls = []
+
+        def handler(node, model, state, instruction):
+            calls.append(node)
+            if node == "triage":
+                return {"triage": "implement"}
+            if node == "implement":
+                return {"implementation": "ok", "head_sha": "a" * 40}
+            if node == "verify":
+                return {"verify": "pass"}
+            return {"review": "approve", "risk": DEFAULT_RISK}
+
+        dispatcher = FailoverDispatcher(handler)
+        orig_run = dispatcher.run
+
+        def tracked_run(node, models, state, instruction, *, attempts=None):
+            res = orig_run(node, models, state, instruction, attempts=attempts)
+            model_name = res["model"] or ""
+            dispatcher.last_meta = [{
+                "node": node,
+                "model": model_name,
+                "slug": model_name.rsplit("-", 1)[0] if model_name else "",
+                "provider": "claude",
+                "status": "ran",
+                "duration_ms": 100,
+                "total_cost_usd": 12.0 if node == "triage" else (40.0 if node == "implement" else 0.0),
+                "model_usage": {},
+            }]
+            return res
+
+        dispatcher.run = tracked_run  # type: ignore[method-assign]
+        soft_res = run_delivery(
+            dispatcher,
+            repo="Example/Engine",
+            request="Build it",
+            budget={"soft_usd": 10.0, "hard_usd": 0.0, "hard_tokens": 0},
+        )
+        self.assertEqual(soft_res["stop"], "verified")
+        self.assertIn("soft limit", soft_res["budget_warning"])
+
+        calls.clear()
+        hard_res = run_delivery(
+            dispatcher,
+            repo="Example/Engine",
+            request="Build it",
+            budget={"soft_usd": 5.0, "hard_usd": 10.0, "hard_tokens": 0},
+        )
+        self.assertEqual(hard_res["stop"], "budget_exceeded")
+        self.assertEqual(hard_res["failure_phase"], "budget")
+        self.assertEqual(calls, ["triage"])
+
+    def test_cli_run_persists_telemetry_and_stats_export_import_commands(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            repo.mkdir()
+            git_repo(repo)
+            db_path = root / "tel.sqlite3"
+            checkpoint = root / "ckpt.sqlite3"
+
+            def worker(args, cwd):
+                if args[-1].find("Review") != -1 and "--model" not in args and "-m" in args:
+                    pass
+                if args[0] == "claude":
+                    return subprocess.CompletedProcess(
+                        args,
+                        0,
+                        json.dumps({
+                            "structured_output": {"triage": "implement"},
+                            "session_id": "sess-1",
+                            "duration_ms": 500,
+                            "total_cost_usd": 0.25,
+                            "modelUsage": {"claude-opus-5-5": {"inputTokens": 300, "outputTokens": 50}},
+                        }),
+                        "",
+                    )
+                out_path = Path(args[args.index("-o") + 1])
+                if "Implement" in args[-1] or "required" in args[-1] and "review" not in args[-1].lower():
+                    (repo / "feat.txt").write_text("hi\n", encoding="utf-8")
+                    out_path.write_text(json.dumps({"implementation": "done", "pr_summary": "Done"}), encoding="utf-8")
+                else:
+                    out_path.write_text(json.dumps({"review": "approve", "risk": DEFAULT_RISK}), encoding="utf-8")
+                return subprocess.CompletedProcess(args, 0, '{"type":"thread.started","thread_id":"t-1"}\n{"type":"turn.completed","usage":{"input_tokens":400,"output_tokens":60}}', "model: gpt-6.2-sol\n")
+
+            prev_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(repo)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = main(
+                        ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
+                         "--check", "exit 0", "--telemetry", str(db_path)],
+                        worker_runner=worker,
+                        checkpoint=checkpoint,
+                        github=FakeGitHub(),
+                        run_gh=lambda cmd: 0,
+                        inspect_worktree=clean_worktree,
+                        read_merge_hold=lambda repo: None,
+                    )
+                self.assertEqual(code, 0)
+            finally:
+                os.chdir(prev_cwd)
+
+            store = TelemetryStore(db_path)
+            self.assertEqual(len(store.list_runs()), 1)
+
+            html_file = root / "stats.html"
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(main(["stats", "--db", str(db_path), "--format", "json"]), 0)
+            parsed = json.loads(out.getvalue())
+            self.assertEqual(parsed["total_runs"], 1)
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["stats", "--db", str(db_path), "--format", "html", "--out", str(html_file)]), 0)
+            self.assertIn("<svg", html_file.read_text(encoding="utf-8"))
+
+            sync_file = root / "export.jsonl"
+            other_db = root / "other.sqlite3"
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["telemetry", "export", "--db", str(db_path), "--out", str(sync_file)]), 0)
+                self.assertEqual(main(["telemetry", "import", str(sync_file), "--db", str(other_db)]), 0)
+            self.assertEqual(len(TelemetryStore(other_db).list_runs()), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
