@@ -8,7 +8,7 @@ class ConfigTest(unittest.TestCase):
         config = load_config()
         self.assertEqual(config.max_review_rounds, 3)
         self.assertEqual(config.nodes["verify"].models, ())
-        self.assertEqual(config.nodes["implement"].models[0], "gpt-6.1-sol-high")
+        self.assertEqual(config.nodes["implement"].models[0], "gpt-6.2-sol-high")
 
     def test_review_uses_the_other_family(self):
         config = load_config()

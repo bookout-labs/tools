@@ -5,20 +5,20 @@ max_review_rounds = 3
 
 [nodes.triage]
 role = "coordinator"
-models = ["claude-opus-5-5-high", "grok-4.7-high", "gpt-6.1-sol-high"]
+models = ["claude-opus-5-5-high", "grok-4.7-high", "gpt-6.2-sol-high"]
 
 [nodes.research]
 role = "coordinator"
-models = ["claude-opus-5-5-high", "grok-4.7-high", "gpt-6.1-sol-high"]
+models = ["claude-opus-5-5-high", "grok-4.7-high", "gpt-6.2-sol-high"]
 
 [nodes.spec]
 role = "coordinator"
-models = ["claude-opus-5-5-high", "grok-4.7-high", "gpt-6.1-sol-high"]
+models = ["claude-opus-5-5-high", "grok-4.7-high", "gpt-6.2-sol-high"]
 
 [nodes.implement]
 role = "builder"
 models = [
-  "gpt-6.1-sol-high",
+  "gpt-6.2-sol-high",
   "gpt-6.1-terra-high",
   "claude-opus-5-5-high",
   "grok-4.7-high",
@@ -27,7 +27,7 @@ models = [
 [nodes.review]
 role = "verifier"
 other_family_from = "implement"
-models = ["claude-opus-5-5-high", "gpt-6.1-sol-high", "grok-4.7-high"]
+models = ["claude-opus-5-5-high", "gpt-6.2-sol-high", "grok-4.7-high"]
 
 [nodes.verify]
 role = "check"

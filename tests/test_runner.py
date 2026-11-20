@@ -94,6 +94,7 @@ class FakeGitHub:
 class CliWorkerTest(unittest.TestCase):
     def test_all_three_commands_pin_the_configured_slug_and_parse_the_final_result(self):
         models = {
+            "gpt-6.2-sol-high": ["codex", "exec", "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=high"],
             "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"],
             "claude-opus-5-5-high": ["claude", "--model", "claude-opus-5-5", "--effort", "high"],
             "grok-4.7-high": ["grok", "-m", "grok-4.7", "--reasoning-effort", "high"],
@@ -266,6 +267,21 @@ class CliWorkerTest(unittest.TestCase):
         self.assertNotIn("-high", " ".join(seen[0][:-1]))
         self.assertIn("The spec value is one document", seen[0][-1])
         self.assertEqual(result["spec"], "Plan")
+
+    def test_implement_prompt_states_the_document_shape(self):
+        seen = []
+
+        def run(args, cwd):
+            seen.append(args)
+            return worker_reply(args, {"implementation": "built", "head_sha": "a" * 40})
+
+        result = CliWorker(Path("."), run)("implement", "gpt-6.2-sol-high", {}, "Implement the change.")
+        self.assertEqual(
+            seen[0][:6],
+            ["codex", "exec", "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=high"],
+        )
+        self.assertIn("The implementation value is one document", seen[0][-1])
+        self.assertEqual(result["implementation"], "built")
 
 
 class LiveRunnerTest(unittest.TestCase):

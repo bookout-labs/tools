@@ -60,7 +60,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["risk"]["level"], "low")
         self.assertTrue(result["merge_armed"])
         self.assertEqual(result["head_sha"], HEAD_SHA)
-        self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
+        self.assertEqual(result["models_used"]["implement"], "gpt-6.2-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
         self.assertNotIn("verify", result["models_used"])
 
@@ -166,6 +166,70 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["models_used"]["spec"], "claude-opus-5-5-high")
         self.assertNotIn("implement", result["path"])
 
+    def test_a_sectioned_implementation_is_stored_as_one_document(self):
+        script = ScriptHandler(head_sha=HEAD_SHA)
+
+        def handler(node, model, state, instruction):
+            if node == "implement":
+                self.assertIn("one document", instruction)
+                return {
+                    "implementation": {
+                        "summary": "Health reports the release.",
+                        "validation": "Worker tests pass.",
+                    },
+                    "head_sha": HEAD_SHA,
+                }
+            return script(node, model, state, instruction)
+
+        result = walk(handler)
+        self.assertEqual(
+            result["path"],
+            ["triage", "implement", "verify", "review", "merge", "done"],
+        )
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(
+            result["implementation"],
+            "summary\nHealth reports the release.\n\nvalidation\nWorker tests pass.",
+        )
+        self.assertEqual(result["head_sha"], HEAD_SHA)
+        self.assertEqual(result["models_used"]["implement"], "gpt-6.2-sol-high")
+
+    def test_an_implementation_that_is_not_a_document_records_the_model(self):
+        shapes = (
+            ["Health reports the release."],
+            {"summary": {"text": "Health reports the release."}},
+            {"summary": "  "},
+            {},
+            "  ",
+        )
+        for implementation in shapes:
+            with self.subTest(implementation=implementation):
+                def handler(node, model, state, instruction, implementation=implementation):
+                    if node == "implement":
+                        return {"implementation": implementation, "head_sha": HEAD_SHA}
+                    return {"triage": "implement"}
+
+                result = walk(handler)
+                self.assertEqual(result["stop"], "invalid_output")
+                self.assertEqual(result["halt_detail"], "implement did not return text")
+                self.assertEqual(result["models_used"]["implement"], "gpt-6.2-sol-high")
+                self.assertNotIn("verify", result["path"])
+
+    def test_a_sectioned_research_answer_is_stored_as_one_document(self):
+        def handler(node, model, state, instruction):
+            if node == "triage":
+                return {"triage": "question"}
+            self.assertIn("one document", instruction)
+            return {"research": {"answer": "The release comes from the tag.", "source": "src/worker.ts"}}
+
+        result = walk(handler)
+        self.assertEqual(result["path"], ["triage", "research", "done"])
+        self.assertEqual(result["stop"], "answered")
+        self.assertEqual(
+            result["research"],
+            "answer\nThe release comes from the tag.\n\nsource\nsrc/worker.ts",
+        )
+
     def test_a_spec_that_is_not_a_document_records_the_model(self):
         shapes = (
             ["Keep GET /health public."],
@@ -223,7 +287,7 @@ class DeliveryTest(unittest.TestCase):
                     self.assertEqual(reviewers, ["claude-opus-5-5-high"])
                     self.assertEqual(result["stop"], "no_reviewer")
                     self.assertNotIn("merge", result["path"])
-                self.assertEqual(result["implement_models"], ["gpt-6.1-sol-high", "claude-opus-5-5-high"])
+                self.assertEqual(result["implement_models"], ["gpt-6.2-sol-high", "claude-opus-5-5-high"])
 
     def test_review_cap_stops_without_arming(self):
         result = walk(ScriptHandler(reviews=[], head_sha=HEAD_SHA))

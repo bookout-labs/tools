@@ -120,9 +120,10 @@ class CliWorker:
             "Write stage decisions as values of their corresponding keys. "
             "Do not arm a merge."
         )
-        if node == "spec":
+        if node in {"spec", "implement", "research"}:
+            label = {"spec": "spec", "implement": "implementation", "research": "research"}[node]
             prompt += (
-                " The spec value is one document: a string, or an object whose values are"
+                f" The {label} value is one document: a string, or an object whose values are"
                 " the sections of that document."
             )
         if node in {"triage", "spec"} and state.get("issue_kind") == "slice" and "slice" not in state:
