@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Iterable, Mapping
 import yaml
@@ -205,6 +206,11 @@ def select_judge_model(
     raise ScorerError(f"no independent judge family available for {scorer.name} outside {', '.join(sorted(avoid))}")
 
 
+def _judge_failure(provider: str, proc: subprocess.CompletedProcess[str]) -> ScorerError:
+    detail = redact_text(proc.stderr or proc.stdout, redact_pii=True)
+    return ScorerError(f"{provider} judge failed ({proc.returncode}): {detail}")
+
+
 def default_judge_runner(cwd: Path | None = None, run: CommandRunner = run_worker_command) -> JudgeRunner:
     """Create a read-only CLI judge caller using native schema enforcement."""
     workdir = cwd or Path.cwd()
@@ -229,7 +235,7 @@ def default_judge_runner(cwd: Path | None = None, run: CommandRunner = run_worke
                 ]
                 proc = run(args, workdir)
                 if proc.returncode != 0:
-                    raise ScorerError(f"codex judge failed ({proc.returncode}): {proc.stderr or proc.stdout}")
+                    raise _judge_failure("codex", proc)
                 file_raw = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
                 if file_raw.strip():
                     return json_object(file_raw)
@@ -250,7 +256,7 @@ def default_judge_runner(cwd: Path | None = None, run: CommandRunner = run_worke
                 args = ["grok", "-m", slug, *effort_args, *options, "--no-subagents", "-p", prompt]
             proc = run(args, workdir)
             if proc.returncode != 0:
-                raise ScorerError(f"{provider} judge failed ({proc.returncode}): {proc.stderr or proc.stdout}")
+                raise _judge_failure(provider, proc)
             envelope = json_object(proc.stdout)
             structured = (
                 envelope.get("structured_output")

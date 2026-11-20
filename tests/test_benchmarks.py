@@ -228,6 +228,27 @@ class BenchmarksTest(unittest.TestCase):
             out = run_isolated_worker_command(["sh", "-c", probe], Path(tmpdir)).stdout.strip()
         self.assertEqual(out, "|0|1")
 
+    def test_model_credentials_reach_only_the_model_cli_not_checks_or_git(self):
+        from foreman.benchmarks import _git, _run_trial_check, run_isolated_worker_command
+
+        creds = {
+            "ANTHROPIC_API_KEY": "synthetic-anthropic-value", "OPENAI_API_KEY": "synthetic-openai-value",
+            "XAI_API_KEY": "synthetic-xai-value", "CLAUDE_CONFIG_DIR": "/nonexistent/claude",
+            "CODEX_HOME": "/nonexistent/codex", "GROK_HOME": "/nonexistent/grok",
+        }
+        probe = "".join(f"${{{name}:+{name} }}" for name in sorted(creds))
+        with TemporaryDirectory() as tmpdir, mock.patch.dict("os.environ", creds):
+            cwd = Path(tmpdir)
+            git_repo(cwd)
+            check_code, check_out = _run_trial_check(cwd, f'echo "set:{probe}"')
+            with mock.patch("foreman.benchmarks.subprocess.run", wraps=subprocess.run) as spy:
+                _git(cwd, "status")
+            git_env = spy.call_args.kwargs["env"]
+            model_out = run_isolated_worker_command(["sh", "-c", f'echo "set:{probe}"'], cwd).stdout
+        self.assertEqual((check_code, check_out.strip()), (0, "set:"))
+        self.assertFalse(set(creds) & set(git_env))
+        self.assertEqual(model_out.split(), ["set:" + sorted(creds)[0], *sorted(creds)[1:]])
+
     def test_isolated_env_strips_git_overrides_and_ignores_user_git_config(self):
         from foreman.benchmarks import isolated_env
 

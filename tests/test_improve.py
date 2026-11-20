@@ -434,5 +434,22 @@ class ImproveGuardAndLoopTest(unittest.TestCase):
             self.assertEqual((stages / "implement.md").read_text(encoding="utf-8"), "Old.\n")
 
 
+    def test_apply_refuses_to_overwrite_an_ignored_local_file(self):
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir()
+            git_repo(repo_root)
+            with (repo_root / ".git/info/exclude").open("a", encoding="utf-8") as exclude:
+                exclude.write(".agents/skills/notes-local/\n")
+            skill = repo_root / ".agents/skills/notes-local/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("Private notes.\n", encoding="utf-8")
+            self.assertEqual(_git(repo_root, "status", "--porcelain", "--untracked-files=all"), "")
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            with self.assertRaisesRegex(WriteSurfaceError, "does not track: .agents/skills/notes-local/SKILL.md"):
+                self._improve(store, repo_root, _propose(".agents/skills/notes-local/SKILL.md", "New.\n"),
+                              dry_run=False, open_pr=False)
+            self.assertEqual(skill.read_text(encoding="utf-8"), "Private notes.\n")
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
+from unittest import mock
 
 from foreman.cli import main
 from foreman.delivery import compile_delivery, run_delivery
@@ -345,6 +346,68 @@ class TelemetryStoreAndSyncTest(unittest.TestCase):
             self.assertEqual([c["call_id"] for c in store.list_stage_calls("run-9")], ["c1"])
             store.import_jsonl(snapshot("2026-11-20T09:00:00Z", ["c1", "c3"]))
             self.assertEqual([c["call_id"] for c in store.list_stage_calls("run-9")], ["c1"])
+
+    def test_concurrent_import_cannot_slip_between_freshness_read_and_call_replacement(self):
+        import sqlite3
+
+        def snapshot(finished_at, call_ids):
+            run = {"type": "run", "run_id": "run-7", "host": "h", "repo": "Example/Engine", "issue": 7,
+                   "started_at": finished_at, "finished_at": finished_at, "stop": "verified"}
+            calls = [{"type": "stage_call", "call_id": cid, "run_id": "run-7", "host": "h", "seq": i,
+                      "node": "implement", "model": "m", "provider": "gpt", "status": "ok", "duration_ms": 1}
+                     for i, cid in enumerate(call_ids)]
+            return "\n".join(json.dumps(x) for x in (run, *calls))
+
+        older, newer = snapshot("2026-11-20T10:00:00Z", ["old-1"]), snapshot("2026-11-20T11:00:00Z", ["new-1"])
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "tel.sqlite3"
+            older_store, newer_store = TelemetryStore(path), TelemetryStore(path)
+
+            @contextlib.contextmanager
+            def no_wait_connect():
+                conn = sqlite3.connect(str(path), timeout=0)
+                conn.row_factory = sqlite3.Row
+                try:
+                    with conn:
+                        yield conn
+                finally:
+                    conn.close()
+
+            blocked = []
+
+            def import_newer():
+                try:
+                    newer_store.import_jsonl(newer)
+                except sqlite3.OperationalError as exc:
+                    self.assertIn("locked", str(exc))
+                    blocked.append(True)
+
+            class ImportNewerAfterFreshnessRead:
+                def __init__(self, conn):
+                    self.conn, self.pending = conn, True
+
+                def execute(self, sql, *params):
+                    cursor = self.conn.execute(sql, *params)
+                    if not (self.pending and sql.startswith("SELECT finished_at FROM runs")):
+                        return cursor
+                    self.pending, row = False, cursor.fetchone()
+                    import_newer()
+                    return mock.Mock(fetchone=lambda: row)
+
+            real_connect = older_store._connect
+
+            @contextlib.contextmanager
+            def interleaved_connect():
+                with real_connect() as conn:
+                    yield ImportNewerAfterFreshnessRead(conn)
+
+            with mock.patch.object(newer_store, "_connect", no_wait_connect), \
+                    mock.patch.object(older_store, "_connect", interleaved_connect):
+                older_store.import_jsonl(older)
+            if blocked:
+                newer_store.import_jsonl(newer)
+            self.assertEqual(older_store.get_run("run-7")["finished_at"], "2026-11-20T11:00:00Z")
+            self.assertEqual([c["call_id"] for c in older_store.list_stage_calls("run-7")], ["new-1"])
 
     def test_insufficient_evidence_never_stored_as_passed(self):
         with TemporaryDirectory() as tmpdir:

@@ -274,6 +274,11 @@ def json_object(text: str) -> dict:
     return result
 
 
+def _counts_spend(usage: object) -> bool:
+    # Codex emits an all-zero usage object when it captured no total; that is unknown spend, not zero.
+    return isinstance(usage, dict) and any(isinstance(v, (int, float)) and v > 0 for v in usage.values())
+
+
 def _parse_codex_events(stdout: str, slug: str) -> tuple[str | None, dict]:
     """Extract final message text, session_id, errors, and token usage from Codex JSONL output."""
     lines = [ln.strip() for ln in (stdout or "").splitlines() if ln.strip()]
@@ -312,7 +317,7 @@ def _parse_codex_events(stdout: str, slug: str) -> tuple[str | None, dict]:
             last_message = event["last_message"]
         info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
         ev_usage = event.get("usage") or payload.get("usage") or info.get("total_token_usage")
-        if isinstance(ev_usage, dict) and ev_usage:
+        if _counts_spend(ev_usage):
             usage = ev_usage
     if not parsed_any_event:
         return None, {"session_id": "", "model_usage": {}, "parsed_events": False, "failed_error": ""}
@@ -353,7 +358,7 @@ def _codex_rollout_usage(session_id: str) -> dict:
             continue
         info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
         found = info.get("total_token_usage") or payload.get("usage")
-        if isinstance(found, dict) and found:
+        if _counts_spend(found):
             usage = found
     return usage
 

@@ -153,6 +153,13 @@ def _assert_clean_worktree(repo_root: Path) -> None:
         raise WriteSurfaceError("worktree has uncommitted changes; improvement PR needs a clean checkout")
 
 
+def _assert_overwrites_only_tracked(repo_root: Path, rel_paths: list[str]) -> None:
+    # A clean status hides ignored files, so an existing target must be tracked to be safe to replace.
+    for rel_path in rel_paths:
+        if (repo_root / rel_path).exists() and _git(repo_root, "ls-files", "--error-unmatch", "--", rel_path).returncode != 0:
+            raise WriteSurfaceError(f"refusing to overwrite a file git does not track: {rel_path}")
+
+
 @contextlib.contextmanager
 def _connect_db(db_path: Path):
     conn = sqlite3.connect(str(db_path), timeout=10.0)
@@ -513,6 +520,7 @@ def run_self_improvement(
 
     if open_pr or _inside_git_worktree(repo_root):
         _assert_clean_worktree(repo_root)
+        _assert_overwrites_only_tracked(repo_root, validated_paths)
     for rel_path, (_, new_content) in zip(validated_paths, cleaned_edits):
         dest = _assert_contained_path(repo_root, rel_path)
         dest.parent.mkdir(parents=True, exist_ok=True)

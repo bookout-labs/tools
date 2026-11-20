@@ -1529,6 +1529,34 @@ class Phase1WorkerAndPreflightTest(unittest.TestCase):
                     with self.assertRaisesRegex(BudgetExceeded, "over budget"):
                         dispatcher.run("triage", [model], {}, "Triage", budget_check=over)
 
+    def test_codex_all_zero_reported_usage_still_recovers_rollout_spend(self):
+        model, slug = "gpt-6.2-sol-high", "gpt-6.2-sol"
+        spent = {"input_tokens": 120, "output_tokens": 35, "total_tokens": 155}
+        zero = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        with TemporaryDirectory() as tempdir, patch.dict("os.environ", {"CODEX_HOME": tempdir}):
+            sessions = Path(tempdir) / "sessions"
+            sessions.mkdir()
+            (sessions / "rollout-sid-zero.jsonl").write_text("\n".join(json.dumps(ev) for ev in (
+                {"type": "turn_context", "payload": {"model": slug}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": spent}}},
+            )))
+
+            def malformed_with_zero_usage(args, cwd):
+                Path(args[args.index("-o") + 1]).write_text("not json")
+                stdout = "\n".join(json.dumps(ev) for ev in (
+                    {"type": "thread.started", "thread_id": "sid-zero"},
+                    {"type": "turn.completed", "usage": zero},
+                ))
+                return subprocess.CompletedProcess(args, 0, stdout, f"model: {slug}\n")
+
+            over = lambda metas: "over budget" if sum(
+                u.get("total_tokens", 0) for m in metas for u in m["model_usage"].values()
+            ) > 100 else None
+            dispatcher = FailoverDispatcher(CliWorker(Path("."), malformed_with_zero_usage))
+            with self.assertRaisesRegex(BudgetExceeded, "over budget"):
+                dispatcher.run("triage", [model], {}, "Triage", budget_check=over)
+            self.assertEqual(dispatcher.last_meta[0]["model_usage"], {slug: spent})
+
     def test_cli_preflight_halts_with_env_unavailable_before_implement(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

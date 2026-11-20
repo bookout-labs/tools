@@ -851,6 +851,8 @@ class TelemetryStore:
                 for kind in ("run", "stage_call", "score")}
         counts = {"runs": 0, "stage_calls": 0, "scores": 0}
         with self._connect() as conn:
+            # Hold the write lock from the freshness read on, so a concurrent import cannot commit in between.
+            conn.execute("BEGIN IMMEDIATE")
             # Runs go first, whatever the line order, so stage calls can follow their run's freshness.
             fresh_runs: set[str] = set()
             for item in rows["run"]:

@@ -42,6 +42,25 @@ class ScorersTest(unittest.TestCase):
             with self.assertRaises(ScorerError):
                 parse_scorer_file(bad)
 
+    def test_failing_judge_redacts_secrets_from_its_error(self):
+        from foreman.scoring import default_judge_runner
+
+        env_secret = "synthetic-judge-env-value-0123"
+        token = "sk-" + "s" * 24
+        stderr = f"auth failed for {env_secret} using {token}"
+
+        def fail(args, cwd):
+            return subprocess.CompletedProcess(args, 1, "", stderr)
+
+        with TemporaryDirectory() as tmpdir, mock.patch.dict("os.environ", {"OPENAI_API_KEY": env_secret}):
+            for model in ("gpt-6.2-sol-high", "claude-sonnet-5-5-high"):
+                with self.assertRaises(ScorerError) as caught:
+                    default_judge_runner(Path(tmpdir), fail)(model, "prompt", {"type": "object"})
+                message = str(caught.exception)
+                self.assertNotIn(env_secret, message)
+                self.assertNotIn(token, message)
+                self.assertIn("judge failed (1)", message)
+
     def test_cross_family_judge_selection_and_deterministic_sampling(self):
         scorers = load_scorers()
         tc = scorers["task-compliance"]  # default model claude-sonnet-5-5-high

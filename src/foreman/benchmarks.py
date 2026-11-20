@@ -125,15 +125,18 @@ def load_suite(path: Path) -> dict[str, Any]:
 TRIAL_ENV = frozenset({
     "HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "LANG", "TERM", "TZ", "NO_COLOR",
     "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
-    # Model CLIs still need their own sign-in to run a trial.
-    "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
 })
 TRIAL_ENV_PREFIXES = ("LC_",)
+# Only the model CLI process gets its sign-in; checks and git never see it.
+MODEL_CREDENTIAL_ENV = frozenset({
+    "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
+})
 
 
-def isolated_env() -> dict[str, str]:
+def isolated_env(*, model_credentials: bool = False) -> dict[str, str]:
     """Environment for trial commands: no credentials, no repo overrides, no prompts, no user or system git config."""
-    env = {k: v for k, v in os.environ.items() if k in TRIAL_ENV or k.startswith(TRIAL_ENV_PREFIXES)}
+    allowed = TRIAL_ENV | MODEL_CREDENTIAL_ENV if model_credentials else TRIAL_ENV
+    env = {k: v for k, v in os.environ.items() if k in allowed or k.startswith(TRIAL_ENV_PREFIXES)}
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -142,7 +145,8 @@ def isolated_env() -> dict[str, str]:
 
 def run_isolated_worker_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        args, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=isolated_env()
+        args, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        env=isolated_env(model_credentials=True),
     )
 
 
@@ -235,6 +239,21 @@ def _read_worktree_diff(worktree: Path, base_sha: str) -> str:
     return diff.stdout if diff.returncode == 0 else ""
 
 
+def _run_trial_check(worktree: Path, command: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        command,
+        shell=True,
+        cwd=worktree,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=isolated_env(),
+    )
+    redacted = SecretRedactor.from_environ().redact(proc.stdout or "")
+    return proc.returncode, redacted[-4000:]
+
+
 def _run_live_trial(
     task: dict[str, Any],
     cfg: dict[str, Any],
@@ -248,27 +267,12 @@ def _run_live_trial(
     if worktree is None:
         raise BenchmarkError("live benchmark trial requires a disposable trial repository")
     t0 = time.monotonic()
-
-    def run_check(command: str) -> tuple[int, str]:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            cwd=worktree,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=isolated_env(),
-        )
-        redacted = SecretRedactor.from_environ().redact(proc.stdout or "")
-        return proc.returncode, redacted[-4000:]
-
     config = _config_for_trial(cfg)
     dispatcher = FailoverDispatcher(CliWorker(worktree, worker_runner or run_isolated_worker_command))
     graph = compile_delivery(
         dispatcher,
         config,
-        run_check=run_check,
+        run_check=lambda command: _run_trial_check(worktree, command),
         inspect_worktree=lambda: _inspect_trial(worktree),
         commit_worktree=lambda title: _commit_detached_trial(worktree, title),
         read_diff=lambda: _read_worktree_diff(worktree, task["base_sha"]),
