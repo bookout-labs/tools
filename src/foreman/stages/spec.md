@@ -1,4 +1,5 @@
 Write the spec. Cover the behavior, the product decisions, and the technical design.
+The spec value is one document: a string, or an object whose values are the sections of that document.
 Reply ready when a person could implement from the spec.
 Reply needs_human when a product choice is still open.
 On a parent issue, return one slice per pull request. Keep each pull request to about 400 changed lines or fewer.

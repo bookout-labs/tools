@@ -6,7 +6,7 @@ import re
 import subprocess
 from typing import Callable
 
-from foreman.config import family
+from foreman.config import ConfigError, family
 from foreman.dispatch import InvalidOutput, QuotaExhausted
 
 CommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
@@ -33,6 +33,44 @@ PROOF_PROMPT = (
     "For required properties, report formal_proof with ran and constraints, a list of "
     "constraint and rejected results. Report evidence you actually collected."
 )
+EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
+
+
+def model_and_effort(model: str) -> tuple[str, str | None]:
+    slug, sep, effort = model.rpartition("-")
+    if sep and slug and effort in EFFORTS:
+        return slug, effort
+    return model, None
+
+
+def _requested_model_ran(slug: str, usage: object) -> bool:
+    """Fail over only when a usage report shows the requested model did not run.
+
+    No report is not quota. A CLI suffix such as grok-4.7-build is still the
+    requested model. An extra model from the same provider stays only when the
+    requested model is in the report. Another provider does not.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return True
+    try:
+        expected = family(slug)
+    except ConfigError:
+        return False
+    matched = False
+    for key in usage:
+        if not isinstance(key, str):
+            return False
+        try:
+            reported = family(key)
+        except ConfigError:
+            return False
+        if reported != expected:
+            return False
+        if key == slug or key.startswith(f"{slug}-"):
+            matched = True
+    return matched
+
+
 QUOTA = re.compile(
     r"quota|rate.limit|usage limit|hit your limit|resource_exhausted|too many requests|\b429\b|"
     r"model[^\n]*(?:not (?:available|found|supported)|does not exist|unsupported)|"
@@ -71,6 +109,11 @@ class CliWorker:
             "Write stage decisions as values of their corresponding keys. "
             "Do not arm a merge."
         )
+        if node == "spec":
+            prompt += (
+                " The spec value is one document: a string, or an object whose values are"
+                " the sections of that document."
+            )
         if node in {"triage", "spec"} and state.get("issue_kind") == "slice" and "slice" not in state:
             prompt += f" Use needs_human if you cannot determine the issue requirements. {SLICE_PROMPT}"
         if node == "implement":
@@ -78,17 +121,21 @@ class CliWorker:
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
         provider = family(model)
+        slug, effort = model_and_effort(model)
         edit = node == "implement"
         if provider == "gpt":
             sandbox = "workspace-write" if edit else "read-only"
-            args = ["codex", "exec", "-m", model, "--color", "never", "-s", sandbox, prompt]
+            effort_args = ["-c", f"model_reasoning_effort={effort}"] if effort else []
+            args = ["codex", "exec", "-m", slug, *effort_args, "--color", "never", "-s", sandbox, prompt]
         else:
             mode = "acceptEdits" if edit else "plan"
             options = ["--output-format", "json", "--permission-mode", mode]
             if provider == "claude":
-                args = ["claude", "--model", model, *options, "-p", prompt]
+                effort_args = ["--effort", effort] if effort else []
+                args = ["claude", "--model", slug, *effort_args, *options, "-p", prompt]
             else:
-                args = ["grok", "-m", model, *options, "--no-subagents", "-p", prompt]
+                effort_args = ["--reasoning-effort", effort] if effort else []
+                args = ["grok", "-m", slug, *effort_args, *options, "--no-subagents", "-p", prompt]
 
         try:
             process = self.run(args, self.cwd)
@@ -101,7 +148,7 @@ class CliWorker:
 
         if provider == "gpt":
             reported = re.findall(r"^model:[ \t]*(\S+)[ \t]*$", process.stderr, re.MULTILINE)
-            if reported != [model] or re.search(r"^model rerouted:", process.stderr, re.MULTILINE):
+            if reported != [slug] or re.search(r"^model rerouted:", process.stderr, re.MULTILINE):
                 raise QuotaExhausted(model)
             body = process.stdout
         else:
@@ -110,8 +157,7 @@ class CliWorker:
                 if QUOTA.search(process.stdout):
                     raise QuotaExhausted(model)
                 raise InvalidOutput(f"{provider} worker reported an error")
-            usage = envelope.get("modelUsage")
-            if not isinstance(usage, dict) or usage.keys() != {model}:
+            if not _requested_model_ran(slug, envelope.get("modelUsage")):
                 raise QuotaExhausted(model)
             body = envelope.get("result" if provider == "claude" else "text")
 
