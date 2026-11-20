@@ -106,20 +106,21 @@ def required_text(value: object, detail: str) -> str:
     return value
 
 
-def spec_document(value: object) -> str:
-    """The graph stores one spec document.
+def stage_document(value: object, name: str) -> str:
+    """The graph stores one document for a text stage.
 
     A string is that document. An object of strings is the same document split
     into sections. Lists, nested values, and blank sections are not a document.
     """
+    detail = f"{name} did not return text"
     if isinstance(value, str):
         return value
     if not isinstance(value, dict) or not value:
-        raise InvalidOutput("spec did not return text")
+        raise InvalidOutput(detail)
     parts: list[str] = []
     for key, item in value.items():
         if not isinstance(key, str) or not isinstance(item, str) or not item.strip():
-            raise InvalidOutput("spec did not return text")
+            raise InvalidOutput(detail)
         parts.append(f"{key}\n{item.strip()}")
     return "\n\n".join(parts)
 
@@ -196,13 +197,13 @@ def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
         update["triage"] = choice(raw.get("triage"), TRIAGE_OUTCOMES, "triage")
     elif name == "spec":
         gate = choice(raw.get("spec_gate"), SPEC_GATES, "spec gate")
-        update["spec"] = required_text(spec_document(raw.get("spec")), "spec did not return text")
+        update["spec"] = required_text(stage_document(raw.get("spec"), "spec"), "spec did not return text")
         update["spec_gate"] = gate
         if state.get("issue_kind") == "parent" and gate == "ready":
             update["slices"] = clean_slices(raw.get("slices"))
     elif name in TEXT_FIELDS:
         key = TEXT_FIELDS[name]
-        update[key] = required_text(raw.get(key), f"{name} did not return text")
+        update[key] = required_text(stage_document(raw.get(key), name), f"{name} did not return text")
         if name == "implement":
             head = raw.get("head_sha")
             update["head_sha"] = (head.strip() or None) if isinstance(head, str) else None
