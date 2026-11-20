@@ -28,6 +28,7 @@ VERIFY_OUTCOMES = {"pass", "fail"}
 RISK_FIELDS = ("alignment", "impact", "verification", "rollback", "error_detection")
 RISK_LEVELS = {"low", "medium", "high"}
 TEXT_FIELDS = {"implement": "implementation", "research": "research"}
+FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 
 
 class SliceProperty(TypedDict):
@@ -60,6 +61,7 @@ class DeliveryState(TypedDict, total=False):
     research: str
     implementation: str
     head_sha: str | None
+    head_checked: bool
     merge_armed: bool
     merge_args: list[str]
     browser_proof: dict | None
@@ -72,6 +74,7 @@ class DeliveryState(TypedDict, total=False):
     verify: str
     review_rounds: int
     models_used: dict[str, str]
+    implement_models: list[str]
     halt: str
     halt_detail: str
     stop: str
@@ -110,7 +113,7 @@ def clean_risk(raw: object) -> dict[str, str]:
     return risk
 
 
-def clean_slices(raw: object) -> list[Slice]:
+def clean_slices(raw: object, *, allow_external_dependencies: bool = False) -> list[Slice]:
     if not isinstance(raw, list) or not raw:
         raise InvalidOutput("spec did not return slices")
     cleaned: list[Slice] = []
@@ -150,7 +153,7 @@ def clean_slices(raw: object) -> list[Slice]:
         raise InvalidOutput("slice titles must be unique")
     for deps in graph.values():
         for dep in deps:
-            if dep not in graph:
+            if dep not in graph and not allow_external_dependencies:
                 raise InvalidOutput(f"unknown dependency {dep}")
     try:
         TopologicalSorter(graph).prepare()
@@ -197,7 +200,12 @@ def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
             update["slice"] = clean_slices([raw["slice"]])[0]
     model = raw.get("model")
     if model:
-        update["models_used"] = {**state.get("models_used", {}), name: model}
+        used = state.get("models_used", {})
+        update["models_used"] = {**used, name: model}
+        if name == "implement":
+            latest = used.get("implement")
+            history = state.get("implement_models", [latest] if latest else [])
+            update["implement_models"] = [*history, model]
     return update
 
 
@@ -226,6 +234,7 @@ def compile_delivery(
     checkpointer: BaseCheckpointSaver | None = None,
     run_check: Callable[[str], int] | None = None,
     run_gh: Callable[[list[str]], int] | None = None,
+    inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
 ):
     config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
@@ -238,7 +247,7 @@ def compile_delivery(
             if dispatcher is None:
                 return {"path": [name], "halt": "no_dispatcher"}
             try:
-                models = order_for(name, config, state.get("models_used") or {})
+                models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
             instruction = prompts[name]
@@ -252,7 +261,10 @@ def compile_delivery(
                 instruction = f"{instruction}\n\nCommand: {command}"
             try:
                 raw = dispatcher.run(name, models, state, instruction)
-                return read_output(name, raw, state)
+                update = read_output(name, raw, state)
+                if name == "implement" and inspect_worktree is not None:
+                    update.update(head_sha=None, head_checked=False)
+                return update
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
             except QuotaExhausted as exc:
@@ -264,12 +276,19 @@ def compile_delivery(
 
     def verify(state: DeliveryState) -> dict:
         assert run_check is not None
+        checked = {}
+        if inspect_worktree is not None:
+            head, clean = inspect_worktree()
+            if not clean or not FULL_SHA.fullmatch(head):
+                return {"path": ["verify"], "halt": "dirty_worktree"}
+            checked = {"head_sha": head, "head_checked": True}
         exit_code = run_check(state["check"])
         verdict = "pass" if exit_code == 0 else "fail"
         return {
             **read_output("verify", {"verify": verdict}, state),
             "check_exit_code": exit_code,
             "proof_labels": {},
+            **(checked if exit_code == 0 else {}),
         }
 
     def prove(state: DeliveryState) -> dict:
@@ -345,9 +364,13 @@ def compile_delivery(
 
     def arm_merge(state: DeliveryState) -> dict:
         head = state.get("head_sha")
-        if not head or not re.fullmatch(r"[0-9a-fA-F]{40}", head):
+        if not head or not FULL_SHA.fullmatch(head):
             return {"merge_armed": False, "path": ["merge"]}
         args = ["gh", "pr", "merge", "--auto", "--match-head-commit", head]
+        if inspect_worktree is not None:
+            current, clean = inspect_worktree()
+            if not state.get("head_checked") or not clean or current != head:
+                return {"merge_armed": False, "merge_args": args, "path": ["merge"]}
         armed = run_gh(args) == 0 if run_gh is not None else run_check is None
         return {"merge_armed": armed, "merge_args": args, "path": ["merge"]}
 
@@ -361,7 +384,9 @@ def compile_delivery(
     builder.add_node("needs_human", needs_human)
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
-    builder.add_edge(START, "triage")
+    builder.add_conditional_edges(
+        START, lambda state: "done" if state.get("halt") else "triage", {"done": "done", "triage": "triage"},
+    )
     builder.add_conditional_edges(
         "triage",
         after_triage,

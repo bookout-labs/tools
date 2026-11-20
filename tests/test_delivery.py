@@ -139,6 +139,31 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
 
+    def test_review_excludes_every_builder_family(self):
+        for review_models in (("claude-opus-5-5-high", "gpt-6.1-sol-high", "grok-4.7-high"),
+                              ("claude-opus-5-5-high", "gpt-6.1-sol-high")):
+            with self.subTest(review_models=review_models):
+                config = load_config()
+                config.nodes["review"] = replace(config.nodes["review"], models=review_models)
+                handler = ScriptHandler(reviews=["changes", "approve"], head_sha=HEAD_SHA)
+
+                def switch_builder(node, model, state, instruction):
+                    if node == "implement" and state.get("review") == "changes" and model.startswith("gpt-"):
+                        raise QuotaExhausted(model)
+                    return handler(node, model, state, instruction)
+
+                result = walk(switch_builder, config=config)
+                reviewers = [call["model"] for call in handler.calls if call["node"] == "review"]
+                self.assertEqual(result["models_used"]["implement"], "claude-opus-5-5-high")
+                if "grok-4.7-high" in review_models:
+                    self.assertEqual(reviewers, ["claude-opus-5-5-high", "grok-4.7-high"])
+                    self.assertEqual(result["stop"], "verified")
+                else:
+                    self.assertEqual(reviewers, ["claude-opus-5-5-high"])
+                    self.assertEqual(result["stop"], "no_reviewer")
+                    self.assertNotIn("merge", result["path"])
+                self.assertEqual(result["implement_models"], ["gpt-6.1-sol-high", "claude-opus-5-5-high"])
+
     def test_review_cap_stops_without_arming(self):
         result = walk(ScriptHandler(reviews=[], head_sha=HEAD_SHA))
         self.assertEqual(result["path"].count("implement"), 3)

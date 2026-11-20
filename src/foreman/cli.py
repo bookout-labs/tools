@@ -19,7 +19,7 @@ from foreman.dry_run import ScriptHandler
 from foreman.github import GitHub
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
-from foreman.runner import run_live_delivery
+from foreman.runner import WorktreeInspector, run_live_delivery
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 
 
@@ -65,7 +65,7 @@ def _find_pr(repo: str) -> dict[str, object] | None:
     # An empty selector keeps current-branch lookup while satisfying gh's --repo argument check.
     try:
         result = subprocess.run(
-            ["gh", "pr", "view", "--repo", repo, "--json", "number,state,headRefOid", ""],
+            ["gh", "pr", "view", "--repo", repo, "--json", "number,state,headRefOid,headRefName,baseRefName", ""],
             shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
         )
         if result.returncode != 0:
@@ -84,6 +84,7 @@ def main(
     github: GitHub | None = None,
     run_gh: Callable[[list[str]], int] | None = None,
     find_pr: Callable[[str], dict[str, object] | None] | None = None,
+    inspect_worktree: WorktreeInspector | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -186,6 +187,9 @@ def main(
             head = pr.get("headRefOid")
             if not isinstance(head, str) or head.lower() != sha.lower():
                 return 1
+            branch = pr.get("headRefName")
+            if not isinstance(branch, str) or not branch.startswith(f"{args.issue}-") or pr.get("baseRefName") != "main":
+                return 1
             return merge(command)
 
         try:
@@ -200,6 +204,7 @@ def main(
                 github=github,
                 run_gh=merge_if_matching_pr,
                 answer=args.answer,
+                inspect_worktree=inspect_worktree,
             )
         except (OSError, QuotaExhausted, ValueError) as exc:
             print(str(exc), file=sys.stderr)

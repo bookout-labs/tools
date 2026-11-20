@@ -74,17 +74,22 @@ def load_config(path: Path | None = None) -> Config:
         return parse_config(tomllib.load(handle))
 
 
-def order_for(node: str, config: Config, models_used: dict[str, str]) -> list[str]:
+def order_for(
+    node: str, config: Config, models_used: dict[str, str], implement_models: list[str] | None = None,
+) -> list[str]:
     spec = config.nodes[node]
     models = list(spec.models)
     source = "implement" if node == "review" else spec.other_family_from
     if not source:
         return models
-    used = models_used.get(source)
+    latest = models_used.get(source)
+    used = (implement_models if node == "review" else None) or ([latest] if latest else [])
     if not used:
         raise ConfigError(f"{node} needs the {source} model")
-    same = family(used)
-    others = [model for model in models if family(model) != same]
+    excluded = {family(model) for model in used}
+    others = [model for model in models if family(model) not in excluded]
     if not others:
-        raise ConfigError(f"no {node} model outside the {same} family")
+        names = ", ".join(sorted(excluded))
+        group = "family" if len(excluded) == 1 else "families"
+        raise ConfigError(f"no {node} model outside the {names} {group}")
     return others
