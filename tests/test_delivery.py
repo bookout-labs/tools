@@ -849,6 +849,58 @@ class DeliveryTest(unittest.TestCase):
         self.assertIn("**Level:** `medium`", body)
         self.assertNotIn("owner@example.invalid", body)
 
+    def test_review_receives_annotated_diff_and_filters_invalid_inline_comments(self):
+        seen_instructions = {}
+        sample_diff = (
+            "diff --git a/src/app.py b/src/app.py\n"
+            "--- a/src/app.py\n"
+            "+++ b/src/app.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            " x = 1\n"
+            "+y = 2\n"
+            " z = 3\n"
+        )
+
+        def handler(node, model, state, instruction):
+            seen_instructions[node] = instruction
+            if node == "triage":
+                return {"triage": "implement"}
+            if node == "implement":
+                return {"implementation": "Added y = 2.", "head_sha": HEAD_SHA}
+            if node == "verify":
+                return {"verify": "pass"}
+            return {
+                "review": "approve",
+                "risk": DEFAULT_RISK,
+                "comments": [
+                    {"path": "b/src/app.py", "line": 2, "side": "RIGHT", "body": "Valid comment."},
+                    {"path": "src/app.py", "line": 999, "side": "RIGHT", "body": "Out of diff."},
+                ],
+            }
+
+        result = compile_delivery(
+            FailoverDispatcher(handler),
+            load_config(),
+            read_diff=lambda: sample_diff,
+        ).invoke({
+            "repo": "DoctorCRE/doctorcre-engine",
+            "issue": 10,
+            "request": "Add y",
+            "check": "npm run check",
+            "issue_kind": "slice",
+            "verify_rounds": 0,
+            "review_rounds": 0,
+            "models_used": {},
+            "attempts": [],
+            "path": [],
+        })
+        self.assertIn("[NEW:2] y = 2", seen_instructions["review"])
+        self.assertEqual(
+            result["review_comments"],
+            [{"path": "src/app.py", "line": 2, "side": "RIGHT", "body": "Valid comment."}],
+        )
+        self.assertEqual(len(result["review_validation_errors"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

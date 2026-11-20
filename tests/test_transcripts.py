@@ -57,6 +57,29 @@ class TranscriptsTest(unittest.TestCase):
         self.assertIn("[tool:grep] pattern", out_grok)
         self.assertNotIn("user@example.invalid", out_grok)
 
+    def test_real_codex_rollout_and_system_reminder_filtering(self):
+        real_codex_rollout = "\n".join([
+            json.dumps({"type": "session_meta", "payload": {"id": "cx-1"}}),
+            json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<environment_context>noise</environment_context>"}]}}),
+            json.dumps({"type": "response_item", "payload": {"type": "function_call", "name": "exec", "arguments": "pytest tests"}}),
+            json.dumps({"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Implemented fix for secret=xai-0123456789abcdefghij"}]}}),
+            json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "output_tokens": 25}}}}),
+        ])
+        condensed_cx = condense_codex_jsonl(real_codex_rollout)
+        self.assertIn("[tool:exec] pytest tests", condensed_cx)
+        self.assertIn("[assistant] Implemented fix", condensed_cx)
+        self.assertIn("[usage]", condensed_cx)
+        self.assertNotIn("<environment_context>", condensed_cx)
+        self.assertNotIn("xai-0123456789abcdefghij", condensed_cx)
+
+        claude_with_reminder = "\n".join([
+            json.dumps({"type": "system", "message": {"role": "system", "content": "hidden"}}),
+            json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "<system-reminder>huge prompt</system-reminder>"}]}}),
+            json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Checked src/a.py"}]}}),
+        ])
+        condensed_cl = condense_claude_jsonl(claude_with_reminder)
+        self.assertEqual(condensed_cl, "[assistant] Checked src/a.py")
+
     def test_locate_transcript_blocks_traversal_and_build_evidence(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

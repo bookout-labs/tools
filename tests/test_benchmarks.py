@@ -15,7 +15,8 @@ from foreman.benchmarks import (
     summarize_benchmark,
 )
 from foreman.cli import main
-from tests.test_runner import git_repo
+from foreman.dry_run import DEFAULT_RISK
+from tests.test_runner import git_repo, worker_reply
 
 
 class BenchmarksTest(unittest.TestCase):
@@ -104,6 +105,66 @@ class BenchmarksTest(unittest.TestCase):
                 code = main(["bench", str(suite_dir), "--dry-run", "--format", "html", "--out", str(html_out)])
             self.assertEqual(code, 0)
             self.assertIn("<svg", html_out.read_text(encoding="utf-8"))
+
+    def test_live_benchmark_mode_runs_cli_worker_in_detached_worktree_with_merge_locked_out(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            repo.mkdir()
+            head = git_repo(repo)
+            suite_dir = root / "suite"
+            (suite_dir / "tasks").mkdir(parents=True)
+            (suite_dir / "suite.yaml").write_text(
+                "name: live-suite\nconfigs:\n  - name: cfg-live\n    models:\n      implement: [\"gpt-6.2-sol-high\"]\n",
+                encoding="utf-8",
+            )
+            (suite_dir / "tasks/t1.yaml").write_text(
+                f"id: t1\ntitle: Live fix\nbase_sha: {head}\nrequest: Create artifact\ncheck: test -f artifact.txt\n",
+                encoding="utf-8",
+            )
+            suite = load_suite(suite_dir)
+
+            def fake_worker(args, cwd):
+                if "Implement" in args[-1] or ("required" in args[-1] and "review" not in args[-1].lower()):
+                    (cwd / "artifact.txt").write_text("ok\n", encoding="utf-8")
+                    return worker_reply(args, {"implementation": "Created artifact."})
+                if "Review" in args[-1] or "review" in args[-1].lower() and args[0] == "codex":
+                    return worker_reply(args, {"review": "approve", "risk": DEFAULT_RISK})
+                return worker_reply(args, {"triage": "implement"})
+
+            def fake_judge(model, prompt, schema):
+                return {"label": next(iter(["pass", "efficient", "compliant", "thorough"])), "reason": "good"}
+
+            # Supply a judge returning a valid label per scorer dynamically
+            from foreman.scoring import load_scorers
+            scorers_by_name = load_scorers()
+
+            def matched_judge(model, prompt, schema):
+                sname = prompt.split("`")[1]
+                return {"label": next(iter(scorers_by_name[sname].labels)), "reason": "verified"}
+
+            results = run_benchmark(
+                suite,
+                repo_path=repo,
+                dry_run=False,
+                worker_runner=fake_worker,
+                judge_runner=matched_judge,
+                score_trials=True,
+            )
+            self.assertEqual(len(results), 1)
+            self.assertTrue(results[0]["passed"])
+            self.assertEqual(results[0]["stop"], "verified")
+            self.assertFalse(results[0]["merge_armed"])
+            self.assertEqual(results[0]["quality_score"], 1.0)
+            # No leaked branches or worktrees in repo
+            branches = subprocess.run(
+                ["git", "branch", "--list"], cwd=repo, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            self.assertEqual(branches, "* main")
+            wt_list = subprocess.run(
+                ["git", "worktree", "list", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True
+            ).stdout
+            self.assertEqual(wt_list.count("worktree "), 1)
 
 
 if __name__ == "__main__":

@@ -243,8 +243,12 @@ def default_judge_runner(cwd: Path | None = None, run: CommandRunner = run_worke
                 proc = run(args, workdir)
                 if proc.returncode != 0:
                     raise ScorerError(f"codex judge failed ({proc.returncode}): {proc.stderr or proc.stdout}")
-                raw = out_file.read_text(encoding="utf-8") if out_file.exists() else proc.stdout
-                return json_object(raw)
+                file_raw = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
+                if file_raw.strip():
+                    return json_object(file_raw)
+                from foreman.worker import _parse_codex_events
+                ev_body, _ = _parse_codex_events(proc.stdout, slug)
+                return json_object(ev_body if ev_body is not None else proc.stdout)
 
             options = [
                 "--output-format", "json",
@@ -261,7 +265,11 @@ def default_judge_runner(cwd: Path | None = None, run: CommandRunner = run_worke
             if proc.returncode != 0:
                 raise ScorerError(f"{provider} judge failed ({proc.returncode}): {proc.stderr or proc.stdout}")
             envelope = json_object(proc.stdout)
-            structured = envelope.get("structured_output")
+            structured = (
+                envelope.get("structured_output")
+                if envelope.get("structured_output") is not None
+                else envelope.get("structuredOutput")
+            )
             if isinstance(structured, dict):
                 return structured
             if isinstance(structured, str) and structured.strip():

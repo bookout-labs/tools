@@ -144,6 +144,63 @@ def comment_on_pull_request(
         raise InvalidOutput(f"could not record the review: {_command_detail(commented)}")
 
 
+def _read_branch_diff(cwd: Path) -> str:
+    for rev_range in ("origin/main...HEAD", "main...HEAD", "HEAD~1..HEAD"):
+        diff = _git(cwd, "diff", "--no-color", "--unified=3", rev_range)
+        if diff.returncode == 0 and diff.stdout.strip():
+            return diff.stdout
+    return ""
+
+
+def post_inline_review_comments(
+    cwd: Path,
+    repo: str,
+    url: str,
+    comments: list[dict],
+    run: Callable[[list[str], Path, str], subprocess.CompletedProcess[str]] | None = None,
+) -> None:
+    """Post validated inline PR review comments via GitHub API without a shell."""
+    if not comments or not isinstance(url, str):
+        return
+    match = re.search(r"/pull/(\d+)(?:[/?#].*)?$", url.strip())
+    if not match:
+        return
+    pr_number = match.group(1)
+    cleaned_comments: list[dict] = []
+    for item in comments:
+        if not isinstance(item, dict):
+            continue
+        body = redact_text(item.get("body") or "", redact_pii=True).strip()
+        path = str(item.get("path") or "").strip()
+        line = item.get("line")
+        side = item.get("side")
+        if not path or not body or not isinstance(line, int) or line <= 0 or side not in {"LEFT", "RIGHT"}:
+            continue
+        entry: dict = {"path": path, "line": line, "side": side, "body": body}
+        if isinstance(item.get("start_line"), int) and item.get("start_side") in {"LEFT", "RIGHT"}:
+            entry["start_line"] = item["start_line"]
+            entry["start_side"] = item["start_side"]
+        cleaned_comments.append(entry)
+    if not cleaned_comments:
+        return
+    payload = json.dumps({"event": "COMMENT", "body": "", "comments": cleaned_comments})
+    args = ["gh", "api", f"repos/{repo}/pulls/{pr_number}/reviews", "--method", "POST", "--input", "-"]
+    if run is not None:
+        proc = run(args, cwd, payload)
+    else:
+        proc = subprocess.run(
+            args,
+            cwd=cwd,
+            shell=False,
+            input=payload,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    if proc.returncode != 0:
+        raise InvalidOutput(f"could not post inline review comments: {_command_detail(proc)}")
+
+
 def publish_reviewed_branch(
     cwd: Path,
     repo: str,
@@ -260,6 +317,8 @@ def run_live_delivery(
     if finish_record is None and inspect_worktree is None:
         def finish_record(state: DeliveryState, url: str) -> None:
             comment_on_pull_request(cwd, repo, url, review_comment(state))
+            if comments := state.get("review_comments"):
+                post_inline_review_comments(cwd, repo, url, comments)
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         graph_ref: list = []
         if finish_publish is None and inspect_worktree is None:
@@ -271,6 +330,7 @@ def run_live_delivery(
             inspect_worktree=lambda: inspect(cwd), commit_worktree=finish_commit,
             publish_worktree=finish_publish, record_review=finish_record,
             read_merge_hold=read_merge_hold, preflight=preflight, budget=budget,
+            read_diff=(lambda: _read_branch_diff(cwd)) if inspect_worktree is None else None,
         )
         graph_ref.append(graph)
         saved = graph.get_state(config)

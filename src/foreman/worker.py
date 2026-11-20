@@ -10,6 +10,7 @@ from typing import Callable
 
 from foreman.config import ConfigError, family
 from foreman.dispatch import CliMissing, InvalidOutput, QuotaExhausted
+from foreman.transcripts import locate_session_transcript
 
 CommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
 
@@ -39,6 +40,35 @@ PROOF_PROMPT = (
 EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 
 _DOC_SCHEMA = {"anyOf": [{"type": "string"}, {"type": "object", "additionalProperties": {"type": "string"}}]}
+_STRICT_DOC_SCHEMA = {"type": "string"}
+_BROWSER_PROOF_SCHEMA = {
+    "type": "object",
+    "required": ["screen", "trace", "passed"],
+    "properties": {
+        "screen": {"type": "string"},
+        "trace": {"type": "string"},
+        "passed": {"type": "boolean"},
+    },
+    "additionalProperties": False,
+}
+_FORMAL_CONSTRAINT_SCHEMA = {
+    "type": "object",
+    "required": ["constraint", "rejected"],
+    "properties": {
+        "constraint": {"type": "string"},
+        "rejected": {"type": "boolean"},
+    },
+    "additionalProperties": False,
+}
+_FORMAL_PROOF_SCHEMA = {
+    "type": "object",
+    "required": ["ran", "constraints"],
+    "properties": {
+        "ran": {"type": "boolean"},
+        "constraints": {"type": "array", "items": _FORMAL_CONSTRAINT_SCHEMA},
+    },
+    "additionalProperties": False,
+}
 _SLICE_PROP_SCHEMA = {
     "type": "object",
     "required": ["name", "constraint"],
@@ -70,77 +100,108 @@ _RISK_SCHEMA = {
     },
     "additionalProperties": False,
 }
-_COMMENT_SCHEMA = {
-    "type": "object",
-    "required": ["path", "line", "side", "body"],
-    "properties": {
-        "path": {"type": "string"},
-        "line": {"type": "integer", "minimum": 1},
-        "side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
-        "start_line": {"type": "integer", "minimum": 1},
-        "start_side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
-        "body": {"type": "string"},
-    },
-    "additionalProperties": False,
-}
 
 
-def stage_schema(node: str) -> dict:
-    """Return a JSON Schema for a delivery graph stage output."""
-    if node == "triage":
+def _comment_schema(*, strict: bool = False) -> dict:
+    if strict:
         return {
             "type": "object",
-            "required": ["triage"],
+            "required": ["path", "line", "side", "start_line", "start_side", "body"],
             "properties": {
-                "triage": {"type": "string", "enum": ["implement", "spec", "question", "needs_human"]},
-                "slice": _SLICE_SCHEMA,
-                "human_question": {"type": "string"},
+                "path": {"type": "string"},
+                "line": {"type": "integer", "minimum": 1},
+                "side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
+                "start_line": {"type": ["integer", "null"], "minimum": 1},
+                "start_side": {"anyOf": [{"type": "string", "enum": ["LEFT", "RIGHT"]}, {"type": "null"}]},
+                "body": {"type": "string"},
             },
             "additionalProperties": False,
         }
-    if node == "spec":
+    return {
+        "type": "object",
+        "required": ["path", "line", "side", "body"],
+        "properties": {
+            "path": {"type": "string"},
+            "line": {"type": "integer", "minimum": 1},
+            "side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
+            "start_line": {"type": "integer", "minimum": 1},
+            "start_side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
+            "body": {"type": "string"},
+        },
+        "additionalProperties": False,
+    }
+
+
+def _nullable(schema: dict) -> dict:
+    return {"anyOf": [schema, {"type": "null"}]}
+
+
+def stage_schema(node: str, *, strict: bool = False) -> dict:
+    """Return a JSON Schema for a delivery graph stage output.
+
+    When strict=True (OpenAI / Codex --output-schema), every property is listed
+    in required and optional values become nullable so strict mode accepts them.
+    """
+    doc = _STRICT_DOC_SCHEMA if strict else _DOC_SCHEMA
+    if node == "triage":
+        props = {
+            "triage": {"type": "string", "enum": ["implement", "spec", "question", "needs_human"]},
+            "slice": _nullable(_SLICE_SCHEMA) if strict else _SLICE_SCHEMA,
+            "human_question": {"type": ["string", "null"]} if strict else {"type": "string"},
+        }
         return {
             "type": "object",
-            "required": ["spec", "spec_gate"],
-            "properties": {
-                "spec": _DOC_SCHEMA,
-                "spec_gate": {"type": "string", "enum": ["ready", "needs_human"]},
-                "slice": _SLICE_SCHEMA,
-                "slices": {"type": "array", "items": _SLICE_SCHEMA},
-                "human_question": {"type": "string"},
-            },
+            "required": list(props.keys()) if strict else ["triage"],
+            "properties": props,
+            "additionalProperties": False,
+        }
+    if node == "spec":
+        props = {
+            "spec": doc,
+            "spec_gate": {"type": "string", "enum": ["ready", "needs_human"]},
+            "slice": _nullable(_SLICE_SCHEMA) if strict else _SLICE_SCHEMA,
+            "slices": _nullable({"type": "array", "items": _SLICE_SCHEMA}) if strict else {"type": "array", "items": _SLICE_SCHEMA},
+            "human_question": {"type": ["string", "null"]} if strict else {"type": "string"},
+        }
+        return {
+            "type": "object",
+            "required": list(props.keys()) if strict else ["spec", "spec_gate"],
+            "properties": props,
             "additionalProperties": False,
         }
     if node == "research":
         return {
             "type": "object",
             "required": ["research"],
-            "properties": {"research": _DOC_SCHEMA},
+            "properties": {"research": doc},
             "additionalProperties": False,
         }
     if node == "implement":
+        props = {
+            "implementation": doc,
+            "head_sha": {"type": ["string", "null"]},
+            "pr_summary": {"type": ["string", "null"]} if strict else {"type": "string"},
+            "browser_proof": _nullable(_BROWSER_PROOF_SCHEMA) if strict else {"type": ["object", "null"]},
+            "formal_proof": _nullable(_FORMAL_PROOF_SCHEMA) if strict else {"type": ["object", "null"]},
+        }
         return {
             "type": "object",
-            "required": ["implementation"],
-            "properties": {
-                "implementation": _DOC_SCHEMA,
-                "head_sha": {"type": ["string", "null"]},
-                "pr_summary": {"type": "string"},
-                "browser_proof": {"type": ["object", "null"]},
-                "formal_proof": {"type": ["object", "null"]},
-            },
+            "required": list(props.keys()) if strict else ["implementation"],
+            "properties": props,
             "additionalProperties": False,
         }
     if node == "review":
+        comments_schema = {"type": "array", "items": _comment_schema(strict=strict)}
+        props = {
+            "review": {"type": "string"},
+            "review_note": {"type": ["string", "null"]} if strict else {"type": "string"},
+            "risk": _RISK_SCHEMA,
+            "comments": _nullable(comments_schema) if strict else comments_schema,
+        }
         return {
             "type": "object",
-            "required": ["review", "risk"],
-            "properties": {
-                "review": {"type": "string"},
-                "review_note": {"type": "string"},
-                "risk": _RISK_SCHEMA,
-                "comments": {"type": "array", "items": _COMMENT_SCHEMA},
-            },
+            "required": list(props.keys()) if strict else ["review", "risk"],
+            "properties": props,
             "additionalProperties": False,
         }
     raise ValueError(f"no schema defined for stage {node}")
@@ -215,13 +276,14 @@ def json_object(text: str) -> dict:
 
 
 def _parse_codex_events(stdout: str, slug: str) -> tuple[str | None, dict]:
-    """Extract final message text, session_id, and token usage from Codex JSONL output."""
+    """Extract final message text, session_id, errors, and token usage from Codex JSONL output."""
     lines = [ln.strip() for ln in (stdout or "").splitlines() if ln.strip()]
     if len(lines) <= 1 and not (lines and '"type"' in lines[0]):
-        return None, {"session_id": "", "model_usage": {}}
+        return None, {"session_id": "", "model_usage": {}, "parsed_events": False, "failed_error": ""}
     session_id = ""
     usage: dict = {}
     last_message: str | None = None
+    failed_error = ""
     parsed_any_event = False
     for line in lines:
         try:
@@ -238,6 +300,12 @@ def _parse_codex_events(stdout: str, slug: str) -> tuple[str | None, dict]:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         if not session_id and isinstance(payload.get("id"), str) and event["type"] == "session_meta":
             session_id = payload["id"]
+        if event["type"] == "error" and isinstance(event.get("message"), str):
+            failed_error = event["message"]
+        elif event["type"] == "turn.failed":
+            err = event.get("error") if isinstance(event.get("error"), dict) else {}
+            if isinstance(err.get("message"), str):
+                failed_error = err["message"]
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
         if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
             last_message = item["text"]
@@ -251,8 +319,38 @@ def _parse_codex_events(stdout: str, slug: str) -> tuple[str | None, dict]:
         if isinstance(ev_usage, dict) and ev_usage:
             usage = ev_usage
     if not parsed_any_event:
-        return None, {"session_id": "", "model_usage": {}}
-    return last_message, {"session_id": session_id, "model_usage": ({slug: usage} if usage else {})}
+        return None, {"session_id": "", "model_usage": {}, "parsed_events": False, "failed_error": ""}
+    return last_message, {
+        "session_id": session_id,
+        "model_usage": ({slug: usage} if usage else {}),
+        "parsed_events": True,
+        "failed_error": failed_error,
+    }
+
+
+def _verify_codex_rollout_model(session_id: str, slug: str) -> None:
+    """Verify the Codex session rollout file on disk matches the requested slug when present."""
+    if not session_id:
+        return
+    path = locate_session_transcript(session_id)
+    if path is None:
+        return
+    seen_models: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        try:
+            ev = json.loads(stripped)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "turn_context":
+            payload = ev.get("payload")
+            if isinstance(payload, dict) and isinstance(payload.get("model"), str):
+                seen_models.append(payload["model"])
+    for recorded_model in seen_models:
+        if recorded_model != slug and not recorded_model.startswith(f"{slug}-"):
+            raise InvalidOutput(f"codex rollout reported model {recorded_model}, expected {slug}")
 
 
 class CliWorker:
@@ -288,7 +386,7 @@ class CliWorker:
         provider = family(model)
         slug, effort = model_and_effort(model)
         edit = node == "implement"
-        schema = stage_schema(node)
+        schema = stage_schema(node, strict=(provider == "gpt"))
         prior_sessions = state.get("sessions") if isinstance(state.get("sessions"), dict) else {}
         prior_models = state.get("models_used") if isinstance(state.get("models_used"), dict) else {}
         resume_id = (
@@ -315,7 +413,7 @@ class CliWorker:
                     str(out_file),
                 ]
                 if resume_id:
-                    args = ["codex", "exec", "resume", resume_id, "-m", slug, *effort_args, *common_tail, prompt]
+                    args = ["codex", "exec", "resume", "-m", slug, *effort_args, *common_tail, resume_id, prompt]
                 else:
                     sandbox = "workspace-write" if edit else "read-only"
                     args = [
@@ -354,11 +452,20 @@ class CliWorker:
                 if reroute:
                     raise InvalidOutput(f"codex rerouted {slug}: {reroute.group(1).strip()}")
                 reported = re.findall(r"^model:[ \t]*(\S+)[ \t]*$", process.stderr, re.MULTILINE)
-                if reported != [slug]:
-                    got = ", ".join(reported) if reported else "none"
-                    raise InvalidOutput(f"codex reported model {got}, expected {slug}")
-                file_body = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
                 event_body, codex_meta = _parse_codex_events(process.stdout, slug)
+                if reported:
+                    if reported != [slug]:
+                        got = ", ".join(reported)
+                        raise InvalidOutput(f"codex reported model {got}, expected {slug}")
+                elif codex_meta.get("parsed_events"):
+                    if err_msg := codex_meta.get("failed_error"):
+                        if QUOTA.search(err_msg):
+                            raise QuotaExhausted(model, _detail(err_msg))
+                        raise InvalidOutput(f"codex worker failed: {_detail(err_msg)}")
+                    _verify_codex_rollout_model(codex_meta.get("session_id", ""), slug)
+                else:
+                    raise InvalidOutput(f"codex reported model none, expected {slug}")
+                file_body = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
                 body: object = file_body if file_body.strip() else (event_body if event_body is not None else process.stdout)
                 self.last_meta = {
                     "provider": provider,
@@ -400,7 +507,11 @@ class CliWorker:
                     "total_cost_usd": envelope.get("total_cost_usd") or envelope.get("cost_usd"),
                     "model_usage": raw_usage,
                 }
-                structured = envelope.get("structured_output")
+                structured = (
+                    envelope.get("structured_output")
+                    if envelope.get("structured_output") is not None
+                    else envelope.get("structuredOutput")
+                )
                 if isinstance(structured, dict):
                     result = structured
                 elif isinstance(structured, str) and structured.strip():
@@ -408,6 +519,23 @@ class CliWorker:
                 else:
                     body = envelope.get("result" if provider == "claude" else "text")
                     result = json_object(body)
+
+        for opt_key in optional:
+            if opt_key in result and result[opt_key] is None and opt_key not in {"head_sha", "browser_proof", "formal_proof"}:
+                result.pop(opt_key)
+        if isinstance(result.get("comments"), list):
+            cleaned_comments = []
+            for item in result["comments"]:
+                if isinstance(item, dict):
+                    cleaned_item = dict(item)
+                    if cleaned_item.get("start_line") is None:
+                        cleaned_item.pop("start_line", None)
+                    if cleaned_item.get("start_side") is None:
+                        cleaned_item.pop("start_side", None)
+                    cleaned_comments.append(cleaned_item)
+                else:
+                    cleaned_comments.append(item)
+            result["comments"] = cleaned_comments
 
         if not set(required) <= result.keys() <= set(required + optional):
             got = ", ".join(sorted(str(k) for k in result.keys())) or "none"

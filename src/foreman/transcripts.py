@@ -77,6 +77,19 @@ def _load_jsonl_text(source: Path | str) -> str:
     return str(source or "")
 
 
+def _is_harness_boilerplate(text: str) -> bool:
+    stripped = text.lstrip()
+    return stripped.startswith((
+        "<system-reminder>",
+        "<user_info>",
+        "<rules>",
+        "<environment_context>",
+        "<skills_instructions>",
+        "<multi_agent_role>",
+        "<multi_agent_mode>",
+    ))
+
+
 def condense_claude_jsonl(source: Path | str, *, max_chars: int = 8000) -> str:
     """Condense a Claude Code session JSONL transcript into compact redacted action lines."""
     redactor = SecretRedactor.from_environ()
@@ -93,6 +106,8 @@ def condense_claude_jsonl(source: Path | str, *, max_chars: int = 8000) -> str:
         if not isinstance(ev, dict):
             continue
         ev_type = str(ev.get("type") or "")
+        if ev_type == "system":
+            continue
         message = ev.get("message") if isinstance(ev.get("message"), dict) else {}
         role = str(message.get("role") or ev_type or "event")
         content = message.get("content")
@@ -102,6 +117,8 @@ def condense_claude_jsonl(source: Path | str, *, max_chars: int = 8000) -> str:
                     continue
                 btype = block.get("type")
                 if btype == "text" and isinstance(block.get("text"), str):
+                    if _is_harness_boilerplate(block["text"]):
+                        continue
                     snippet = _clip_line(block["text"])
                     if snippet:
                         lines_out.append(f"[{role}] {snippet}")
@@ -114,13 +131,15 @@ def condense_claude_jsonl(source: Path | str, *, max_chars: int = 8000) -> str:
                     if block.get("is_error"):
                         lines_out.append(f"[tool_error] {_clip_line(block.get('content'), 200)}")
         elif isinstance(content, str) and content.strip():
+            if _is_harness_boilerplate(content):
+                continue
             lines_out.append(f"[{role}] {_clip_line(content)}")
     scrubbed = redactor.redact(_truncate_lines(lines_out, max_chars), redact_pii=True)
     return scrubbed
 
 
 def condense_codex_jsonl(source: Path | str, *, max_chars: int = 8000) -> str:
-    """Condense a Codex CLI JSONL session or exec event stream into compact redacted lines."""
+    """Condense a Codex CLI JSONL session rollout or exec event stream into redacted lines."""
     redactor = SecretRedactor.from_environ()
     raw = _load_jsonl_text(source)
     lines_out: list[str] = []
@@ -145,10 +164,32 @@ def condense_codex_jsonl(source: Path | str, *, max_chars: int = 8000) -> str:
             lines_out.append(f"[cmd exit={exit_code}] {cmd}")
         elif item.get("type") == "file_change":
             lines_out.append(f"[file] {_clip_line(item.get('changes') or item.get('path'), 160)}")
+        elif ev_type == "response_item":
+            ptype = payload.get("type")
+            if ptype == "message" and payload.get("role") in {"assistant", "user"}:
+                role = str(payload["role"])
+                for block in payload.get("content") or []:
+                    if not isinstance(block, dict):
+                        continue
+                    text = block.get("text")
+                    if isinstance(text, str) and text.strip() and not _is_harness_boilerplate(text):
+                        lines_out.append(f"[{role}] {_clip_line(text)}")
+            elif ptype in {"function_call", "custom_tool_call"}:
+                name = payload.get("name") or "tool"
+                args = payload.get("arguments") or payload.get("input") or ""
+                lines_out.append(f"[tool:{name}] {_clip_line(args, 160)}")
+            elif ptype in {"function_call_output", "custom_tool_call_output"}:
+                out_text = str(payload.get("output") or "")
+                if any(tok in out_text.lower() for tok in ("error", "fail", "exception", "traceback")):
+                    lines_out.append(f"[tool_error] {_clip_line(out_text, 200)}")
         elif ev_type == "event_msg" and payload.get("type") == "agent_message":
             lines_out.append(f"[assistant] {_clip_line(payload.get('message'))}")
         elif ev_type == "event_msg" and payload.get("type") in {"exec_command_end", "exec_command"}:
             lines_out.append(f"[cmd] {_clip_line(payload.get('command') or payload.get('aggregated_output'), 160)}")
+        elif ev_type == "event_msg" and payload.get("type") == "token_count":
+            info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+            if isinstance(info.get("total_token_usage"), dict):
+                lines_out.append(f"[usage] {json.dumps(info['total_token_usage'], sort_keys=True)}")
         elif ev_type == "turn.completed" and isinstance(ev.get("usage"), dict):
             lines_out.append(f"[usage] {json.dumps(ev['usage'], sort_keys=True)}")
     return redactor.redact(_truncate_lines(lines_out, max_chars), redact_pii=True)
@@ -170,9 +211,18 @@ def condense_grok_jsonl(source: Path | str, *, max_chars: int = 8000) -> str:
         if not isinstance(ev, dict):
             continue
         role = str(ev.get("role") or ev.get("type") or "event")
+        if role == "system":
+            continue
         content = ev.get("content")
         if isinstance(content, str) and content.strip():
-            lines_out.append(f"[{role}] {_clip_line(content)}")
+            if not _is_harness_boilerplate(content):
+                lines_out.append(f"[{role}] {_clip_line(content)}")
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    txt = block["text"]
+                    if not _is_harness_boilerplate(txt):
+                        lines_out.append(f"[{role}] {_clip_line(txt)}")
         for tc in ev.get("tool_calls") or []:
             if isinstance(tc, dict):
                 fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc

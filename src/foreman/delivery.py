@@ -14,6 +14,11 @@ from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import Attempt, CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.proof import browser_proof_label, formal_proof_label
 from foreman.redaction import redact_text
+from foreman.review_validation import (
+    annotate_unified_diff,
+    build_diff_maps_from_annotated_diff,
+    validate_review_comments,
+)
 from foreman.telemetry import load_pricing, state_usage_summary
 from foreman.watcher import Proposal, watch_run
 
@@ -87,6 +92,7 @@ class DeliveryState(TypedDict, total=False):
     review: str
     review_note: str
     review_comments: list[dict]
+    review_validation_errors: list[str]
     risk: dict[str, str]
     verify: str
     verify_rounds: int
@@ -392,6 +398,7 @@ def compile_delivery(
     read_merge_hold: Callable[[str], str | None] | None = None,
     preflight: Callable[[], tuple[bool, str]] | None = None,
     budget: dict | None = None,
+    read_diff: Callable[[], str] | None = None,
 ):
     config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
@@ -451,11 +458,32 @@ def compile_delivery(
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
+            diff_line_map = None
+            diff_content_map = None
+            if name == "review" and read_diff is not None:
+                raw_diff = read_diff() or ""
+                if raw_diff.strip():
+                    annotated_diff = redact_text(annotate_unified_diff(raw_diff), redact_pii=True)
+                    diff_line_map, diff_content_map = build_diff_maps_from_annotated_diff(annotated_diff)
+                    instruction = (
+                        f"{instruction}\n\n"
+                        "Annotated diff (use [NEW:line] on side RIGHT and [OLD:line] on side LEFT):\n"
+                        f"{annotated_diff[:20000]}"
+                    )
             raw = None
             recorded: list[Attempt] = []
             try:
                 raw = dispatcher.run(name, models, state, instruction, attempts=recorded)
                 update = read_output(name, raw, state)
+                if name == "review" and diff_line_map is not None and update.get("review_comments"):
+                    validated = validate_review_comments(
+                        update["review_comments"],
+                        diff_line_map,
+                        diff_content_map,
+                    )
+                    update["review_comments"] = list(validated.comments)
+                    if validated.errors:
+                        update["review_validation_errors"] = list(validated.errors)
                 update["attempts"] = recorded
                 metas = list(getattr(dispatcher, "last_meta", None) or [])
                 if metas:

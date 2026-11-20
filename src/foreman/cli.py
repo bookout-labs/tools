@@ -230,6 +230,7 @@ def main(
     bench_cmd.add_argument("suite")
     bench_cmd.add_argument("--repo-path", default=".")
     bench_cmd.add_argument("--dry-run", action="store_true")
+    bench_cmd.add_argument("--score", action="store_true", help="score each benchmark trial with configured LLM scorers")
     bench_cmd.add_argument("--format", choices=("text", "json", "html"), default="text")
     bench_cmd.add_argument("--out", help="optional output path for formatted benchmark report")
 
@@ -241,6 +242,9 @@ def main(
                 suite,
                 repo_path=Path(args.repo_path) if args.repo_path else None,
                 dry_run=args.dry_run,
+                worker_runner=worker_runner or run_worker_command,
+                judge_runner=judge_runner,
+                score_trials=args.score,
             )
             summary = summarize_benchmark(raw)
         except (BenchmarkError, OSError) as exc:

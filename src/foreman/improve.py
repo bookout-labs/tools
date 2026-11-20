@@ -47,27 +47,26 @@ BLOCKED_BASENAMES = {
     "watcher.py",
 }
 
+_IMPROVE_EDIT_ITEM = {
+    "type": "object",
+    "required": ["path", "content"],
+    "properties": {
+        "path": {"type": "string"},
+        "content": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+
 IMPROVE_SCHEMA = {
     "type": "object",
-    "required": ["action"],
+    "required": ["action", "reason", "title", "summary", "regressions_addressed", "edits"],
     "properties": {
         "action": {"type": "string", "enum": ["no_change", "propose"]},
-        "reason": {"type": "string"},
-        "title": {"type": "string"},
-        "summary": {"type": "string"},
-        "regressions_addressed": {"type": "array", "items": {"type": "string"}},
-        "edits": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["path", "content"],
-                "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
-                },
-                "additionalProperties": False,
-            },
-        },
+        "reason": {"type": ["string", "null"]},
+        "title": {"type": ["string", "null"]},
+        "summary": {"type": ["string", "null"]},
+        "regressions_addressed": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
+        "edits": {"anyOf": [{"type": "array", "items": _IMPROVE_EDIT_ITEM}, {"type": "null"}]},
     },
     "additionalProperties": False,
 }
@@ -296,8 +295,12 @@ def default_observer_runner(
                 proc = run(args, repo_root)
                 if proc.returncode != 0:
                     raise RuntimeError(f"observer codex failed: {proc.stderr or proc.stdout}")
-                raw = out_file.read_text(encoding="utf-8") if out_file.exists() else proc.stdout
-                return json_object(raw)
+                file_raw = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
+                if file_raw.strip():
+                    return json_object(file_raw)
+                from foreman.worker import _parse_codex_events
+                ev_body, _ = _parse_codex_events(proc.stdout, slug)
+                return json_object(ev_body if ev_body is not None else proc.stdout)
 
             options = [
                 "--output-format", "json",
@@ -314,7 +317,11 @@ def default_observer_runner(
             if proc.returncode != 0:
                 raise RuntimeError(f"observer {provider} failed: {proc.stderr or proc.stdout}")
             envelope = json_object(proc.stdout)
-            structured = envelope.get("structured_output")
+            structured = (
+                envelope.get("structured_output")
+                if envelope.get("structured_output") is not None
+                else envelope.get("structuredOutput")
+            )
             if isinstance(structured, dict):
                 return structured
             if isinstance(structured, str) and structured.strip():

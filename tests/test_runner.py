@@ -11,8 +11,14 @@ from unittest.mock import patch
 from foreman.cli import _print_run, main
 from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
-from foreman.runner import comment_on_pull_request, commit_implementation, publish_reviewed_branch, run_live_delivery
-from foreman.worker import CliWorker
+from foreman.runner import (
+    comment_on_pull_request,
+    commit_implementation,
+    post_inline_review_comments,
+    publish_reviewed_branch,
+    run_live_delivery,
+)
+from foreman.worker import CliWorker, stage_schema
 
 
 HEAD = "a" * 40
@@ -1228,7 +1234,9 @@ class Phase1WorkerAndPreflightTest(unittest.TestCase):
         worker = CliWorker(Path("."), run)
         state = {"models_used": {"implement": "gpt-6.2-sol-high"}, "sessions": {"implement": "thread-99"}}
         worker("implement", "gpt-6.2-sol-high", state, "Fix review")
-        self.assertEqual(recorded_args[0][:4], ["codex", "exec", "resume", "thread-99"])
+        self.assertEqual(recorded_args[0][:3], ["codex", "exec", "resume"])
+        self.assertEqual(recorded_args[0][-2], "thread-99")
+        self.assertLess(recorded_args[0].index("--output-schema"), recorded_args[0].index("thread-99"))
 
         worker("implement", "claude-opus-5-5-high", state, "Fix review")
         self.assertNotIn("--resume", recorded_args[1])
@@ -1265,4 +1273,98 @@ class Phase1WorkerAndPreflightTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(calls, ["claude"])
             self.assertIn("done env_unavailable", out.getvalue())
+
+    def test_strict_codex_schema_null_stripping_grok_structured_output_and_rollout_check(self):
+        for node in ("triage", "spec", "research", "implement", "review"):
+            strict = stage_schema(node, strict=True)
+            self.assertEqual(set(strict["required"]), set(strict["properties"].keys()))
+            self.assertIs(strict["additionalProperties"], False)
+
+        # Grok camelCase structuredOutput + null stripping
+        def grok_run(args, cwd):
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                json.dumps({
+                    "structuredOutput": {"triage": "implement", "slice": None, "human_question": None},
+                    "sessionId": "gr-1",
+                    "modelUsage": {"grok-4.7-build": {}},
+                }),
+                "",
+            )
+
+        res = CliWorker(Path("."), grok_run)("triage", "grok-4.7-high", {"issue": 1}, "Triage")
+        self.assertEqual(res, {"triage": "implement"})
+
+        # Codex --json rollout verification without stderr model banner
+        with TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            sess_dir = codex_home / "sessions" / "2026" / "11" / "20"
+            sess_dir.mkdir(parents=True)
+            rollout_ok = sess_dir / "rollout-sid-match.jsonl"
+            rollout_ok.write_text(
+                json.dumps({"type": "turn_context", "payload": {"model": "gpt-6.2-sol"}}) + "\n",
+                encoding="utf-8",
+            )
+            rollout_bad = sess_dir / "rollout-sid-mismatch.jsonl"
+            rollout_bad.write_text(
+                json.dumps({"type": "turn_context", "payload": {"model": "gpt-other"}}) + "\n",
+                encoding="utf-8",
+            )
+
+            with unittest.mock.patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}):
+                def run_ok(args, cwd):
+                    out_file = Path(args[args.index("-o") + 1])
+                    out_file.write_text(json.dumps({
+                        "implementation": "Fixed.",
+                        "head_sha": None,
+                        "pr_summary": None,
+                        "browser_proof": None,
+                        "formal_proof": None,
+                    }))
+                    ev = "\n".join([
+                        json.dumps({"type": "thread.started", "thread_id": "sid-match"}),
+                        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 50, "output_tokens": 10}}),
+                    ])
+                    return subprocess.CompletedProcess(args, 0, ev, "")
+
+                ok_out = CliWorker(Path("."), run_ok)("implement", "gpt-6.2-sol-high", {"issue": 2}, "Build")
+                self.assertEqual(ok_out["implementation"], "Fixed.")
+                self.assertNotIn("pr_summary", ok_out)
+
+                def run_bad(args, cwd):
+                    out_file = Path(args[args.index("-o") + 1])
+                    out_file.write_text(json.dumps({"triage": "implement", "slice": None, "human_question": None}))
+                    ev = json.dumps({"type": "thread.started", "thread_id": "sid-mismatch"})
+                    return subprocess.CompletedProcess(args, 0, ev, "")
+
+                with self.assertRaises(InvalidOutput) as ctx:
+                    CliWorker(Path("."), run_bad)("triage", "gpt-6.2-sol-high", {"issue": 2}, "Triage")
+                self.assertIn("gpt-other", str(ctx.exception))
+
+    def test_post_inline_review_comments_uses_gh_api_with_redaction(self):
+        calls = []
+
+        def fake_run(args, cwd, payload):
+            calls.append((list(args), cwd, json.loads(payload)))
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        post_inline_review_comments(
+            Path("engine"),
+            "Example/Engine",
+            "https://github.com/Example/Engine/pull/42",
+            [{
+                "path": "src/app.py",
+                "line": 12,
+                "side": "RIGHT",
+                "body": "Avoid logging owner@example.invalid token=ghp_0123456789abcdefghij0123456789",
+            }],
+            run=fake_run,
+        )
+        self.assertEqual(len(calls), 1)
+        args, cwd, payload = calls[0]
+        self.assertEqual(args, ["gh", "api", "repos/Example/Engine/pulls/42/reviews", "--method", "POST", "--input", "-"])
+        self.assertEqual(payload["event"], "COMMENT")
+        self.assertNotIn("owner@example.invalid", payload["comments"][0]["body"])
+        self.assertNotIn("ghp_0123456789abcdefghij0123456789", payload["comments"][0]["body"])
 

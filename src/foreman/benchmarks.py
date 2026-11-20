@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import html
 import json
 from pathlib import Path
@@ -13,9 +14,15 @@ import time
 from typing import Any, Callable
 import yaml
 
-from foreman.delivery import compile_delivery, run_delivery
-from foreman.dispatch import FailoverDispatcher
+from foreman.config import Config, NodeConfig, load_config
+from foreman.delivery import clean_slices, compile_delivery, run_delivery
+from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import ScriptHandler
+from foreman.redaction import SecretRedactor
+from foreman.runner import _inspect_worktree
+from foreman.scoring import JudgeRunner, load_scorers, score_run
+from foreman.telemetry import TelemetryStore, state_usage_summary
+from foreman.worker import CliWorker, CommandRunner, run_worker_command
 
 FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 
@@ -125,15 +132,151 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _refuse_gh(cmd: list[str]) -> int:
-    return 1
-
-
 BENCHMARK_LOCKOUT_KWARGS: dict[str, Any] = {
     "publish_worktree": None,
     "record_review": None,
-    "run_gh": _refuse_gh,
+    "run_gh": None,
+    "read_merge_hold": None,
 }
+
+
+def _config_for_trial(cfg: dict[str, Any]) -> Config:
+    base = load_config()
+    overrides = cfg.get("models")
+    if not isinstance(overrides, dict) or not overrides:
+        return base
+    nodes = dict(base.nodes)
+    for stage_name, models in overrides.items():
+        if stage_name in nodes and isinstance(models, list) and all(isinstance(m, str) for m in models):
+            nodes[stage_name] = NodeConfig(role=nodes[stage_name].role, models=tuple(models))
+    return replace(base, nodes=nodes)
+
+
+def _commit_detached_trial(worktree: Path, title: str) -> str:
+    """Commit worktree edits onto detached HEAD so no branch ref leaks into the main repo."""
+    status = _git(worktree, "status", "--porcelain")
+    if status.returncode != 0:
+        raise InvalidOutput("benchmark worktree status failed")
+    if status.stdout.strip():
+        if _git(worktree, "add", "-A").returncode != 0:
+            raise InvalidOutput("benchmark could not stage changes")
+        msg = title.strip() or "Benchmark trial commit"
+        if _git(worktree, "commit", "-m", msg).returncode != 0:
+            raise InvalidOutput("benchmark commit failed")
+    head = _git(worktree, "rev-parse", "HEAD")
+    if head.returncode != 0 or not FULL_SHA.fullmatch(head.stdout.strip()):
+        raise InvalidOutput("benchmark worktree HEAD invalid")
+    return head.stdout.strip()
+
+
+def _read_worktree_diff(worktree: Path, base_sha: str) -> str:
+    diff = _git(worktree, "diff", "--no-color", "--unified=3", base_sha, "HEAD")
+    return diff.stdout if diff.returncode == 0 else ""
+
+
+def _run_live_trial(
+    task: dict[str, Any],
+    cfg: dict[str, Any],
+    worktree: Path | None,
+    *,
+    worker_runner: CommandRunner = run_worker_command,
+    judge_runner: JudgeRunner | None = None,
+    score_trials: bool = False,
+) -> dict[str, Any]:
+    """Run a live delivery trial inside an isolated detached worktree with publish/merge disabled."""
+    if worktree is None:
+        raise BenchmarkError("live benchmark trial requires an isolated worktree")
+    t0 = time.monotonic()
+
+    def run_check(command: str) -> tuple[int, str]:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            cwd=worktree,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        redacted = SecretRedactor.from_environ().redact(proc.stdout or "")
+        return proc.returncode, redacted[-4000:]
+
+    config = _config_for_trial(cfg)
+    dispatcher = FailoverDispatcher(CliWorker(worktree, worker_runner))
+    graph = compile_delivery(
+        dispatcher,
+        config,
+        run_check=run_check,
+        inspect_worktree=lambda: _inspect_worktree(worktree),
+        commit_worktree=lambda title: _commit_detached_trial(worktree, title),
+        read_diff=lambda: _read_worktree_diff(worktree, task["base_sha"]),
+        budget=cfg.get("budget"),
+        **BENCHMARK_LOCKOUT_KWARGS,
+    )
+    initial: dict[str, Any] = {
+        "repo": task["repo"],
+        "issue": 0,
+        "request": f"{task['title']}\n\n{task['request']}",
+        "check": task["check"],
+        "issue_kind": task["issue_kind"],
+        "verify_rounds": 0,
+        "review_rounds": 0,
+        "models_used": {},
+        "sessions": {},
+        "usage_records": [],
+        "attempts": [],
+        "path": [],
+    }
+    if task["issue_kind"] == "slice":
+        raw_slice = task.get("slice") or {
+            "title": task["title"],
+            "acceptance": task["request"],
+            "depends_on": [],
+            "screen": "",
+            "properties": [],
+        }
+        initial["slice"] = clean_slices([raw_slice], allow_external_dependencies=True)[0]
+
+    result = graph.invoke(initial)
+    elapsed_ms = max(1, int((time.monotonic() - t0) * 1000))
+    usage = state_usage_summary(result.get("usage_records"))
+    passed = result.get("stop") == task.get("expected_stop", "verified")
+
+    quality_score: float | None = None
+    quality_label = "pass" if passed else "fail"
+    if score_trials or judge_runner is not None:
+        with TemporaryDirectory(prefix="foreman_bench_score_") as td:
+            store = TelemetryStore(Path(td) / "bench.sqlite3")
+            rid = store.record_run(result, duration_ms=elapsed_ms)
+            diff_text = _read_worktree_diff(worktree, task["base_sha"])
+            scored = score_run(
+                store,
+                rid,
+                list(load_scorers().values()),
+                judge=judge_runner,
+                respect_sampling=False,
+                diff_text=diff_text,
+            )
+            evaluable = [s["score"] for s in scored if s["label"] != "insufficient_evidence"]
+            if evaluable:
+                quality_score = round(sum(evaluable) / len(evaluable), 4)
+                quality_label = "pass" if all(s["passed"] for s in scored if s["label"] != "insufficient_evidence") else "fail"
+            elif scored:
+                quality_score = 0.5
+                quality_label = "insufficient_evidence"
+
+    return {
+        "task_id": task["id"],
+        "config": cfg["name"],
+        "stop": result.get("stop"),
+        "passed": passed,
+        "quality_score": quality_score if quality_score is not None else (1.0 if passed else 0.0),
+        "quality_label": quality_label,
+        "cost_usd": usage["cost_usd"],
+        "duration_ms": elapsed_ms,
+        "tokens": usage["total_tokens"],
+        "merge_armed": bool(result.get("merge_armed", False)),
+    }
 
 
 def _default_dry_trial(task: dict[str, Any], cfg: dict[str, Any], worktree: Path | None) -> dict[str, Any]:
@@ -170,10 +313,24 @@ def run_benchmark(
     trial_runner: TrialRunner | None = None,
     worktree_root: Path | None = None,
     dry_run: bool = False,
+    worker_runner: CommandRunner = run_worker_command,
+    judge_runner: JudgeRunner | None = None,
+    score_trials: bool = False,
 ) -> list[dict[str, Any]]:
     """Execute suite configs x tasks in isolated detached worktrees with guaranteed cleanup."""
     results: list[dict[str, Any]] = []
-    runner = trial_runner or _default_dry_trial
+    if trial_runner is not None:
+        runner = trial_runner
+    elif dry_run:
+        runner = _default_dry_trial
+    else:
+        def runner(t, c, wt):
+            return _run_live_trial(
+                t, c, wt,
+                worker_runner=worker_runner,
+                judge_runner=judge_runner,
+                score_trials=score_trials,
+            )
 
     for cfg in suite["configs"]:
         for task in suite["tasks"]:
