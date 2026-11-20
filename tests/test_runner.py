@@ -6,6 +6,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from foreman.cli import main
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
@@ -250,6 +251,36 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertFalse(result["merge_armed"])
         self.assertEqual(result["merge_args"], ARM_ARGS)
 
+    def test_default_merge_runner_discards_stdin_and_returns_exit_code(self):
+        from foreman.cli import _run_gh
+
+        with patch("foreman.cli.subprocess.run", return_value=subprocess.CompletedProcess(ARM_ARGS, 1)) as run:
+            self.assertEqual(_run_gh(ARM_ARGS), 1)
+        run.assert_called_once_with(ARM_ARGS, shell=False, stdin=subprocess.DEVNULL)
+
+    def test_main_arms_or_records_merge_using_injected_runner(self):
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code), TemporaryDirectory(dir=self.cwd) as directory:
+                replies = iter([{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}, APPROVE])
+                calls = []
+
+                def worker(args, cwd):
+                    return worker_reply(args, next(replies))
+
+                def gh(args):
+                    calls.append(args)
+                    return exit_code
+
+                with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    code = main(
+                        ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                        worker_runner=worker, checkpoint=Path(directory) / "run.sqlite3", github=self.github, run_gh=gh,
+                    )
+                self.assertEqual(code, 0)
+                self.assertEqual(calls, [ARM_ARGS])
+                self.assertIn("merge armed" if exit_code == 0 else "merge arm recorded", stdout.getvalue())
+                self.assertIn(" ".join(ARM_ARGS), stdout.getvalue())
+
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
         script = """
 import json
@@ -277,7 +308,7 @@ def run(args, cwd):
         return worker_reply(args, {"implementation": "built", "head_sha": HEAD})
     return worker_reply(args, APPROVE)
 
-sys.exit(main(sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]), github=FakeGitHub()))
+sys.exit(main(sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]), github=FakeGitHub(), run_gh=lambda args: 0))
 """
         def invoke(*flags):
             bootstrap = f"import sys; sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n"

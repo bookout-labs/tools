@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import sys
+from typing import Callable
 
 import yaml
 
@@ -54,12 +56,17 @@ def _print_run(result: dict) -> None:
         print(result["halt_detail"])
 
 
+def _run_gh(args: list[str]) -> int:
+    return subprocess.run(args, shell=False, stdin=subprocess.DEVNULL).returncode
+
+
 def main(
     argv: list[str] | None = None,
     *,
     worker_runner: CommandRunner | None = run_worker_command,
     checkpoint: Path | None = None,
     github: GitHub | None = None,
+    run_gh: Callable[[list[str]], int] | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -157,6 +164,7 @@ def main(
                 dispatcher=dispatcher,
                 request=args.request,
                 github=github,
+                run_gh=run_gh if run_gh is not None else _run_gh,
                 answer=args.answer,
             )
         except (OSError, QuotaExhausted, ValueError) as exc:
