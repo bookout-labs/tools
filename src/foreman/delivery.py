@@ -55,6 +55,7 @@ class DeliveryState(TypedDict, total=False):
     check: str
     check_exit_code: int
     check_exits: Annotated[list[int], operator.add]
+    review_log: Annotated[list[dict[str, str]], operator.add]
     triage: str
     spec: str
     spec_gate: str
@@ -289,6 +290,15 @@ def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
             latest = used.get("implement")
             history = state.get("implement_models", [latest] if latest else [])
             update["implement_models"] = [*history, model]
+    if name == "review" and "review" in update:
+        entry = {
+            "verdict": update["review"],
+            "level": update["risk"]["level"],
+            "note": update.get("review_note") or "",
+        }
+        if model:
+            entry["model"] = model
+        update["review_log"] = [entry]
     return update
 
 

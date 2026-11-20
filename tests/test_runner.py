@@ -442,6 +442,55 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn("done review_cap", text)
         self.assertIn("review note: Add a hermetic RPC-first regression test.", text)
 
+    def test_log_keeps_each_review_verdict(self):
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            _print_run({
+                "path": [
+                    "triage", "implement", "verify", "review",
+                    "implement", "verify", "review", "merge", "done",
+                ],
+                "check": "npm run check",
+                "check_exit_code": 0,
+                "check_exits": [0, 0],
+                "models_used": {"review": "gpt-6.2-sol-high"},
+                "review": "approve",
+                "review_note": "The RPC test is in.",
+                "risk": {"level": "low"},
+                "review_log": [
+                    {
+                        "model": "gpt-6.2-sol-high",
+                        "verdict": "changes",
+                        "level": "medium",
+                        "note": "Add the RPC-first test.",
+                    },
+                    {
+                        "model": "gpt-6.2-sol-high",
+                        "verdict": "approve",
+                        "level": "low",
+                        "note": "The RPC test is in.",
+                    },
+                ],
+                "stop": "verified",
+                "merge_armed": True,
+                "pull_request": "https://github.com/DoctorCRE/doctorcre-engine/pull/895",
+            })
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual(
+            [line for line in lines if line.startswith("review gpt-6.2-sol-high")],
+            [
+                "review gpt-6.2-sol-high changes risk medium",
+                "review gpt-6.2-sol-high approve risk low",
+            ],
+        )
+        self.assertEqual(
+            [line for line in lines if line.startswith("review note:")],
+            ["review note: Add the RPC-first test.", "review note: The RPC test is in."],
+        )
+        self.assertLess(
+            lines.index("review note: Add the RPC-first test."),
+            lines.index("review gpt-6.2-sol-high approve risk low"),
+        )
+
     def test_both_proofs_pass_before_review_and_record_the_merge_command(self):
         self.github.body = slice_body(SLICE)
         result = self.walk([

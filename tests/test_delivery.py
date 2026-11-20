@@ -268,6 +268,10 @@ class DeliveryTest(unittest.TestCase):
             ["triage", "implement", "verify", "review", "implement", "verify", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
+        self.assertEqual(
+            [(item["verdict"], item["level"], item["model"]) for item in result["review_log"]],
+            [("changes", "low", "gpt-6.2-sol-high"), ("approve", "low", "gpt-6.2-sol-high")],
+        )
 
     def test_review_stays_on_sol_when_the_builder_changes_family(self):
         handler = ScriptHandler(reviews=["changes", "approve"], head_sha=HEAD_SHA)

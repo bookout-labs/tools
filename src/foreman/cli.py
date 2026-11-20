@@ -29,7 +29,9 @@ MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
 def _print_run(result: dict) -> None:
     models = result.get("models_used", {})
     exits = result.get("check_exits") if isinstance(result.get("check_exits"), list) else []
+    reviews = result.get("review_log") if isinstance(result.get("review_log"), list) else []
     verify_index = 0
+    review_index = 0
     for node in result["path"]:
         if node == "verify":
             label = result.get("check") or "(no check)"
@@ -46,7 +48,7 @@ def _print_run(result: dict) -> None:
             print(f"done {result['stop']}")
             if detail := result.get("halt_detail"):
                 print(detail)
-            elif result.get("stop") == "review_cap" and (note := result.get("review_note")):
+            elif result.get("stop") == "review_cap" and not reviews and (note := result.get("review_note")):
                 print(f"review note: {note}")
             if proposal := result.get("proposal"):
                 print(proposal["summary"].rstrip())
@@ -67,13 +69,23 @@ def _print_run(result: dict) -> None:
                 print(shlex.join(args))
         else:
             fields = [node]
-            if model := models.get(node):
+            entry = None
+            if node == "review" and review_index < len(reviews) and isinstance(reviews[review_index], dict):
+                entry = reviews[review_index]
+                review_index += 1
+            model = entry.get("model") if entry and entry.get("model") else models.get(node)
+            if model:
                 fields.append(model)
-            if node == "review" and (verdict := result.get("review")):
-                fields.append(verdict)
-            if node == "review" and (risk := result.get("risk")):
-                fields.extend(("risk", risk["level"]))
+            if node == "review":
+                verdict = entry.get("verdict") if entry else result.get("review")
+                risk = entry.get("level") if entry else (result.get("risk") or {}).get("level")
+                if verdict:
+                    fields.append(verdict)
+                if risk:
+                    fields.extend(("risk", risk))
             print(" ".join(fields))
+            if entry and (note := entry.get("note")):
+                print(f"review note: {note}")
     if result.get("stop") == "needs_human" and "done" not in result["path"]:
         print("paused needs_human")
         print(result["halt_detail"])
