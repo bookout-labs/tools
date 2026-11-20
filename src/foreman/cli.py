@@ -1,6 +1,7 @@
 """Command line for the foreman tool."""
 
 import argparse
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -21,7 +22,7 @@ from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.resolve import Cmd, cache_resolve, resolve_route, run_cmd
 from foreman.runner import WorktreeInspector, run_live_delivery
-from foreman.save import SaveError, SaveRequest, config_from_pointer, run_save
+from foreman.save import SaveConfig, SaveError, SaveRequest, config_from_pointer, run_save
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 
 
@@ -40,6 +41,10 @@ def _print_run(result: dict) -> None:
             print(f"done {result['stop']}")
             if detail := result.get("halt_detail"):
                 print(detail)
+        elif node == "save":
+            print("save")
+            if report := result.get("save_report"):
+                print(report)
         elif node == "merge":
             if result["merge_armed"]:
                 print("merge armed")
@@ -66,6 +71,28 @@ def _print_run(result: dict) -> None:
     if result.get("stop") == "needs_human" and "done" not in result["path"]:
         print("paused needs_human")
         print(result["halt_detail"])
+
+
+def _default_save_run(command: list[str], overlay: dict | None):
+    merged = None if overlay is None else {**os.environ, **overlay}
+    try:
+        result = subprocess.run(
+            command, cwd=Path.cwd(), env=merged, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, shell=False,
+        )
+    except FileNotFoundError as exc:
+        return Cmd(127, "", str(exc))
+    return Cmd(result.returncode, result.stdout, result.stderr)
+
+
+def save_config_for_run(cwd: Path) -> SaveConfig | None:
+    path = cwd / "tools.yaml"
+    if not path.is_file():
+        return None
+    pointer = load_pointer(path)
+    if "save" not in pointer:
+        return None
+    return replace(config_from_pointer(pointer), queue=False)
 
 
 def _run_gh(args: list[str]) -> int:
@@ -185,19 +212,8 @@ def main(
             issue=args.issue, regroup=args.regroup, paths=tuple(args.paths),
         )
 
-        def default_save_run(command: list[str], overlay: dict | None):
-            merged = None if overlay is None else {**os.environ, **overlay}
-            try:
-                result = subprocess.run(
-                    command, cwd=Path.cwd(), env=merged, stdin=subprocess.DEVNULL,
-                    capture_output=True, text=True, shell=False,
-                )
-            except FileNotFoundError as exc:
-                return Cmd(127, "", str(exc))
-            return Cmd(result.returncode, result.stdout, result.stderr)
-
         try:
-            print(run_save(config, request, save_run or default_save_run, cwd=Path.cwd()))
+            print(run_save(config, request, save_run or _default_save_run, cwd=Path.cwd()))
         except SaveError as exc:
             print(f"save: {exc}", file=sys.stderr)
             return 1
@@ -225,6 +241,11 @@ def main(
             state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
         cwd = Path.cwd()
+        try:
+            save_config = save_config_for_run(cwd)
+        except (OSError, PointerError, SaveError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         dispatcher = FailoverDispatcher(CliWorker(cwd, worker_runner)) if worker_runner else None
         lookup = _find_pr if find_pr is None else find_pr
         merge = _run_gh if run_gh is None else run_gh
@@ -262,6 +283,8 @@ def main(
                 resolve=resolve if resolve is not None else cache_resolve(
                     lambda route, effort: resolve_route(route, effort, run_cmd)
                 ),
+                save_config=save_config,
+                save_run=save_run or _default_save_run,
             )
         except (OSError, QuotaExhausted, ValueError) as exc:
             print(str(exc), file=sys.stderr)

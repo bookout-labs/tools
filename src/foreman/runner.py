@@ -12,6 +12,7 @@ from langgraph.types import Command
 from foreman.delivery import DeliveryState, Slice, clean_slices, compile_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.github import GhClient, GitHub
+from foreman.save import SaveConfig
 
 WorktreeInspector = Callable[[Path], tuple[str, bool]]
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
@@ -44,6 +45,8 @@ def run_live_delivery(
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: WorktreeInspector | None = None,
     resolve: Callable[[str, str], str] | None = None,
+    save_config: SaveConfig | None = None,
+    save_run: Callable | None = None,
 ) -> dict:
     def run_check(command: str) -> int:
         return subprocess.run(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL).returncode
@@ -56,6 +59,7 @@ def run_live_delivery(
         graph = compile_delivery(
             dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
             inspect_worktree=lambda: inspect(cwd), resolve=resolve,
+            save_config=save_config, save_run=save_run,
         )
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")

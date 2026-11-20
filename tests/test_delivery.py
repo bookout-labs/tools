@@ -1,11 +1,18 @@
+import contextlib
+import io
+from pathlib import Path
 import unittest
 
 from dataclasses import replace
 
+from foreman.cli import _print_run
 from foreman.config import family, NodeConfig, load_config
 from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
+from foreman.pointer import load_pointer
+from foreman.resolve import Cmd
+from foreman.save import config_from_pointer
 
 
 SLICES = [
@@ -27,6 +34,8 @@ SLICES = [
 
 
 HEAD_SHA = "a" * 40
+PUBLISHED = "b" * 40
+ROOT = Path(__file__).parents[1]
 
 
 def walk(handler, check="npm run check", issue_kind="slice", config=None):
@@ -277,10 +286,161 @@ class DeliveryTest(unittest.TestCase):
 
     def test_diagram_names_the_nodes(self):
         picture = diagram()
-        for name in REQUIRED_NODES + ("merge", "done"):
+        for name in REQUIRED_NODES + ("merge", "done", "save"):
             self.assertIn(name, picture)
         self.assertNotIn("claude-opus", picture)
         compile_delivery(FailoverDispatcher(ScriptHandler()), load_config())
+
+    def publisher(self, sha=PUBLISHED, branch="feature", porcelain="", names="src/field.ts\0", ancestor=0):
+        calls = []
+
+        def run(args, _env):
+            calls.append(list(args))
+            if args[:2] == ["git", "branch"]:
+                return Cmd(0, branch + "\n")
+            if args[:2] == ["git", "fetch"]:
+                return Cmd(0, "")
+            if args[:2] == ["git", "show-ref"]:
+                return Cmd(1, "")
+            if args[:4] == ["git", "rev-parse", "-q", "--verify"]:
+                return Cmd(1, "")
+            if args[:2] == ["git", "merge-base"]:
+                return Cmd(ancestor, "")
+            if args[:2] == ["git", "status"]:
+                return Cmd(0, porcelain)
+            if args[:2] == ["git", "rev-parse"]:
+                return Cmd(0, sha + "\n")
+            if args[:2] == ["git", "diff"] and "--name-only" in args:
+                return Cmd(0, names)
+            if args[:2] == ["git", "push"]:
+                return Cmd(0, "")
+            if args[:3] == ["gh", "pr", "list"]:
+                return Cmd(0, "[]")
+            if args[:3] == ["gh", "pr", "create"]:
+                return Cmd(0, "https://example.test/pull/9\n")
+            return Cmd(1, "", "unexpected %s" % args)
+
+        return calls, run
+
+    def test_approval_publishes_the_reviewed_sha_then_arms_it(self):
+        calls, run = self.publisher()
+        config = config_from_pointer(load_pointer(ROOT / "examples" / "doctorcre-engine.yaml"))
+        self.assertTrue(config.queue)
+        result = run_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=PUBLISHED)),
+            repo="DoctorCRE/doctorcre-engine",
+            request="Add a field",
+            check="npm run check",
+            save_config=config,
+            save_run=run,
+        )
+        self.assertEqual(
+            result["path"],
+            ["triage", "implement", "verify", "review", "save", "merge", "done"],
+        )
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["head_sha"], PUBLISHED)
+        self.assertTrue(result["head_checked"])
+        self.assertEqual(
+            result["merge_args"],
+            ["gh", "pr", "merge", "--auto", "--match-head-commit", PUBLISHED],
+        )
+        self.assertTrue(result["merge_armed"])
+        self.assertIn("https://example.test/pull/9", result["save_report"])
+        created = next(args for args in calls if args[:3] == ["gh", "pr", "create"])
+        self.assertEqual(created[created.index("--title") + 1], "Add a field")
+        self.assertIn("DoctorCRE/doctorcre-engine", created)
+        self.assertTrue(any(args[:2] == ["git", "push"] for args in calls))
+        self.assertFalse(any(args[:2] == ["git", "commit"] for args in calls))
+        self.assertFalse(any(args[:2] == ["git", "merge"] for args in calls))
+        self.assertFalse(any(args[:3] == ["gh", "pr", "merge"] for args in calls))
+        self.assertFalse(any(arg == "token" for args in calls for arg in args))
+        self.assertTrue(config.queue)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            _print_run(result)
+        self.assertIn("save\n1/2 pushed feature", stdout.getvalue())
+        self.assertIn("merge armed", stdout.getvalue())
+
+    def test_publish_uses_the_slice_title_and_issue(self):
+        calls, run = self.publisher()
+        config = config_from_pointer(load_pointer(ROOT / "examples" / "doctorcre-engine.yaml"))
+        graph = compile_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=PUBLISHED)),
+            save_config=config,
+            save_run=run,
+        )
+        result = graph.invoke({
+            "repo": "DoctorCRE/doctorcre-engine",
+            "request": "Add a field\n\nDetails.",
+            "check": "npm run check",
+            "issue_kind": "slice",
+            "issue": 42,
+            "slice": {
+                "title": "Name the release",
+                "acceptance": "The health check names the release.",
+                "depends_on": [],
+                "screen": "",
+                "properties": [],
+            },
+            "review_rounds": 0,
+            "models_used": {},
+            "model_choices": [],
+            "path": [],
+        })
+        created = next(args for args in calls if args[:3] == ["gh", "pr", "create"])
+        self.assertEqual(created[created.index("--title") + 1], "Name the release")
+        self.assertIn("Board: #42", created[created.index("--body") + 1])
+        self.assertNotIn("Proof:", created[created.index("--body") + 1])
+        self.assertEqual(result["head_sha"], PUBLISHED)
+
+    def test_a_different_head_stays_unpublished(self):
+        calls, run = self.publisher(sha="c" * 40)
+        config = config_from_pointer(load_pointer(ROOT / "examples" / "doctorcre-engine.yaml"))
+        result = run_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=PUBLISHED)),
+            repo="DoctorCRE/doctorcre-engine",
+            request="Add a field",
+            check="npm run check",
+            save_config=config,
+            save_run=run,
+        )
+        self.assertEqual(result["stop"], "save_failed")
+        self.assertIn("reviewed commit", result["halt_detail"])
+        self.assertNotIn("merge", result["path"])
+        self.assertFalse(any(args[:2] == ["git", "push"] for args in calls))
+
+    def test_save_failure_stops_before_merge(self):
+        calls, run = self.publisher(branch="main")
+        config = config_from_pointer(load_pointer(ROOT / "examples" / "doctorcre-engine.yaml"))
+        result = run_delivery(
+            FailoverDispatcher(ScriptHandler(head_sha=PUBLISHED)),
+            repo="DoctorCRE/doctorcre-engine",
+            request="Add a field",
+            check="npm run check",
+            save_config=config,
+            save_run=run,
+        )
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "save", "done"])
+        self.assertEqual(result["stop"], "save_failed")
+        self.assertIn("never from main", result["halt_detail"])
+        self.assertFalse(any(args[:2] == ["git", "push"] for args in calls))
+
+    def test_review_changes_do_not_publish(self):
+        calls, run = self.publisher()
+        config = config_from_pointer(load_pointer(ROOT / "examples" / "doctorcre-engine.yaml"))
+        result = run_delivery(
+            FailoverDispatcher(ScriptHandler(reviews=["changes"], head_sha=PUBLISHED)),
+            repo="DoctorCRE/doctorcre-engine",
+            request="Add a field",
+            check="npm run check",
+            save_config=config,
+            save_run=run,
+        )
+        self.assertNotIn("save", result["path"])
+        self.assertNotIn("merge", result["path"])
+        self.assertEqual(calls, [])
+        self.assertEqual(result["stop"], "review_cap")
 
 
 if __name__ == "__main__":

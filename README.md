@@ -28,9 +28,12 @@ flowchart TD
   proof -->|missing evidence or cap reached| done
   verify -->|fail, under the cap| implement
   verify -->|dirty worktree, invalid HEAD, or cap reached| done
+  review -->|approve, save configured| save
   review -->|approve| merge
   review -->|changes, under the cap| implement
   review -->|cap reached or no reviewer| done
+  save -->|published| merge
+  save -->|halt| done
   merge --> done
   done --> __end__([end])
 ```
@@ -43,7 +46,7 @@ Live verify stops with `dirty_worktree` if the checkout has changes or Git canno
 
 The cap is three failures across verify, proof, and review. It is config. A node cannot raise it.
 
-After approval, the live merge node records `gh pr merge --auto --match-head-commit <sha>` with the SHA from verify. The worktree must still be clean and at that SHA for the command to run. The CLI also requires an open pull request at that SHA with a head branch starting with the issue number and a hyphen and a base branch of `main`.
+After approval, a pointer with a save block pushes that clean reviewed HEAD and opens or updates the pull request. The commit stays the one verify recorded. The live merge node then records `gh pr merge --auto --match-head-commit <sha>` with that SHA. A pointer without a save block goes from approval to the merge node. The worktree must still be clean and at that SHA for the command to run. The CLI also requires an open pull request at that SHA with a head branch starting with the issue number and a hyphen and a base branch of `main`.
 
 Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 
@@ -128,7 +131,7 @@ foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm r
 
 The runner resolves each family with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request and check command.
 
-`foreman save` commits the named files, pushes the branch, and opens or updates a pull request. The optional `save` block in `tools.yaml` supplies the GitHub App, the privacy list, the work-id pattern, the board repository, whether proof is required, and whether to queue the pull request. A pointer without `save` still validates. Repositories that leave `app` unset use the ambient `gh` login. This command is separate from the delivery graph's `gh pr merge --auto --match-head-commit` arm.
+`foreman save` commits the named files, pushes the branch, and opens or updates a pull request. The optional `save` block in `tools.yaml` supplies the GitHub App, the privacy list, the work-id pattern, the board repository, whether proof is required, and whether to queue the pull request. A pointer without `save` still validates. Repositories that leave `app` unset use the ambient `gh` login. A live delivery run with a save block uses those same gates after review accepts, pushes the reviewed commit, and opens the pull request. The merge node then arms `gh pr merge --auto --match-head-commit`. Standalone `foreman save` with `queue: true` still queues with `gh pr merge --auto`.
 
 ```sh
 foreman save --work LAB.1.3 -m "what changed" --issue 2 --proof "Shown on the board." docs/note.md

@@ -1,6 +1,8 @@
-"""Save finished work: commit, push, and open a pull request from tools.yaml.
+"""Save and publish finished work from tools.yaml.
 
-This is the life-ai save ceremony. It is not the delivery graph's merge arm.
+`foreman save` commits named files, pushes, and opens a pull request.
+`publish_reviewed` pushes the commit review already accepted and opens the pull request.
+The delivery merge node arms `gh pr merge --auto --match-head-commit`.
 """
 
 from dataclasses import dataclass
@@ -81,6 +83,15 @@ class SaveRequest:
     issue: str | None = None
     regroup: str | None = None
     paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PublishResult:
+    sha: str
+    report: str
+
+
+_SHA = re.compile(r"[0-9a-fA-F]{40}")
 
 
 def kind_of(path: str, rules: dict[str, tuple[str, ...]] | None) -> str | None:
@@ -440,3 +451,149 @@ def run_save(
         if hook.code != 0:
             raise SaveError("post_save hook failed")
     return "\n".join(lines)
+
+
+def publish_reviewed(
+    config: SaveConfig,
+    request: SaveRequest,
+    run,
+    *,
+    environ: dict[str, str] | None = None,
+    expected_sha: str | None = None,
+) -> PublishResult:
+    """Push the reviewed HEAD and open or update its pull request.
+
+    A stale branch stops with autostash guidance. Merging it would move HEAD
+    off the commit verify recorded.
+    """
+    env_map = os.environ if environ is None else environ
+    if config.work_id_pattern and not re.fullmatch(config.work_id_pattern, request.work):
+        raise SaveError("Give a work ID, like --work LAB.1.3")
+    if not request.message:
+        raise SaveError('Give a message, like -m "what changed"')
+    if re.search(r"[\r\n]", request.proof):
+        raise SaveError("--proof must be one line")
+    if request.issue and not ISSUE.fullmatch(request.issue):
+        raise SaveError("--issue is a Builds board issue number, like --issue 2")
+
+    token_env: dict[str, str] | None = None
+
+    def spawn(args: list[str], overlay: dict[str, str] | None = None) -> Cmd:
+        return run(args, overlay)
+
+    def git(*args: str, check: bool = True) -> Cmd:
+        result = spawn(["git", *args])
+        if check and result.code != 0:
+            raise SaveError(f"git {' '.join(args)} failed")
+        return result
+
+    branch = git("branch", "--show-current").stdout.strip()
+    if not branch or branch == "main":
+        raise SaveError("Save from a worktree, never from main.")
+    if spawn(["git", "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"]).code != 0:
+        raise SaveError("git fetch failed. Check origin access, then save again.")
+    remote = f"origin/{branch}"
+    exists = spawn(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/{remote}"])
+    refs = ["origin/main"]
+    if exists.code == 0:
+        refs.append(remote)
+    elif exists.code != 1:
+        raise SaveError("Cannot establish remote branch status.")
+    if spawn(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"]).code == 0:
+        raise SaveError("A merge is in progress. Finish it with git merge --continue, then save again.")
+    for ref in refs:
+        status = spawn(["git", "merge-base", "--is-ancestor", ref, "HEAD"]).code
+        if status not in (0, 1):
+            raise SaveError("git merge-base failed. Cannot establish branch freshness.")
+        if status == 1:
+            raise SaveError(f"Branch is stale against {ref}. {UPDATE.format(ref=ref)}")
+
+    status = spawn(["git", "status", "--porcelain"])
+    if status.code != 0:
+        raise SaveError("git status --porcelain failed")
+    if status.stdout.strip():
+        raise SaveError("The checkout has uncommitted changes, so the reviewed commit stays unpublished.")
+    sha = git("rev-parse", "HEAD").stdout.strip()
+    if not _SHA.fullmatch(sha):
+        raise SaveError("git rev-parse HEAD did not return a full SHA.")
+    if expected_sha and _SHA.fullmatch(expected_sha) and sha.lower() != expected_sha.lower():
+        raise SaveError("HEAD is not the reviewed commit.")
+    names = git("diff", "--name-only", "--no-renames", "-z", "origin/main...HEAD")
+    files = [name for name in names.stdout.split("\0") if name]
+    if not files:
+        raise SaveError("Nothing to publish.")
+
+    agent = _agent(request, env_map)
+    session = _session(env_map)
+    if config.work_id_pattern:
+        trailers = f"Work: {request.work}\nAgent: {agent}\nSession: {session}"
+    else:
+        trailers = f"Agent: {agent}\nSession: {session}"
+    parts = [
+        f"Proof: {request.proof}" if request.proof else "",
+        f"Board: #{request.issue}" if request.issue else "",
+        trailers,
+    ]
+    body = "\n".join(part for part in parts if part)
+    errors = missing(files, body, config)
+    if errors:
+        raise SaveError("\n".join(errors))
+    terms = term_list(config, env_map)
+    if terms is not None:
+        hits = leaks([
+            "\n".join(files),
+            added(git("diff", "--text", "-U0", "origin/main...HEAD").stdout),
+            request.message,
+            body,
+            git("log", "--format=%B", "origin/main..HEAD").stdout,
+        ], terms)
+        if hits:
+            raise SaveError(
+                f"{hits} line(s) match the personal-term list. Personal data lives in Neon and R2, never in git."
+            )
+    if config.app:
+        minted = spawn([
+            "gh", "token", "generate", "--app-id", config.app["id"],
+            "--installation-id", config.app["installation"], "--key", config.app["key"], "--token-only",
+        ])
+        if minted.code != 0 or not minted.stdout.strip():
+            raise SaveError("Could not mint a GitHub App token.")
+        token_env = {"GH_TOKEN": minted.stdout.strip()}
+    if request.issue and config.board_repo:
+        viewed = spawn(["gh", "issue", "view", request.issue, "-R", config.board_repo, "--json", "state"], token_env)
+        if viewed.code != 0:
+            raise SaveError(
+                f"Cannot read Builds issue #{request.issue}. It must exist and be OPEN; check the number and GitHub access."
+            )
+        try:
+            state = json.loads(viewed.stdout).get("state")
+        except json.JSONDecodeError as exc:
+            raise SaveError(
+                f"Cannot read Builds issue #{request.issue}. It must exist and be OPEN; check the number and GitHub access."
+            ) from exc
+        if state != "OPEN":
+            raise SaveError(f"Builds issue #{request.issue} is {state}. Choose an OPEN issue (… --issue <n>).")
+    pushed = spawn(["git", "push", "-u", "origin", branch])
+    if pushed.code != 0:
+        raise SaveError(f"Push failed. Fetch origin, then {UPDATE.format(ref=remote)} Then save again.")
+    listed = spawn(["gh", "pr", "list", "-R", config.repo, "--head", branch, "--state", "open", "--json", "url"], token_env)
+    if listed.code != 0:
+        raise SaveError("gh pr list failed")
+    try:
+        found = json.loads(listed.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise SaveError("gh pr list failed") from exc
+    if found:
+        pr = found[0]["url"]
+        edited = spawn(["gh", "pr", "edit", pr, "--title", request.message, "--body", body], token_env)
+        if edited.code != 0:
+            raise SaveError("gh pr edit failed")
+    else:
+        created = spawn([
+            "gh", "pr", "create", "-R", config.repo, "--base", "main", "--head", branch,
+            "--title", request.message, "--body", body,
+        ], token_env)
+        if created.code != 0 or not created.stdout.strip():
+            raise SaveError("gh pr create failed")
+        pr = created.stdout.strip()
+    return PublishResult(sha=sha, report=f"1/2 pushed {branch}\n2/2 {pr} is open.")

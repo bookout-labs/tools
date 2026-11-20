@@ -1,5 +1,6 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
+from dataclasses import replace
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, Callable, TypedDict
@@ -14,6 +15,7 @@ from foreman.config import Config, ConfigError, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.proof import browser_proof_label, formal_proof_label
 from foreman.router import choose_order
+from foreman.save import SaveConfig, SaveError, SaveRequest, publish_reviewed
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -81,6 +83,7 @@ class DeliveryState(TypedDict, total=False):
     files: list[str]
     halt: str
     halt_detail: str
+    save_report: str
     stop: str
     path: Annotated[list[str], operator.add]
 
@@ -231,6 +234,43 @@ def stop_reason(state: DeliveryState) -> str:
     return "stopped"
 
 
+def _first_line(text: str) -> str:
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _matching_work_id(config: SaveConfig, text: str) -> str:
+    if not config.work_id_pattern:
+        return ""
+    try:
+        pattern = re.compile(config.work_id_pattern)
+    except re.error as exc:
+        raise SaveError("save work_id_pattern is not a valid regex.") from exc
+    for token in text.split():
+        if pattern.fullmatch(token):
+            return token
+    return ""
+
+
+def _publish_request(state: DeliveryState, config: SaveConfig) -> SaveRequest:
+    raw_slice = state.get("slice")
+    title = ""
+    acceptance = ""
+    if isinstance(raw_slice, dict):
+        if isinstance(raw_slice.get("title"), str):
+            title = raw_slice["title"].strip()
+        if isinstance(raw_slice.get("acceptance"), str):
+            acceptance = raw_slice["acceptance"]
+    message = title or _first_line(state.get("request") or "")
+    proof = " ".join(acceptance.split()) if config.proof == "required" else ""
+    blob = " ".join(part for part in (state.get("request") or "", title, acceptance) if part)
+    number = state.get("issue")
+    issue = str(number) if isinstance(number, int) and number > 0 else None
+    return SaveRequest(work=_matching_work_id(config, blob), message=message, proof=proof, issue=issue)
+
+
 def compile_delivery(
     dispatcher: FailoverDispatcher | None,
     config: Config | None = None,
@@ -240,6 +280,8 @@ def compile_delivery(
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
     resolve: Callable[[str, str], str] | None = None,
+    save_config: SaveConfig | None = None,
+    save_run: Callable | None = None,
 ):
     config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
@@ -370,10 +412,13 @@ def compile_delivery(
         if state.get("halt"):
             return "done"
         if state.get("review") == "approve":
-            return "merge"
+            return "save" if save_config is not None else "merge"
         if state.get("review_rounds", 0) < config.max_review_rounds:
             return "implement"
         return "done"
+
+    def after_save(state: DeliveryState) -> str:
+        return "done" if state.get("halt") else "merge"
 
     def after_verify(state: DeliveryState) -> str:
         if state.get("halt"):
@@ -407,6 +452,27 @@ def compile_delivery(
         armed = run_gh(args) == 0 if run_gh is not None else run_check is None
         return {"merge_armed": armed, "merge_args": args, "path": ["merge"]}
 
+    def save_node(state: DeliveryState) -> dict:
+        if save_config is None or save_run is None:
+            return {"path": ["save"], "halt": "save_failed", "halt_detail": "This run has no save config."}
+        try:
+            request = _publish_request(state, save_config)
+            # The merge node arms match-head-commit. This step only publishes.
+            published = publish_reviewed(
+                replace(save_config, queue=False),
+                request,
+                save_run,
+                expected_sha=state.get("head_sha"),
+            )
+        except SaveError as exc:
+            return {"path": ["save"], "halt": "save_failed", "halt_detail": str(exc)}
+        return {
+            "path": ["save"],
+            "head_sha": published.sha,
+            "head_checked": True,
+            "save_report": published.report,
+        }
+
     def finish(state: DeliveryState) -> dict:
         return {"stop": stop_reason(state), "path": ["done"]}
 
@@ -415,6 +481,7 @@ def compile_delivery(
         builder.add_node(name, verify if name == "verify" and run_check is not None else bind(name))
     builder.add_node("proof", prove)
     builder.add_node("needs_human", needs_human)
+    builder.add_node("save", save_node)
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_conditional_edges(
@@ -437,8 +504,9 @@ def compile_delivery(
     builder.add_conditional_edges(
         "review",
         after_review,
-        {"merge": "merge", "implement": "implement", "done": "done"},
+        {"save": "save", "merge": "merge", "implement": "implement", "done": "done"},
     )
+    builder.add_conditional_edges("save", after_save, {"merge": "merge", "done": "done"})
     builder.add_conditional_edges(
         "verify",
         after_verify,
@@ -463,10 +531,12 @@ def run_delivery(
     labels: list[str] | None = None,
     files: list[str] | None = None,
     resolve: Callable[[str, str], str] | None = None,
+    save_config: SaveConfig | None = None,
+    save_run: Callable | None = None,
 ) -> dict:
     if issue_kind not in {"parent", "slice"}:
         raise ValueError(f"unknown issue kind {issue_kind}")
-    graph = compile_delivery(dispatcher, config, resolve=resolve)
+    graph = compile_delivery(dispatcher, config, resolve=resolve, save_config=save_config, save_run=save_run)
     initial: dict = {
         "repo": repo,
         "request": request,
