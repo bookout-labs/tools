@@ -13,6 +13,14 @@ from typing import Callable
 import yaml
 
 from foreman.accept import AcceptError, accept_event
+from foreman.benchmarks import (
+    BenchmarkError,
+    load_suite,
+    render_benchmark_html,
+    render_benchmark_text,
+    run_benchmark,
+    summarize_benchmark,
+)
 from foreman.delivery import GRAPH_NAME, diagram, run_delivery
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
@@ -218,7 +226,40 @@ def main(
     tel_import.add_argument("paths", nargs="+")
     tel_import.add_argument("--db", help="SQLite telemetry database path")
 
+    bench_cmd = commands.add_parser("bench", help="run a benchmark suite across isolated worktrees")
+    bench_cmd.add_argument("suite")
+    bench_cmd.add_argument("--repo-path", default=".")
+    bench_cmd.add_argument("--dry-run", action="store_true")
+    bench_cmd.add_argument("--format", choices=("text", "json", "html"), default="text")
+    bench_cmd.add_argument("--out", help="optional output path for formatted benchmark report")
+
     args = parser.parse_args(argv)
+    if args.command == "bench":
+        try:
+            suite = load_suite(Path(args.suite))
+            raw = run_benchmark(
+                suite,
+                repo_path=Path(args.repo_path) if args.repo_path else None,
+                dry_run=args.dry_run,
+            )
+            summary = summarize_benchmark(raw)
+        except (BenchmarkError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        if args.format == "json":
+            rendered = json.dumps(summary, indent=2, sort_keys=True)
+        elif args.format == "html":
+            rendered = render_benchmark_html(summary)
+        else:
+            rendered = render_benchmark_text(summary)
+        if args.out:
+            out_path = Path(args.out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(rendered + ("\n" if not rendered.endswith("\n") else ""), encoding="utf-8")
+            print(str(out_path))
+        else:
+            print(rendered)
+        return 0
     if args.command == "scorers":
         try:
             loaded = load_scorers()
@@ -362,6 +403,10 @@ def main(
             print("ignored")
             return 0
         print(f"start {decision['source']}")
+        if decision.get("draft_only"):
+            print("draft_only true")
+        if dedupe_key := decision.get("dedupe_key"):
+            print(f"dedupe_key {dedupe_key}")
         print(decision["request"])
         return 0
     if args.command == "improve":

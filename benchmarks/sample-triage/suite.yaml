@@ -1,0 +1,17 @@
+name: sample-triage
+description: Synthetic sample benchmark suite comparing model configs without real production data.
+repo: Example/Engine
+configs:
+  - name: baseline-sol
+    script_triage: implement
+    synthetic_quality: 0.92
+    synthetic_cost_usd: 0.35
+    synthetic_duration_ms: 1400
+  - name: fast-opus
+    script_triage: implement
+    synthetic_quality: 0.96
+    synthetic_cost_usd: 0.80
+    synthetic_duration_ms: 1200
+tasks:
+  - tasks/clear-bugfix.yaml
+  - tasks/ambiguous-ui-feature.yaml

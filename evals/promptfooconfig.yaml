@@ -85,3 +85,33 @@ tests:
         value: does not change models.toml or max_review_rounds
       - type: contains
         value: A person opens the pull request.
+  - description: Environment failure halts verify fast without wasting retries
+    vars:
+      case: verify-env-halt
+    assert:
+      - type: equals
+        value: env_unavailable
+  - description: Hard budget ceiling halts cleanly as budget_exceeded
+    vars:
+      case: budget-halt
+    assert:
+      - type: equals
+        value: budget_exceeded
+  - description: Scorer insufficient_evidence never passes and stays out of averages
+    vars:
+      case: scorer-insufficient
+    assert:
+      - type: equals
+        value: insufficient_non_pass
+  - description: Self-improvement write guard blocks protected config files
+    vars:
+      case: improve-write-guard
+    assert:
+      - type: equals
+        value: blocked
+  - description: Alert webhook creates redacted draft-only event
+    vars:
+      case: alert-webhook-draft
+    assert:
+      - type: equals
+        value: draft_redacted

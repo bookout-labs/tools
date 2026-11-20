@@ -1,0 +1,8 @@
+id: clear-bugfix
+title: Null guard in synthetic parser
+repo: Example/Engine
+base_sha: eacb62837f45115afaa63d4e3f98dddc85e6aee5
+check: exit 0
+issue_kind: slice
+expected_stop: verified
+request: Guard empty string inputs before splitting record lines.

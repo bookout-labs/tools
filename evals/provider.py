@@ -6,10 +6,16 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from foreman.delivery import run_delivery  # noqa: E402
+from foreman.accept import accept_event  # noqa: E402
+from foreman.delivery import compile_delivery, run_delivery  # noqa: E402
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted  # noqa: E402
 from foreman.dry_run import ScriptHandler  # noqa: E402
+from foreman.improve import WriteSurfaceError, check_write_surface  # noqa: E402
 from foreman.measure import grade, propose, selected  # noqa: E402
+from foreman.scoring import load_scorers, score_run  # noqa: E402
+from foreman.telemetry import TelemetryStore  # noqa: E402
+from tempfile import TemporaryDirectory  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
 
 
 def _stop(handler, issue_kind="slice") -> str:
@@ -91,6 +97,83 @@ def call_api(prompt, options, context):
         output = "yes" if selected(0) and selected(10) and not selected(1) else "no"
     elif case == "proposal":
         output = propose("redundant-tests")
+    elif case == "verify-env-halt":
+        handler = ScriptHandler(triage="implement")
+        res = compile_delivery(
+            FailoverDispatcher(handler),
+            run_check=lambda cmd: (1, "No PostgreSQL server answered on localhost:5432"),
+        ).invoke({
+            "repo": "DoctorCRE/doctorcre-engine",
+            "issue": 1,
+            "request": "Run check",
+            "check": "npm run check",
+            "issue_kind": "slice",
+            "verify_rounds": 0,
+            "review_rounds": 0,
+            "models_used": {},
+            "attempts": [],
+            "path": [],
+        })
+        output = res["stop"]
+    elif case == "budget-halt":
+        handler = ScriptHandler(triage="implement")
+        dispatcher = FailoverDispatcher(handler)
+        orig_run = dispatcher.run
+
+        def pricey(node, models, state, instruction, *, attempts=None):
+            res = orig_run(node, models, state, instruction, attempts=attempts)
+            dispatcher.last_meta = [{"node": node, "model": res["model"], "status": "ran", "total_cost_usd": 60.0}]
+            return res
+
+        dispatcher.run = pricey  # type: ignore[method-assign]
+        res = run_delivery(
+            dispatcher,
+            repo="DoctorCRE/doctorcre-engine",
+            request="Expensive task",
+            budget={"soft_usd": 15.0, "hard_usd": 50.0, "hard_tokens": 0},
+        )
+        output = res["stop"]
+    elif case == "scorer-insufficient":
+        with TemporaryDirectory() as td:
+            store = TelemetryStore(_Path(td) / "tel.sqlite3")
+            rid = store.record_run({"repo": "Example/Engine", "issue": 1, "stop": "verified"})
+            spec = load_scorers()["task-compliance"]
+            rows = score_run(
+                store,
+                rid,
+                [spec],
+                judge=lambda m, p, s: {"label": "insufficient_evidence", "reason": "missing logs"},
+            )
+            stats = store.compute_stats()["scorers"]["task-compliance"]
+            output = (
+                "insufficient_non_pass"
+                if (not rows[0]["passed"] and stats["avg_score"] is None and stats["insufficient_evidence"] == 1)
+                else "unexpected"
+            )
+    elif case == "improve-write-guard":
+        try:
+            check_write_surface(["src/foreman/models.toml"])
+            output = "allowed"
+        except WriteSurfaceError:
+            output = "blocked"
+    elif case == "alert-webhook-draft":
+        decision = accept_event({
+            "source": "alert_webhook",
+            "severity": "error",
+            "service": "api",
+            "title": "500 on /deals for owner@example.invalid",
+            "body": "token=ghp_0123456789abcdefghij0123456789",
+        })
+        output = (
+            "draft_redacted"
+            if (
+                decision["start"]
+                and decision["draft_only"]
+                and "owner@example.invalid" not in decision["request"]
+                and "ghp_0123456789abcdefghij0123456789" not in decision["request"]
+            )
+            else "leaked"
+        )
     else:
         return {"error": f"unknown case {case}"}
     return {"output": output}
