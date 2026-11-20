@@ -17,6 +17,7 @@ from foreman.delivery import GRAPH_NAME, diagram, run_delivery
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from foreman.github import GhClient, GitHub
+from foreman.improve import ObserverRunner, WriteSurfaceError, run_self_improvement
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.runner import WorktreeInspector, run_live_delivery
@@ -134,6 +135,7 @@ def main(
     *,
     worker_runner: CommandRunner | None = run_worker_command,
     judge_runner: JudgeRunner | None = None,
+    observer_runner: ObserverRunner | None = None,
     checkpoint: Path | None = None,
     telemetry_path: Path | None = None,
     github: GitHub | None = None,
@@ -168,8 +170,19 @@ def main(
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")
     accept.add_argument("path")
 
-    improve = commands.add_parser("improve", help="propose a change from a failing score")
-    improve.add_argument("failure")
+    improve = commands.add_parser("improve", help="propose a change from a failing score or telemetry run")
+    improve.add_argument("failure", nargs="?")
+    improve.add_argument("--run", action="store_true", help="run closed-loop observer on telemetry failures")
+    improve.add_argument("--db", help="SQLite telemetry database path")
+    improve.add_argument("--repo")
+    improve.add_argument("--mode", choices=("all", "scorer", "review", "triage"), default="all")
+    improve.add_argument("--days", type=int, default=7)
+    improve.add_argument("--min-failures", type=int, default=3)
+    improve.add_argument("--now", action="store_true", help="bypass 7-day cadence and failure threshold gates")
+    improve.add_argument("--dry-run", action="store_true", default=False, help="print proposed diffs without modifying files")
+    improve.add_argument("--apply", action="store_true", help="write allowed prompt edits to the working tree")
+    improve.add_argument("--open-pr", action="store_true", help="commit allowed edits and open a non-auto-merged PR")
+    improve.add_argument("--workdir", help="repository root directory for improvement edits")
 
     scorers_cmd = commands.add_parser("scorers", help="list configured LLM scorer rubrics")
     scorers_cmd.add_argument("--json", action="store_true")
@@ -352,6 +365,42 @@ def main(
         print(decision["request"])
         return 0
     if args.command == "improve":
+        if args.run:
+            db = Path(args.db) if args.db else (telemetry_path or default_telemetry_path())
+            store = TelemetryStore(db)
+            workdir = Path(args.workdir) if args.workdir else Path.cwd()
+            is_dry = True if args.dry_run or (not args.apply and not args.open_pr) else False
+            try:
+                outcome = run_self_improvement(
+                    store,
+                    workdir,
+                    repo=args.repo,
+                    mode=args.mode,
+                    days=args.days,
+                    min_failing_runs=args.min_failures,
+                    now=args.now,
+                    dry_run=is_dry,
+                    open_pr=args.open_pr,
+                    observer=observer_runner,
+                )
+            except (WriteSurfaceError, RuntimeError, OSError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            status = outcome["status"]
+            if status in {"skipped", "no_change"}:
+                print(f"{status}: {outcome.get('reason', '')}")
+                return 0
+            print(f"{status}: {outcome.get('title', '')}")
+            for diff_text in (outcome.get("diffs") or {}).values():
+                if diff_text:
+                    print(diff_text, end="")
+            if pr_body := outcome.get("pr_body"):
+                print(pr_body)
+            if pr_url := outcome.get("pr_url"):
+                print(pr_url)
+            return 0
+        if not args.failure:
+            improve.error("failure name or --run is required")
         try:
             print(propose(args.failure), end="")
         except MeasureError as exc:
