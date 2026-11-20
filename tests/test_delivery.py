@@ -61,7 +61,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertTrue(result["merge_armed"])
         self.assertEqual(result["head_sha"], HEAD_SHA)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.2-sol-high")
-        self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
+        self.assertEqual(result["models_used"]["review"], "gpt-6.2-sol-high")
         self.assertNotIn("verify", result["models_used"])
 
     def test_ready_spec_is_implemented(self):
@@ -118,7 +118,11 @@ class DeliveryTest(unittest.TestCase):
 
     def test_review_stops_when_no_other_family_remains(self):
         config = load_config()
-        config.nodes["review"] = replace(config.nodes["review"], models=("gpt-6.1-terra-high",))
+        config.nodes["review"] = replace(
+            config.nodes["review"],
+            models=("gpt-6.1-terra-high",),
+            other_family_from="implement",
+        )
         handler = ScriptHandler()
         result = walk(handler, config=config)
         self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "done"])
@@ -265,30 +269,66 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
 
-    def test_review_excludes_every_builder_family(self):
-        for review_models in (("claude-opus-5-5-high", "gpt-6.1-sol-high", "grok-4.7-high"),
-                              ("claude-opus-5-5-high", "gpt-6.1-sol-high")):
-            with self.subTest(review_models=review_models):
-                config = load_config()
-                config.nodes["review"] = replace(config.nodes["review"], models=review_models)
-                handler = ScriptHandler(reviews=["changes", "approve"], head_sha=HEAD_SHA)
+    def test_review_stays_on_sol_when_the_builder_changes_family(self):
+        handler = ScriptHandler(reviews=["changes", "approve"], head_sha=HEAD_SHA)
+        notes = []
 
-                def switch_builder(node, model, state, instruction):
-                    if node == "implement" and state.get("review") == "changes" and model.startswith("gpt-"):
-                        raise QuotaExhausted(model)
-                    return handler(node, model, state, instruction)
+        def switch_builder(node, model, state, instruction):
+            if node == "implement" and state.get("review") == "changes":
+                if model.startswith("gpt-"):
+                    raise QuotaExhausted(model)
+                notes.append(state.get("review_note"))
+            return handler(node, model, state, instruction)
 
-                result = walk(switch_builder, config=config)
-                reviewers = [call["model"] for call in handler.calls if call["node"] == "review"]
-                self.assertEqual(result["models_used"]["implement"], "claude-opus-5-5-high")
-                if "grok-4.7-high" in review_models:
-                    self.assertEqual(reviewers, ["claude-opus-5-5-high", "grok-4.7-high"])
-                    self.assertEqual(result["stop"], "verified")
-                else:
-                    self.assertEqual(reviewers, ["claude-opus-5-5-high"])
-                    self.assertEqual(result["stop"], "no_reviewer")
-                    self.assertNotIn("merge", result["path"])
-                self.assertEqual(result["implement_models"], ["gpt-6.2-sol-high", "claude-opus-5-5-high"])
+        result = walk(switch_builder)
+        reviewers = [call["model"] for call in handler.calls if call["node"] == "review"]
+        self.assertEqual(reviewers, ["gpt-6.2-sol-high", "gpt-6.2-sol-high"])
+        self.assertEqual(result["models_used"]["implement"], "claude-opus-5-5-high")
+        self.assertEqual(result["implement_models"], ["gpt-6.2-sol-high", "claude-opus-5-5-high"])
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(notes, [""])
+
+    def test_a_review_sentence_keeps_the_verdict_and_the_note(self):
+        handler = ScriptHandler(reviews=["changes", "approve"], head_sha=HEAD_SHA)
+        seen = []
+
+        def sentence(node, model, state, instruction):
+            if node == "review":
+                self.assertIn("The review value is approve or changes.", instruction)
+            if node == "implement" and state.get("review") == "changes":
+                seen.append(state.get("review_note"))
+            raw = handler(node, model, state, instruction)
+            if node == "review" and raw["review"] == "changes":
+                raw["review"] = "changes. Decision 190 is dated 2026-11-25."
+            return raw
+
+        result = walk(sentence)
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(seen, ["Decision 190 is dated 2026-11-25."])
+        self.assertEqual(result["review"], "approve")
+
+    def test_a_review_that_is_not_a_verdict_stops(self):
+        samples = (
+            "approved",
+            "approve this if the date is fixed",
+            "changes are required",
+            "change.",
+            "The review is approve.",
+        )
+        for sample in samples:
+            with self.subTest(sample=sample):
+                handler = ScriptHandler(head_sha=HEAD_SHA)
+
+                def bad(node, model, state, instruction, sample=sample):
+                    raw = handler(node, model, state, instruction)
+                    if node == "review":
+                        raw["review"] = sample
+                    return raw
+
+                result = walk(bad)
+                self.assertEqual(result["stop"], "invalid_output")
+                self.assertEqual(result["halt_detail"], "review must be one of approve, changes")
+                self.assertNotIn("merge", result["path"])
 
     def test_review_cap_stops_without_arming(self):
         result = walk(ScriptHandler(reviews=[], head_sha=HEAD_SHA))
@@ -345,7 +385,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "invalid_output")
         self.assertIn("risk level", result["halt_detail"])
 
-    def test_review_quota_never_falls_back_to_the_builder_family(self):
+    def test_review_quota_tries_each_configured_model(self):
         handler = ScriptHandler(head_sha=HEAD_SHA)
         offered = []
 
@@ -355,10 +395,11 @@ class DeliveryTest(unittest.TestCase):
                 raise QuotaExhausted(model)
             return handler(node, model, state, instruction)
 
-        config = load_config()
-        config.nodes["review"] = replace(config.nodes["review"], other_family_from=None)
-        result = walk(exhaust_review, config=config)
-        self.assertEqual(offered, ["claude-opus-5-5-high", "grok-4.7-high"])
+        result = walk(exhaust_review)
+        self.assertEqual(
+            offered,
+            ["gpt-6.2-sol-high", "gpt-6.1-terra-high", "grok-4.7-high"],
+        )
         self.assertEqual(result["stop"], "no_reviewer")
         self.assertIn("quota exhausted", result["halt_detail"])
         self.assertNotIn("merge", result["path"])
@@ -373,11 +414,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(exhaust_claude)
         self.assertEqual(result["models_used"]["triage"], "grok-4.7-high")
-        self.assertEqual(result["models_used"]["review"], "grok-4.7-high")
-        self.assertNotEqual(
-            result["models_used"]["implement"].split("-", 1)[0],
-            result["models_used"]["review"].split("-", 1)[0],
-        )
+        self.assertEqual(result["models_used"]["review"], "gpt-6.2-sol-high")
 
     def test_every_model_exhausted_halts_so_watcher_sees_it(self):
         def exhaust(node, model, state, instruction):

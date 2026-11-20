@@ -26,8 +26,7 @@ models = [
 
 [nodes.review]
 role = "verifier"
-other_family_from = "implement"
-models = ["claude-opus-5-5-high", "gpt-6.2-sol-high", "grok-4.7-high"]
+models = ["gpt-6.2-sol-high", "gpt-6.1-terra-high", "grok-4.7-high"]
 
 [nodes.verify]
 role = "check"

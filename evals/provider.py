@@ -37,10 +37,6 @@ def _with_quota_gap() -> str:
         request="Add a field",
         check="npm run check",
     )
-    implement = result["models_used"]["implement"]
-    review = result["models_used"]["review"]
-    if implement.split("-", 1)[0] == review.split("-", 1)[0]:
-        return "same-family"
     return result["stop"]
 
 

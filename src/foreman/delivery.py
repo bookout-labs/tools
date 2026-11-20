@@ -71,6 +71,7 @@ class DeliveryState(TypedDict, total=False):
     human_question: str
     human_answers: list[str]
     review: str
+    review_note: str
     risk: dict[str, str]
     verify: str
     review_rounds: int
@@ -122,6 +123,24 @@ def choice(value: object, options: set[str], field: str) -> str:
     if not isinstance(value, str) or value not in options:
         raise InvalidOutput(f"{field} must be one of {', '.join(sorted(options))}")
     return value
+
+
+def review_verdict(value: object) -> tuple[str, str]:
+    """A review is approve or changes, optionally followed by punctuation and a note.
+
+    A sentence that merely contains one of those words is not a verdict.
+    """
+    detail = "review must be one of approve, changes"
+    if not isinstance(value, str):
+        raise InvalidOutput(detail)
+    match = re.fullmatch(
+        r"(approve|changes)(?:[.,:;]\s*([\s\S]*))?$",
+        value.strip(),
+        re.IGNORECASE,
+    )
+    if not match:
+        raise InvalidOutput(detail)
+    return match.group(1).lower(), (match.group(2) or "").strip()
 
 
 def clean_risk(raw: object) -> dict[str, str]:
@@ -209,8 +228,9 @@ def read_output(name: str, raw: dict, state: DeliveryState) -> dict:
         if verdict == "fail":
             update["review_rounds"] = state.get("review_rounds", 0) + 1
     elif name == "review":
-        verdict = choice(raw.get("review"), REVIEW_OUTCOMES, "review")
+        verdict, note = review_verdict(raw.get("review"))
         update["review"] = verdict
+        update["review_note"] = note
         update["risk"] = clean_risk(raw.get("risk"))
         if verdict == "changes":
             update["review_rounds"] = state.get("review_rounds", 0) + 1
