@@ -39,6 +39,19 @@ def worker_reply(args, reply, model=None):
     return subprocess.CompletedProcess(args, 0, json.dumps({field: body, "modelUsage": {model: {}}}), "")
 
 
+class FakeGitHub:
+    def __init__(self, labels=None):
+        self.labels = labels if labels is not None else ["slice"]
+        self.created = []
+
+    def load_issue(self, repo, number):
+        return {"title": "Issue title", "body": "Issue body", "labels": self.labels}
+
+    def create_issue(self, repo, title, body, labels):
+        self.created.append((title, body, labels))
+        return 100 + len(self.created)
+
+
 class CliWorkerTest(unittest.TestCase):
     def test_all_three_commands_pin_the_configured_slug_and_parse_the_final_result(self):
         models = {
@@ -96,6 +109,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.cwd = Path(directory)
         self.checkpoint = self.cwd / "runs.sqlite3"
         self.calls = []
+        self.github = FakeGitHub()
 
     def walk(self, replies, *, check="exit 0", run_gh=None):
         outputs = iter(replies)
@@ -108,8 +122,32 @@ class LiveRunnerTest(unittest.TestCase):
         return run_live_delivery(
             repo="Example/Engine", issue=8, check=check, cwd=self.cwd,
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
-            run_gh=run_gh,
+            run_gh=run_gh, github=self.github,
         )
+
+    def test_load_slice_issue(self):
+        result = self.walk([{"triage": "question"}, {"research": "answer"}])
+        self.assertEqual(result["request"], "Issue title\n\nIssue body")
+        self.assertEqual(result["issue_kind"], "slice")
+
+    def test_load_parent_and_file_slices_only_once(self):
+        self.github = FakeGitHub(["factory"])
+        second = {**SLICE, "title": "Finish items", "depends_on": [SLICE["title"]]}
+        result = self.walk([{"triage": "spec"}, {
+            "spec": "Plan", "spec_gate": "ready", "slices": [SLICE, second],
+        }])
+        self.assertEqual(result["issue_kind"], "parent")
+        self.assertEqual(result["request"], "Issue title\n\nIssue body")
+        self.assertEqual(result["child_issue_numbers"], [101, 102])
+        self.assertEqual([x[0] for x in self.github.created], [SLICE["title"], second["title"]])
+        self.assertEqual(self.github.created[0][2], ["slice", "factory"])
+        self.assertEqual(self.github.created[1][2], ["slice"])
+        for text in (SLICE["acceptance"], SLICE["screen"], "unique_item_id"):
+            self.assertIn(text, self.github.created[0][1])
+        self.assertIn(SLICE["title"], self.github.created[1][1])
+        resumed = self.walk([])
+        self.assertEqual(resumed["child_issue_numbers"], [101, 102])
+        self.assertEqual(len(self.github.created), 2)
 
     def test_injected_workers_reach_merge_after_a_real_check_in_the_repo(self):
         (self.cwd / "expected").touch()
@@ -187,7 +225,7 @@ class LiveRunnerTest(unittest.TestCase):
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "touch ran"],
-                worker_runner=None, checkpoint=self.checkpoint,
+                worker_runner=None, checkpoint=self.checkpoint, github=self.github,
             )
         self.assertEqual(code, 0)
         self.assertIn("done no_dispatcher", stdout.getvalue())
@@ -218,7 +256,7 @@ import json
 from pathlib import Path
 import sys
 from foreman.cli import main
-from test_runner import APPROVE, HEAD, worker_reply
+from test_runner import APPROVE, HEAD, FakeGitHub, worker_reply
 
 def run(args, cwd):
     prompt = args[-1]
@@ -239,7 +277,7 @@ def run(args, cwd):
         return worker_reply(args, {"implementation": "built", "head_sha": HEAD})
     return worker_reply(args, APPROVE)
 
-sys.exit(main(sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1])))
+sys.exit(main(sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]), github=FakeGitHub()))
 """
         def invoke(*flags):
             bootstrap = f"import sys; sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n"

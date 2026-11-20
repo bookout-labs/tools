@@ -54,6 +54,7 @@ class DeliveryState(TypedDict, total=False):
     spec: str
     spec_gate: str
     slices: list[Slice]
+    child_issue_numbers: list[int]
     slice: Slice
     issue_kind: str
     research: str

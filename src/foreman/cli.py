@@ -13,6 +13,7 @@ from foreman.accept import AcceptError, accept_event
 from foreman.delivery import GRAPH_NAME, diagram, run_delivery
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
+from foreman.github import GitHub
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.runner import run_live_delivery
@@ -58,6 +59,7 @@ def main(
     *,
     worker_runner: CommandRunner | None = run_worker_command,
     checkpoint: Path | None = None,
+    github: GitHub | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -153,7 +155,8 @@ def main(
                 cwd=cwd,
                 checkpoint=checkpoint,
                 dispatcher=dispatcher,
-                request=args.request or "",
+                request=args.request,
+                github=github,
                 answer=args.answer,
             )
         except (OSError, QuotaExhausted, ValueError) as exc:
