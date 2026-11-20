@@ -6,7 +6,7 @@ import re
 import subprocess
 from typing import Callable
 
-from foreman.config import ROUTES, family
+from foreman.config import EFFORTS, ROUTES, family
 from foreman.dispatch import InvalidOutput, QuotaExhausted
 
 CommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
@@ -33,6 +33,15 @@ PROOF_PROMPT = (
     "For required properties, report formal_proof with ran and constraints, a list of "
     "constraint and rejected results. Report evidence you actually collected."
 )
+def model_and_effort(model: str, requested: object = None) -> tuple[str, str | None]:
+    slug, sep, effort = model.rpartition("-")
+    if sep and slug and effort in EFFORTS:
+        return slug, effort
+    if isinstance(requested, str) and requested in EFFORTS:
+        return model, requested
+    return model, None
+
+
 def _usage_matches(model: str, usage: object) -> bool:
     if not isinstance(usage, dict) or not usage:
         return False
@@ -90,19 +99,21 @@ class CliWorker:
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
         provider = family(model)
+        slug, effort = model_and_effort(model, state.get("effort"))
         edit = node == "implement"
-        effort = state.get("effort") if isinstance(state.get("effort"), str) else None
         if provider == "gpt":
             sandbox = "workspace-write" if edit else "read-only"
-            args = ["codex", "exec", "-m", model, "--color", "never", "-s", sandbox, prompt]
+            effort_args = ["-c", f"model_reasoning_effort={effort}"] if effort else []
+            args = ["codex", "exec", "-m", slug, *effort_args, "--color", "never", "-s", sandbox, prompt]
         else:
             mode = "acceptEdits" if edit else "plan"
             options = ["--output-format", "json", "--permission-mode", mode]
-            effort_args = ["--effort", effort] if effort else []
             if provider == "claude":
-                args = ["claude", "--model", model, *effort_args, *options, "-p", prompt]
+                effort_args = ["--effort", effort] if effort else []
+                args = ["claude", "--model", slug, *effort_args, *options, "-p", prompt]
             else:
-                args = ["grok", "-m", model, *effort_args, *options, "--no-subagents", "-p", prompt]
+                effort_args = ["--reasoning-effort", effort] if effort else []
+                args = ["grok", "-m", slug, *effort_args, *options, "--no-subagents", "-p", prompt]
 
         try:
             process = self.run(args, self.cwd)
@@ -115,7 +126,7 @@ class CliWorker:
 
         if provider == "gpt":
             reported = re.findall(r"^model:[ \t]*(\S+)[ \t]*$", process.stderr, re.MULTILINE)
-            if reported != [model] or re.search(r"^model rerouted:", process.stderr, re.MULTILINE):
+            if reported != [slug] or re.search(r"^model rerouted:", process.stderr, re.MULTILINE):
                 raise QuotaExhausted(model)
             body = process.stdout
         else:
@@ -125,7 +136,7 @@ class CliWorker:
                     raise QuotaExhausted(model)
                 raise InvalidOutput(f"{provider} worker reported an error")
             usage = envelope.get("modelUsage")
-            if not _usage_matches(model, usage):
+            if not _usage_matches(slug, usage):
                 raise QuotaExhausted(model)
             body = envelope.get("result" if provider == "claude" else "text")
 

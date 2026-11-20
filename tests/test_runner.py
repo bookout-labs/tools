@@ -85,20 +85,38 @@ class FakeGitHub:
 class CliWorkerTest(unittest.TestCase):
     def test_all_three_commands_pin_the_configured_slug_and_parse_the_final_result(self):
         models = {
-            "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol-high"],
-            "claude-opus-5-5-high": ["claude", "--model", "claude-opus-5-5-high"],
-            "grok-4.7-high": ["grok", "-m", "grok-4.7-high"],
+            "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"],
+            "claude-opus-5-5-high": ["claude", "--model", "claude-opus-5-5", "--effort", "high"],
+            "grok-4.7-high": ["grok", "-m", "grok-4.7", "--reasoning-effort", "high"],
         }
         for model, prefix in models.items():
             with self.subTest(model=model):
                 def run(args, cwd):
                     self.assertEqual(args[:len(prefix)], prefix)
+                    self.assertNotIn("-high", " ".join(args[:-1]))
                     self.assertEqual(cwd, Path("engine"))
                     self.assertIn('{"issue": 12}', args[-1])
                     return worker_reply(args, {"triage": "implement"})
 
                 result = CliWorker(Path("engine"), run)("triage", model, {"issue": 12}, "Read the issue.")
                 self.assertEqual(result, {"triage": "implement"})
+
+    def test_alias_effort_comes_from_state_and_stays_off_the_model(self):
+        seen = []
+
+        def run(args, cwd):
+            seen.append(args)
+            return worker_reply(args, {"triage": "implement"})
+
+        CliWorker(Path("."), run)("triage", "opus", {"effort": "high"}, "")
+        CliWorker(Path("."), run)("triage", "gpt-6.2-sol-high", {"effort": "high"}, "")
+        self.assertEqual(seen[0][:5], ["claude", "--model", "opus", "--effort", "high"])
+        self.assertEqual(
+            seen[1][:6],
+            ["codex", "exec", "-m", "gpt-6.2-sol", "-c", "model_reasoning_effort=high"],
+        )
+        for args in seen:
+            self.assertNotIn("-high", " ".join(args[:-1]))
 
     def test_prose_and_extra_keys_are_invalid(self):
         replies = ('Here is the result: {"triage": "implement"}', {"triage": "implement", "next": "merge"})
