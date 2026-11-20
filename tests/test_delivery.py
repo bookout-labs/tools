@@ -172,6 +172,7 @@ class DeliveryTest(unittest.TestCase):
         def handler(node, model, state, instruction):
             if node == "implement":
                 self.assertIn("one document", instruction)
+                self.assertIn("The runner commits them on that branch.", instruction)
                 return {
                     "implementation": {
                         "summary": "Health reports the release.",

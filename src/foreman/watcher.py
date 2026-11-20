@@ -147,6 +147,13 @@ def _invalid_output_proposal(node: str, detail: str, evidence: str) -> Proposal:
             "Review output missed required verdict or merge risk fields.",
             evidence,
         )
+    if "could not commit" in lower or "could not create branch" in lower or "could not stage" in lower:
+        return _make_graph_proposal(
+            "Commit the implementation from the runner",
+            "src/foreman/runner.py",
+            "The implementation was still uncommitted when the runner tried to record it.",
+            evidence,
+        )
     if "triage must be" in lower:
         return _make_graph_proposal(
             "Fix triage output contract",
