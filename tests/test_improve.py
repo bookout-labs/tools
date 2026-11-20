@@ -397,6 +397,42 @@ class ImproveGuardAndLoopTest(unittest.TestCase):
             bundle = collect_improvement_bundle(store, repo="Example/Engine", days=3650, gh_runner=gh)
             self.assertIn("followup_commits:1", bundle["review_feedback"][0]["signals"])
 
+    def test_bundle_uses_the_later_head_when_shared_pr_runs_finish_in_the_same_second(self):
+        pr = "https://github.com/Example/Engine/pull/41"
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            for head in ("h1", "h2"):
+                store.record_run({"repo": "Example/Engine", "issue": 7, "stop": "verified",
+                                  "pull_request": pr, "head_sha": head}, finished_at="2026-11-20T10:00:00Z")
+            prs = [{"number": 41, "url": pr, "state": "CLOSED", "closedAt": "2026-11-20T10:00:00Z",
+                    "mergedAt": None, "commits": [
+                        {"oid": oid, "authors": [{"login": "owner"}]} for oid in ("h1", "h2", "h3")
+                    ]}]
+
+            def gh(args):
+                return subprocess.CompletedProcess(args, 0, json.dumps(prs if args[1] == "pr" else []), "")
+
+            bundle = collect_improvement_bundle(store, repo="Example/Engine", days=3650, gh_runner=gh)
+            self.assertIn("followup_commits:1", bundle["review_feedback"][0]["signals"])
+
+    def test_apply_sees_untracked_files_hidden_by_status_config(self):
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir()
+            git_repo(repo_root)
+            stages = repo_root / "src/foreman/stages"
+            stages.mkdir(parents=True)
+            (stages / "implement.md").write_text("Old.\n", encoding="utf-8")
+            _git(repo_root, "add", "-A")
+            _git(repo_root, "commit", "-m", "stages")
+            _git(repo_root, "config", "status.showUntrackedFiles", "no")
+            (repo_root / "scratch.txt").write_text("hidden\n", encoding="utf-8")
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            with self.assertRaises(WriteSurfaceError):
+                self._improve(store, repo_root, _propose("src/foreman/stages/implement.md", "New.\n"),
+                              dry_run=False, open_pr=False)
+            self.assertEqual((stages / "implement.md").read_text(encoding="utf-8"), "Old.\n")
+
 
 if __name__ == "__main__":
     unittest.main()

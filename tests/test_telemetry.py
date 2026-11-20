@@ -301,6 +301,51 @@ class TelemetryStoreAndSyncTest(unittest.TestCase):
             ]})
             self.assertEqual([r["gh_human_commits"] for r in store.list_runs()], [1, 1])
 
+    def test_same_second_runs_on_a_shared_pr_use_the_later_head(self):
+        pr = "https://github.com/Example/Engine/pull/8"
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            for head in ("a" * 40, "b" * 40):
+                store.record_run({"repo": "Example/Engine", "issue": 8, "stop": "verified",
+                                  "head_sha": head, "pull_request": pr}, finished_at="2026-11-20T10:00:00Z")
+            self.assertEqual(store.list_runs(repo="Example/Engine")[0]["head_sha"], "b" * 40)
+            store.enrich_github_outcomes(lambda *a: {"state": "MERGED", "commits": [
+                {"oid": sha * 40, "authors": [{"login": "owner"}]} for sha in "abc"
+            ]}, repo="Example/Engine")
+            self.assertEqual([r["gh_human_commits"] for r in store.list_runs()], [1, 1])
+
+    def test_export_decodes_and_scrubs_every_json_column(self):
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            rid = store.record_run({"repo": "Example/Engine", "issue": 3, "stop": "verified"})
+            # An escaped @ hides the address from a raw-text scrub.
+            with store._connect() as conn:
+                conn.execute(
+                    "UPDATE runs SET models_json = ? WHERE run_id = ?",
+                    ('{"implement": "owner\\u0040example.invalid"}', rid),
+                )
+            run_line = json.loads(store.export_jsonl().splitlines()[0])
+        self.assertNotIn("example.invalid", json.dumps(json.loads(run_line["models_json"])))
+
+    def test_import_drops_stage_calls_a_newer_snapshot_no_longer_lists(self):
+        def snapshot(finished_at, call_ids):
+            run = {"type": "run", "run_id": "run-9", "host": "h", "repo": "Example/Engine", "issue": 9,
+                   "started_at": finished_at, "finished_at": finished_at, "stop": "verified"}
+            calls = [{"type": "stage_call", "call_id": cid, "run_id": "run-9", "host": "h", "seq": i,
+                      "node": "implement", "model": "m", "provider": "gpt", "status": "ok", "duration_ms": 1,
+                      "session_id": "", "cost_usd": 1.0, "input_tokens": 0, "cached_input_tokens": 0,
+                      "cache_write_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+                     for i, cid in enumerate(call_ids)]
+            return "\n".join(json.dumps(x) for x in (run, *calls))
+
+        with TemporaryDirectory() as tmpdir:
+            store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")
+            store.import_jsonl(snapshot("2026-11-20T10:00:00Z", ["c1", "c2"]))
+            store.import_jsonl(snapshot("2026-11-20T11:00:00Z", ["c1"]))
+            self.assertEqual([c["call_id"] for c in store.list_stage_calls("run-9")], ["c1"])
+            store.import_jsonl(snapshot("2026-11-20T09:00:00Z", ["c1", "c3"]))
+            self.assertEqual([c["call_id"] for c in store.list_stage_calls("run-9")], ["c1"])
+
     def test_insufficient_evidence_never_stored_as_passed(self):
         with TemporaryDirectory() as tmpdir:
             store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")

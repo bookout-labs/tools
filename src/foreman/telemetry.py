@@ -258,14 +258,18 @@ def _sanitize_state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
 
 def _scrub_export_row(payload: dict[str, Any]) -> dict[str, Any]:
     """Re-redact every field on the way out so rows stored before a redaction fix never leak."""
-    payload = redact_value(payload, redact_pii=True)
-    if isinstance(payload.get("state_json"), str):
-        try:
-            state = json.loads(payload["state_json"])
-        except ValueError:
-            state = {}
-        payload["state_json"] = json.dumps(redact_value(state, redact_pii=True), sort_keys=True)
-    return payload
+    out: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key.endswith("_json") and isinstance(value, str):
+            # Decode first: JSON escapes such as \u0040 hide PII from a raw-text scrub.
+            try:
+                decoded = json.loads(value)
+            except ValueError:
+                decoded = {}
+            out[key] = json.dumps(redact_value(decoded, redact_pii=True), sort_keys=True)
+        else:
+            out[key] = redact_value(value, redact_pii=True)
+    return out
 
 
 def _parse_iso(ts: str) -> datetime | None:
@@ -661,7 +665,7 @@ class TelemetryStore:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM runs {where} ORDER BY finished_at DESC LIMIT ?",
+                f"SELECT * FROM runs {where} ORDER BY finished_at DESC, rowid DESC LIMIT ?",
                 (*params, limit),
             ).fetchall()
             return [self._row_to_run(r) for r in rows]
@@ -855,6 +859,8 @@ class TelemetryStore:
                 ).fetchone()
                 if existing is None or str(item.get("finished_at") or "") >= str(existing[0] or ""):
                     fresh_runs.add(str(item.get("run_id")))
+                    # A fresher snapshot owns the run's calls; calls it no longer lists are stale.
+                    conn.execute("DELETE FROM stage_calls WHERE run_id = ?", (item.get("run_id"),))
                 conn.execute(
                     IMPORT_RUN_SQL,
                     [item.get("run_id")]

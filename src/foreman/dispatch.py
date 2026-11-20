@@ -85,6 +85,8 @@ class FailoverDispatcher:
                 meta = getattr(self.handler, "last_meta", None)
                 if isinstance(meta, dict):
                     self.last_meta.append({**meta, "node": node, "model": model, "status": "stopped"})
+                if budget_check is not None and (detail := budget_check(self.last_meta)):
+                    raise BudgetExceeded(detail) from exc
                 raise
             meta = getattr(self.handler, "last_meta", None)
             if isinstance(meta, dict):

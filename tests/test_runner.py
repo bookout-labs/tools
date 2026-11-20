@@ -1497,6 +1497,38 @@ class Phase1WorkerAndPreflightTest(unittest.TestCase):
                 dispatcher.run("triage", [model, model], {}, "Triage", budget_check=over)
             self.assertEqual(len(dispatcher.last_meta), 1)
 
+    def test_codex_failed_or_malformed_exit_still_counts_rollout_spend(self):
+        model, slug = "gpt-6.2-sol-high", "gpt-6.2-sol"
+        spent = {"input_tokens": 900, "output_tokens": 100, "total_tokens": 1000}
+        with TemporaryDirectory() as tempdir, patch.dict("os.environ", {"CODEX_HOME": tempdir}):
+            sessions = Path(tempdir) / "sessions"
+            sessions.mkdir()
+            (sessions / "rollout-sid-spend.jsonl").write_text("\n".join(json.dumps(ev) for ev in (
+                {"type": "turn_context", "payload": {"model": slug}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": spent}}},
+            )))
+
+            def crashed(args, cwd):
+                return subprocess.CompletedProcess(args, 2, "", f"model: {slug}\nsession id: sid-spend\npanic\n")
+
+            def malformed(args, cwd):
+                Path(args[args.index("-o") + 1]).write_text("not json")
+                stdout = json.dumps({"type": "thread.started", "thread_id": "sid-spend"})
+                return subprocess.CompletedProcess(args, 0, stdout, f"model: {slug}\n")
+
+            over = lambda metas: "over budget" if sum(
+                u.get("total_tokens", 0) for m in metas for u in m["model_usage"].values()
+            ) > 500 else None
+            for run in (crashed, malformed):
+                with self.subTest(run=run.__name__):
+                    worker = CliWorker(Path("."), run)
+                    with self.assertRaises(InvalidOutput):
+                        worker("triage", model, {}, "Triage")
+                    self.assertEqual(worker.last_meta["model_usage"], {slug: spent})
+                    dispatcher = FailoverDispatcher(CliWorker(Path("."), run))
+                    with self.assertRaisesRegex(BudgetExceeded, "over budget"):
+                        dispatcher.run("triage", [model], {}, "Triage", budget_check=over)
+
     def test_cli_preflight_halts_with_env_unavailable_before_implement(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

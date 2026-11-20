@@ -198,13 +198,11 @@ def select_judge_model(
     if review_family and ("review" in scorer.stages or scorer.name == "review-quality"):
         avoid.add(review_family)
 
-    candidates = (scorer.model, *fallback_order)
-    for exclusions in (avoid, impl_families):
-        for cand in candidates:
-            cand_family = _safe_family(cand)
-            if cand_family and cand_family not in exclusions:
-                return cand
-    raise ScorerError("no independent judge family available outside builder families")
+    for cand in (scorer.model, *fallback_order):
+        cand_family = _safe_family(cand)
+        if cand_family and cand_family not in avoid:
+            return cand
+    raise ScorerError(f"no independent judge family available for {scorer.name} outside {', '.join(sorted(avoid))}")
 
 
 def default_judge_runner(cwd: Path | None = None, run: CommandRunner = run_worker_command) -> JudgeRunner:

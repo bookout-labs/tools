@@ -512,9 +512,9 @@ class CliWorker:
                 banner = CODEX_SESSION_BANNER.search(f"{process.stderr}\n{process.stdout}")
                 session_id = codex_meta["session_id"] or (banner.group(1) if banner else "") or resume_id or ""
                 usage = codex_meta["model_usage"]
-                if not usage and (process.returncode != 0 or codex_meta["failed_error"]):
-                    if rollout_usage := _codex_rollout_usage(session_id):
-                        usage = {slug: rollout_usage}
+                # Any exit can leave spend only in the rollout, including a zero exit with malformed output.
+                if not usage and (rollout_usage := _codex_rollout_usage(session_id)):
+                    usage = {slug: rollout_usage}
                 if resume_id and usage:
                     usage = {slug: _codex_resume_usage(usage[slug], slug, session_id, state.get("usage_records") or [])}
                 if process.returncode == 0 or usage:
@@ -531,14 +531,14 @@ class CliWorker:
 
             if process.returncode != 0:
                 combined = f"{process.stderr}\n{process.stdout}"
+                if provider != "gpt":
+                    try:
+                        envelope = json.loads(process.stdout)
+                    except ValueError:
+                        envelope = None
+                    if isinstance(envelope, dict):
+                        self.last_meta = _envelope_meta(envelope, provider, model, slug, elapsed_ms)
                 if QUOTA.search(combined):
-                    if provider != "gpt":
-                        try:
-                            envelope = json.loads(process.stdout)
-                        except ValueError:
-                            envelope = None
-                        if isinstance(envelope, dict):
-                            self.last_meta = _envelope_meta(envelope, provider, model, slug, elapsed_ms)
                     raise QuotaExhausted(model, _detail(combined))
                 detail = _detail(combined)
                 raise InvalidOutput(
@@ -568,8 +568,8 @@ class CliWorker:
             else:
                 envelope = json_object(process.stdout)
                 if envelope.get("is_error") or envelope.get("type") == "error":
+                    self.last_meta = _envelope_meta(envelope, provider, model, slug, elapsed_ms)
                     if QUOTA.search(process.stdout):
-                        self.last_meta = _envelope_meta(envelope, provider, model, slug, elapsed_ms)
                         raise QuotaExhausted(model, _detail(process.stdout))
                     detail = _detail(
                         envelope.get("result") or envelope.get("error") or envelope.get("message") or process.stdout

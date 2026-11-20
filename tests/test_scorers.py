@@ -162,6 +162,13 @@ class ScorersTest(unittest.TestCase):
         with self.assertRaisesRegex(ScorerError, "no independent judge family"):
             select_judge_model(tc, {"implement": "gpt-6.2-sol-high"}, implement_models=builders)
 
+    def test_review_judge_never_reuses_the_reviewer_family(self):
+        rq = load_scorers()["review-quality"]
+        builders = ["claude-opus-5-5-high", "gpt-6.2-sol-high"]
+        with self.assertRaisesRegex(ScorerError, "no independent judge family"):
+            select_judge_model(rq, {"implement": "gpt-6.2-sol-high", "review": "grok-4.7-high"},
+                               implement_models=builders)
+
     def test_run_without_observed_stages_skips_stage_scoped_scorers(self):
         with TemporaryDirectory() as tmpdir:
             store = TelemetryStore(Path(tmpdir) / "tel.sqlite3")

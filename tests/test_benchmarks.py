@@ -244,6 +244,67 @@ class BenchmarksTest(unittest.TestCase):
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
 
+    def test_isolated_env_keeps_only_allowlisted_names(self):
+        from foreman.benchmarks import isolated_env
+
+        leaked = {"GITHUB_APP_TOKEN": "t", "GH_TEST_TOKEN": "t", "GIT_SSH_VARIANT": "ssh", "SOME_NEW_SECRET": "s"}
+        with mock.patch.dict("os.environ", {**leaked, "HOME": "/home/example", "LC_ALL": "C"}):
+            env = isolated_env()
+        self.assertFalse(set(leaked) & set(env))
+        self.assertEqual((env["HOME"], env["LC_ALL"]), ("/home/example", "C"))
+
+    def test_trial_inspection_ignores_caller_git_env_and_status_config(self):
+        from foreman.benchmarks import _inspect_trial
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            trial, other = root / "trial", root / "other"
+            trial.mkdir()
+            other.mkdir()
+            head = git_repo(trial)
+            git_repo(other)
+            subprocess.run(["git", "config", "status.showUntrackedFiles", "no"], cwd=trial, check=True)
+            (trial / "hidden.txt").write_text("x\n", encoding="utf-8")
+            with mock.patch.dict("os.environ", {"GIT_DIR": str(other / ".git")}):
+                self.assertEqual(_inspect_trial(trial), (head, False))
+
+    def test_default_trial_judge_runs_isolated_in_the_trial_repo(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            repo.mkdir()
+            head = git_repo(repo)
+            suite_dir = root / "suite"
+            (suite_dir / "tasks").mkdir(parents=True)
+            (suite_dir / "suite.yaml").write_text("name: s\nconfigs:\n  - name: cfg\n", encoding="utf-8")
+            (suite_dir / "tasks/t1.yaml").write_text(
+                f"id: t1\nbase_sha: {head}\nrequest: Test change\ncheck: exit 0\n", encoding="utf-8"
+            )
+            suite = load_suite(suite_dir)
+            judge_calls = []
+            real_run = subprocess.run
+
+            def spy_run(args, *pargs, **kwargs):
+                if isinstance(args, list) and args and args[0] in ("claude", "codex", "grok"):
+                    if "independent LLM judge" not in args[-1]:
+                        return worker_reply(args, {"triage": "ask", "question": "Which file?"})
+                    judge_calls.append((kwargs.get("cwd"), kwargs.get("env")))
+                    reply = {"label": "insufficient_evidence", "reason": "n/a"}
+                    if args[0] == "codex":
+                        Path(args[args.index("-o") + 1]).write_text(json.dumps(reply), encoding="utf-8")
+                        return subprocess.CompletedProcess(args, 0, "", "")
+                    return subprocess.CompletedProcess(args, 0, json.dumps({"structured_output": reply}), "")
+                return real_run(args, *pargs, **kwargs)
+
+            with mock.patch.dict("os.environ", {"GH_TOKEN": "gho_" + "x" * 30}), \
+                    mock.patch.object(subprocess, "run", spy_run):
+                run_benchmark(suite, repo_path=repo, dry_run=False, score_trials=True)
+            self.assertTrue(judge_calls)
+            for cwd, env in judge_calls:
+                self.assertTrue(Path(cwd).name.startswith("trial-"), cwd)
+                self.assertIsNotNone(env)
+                self.assertNotIn("GH_TOKEN", env)
+
     def test_cli_bench_runs_workers_with_isolated_env_by_default(self):
         from foreman import benchmarks
 

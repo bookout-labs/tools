@@ -20,8 +20,7 @@ from foreman.delivery import clean_slices, compile_delivery, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import ScriptHandler
 from foreman.redaction import SecretRedactor
-from foreman.runner import _inspect_worktree
-from foreman.scoring import JudgeRunner, load_scorers, score_run
+from foreman.scoring import JudgeRunner, default_judge_runner, load_scorers, score_run
 from foreman.telemetry import TelemetryStore, state_usage_summary
 from foreman.worker import CliWorker, CommandRunner
 
@@ -122,20 +121,19 @@ def load_suite(path: Path) -> dict[str, Any]:
     }
 
 
-CREDENTIAL_ENV = frozenset({
-    "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GH_HOST", "GH_CONFIG_DIR", "GITHUB_PAT",
-    "GIT_ASKPASS", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_CREDENTIAL_HELPER",
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+# Allowlist, not denylist: any new credential or git override name stays out by default.
+TRIAL_ENV = frozenset({
+    "HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "LANG", "TERM", "TZ", "NO_COLOR",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+    # Model CLIs still need their own sign-in to run a trial.
+    "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
 })
-CREDENTIAL_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+TRIAL_ENV_PREFIXES = ("LC_",)
 
 
 def isolated_env() -> dict[str, str]:
     """Environment for trial commands: no credentials, no repo overrides, no prompts, no user or system git config."""
-    env = {
-        k: v for k, v in os.environ.items()
-        if k not in CREDENTIAL_ENV and not k.startswith(CREDENTIAL_ENV_PREFIXES)
-    }
+    env = {k: v for k, v in os.environ.items() if k in TRIAL_ENV or k.startswith(TRIAL_ENV_PREFIXES)}
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -202,9 +200,19 @@ def _config_for_trial(cfg: dict[str, Any]) -> Config:
     return replace(base, nodes=nodes)
 
 
+def _trial_status(worktree: Path) -> subprocess.CompletedProcess[str]:
+    # Explicit flags so a worker's repo-local config cannot hide untracked or submodule changes.
+    return _git(worktree, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
+
+
+def _inspect_trial(worktree: Path) -> tuple[str, bool]:
+    head, status = _git(worktree, "rev-parse", "HEAD"), _trial_status(worktree)
+    return head.stdout.strip(), head.returncode == status.returncode == 0 and not status.stdout
+
+
 def _commit_detached_trial(worktree: Path, title: str) -> str:
     """Commit trial edits and leave HEAD detached even if the worker checked out a branch."""
-    status = _git(worktree, "status", "--porcelain")
+    status = _trial_status(worktree)
     if status.returncode != 0:
         raise InvalidOutput("benchmark worktree status failed")
     if status.stdout.strip():
@@ -261,7 +269,7 @@ def _run_live_trial(
         dispatcher,
         config,
         run_check=run_check,
-        inspect_worktree=lambda: _inspect_worktree(worktree),
+        inspect_worktree=lambda: _inspect_trial(worktree),
         commit_worktree=lambda title: _commit_detached_trial(worktree, title),
         read_diff=lambda: _read_worktree_diff(worktree, task["base_sha"]),
         budget=cfg.get("budget"),
@@ -308,7 +316,7 @@ def _run_live_trial(
                 store,
                 rid,
                 list(load_scorers().values()),
-                judge=judge_runner,
+                judge=judge_runner or default_judge_runner(worktree, run_isolated_worker_command),
                 respect_sampling=False,
                 diff_text=_read_worktree_diff(worktree, task["base_sha"]),
             )

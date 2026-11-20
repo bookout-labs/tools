@@ -145,7 +145,8 @@ def _inside_git_worktree(repo_root: Path) -> bool:
 
 
 def _assert_clean_worktree(repo_root: Path) -> None:
-    status = _git(repo_root, "status", "--porcelain")
+    # Explicit flags so status.showUntrackedFiles or submodule config cannot hide a dirty checkout.
+    status = _git(repo_root, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
     if status.returncode != 0:
         raise WriteSurfaceError("could not read git status before improvement edits")
     if status.stdout.strip():
