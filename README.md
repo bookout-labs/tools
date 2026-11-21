@@ -352,7 +352,11 @@ The runner uses the pinned model slugs from `models.toml` with the installed Cod
 
 If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota returns. Foreman retries the same stage and retains its earlier attempt records. Review instead prints `done reviewer_unavailable` (exit 75) when all eligible reviewers are unavailable. Rerun after restoring quota or the missing CLI; review reselects from the current model table.
 
-Before review, Foreman fetches the pull request's base branch from `origin` and counts changes in `src/` and `tests/` against the merge base. Use Git 2.43 or later. Files marked `linguist-generated` in the merge base do not count. If Foreman presents a split plan, use `--answer split` to accept it or `--answer override` to continue with that measured diff.
+Before review, Foreman fetches the pull request's base branch from `origin` and counts added and deleted lines across every path against the merge base, including root files, docs, and logs. Use Git 2.43 or later.
+
+Files marked `linguist-generated` by [`.gitattributes`](.gitattributes) at the merge base do not count. Here, that means fixtures, generated schemas, and lockfiles. Candidate attribute changes cannot exempt their own lines.
+
+Pure renames add no lines. For renames across an exclusion boundary, only the handwritten side counts. Binary files count through Git's text diff. If Foreman presents a split plan, use `--answer split` to accept it or `--answer override` to continue with that measured diff.
 
 
 ## Tests

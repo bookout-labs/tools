@@ -296,7 +296,7 @@ class LiveWorkspace:
             "--no-ext-diff", "--no-textconv",
         )
         raw = self._inspection_git(
-            merge_base, "diff", *diff_options, "--numstat", "-z", merge_base, head, "--", "src/", "tests/",
+            merge_base, "diff", *diff_options, "--numstat", "-z", merge_base, head, "--",
         )
         if not raw:
             return {"head": head, "merge_base": merge_base, "lines": 0}
@@ -322,10 +322,11 @@ class LiveWorkspace:
         for before, after, removed, added in entries:
             if before in generated and after in generated:
                 continue
-            if added == b"-":
-                # Numstat can report binary even when Git emits a text patch.
+            crosses_exclusion = (before in generated) != (after in generated)
+            if added == b"-" or crosses_exclusion:
                 patch = self._inspection_git(
                     merge_base, "diff", *diff_options, "--patch", "--unified=0", "--inter-hunk-context=0",
+                    *(("--no-renames",) if crosses_exclusion else ()),
                     "--no-color", merge_base, head, "--", os.fsdecode(before), os.fsdecode(after),
                 )
                 hunks = HUNK.findall(patch)
