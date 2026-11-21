@@ -13,7 +13,7 @@ from langgraph.types import interrupt
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.proof import browser_proof_label, formal_proof_label
-from foreman.stage_output import STAGE_OUTPUTS, Contract, Slice, SliceDecision, SpecOutput, VerifyOutput, parse_output
+from foreman.stage_output import STAGE_OUTPUTS, Slice, SlicePlanningOutput, SpecOutput, parse_output
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -35,9 +35,9 @@ class DeliveryState(TypedDict, total=False):
     triage: str
     spec: str
     spec_gate: str
-    slices: list[dict]
+    slices: list[dict[str, object]]
     child_issue_numbers: list[int]
-    slice: dict
+    slice: dict[str, object]
     issue_kind: str
     research: str
     implementation: str
@@ -72,13 +72,12 @@ def stage_text(name: str) -> str:
     return text
 
 
-def clean_slices(raw: list[Slice] | None, *, allow_external_dependencies: bool = False) -> list[dict]:
+def clean_slices(raw: list[Slice] | None, *, allow_external_dependencies: bool = False) -> list[dict[str, object]]:
     if not raw:
         raise InvalidOutput("slices: ready parent spec needs at least one slice")
-    cleaned = [item.model_dump() for item in raw]
-    graph = {item["title"]: item["depends_on"] for item in cleaned}
-    if len(graph) != len(cleaned):
-        raise InvalidOutput("slice titles must be unique")
+    graph = {item.title: item.depends_on for item in raw}
+    if len(graph) != len(raw):
+        raise InvalidOutput("slices.title: must be unique")
     for deps in graph.values():
         for dep in deps:
             if dep not in graph and not allow_external_dependencies:
@@ -86,16 +85,17 @@ def clean_slices(raw: list[Slice] | None, *, allow_external_dependencies: bool =
     try:
         TopologicalSorter(graph).prepare()
     except CycleError as exc:
-        raise InvalidOutput("slice dependencies cycle") from exc
-    return cleaned
+        raise InvalidOutput("slices.depends_on: dependency cycle") from exc
+    return [item.model_dump() for item in raw]
 
 
-def stage_update(name: str, output: Contract, state: DeliveryState, model: str | None = None) -> dict:
+def read_output(name: str, raw: object, state: DeliveryState, model: str | None = None) -> dict:
+    output = parse_output(STAGE_OUTPUTS[name], raw)
     update = output.model_dump(exclude={"slice", "slices"})
     update["path"] = [name]
     if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready":
         update["slices"] = clean_slices(output.slices)
-    if isinstance(output, SliceDecision):
+    if isinstance(output, SlicePlanningOutput):
         update["human_question"] = output.human_question or ""
         ready = update.get("triage") == "implement" or update.get("spec_gate") == "ready"
         if ready and state.get("issue_kind") == "slice" and "slice" not in state and output.slice is not None:
@@ -164,8 +164,7 @@ def compile_delivery(
                 instruction = f"{instruction}\n\nCommand: {command}"
             try:
                 raw, model = dispatcher.run(name, models, state, instruction)
-                output = parse_output(STAGE_OUTPUTS[name], raw)
-                update = stage_update(name, output, state, model)
+                update = read_output(name, raw, state, model)
                 if name == "implement" and inspect_worktree is not None:
                     update.update(head_sha=None, head_checked=False)
                 return update
@@ -189,7 +188,7 @@ def compile_delivery(
         exit_code = run_check(state["check"])
         verdict = "pass" if exit_code == 0 else "fail"
         return {
-            **stage_update("verify", VerifyOutput(verify=verdict), state),
+            **read_output("verify", {"verify": verdict}, state),
             "check_exit_code": exit_code,
             "proof_labels": {},
             **(checked if exit_code == 0 else {}),

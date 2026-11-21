@@ -136,9 +136,9 @@ class CliWorkerTest(unittest.TestCase):
 
 class StageOutputTest(unittest.TestCase):
     def test_schema_snapshot(self):
-        snapshot = Path(__file__).with_name("stage-schemas.jsonl").read_text()
+        snapshot = Path(__file__).with_name("stage-schemas.json").read_text()
         schemas = {name: model.model_json_schema() for name, model in STAGE_OUTPUTS.items()}
-        self.assertEqual(schemas, dict(map(json.loads, snapshot.splitlines())))
+        self.assertEqual(schemas, json.loads(snapshot))
 
     def test_every_object_in_the_schema_is_strict(self):
         def check(schema):
@@ -159,9 +159,13 @@ class StageOutputTest(unittest.TestCase):
         result = parse_output(ImplementOutput, {"implementation": {"Changes": "Built.", "Tests": "Passed."}})
         self.assertEqual(result.implementation, "Changes\nBuilt.\n\nTests\nPassed.")
 
-    def test_review_keeps_the_note_after_the_verdict(self):
-        result = parse_output(ReviewOutput, {"review": "changes. Add a check.", "risk": DEFAULT_RISK})
-        self.assertEqual((result.review, result.review_note), ("changes", "Add a check."))
+    def test_punctuated_changes_without_a_note_keeps_null(self):
+        result = parse_output(ReviewOutput, {**APPROVE, "review": "changes."})
+        self.assertEqual((result.review, result.review_note), ("changes", None))
+
+    def test_hedged_approval_is_invalid(self):
+        with self.assertRaisesRegex(InvalidOutput, "^review:"):
+            parse_output(ReviewOutput, {**APPROVE, "review": "approve, but please fix X first"})
 
 
 class LiveRunnerTest(unittest.TestCase):
@@ -170,6 +174,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.cwd = Path(directory)
         self.checkpoint = self.cwd / "runs.sqlite3"
         self.calls = []
+        self.prompts = []
         self.github = FakeGitHub()
 
     def walk(self, replies, *, issue=8, check="exit 0", run_gh=None, inspect_worktree=clean_worktree):
@@ -178,6 +183,7 @@ class LiveRunnerTest(unittest.TestCase):
         def run(args, cwd):
             self.assertEqual(cwd, self.cwd)
             self.calls.append(args[0])
+            self.prompts.append(args[-1])
             return worker_reply(args, next(outputs))
 
         return run_live_delivery(
@@ -185,6 +191,14 @@ class LiveRunnerTest(unittest.TestCase):
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
             run_gh=run_gh, github=self.github, inspect_worktree=inspect_worktree,
         )
+
+    def test_review_note_reaches_the_next_implement_prompt(self):
+        built = {"implementation": "Built."}
+        changes = {**APPROVE, "review": "changes. Add a check."}
+        self.walk([{"triage": "implement"}, built, changes, built, APPROVE], run_gh=lambda _: 0)
+        prompt = self.prompts[3]
+        self.assertIn('"title": "ImplementOutput"', prompt)
+        self.assertEqual(json.loads(prompt.split("Delivery state:\n")[1])["review_note"], "Add a check.")
 
     def test_load_slice_issue(self):
         result = self.walk([{"triage": "question"}, {"research": "answer"}])

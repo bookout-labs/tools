@@ -18,7 +18,7 @@ WorktreeInspector = Callable[[Path], tuple[str, bool]]
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 
 
-def _load_slice(body: str) -> dict:
+def _load_slice(body: str) -> dict[str, object]:
     blocks = SLICE_FENCE.findall(body)
     if not blocks:
         raise InvalidOutput("slice issue needs a fenced JSON object")

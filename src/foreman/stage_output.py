@@ -8,11 +8,12 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints, T
 from foreman.dispatch import InvalidOutput
 
 Text = Annotated[str, StringConstraints(pattern=r"\S")]
-TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Sections = TypeAdapter(dict[TrimmedText, TrimmedText])
 Output = TypeVar("Output", bound=BaseModel)
 
 
+# CLIs without schema enforcement may omit nullable fields until S2/S3.
 def _require_all_fields(schema: dict) -> None:
     properties = schema["properties"]
     schema["required"] = list(properties)
@@ -30,6 +31,8 @@ class SliceProperty(Contract):
 
 
 class Slice(Contract):
+    """Preserve the proof obligations. Implementers should report only evidence they collect."""
+
     title: TrimmedText
     acceptance: TrimmedText
     depends_on: list[TrimmedText]
@@ -44,12 +47,12 @@ class Slice(Contract):
         return value
 
 
-class SliceDecision(Contract):
-    slice: Slice | None = None
-    human_question: str | None = None
+class SlicePlanningOutput(Contract):
+    slice: Slice | None = None  # CLIs without schema enforcement may omit this.
+    human_question: str | None = None  # CLIs without schema enforcement may omit this.
 
 
-class TriageOutput(SliceDecision):
+class TriageOutput(SlicePlanningOutput):
     triage: Literal["implement", "spec", "question", "needs_human"]
 
 
@@ -57,16 +60,18 @@ class ResearchOutput(Contract):
     research: Text
 
 
-class SpecOutput(SliceDecision):
+class SpecOutput(SlicePlanningOutput):
     spec: Text
     spec_gate: Literal["ready", "needs_human"]
-    slices: list[Slice] | None = None
+    slices: list[Slice] | None = None  # CLIs without schema enforcement may omit this.
 
 
 class BrowserProof(Contract):
-    screen: str | None = None
-    trace: str | None = None
-    passed: bool | None = None
+    """For a required screen, report only browser evidence you actually collected."""
+
+    screen: str | None = None  # CLIs without schema enforcement may omit this.
+    trace: str | None = None  # CLIs without schema enforcement may omit this.
+    passed: bool | None = None  # CLIs without schema enforcement may omit this.
 
 
 class ConstraintResult(Contract):
@@ -75,17 +80,21 @@ class ConstraintResult(Contract):
 
 
 class FormalProof(Contract):
-    ran: bool | None = None
-    constraints: list[ConstraintResult] | None = None
-    typecheck: str | bool | None = None
+    """For required properties, report only formal evidence you actually collected."""
+
+    ran: bool | None = None  # CLIs without schema enforcement may omit this.
+    constraints: list[ConstraintResult] | None = None  # CLIs without schema enforcement may omit this.
+    typecheck: str | bool | None = None  # CLIs without schema enforcement may omit this.
 
 
 class ImplementOutput(Contract):
     implementation: Text
+    # CLIs without schema enforcement may omit the head SHA.
     head_sha: Annotated[str | None, AfterValidator(lambda sha: (sha or "").strip() or None)] = None
-    browser_proof: BrowserProof | None = None
-    formal_proof: FormalProof | None = None
+    browser_proof: BrowserProof | None = None  # CLIs without schema enforcement may omit this.
+    formal_proof: FormalProof | None = None  # CLIs without schema enforcement may omit this.
 
+    # CLIs without schema enforcement can return sections until S2/S3.
     @field_validator("implementation", mode="before")
     @classmethod
     def join_sections(cls, value: object) -> object:
@@ -107,16 +116,20 @@ class MergeRisk(Contract):
 class ReviewOutput(Contract):
     review: Literal["approve", "changes"]
     risk: MergeRisk
-    review_note: str | None = None
+    review_note: str | None = None  # CLIs without schema enforcement may omit this.
 
+    # CLIs without schema enforcement can punctuate verdicts until S2/S3.
     @model_validator(mode="before")
     @classmethod
     def split_verdict(cls, value: object) -> object:
         if isinstance(value, dict) and isinstance(verdict := value.get("review"), str):
-            match = re.fullmatch(r"(approve|changes)(?:[.,:;]\s*(.*))?", verdict.strip(), re.I | re.S)
+            verdict = verdict.strip()
+            if verdict in {"approve", "approve."}:
+                return {**value, "review": "approve"}
+            match = re.fullmatch(r"changes(?:[.,:;]\s*(.*))?", verdict, re.I | re.S)
             if match:
                 note = value.get("review_note")
-                return {**value, "review": match[1].lower(), "review_note": match[2] if note is None else note}
+                return {**value, "review": "changes", "review_note": (match[1] or None) if note is None else note}
         return value
 
 
@@ -139,7 +152,5 @@ def parse_output(contract: type[Output], raw: object) -> Output:
         return contract.model_validate(raw)
     except ValidationError as exc:
         error = exc.errors(include_input=False)[0]
-        location = [str(part) for part in error["loc"]]
-        path = ".".join(location) or "$"
-        label = f" (merge {' '.join(location)})" if location and location[0] == "risk" else ""
-        raise InvalidOutput(f"{path}{label}: {error['msg']}") from exc
+        path = ".".join(map(str, error["loc"])) or "$"
+        raise InvalidOutput(f"{path}: {error['msg']}") from exc
