@@ -78,11 +78,11 @@ class ScriptHandler:
         if node == "review":
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = (
-                [{"file": "example.txt", "line": 1, "severity": "blocking", "summary": "Add a check."}]
-                if verdict == "changes" else []
+                [{"id": "check", "kind": "untested-path", "fix": "Add a check.", "ruling_id": None, "file": "example.txt", "line": 1, "severity": "blocking", "summary": "Add a check."}]
+                if verdict == "changes" and not state.get("review") else []
             )
             return Outcome("ran", {
-                "review": verdict, "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.", "tool_facts": [],
+                "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if state.get("review") else [], "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.", "tool_facts": [],
             }, usage=SCRIPTED_USAGE)
         if node == "verify":
             return Outcome("ran", {"verify": self.verify}, usage=SCRIPTED_USAGE)
