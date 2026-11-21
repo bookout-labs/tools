@@ -1,0 +1,12 @@
+[
+  [
+    {"number": 20, "state": "open", "title": "Synthetic proposal", "body": "Evidence: Example/Engine#7\n<!-- foreman-watch: invalid_output@src/foreman/stages/triage.md -->"},
+    {"number": 2, "state": "open", "body": "<!-- foreman-watch: invalid_output@src/foreman/stages/triage.md -->", "pull_request": {"url": "https://api.github.com/repos/Example/Target/pulls/2"}},
+    {"number": 3, "state": "open", "body": null, "pull_request": null}
+  ],
+  [
+    {"number": 10, "state": "open", "body": "Evidence: Example/Engine#6\n<!-- foreman-watch: invalid_output@src/foreman/stages/triage.md -->"},
+    {"number": 4, "state": "closed", "body": "<!-- foreman-watch: invalid_output@src/foreman/stages/triage.md -->"},
+    {"number": 21, "state": "open", "body": null}
+  ]
+]

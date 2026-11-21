@@ -23,6 +23,7 @@ from foreman.redaction import redact
 from foreman.runner import AnswerError, RESUMABLE_HALTS, run_live_delivery
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
+from foreman.watch import DEFAULT_WATCH_REPO
 
 
 def _write_run_log(text: str, *, file: TextIO | None = None, end: str = "\n") -> None:
@@ -116,6 +117,7 @@ def main(
     run = commands.add_parser("run", help="walk a graph")
     run.add_argument("graph")
     run.add_argument("--repo", required=True)
+    run.add_argument("--watch-repo", default=DEFAULT_WATCH_REPO)
     run.add_argument("--issue", type=int)
     run.add_argument("--request")
     run.add_argument("--check", default="")
@@ -189,6 +191,8 @@ def main(
     else:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
             run.error("--repo must be OWNER/NAME")
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.watch_repo):
+            run.error("--watch-repo must be OWNER/NAME")
         if args.issue is None or args.issue < 1 or not args.check.strip():
             run.error("a live run requires a positive --issue and a --check command")
         if checkpoint is None:
@@ -211,11 +215,14 @@ def main(
                 run=live_run,
                 answer=args.answer,
                 max_tokens=args.max_tokens,
+                watch_repo=args.watch_repo,
+                report=_print_run,
             )
         except (AnswerError, ForgeError, OSError, QuotaExhausted, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
-    _print_run(result)
+    if args.dry_run:
+        _print_run(result)
     return run_exit_code(result)
 
 

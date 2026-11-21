@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict
@@ -124,6 +125,27 @@ class CreatedIssue(BaseModel, strict=True):
     number: PositiveInt
 
 
+class IssueSummary(CreatedIssue):
+    body: str | None
+
+
+class ListedIssue(IssueSummary):
+    state: Literal["open", "closed"]
+    pull_request: dict[str, object] | None = None
+
+
+class IssuePages(RootModel[list[list[ListedIssue]]], strict=True):
+    pass
+
+
+class IssueComment(BaseModel, strict=True):
+    body: str
+
+
+class CommentPages(RootModel[list[list[IssueComment]]], strict=True):
+    pass
+
+
 class ActionsVariable(BaseModel, strict=True):
     name: str
     value: str
@@ -170,6 +192,9 @@ class ReviewComment(TypedDict):
 
 
 class Forge(Protocol):
+    def open_issues(self, repo: str) -> list[IssueSummary]: ...
+    def issue_comments(self, repo: str, number: int) -> list[str]: ...
+    def comment_issue(self, repo: str, number: int, body: str) -> None: ...
     def default_branch(self, repo: str) -> str: ...
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
     def load_issue(self, repo: str, number: int) -> Issue: ...
@@ -210,6 +235,22 @@ def render_slice_body(prose: str, child: StoredSlice) -> str:
     )
 
 
+def redact_issue_body(body: str) -> str:
+    """Keep the checkpoint UUID in canonical watcher metadata usable for recovery."""
+    marker = re.search(
+        r"(?m)^<!-- foreman-watch-run: [\w.-]+/[\w.-]+#[1-9][0-9]*@"
+        r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) -->"
+        r"(?:\n<!-- foreman-watch: [a-z_]+@src/foreman/[\w/.-]+ -->)?\n?\Z", body,
+    )
+    if marker is None:
+        return redact(body)
+    start, end = marker.span(1)
+    evidence = redact(body[:marker.start()])
+    if evidence and not evidence.endswith("\n"):
+        evidence += "\n"
+    return evidence + redact(body[marker.start():start]) + marker[1] + redact(body[end:])
+
+
 class LiveForge:
     def __init__(self):
         self._defaults: dict[str, str] = {}
@@ -247,10 +288,30 @@ class LiveForge:
         )
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
+    def open_issues(self, repo: str) -> list[IssueSummary]:
+        pages = self._read(IssuePages, [
+            "gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate", "--slurp",
+        ])
+        return [issue for page in pages.root for issue in page
+                if issue.state == "open" and "pull_request" not in issue.model_fields_set]
+
+    def issue_comments(self, repo: str, number: int) -> list[str]:
+        pages = self._read(CommentPages, [
+            "gh", "api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate", "--slurp",
+        ])
+        return [comment.body for page in pages.root for comment in page]
+
+    def comment_issue(self, repo: str, number: int, body: str) -> None:
+        repo, body = redact(repo), redact_issue_body(body)
+        self._run_command([
+            "gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}",
+        ], timeout=None)
+
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None,
     ) -> int:
-        repo, title, body, *labels = (redact(value) for value in (repo, title, body, *labels))
+        repo, title, *labels = (redact(value) for value in (repo, title, *labels))
+        body = redact_issue_body(body)
         if child is not None:
             child = self._redact_slice(child)
             body = render_slice_body(body, child)

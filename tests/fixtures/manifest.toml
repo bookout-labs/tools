@@ -700,3 +700,24 @@ version = "1.2.24"
 kind = "quoted_source"
 sources = ["https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/graph/state.py", "https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py"]
 notes = "Synchronous graph subset declared in typings/langgraph/graph. Signatures cover nodes, compile, invoke v1/v2, state/history/update (including as_node), and diagram output. Runtime graph tests exercise this pinned package."
+
+[fixtures."github/watch-issues.json"]
+tool = "GitHub REST"
+version = "2022-11-28"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/issues?apiVersion=2022-11-28#list-repository-issues", "https://cli.github.com/manual/gh_api"]
+notes = 'REST docs: "You can identify pull requests by the pull_request key." Synthetic projections of documented number, state, nullable body and pull_request fields; includes closed and null-key negative cases. gh api --paginate --slurp wraps the response arrays in an outer array, one inner array per page. Request: GET /repos/{owner}/{repo}/issues?state=open&per_page=100. The open query excludes closed issues; the parser also rejects closed entries defensively.'
+
+[fixtures."github/watch-comments.json"]
+tool = "GitHub REST"
+version = "2022-11-28"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/comments?apiVersion=2022-11-28#list-issue-comments", "https://cli.github.com/manual/gh_api"]
+notes = 'Synthetic projections of the documented comment array (integer id and string body). GET /repos/{owner}/{repo}/issues/{issue_number}/comments?per_page=100. gh --paginate --slurp collects every page into an outer array; page two carries a synthetic run marker.'
+
+[fixtures."github/watch-comment-created.json"]
+tool = "GitHub REST"
+version = "2022-11-28"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/comments?apiVersion=2022-11-28#create-an-issue-comment"]
+notes = 'Synthetic projection of the documented 201 Created comment object (integer id, string body and html_url). POST /repos/{owner}/{repo}/issues/{issue_number}/comments requires a string body. Foreman leaves this response unparsed; a successful command acknowledges the write.'

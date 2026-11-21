@@ -56,6 +56,8 @@ class PublicationTest(unittest.TestCase):
         self.git("remote", "add", "origin", str(self.remote))
         self.git("push", "origin", self.base)
         self.created = []
+        self.proposals = []
+        self.proposal_comments = []
         self.published_heads = []
         self.create_error = False
         self.fixture.enter_context(patch("foreman.github.subprocess.run", side_effect=self.subprocess))
@@ -76,6 +78,18 @@ class PublicationTest(unittest.TestCase):
         if command[1] != "api":
             self.assertEqual(command[command.index("--repo") + 1], REPO)
         match command[1:3]:
+            case ["api", "repos/bookout-labs/tools/issues?state=open&per_page=100"]:
+                response = [self.proposals]
+            case ["api", "repos/bookout-labs/tools/issues"]:
+                body = next(value.removeprefix("body=") for value in command if value.startswith("body="))
+                self.proposals.append({"number": 1001, "state": "open", "body": body})
+                response = {"number": 1001}
+            case ["api", "repos/bookout-labs/tools/issues/1001/comments?per_page=100"]:
+                response = [self.proposal_comments]
+            case ["api", "repos/bookout-labs/tools/issues/1001/comments"]:
+                body = next(value.removeprefix("body=") for value in command if value.startswith("body="))
+                self.proposal_comments.append({"body": body})
+                response = {"id": 1, "body": body}
             case ["api", "repos/Example/Engine/issues/8/dependencies/blocked_by"]:
                 response = [[]]
             case ["issue", "view"]:

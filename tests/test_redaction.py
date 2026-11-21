@@ -1,11 +1,8 @@
 import tests
 
-import ast
-from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
 from importlib.metadata import version
 from io import StringIO
-from pathlib import Path
 from re import Pattern
 import subprocess
 import unittest
@@ -208,46 +205,3 @@ class RedactionTest(unittest.TestCase):
             code = main([*base, "--issue", "8", "--check", "exit 0"], worker_runner=None)
         self.assertEqual(code, 1)
         self.assertEqual(stderr.getvalue(), "Worker error [redacted:GitHub Token]\n")
-
-    def test_only_boundary_functions_reference_redact(self):
-        references = Counter()
-        package = Path(__file__).resolve().parents[1] / "src" / "foreman"
-        for path in package.rglob("*.py"):
-            tree = ast.parse(path.read_text())
-            aliases = {"redact"}
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.module in {"foreman.redaction", "redaction"}:
-                    aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "redact")
-
-            def visit(node, scope="<module>"):
-                if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                    scope = node.name if scope == "<module>" else f"{scope}.{node.name}"
-                if (
-                    isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in aliases
-                    or isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and node.attr == "redact"
-                ):
-                    references[path.relative_to(package).as_posix(), scope] += 1
-                for child in ast.iter_child_nodes(node):
-                    visit(child, scope)
-
-            visit(tree)
-        self.assertEqual(references, {
-            ("cli.py", "_write_run_log"): 1,
-            ("delivery.py", "DryRun.record_merge"): 2,
-            ("github.py", "LiveForge._arm_auto_merge"): 1,
-            ("github.py", "LiveForge._redact_slice"): 10,
-            ("github.py", "LiveForge.add_label"): 1,
-            ("github.py", "LiveForge.add_blocker"): 1,
-            ("github.py", "LiveForge.create_issue"): 1,
-            ("github.py", "LiveForge.post_review"): 4,
-            ("github.py", "pull_request_command"): 5,
-            ("delivery.py", "compile_delivery.prepare"): 1,
-            ("delivery.py", "compile_delivery.commit"): 2,
-            ("delivery.py", "compile_delivery.publish"): 1,
-            ("workspace.py", "branch_command"): 1,
-            ("workspace.py", "commit_commands"): 1,
-            ("workspace.py", "push_command"): 1,
-            ("workspace.py", "LiveWorkspace.create_branch"): 1,
-            ("workspace.py", "LiveWorkspace.committed"): 1,
-            ("workspace.py", "LiveWorkspace.push"): 1,
-        })

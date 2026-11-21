@@ -126,7 +126,13 @@ class PullRequestSizeDecision(StrEnum):
     OVERRIDE = "override"
 
 
+class WatchRecord(TypedDict):
+    issue: int
+    action: Literal["filed", "commented"]
+
+
 class DeliveryFields(TypedDict, total=False):
+    watch: WatchRecord | None
     pending_dispatch: PendingDispatchRecord | None
     dispatch_plan: DispatchPlanRecord
     request: str

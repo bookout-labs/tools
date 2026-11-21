@@ -22,7 +22,8 @@ from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
-from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
+from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueSummary, LiveForge, MergeHoldUnreadable, MergeNotArmed, PullRequest, redact_issue_body, render_slice_body
+from foreman.redaction import redact
 
 from foreman.runner import AnswerError, run_live_delivery
 from foreman.skill_rules import export_skills, git
@@ -149,6 +150,22 @@ class FakeGitHub:
         self.base = BASE
         self.hold: str | None = None
         self.hold_reads = []
+        self.proposals = {}
+        self.proposal_comments = {}
+        self.watch_calls = []
+
+    def open_issues(self, repo):
+        self.watch_calls.append(("open_issues", repo))
+        return [item for (owner, _), item in self.proposals.items() if owner == repo]
+
+    def issue_comments(self, repo, number):
+        self.watch_calls.append(("issue_comments", repo, number))
+        return self.proposal_comments.get((repo, number), [])
+
+    def comment_issue(self, repo, number, body):
+        body = redact_issue_body(body)
+        self.watch_calls.append(("comment_issue", repo, number, body))
+        self.proposal_comments.setdefault((repo, number), []).append(body)
 
     def default_branch(self, repo):
         return "main"
@@ -181,8 +198,13 @@ class FakeGitHub:
         return {"title": "Issue title", "body": self.body, "labels": self.labels}
 
     def create_issue(self, repo, title, body, labels, *, child=None):
-        if child is not None:
-            body = render_slice_body(body, child)
+        if child is None:
+            number = 1001 + len(self.proposals)
+            body = redact_issue_body(body)
+            self.watch_calls.append(("create_issue", repo, redact(title), body, labels))
+            self.proposals[repo, number] = IssueSummary(number=number, body=body)
+            return number
+        body = render_slice_body(body, child)
         self.created.append((title, body, labels))
         number = 100 + len(self.created)
         self.issue_labels[number] = list(labels)
@@ -557,6 +579,7 @@ class LiveRunnerTest(unittest.TestCase):
             ("why/SKILL.md", "", "method is empty"),
         ):
             with self.subTest(method=method, detail=detail), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "runs.sqlite3"
                 pin = fixture_pin(Path(directory) / "fixture")
                 source = Path(pin.repository)
                 (source / "pstack" / "skills" / method).write_text(content, encoding="utf-8")
@@ -1725,7 +1748,7 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_missing_slice_has_no_fake_stage(self):
         result = self.live(body="No JSON")
         self.assert_halt(result, "missing_slice", "slice issue needs a fenced JSON object")
-        self.assertEqual(result[1], "tokens 0 of 20000000\ndone missing_slice\nslice issue needs a fenced JSON object\n")
+        self.assertEqual(result[1], "tokens 0 of 20000000\ndone missing_slice\nslice issue needs a fenced JSON object\nwatch filed #1001\n")
 
     def test_resumable_halts(self):
         replies = [{"triage": "implement"}, {"implementation": "built"}, APPROVE]
@@ -1753,7 +1776,10 @@ class HaltExitCodeTest(unittest.TestCase):
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid")
         result = {**halted("merge_not_armed", detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
-        with patch("foreman.cli.run_live_delivery", return_value=result), contextlib.redirect_stdout(io.StringIO()) as output:
+        def finished(**kwargs):
+            kwargs["report"](result)
+            return result
+        with patch("foreman.cli.run_live_delivery", side_effect=finished), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
 

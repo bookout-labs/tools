@@ -1,10 +1,11 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 import json
 from pathlib import Path
 import re
+import sys
 from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
@@ -18,8 +19,10 @@ from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, Deliver
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
-from foreman.github import Forge
+from foreman.github import Forge, ForgeError
+from foreman.redaction import redact
 from foreman.stage_output import Attempt, StoredSlice, parse_output
+from foreman.watch import DEFAULT_WATCH_REPO, watch
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 
@@ -95,6 +98,8 @@ def run_live_delivery(
     answer: str | None = None,
     max_tokens: int | None = None,
     fact_record: str | None = None,
+    watch_repo: str = DEFAULT_WATCH_REPO,
+    report: Callable[[DeliveryResult], None] | None = None,
 ) -> DeliveryResult:
     if fact_record is not None:
         fact_record = fact_record_path(fact_record)
@@ -120,11 +125,37 @@ def run_live_delivery(
                 scratch=None if channels.get("stop") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
             )
         except SkillMissing as exc:
-            return read_delivery_state({**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
-                                        "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
-                                        "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
-                                        "repo": repo, "check": check,
-                                        "token_cap": channels["token_cap"] if prior else (max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)})
+            graph = compile_delivery(dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver)
+            graph.update_state(config, {**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
+                                       "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
+                                       "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
+                                       "repo": repo, "issue": issue, "check": check, "workspace": workspace,
+                                       **({"watch": None} if channels.get("watch") else {}),
+                                       "token_cap": channels["token_cap"] if prior else (max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)}, as_node="done")
+
+        def finish(saved: StateSnapshot, result: DeliveryResult | None = None) -> DeliveryResult:
+            result = result if result is not None else read_delivery_state(saved.values)
+            if report is not None:
+                report(result)
+            if reason := result.get("halt"):
+                checkpoint_id = saved.config.get("configurable", {})["checkpoint_id"]
+                run_key = f"{result['repo']}#{issue}@{checkpoint_id}"
+                try:
+                    record = watch(result, client, watch_repo, run_key)
+                except ForgeError as exc:
+                    print(redact(f"watch failed: {exc}"), file=sys.stderr, flush=True)
+                else:
+                    if record is None:
+                        if report is not None:
+                            print(f"watch skipped {reason}", flush=True)
+                    else:
+                        if result.get("watch") is None:
+                            graph.update_state(saved.config, {"watch": record}, as_node="done")
+                            result["watch"] = record
+                        if report is not None:
+                            print(f"watch {record['action']} #{record['issue']}", flush=True)
+            return result
+
         def invoke(
             graph_input: DeliveryState | Command[str] | None,
             state: DeliveryState,
@@ -137,7 +168,7 @@ def run_live_delivery(
         if saved.values:
             if not saved.next and not saved.interrupts and saved.values.get("halt") not in RESUMABLE_HALTS:
                 if "token_cap" not in saved.values:
-                    return read_delivery_state(saved.values)
+                    return finish(saved)
             require_token_cap(saved.values, checkpoint)
         saved_values = checkpoint_state(saved.values)
         if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
@@ -145,6 +176,8 @@ def run_live_delivery(
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
+        if saved_values is not None and saved_values.get("halt") == "skill_missing":
+            return finish(saved)
         if saved_values is not None and (pending := saved_values.get("pending_dispatch")):
             assert "dispatch_plan" in saved_values
             stage = pending["stage"]
@@ -155,7 +188,7 @@ def run_live_delivery(
                                                             methods=saved_values["dispatch_plan"]["methods"], outcome="interrupted", usage=None).record()],
                                        "pending_dispatch": None}, as_node=stage + "_call")
             invoke(None, saved_values)
-            return read_delivery_state(graph.get_state(config).values)
+            return finish(graph.get_state(config))
         waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == "quota_exhausted"
         if answer is not None:
             if waiting_for_quota:
@@ -199,7 +232,10 @@ def run_live_delivery(
                     initial.update(halted("missing_slice", str(exc), None))
                 else:
                     if detail := _blocker_detail(client, repo, issue, item):
-                        return {**initial, "path": ["done"], "stop": "blocked", "halt_detail": detail}
+                        result: DeliveryResult = {**initial, "path": ["done"], "stop": "blocked", "halt_detail": detail}
+                        if report is not None:
+                            report(result)
+                        return result
                     initial["slice"] = item.record()
                     if item.work_kind is not None:
                         initial["work_kind"] = item.work_kind
@@ -254,9 +290,9 @@ def run_live_delivery(
         if saved.interrupts:
             if saved_values.get("halt") == "quota_exhausted":
                 parse_output(QuotaPause, saved.interrupts[0].value)
-                return read_delivery_state({**saved_values, "stop": "quota_exhausted"})
+                return finish(saved, read_delivery_state({**saved_values, "stop": "quota_exhausted"}))
             question = parse_output(HumanPrompt, saved.interrupts[0].value).question
-            return read_delivery_state({**saved_values, "stop": "needs_human", "halt_detail": question})
+            return finish(saved, read_delivery_state({**saved_values, "stop": "needs_human", "halt_detail": question}))
         result = read_delivery_state(saved_values)
         if "merge" in result["path"] and "merge" not in result:
             legacy = saver.get(saved.config)
@@ -264,4 +300,4 @@ def run_live_delivery(
                 armed = legacy["channel_values"].get("merge_armed")
                 if isinstance(armed, bool):
                     result["merge"] = "armed" if armed else "not_armed"
-        return result
+        return finish(saved, result)
