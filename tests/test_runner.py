@@ -20,7 +20,7 @@ from foreman.github import ForgeError, MergeHoldUnreadable, MergeNotArmed, PullR
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
-from foreman.workspace import LiveWorkspace, ReviewDiff, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import LiveWorkspace, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from test_adapters import fixture_process
 
 
@@ -332,7 +332,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.prompts = []
         self.github = FakeGitHub()
 
-    def walk(self, replies, *, issue=8, check="exit 0", snapshots=(CLEAN_WORKTREE,)):
+    def walk(self, replies, *, issue=8, check="exit 0", snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None):
         outputs = iter(replies)
 
         def run(args, cwd, env):
@@ -344,7 +344,7 @@ class LiveRunnerTest(unittest.TestCase):
         return run_live_delivery(
             repo="Example/Engine", issue=issue, check=check,
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
-            run=LiveRun(self.github, FakeWorkspace(self.cwd, snapshots)),
+            run=LiveRun(self.github, workspace if workspace is not None else FakeWorkspace(self.cwd, snapshots)),
         )
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
@@ -392,7 +392,6 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(self.github.merge_calls, [])
 
     def test_review_halts_when_git_fetch_times_out(self):
-        replies = iter([{"triage": "implement"}, {"implementation": "Built."}])
         outputs = {
             ("git", "rev-parse", "HEAD"): HEAD + "\n",
             ("git", "status", "--porcelain"): "",
@@ -411,10 +410,9 @@ class LiveRunnerTest(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, outputs[key])
 
         with patch("foreman.workspace.subprocess.run", side_effect=run):
-            result = run_live_delivery(
-                repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-                dispatcher=FailoverDispatcher(CliWorker(self.cwd, lambda args, cwd, env: worker_reply(args, next(replies)))),
-                run=LiveRun(self.github, LiveWorkspace(self.cwd)),
+            result = self.walk(
+                [{"triage": "implement"}, {"implementation": "Built."}],
+                workspace=LiveWorkspace(self.cwd),
             )
 
         self.assertEqual(result.get("stop"), "review_unavailable")
