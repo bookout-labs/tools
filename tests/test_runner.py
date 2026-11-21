@@ -448,32 +448,29 @@ assert dict(os.environ) == inherited
         self.assertEqual([a["outcome"] for a in result["attempts"]], ["cli_missing", "ran"])
 
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
-        for cli, model in (("claude", "claude-opus-5-5-high"),):
-            cases = [("quota", "needs_human"), ("cli_missing", "needs_human"),
-                     ("is_error", "invalid_output"), ("missing_model_usage", "invalid_output")]
-            if cli == "claude":
-                cases.append(("wrong_model", "invalid_output"))
-            for case, stop in cases:
-                with self.subTest(cli=cli, case=case):
-                    calls = []
+        cases = [("quota", "needs_human"), ("cli_missing", "needs_human"),
+                 ("is_error", "invalid_output"), ("missing_model_usage", "invalid_output")]
+        cases.append(("wrong_model", "invalid_output"))
+        for case, stop in cases:
+            with self.subTest(case=case):
+                calls = []
 
-                    def run(args, cwd, env):
-                        calls.append(args[0])
-                        if args[0] == "codex":
-                            return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
-                        if case == "cli_missing":
-                            raise FileNotFoundError(args[0])
-                        exit_code = 1 if case in {"quota", "is_error"} else 0
-                        return fixture_process(args, case, exit_code)
+                def run(args, cwd, env):
+                    calls.append(args[0])
+                    if args[0] == "codex":
+                        return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
+                    if case == "cli_missing":
+                        raise FileNotFoundError(args[0])
+                    exit_code = 1 if case in {"quota", "is_error"} else 0
+                    return fixture_process(args, case, exit_code)
 
-                    result = self.walk_triage((model, "gpt-6.1-sol-high"), run)
-                    self.assertEqual(result["stop"], stop)
-                    self.assertEqual(calls, [cli, "codex"] if stop == "needs_human" else [cli])
-                    expected = [case, "ran"] if stop == "needs_human" else ["failed"]
-                    self.assertEqual([item["outcome"] for item in result["attempts"]], expected)
-                    if case == "is_error":
-                        message = "turn_handoff:" if cli == "claude" else "unknown model id"
-                        self.assertIn(message, result["halt_detail"])
+                result = self.walk_triage(("claude-opus-5-5-high", "gpt-6.1-sol-high"), run)
+                self.assertEqual(result["stop"], stop)
+                self.assertEqual(calls, ["claude", "codex"] if stop == "needs_human" else ["claude"])
+                expected = [case, "ran"] if stop == "needs_human" else ["failed"]
+                self.assertEqual([item["outcome"] for item in result["attempts"]], expected)
+                if case == "is_error":
+                    self.assertIn("turn_handoff:", result["halt_detail"])
 
     def test_delivery_stops_for_an_incomplete_native_stage_reply(self):
         def run(args, cwd, env):
