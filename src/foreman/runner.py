@@ -31,11 +31,7 @@ def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice) -> s
     if open_urls := [blocker.html_url for blocker in blockers if blocker.state == "open"]:
         return "Open blockers: " + ", ".join(open_urls)
     local = {blocker.number: blocker for blocker in blockers if blocker.in_repo(repo)}
-    planned = item.blocker_numbers
-    if planned is None:
-        # Older child issues identify their siblings by title.
-        by_title = {blocker.title: blocker.number for blocker in local.values()}
-        planned = [by_title[title] for title in item.depends_on if title in by_title]
+    planned = item.blocker_numbers or []
     if len(planned) != len(item.depends_on) or not set(planned) <= local.keys():
         return "Planned blocker links are missing."
     if unmerged := [number for number in planned if not forge.is_merged(repo, number)]:
@@ -115,9 +111,7 @@ def run_live_delivery(
             siblings = {item.title: number for item, number in zip(plan, numbers)}
             for item in plan[len(numbers):]:
                 payload = item.model_dump(exclude_unset=True)
-                # Plans saved by older versions can list consumers before builders.
-                if all(title in siblings for title in item.depends_on):
-                    payload["blocker_numbers"] = [siblings[title] for title in item.depends_on]
+                payload["blocker_numbers"] = [siblings[title] for title in item.depends_on]
                 dependencies = "\n".join(f"- {title}" for title in item.depends_on) or "None"
                 constraints = "\n".join(f"- {prop.constraint}" for prop in item.properties) or "None"
                 body = (f"Acceptance:\n{item.acceptance}\n\nDependencies:\n{dependencies}"
@@ -146,10 +140,4 @@ def run_live_delivery(
             question = saved.interrupts[0].value["question"]
             return {**saved.values, "stop": "needs_human", "halt_detail": question}
         result: DeliveryState = dict(saved.values)
-        if "merge" in result.get("path", []) and "merge" not in result:
-            legacy = saver.get(saved.config)
-            if legacy is not None:
-                armed = legacy["channel_values"].get("merge_armed")
-                if isinstance(armed, bool):
-                    result["merge"] = "armed" if armed else "not_armed"
         return result

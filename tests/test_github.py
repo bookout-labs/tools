@@ -86,13 +86,15 @@ class LiveForgeTest(unittest.TestCase):
 
     @patch("foreman.github.subprocess.run")
     def test_only_closed_issue_with_merged_closing_pull_request_is_merged(self, run):
-        for closed, references, state, expected in (
-            (False, [CLOSING_PR], None, False),
-            (True, [], None, False),
-            (True, [CLOSING_PR], "CLOSED", False),
-            (True, [CLOSING_PR], "MERGED", True),
+        for closed, references, state, base, default, expected in (
+            (False, [CLOSING_PR], None, None, None, False),
+            (True, [], None, None, None, False),
+            (True, [CLOSING_PR], "CLOSED", "main", None, False),
+            (True, [CLOSING_PR], "MERGED", "main", "main", True),
+            (True, [CLOSING_PR], "MERGED", "release", "main", False),
+            (True, [CLOSING_PR], "MERGED", "trunk", "trunk", True),
         ):
-            with self.subTest(closed=closed, state=state):
+            with self.subTest(closed=closed, state=state, base=base, default=default):
                 run.reset_mock()
                 issue = {"closed": closed, "closedByPullRequestsReferences": references}
                 replies = [gh_result(json.dumps(issue))]
@@ -100,8 +102,11 @@ class LiveForgeTest(unittest.TestCase):
                     ["gh", "issue", "view", "1", "--repo", REPO, "--json", "closed,closedByPullRequestsReferences"],
                 ]
                 if state is not None:
-                    replies.append(gh_result(json.dumps({"state": state})))
-                    commands.append(["gh", "pr", "view", "3", "--repo", "Other/Closing", "--json", "state"])
+                    replies.append(gh_result(json.dumps({"state": state, "baseRefName": base})))
+                    commands.append(["gh", "pr", "view", "3", "--repo", "Other/Closing", "--json", "state,baseRefName"])
+                if default is not None:
+                    replies.append(gh_result(json.dumps({"defaultBranchRef": {"name": default}})))
+                    commands.append(["gh", "repo", "view", "Other/Closing", "--json", "defaultBranchRef"])
                 run.side_effect = replies
                 self.assertEqual(LiveForge().is_merged(REPO, 1), expected)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], commands)

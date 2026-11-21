@@ -38,6 +38,18 @@ class PullRequestStatus(BaseModel, strict=True):
     state: PullRequestState
 
 
+class ClosingPullRequestStatus(PullRequestStatus):
+    baseRefName: str
+
+
+class DefaultBranch(BaseModel, strict=True):
+    name: str
+
+
+class RepositoryDefaultBranch(BaseModel, strict=True):
+    defaultBranchRef: DefaultBranch
+
+
 class AutoMergeRequest(BaseModel, strict=True):
     mergeMethod: Literal["MERGE", "REBASE", "SQUASH"]
 
@@ -184,10 +196,14 @@ class LiveForge:
         for pr in issue.closedByPullRequestsReferences:
             closing_repo = f"{pr.repository.owner.login}/{pr.repository.name}"
             status = self._read(
-                PullRequestStatus, ["gh", "pr", "view", str(pr.number), "--repo", closing_repo, "--json", "state"],
+                ClosingPullRequestStatus, ["gh", "pr", "view", str(pr.number), "--repo", closing_repo, "--json", "state,baseRefName"],
             )
             if status.state == "MERGED":
-                return True
+                repository = self._read(
+                    RepositoryDefaultBranch, ["gh", "repo", "view", closing_repo, "--json", "defaultBranchRef"],
+                )
+                if status.baseRefName == repository.defaultBranchRef.name:
+                    return True
         return False
 
     def add_label(self, repo: str, number: int, label: str) -> None:

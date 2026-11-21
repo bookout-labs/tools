@@ -63,6 +63,7 @@ claude --model claude-opus-5-5 --effort high --permission-mode plan \
   --output-format json --json-schema "$triage_schema" -p "$claude_prompt"
 codex exec -m gpt-6.1-sol -c model_reasoning_effort=high --color never \
   -s read-only "$codex_prompt_with_schema"
+```
 
 ## GitHub issue dependency contract
 
@@ -102,3 +103,21 @@ documents `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`. Foreman
 sends `commit_id`, `event: COMMENT`, `body`, and a `comments` array
 with `path`, `line`, `side`, and `body` per inline comment. The
 [`RIGHT` side identifies the new file](https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request).
+
+## Closing pull request contract
+
+Checked against GitHub GraphQL documentation on 2026-11-20 and GitHub CLI
+v2.102.0 [query builder](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L78-L95).
+The CLI requests closing references without a base-branch filter. The
+[Issue field](https://docs.github.com/en/graphql/reference/issues#issue)
+also admits manually linked PRs by default. A closed issue and a merged
+referenced PR therefore do not establish that the work reached the default branch.
+Foreman checks the closing repository's default branch, including for cross-repository references.
+
+CLI v2.102.0 exposes `state` and `baseRefName` in `gh pr view --json`
+and `defaultBranchRef { name }` in `gh repo view --json`.
+[PR fields](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L353-L357),
+[repository field](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L603-L604).
+The tests feed those documented shapes through the production Pydantic parsers.
+A merged PR targeting `release` with default branch `main` must return false;
+a merged PR targeting default branch `trunk` must return true.

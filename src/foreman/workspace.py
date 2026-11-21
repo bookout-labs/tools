@@ -44,12 +44,9 @@ class LiveWorkspace:
         return subprocess.run(command, shell=True, cwd=self.root, stdin=subprocess.DEVNULL).returncode
 
     def has_file(self, path: str) -> bool:
-        relative = Path(path)
-        if relative.is_absolute() or ".." in relative.parts:
-            return False
         root = self.root.resolve()
         try:
-            file = (root / relative).resolve()
+            file = (root / path).resolve()
             return file.is_relative_to(root) and file.is_file()
         except (OSError, RuntimeError, ValueError):
             return False

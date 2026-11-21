@@ -45,7 +45,7 @@ class DryRun:
     pass
 
 
-SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle"]
+SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle", "existing_seam_builder"]
 
 
 class SpecRejection(TypedDict):
@@ -133,7 +133,10 @@ def clean_slices(
             if seam.path is not None and (workspace is None or not workspace.has_file(seam.path)):
                 raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, but {seam.path} is not a workspace file.")
             if builder := builders.get(seam.name):
-                dependencies[builder] = None
+                if seam.exists:
+                    raise InvalidSlicePlan("existing_seam_builder", f"{seam.name}: marked existing but built by {builder}.")
+                if builder != item.title:
+                    dependencies[builder] = None
             elif seam.path is None:
                 raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, which has no builder or existing file.")
     try:

@@ -9,8 +9,6 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from langgraph.checkpoint.sqlite import SqliteSaver
-
 from foreman.cli import main
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, run_delivery
@@ -128,7 +126,7 @@ class FakeGitHub:
         return number in self.merged
 
     def add_blocker(self, repo, number, blocker):
-        self.dependencies.setdefault(number, set()).add(blocker)
+        self.dependencies.setdefault(number, []).append(blocker)
 
     def blockers(self, repo, number):
         return [
@@ -475,7 +473,9 @@ class LiveRunnerTest(unittest.TestCase):
             self.assertEqual(fence, "\n\n```json\n")
             self.assertEqual(json.loads(encoded.removesuffix("\n```")), item)
             self.assertTrue(prose.startswith("Acceptance:\n" + item["acceptance"]))
+        self.assertEqual(self.github.dependencies, {102: [101]})
         resumed = self.walk([])
+        self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(resumed["child_issue_numbers"], [101, 102])
         self.assertEqual(len(self.github.created), 2)
         self.assertEqual(self.github.label_calls, [])
@@ -507,6 +507,39 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["stop"], "sliced")
         self.assertEqual(result["slices"][1]["depends_on"], [])
         self.assertEqual(self.github.issue_labels[102], ["slice", "factory"])
+
+    def test_self_built_seam_is_not_a_dependency(self):
+        self.github = FakeGitHub(["factory"])
+        builder = {**BUILDER, "uses": [SEAM]}
+        result = self.walk([{"triage": "spec"}, {
+            "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, builder],
+        }])
+        self.assertEqual(result["stop"], "sliced")
+        self.assertEqual(result["slices"][0]["depends_on"], [])
+        self.assertEqual(self.github.dependencies, {102: [101]})
+
+    def test_existing_seam_with_a_builder_is_rejected_before_filing(self):
+        self.github = FakeGitHub(["factory"])
+        (self.cwd / "seam.py").touch()
+        consumer = {**CONSUMER, "uses": [{**SEAM, "exists": True, "path": "seam.py"}]}
+        spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
+        result = self.walk([{"triage": "spec"}, spec, spec, spec])
+        self.assertEqual(result["stop"], "spec_cap")
+        self.assertEqual(result["spec_rejection"]["kind"], "existing_seam_builder")
+        self.assertEqual(self.github.created, [])
+
+    def test_workspace_file_paths_resolve_inside_the_root(self):
+        (self.cwd / "api.py").touch()
+        (self.cwd / "sub").mkdir()
+        workspace = LiveWorkspace(self.cwd)
+        self.assertTrue(workspace.has_file("sub/../api.py"))
+        with TemporaryDirectory() as directory:
+            outside = Path(directory) / "api.py"
+            outside.touch()
+            (self.cwd / "escape.py").symlink_to(outside)
+            for path in (str(outside), "../api.py", "escape.py"):
+                with self.subTest(path=path):
+                    self.assertFalse(workspace.has_file(path))
 
     def test_existing_seam_outside_workspace_reaches_the_cap_without_filing(self):
         self.github = FakeGitHub(["factory"])
@@ -891,17 +924,6 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(invoke(), armed)
         self.assertEqual(self.github.hold_reads, [repo, repo, repo])
         self.assertEqual(self.github.merge_calls, [(repo, 8, BRANCH, HEAD)])
-
-    def test_completed_legacy_checkpoint_keeps_its_merge_outcome(self):
-        result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-        config = {"configurable": {"thread_id": "example/engine#8"}}
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saved = saver.get_tuple(config)
-            channels = saved.checkpoint["channel_values"]
-            channels["merge_armed"] = channels.pop("merge") == "armed"
-            saver.put(saved.config, saved.checkpoint, saved.metadata, {})
-        self.assertEqual(self.walk([]), result)
-        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
 
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
         script = """
