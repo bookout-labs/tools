@@ -21,7 +21,7 @@ from langgraph.types import interrupt
 from pydantic import TypeAdapter, ValidationError
 from typing_extensions import TypedDict
 
-from foreman.adapters import Outcome, OutcomeKind
+from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
@@ -32,7 +32,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
+    Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -93,12 +93,9 @@ class DryRun:
         return merge_command(redact(repo), "<number>", revision)
 
 
-class SkillAttempt(TypedDict):
-    stage: str
-    model: str | None
-    commit: str
-    methods: list[str]
-    outcome: OutcomeKind
+def run_tokens(attempts: list[AttemptRecord]) -> int:
+    return sum(usage["input"] + usage["output"] + usage["cache_read"] + usage["cache_creation"]
+               for attempt in attempts if (usage := attempt["usage"]) is not None)
 
 
 SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle", "existing_seam_builder"]
@@ -137,7 +134,7 @@ class DeliveryFields(TypedDict, total=False):
     work_kind: WorkKind
     pstack_pin: dict[str, str]
     skill_reason: SkillFailureReason
-    skill_attempts: Annotated[list[SkillAttempt], operator.add]
+    attempts: Annotated[list[AttemptRecord], operator.add]
     research: str
     implementation: str
     delivery_branch: str
@@ -477,17 +474,23 @@ def compile_delivery(
                 instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
                 for key in ("review_findings", "settled_rulings", *( ("findings", "detail", "implementation") if past.rounds else ())):
                     worker_state.pop(key, None)
-            attempts: list[SkillAttempt] = []
+            attempts: list[AttemptRecord] = []
 
-            def record_attempt(model: str | None, kind: OutcomeKind) -> None:
-                attempts.append({
-                    "stage": name, "model": model, "commit": config.pstack.commit, "methods": methods, "outcome": kind,
-                })
+            def record_attempt(model: str | None, outcome: Outcome) -> None:
+                attempts.append(Attempt(
+                    stage=name, model=model, commit=config.pstack.commit, methods=methods, outcome=outcome.kind,
+                    usage=None if outcome.usage is None else AttemptUsage(
+                        input=outcome.usage.input_tokens, output=outcome.usage.output_tokens,
+                        cache_read=outcome.usage.cache_read_input_tokens or 0,
+                        cache_creation=outcome.usage.cache_creation_input_tokens or 0,
+                        cost_usd=outcome.usage.total_cost_usd,
+                    ),
+                ).record())
 
             outcome, model = dispatcher.run(
-                name, models, worker_state, instruction, on_attempt=record_attempt if methods_root and name != "verify" else None,
+                name, models, worker_state, instruction, on_attempt=record_attempt,
             )
-            stopped: DeliveryUpdate = {"path": [name], "skill_attempts": attempts}
+            stopped: DeliveryUpdate = {"path": [name], "attempts": attempts}
             if outcome.kind == "failed":
                 return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
@@ -504,7 +507,7 @@ def compile_delivery(
                     head = state.get("verified_head") or state.get("head_sha") or ""
                     accepted = accept(past, output, head, _check_tool_facts(output, run, state), review_context[2] if review_context else None)
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
-                update["skill_attempts"] = attempts
+                update["attempts"] = attempts
                 if accepted is not None:
                     update.update(review=accepted.review, detail=accepted.detail,
                                   review_findings=[r.model_dump(mode="json") for r in accepted.history.rounds],
@@ -564,6 +567,7 @@ def compile_delivery(
         assert "delivery_branch" in state and "attempt_head" in state or isinstance(run, DryRun)
         if isinstance(run, DryRun):
             return dispatch_implement(state, runtime)
+        update: DeliveryUpdate = {}
         try:
             before = run.workspace.inspect()
             branch, parent = state.get("delivery_branch"), state.get("attempt_head")
@@ -579,18 +583,18 @@ def compile_delivery(
                         "partial_edits": run.workspace.fingerprint()}
             after = run.workspace.inspect()
             if after.head != before.head or after.branch != before.branch:
-                return {**halted("failed", "The worker changed HEAD or switched branches.", "implement"), "head_sha": after.head}
+                return {**halted("failed", "The worker changed HEAD or switched branches.", "implement"), "head_sha": after.head, "attempts": update.get("attempts", [])}
             if not update.get("halt") and after.clean:
                 identifiers = [str(f.get("id")) for f in state.get("findings", [])]
                 if (gate := history({"rounds": state.get("review_findings", [])}).gate) and not gate.passed:
                     identifiers.insert(0, "tool-facts")
                 detail = "no changes" + ("; unresolved findings: " + ", ".join(identifiers) if identifiers else "")
-                return halted("failed", detail, "implement")
+                return {**update, **halted("failed", detail, "implement")}
             fingerprint = run.workspace.fingerprint()
             return {**update, "implementation_edits": fingerprint,
                     "partial_edits": fingerprint if update.get("halt") == "quota_exhausted" else ""}
         except WorkspaceError as exc:
-            return halted("git_failed", str(exc), "implement")
+            return {**update, **halted("git_failed", str(exc), "implement")}
 
     def commit(state: DeliveryState) -> DeliveryUpdate:
         assert "slice" in state

@@ -163,6 +163,7 @@ class PublicationTest(unittest.TestCase):
         result = self.walk(lambda: None)
         self.assertEqual(result.get("stop"), "failed")
         self.assertEqual(result.get("halt_detail"), "no changes")
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement"])
         self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
         self.assertEqual(self.created, [])
 
@@ -173,6 +174,7 @@ class PublicationTest(unittest.TestCase):
         result = self.walk(commit)
         self.assertEqual(result.get("stop"), "failed")
         self.assertIn("worker changed HEAD", result.get("halt_detail", ""))
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement"])
         self.assertEqual(result.get("head_sha"), self.git("rev-parse", "HEAD"))
         self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
         self.assertEqual(self.created, [])

@@ -2,9 +2,11 @@
 
 from collections.abc import Mapping
 
-from foreman.adapters import Outcome
+from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
 from foreman.stage_output import MergeRiskRecord, WorkKind
+
+SCRIPTED_USAGE = Usage(input_tokens=1, output_tokens=1)
 
 DEFAULT_RISK: MergeRiskRecord = {
     "alignment": "The change matches the request.",
@@ -58,19 +60,19 @@ class ScriptHandler:
             return Outcome("ran", {
                 "triage": self.triage, "work_kind": self.work_kind, "human_question": None,
                 "slice": self.slice if self.triage == "implement" and state["issue_kind"] == "parent" else None,
-            })
+            }, usage=SCRIPTED_USAGE)
         if node == "spec":
             return Outcome("ran", {
                 "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices,
                 "human_question": None,
-            })
+            }, usage=SCRIPTED_USAGE)
         if node == "implement":
             return Outcome("ran", {
                 "implementation": self.implementation,
                 "browser_proof": None, "formal_proof": None,
-            })
+            }, usage=SCRIPTED_USAGE)
         if node == "research":
-            return Outcome("ran", {"research": self.research})
+            return Outcome("ran", {"research": self.research}, usage=SCRIPTED_USAGE)
         if node == "review":
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = (
@@ -79,7 +81,7 @@ class ScriptHandler:
             )
             return Outcome("ran", {
                 "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if state.get("review") else [], "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.", "tool_facts": [],
-            })
+            }, usage=SCRIPTED_USAGE)
         if node == "verify":
-            return Outcome("ran", {"verify": self.verify})
+            return Outcome("ran", {"verify": self.verify}, usage=SCRIPTED_USAGE)
         raise ValueError(f"no script for {node}")

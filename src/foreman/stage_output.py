@@ -8,10 +8,11 @@ from dataclasses import dataclass
 
 from typing_extensions import NotRequired, TypedDict, override
 
-from pydantic import BaseModel, ConfigDict, JsonValue, Field, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator
 
 from pydantic.config import JsonDict
 
+from foreman.adapters import OutcomeKind
 from foreman.dispatch import InvalidOutput
 
 PULL_REQUEST_LINES = 400
@@ -122,6 +123,52 @@ class RecordContract(Contract, Generic[Record]):
     def record(self) -> Record:
         excluded = {key for key in ("depends_on", "blocker_numbers") if key not in self.model_fields_set}
         return self.record_adapter().validate_python(self.model_dump(exclude=excluded), strict=True)
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AttemptUsageRecord(TypedDict):
+    input: NonNegativeInt
+    output: NonNegativeInt
+    cache_read: NonNegativeInt
+    cache_creation: NonNegativeInt
+    cost_usd: float | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AttemptRecord(TypedDict):
+    stage: str
+    model: str | None
+    commit: str
+    methods: list[str]
+    outcome: OutcomeKind
+    usage: AttemptUsageRecord | None
+
+
+class AttemptUsage(RecordContract[AttemptUsageRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[AttemptUsageRecord]:
+        return TypeAdapter(AttemptUsageRecord)
+
+    input: NonNegativeInt
+    output: NonNegativeInt
+    cache_read: NonNegativeInt
+    cache_creation: NonNegativeInt
+    cost_usd: float | None
+
+
+class Attempt(RecordContract[AttemptRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[AttemptRecord]:
+        return TypeAdapter(AttemptRecord)
+
+    stage: str
+    model: str | None
+    commit: str
+    methods: list[str]
+    outcome: OutcomeKind
+    usage: AttemptUsage | None
 
 
 class SliceProperty(RecordContract[SlicePropertyRecord]):

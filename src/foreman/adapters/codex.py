@@ -41,9 +41,11 @@ def read_usage(report: object) -> Usage | None:
         return None
     if usage.cache_read_input_tokens is None:
         return None
-    cached = max(0, usage.cache_read_input_tokens)
+    cached = usage.cache_read_input_tokens
+    if cached > usage.input_tokens:
+        return None
     return usage.model_copy(update={
-        "input_tokens": max(0, usage.input_tokens - cached),
+        "input_tokens": usage.input_tokens - cached,
         "cache_read_input_tokens": cached,
     })
 
