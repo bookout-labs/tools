@@ -9,10 +9,9 @@ from typing import Callable
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from foreman.delivery import DeliveryState, clean_slices, compile_delivery
+from foreman.delivery import DeliveryState, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.github import GhClient, GitHub
-from foreman.stage_output import Slice, parse_output
 
 WorktreeInspector = Callable[[Path], tuple[str, bool]]
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
@@ -22,7 +21,7 @@ def _load_slice(body: str) -> dict[str, object]:
     blocks = SLICE_FENCE.findall(body)
     if not blocks:
         raise InvalidOutput("slice issue needs a fenced JSON object")
-    return clean_slices([parse_output(Slice, json.loads(blocks[-1]))], "slice", allow_external_dependencies=True)[0]
+    return load_slice(json.loads(blocks[-1]))
 
 
 def _inspect_worktree(cwd: Path) -> tuple[str, bool]:

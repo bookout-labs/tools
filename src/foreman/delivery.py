@@ -12,8 +12,10 @@ from langgraph.types import interrupt
 
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.proof import browser_proof_label, formal_proof_label
-from foreman.stage_output import Contract, STAGE_OUTPUTS, Slice, SlicePlanningOutput, SpecOutput, VerifyOutput, parse_output
+from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
+from foreman.stage_output import (
+    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+)
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -99,16 +101,21 @@ def clean_slices(
     return [item.model_dump() for item in raw]
 
 
+def load_slice(raw: object) -> dict[str, object]:
+    return clean_slices([parse_output(Slice, raw)], "slice", allow_external_dependencies=True)[0]
+
+
 def stage_update(name: str, output: Contract, state: DeliveryState, model: str | None = None) -> dict[str, object]:
     update: dict[str, object] = output.model_dump(exclude={"slice", "slices"})
     update["path"] = [name]
     if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready":
         update["slices"] = clean_slices(output.slices, "slices")
-    if isinstance(output, SlicePlanningOutput):
+    if isinstance(output, HumanQuestionOutput):
         update["human_question"] = output.human_question or ""
-        ready = update.get("triage") == "implement" or update.get("spec_gate") == "ready"
-        if ready and state.get("issue_kind") == "slice" and "slice" not in state and output.slice is not None:
-            update["slice"] = clean_slices([output.slice], "slice")[0]
+    if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
+        if output.slice is None:
+            raise InvalidOutput("slice: required when a parent triages as implement")
+        update["slice"] = clean_slices([output.slice], "slice")[0]
     if update.get("review") == "changes" or update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -163,9 +170,10 @@ def compile_delivery(
             except ConfigError as exc:
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
             instruction = prompts[name]
-            if name == "implement" and (slice := state.get("slice")):
-                for field, skill in (("screen", "browser-proof"), ("properties", "formal-proof")):
-                    if slice[field]:
+            if name == "implement":
+                slice = state["slice"]
+                for required, skill in ((browser_required, "browser-proof"), (formal_required, "formal-proof")):
+                    if required(slice):
                         proof = (PACKAGE / "skills" / f"{skill}.md").read_text().strip()
                         instruction = f"{instruction}\n\n{proof}"
             if name == "verify":
@@ -230,10 +238,8 @@ def compile_delivery(
         decision = state.get("triage")
         if decision == "needs_human":
             return "needs_human" if checkpointer is not None else "done"
-        if state.get("issue_kind") == "parent":
-            return "spec"
         if decision == "question":
-            return "research"
+            return "spec" if state.get("issue_kind") == "parent" else "research"
         return decision or "done"
 
     def after_spec(state: DeliveryState) -> str:
@@ -258,8 +264,8 @@ def compile_delivery(
         if state.get("halt"):
             return "done"
         if state.get("verify") == "pass":
-            slice = state.get("slice")
-            if slice and (slice["screen"] or slice["properties"]):
+            slice = state["slice"]
+            if browser_required(slice) or formal_required(slice):
                 return "proof"
             return "review"
         if state.get("review_rounds", 0) < config.max_review_rounds:
@@ -338,22 +344,21 @@ def run_delivery(
     request: str,
     check: str = "",
     config: Config | None = None,
-    issue_kind: str = "slice",
+    slice: dict[str, object] | None = None,
 ) -> DeliveryState:
-    if issue_kind not in {"parent", "slice"}:
-        raise ValueError(f"unknown issue kind {issue_kind}")
+    state: DeliveryState = {
+        "repo": repo,
+        "request": request,
+        "check": check,
+        "issue_kind": "parent" if slice is None else "slice",
+        "review_rounds": 0,
+        "models_used": {},
+        "path": [],
+    }
+    if slice is not None:
+        state["slice"] = load_slice(slice)
     graph = compile_delivery(dispatcher, config)
-    return graph.invoke(
-        {
-            "repo": repo,
-            "request": request,
-            "check": check,
-            "issue_kind": issue_kind,
-            "review_rounds": 0,
-            "models_used": {},
-            "path": [],
-        }
-    )
+    return graph.invoke(state)
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:

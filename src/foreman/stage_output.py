@@ -8,6 +8,8 @@ from pydantic.config import JsonDict
 
 from foreman.dispatch import InvalidOutput
 
+PULL_REQUEST_LINES = 400
+
 Text = Annotated[str, StringConstraints(pattern=r"\S")]
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Sections = TypeAdapter(dict[TrimmedText, TrimmedText])
@@ -27,23 +29,33 @@ class Contract(BaseModel):
 
 
 class SliceProperty(Contract):
-    name: TrimmedText
-    constraint: TrimmedText
+    name: TrimmedText = Field(description="State the database rule in plain words.")
+    constraint: TrimmedText = Field(description="Give the exact PostgreSQL constraint name, such as deals_external_id_key.")
+
+
+def _describe_slice(schema: JsonDict) -> None:
+    _require_all_fields(schema)
+    schema["description"] = f"One pull request's outcome, about {PULL_REQUEST_LINES} changed lines or fewer, and its proof obligations."
 
 
 class Slice(Contract):
-    """Preserve the proof obligations. Implementers should report only evidence they collect."""
+    model_config = ConfigDict(json_schema_extra=_describe_slice)
 
-    title: TrimmedText
-    acceptance: TrimmedText
+    title: TrimmedText = Field(description="Name the outcome.")
+    acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
     depends_on: list[TrimmedText] = Field(
-        description="Titles of other slices in this spec that must land first; empty for a single slice.",
+        description="List the titles of other slices from the same parent that must land first. Use an empty list if none must land first.",
     )
     screen: str = Field(
-        description="Use docs/screens/<file>.md without '..', or an empty string.",
+        description=(
+            "When the change alters a screen described under docs/screens/, name that Markdown file directly under "
+            "docs/screens/ without '..'. Use an empty string when no documented screen changes."
+        ),
         pattern=r"^(docs/screens/[^/\\]+\.md)?$",
     )
-    properties: list[SliceProperty]
+    properties: list[SliceProperty] = Field(
+        description="List only named PostgreSQL CHECK, UNIQUE, FOREIGN KEY, EXCLUSION, or NOT NULL constraints. Use an empty list when the slice adds no database rule.",
+    )
 
     @field_validator("screen")
     @classmethod
@@ -53,23 +65,37 @@ class Slice(Contract):
         return value
 
 
-class SlicePlanningOutput(Contract):
-    slice: Slice | None = None  # CLIs without schema enforcement may omit this.
-    human_question: str | None = None  # CLIs without schema enforcement may omit this.
+class HumanQuestionOutput(Contract):
+    human_question: str | None = Field(
+        default=None,
+        description="When this stage returns needs_human, put the question for the person here. Use null otherwise.",
+    )
 
 
-class TriageOutput(SlicePlanningOutput):
-    triage: Literal["implement", "spec", "question", "needs_human"]
+class TriageOutput(HumanQuestionOutput):
+    triage: Literal["implement", "spec", "question", "needs_human"] = Field(
+        description=(
+            "Use implement when the behavior is decided and the change fits in one pull request "
+            f"of about {PULL_REQUEST_LINES} changed lines or fewer. For other changes, use spec."
+        ),
+    )
+    slice: Slice | None = Field(
+        default=None,
+        description="For a parent issue that triages as implement, return its single slice. Use null otherwise, including for slice issues.",
+    )
 
 
 class ResearchOutput(Contract):
     research: Text
 
 
-class SpecOutput(SlicePlanningOutput):
+class SpecOutput(HumanQuestionOutput):
     spec: Text
     spec_gate: Literal["ready", "needs_human"]
-    slices: list[Slice] | None = None  # CLIs without schema enforcement may omit this.
+    slices: list[Slice] | None = Field(
+        default=None,
+        description="For a ready parent spec, return one entry per pull request. Use null otherwise.",
+    )
 
 
 class BrowserProof(Contract):

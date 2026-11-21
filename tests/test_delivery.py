@@ -1,6 +1,7 @@
 import unittest
 
 from dataclasses import replace
+from pathlib import Path
 
 from foreman.config import NodeConfig, load_config
 from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
@@ -14,7 +15,7 @@ SLICES = [
         "acceptance": "The board shows the deals.",
         "depends_on": [],
         "screen": "docs/screens/deals.md",
-        "properties": [{"name": "Visibility", "constraint": "Every open deal appears once."}],
+        "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
     },
     {
         "title": "Board saves a move",
@@ -24,23 +25,30 @@ SLICES = [
         "properties": [],
     },
 ]
+EMPTY_SLICE = {**SLICES[1], "depends_on": []}
 
 
 HEAD_SHA = "a" * 40
 
 
-def walk(handler, check="npm run check", issue_kind="slice", config=None):
+def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
     return run_delivery(
         FailoverDispatcher(handler),
         repo="DoctorCRE/doctorcre-engine",
         request="Add a field",
         check=check,
-        issue_kind=issue_kind,
+        slice=slice,
         config=config,
     )
 
 
 class DeliveryTest(unittest.TestCase):
+    def test_passing_a_slice_starts_a_slice_run(self):
+        result = walk(ScriptHandler(triage="spec"), slice=SLICES[1])
+        self.assertEqual(result["issue_kind"], "slice")
+        self.assertEqual(result["slice"], SLICES[1])
+        self.assertEqual(result["stop"], "verified")
+
     def test_clear_change_skips_spec(self):
         handler = ScriptHandler(head_sha=HEAD_SHA)
 
@@ -71,16 +79,24 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
 
+    def test_ready_spec_keeps_the_loaded_slice_proof_obligations(self):
+        result = walk(ScriptHandler(triage="spec"), slice=SLICES[0])
+        self.assertEqual(result["path"], ["triage", "spec", "implement", "verify", "proof", "done"])
+        self.assertEqual(result["stop"], "insufficient_evidence")
+
     def test_triage_slice_rejects_a_dependency(self):
-        result = walk(lambda *_: {"triage": "implement", "slice": {**SLICES[0], "depends_on": ["Other"]}})
+        result = walk(
+            lambda *_: {"triage": "implement", "slice": {**SLICES[0], "depends_on": ["Other"]}},
+            slice=None,
+        )
         self.assertEqual(result["path"], ["triage", "done"])
         self.assertEqual(result["stop"], "invalid_output")
         self.assertEqual(result["halt_detail"], "slice.depends_on.0: unknown dependency Other")
 
-    def test_a_parent_routes_to_spec_even_when_triage_says_implement(self):
-        for triage in ("implement", "spec"):
+    def test_a_parent_routes_spec_and_question_to_spec(self):
+        for triage in ("spec", "question"):
             with self.subTest(triage=triage):
-                result = walk(ScriptHandler(triage=triage, slices=SLICES), issue_kind="parent")
+                result = walk(ScriptHandler(triage=triage, slices=SLICES), slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "sliced")
                 self.assertEqual(result["slices"], SLICES)
@@ -98,12 +114,12 @@ class DeliveryTest(unittest.TestCase):
             "double dot": [{**first, "screen": "docs/screens/deals..draft.md"}],
             "backslash": [{**first, "screen": r"docs/screens/other\deals.md"}],
             "nested screen": [{**first, "screen": "docs/screens/sub/deals.md"}],
-            "blank constraint": [{**first, "properties": [{"name": "Visibility", "constraint": " "}]}],
-            "missing name": [{**first, "properties": [{"constraint": "Every deal appears once."}]}],
+            "blank constraint": [{**first, "properties": [{"name": "Deal external IDs are unique", "constraint": " "}]}],
+            "missing name": [{**first, "properties": [{"constraint": "deals_external_id_key"}]}],
         }
         for case, slices in cases.items():
             with self.subTest(case=case):
-                result = walk(ScriptHandler(slices=slices), issue_kind="parent")
+                result = walk(ScriptHandler(triage="spec", slices=slices), slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "invalid_output")
                 self.assertTrue(result["halt_detail"])
@@ -286,6 +302,11 @@ class DeliveryTest(unittest.TestCase):
             self.assertIn(name, picture)
         self.assertNotIn("claude-opus", picture)
         compile_delivery(FailoverDispatcher(ScriptHandler()), load_config())
+
+    def test_readme_diagram_matches_the_generated_graph(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        mermaid = readme.split("```mermaid\n", 1)[1].split("\n```", 1)[0]
+        self.assertEqual(mermaid, diagram())
 
 
 if __name__ == "__main__":
