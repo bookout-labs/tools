@@ -187,10 +187,6 @@ class ReviewOutput(Contract):
     )
     detail: Text = Field(description="Write the pull request review body, including any longer explanation.")
 
-    @property
-    def review(self) -> Literal["approve", "changes"]:
-        return "changes" if self.findings or any(r.status == "unresolved" for r in self.resolutions) else "approve"
-
 
 class VerifyOutput(Contract):
     verify: Literal["pass", "fail"]
