@@ -75,16 +75,20 @@ class DiagramTests(unittest.TestCase):
             and method.name.startswith("test_")
         }
         document = (ROOT / "docs/publication-recovery.md").read_text()
+        self.assertIn("## Transition tests\n", document)
         section = document.split("## Transition tests\n", 1)[1].split("\n## ", 1)[0]
         table = re.search(
             r"(?m)^\| Transition or crash window \| Test \|\n\| --- \| --- \|\n((?:\|.*\|\n)*)",
             section,
         )
-        self.assertIsNotNone(table, "publication transition table is missing")
-        assert table is not None
-        references = set(re.findall(r"`(test_\w+)`", table[1]))
-        self.assertTrue(references, "publication transition table has no test references")
-        self.assertFalse(references - methods, f"unknown publication tests: {references - methods}")
+        if table is None:
+            self.fail("publication transition table is missing")
+        rows = table[1].splitlines()
+        self.assertTrue(rows, "publication transition table has no rows")
+        references = {f"`{name}`" for name in methods}
+        for row in rows:
+            transition, cell = row[1:-1].split("|")
+            self.assertIn(cell.strip(), references, transition.strip())
 
     def test_drift_is_exactly_the_scheduled_gaps(self):
         path = GRAPH / "gaps.toml"

@@ -15,7 +15,7 @@ stateDiagram-v2
     Editing --> UsageUnknown: crash leaves pending dispatch
     UsageUnknown --> [*]: stop without redispatch
     Reconciling --> Committing: checkpoint edits or adopted worker tree
-    Reconciling --> Rejected: invalid worker history or changed branch
+    Reconciling --> Paused: invalid worker history or changed branch
     Reconciling --> Rejected: no changes
     Reconciling --> Paused: git failure
     Committing --> Committing: soft-reset adopted history, preserve tree
@@ -51,12 +51,14 @@ All names below are methods in `tests/test_publication.py`.
 | Quota halt, retry same partial edits | `test_quota_stop_continues_owned_partial_edits` |
 | Foreign changes after quota halt, reject | `test_foreign_edits_after_quota_stop_are_rejected` |
 | Unowned initial edits, reject | `test_dirty_initial_worktree_has_specific_detail` |
-| Empty worker commit, reject | `test_worker_commit_is_detected_using_the_actual_head` |
+| Empty worker commit, halt, preserve checkout, rerun after restore | `test_worker_commit_is_detected_using_the_actual_head` |
 | Clean, unpublished, nonempty linear worker history, adopt tree and replace with Foreman commit | `test_worker_tree_replays_reconciliation_and_publication` |
 | Crash before or after soft reset, resume from candidate without repeating worker or reconciliation | `test_worker_tree_replays_reconciliation_and_publication` |
 | Adopted tree committed before checkpoint, recover Foreman commit | `test_worker_tree_replays_reconciliation_and_publication` |
-| Invalid worker history or changed branch, reject and preserve checkout | `test_worker_history_rejections_preserve_checkout_and_usage` |
-| Candidate changes after reconciliation, reject before publication | `test_reconciled_candidate_mutation_is_rejected_before_publication` |
+| Invalid worker history or changed branch, halt, preserve checkout, rerun after restore | `test_worker_history_rejections_preserve_checkout_and_usage` |
+| Restore rejected worker history as edits, rerun to verified | `test_recovery_with_edits_uses_reconciled_fingerprint` |
+| Reconcile git timeout or lock, halt and retry reconciliation | `test_reconcile_git_errors_remain_git_failed` |
+| Extra commit after reconciliation, halt at commit | `test_reconciled_candidate_mutation_is_rejected_before_publication` |
 | Worker produces no edits, reject | `test_no_changes_fails_without_pushing` |
 | Completed worker checkpoint, crash before commit, retry commit | `test_crash_windows_resume_without_duplicate_completed_work` |
 | Commit lock, halt and retry commit | `test_index_lock_is_resumable` |
@@ -69,7 +71,7 @@ All names below are methods in `tests/test_publication.py`.
 | Missing PR, create then verify | `test_graph_commits_and_pushes_before_opening_one_pull_request` |
 | PR create failure, halt and retry | `test_rerun_retries_publication_without_rerunning_the_worker` |
 | PR creation finishes, crash and reuse PR | `test_crash_windows_resume_without_duplicate_completed_work` |
-| Existing PR on wrong base, reject | `test_wrong_base_open_pr_stops_without_creation` |
+| Existing PR on wrong base, halt | `test_wrong_base_open_pr_stops_without_creation` |
 | Review changes, next attempt on same branch and PR | `test_second_attempt_adds_a_commit_to_the_same_pull_request` |
 | Fetch, push, ls-remote and commit timeout, typed failure | `test_git_calls_disable_prompts_and_bound_network_and_commit` |
 | Authentication fails under a pseudo-terminal, return | `test_auth_failure_under_pty_returns_without_prompting` |
