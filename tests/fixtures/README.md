@@ -270,3 +270,16 @@ Pydantic strict integer validation rejects fractional numbers and booleans. Mode
 ### LangGraph dispatch durability
 
 LangGraph 1.2.24 `durability="sync"` commits the setup node before entering the call node. `tests/test_dispatch_recovery.py` kills fresh processes after a successful call, an uncommitted quota, and a committed quota followed by fallback. Recovery uses `update_state(as_node="<stage>_call")` to select that node's conditional route. The pinned package's `get_state_history` returns newest checkpoints first; `_checkpoint_before_halt` takes the first matching entry. LangGraph defaults to 10007 recursion steps (overridable by LANGGRAPH_DEFAULT_RECURSION_LIMIT); delivery overrides this with the sum of stage setup and candidate counts plus 12 orchestration steps per review round.
+`git/grep-lines.z`, `git/grep-no-text.z`, `git/name-status-rename.z`,
+`git/ls-tree.z`, `git/merge-base.txt`, `git/grep-fatal.stderr.txt`,
+`git/fetch-by-sha.json`, `git/grep-basic-regexp.json`, and
+`git/grep-attribute-source.json` record synthetic Git 2.56.0 runs. Recapture from the
+checkout root with `python tests/capture-review-context.py`. The script uses
+temporary repositories and a file-protocol origin, with fixed commit dates.
+The `.z` files contain raw stdout, including NUL delimiters; the fatal fixture
+contains raw stderr. The fetch transcript includes object-availability probes
+before and after fetching two full SHAs into an empty repository. Exit statuses,
+argv, and carried claim IDs are in `manifest.toml`. `git/name-status-types.md`
+records versioned source evidence for the status set.
+The grep transcripts compare configured pattern modes and local attributes
+against the explicit basic-regexp and committed-tree attribute options.

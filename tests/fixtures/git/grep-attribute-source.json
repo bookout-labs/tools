@@ -1,0 +1,68 @@
+{
+  "HEAD_attributes": null,
+  "worktree_and_index_attributes": "items.txt -diff\nspace* -diff\n",
+  "user_attributes": "nested/file.txt -diff\n",
+  "unpinned": {
+    "argv": [
+      "git",
+      "-c",
+      "core.attributesFile=../local-attributes",
+      "grep",
+      "-G",
+      "-c",
+      "-I",
+      "-z",
+      "--no-textconv",
+      "-e",
+      "^",
+      "HEAD",
+      "--"
+    ],
+    "returncode": 0,
+    "stdout": "HEAD:old name.txt\u00001\n",
+    "stderr": ""
+  },
+  "tree_source_only": {
+    "argv": [
+      "git",
+      "-c",
+      "core.attributesFile=../local-attributes",
+      "--attr-source=HEAD",
+      "grep",
+      "-G",
+      "-c",
+      "-I",
+      "-z",
+      "--no-textconv",
+      "-e",
+      "^",
+      "HEAD",
+      "--"
+    ],
+    "returncode": 0,
+    "stdout": "HEAD:items.txt\u00003\nHEAD:old name.txt\u00001\nHEAD:space : name.txt\u00002\n",
+    "stderr": ""
+  },
+  "tree_source_and_no_user_file": {
+    "argv": [
+      "git",
+      "--no-replace-objects",
+      "-c",
+      "core.attributesFile=/dev/null",
+      "--attr-source=HEAD",
+      "grep",
+      "-G",
+      "-c",
+      "-I",
+      "-z",
+      "--no-textconv",
+      "-e",
+      "^",
+      "HEAD",
+      "--"
+    ],
+    "returncode": 0,
+    "stdout": "HEAD:items.txt\u00003\nHEAD:nested/file.txt\u00001\nHEAD:old name.txt\u00001\nHEAD:space : name.txt\u00002\n",
+    "stderr": ""
+  }
+}
