@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
-from typing import get_args
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -16,7 +15,8 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DEFAULT_TOKEN_CAP, MergeHalt, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, unknown_usage, read_delivery_state
+from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
+from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -42,9 +42,9 @@ class RunPresentation:
 def snapshot_result(snapshot: StateSnapshot, saver: SqliteSaver) -> DeliveryResult:
     values = snapshot.values
     if snapshot.interrupts:
-        if values.get("halt") == "quota_exhausted":
+        if values.get("halt") == Halt.quota_exhausted:
             parse_output(QuotaPause, snapshot.interrupts[0].value)
-            return read_delivery_state({**values, "stop": "quota_exhausted"})
+            return read_delivery_state({**values, "stop": Halt.quota_exhausted.value})
         question = parse_output(HumanPrompt, snapshot.interrupts[0].value).question
         return read_delivery_state({**values, "stop": "needs_human", "halt_detail": question})
     result = read_delivery_state({**values, "stop": values.get("stop", "")})
@@ -179,7 +179,7 @@ def run_live_delivery(
                 scratch=None if channels.get("stop") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
             )
         except SkillMissing as exc:
-            return read_delivery_state({**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
+            return read_delivery_state({**halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,
                                         "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
                                         "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
                                         "repo": repo, "check": check,
@@ -221,13 +221,13 @@ def run_live_delivery(
             stage = pending["stage"]
             models = saved_values["dispatch_plan"]["models"]
             model = models[pending["index"]] if models else None
-            graph.update_state(config, {**halted("usage_unknown", unknown_usage(stage, model), stage),
+            graph.update_state(config, {**halted(Halt.usage_unknown, unknown_usage(stage, model), stage),
                                        "attempts": [Attempt(stage=stage, model=model, commit=pin.commit,
                                                             methods=saved_values["dispatch_plan"]["methods"], outcome="interrupted", usage=None).record()],
                                        "pending_dispatch": None}, as_node=stage + "_call")
             invoke(None, saved_values)
             return snapshot_result(graph.get_state(config), saver)
-        waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == "quota_exhausted"
+        waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == Halt.quota_exhausted
         if answer is not None:
             if waiting_for_quota:
                 raise AnswerError("This issue has no pending question.")
@@ -268,7 +268,7 @@ def run_live_delivery(
                 try:
                     item = _load_slice(loaded["body"])
                 except (InvalidOutput, json.JSONDecodeError) as exc:
-                    initial.update(halted("missing_slice", str(exc), None))
+                    initial.update(halted(Halt.missing_slice, str(exc), None))
                 else:
                     if detail := _blocker_detail(client, repo, issue, item):
                         return {**initial, "path": ["done"], "stop": "blocked", "halt_detail": detail}
@@ -281,7 +281,7 @@ def run_live_delivery(
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             repaired = False
             repair_head: str | None = None
-            if saved_values.get("halt") in get_args(MergeHalt) and not saved_values.get("merge_receipt") and (head := saved_values.get("verified_head")) and (branch := saved_values.get("delivery_branch")):
+            if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge_receipt") and (head := saved_values.get("verified_head")) and (branch := saved_values.get("delivery_branch")):
                 worktree = run.workspace.inspect()
                 try:
                     observed = client.readiness(repo, issue, branch, head)

@@ -21,7 +21,8 @@ from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
-from foreman.runner import AnswerError, RESUMABLE_HALTS, RunPresentation, run_live_delivery
+from foreman.outcomes import exit_code
+from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
@@ -274,4 +275,4 @@ def run_exit_code(result: DeliveryResult) -> int:
         return 3
     if stop in ("verified", "sliced", "answered") and result.get("path", [])[-1:] == ["done"]:
         return 0
-    return 75 if result.get("halt") in RESUMABLE_HALTS else 1
+    return exit_code(result.get("halt"))
