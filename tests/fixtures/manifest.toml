@@ -1102,3 +1102,30 @@ tool = "Foreman ReviewOutput"
 version = "issue 108"
 sources = ["https://github.com/bookout-labs/tools/issues/108"]
 notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/codex-schema-probe.json"]
+kind = "captured_run"
+tool = "codex"
+version = "codex-cli 0.171.0"
+argv = ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", "--ephemeral", "--json", "--output-schema", "<probe>/codex/output-schema.json", "--color", "never", "-s", "read-only", "Return exactly {\"items\":[1]} using the supplied strict schema. Do not use tools or read files."]
+returncode = 0
+claim_ids = ["tool-fact-230c1b4874586ed39a5d550a80dc49e6c553b6316324ecff8c29541c9e311a89"]
+notes = "codex CLI codex-cli 0.171.0 accepts a strict schema containing minItems and exclusiveMinimum. Live probe on 2026-11-21. Strict schema, argv, stdout and stderr are in the fixture. Session IDs, checkout paths and credential expiry are scrubbed. Schema acceptance only; no claim about model enforcement of invalid answers."
+
+[fixtures."review/claude-schema-probe.json"]
+kind = "captured_run"
+tool = "claude"
+version = "2.1.329 (Claude Code)"
+argv = ["claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "plan", "--output-format", "json", "--json-schema", "{\"type\": \"object\", \"properties\": {\"items\": {\"type\": \"array\", \"items\": {\"type\": \"integer\", \"exclusiveMinimum\": 0}, \"minItems\": 1}}, \"required\": [\"items\"], \"additionalProperties\": false}", "-p", "Return exactly {\"items\":[1]} using the supplied strict schema. Do not use tools or read files."]
+returncode = 0
+claim_ids = ["tool-fact-40834e45ef0138a2662ed2a32fba3359649ba0db49f7dc25464375c6dda97908"]
+notes = "claude CLI 2.1.329 (Claude Code) accepts a strict schema containing minItems and exclusiveMinimum. Live probe on 2026-11-21. Strict schema, argv, stdout and stderr are in the fixture. Session IDs, checkout paths and credential expiry are scrubbed. Schema acceptance only; no claim about model enforcement of invalid answers."
+
+[fixtures."review/grok-schema-probe.json"]
+kind = "captured_run"
+tool = "grok"
+version = "grok 1.0.89 (28be5bb1bf65) [stable]"
+argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\": \"object\", \"properties\": {\"items\": {\"type\": \"array\", \"items\": {\"type\": \"integer\", \"exclusiveMinimum\": 0}, \"minItems\": 1}}, \"required\": [\"items\"], \"additionalProperties\": false}", "-p", "Return exactly {\"items\":[1]} using the supplied strict schema. Do not use tools or read files."]
+returncode = 0
+claim_ids = ["tool-fact-2a9a216d957eeb93fab68597f145c04c8bf20d36b3973d9ffb555e3fdb3dd24f"]
+notes = "grok CLI grok 1.0.89 (28be5bb1bf65) [stable] accepts a strict schema containing minItems and exclusiveMinimum. Live probe on 2026-11-21. Strict schema, argv, stdout and stderr are in the fixture. Session IDs, checkout paths and credential expiry are scrubbed. Schema acceptance only; no claim about model enforcement of invalid answers."

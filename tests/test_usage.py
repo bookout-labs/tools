@@ -8,7 +8,7 @@ from foreman.adapters import Usage
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.adapters.codex import CodexAdapter
-from foreman.stage_output import AttemptUsage, AttemptUsageRecord, STAGE_OUTPUTS
+from foreman.stage_output import AttemptUsage, AttemptUsageRecord
 from foreman.config import ModelSpec
 from foreman.delivery import run_tokens, run_delivery
 from foreman.dry_run import ScriptHandler
@@ -78,7 +78,7 @@ class UsageTests(unittest.TestCase):
         for cli, adapter, fixture, total in (
             ("claude", ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high")), "success", 9799),
             ("grok", GrokAdapter(ModelSpec.parse("grok-4.7-high")), "success", 27669),
-            ("codex", CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), STAGE_OUTPUTS["triage"]), "cached_success", 149),
+            ("codex", CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high")), "cached_success", 149),
         ):
             with self.subTest(cli=cli):
                 process = fixture_process([cli], fixture, 0)

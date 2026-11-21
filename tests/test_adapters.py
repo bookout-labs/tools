@@ -10,7 +10,6 @@ from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
 from foreman.fixture_manifest import CapturedRun, FixtureManifest
-from foreman.stage_output import Contract, STAGE_OUTPUTS
 
 FIXTURES = Path(__file__).with_name("fixtures")
 
@@ -178,14 +177,8 @@ def codex_process(events, exit_code=0, stderr=""):
     return CompletedProcess(["codex"], exit_code, "\n".join(json.dumps(event, ensure_ascii=False) for event in events), stderr)
 
 
-class RecordedTriage(Contract):
-    triage: str
-    slice: None
-    human_question: str
-
-
 class CodexAdapterTest(unittest.TestCase):
-    adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), RecordedTriage)
+    adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"))
 
     def test_recorded_success(self):
         outcome = self.adapter.read(fixture_process(["codex"], "success", 0))
@@ -213,11 +206,12 @@ class CodexAdapterTest(unittest.TestCase):
         self.assertEqual(outcome.kind, "failed")
         self.assertIn("is not supported", outcome.detail)
 
-    def test_schema_invalid_final_output_is_a_failure(self):
+    def test_schema_validation_is_left_to_delivery(self):
         events = codex_events()
         events[-2]["item"]["text"] = '{"triage":"needs_human","human_question":"Which items?"}'
         outcome = self.adapter.read(codex_process(events))
-        self.assertEqual((outcome.kind, outcome.detail), ("failed", "slice: Field required"))
+        self.assertEqual(outcome.kind, "ran")
+        self.assertEqual(outcome.output, {"triage": "needs_human", "human_question": "Which items?"})
         self.assertIsNotNone(outcome.usage)
 
     def test_missing_and_zero_usage_are_unknown(self):
@@ -262,14 +256,6 @@ class CodexAdapterTest(unittest.TestCase):
     def test_agent_message_alone_does_not_complete_the_turn(self):
         outcome = self.adapter.read(codex_process(codex_events()[:-1]))
         self.assertEqual((outcome.kind, outcome.detail), ("failed", "Codex did not complete the turn"))
-
-    def test_codex_review_defers_validation_to_context_boundary(self):
-        events = codex_events()
-        events[-2]["item"]["text"] = json.dumps({"review": "changes. Add a check."})
-        adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), STAGE_OUTPUTS["review"])
-        outcome = adapter.read(codex_process(events))
-        self.assertEqual(outcome.kind, "ran")
-        self.assertEqual(outcome.output, {"review": "changes. Add a check."})
 
     def test_quota_formatters_as_terminal_failures(self):
         cases = json.loads((FIXTURES / "codex" / "quota-formatters.json").read_text())

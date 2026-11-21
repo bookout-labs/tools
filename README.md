@@ -213,7 +213,7 @@ Changes to `docs/graph/` require Joe's written approval on the PR before merge.
 
 The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. Review uses only Opus and Sol, filtered by implementation family. Grok remains in the other model orders. A node does not edit the list, and it does not decide the next node.
 
-Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high.
+Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Each dimension must cite the diff; an ungrounded review halts `invalid_output`.
 
 Round 1 reviews the full PR diff. Later rounds check unresolved findings and added
 interdiff lines also in the PR diff. Out-of-scope findings become coordinator notes. Typed findings have stable IDs, kinds, fixes and

@@ -699,28 +699,26 @@ class SettledRuling(Contract):
     text: Text
 
 
+class ReviewFinding(Finding):
+    @model_validator(mode="after")
+    def resolve(self, info: ValidationInfo) -> Self:
+        Citation.model_validate(dict(side="head", path=self.file, line=self.line), context=info.context)
+        return self
+
+
 class ReviewOutput(StageOutput):
     resolutions: list[FindingResolution] = Field(description="Mark every earlier unresolved reviewer finding once. The graph resolves tool-fact gate findings. Return an empty list in round 1.")
     risk: MergeRisk
-    findings: list[Finding] = Field(
+    findings: list[ReviewFinding] = Field(
         description="List each new requested fix, including nits. Return an empty list when there are none.",
     )
     tool_facts: list[ToolFact] = Field(
         description="List every outside-tool fact the diff relies on, including unrecorded facts. Use an empty list if there are none.",
     )
-    @field_validator("findings")
-    @classmethod
-    def resolve_findings(cls, value: list[Finding], info: ValidationInfo) -> list[Finding]:
-        if not isinstance(info.context, ReviewContext):
-            raise ValueError("trusted review context required")
-        for finding in value:
-            Citation.model_validate(dict(side="head", path=finding.file, line=finding.line), context=info.context)
-        return value
-
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        return {"risk": self.risk.record(), "detail": self.risk.render(),
+        return {"risk": self.risk.record(),
                 "findings": [finding.record() for finding in self.findings]}
 
 

@@ -19,7 +19,7 @@ from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, F
 
 
 class ReviewRoundsTest(unittest.TestCase):
-    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False, review_crash=False, review_quota=False, bad_interdiff=False):
+    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False, review_crash=False, review_quota=False, bad_interdiff=False, rerun=False):
         self.prompts = []
         self.diffs = []
         self.gate_reads = []
@@ -97,9 +97,9 @@ class ReviewRoundsTest(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint")) as saver:
                 graph = compile_delivery(dispatch, settings, scratch=scratch,
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
-                config = {"configurable": {"thread_id": "rounds"}}
+                config = {"configurable": {"thread_id": "example/repo#8"}}
                 state = {"repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": EMPTY_SLICE,
-                         "check": "exit 0", "token_cap": 20_000_000, **(initial or {})}
+                         "check": "exit 0", "token_cap": 20_000_000, "max_budget_usd": None, "pstack_pin": settings.pstack.model_dump(), **(initial or {})}
                 if crash or post_crash or review_crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
                         graph.invoke(state, config)
@@ -110,6 +110,12 @@ class ReviewRoundsTest(unittest.TestCase):
                     result = graph.invoke(None, config)
                 else:
                     result = graph.invoke(state, config)
+                if rerun:
+                    from foreman.runner import run_live_delivery
+                    from unittest.mock import patch
+                    with patch('foreman.runner.load_config', return_value=settings):
+                        result = run_live_delivery(repo='Example/Repo', issue=8, check='exit 0',
+                            checkpoint=Path(directory) / 'checkpoint', run=LiveRun(self.forge, workspace), dispatcher=dispatch)
                 if answer:
                     self.assertEqual(result["halt"], "design_rethink")
                     self.assertEqual(read_delivery_state({"stop": "needs_human", **result})["review_rounds"], 2)

@@ -494,7 +494,7 @@ class StageOutputTest(unittest.TestCase):
                 parse_output(ReviewOutput, {**APPROVE, "review": verdict}, context=SCRIPTED_REVIEW_CONTEXT)
 
     def test_review_summary_is_limited_to_200_characters(self):
-        self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["Finding"]["properties"]["summary"]["maxLength"], 200)
+        self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["ReviewFinding"]["properties"]["summary"]["maxLength"], 200)
         raw = {**APPROVE, "findings": [{**FINDING, "summary": "a" * 201}]}
         with self.assertRaisesRegex(InvalidOutput, r"^findings\.0\.summary:"):
             parse_output(ReviewOutput, raw, context=SCRIPTED_REVIEW_CONTEXT)

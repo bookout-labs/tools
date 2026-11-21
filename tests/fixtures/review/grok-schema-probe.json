@@ -1,0 +1,39 @@
+{
+  "returncode": 0,
+  "stdout": "{\n  \"text\": \"{\\\"items\\\":[1]}\",\n  \"stopReason\": \"end_turn\",\n  \"sessionId\": \"00000000-0000-4000-8000-000000000001\",\n  \"requestId\": \"00000000-0000-4000-8000-000000000001\",\n  \"cwd\": \"/Users/booko/.t3/worktrees/tools-graph/t3-c90c9830-[redacted:Hex High Entropy String]/.scratch.schema-probe/grok\",\n  \"thought\": \"I will return exactly {\\\"items\\\":[1]} using the supplied strict schema.\\n\\nThe schema requires a non-empty array of positive integers. No surrounding text is allowed.\",\n  \"usage\": {\n    \"input_tokens\": 26353,\n    \"cache_read_input_tokens\": 1664,\n    \"cache_creation_input_tokens\": 0,\n    \"output_tokens\": 226,\n    \"reasoning_tokens\": 220,\n    \"total_tokens\": 28243\n  },\n  \"num_turns\": 1,\n  \"total_cost_usd\": 0.01866396,\n  \"total_cost_usd_ticks\": 186639600,\n  \"modelUsage\": {\n    \"grok-4.7-build\": {\n      \"inputTokens\": 26353,\n      \"outputTokens\": 226,\n      \"cacheReadInputTokens\": 1664,\n      \"cacheCreationInputTokens\": 0,\n      \"modelCalls\": 1,\n      \"costUSD\": 0.01866396\n    }\n  },\n  \"structuredOutput\": {\n    \"items\": [\n      1\n    ]\n  }\n}\n",
+  "stderr": "",
+  "argv": [
+    "grok",
+    "-m",
+    "grok-4.7",
+    "--reasoning-effort",
+    "high",
+    "--permission-mode",
+    "plan",
+    "--no-subagents",
+    "--output-format",
+    "json",
+    "--json-schema",
+    "{\"type\": \"object\", \"properties\": {\"items\": {\"type\": \"array\", \"items\": {\"type\": \"integer\", \"exclusiveMinimum\": 0}, \"minItems\": 1}}, \"required\": [\"items\"], \"additionalProperties\": false}",
+    "-p",
+    "Return exactly {\"items\":[1]} using the supplied strict schema. Do not use tools or read files."
+  ],
+  "version": "grok 1.0.89 (28be5bb1bf65) [stable]",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "minItems": 1
+      }
+    },
+    "required": [
+      "items"
+    ],
+    "additionalProperties": false
+  }
+}

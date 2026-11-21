@@ -26,11 +26,34 @@ class CitationTests(unittest.TestCase):
             parse_output(ReviewOutput, payload())
 
     def test_bad_fixtures_name_the_field(self):
-        for name, field in [('placeholder-99', 'risk.alignment'), ('padded', 'risk.alignment.evidence'),
-                            ('unrelated', 'risk.alignment.evidence'), ('stale', 'risk.alignment.evidence'),
-                            ('invented-finding', 'findings.0.line')]:
-            with self.subTest(name=name), self.assertRaisesRegex(InvalidOutput, field):
+        for name, field, message in [('placeholder-99', 'risk.alignment', 'valid dictionary'),
+                                     ('padded', 'risk.alignment.evidence', 'does not exist'),
+                                     ('unrelated', 'risk.alignment.evidence', 'must cite a changed path'),
+                                     ('stale', 'risk.alignment.evidence', 'is not a text line'),
+                                     ('invented-finding', 'findings.0.line', 'greater than 0')]:
+            with self.subTest(name=name), self.assertRaises(InvalidOutput) as raised:
                 self.parse(payload(name))
+            self.assertIn(field, str(raised.exception))
+            self.assertIn(message, str(raised.exception))
+
+    def test_bad_finding_path_names_its_index(self):
+        raw = dict(payload(), findings=[FINDING, {**FINDING, 'id': 'bad', 'file': 'nope.py', 'line': 1}])
+        with self.assertRaisesRegex(InvalidOutput, r"^findings\.1:.*nope.py.*does not exist"):
+            self.parse(raw)
+
+    def test_cli_schema_acceptance_captures(self):
+        for name in ('codex', 'claude', 'grok'):
+            capture = payload(name + '-schema-probe')
+            schema = capture['schema']['properties']['items']
+            self.assertEqual((schema['minItems'], schema['items']['exclusiveMinimum']), (1, 0))
+            if name == 'codex':
+                events = [json.loads(line) for line in capture['stdout'].splitlines()]
+                self.assertEqual(events[-1]['type'], 'turn.completed')
+                result = json.loads(next(e['item']['text'] for e in events if e.get('item', {}).get('type') == 'agent_message'))
+            else:
+                envelope = json.loads(capture['stdout'])
+                result = envelope['structured_output' if name == 'claude' else 'structuredOutput']
+            self.assertEqual((capture['returncode'], result), (0, {'items': [1]}))
 
     def test_deleted_and_inapplicable_dimensions(self):
         raw = payload()
@@ -67,20 +90,19 @@ class CitationGraphTests(unittest.TestCase):
     def test_placeholder_rejected_before_post_or_merge(self):
         result = self.run_rounds([payload('placeholder-99')])
         self.assertEqual(result['halt'], 'invalid_output')
-        self.assertIn('review ', result['halt_detail'])
+        self.assertIn('review claude-opus-5-5-high:', result['halt_detail'])
         self.assertFalse(result.get('review_findings'))
         self.assertFalse(result.get('review_receipt'))
         self.assertFalse(self.forge.reviews)
         self.assertFalse(self.forge.merge_calls)
-        self.assertEqual(result['attempts'][-1]['outcome'], 'ran')
-        self.assertIsNotNone(result['attempts'][-1]['usage'])
+        self.assertEqual((result['attempts'][-1]['outcome'], result['attempts'][-1]['usage']['input']), ('ran', 1))
 
     def test_later_rejection_keeps_only_prior_accepted_round(self):
         result = self.run_rounds([{**payload(), 'findings': [FINDING]}, payload('stale')])
         self.assertEqual(result['halt'], 'invalid_output')
         self.assertEqual(len(result['review_findings']), 1)
         self.assertEqual(len(self.forge.reviews), 1)
-        self.assertFalse(result.get('review_receipt'))
+        self.assertEqual(result['review_receipt'], {'id': 1, 'state': 'COMMENTED', 'commit_id': result['review_findings'][0]['reviewed_head']})
         self.assertFalse(self.forge.merge_calls)
 
     def test_grounded_review_arms_merge(self):
@@ -92,8 +114,9 @@ class CitationGraphTests(unittest.TestCase):
         empty = ReviewSide('a'*40, frozenset(), {}, frozenset())
         for value in [WorktreeInspectionFailed('unreadable'), ReviewContext(empty, empty)]:
             with self.subTest(value=value), patch.object(FakeWorkspace, 'review_context', side_effect=value if isinstance(value, Exception) else None, return_value=value):
-                result = self.run_rounds([])
+                result = self.run_rounds([], rerun=True)
                 self.assertEqual(result['halt'], 'review_unavailable')
-                self.assertNotIn('review', [p[0] for p in self.prompts])
+                self.assertIsNone(result.get('pending_dispatch'))
+                self.assertFalse([a for a in result['attempts'] if a['stage'] == 'review'])
                 self.assertFalse(self.forge.reviews)
                 self.assertFalse(self.forge.merge_calls)
