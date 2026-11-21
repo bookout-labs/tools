@@ -41,7 +41,7 @@ MergeHalt = Literal["merge_held", "merge_not_armed"]
 HaltReason = Literal[
     MergeHalt, "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+    "design_rethink", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[MergeHalt] = frozenset(get_args(MergeHalt))
 
@@ -129,7 +129,7 @@ class DeliveryState(TypedDict, total=False):
     review_rounds: int
     models_used: dict[str, str]
     implement_models: list[str]
-    halt: HaltReason
+    halt: HaltReason | Literal[""]
     halt_detail: str
     stop: str
     path: Annotated[list[str], operator.add]
@@ -400,10 +400,10 @@ def compile_delivery(
                                       review_rounds=state.get("review_rounds", 0))
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
-                update = {"path": [name], "spec_rejection": exc.reason, "review_rounds": rounds}
+                rejected: DeliveryState = {"path": [name], "spec_rejection": exc.reason, "review_rounds": rounds}
                 if rounds >= config.max_review_rounds:
-                    update.update(halted("spec_cap", str(exc), name))
-                return update
+                    rejected.update(halted("spec_cap", str(exc), name))
+                return rejected
             except InvalidOutput as exc:
                 return halted("invalid_output", str(exc), name)
 

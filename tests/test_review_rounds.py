@@ -233,13 +233,15 @@ class ReviewRoundsTest(unittest.TestCase):
                 result = self.run_rounds(reviews)
                 self.assertEqual(result["stop"], "review_cap")
                 self.assertEqual(result["review_rounds"], 3)
-                self.assertFalse(result.get("halt"))
+                self.assertEqual(result.get("halt"), "review_cap")
 
     def test_later_gate_failure_gets_fresh_id_without_recurrence(self):
         first = {"claim": "The CLI accepts example.", "fixture": "result.txt"}
         second = {"claim": "Another tool fact.", "fixture": None}
-        result = self.run_rounds([{**APPROVE, "tool_facts": [first]}, APPROVE,
-                                  {**APPROVE, "tool_facts": [second]}, APPROVE], gate_heads={"2" * 40, "3" * 40, "4" * 40})
+        result = self.run_rounds([{**APPROVE, "tool_facts": [first]},
+                                  {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
+                                  {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
+                                   "tool_facts": [second]}], gate_heads={"2" * 40, "3" * 40})
         self.assertEqual(result["stop"], "review_cap")
         self.assertEqual(result["review_rounds"], 3)
         self.assertEqual(result["findings"][0]["id"], "tool-fact-gate:3")

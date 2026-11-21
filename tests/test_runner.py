@@ -1237,9 +1237,11 @@ class HaltExitCodeTest(unittest.TestCase):
         ), "verify_cap", "Verification failed after 3 rounds. Check exit 7 failed.")
 
     def test_review_cap(self):
-        changes = {**APPROVE, "review": "changes", "findings": [FINDING], "detail": "Add a boundary check."}
+        changes = {**APPROVE, "findings": [FINDING], "detail": "Add a boundary check."}
+        unresolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "unresolved"}], "detail": "Add a boundary check."}
         self.assert_halt(self.live(
-            [{"triage": "implement"}] + [{"implementation": "built"}, changes] * 3,
+            [{"triage": "implement"}] + [{"implementation": "built"}, changes]
+            + [{"implementation": "built"}, unresolved] * 2,
         ), "review_cap", "Review requested changes after 3 rounds. Last review: Add a boundary check.")
 
     def test_missing_slice_has_no_fake_stage(self):
