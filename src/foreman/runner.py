@@ -1,5 +1,6 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
+from collections.abc import Mapping
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
+from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -76,6 +77,11 @@ def _checkpoint_before_halt(
     return before
 
 
+def require_token_cap(values: Mapping[str, object], checkpoint: Path) -> None:
+    if "token_cap" not in values:
+        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run with a new checkpoint path.")
+
+
 def run_live_delivery(
     *,
     repo: str,
@@ -87,6 +93,7 @@ def run_live_delivery(
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
     answer: str | None = None,
+    max_tokens: int | None = None,
     fact_record: str | None = None,
 ) -> DeliveryResult:
     if fact_record is not None:
@@ -99,6 +106,10 @@ def run_live_delivery(
         delivery_config = load_config()
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
+        if prior and "token_cap" in channels and max_tokens is not None and channels["token_cap"] != max_tokens:
+            raise ValueError("--max-tokens differs from the stored token cap")
+        if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
+            require_token_cap(channels, checkpoint)
         saved_pin = channels.get("pstack_pin")
         if prior and not channels.get("stop") and saved_pin is None:
             raise ValueError("Cannot resume a delivery checkpoint without a pstack pin.")
@@ -112,7 +123,8 @@ def run_live_delivery(
             return read_delivery_state({**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                         "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
                                         "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
-                                        "repo": repo, "check": check})
+                                        "repo": repo, "check": check,
+                                        "token_cap": channels["token_cap"] if prior else (max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)})
         def invoke(
             graph_input: DeliveryState | Command[str] | None,
             state: DeliveryState,
@@ -122,6 +134,11 @@ def run_live_delivery(
             graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync", version="v2")
 
         saved = graph.get_state(config)
+        if saved.values:
+            if not saved.next and not saved.interrupts and saved.values.get("halt") not in RESUMABLE_HALTS:
+                if "token_cap" not in saved.values:
+                    return read_delivery_state(saved.values)
+            require_token_cap(saved.values, checkpoint)
         saved_values = checkpoint_state(saved.values)
         if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
             raise ValueError("--fact-record differs from the checkpoint.")
@@ -164,7 +181,7 @@ def run_live_delivery(
             initial: DeliveryState = {
                 "fact_record": fact_record or MANIFEST_PATH,
                 "repo": repo,
-                "usage_version": 1,
+                "token_cap": max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
                 "issue": issue,
                 "workspace": workspace,
                 "request": text,
@@ -191,6 +208,7 @@ def run_live_delivery(
             invoke(Command(resume=True), saved_values)
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
+            require_token_cap(before.values, checkpoint)
             replay = before.config
             if partial := saved_values.get("partial_edits"):
                 replay = graph.update_state(replay, {"partial_edits": partial})

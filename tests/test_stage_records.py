@@ -77,7 +77,7 @@ class StageRecordTests(unittest.TestCase):
 
     def test_legacy_checkpoint_restores_slice_defaults(self):
         from foreman.runner import checkpoint_state
-        state = checkpoint_state({"repo": "example/repo", "check": "true", "path": [], "slice": {"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []}})
+        state = checkpoint_state({"token_cap": 20_000_000, "repo": "example/repo", "check": "true", "path": [], "slice": {"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []}})
         self.assertFalse(state["slice"]["stateful"])
         self.assertEqual(state["slice"]["builds"], [])
         self.assertEqual(state["slice"]["uses"], [])

@@ -38,6 +38,7 @@ from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, acce
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
+DEFAULT_TOKEN_CAP = 20_000_000
 PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
@@ -47,7 +48,7 @@ ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_fai
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "usage_unknown", "design_rethink", "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+    "budget_exceeded", "usage_unknown", "design_rethink", "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
@@ -128,7 +129,6 @@ class PullRequestSizeDecision(StrEnum):
 class DeliveryFields(TypedDict, total=False):
     pending_dispatch: PendingDispatchRecord | None
     dispatch_plan: DispatchPlanRecord
-    usage_version: int
     request: str
     issue: int
     workspace: str
@@ -185,6 +185,7 @@ class DeliveryFields(TypedDict, total=False):
 
 
 class DeliveryUpdate(DeliveryFields, total=False):
+    token_cap: int
     stop: str
     repo: str
     check: str
@@ -192,6 +193,7 @@ class DeliveryUpdate(DeliveryFields, total=False):
 
 
 class DeliveryState(DeliveryFields):
+    token_cap: int
     stop: NotRequired[str]
     repo: str
     check: str
@@ -199,6 +201,7 @@ class DeliveryState(DeliveryFields):
 
 
 class DeliveryResult(DeliveryFields):
+    token_cap: NotRequired[int]
     repo: str
     check: str
     path: Annotated[list[str], operator.add]
@@ -227,6 +230,14 @@ def halted(reason: HaltReason, detail: str, path: str | None) -> DeliveryUpdate:
     if not detail.strip():
         raise ValueError(f"{reason} requires a nonempty halt detail")
     return {"halt": reason, "halt_detail": detail, "path": [path] if path else []}
+
+
+def budget_halt(state: DeliveryState, attempts: list[AttemptRecord], stage: str) -> DeliveryUpdate:
+    last = attempts[-1]
+    detail = (f"Run used {run_tokens(attempts)} tokens; cap is {state['token_cap']}. "
+              f"Last attempt: {last['stage']} {last['model']} used {run_tokens([last])}. "
+              "An in-flight attempt can overshoot the cap.")
+    return halted("budget_exceeded", detail, stage)
 
 
 def stage_text(name: str) -> str:
@@ -411,6 +422,8 @@ def compile_delivery(
 
     def bind(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+            if run_tokens(state.get("attempts", [])) >= state["token_cap"]:
+                return budget_halt(state, state.get("attempts", []), name)
             if dispatcher is None:
                 return halted("no_dispatcher", "No dispatcher is configured.", name)
             current_run = run if isinstance(run, DryRun) else runtime.context or run
@@ -527,6 +540,11 @@ def compile_delivery(
                 name, ModelSpec.parse(models[pending["index"]]) if models else None, worker_state, plan["instruction"], on_attempt=record_attempt,
             )
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
+            attempt_history = state.get("attempts", []) + attempts
+            if outcome.kind == "ran" and outcome.usage is None:
+                return {**stopped, **halted("usage_unknown", unknown_usage(name, model), name)}
+            if run_tokens(attempt_history) >= state["token_cap"]:
+                return {**stopped, **budget_halt(state, attempt_history, name)}
             index = pending["index"] + 1
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):
                 return {"attempts": attempts, "pending_dispatch": PendingDispatch(
@@ -1032,12 +1050,13 @@ def run_delivery(
     config: Config | None = None,
     slice: object = None,
     scratch: Path | None = None,
+    max_tokens: int = DEFAULT_TOKEN_CAP,
     skills: SkillSource = export_skills,
     fact_record: str = MANIFEST_PATH,
 ) -> DeliveryResult:
     state: DeliveryState = {
         "repo": repo,
-        "usage_version": 1,
+        "token_cap": max_tokens,
         "fact_record": fact_record_path(fact_record),
         "request": request,
         "check": check,
