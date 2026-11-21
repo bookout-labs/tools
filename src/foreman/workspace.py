@@ -409,7 +409,8 @@ class LiveWorkspace:
             "--no-replace-objects", "ls-tree", "-rz", "--name-only", "--full-tree", sha, "--",
         ).split(b"\0") if path)
         raw = self._git(
-            "--no-replace-objects", "grep", "-c", "-I", "-z", "--no-textconv", "-e", "^", sha, "--",
+            "--no-replace-objects", *ATTRIBUTE_CONFIG, f"--attr-source={sha}",
+            "grep", "-G", "-c", "-I", "-z", "--no-textconv", "-e", "^", sha, "--",
             allowed_returncodes=(0, 1),
         )
         lines: dict[str, int] = {}

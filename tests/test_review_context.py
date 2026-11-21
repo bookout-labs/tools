@@ -164,6 +164,34 @@ class WorkspaceReviewContextTest(unittest.TestCase):
         with self.assertRaises(WorktreeInspectionFailed):
             self.workspace.review_context(head, head)
 
+    def test_line_counts_ignore_local_grep_pattern_settings(self):
+        self.write("text.txt", b"first\nlast")
+        head = self.commit()
+        self.git("push", "origin", "main")
+        self.git("config", "grep.patternType", "fixed")
+        context = self.workspace.review_context(head, head)
+        self.assertEqual(context.base.lines, {"text.txt": 2})
+        self.assertEqual(context.head.lines, {"text.txt": 2})
+
+    def test_line_counts_use_each_committed_trees_attributes(self):
+        self.write("text.txt", b"first\nlast")
+        base = self.commit()
+        self.write(".gitattributes", b"text.txt -diff\n")
+        head = self.commit()
+        self.git("push", "origin", "main")
+        attributes = self.root.parent / "local-attributes"
+        attributes.write_text("text.txt -diff\n")
+        for source in ("worktree", "attributesFile"):
+            with self.subTest(source=source):
+                if source == "worktree":
+                    self.write(".gitattributes", b"# local override\ntext.txt -diff\n")
+                else:
+                    (self.root / ".gitattributes").unlink()
+                    self.git("config", "core.attributesFile", str(attributes))
+                context = self.workspace.review_context(base, head)
+                self.assertEqual(context.base.lines, {"text.txt": 2})
+                self.assertEqual(context.head.lines, {".gitattributes": 1})
+
     def test_dry_run_default_matches_the_review_diff_and_can_be_overridden(self):
         for path, content in {"README.md": b"unchanged\n", "items.txt": b"first\nold\nlast\n",
                               "deleted.txt": b"obsolete\n"}.items():

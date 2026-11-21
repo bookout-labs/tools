@@ -1,0 +1,62 @@
+{
+  "before": [
+    {
+      "argv": [
+        "git",
+        "cat-file",
+        "-t",
+        "21316f64d74e61197f814606dff72d9d9d493823"
+      ],
+      "returncode": 128,
+      "stdout": "",
+      "stderr": "fatal: git cat-file: could not get object info\n"
+    },
+    {
+      "argv": [
+        "git",
+        "cat-file",
+        "-t",
+        "e537eb10fa7f8f3be0e522e4d58f94f6b2e55bc8"
+      ],
+      "returncode": 128,
+      "stdout": "",
+      "stderr": "fatal: git cat-file: could not get object info\n"
+    }
+  ],
+  "fetch": {
+    "argv": [
+      "git",
+      "fetch",
+      "origin",
+      "21316f64d74e61197f814606dff72d9d9d493823",
+      "e537eb10fa7f8f3be0e522e4d58f94f6b2e55bc8"
+    ],
+    "returncode": 0,
+    "stdout": "",
+    "stderr": "From ../origin\n * branch            21316f64d74e61197f814606dff72d9d9d493823 -> FETCH_HEAD\n * branch            e537eb10fa7f8f3be0e522e4d58f94f6b2e55bc8 -> FETCH_HEAD\n"
+  },
+  "after": [
+    {
+      "argv": [
+        "git",
+        "cat-file",
+        "-t",
+        "21316f64d74e61197f814606dff72d9d9d493823"
+      ],
+      "returncode": 0,
+      "stdout": "commit\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "cat-file",
+        "-t",
+        "e537eb10fa7f8f3be0e522e4d58f94f6b2e55bc8"
+      ],
+      "returncode": 0,
+      "stdout": "commit\n",
+      "stderr": ""
+    }
+  ]
+}

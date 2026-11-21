@@ -1,7 +1,0 @@
-git version 2.56.0
-grep-lines.z argv: ['git', '--no-replace-objects', 'grep', '-c', '-I', '-z', '--no-textconv', '-e', '^', 'HEAD', '--']
-returncode: 0 stdout: b'HEAD:items.txt\x003\nHEAD:old name.txt\x001\nHEAD:space : name.txt\x002\n'
-name-status-rename.z argv: ['git', '--no-replace-objects', 'diff', '--name-status', '-z', '--find-renames', '--no-ext-diff', '--no-textconv', '--no-relative', 'HEAD^', 'HEAD', '--']
-returncode: 0 stdout: b'R100\x00old name.txt\x00new : name.txt\x00'
-grep-no-text.z argv: ['git', '--no-replace-objects', 'grep', '-c', '-I', '-z', '--no-textconv', '-e', '^', 'HEAD', '--']
-returncode: 1 stdout: b''
