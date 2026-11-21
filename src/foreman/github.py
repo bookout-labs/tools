@@ -99,7 +99,7 @@ def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
 
 class LiveForge:
     def load_issue(self, repo: str, number: int) -> Issue:
-        issue = self._read_issue_response(
+        issue = self._read(
             IssueView, ["gh", "issue", "view", str(number), "--repo", repo, "--json", "title,body,labels"],
         )
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
@@ -108,10 +108,10 @@ class LiveForge:
         args = ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={body}"]
         for label in labels:
             args.extend(["-f", f"labels[]={label}"])
-        return self._read_issue_response(CreatedIssue, args, timeout=None).number
+        return self._read(CreatedIssue, args, timeout=None).number
 
     def is_merged(self, repo: str, number: int) -> bool:
-        issue = self._read_issue_response(
+        issue = self._read(
             IssueClosure, ["gh", "issue", "view", str(number), "--repo", repo, "--json",
                            "closed,closedByPullRequestsReferences"],
         )
@@ -119,7 +119,7 @@ class LiveForge:
             return False
         for pr in issue.closedByPullRequestsReferences:
             closing_repo = f"{pr.repository.owner.login}/{pr.repository.name}"
-            status = self._read_issue_response(
+            status = self._read(
                 PullRequestStatus, ["gh", "pr", "view", str(pr.number), "--repo", closing_repo, "--json", "state"],
             )
             if status.state == "MERGED":
@@ -132,7 +132,9 @@ class LiveForge:
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
         try:
             self._arm_auto_merge(repo, issue, branch, sha)
-        except (CommandFailed, CommandTimedOut) as exc:
+        except MergeNotArmed:
+            raise
+        except ForgeError as exc:
             raise MergeNotArmed(str(exc)) from exc
 
     def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
@@ -149,19 +151,14 @@ class LiveForge:
         try:
             self._run_command(command)
         except CommandTimedOut as exc:
-            try:
-                confirmed = self._view_pr(repo, str(pr.number))
-            except ForgeError as confirmation_error:
-                raise MergeNotArmed(
-                    f"Merge arming timed out and was not confirmed ({confirmation_error})."
-                ) from exc
-            new_squash_request = (
-                pr.autoMergeRequest is None
+            confirmed = self._view_pr(repo, str(pr.number))
+            open_squash_request = (
+                confirmed.state == "OPEN"
                 and confirmed.autoMergeRequest is not None
                 and confirmed.autoMergeRequest.mergeMethod == "SQUASH"
             )
             same_head = confirmed.number == pr.number and confirmed.headRefOid.lower() == sha.lower()
-            if not (same_head and (confirmed.state == "MERGED" or new_squash_request)):
+            if not (same_head and (confirmed.state == "MERGED" or open_squash_request)):
                 raise MergeNotArmed("Merge arming timed out and was not confirmed.") from exc
 
     def _view_pr(self, repo: str, selector: str) -> PullRequest:
@@ -169,10 +166,7 @@ class LiveForge:
             "gh", "pr", "view", "--repo", repo,
             "--json", "number,state,headRefOid,headRefName,baseRefName,autoMergeRequest", "--", selector,
         ]
-        try:
-            return PullRequest.model_validate_json(self._run_command(command))
-        except ValidationError as exc:
-            raise MergeNotArmed(f"Invalid response from gh pr view ({exc}).") from exc
+        return self._read(PullRequest, command)
 
     def _run_command(self, command: list[str], *, timeout: float | None = 30) -> str:
         operation = " ".join(command[:2] if command[1] == "api" else command[:3])
@@ -188,9 +182,7 @@ class LiveForge:
             raise CommandFailed(result.stderr.strip() or f"{operation} exited with code {result.returncode}.")
         return result.stdout
 
-    def _read_issue_response(
-        self, model: type[Model], command: list[str], *, timeout: float | None = 30,
-    ) -> Model:
+    def _read(self, model: type[Model], command: list[str], *, timeout: float | None = 30) -> Model:
         output = self._run_command(command, timeout=timeout)
         try:
             return model.model_validate_json(output)
