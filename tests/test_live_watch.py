@@ -126,8 +126,8 @@ class LiveWatchTest(unittest.TestCase):
         self.forge.create_issue.assert_not_called()
         self.forge.comment_issue.assert_not_called()
         self.forge.reset_mock()
-        for verify, expected in (('pass', 0), ('fail', 1)):
-            with patch('foreman.cli.LiveForge', side_effect=AssertionError('dry Forge')), patch('foreman.cli.ScriptHandler', return_value=ScriptHandler(verify=verify)), contextlib.redirect_stdout(io.StringIO()):
+        for exit_code, expected in ((0, 0), (1, 1)):
+            with patch('foreman.cli.LiveForge', side_effect=AssertionError('dry Forge')), patch('foreman.delivery.DryRun.run', return_value=exit_code), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(['run', 'delivery', '--repo', 'Example/Engine', '--request', 'test', '--dry-run'], live_run=self.run), expected)
         self.assertEqual(self.forge.mock_calls, [])
 
