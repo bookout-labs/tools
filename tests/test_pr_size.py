@@ -180,6 +180,17 @@ class PullRequestSizeTest(unittest.TestCase):
         head = self.commit()
         self.assertEqual(workspace.pull_request_size(head, "main")["lines"], 9)
 
+    def test_binary_rename_with_edit_counts_only_changed_lines(self):
+        self.git("switch", "main")
+        self.write("original.dat", "\0item\n" * 500)
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("switch", "-C", BRANCH, base)
+        self.git("mv", "original.dat", "renamed.dat")
+        self.write("renamed.dat", "\0item\n" * 500 + "added\n")
+        head = self.commit()
+        self.assertEqual(LiveWorkspace(self.root).pull_request_size(head, "main")["lines"], 1)
+
     def test_rename_across_generated_boundary_counts_handwritten_side(self):
         self.git("switch", "main")
         self.write("docs/original.md", "content\n" * 11)
@@ -311,6 +322,21 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(self.stages, ["SpecOutput"])
         self.assertEqual(self.forge.merge_calls, [])
         self.assertIn("done verified", self.invoke("--answer", "override")[0])
+
+    def test_hardened_grep_uses_base_attributes_and_basic_patterns(self):
+        self.write("src/items.py", "first\nlast")
+        self.write(".gitattributes", "src/items.py -diff\n")
+        head = self.commit()
+        self.git("config", "grep.patternType", "fixed")
+        self.git("config", "grep.extendedRegexp", "true")
+        self.git("config", "color.grep", "always")
+        self.write("../local-attributes", "src/items.py -diff\n")
+        self.git("config", "core.attributesFile", str(self.root.parent / "local-attributes"))
+        raw = LiveWorkspace(self.root)._inspection_git(
+            self.base, "grep", "-c", "-I", "-z", "--no-textconv", "-e", "^", head,
+            "--", "src/items.py", allowed_returncodes=(0, 1),
+        )
+        self.assertEqual(raw, head.encode() + b":src/items.py\x002\n")
 
     def test_branch_attributes_cannot_exempt_its_own_diff(self):
         self.write(".gitattributes", (self.root / ".gitattributes").read_text() + "** linguist-generated -diff\n")

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -34,6 +35,9 @@ class ReviewRoundsTest(unittest.TestCase):
             return receipts[marker]
         self.forge.post_review = post
         with TemporaryDirectory() as directory, skill_fixture() as (settings, scratch):
+            if review_quota:
+                builder = settings.nodes["implement"]
+                settings.nodes["implement"] = replace(builder, models=tuple(m for m in builder.models if m.family == "grok"))
             outer = self
 
             class Workspace(FakeWorkspace):
