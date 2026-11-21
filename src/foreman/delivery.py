@@ -14,7 +14,7 @@ from langgraph.types import interrupt
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.github import Forge, ForgeError, MergeNotArmed, merge_command
+from foreman.github import MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, merge_command
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.stage_output import (
     Contract, HumanQuestionOutput, PULL_REQUEST_LINES, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput,
@@ -29,6 +29,9 @@ STAGE_ORDER = REQUIRED_NODES + ("merge",)
 SKILLS_FOR = {
     "review": ("review-quality", "merge-risk"),
 }
+MergeHalt = Literal["merge_held", "merge_not_armed"]
+
+
 @dataclass(frozen=True)
 class LiveRun:
     forge: Forge
@@ -315,13 +318,19 @@ def compile_delivery(
 
     dispatch_review = bind("review")
 
-    def merge_not_armed(detail: str) -> DeliveryState:
-        return {"merge": "not_armed", "halt": "merge_not_armed", "halt_detail": detail, "path": ["merge"]}
-
-    def moved_head(actual: str, verified: str) -> DeliveryState:
-        return merge_not_armed(
-            f"HEAD is {actual}, verification checked {verified}. This run is finished and the merge was not armed.",
+    def moved_head_detail(actual: str, verified: str) -> str:
+        return (
+            f"HEAD is {actual}, verification checked {verified}. "
+            "Reset the PR branch to the verified commit.\n"
+            f"  git reset --keep {verified}\n"
+            "Then rerun the same command. New commits need a new run."
         )
+
+    def moved_before_review(actual: str, verified: str) -> dict[str, object]:
+        return {
+            "merge": "not_armed", "halt": "merge_not_armed", "path": ["review"],
+            "halt_detail": moved_head_detail(actual, verified),
+        }
 
     def review(state: DeliveryState) -> dict[str, object]:
         if isinstance(run, DryRun):
@@ -332,7 +341,7 @@ def compile_delivery(
                 raise WorktreeInspectionFailed("The run did not record a verified HEAD.")
             worktree = run.workspace.inspect()
             if worktree.head != head:
-                return dict(moved_head(worktree.head, head))
+                return moved_before_review(worktree.head, head)
             if worktree.branch is None:
                 raise WorktreeInspectionFailed("HEAD is detached. Pull request sizing requires a checked-out branch.")
             repo = state.get("repo")
@@ -341,7 +350,7 @@ def compile_delivery(
             size = run.workspace.pull_request_size(head, base)
             checked = run.workspace.inspect()
             if checked.head != head:
-                return dict(moved_head(checked.head, head))
+                return moved_before_review(checked.head, head)
             if not checked.clean or checked.branch != worktree.branch:
                 raise WorktreeInspectionFailed("The worktree changed after verification.")
         except (ForgeError, WorktreeInspectionFailed) as exc:
@@ -411,30 +420,44 @@ def compile_delivery(
         return "done" if state.get("halt") else "verify"
 
     def arm_merge(state: DeliveryState) -> DeliveryState:
+        repo = state["repo"]
+        head = state.get("verified_head")
+
+        def halted(halt: MergeHalt, detail: str) -> DeliveryState:
+            return {
+                "merge": "not_armed", "halt": halt, "halt_detail": detail, "path": ["merge"],
+                "merge_command": merge_command(repo, "<number>", head or "<sha>"),
+            }
+
         match run:
             case DryRun():
                 return {
                     "merge": "skipped", "path": ["merge"],
-                    "merge_command": merge_command(state["repo"], "<number>", state.get("head_sha") or "<sha>"),
+                    "merge_command": merge_command(repo, "<number>", state.get("head_sha") or "<sha>"),
                 }
             case LiveRun(forge=forge, workspace=workspace):
-                head = state.get("verified_head")
                 if head is None:
-                    return merge_not_armed("The run did not record a verified HEAD.")
+                    return halted("merge_not_armed", "The run did not record a verified HEAD.")
                 try:
                     worktree = workspace.inspect()
                 except WorktreeInspectionFailed as exc:
-                    return merge_not_armed(str(exc))
+                    return halted("merge_not_armed", str(exc))
                 if not worktree.clean:
-                    return merge_not_armed("The worktree has changes or Git could not inspect it.")
+                    return halted("merge_not_armed", "The worktree has changes or Git could not inspect it.")
                 if worktree.head != head:
-                    return moved_head(worktree.head, head)
+                    return halted("merge_not_armed", moved_head_detail(worktree.head, head))
                 if worktree.branch is None:
-                    return merge_not_armed("HEAD is detached. Merge requires a checked-out branch.")
+                    return halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")
                 try:
-                    forge.arm_auto_merge(state["repo"], state["issue"], worktree.branch, head)
+                    hold = forge.merge_hold(repo)
+                except MergeHoldUnreadable as exc:
+                    return halted("merge_held", f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
+                if hold:
+                    return halted("merge_held", hold)
+                try:
+                    forge.arm_auto_merge(repo, state["issue"], worktree.branch, head)
                 except MergeNotArmed as exc:
-                    return merge_not_armed(str(exc))
+                    return halted("merge_not_armed", str(exc))
                 return {"merge": "armed", "path": ["merge"]}
 
     def finish(state: DeliveryState) -> DeliveryState:

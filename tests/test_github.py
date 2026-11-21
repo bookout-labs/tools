@@ -5,7 +5,7 @@ from unittest.mock import call, patch
 
 from pydantic import ValidationError
 
-from foreman.github import CommandFailed, CommandTimedOut, ForgeError, LiveForge, MergeNotArmed
+from foreman.github import CommandFailed, CommandTimedOut, ForgeError, LiveForge, MergeHoldUnreadable, MergeNotArmed
 
 
 HEAD = "a" * 40
@@ -42,6 +42,38 @@ class LiveForgeTest(unittest.TestCase):
         run.return_value = pr_result({**PR, "baseRefName": "release/current"})
         self.assertEqual(LiveForge().pull_request_base(REPO, BRANCH), "release/current")
         self.assertEqual(run.call_args.args[0], VIEW)
+
+    @patch("foreman.github.subprocess.run")
+    def test_merge_hold_reads_the_requested_repository_variable(self, run):
+        for stdout, hold in (
+            ('[{"name":"REGION","value":"test"},{"name":"FOREMAN_MERGE_HOLD","value":"  Maintenance\\n"}]', "  Maintenance\n"),
+            ('[{"name":"FOREMAN_MERGE_HOLD","value":""}]', ""),
+            ('[{"name":"REGION","value":"test"}]', None),
+            ("[]", None),
+        ):
+            with self.subTest(hold=hold):
+                run.return_value = gh_result(stdout)
+                self.assertEqual(LiveForge().merge_hold(REPO), hold)
+                self.assertEqual(run.call_args.args[0], [
+                    "gh", "variable", "list", "--repo", REPO, "--json", "name,value",
+                ])
+
+    @patch("foreman.github.subprocess.run")
+    def test_merge_hold_fails_closed_on_command_and_validation_errors(self, run):
+        reason = "failed to get variables: HTTP 404: Not Found (https://api.github.com/repos/Example/Missing/actions/variables?per_page=100)"
+        run.side_effect = [
+            subprocess.CompletedProcess([], 1, "", reason),
+            gh_result('[{"name":"FOREMAN_MERGE_HOLD","value":123}]'),
+            subprocess.TimeoutExpired(["gh", "variable", "list"], 30),
+        ]
+        with self.assertRaises(MergeHoldUnreadable) as error:
+            LiveForge().merge_hold("Example/Missing")
+        self.assertEqual(str(error.exception), reason)
+        self.assertIsInstance(error.exception.__cause__, CommandFailed)
+        with self.assertRaisesRegex(MergeHoldUnreadable, "Invalid ActionsVariables response"):
+            LiveForge().merge_hold(REPO)
+        with self.assertRaisesRegex(MergeHoldUnreadable, "gh variable list timed out"):
+            LiveForge().merge_hold(REPO)
 
     @patch("foreman.github.subprocess.run")
     def test_load_issue_validates_labels_and_normalizes_an_empty_body(self, run):
