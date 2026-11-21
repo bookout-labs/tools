@@ -55,7 +55,9 @@ class ProofLabelTest(unittest.TestCase):
         )
         for raw, label in cases:
             with self.subTest(raw=raw):
-                artifact = None if raw is None else BrowserProof.model_validate(raw).model_dump()
+                artifact = None if raw is None else BrowserProof.model_validate({
+                    "screen": None, "trace": None, "passed": None, **raw,
+                }).model_dump()
                 self.assertEqual(browser_proof_label(slice, artifact), label)
 
     def test_formal_evidence_boundary(self):
@@ -71,10 +73,13 @@ class ProofLabelTest(unittest.TestCase):
         )
         for raw, label in cases:
             with self.subTest(raw=raw):
-                artifact = None if raw is None else FormalProof.model_validate(raw).model_dump()
+                artifact = None if raw is None else FormalProof.model_validate({
+                    "ran": None, "constraints": None, "typecheck": None, **raw,
+                }).model_dump()
                 self.assertEqual(formal_proof_label(slice, artifact), label)
 
         rejected_amount = FormalProof.model_validate({
+            "ran": None, "typecheck": None,
             "constraints": [{"constraint": "positive_amount", "rejected": True}],
         }).model_dump()
         self.assertIsNone(formal_proof_label(slice, rejected_amount))

@@ -1,0 +1,16 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": true,
+  "api_error": "model_substitution_disabled",
+  "result": "CLAUDE_CODE_NO_MODEL_FALLBACK forbids model substitution",
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0
+  },
+  "total_cost_usd": 0,
+  "modelUsage": {},
+  "session_id": "4d8f5dbc-5b69-4be1-a541-402e6f92cafe"
+}
