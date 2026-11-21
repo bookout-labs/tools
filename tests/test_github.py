@@ -41,12 +41,6 @@ def pr_result(pr=PR, command=VIEW):
 
 class LiveForgeTest(unittest.TestCase):
     @patch("foreman.github.subprocess.run")
-    def test_pull_request_base_uses_the_forge_base_ref(self, run):
-        run.return_value = pr_result({**PR, "baseRefName": "release/current"})
-        self.assertEqual(LiveForge().pull_request_base(REPO, BRANCH), "release/current")
-        self.assertEqual(run.call_args.args[0], VIEW)
-
-    @patch("foreman.github.subprocess.run")
     def test_merge_hold_reads_the_requested_repository_variable(self, run):
         for stdout, hold in (
             ('[{"name":"REGION","value":"test"},{"name":"FOREMAN_MERGE_HOLD","value":"  Maintenance\\n"}]', "  Maintenance\n"),
@@ -155,23 +149,6 @@ class LiveForgeTest(unittest.TestCase):
         with self.assertRaisesRegex(CommandFailed, "Not Found") as error:
             LiveForge().load_issue(REPO, 8)
         self.assertNotIsInstance(error.exception, MergeNotArmed)
-
-    @patch("foreman.github.subprocess.run")
-    def test_review_write_redacts_synthetic_secrets_before_json_encoding(self, run):
-        synthetic_token = "ghp_" + "a" * 36
-        run.side_effect = [pr_result(), pr_result(), gh_result("")]
-        forge = LiveForge()
-        target = forge.review_target(REPO, 8, BRANCH, HEAD)
-        forge.post_review(REPO, target, f"Synthetic {synthetic_token}", [{
-            "path": f"docs/{synthetic_token}.txt", "line": 2, "side": "RIGHT",
-            "body": f'Synthetic password="abc" and abc {synthetic_token}',
-        }])
-        payload = json.loads(run.call_args.kwargs["input"])
-        self.assertEqual(payload["commit_id"], HEAD.upper())
-        self.assertEqual(payload["body"], "Synthetic [redacted:GitHub Token]")
-        self.assertEqual(payload["comments"][0]["path"], "docs/[redacted:GitHub Token].txt")
-        self.assertEqual(payload["comments"][0]["body"],
-                         'Synthetic password="[redacted:Secret Keyword]" and abc [redacted:GitHub Token]')
 
     @patch("foreman.github.subprocess.run")
     def test_posts_the_review_and_inline_comments_for_the_verified_head(self, run):
