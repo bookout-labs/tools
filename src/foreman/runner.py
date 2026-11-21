@@ -96,6 +96,8 @@ def run_live_delivery(
         channels = prior["channel_values"] if prior else {}
         if prior and "token_cap" in channels and max_tokens is not None and channels["token_cap"] != max_tokens:
             raise ValueError("--max-tokens differs from the stored token cap")
+        if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
+            require_token_cap(channels, checkpoint)
         saved_pin = channels.get("pstack_pin")
         if prior and not channels.get("stop") and saved_pin is None:
             raise ValueError("Cannot resume a delivery checkpoint without a pstack pin.")
@@ -189,8 +191,6 @@ def run_live_delivery(
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
             require_token_cap(before.values, checkpoint)
-            if before.values["token_cap"] != saved_values["token_cap"]:
-                raise ValueError("The historical checkpoint has a different token cap. Start a new run.")
             replay = before.config
             if partial := saved_values.get("partial_edits"):
                 replay = graph.update_state(replay, {"partial_edits": partial})

@@ -13,6 +13,7 @@ from foreman.delivery import DEFAULT_TOKEN_CAP, DryRun, LiveRun, compile_deliver
 from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.runner import run_live_delivery
+from foreman.skill_rules import SkillMissing
 from tests.skill_fixture import skill_fixture
 from test_runner import FakeGitHub, FakeWorkspace
 
@@ -97,6 +98,23 @@ class TokenCapTests(unittest.TestCase):
                     graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {key: value for key, value in snapshot.items() if key != "token_cap"})
                 with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
                     run_live_delivery(**{**kwargs, "checkpoint": legacy}, dispatcher=FailoverDispatcher(quota))
+
+    def test_legacy_unfinished_checkpoint_with_missing_skill(self):
+        with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
+            def quota(*args):
+                return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0))
+            kwargs = dict(repo="a/b", issue=8, check="exit 0",
+                          run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))
+            first = run_live_delivery(**kwargs, checkpoint=Path(folder) / "a.sqlite", dispatcher=FailoverDispatcher(quota))
+            legacy = Path(folder) / "legacy.sqlite"
+            with SqliteSaver.from_conn_string(str(legacy)) as saver:
+                graph = compile_delivery(FailoverDispatcher(quota), config, run=DryRun(), checkpointer=saver)
+                graph.update_state({"configurable": {"thread_id": "a/b#8"}},
+                                   {key: value for key, value in first.items() if key != "token_cap"})
+            with patch("foreman.delivery.export_skills", side_effect=SkillMissing(config.pstack)) as export:
+                with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
+                    run_live_delivery(**kwargs, checkpoint=legacy, dispatcher=FailoverDispatcher(quota))
+                export.assert_not_called()
 
     def test_cli_positive_tokens_default_and_done_log(self):
         for raw in ("0", "-1", "abc"):
