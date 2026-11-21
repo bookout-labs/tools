@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from foreman.dispatch import InvalidOutput
-from foreman.stage_output import Contract, Finding, ReviewOutput, SettledRuling, ToolFact, parse_output
+from foreman.stage_output import Contract, Finding, ReviewOutput, SettledRuling, StoredToolFact, parse_output
 from foreman.workspace import ReviewScope
 
 
@@ -13,6 +13,7 @@ class GraphCheck(Contract):
     failing_heads: list[str] = Field(default_factory=list[str])
     detail: str
     passed: bool = False
+    tool_facts: list[StoredToolFact] = Field(default_factory=list[StoredToolFact])
 
 
 class ReviewRound(Contract):
@@ -21,13 +22,16 @@ class ReviewRound(Contract):
     findings: list[Finding]
     resolutions: dict[str, Literal["resolved", "unresolved"]]
     graph_check: GraphCheck | None = None
-    tool_facts: list[ToolFact] = Field(default_factory=list[ToolFact])
     coordinator_notes: list[Finding] = Field(default_factory=list[Finding])
 
 
 class ReviewHistory(Contract):
     rounds: list[ReviewRound] = Field(default_factory=list[ReviewRound])
     settled: list[SettledRuling] = Field(default_factory=list[SettledRuling])
+
+    @property
+    def gate(self) -> GraphCheck | None:
+        return self.rounds[-1].graph_check if self.rounds else None
 
     def unresolved(self) -> list[Finding]:
         findings = {f.id: f for r in self.rounds for f in r.findings}
@@ -78,13 +82,14 @@ def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphChec
             raise InvalidOutput("findings.ruling_id: unknown settled ruling")
         outside = scope is not None and scope.eligible is not None and (finding.file, finding.line) not in scope.eligible
         (notes if finding.ruling_id or outside else findings).append(finding)
-    old_gate = past.rounds[-1].graph_check if past.rounds else None
+    old_gate = past.gate
     if old_gate and not old_gate.passed:
         heads = sorted(set(old_gate.failing_heads).union(gate.failing_heads if gate else []))
         gate = GraphCheck(failing_heads=heads, detail=gate.detail if gate else old_gate.detail,
-                          passed=gate is None and head not in heads)
+                          passed=(gate is None or gate.passed) and head not in heads,
+                          tool_facts=gate.tool_facts if gate else old_gate.tool_facts)
     entry = ReviewRound(round=len(past.rounds) + 1, reviewed_head=head, findings=findings,
-                        resolutions=resolutions, coordinator_notes=notes, graph_check=gate, tool_facts=output.tool_facts)
+                        resolutions=resolutions, coordinator_notes=notes, graph_check=gate)
     history = ReviewHistory(rounds=[*past.rounds, entry], settled=past.settled)
     detail = [output.detail, *(f"Coordinator note {f.id}: {f.file}:{f.line} {f.summary}" for f in notes)]
     if gate and not gate.passed:
