@@ -238,6 +238,8 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge._redact_slice"): 10,
             ("github.py", "LiveForge.add_label"): 1,
             ("github.py", "LiveForge.add_blocker"): 1,
+            ("github.py", "LiveForge.add_sub_issue"): 1,
+            ("github.py", "LiveForge.update_issue_body"): 1,
             ("github.py", "LiveForge.create_issue"): 1,
             ("github.py", "LiveForge.comment_issue"): 1,
             ("github.py", "LiveForge.post_review"): 4,

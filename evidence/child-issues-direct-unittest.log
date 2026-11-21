@@ -1,0 +1,412 @@
+EEEEEEEEEEEEEEE.....EEEEE......E.....EEE
+======================================================================
+ERROR: test_accept (unittest.loader._FailedTest.test_accept)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_accept
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_accept.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_adapters (unittest.loader._FailedTest.test_adapters)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_adapters
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_adapters.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_budget (unittest.loader._FailedTest.test_budget)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_budget
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_budget.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_config (unittest.loader._FailedTest.test_config)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_config
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_config.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_delivery (unittest.loader._FailedTest.test_delivery)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_delivery
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_delivery.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_dispatch_recovery (unittest.loader._FailedTest.test_dispatch_recovery)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_dispatch_recovery
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_dispatch_recovery.py", line 9, in <module>
+    from tests.skill_fixture import skill_fixture
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_fixture_manifest (unittest.loader._FailedTest.test_fixture_manifest)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_fixture_manifest
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_fixture_manifest.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_github (unittest.loader._FailedTest.test_github)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_github
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_github.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_measure (unittest.loader._FailedTest.test_measure)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_measure
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_measure.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_offline (unittest.loader._FailedTest.test_offline)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_offline
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_offline.py", line 3, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_pointer (unittest.loader._FailedTest.test_pointer)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_pointer
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_pointer.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_pr_size (unittest.loader._FailedTest.test_pr_size)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_pr_size
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_pr_size.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_proof (unittest.loader._FailedTest.test_proof)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_proof
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_proof.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_publication (unittest.loader._FailedTest.test_publication)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_publication
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_publication.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_redaction (unittest.loader._FailedTest.test_redaction)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_redaction
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_redaction.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_review_rounds (unittest.loader._FailedTest.test_review_rounds)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_review_rounds
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_review_rounds.py", line 17, in <module>
+    from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_runner.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_runner (unittest.loader._FailedTest.test_runner)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_runner
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_runner.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_skill_rules (unittest.loader._FailedTest.test_skill_rules)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_skill_rules
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_skill_rules.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_spec_candidate (unittest.loader._FailedTest.test_spec_candidate)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_spec_candidate
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_spec_candidate.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_spec_check (unittest.loader._FailedTest.test_spec_check)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_spec_check
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_spec_check.py", line 8, in <module>
+    from test_spec_candidate import SLICE
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_spec_candidate.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_candidate_nested_boundaries_reject_coercion (test_stage_records.StageRecordTests.test_candidate_nested_boundaries_reject_coercion)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_stage_records.py", line 88, in test_candidate_nested_boundaries_reject_coercion
+    from test_spec_candidate import CandidateTests, SLICE
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_spec_candidate.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+======================================================================
+ERROR: test_token_cap (unittest.loader._FailedTest.test_token_cap)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_token_cap
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_token_cap.py", line 17, in <module>
+    from tests.skill_fixture import skill_fixture
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_type_gate (unittest.loader._FailedTest.test_type_gate)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_type_gate
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_type_gate.py", line 3, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+ERROR: test_usage (unittest.loader._FailedTest.test_usage)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_usage
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/test_usage.py", line 16, in <module>
+    from tests.test_adapters import fixture_process
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1ba81a26-e278058e42c5ca85/.scratch.dysd7sqz/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+----------------------------------------------------------------------
+Ran 40 tests in 0.026s
+
+FAILED (errors=24)

@@ -9,6 +9,41 @@
 # A derived fixture records the argv of its original capture.
 # Source quotes link to published evidence without a capture command.
 
+[fixtures."github/linked-issue.json"]
+tool = "GitHub REST API"
+version = "2026-03-10"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue", "https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue", "https://docs.github.com/en/rest/issues/issues#get-an-issue"]
+notes = "Selected fields from the published issue response example. The global id (1) differs from the repository issue number (1347). Used for parent, identity GET, POST receipt and PATCH receipt."
+
+[fixtures."github/sub-issues.json"]
+tool = "gh and GitHub REST API"
+version = "gh 2.102.0; GitHub REST API 2026-03-10"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/sub-issues#list-sub-issues", "https://cli.github.com/manual/gh_api"]
+notes = "Reduced published response example, with a synthetic second page (id 2, number 1349, closed) in gh --paginate --slurp format. Tests consume both pages and distinguish id from number."
+
+[fixtures."github/no-parent.json"]
+tool = "GitHub connector fetch"
+version = "GitHub REST API; captured 2026-11-21"
+kind = "captured_run"
+argv = ["mcp__codex_apps__github_fetch", '{"url":"https://api.github.com/repos/octocat/Hello-World/issues/1347/parent"}']
+notes = "Unmodified JSON error_data from the connector's HTTP 404 response. gh cannot reach api.github.com from this sandbox; this is a connector capture, not a gh run. Tests render the diagnostic using the versioned CLI formatter recorded in github/gh-api-fields-and-errors.txt."
+
+[fixtures."github/parent-errors.json"]
+tool = "gh and GitHub REST API"
+version = "gh 2.102.0; GitHub REST API 2026-03-10"
+kind = "quoted_source"
+sources = ["https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go", "https://github.com/cli/cli/blob/v2.102.0/internal/ghcmd/cmd.go", "https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue"]
+notes = "Synthetic error cases using gh's published HTTP error formatter and exit code 1, not live permission/validation probes. Includes generic 404 and a no-parent message with the wrong status to prevent broad exception suppression."
+
+[fixtures."github/marked-issues.json"]
+tool = "gh and GitHub REST API"
+version = "gh 2.102.0; GitHub REST API 2026-03-10"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/issues#list-repository-issues", "https://cli.github.com/manual/gh_api"]
+notes = "Reduced issue response schema with synthetic two-page bodies, exact markers, states and PR entries (including pull_request:null). state=all includes closed issues; the pull_request key distinguishes PRs; --slurp wraps pages."
+
 [fixtures."claude/help.txt"]
 tool = "claude"
 version = "2.1.329"

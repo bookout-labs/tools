@@ -179,6 +179,14 @@ class BlockerPages(RootModel[list[list[IssueBlocker]]]):
     pass
 
 
+class LinkedIssue(IssueBlocker):
+    id: PositiveInt
+
+
+class LinkedIssuePages(RootModel[list[list[LinkedIssue]]], strict=True):
+    pass
+
+
 class Issue(TypedDict):
     title: str
     body: str
@@ -226,6 +234,11 @@ class Forge(Protocol):
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
     def load_issue(self, repo: str, number: int) -> Issue: ...
     def open_issues(self, repo: str) -> list[OpenIssue]: ...
+    def marked_issues(self, repo: str, marker: str) -> list[int]: ...
+    def sub_issues(self, repo: str, number: int) -> list[LinkedIssue]: ...
+    def parent_issue(self, repo: str, number: int) -> LinkedIssue | None: ...
+    def add_sub_issue(self, repo: str, number: int, child: int) -> None: ...
+    def update_issue_body(self, repo: str, number: int, body: str) -> None: ...
     def issue_comments(self, repo: str, number: int) -> list[str]: ...
     def comment_issue(self, repo: str, number: int, body: str) -> None: ...
     def create_issue(
@@ -316,6 +329,41 @@ class LiveForge:
             "gh", "api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate", "--slurp",
         ])
         return [comment.body or "" for page in pages.root for comment in page]
+
+    def marked_issues(self, repo: str, marker: str) -> list[int]:
+        pages = self._read(OpenIssuePages, [
+            "gh", "api", f"repos/{repo}/issues?state=all&per_page=100", "--paginate", "--slurp",
+        ])
+        return [issue.number for page in pages.root for issue in page
+                if "pull_request" not in issue.model_fields_set and marker in (issue.body or "")]
+
+    def sub_issues(self, repo: str, number: int) -> list[LinkedIssue]:
+        pages = self._read(LinkedIssuePages, [
+            "gh", "api", f"repos/{repo}/issues/{number}/sub_issues?per_page=100", "--paginate", "--slurp",
+        ])
+        return [issue for page in pages.root for issue in page]
+
+    def parent_issue(self, repo: str, number: int) -> LinkedIssue | None:
+        try:
+            return self._read(LinkedIssue, ["gh", "api", f"repos/{repo}/issues/{number}/parent"])
+        except CommandFailed as exc:
+            if str(exc) == "gh: No parent issue found (HTTP 404)":
+                return None
+            raise
+
+    def add_sub_issue(self, repo: str, number: int, child: int) -> None:
+        repo = redact(repo)
+        identity = self._read(IssueIdentity, ["gh", "api", f"repos/{repo}/issues/{child}"])
+        self._run_command([
+            "gh", "api", f"repos/{repo}/issues/{number}/sub_issues",
+            "--method", "POST", "-F", f"sub_issue_id={identity.id}",
+        ])
+
+    def update_issue_body(self, repo: str, number: int, body: str) -> None:
+        repo, body = (redact(value) for value in (repo, body))
+        self._run_command([
+            "gh", "api", f"repos/{repo}/issues/{number}", "--method", "PATCH", "-f", f"body={body}",
+        ])
 
     def comment_issue(self, repo: str, number: int, body: str) -> None:
         repo, body = (redact(value) for value in (repo, body))
