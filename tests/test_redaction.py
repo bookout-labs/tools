@@ -16,7 +16,6 @@ from detect_secrets.core.scan import scan_line
 from detect_secrets.settings import default_settings, get_plugins
 
 from foreman.cli import main
-from foreman.delivery import DryRun
 from foreman.github import LiveForge
 from foreman.redaction import redact
 from foreman.runner import _load_slice
@@ -183,16 +182,10 @@ class RedactionTest(unittest.TestCase):
         LiveForge().arm_auto_merge(REPO, 82, BRANCH, SYNTHETIC_SHA, observation)
         live = next(call.args[0] for call in gh.call_args_list if call.args[0][1:3] == ["pr", "merge"])
         self.assertEqual(live[-2:], ["--match-head-commit", SYNTHETIC_SHA])
-        self.assertEqual(DryRun().record_merge("Example/Target", SYNTHETIC_SHA)[-1], SYNTHETIC_SHA)
         gh.side_effect = None
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
         LiveForge().create_issue("Example/Target", "Synthetic fixture", SYNTHETIC_SHA, [])
         self.assertIn("body=[redacted:Hex High Entropy String]", gh.call_args.args[0])
-
-    def test_dry_run_redacts_recorded_arguments(self):
-        argv = DryRun().record_merge(f"Example/{SYNTHETIC_GITHUB}", SYNTHETIC_GITHUB)
-        self.assertIn("Example/[redacted:GitHub Token]", argv)
-        self.assertEqual(argv[-1], "[redacted:GitHub Token]")
 
     def test_run_log_redacts_dry_run_check_and_live_error(self):
         base = ["run", "delivery", "--repo", "Example/Target"]
@@ -237,7 +230,6 @@ class RedactionTest(unittest.TestCase):
             ("dispatch.py", "clean_outcome"): 1,
             ("dispatch.py", "clean_outcome.clean"): 1,
             ("cli.py", "_write_run_log"): 1,
-            ("delivery.py", "DryRun.record_merge"): 2,
             ("github.py", "LiveForge._run_command"): 2,
             ("workspace.py", "LiveWorkspace._git"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,

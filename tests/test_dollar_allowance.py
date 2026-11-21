@@ -1,3 +1,4 @@
+from foreman.dry_run import DryRun
 import contextlib
 from decimal import Decimal
 import io
@@ -14,7 +15,7 @@ from langgraph.types import Overwrite
 from foreman.adapters import Outcome, Usage
 from foreman.budget import CostUnknown, Exhausted, Remaining, dollar_admission
 from foreman.cli import _print_run, main
-from foreman.delivery import DryRun, LiveRun, compile_delivery, run_delivery, run_tokens
+from foreman.delivery import LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import ScriptHandler
 from foreman.runner import run_live_delivery
 from foreman.usd import BudgetUsd
@@ -210,7 +211,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 with self.subTest(stop=snapshot["stop"]):
                     legacy = root / f"{snapshot['stop']}.sqlite"
                     with SqliteSaver.from_conn_string(str(legacy)) as saver:
-                        graph = compile_delivery(quota, config, run=DryRun(), checkpointer=saver)
+                        graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {key: value for key, value in snapshot.items() if key != "max_budget_usd"})
                     with self.assertRaisesRegex(ValueError, "unknown usage history for --max-budget-usd.*new run"):
                         run_live_delivery(**kwargs, checkpoint=legacy)
@@ -229,7 +230,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
             finished = root / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(finished)) as saver:
-                graph = compile_delivery(ScriptHandler(), config, run=DryRun(), checkpointer=saver)
+                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state(THREAD, {"repo": "a/b", "check": "", "path": ["done"], "stop": "answered",
                                             "token_cap": 100}, as_node="done")
             output = printed(run_live_delivery(**kwargs, checkpoint=finished))
@@ -272,7 +273,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 dispatched = len(calls)
                 if case == "non_prefix":
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-                        graph = compile_delivery(ScriptHandler(), config, run=DryRun(), checkpointer=saver)
+                        graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {"attempts": Overwrite(implement)}, as_node="done")
                     with self.assertRaisesRegex(ValueError, "non-prefix attempt history"):
                         run_live_delivery(**kwargs)
