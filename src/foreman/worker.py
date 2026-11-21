@@ -41,16 +41,18 @@ class CliWorker:
         prompt = (
             f"{instruction}\n\nReturn exactly one JSON object that matches the output schema. "
             "Use null for inapplicable nullable fields. Do not arm a merge."
+            " Write disposable scratch only under $TMPDIR, outside the checkout."
+            " Do not return the scratch path as evidence."
         )
         contract = STAGE_OUTPUTS[node]
         schema = json.dumps(contract.model_json_schema())
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
         adapter = ADAPTERS[model.family](model, contract)
-        with TemporaryDirectory(prefix="foreman-worker-") as directory:
+        with TemporaryDirectory(prefix="foreman-worker-", dir=self.cwd.resolve().parent) as directory:
             args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory)))
             try:
-                process = self.run(args, self.cwd, adapter.env)
+                process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": directory})
             except FileNotFoundError:
                 return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable")
             return adapter.read(process)

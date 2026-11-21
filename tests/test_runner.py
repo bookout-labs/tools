@@ -306,7 +306,7 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertEqual(cwd, Path("engine"))
                     self.assertIn('{"issue": 12}', args[-1])
                     expected_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"} if args[0] == "claude" else {}
-                    self.assertEqual(env, expected_env)
+                    self.assertEqual(env, {**expected_env, "TMPDIR": env["TMPDIR"]})
                     self.assertNotIn("Output schema:", args[-1])
                     if args[0] == "codex":
                         self.assertIn("--json", args)
@@ -326,6 +326,35 @@ class CliWorkerTest(unittest.TestCase):
                 self.assertEqual(result.output["triage"], "implement")
                 for path in schema_paths:
                     self.assertFalse(path.exists())
+
+    def test_each_family_can_use_scratch_outside_checkout(self):
+        with TemporaryDirectory() as root:
+            checkout = Path(root) / "checkout"
+            checkout.mkdir()
+            paths = []
+            for model in ("gpt-6.1-sol-high", "claude-opus-5-5-high", "grok-4.7-high"):
+                with self.subTest(model=model):
+                    def run(args, cwd, env):
+                        scratch = Path(env["TMPDIR"])
+                        paths.append(scratch)
+                        self.assertTrue(scratch.is_absolute())
+                        self.assertFalse(scratch.is_relative_to(checkout))
+                        self.assertNotIn(str(scratch), args[-1])
+                        process = run_worker_command([
+                            sys.executable, "-c",
+                            "import os, pathlib; "
+                            "p = pathlib.Path(os.environ['TMPDIR']) / 'scratch.txt'; "
+                            "p.write_text('worker scratch'); print(p.read_text())",
+                        ], cwd, env)
+                        self.assertEqual(process.returncode, 0, process.stderr)
+                        self.assertEqual(process.stdout.strip(), "worker scratch")
+                        return worker_reply(args, {"triage": "implement"})
+
+                    result = CliWorker(checkout, run)("triage", ModelSpec.parse(model), {}, "Read the issue.")
+                    self.assertEqual(result.kind, "ran")
+                    self.assertFalse(paths[-1].exists())
+            self.assertEqual(len(set(paths)), 3)
+            self.assertEqual(list(checkout.iterdir()), [])
 
     def test_subprocess_merges_adapter_environment_with_inherited_environment(self):
         inherited = {"PATH": "/bin", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0"}
@@ -918,6 +947,44 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                               fact_record="evidence/other.toml", checkpoint=self.checkpoint, dispatcher=ScriptHandler(),
                               run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(self.walk([])["stop"], "verified")
+
+    def test_resume_allocates_fresh_scratch_without_checkpointing_paths(self):
+        paths = []
+
+        def quota(args, cwd, env):
+            scratch = Path(env["TMPDIR"])
+            self.assertFalse(scratch.is_relative_to(self.cwd))
+            self.assertNotIn(scratch, paths)
+            self.assertFalse((scratch / "scratch.txt").exists())
+            (scratch / "scratch.txt").write_text("discard on quota")
+            paths.append(scratch)
+            return fixture_process(args, "quota", 1)
+
+        paused = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+            dispatcher=CliWorker(self.cwd, quota), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+        )
+        self.assertEqual(paused["stop"], "quota_exhausted")
+        self.assertTrue(paths)
+        self.assertTrue(all(not path.exists() for path in paths))
+        before_resume = len(paths)
+        replies = iter([{"triage": "question"}, {"research": "Only open items."}])
+
+        def answer(args, cwd, env):
+            quota(args, cwd, env)
+            return worker_reply(args, next(replies))
+
+        resumed = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+            dispatcher=CliWorker(self.cwd, answer), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+        )
+        self.assertEqual(resumed["stop"], "answered")
+        self.assertGreater(len(paths), before_resume)
+        self.assertTrue(all(not path.exists() for path in paths))
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            checkpoints = repr(list(saver.list({"configurable": {"thread_id": "example/engine#8"}})))
+        for path in paths:
+            self.assertNotIn(str(path), checkpoints)
 
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
         def exhaust(node, model, state, instruction):
