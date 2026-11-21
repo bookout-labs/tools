@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from foreman.workspace import ReviewScope
 from foreman.dispatch import InvalidOutput
 from foreman.stage_output import Contract, Finding, ReviewOutput, SettledRuling, ToolFact, parse_output
 
@@ -46,6 +47,7 @@ class AcceptedReview(Contract):
     history: ReviewHistory
     findings: list[Finding]
     detail: str
+    rethink: str = ""
 
     @property
     def change_kind(self) -> Literal["blocking", "nits"] | None:
@@ -59,7 +61,7 @@ class AcceptedReview(Contract):
         return "changes" if self.change_kind else "approve"
 
 
-def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphCheck | None) -> AcceptedReview:
+def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphCheck | None, scope: ReviewScope | None = None) -> AcceptedReview:
     earlier = {f.id for f in past.unresolved()}
     resolutions: dict[str, Literal["resolved", "unresolved"]] = {r.id: r.status for r in output.resolutions}
     if len(resolutions) != len(output.resolutions) or resolutions.keys() != earlier:
@@ -74,7 +76,8 @@ def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphChec
     for finding in output.findings:
         if finding.ruling_id is not None and finding.ruling_id not in settled:
             raise InvalidOutput("findings.ruling_id: unknown settled ruling")
-        (notes if finding.ruling_id else findings).append(finding)
+        outside = scope is not None and scope.eligible is not None and (finding.file, finding.line) not in scope.eligible
+        (notes if finding.ruling_id or outside else findings).append(finding)
     old_gate = past.rounds[-1].graph_check if past.rounds else None
     if old_gate and not old_gate.passed:
         heads = sorted(set(old_gate.failing_heads).union(gate.failing_heads if gate else []))
@@ -86,7 +89,10 @@ def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphChec
     detail = [output.detail, *(f"Coordinator note {f.id}: {f.file}:{f.line} {f.summary}" for f in notes)]
     if gate and not gate.passed:
         detail.append(gate.detail)
-    return AcceptedReview(history=history, findings=history.unresolved(), detail="\n\n".join(detail))
+    recurrence = next(((old, new) for entry in past.rounds for old in entry.findings for new in findings
+                       if old.severity == new.severity == "blocking" and old.kind == new.kind), None)
+    rethink = "" if recurrence is None else "Design-level fix required:\n" + "\n".join(f.model_dump_json() for f in recurrence)
+    return AcceptedReview(history=history, findings=history.unresolved(), detail="\n\n".join(detail), rethink=rethink)
 
 
 def history(raw: object) -> ReviewHistory:

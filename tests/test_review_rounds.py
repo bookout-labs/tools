@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
 
 from foreman.review_round import GraphCheck, ReviewHistory, accept
 from foreman.delivery import LiveRun, compile_delivery
@@ -15,7 +16,7 @@ from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, F
 
 
 class ReviewRoundsTest(unittest.TestCase):
-    def run_rounds(self, reviews, *, initial=None, crash=False, bad_diff=False, gate_heads=None):
+    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None):
         self.prompts = []
         self.diffs = []
         self.gate_reads = []
@@ -38,7 +39,9 @@ class ReviewRoundsTest(unittest.TestCase):
 
                 def review_diff(self, base, head, *, interdiff=False):
                     outer.diffs.append((base, head, interdiff))
-                    diff = super().review_diff(base, head)
+                    diff = super().review_diff(base, head, interdiff=interdiff)
+                    if divergent and interdiff:
+                        return type(diff)(diff.command, diff.patch + "diff --git a/main.txt b/main.txt\n--- a/main.txt\n+++ b/main.txt\n@@ -0,0 +1 @@\n+mainline\n")
                     if bad_diff:
                         return type(diff)(diff.command, "--- a/x\n+++ b/x\n@@ -1 +1 @@\ninvalid\n")
                     return diff
@@ -79,6 +82,10 @@ class ReviewRoundsTest(unittest.TestCase):
                     result = graph.invoke(None, config)
                 else:
                     result = graph.invoke(state, config)
+                if answer:
+                    self.assertEqual(result["halt"], "design_rethink")
+                    self.assertEqual(result["review_rounds"], 1)
+                    result = graph.invoke(Command(resume="Redesign the ownership."), config)
                 return result
 
     def test_missing_duplicate_unknown_resolutions_and_reused_ids_fail_closed(self):
@@ -114,7 +121,7 @@ class ReviewRoundsTest(unittest.TestCase):
         result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
                                  {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}], crash=True)
         self.assertEqual(result["merge"], "armed")
-        self.assertEqual(self.diffs, [(BASE, HEAD, False)] * 2)
+        self.assertEqual(self.diffs, [(BASE, HEAD, False), (BASE, HEAD, False), (HEAD, HEAD, True)])
         raw = parse_output(ReviewOutput, {**APPROVE, "findings": [FINDING]})
         before = raw.model_dump()
         past = ReviewHistory()
@@ -137,3 +144,45 @@ class ReviewRoundsTest(unittest.TestCase):
         result = self.run_rounds([APPROVE], initial={"review_findings": [{"broken": True}]})
         self.assertEqual(result["halt"], "invalid_output")
         self.assertIn("implement", result["path"])
+    def test_recurrence_pauses_without_consuming_round_or_patching(self):
+        result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
+                                 {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
+                                  "findings": [{**FINDING, "id": "again"}]}])
+        self.assertEqual(result["halt"], "design_rethink")
+        self.assertEqual(result["review_rounds"], 1)
+        self.assertEqual(result["path"].count("implement"), 2)
+        self.assertEqual([json.loads(line)["id"] for line in result["halt_detail"].splitlines()[1:]], ["f1", "again"])
+        self.assertFalse(self.forge.merge_calls)
+
+    def test_design_answer_resumes_implementation(self):
+        result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
+                                 {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
+                                  "findings": [{**FINDING, "id": "again"}]},
+                                 {**APPROVE, "resolutions": [{"id": "again", "status": "resolved"}]}], answer=True)
+        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["settled_rulings"][0]["text"], "Redesign the ownership.")
+
+        instruction = [p[2] for p in self.prompts if p[0] == "review"][2]
+        self.assertEqual(json.loads(instruction.split("Settled, don't reopen:\n")[1])[0]["id"], "design:2")
+
+    def test_interdiff_mainline_is_a_note_and_never_inline(self):
+        nit = {**FINDING, "severity": "nit"}
+        result = self.run_rounds([{**APPROVE, "findings": [nit]},
+                                 {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
+                                  "findings": [{**FINDING, "id": "main", "file": "main.txt", "line": 1}]}], divergent=True)
+        self.assertEqual(result["merge"], "armed")
+        self.assertIn("Coordinator note main", self.forge.reviews[-1][3])
+        self.assertEqual(self.forge.reviews[-1][4], [])
+
+    def test_diff_parse_failure_is_tolerated_first_and_unavailable_later(self):
+        result = self.run_rounds([APPROVE], bad_diff=True)
+        self.assertEqual(result["merge"], "armed")
+        result = self.run_rounds([{**APPROVE, "findings": [FINDING]}, APPROVE], bad_diff=True)
+        self.assertEqual(result["halt"], "review_unavailable")
+
+    def test_gate_never_counts_as_reviewer_recurrence(self):
+        fact = {"claim": "CLI behavior", "fixture": None}
+        result = self.run_rounds([{**APPROVE, "tool_facts": [fact]},
+                                 {**APPROVE, "findings": [FINDING]},
+                                 {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}])
+        self.assertEqual(result["stop"], "review_cap")

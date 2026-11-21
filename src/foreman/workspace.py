@@ -9,6 +9,8 @@ import shlex
 import subprocess
 from typing import NewType, Protocol
 from typing_extensions import TypedDict
+from unidiff.errors import UnidiffParseError
+from unidiff.patch import PatchSet
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 ATTRIBUTE_CONFIG = ("-c", "core.attributesFile=/dev/null")
@@ -53,6 +55,18 @@ class ReviewDiff:
     patch: str
 
 
+@dataclass(frozen=True)
+class ReviewScope:
+    command: str
+    inline: frozenset[tuple[str, int]]
+    eligible: frozenset[tuple[str, int]] | None = None
+
+
+def added_lines(patch: str) -> frozenset[tuple[str, int]]:
+    return frozenset((file.path, line.target_line_no) for file in PatchSet(patch) if not file.is_removed_file
+                     for hunk in file for line in hunk if line.is_added and line.target_line_no is not None)
+
+
 class Workspace(Protocol):
     root: Path
 
@@ -62,7 +76,8 @@ class Workspace(Protocol):
     def read_file_at(self, head: str, path: str) -> str: ...
     def has_file(self, path: str) -> bool: ...
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
-    def review_diff(self, base: str, head: str) -> ReviewDiff: ...
+    def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff: ...
+    def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope: ...
 
 
 class LiveWorkspace:
@@ -176,15 +191,32 @@ class LiveWorkspace:
                 lines += added_lines
         return {"head": head, "merge_base": merge_base, "lines": lines}
 
-    def review_diff(self, base: str, head: str) -> ReviewDiff:
+    def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff:
         if not (FULL_SHA.fullmatch(base) and FULL_SHA.fullmatch(head)):
             raise WorktreeInspectionFailed("Review requires full base and head SHAs.")
         self._git("fetch", "--no-tags", "origin", base, head, timeout=30)
         args = (
             "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
-            "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}...{head}", "--",
+            "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}..{head}" if interdiff else f"{base}...{head}", "--",
         )
         return ReviewDiff(shlex.join(("git", *args)), os.fsdecode(self._git(*args)))
+
+    def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope:
+        pr = self.review_diff(base, head)
+        try:
+            inline = added_lines(pr.patch)
+        except UnidiffParseError as exc:
+            if previous is not None:
+                raise WorktreeInspectionFailed("PR diff could not be parsed for scoping.") from exc
+            inline = frozenset[tuple[str, int]]()
+        if previous is None:
+            return ReviewScope(pr.command, inline)
+        diff = self.review_diff(previous, head, interdiff=True)
+        try:
+            eligible = added_lines(diff.patch) & inline
+        except UnidiffParseError as exc:
+            raise WorktreeInspectionFailed("Review interdiff could not be parsed.") from exc
+        return ReviewScope(diff.command, inline, eligible)
 
     def _git(self, *args: str, input_paths: bytes | None = None, timeout: float | None = None) -> bytes:
         operation = " ".join(("git", *args))

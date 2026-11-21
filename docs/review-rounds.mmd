@@ -1,4 +1,6 @@
 flowchart TD
+    review -->|recurrence|needs_human
+    needs_human -->|design ruling|implement
     review -->|changes below cap|implement
     implement --> verify
     verify --> review

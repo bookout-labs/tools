@@ -33,6 +33,7 @@ graph TD;
 	implement -.-> done;
 	implement -.-> verify;
 	merge --> done;
+	needs_human -.-> implement;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
 	proof -.-> done;
