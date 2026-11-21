@@ -1,14 +1,18 @@
 # Entry IDs are paths relative to tests/fixtures.
 # Captured probes used synthetic prompts in empty temporary directories.
 # UUIDs, paths, and credential expiry are scrubbed. Grok reasoning is redacted.
+# The Claude adapter uses --permission-mode plan for read-only work and supplies
+# CLAUDE_CODE_NO_MODEL_FALLBACK=1 in the subprocess environment. The WebFetch
+# probes below used dontAsk and explicit tool permissions.
+# Codex receives its schema in the prompt until S3. Its probes used extra flags
+# to run outside a checkout with an ephemeral session.
 # A derived fixture records the argv of its original capture.
-# Source quotes have empty argv because no capture command produced them.
+# Source quotes link to published evidence without a capture command.
 
 [fixtures."claude/is_error.json"]
 tool = "claude"
 version = "2.1.329"
 kind = "quoted_source"
-argv = []
 sources = [
   "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz",
 ]
@@ -48,7 +52,6 @@ derived_from = "claude/success.json"
 tool = "claude"
 version = "2.1.329"
 kind = "quoted_source"
-argv = []
 sources = [
   "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz",
 ]
@@ -58,7 +61,6 @@ notes = "The Claude binary selects model_substitution_disabled or no_allowed_fal
 tool = "claude"
 version = "2.1.329"
 kind = "quoted_source"
-argv = []
 sources = [
   "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz",
 ]
@@ -157,7 +159,6 @@ derived_from = "claude/success.json"
 tool = "codex"
 version = "0.171.0"
 kind = "quoted_source"
-argv = []
 sources = [
   "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L822-L977",
 ]
@@ -217,7 +218,6 @@ notes = "Exit 0. Relevant banner lines from stderr report the requested model an
 tool = "git"
 version = "2.56.0"
 kind = "quoted_source"
-argv = []
 sources = [
   "https://github.com/git/git/blob/v2.56.0/Documentation/git-ls-tree.adoc",
   "https://github.com/git/git/blob/v2.56.0/Documentation/git-fast-import.adoc",
@@ -274,7 +274,7 @@ derived_from = "grok/success.json"
 
 [fixtures."grok/is_error.json"]
 tool = "grok"
-version = "1.0.89 (28be5bb1bf65)"
+version = "1.0.89"
 kind = "captured_run"
 argv = [
   "grok",
@@ -319,9 +319,8 @@ derived_from = "grok/success.json"
 
 [fixtures."grok/quota.json"]
 tool = "grok"
-version = "1.0.89 (28be5bb1bf65)"
+version = "1.0.89"
 kind = "quoted_source"
-argv = []
 sources = [
   "https://registry.npmjs.org/@xai-official/grok-darwin-arm64/-/grok-darwin-arm64-1.0.89.tgz",
   "https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/sampling/error.rs#L17-L64",
@@ -374,3 +373,17 @@ argv = [
 ]
 notes = "Zero the top-level token usage."
 derived_from = "grok/success.json"
+
+[fixtures."review.diff"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", "HEAD^...HEAD", "--"]
+notes = "Synthetic repository. The head replaced the middle line of three-line items.txt and removed one-line deleted.txt. The synthetic checkout test also runs git fetch --no-tags origin <base-oid> <head-oid> and verifies the fetched base becomes available."
+
+[fixtures."github/review-api.txt"]
+tool = "gh and GitHub REST API"
+version = "gh 2.102.0; GitHub REST API 2022-11-28"
+kind = "quoted_source"
+sources = ["https://cli.github.com/manual/gh_pr_view", "https://cli.github.com/manual/gh_api", "https://docs.github.com/en/rest/pulls/reviews?apiVersion=2022-11-28#create-a-review-for-a-pull-request", "https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request"]
+notes = "Published evidence for the PR fields, stdin request body, review endpoint, and inline comment side used by LiveForge."

@@ -1,9 +1,9 @@
 """Provenance for outside-tool evidence under tests/fixtures."""
 
 import tomllib
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import Field, HttpUrl
+from pydantic import Field, HttpUrl, model_validator
 
 from foreman.stage_output import Contract, Text
 from foreman.workspace import Workspace
@@ -26,12 +26,22 @@ class CapturedRun(FixtureSource):
 
 class QuotedSource(FixtureSource):
     kind: Literal["quoted_source"]
-    argv: list[str] = Field(max_length=0)
     sources: list[HttpUrl] = Field(min_length=1)
 
 
 class FixtureManifest(Contract):
     fixtures: dict[Text, Annotated[CapturedRun | QuotedSource, Field(discriminator="kind")]]
+
+    @model_validator(mode="after")
+    def derived_captures_match(self) -> Self:
+        for path, fixture in self.fixtures.items():
+            if isinstance(fixture, CapturedRun) and fixture.derived_from is not None:
+                original = self.fixtures.get(fixture.derived_from)
+                if not isinstance(original, CapturedRun):
+                    raise ValueError(f"{path}: derived_from must name an existing captured run")
+                if fixture.argv != original.argv:
+                    raise ValueError(f"{path}: argv must match derived_from {fixture.derived_from}")
+        return self
 
     @classmethod
     def from_toml(cls, content: str) -> "FixtureManifest":

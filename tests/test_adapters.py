@@ -7,6 +7,7 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
+from foreman.dispatch import InvalidOutput
 from foreman.stage_output import STAGE_OUTPUTS, parse_output
 
 FIXTURES = Path(__file__).with_name("fixtures")
@@ -169,17 +170,7 @@ class CodexCompatibilityTest(unittest.TestCase):
         self.assertEqual(proof["implementation"], "Changes\nBuilt.\n\nTests\nPassed.")
         self.assertEqual(proof["browser_proof"], {"trace": "trace.zip", "screen": None, "passed": None})
 
-    def test_normalizes_punctuated_verdicts(self):
-        for raw, verdict, note in (
-            ("approve.", "approve", None),
-            ("changes.", "changes", None),
-            ("changes. Add a check.", "changes", "Add a check."),
-        ):
-            with self.subTest(raw=raw):
-                outcome = self.read("review", {"review": raw})
-                self.assertEqual(outcome.output, {"review": verdict, "review_note": note})
-
-    def test_rejects_two_change_notes(self):
-        outcome = self.read("review", {"review": "changes. Add a check.", "review_note": "Update the docs."})
-        self.assertEqual(outcome.kind, "failed")
-        self.assertIn("inline change note conflicts with review_note", outcome.detail)
+    def test_codex_review_uses_the_same_exact_verdict_contract(self):
+        outcome = self.read("review", {"review": "changes. Add a check."})
+        with self.assertRaisesRegex(InvalidOutput, "^review:"):
+            parse_output(STAGE_OUTPUTS["review"], outcome.output)
