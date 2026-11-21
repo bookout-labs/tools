@@ -337,6 +337,9 @@ class PublicationTest(unittest.TestCase):
                         break
                     output.extend(chunk)
             done, status = os.waitpid(pid, os.WNOHANG)
+            while done == 0 and time.monotonic() < deadline:
+                time.sleep(0.01)
+                done, status = os.waitpid(pid, os.WNOHANG)
             exited = done == pid
             self.assertTrue(exited, "authentication hung under a controlling pseudo-terminal")
             self.assertNotEqual(os.waitstatus_to_exitcode(status), 0)

@@ -77,6 +77,8 @@ The merged b67cc3c base retains `--preflight`, `env_unavailable`, `ResumableHalt
 
 Local verification passed 248 unit tests, 12 evals, the README dry run with `done verified`, and `git diff --check`. Pyright 1.1.414 checked all eight changed Python modules against the same modules on b67cc3c. Both report 16 pre-existing diagnostics and zero warnings; there are no new diagnostics.
 
-Against b67cc3c the diff contains 283 changed source lines and 698 handwritten test lines. Fixtures and generated schemas add 52 lines and are excluded from T5. The coordinator's no-split ruling is recorded in issue #55. Crash recovery and publication remain one contract.
+Against b67cc3c the diff contains 283 changed source lines and 706 handwritten test lines. Fixtures and generated schemas add 52 lines and are excluded from T5. The coordinator's no-split ruling is recorded in issue #55. Crash recovery and publication remain one contract.
 
 PRODUCTION PROOF for this PR is fixture-only by instruction. `TMPDIR="$PWD/.tmp" uv run python -m unittest discover -s tests -p test_publication.py` must exit 0. Its pass path ends with an open PR fixture and matching local/remote HEAD; failure cases stop with typed, detailed halts. The pty authentication server, local bare remotes and all fixtures use synthetic data. No live delivery graph run was used.
+
+The hosted Linux run exposed a fixture that inherited a global Git author. The real-checkout reset fixture now configures a synthetic author explicitly and passes with global Git configuration disabled. The controlling-pty test waits within its deadline for the child exit status after terminal EOF; ten consecutive runs passed with global Git configuration disabled.
