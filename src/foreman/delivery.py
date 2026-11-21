@@ -159,6 +159,7 @@ class DeliveryFields(TypedDict, total=False):
     head_sha: str | None
     verified_head: str
     readiness_observation: str
+    merge_receipt: str
     merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
@@ -992,7 +993,7 @@ def compile_delivery(
                     return {**merge_halted(reason, observation.model_dump_json()),
                             "readiness_observation": observation.model_dump_json()}
                 try:
-                    forge.arm_auto_merge(repo, issue, worktree.branch, head)
+                    merge_receipt = forge.arm_auto_merge(repo, issue, worktree.branch, head)
                 except MergeNotArmed as exc:
                     return merge_halted("merge_not_armed", str(exc))
                 try:
@@ -1001,7 +1002,8 @@ def compile_delivery(
                     return merge_halted("readiness_unavailable", str(exc))
                 if confirmed.outcome != "ready" or confirmed.pr != observation.pr:
                     return merge_halted("ci_pending", confirmed.model_dump_json())
-                return {"merge": "armed", "path": ["merge"], "readiness_observation": confirmed.model_dump_json()}
+                return {"merge": "armed", "path": ["merge"], "readiness_observation": confirmed.model_dump_json(),
+                        "merge_receipt": merge_receipt.model_dump_json()}
 
     def finish(state: DeliveryState) -> DeliveryUpdate:
         reason = stop_reason(state)

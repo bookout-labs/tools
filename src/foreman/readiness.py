@@ -31,7 +31,7 @@ class Requirement(BaseModel):
     integration_id: int | None = Field(default=None, validation_alias=AliasChoices("integration_id", "app_id"))
 
 
-class Parameters(BaseModel):
+class Parameters(BaseModel, extra="allow"):
     required_status_checks: list[Requirement] = Field(default_factory=list[Requirement])
     merge_method: str | None = None
 
@@ -111,3 +111,40 @@ class Protection(BaseModel):
 
 class BranchPolicy(BaseModel):
     protection: Protection
+
+
+class QueueCommit(BaseModel):
+    oid: str
+
+
+class QueueEntry(BaseModel):
+    id: str
+    state: str
+    headCommit: QueueCommit
+
+
+class AutoRequest(BaseModel):
+    enabledAt: str
+    mergeMethod: Literal["MERGE", "REBASE", "SQUASH"]
+
+
+class QueueSnapshot(BaseModel):
+    number: int
+    state: str
+    headRefOid: str
+    baseRefOid: str
+    baseRefName: str
+    isDraft: bool
+    autoMergeRequest: AutoRequest | None
+    mergeQueueEntry: QueueEntry | None
+
+
+class MergeReceipt(BaseModel):
+    repo: str
+    pr: int
+    source_head: str
+    base: str
+    method: Literal["MERGE", "REBASE", "SQUASH"]
+    queue_policy: Parameters
+    identity: str
+    status: str
