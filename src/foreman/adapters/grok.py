@@ -26,7 +26,6 @@ class GrokEnvelope(NativeEnvelope):
     structured_output_error: str = Field(default="", alias="structuredOutputError")
     session_id: str | None = Field(default=None, alias="sessionId")
     usage_is_incomplete: bool = False
-    total_cost_usd: float | None = None
 
     @override
     def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
@@ -49,7 +48,7 @@ class GrokEnvelope(NativeEnvelope):
             detail = detail or "missing structured output"
         return build_outcome(
             kind, output=self.structured_output, usage=None if self.usage_is_incomplete else self.read_usage(),
-            total_cost_usd=self.total_cost_usd, session_id=self.session_id, detail=detail,
+            session_id=self.session_id, detail=detail,
         )
 
 

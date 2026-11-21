@@ -21,7 +21,6 @@ class ClaudeEnvelope(NativeEnvelope):
     errors: list[str] = Field(default_factory=list)
     structured_output: dict[str, object] | None = None
     session_id: str | None = None
-    total_cost_usd: float | None = None
 
     @override
     def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
@@ -43,7 +42,7 @@ class ClaudeEnvelope(NativeEnvelope):
             kind = "failed"
             detail = detail or "missing structured output"
         return build_outcome(
-            kind, output=self.structured_output, usage=self.read_usage(), total_cost_usd=self.total_cost_usd,
+            kind, output=self.structured_output, usage=self.read_usage(),
             session_id=self.session_id, detail=detail,
         )
 
