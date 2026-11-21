@@ -40,7 +40,7 @@ implement gpt-6.1-sol-high
 publish
 verify npm run check
 review claude-opus-5-5-high risk low
-merge skipped (dry run): gh pr merge '<number>' --repo DoctorCRE/doctorcre-engine --auto --match-head-commit '<sha>'
+merge skipped (dry run): gh pr merge '<number>' --repo DoctorCRE/doctorcre-engine --auto --squash --match-head-commit '<sha>'
 check exit 0
 tokens 6 of 20000000
 done verified

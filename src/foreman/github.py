@@ -7,6 +7,7 @@ import re
 import subprocess
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict, NotRequired
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
 from foreman.workspace import commit_sha
 
+BOT_LOGIN = "bookout-labs-foreman[bot]"
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
 Model = TypeVar("Model", bound=BaseModel)
 
@@ -289,7 +291,7 @@ def pull_request_command(repo: str, head: str, base: str, title: str, body: str)
 
 
 def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
-    return ["gh", "pr", "merge", pull_request, "--repo", repo, "--auto", "--match-head-commit", sha]
+    return ["gh", "pr", "merge", pull_request, "--repo", repo, "--auto", "--squash", "--match-head-commit", sha]
 
 
 def render_slice_body(prose: str, child: StoredSlice) -> str:
@@ -309,6 +311,14 @@ def render_slice_body(prose: str, child: StoredSlice) -> str:
 class LiveForge:
     def __init__(self):
         self._defaults: dict[str, str] = {}
+
+    def bot_identity(self, repo: str) -> dict[str, str]:
+        user_id = self._read(repo, IssueIdentity, [
+            "gh", "api", f"users/{quote(BOT_LOGIN, safe='')}",
+        ]).id
+        email = f"{user_id}+{BOT_LOGIN}@users.noreply.github.com"
+        return {f"GIT_{role}_{field}": value for role in ("AUTHOR", "COMMITTER")
+                for field, value in (("NAME", BOT_LOGIN), ("EMAIL", email))}
 
     def default_branch(self, repo: str) -> str:
         if repo not in self._defaults:
