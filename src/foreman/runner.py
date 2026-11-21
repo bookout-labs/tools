@@ -13,7 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery, load_slice
+from foreman.delivery import DeliveryState, LiveRun, MergeHalt, PullRequestSizeDecision, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.stage_output import StoredSlice, parse_output
@@ -67,7 +67,7 @@ def run_live_delivery(
         try:
             graph = compile_delivery(
                 dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver,
-                scratch=None if channels.get("stop") else Path(scratch),
+                scratch=None if channels.get("stop") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
             )
         except SkillMissing as exc:
             return {"path": ["done"], "halt": exc.halt, "stop": exc.halt,
@@ -82,6 +82,11 @@ def run_live_delivery(
                 raise ValueError("This issue has no pending question.")
             if not answer.strip():
                 raise ValueError("The answer must contain text.")
+            if saved.interrupts[0].value["stage"] == "pr_size":
+                try:
+                    answer = PullRequestSizeDecision(answer).value
+                except ValueError as exc:
+                    raise ValueError("Answer split or override at the pull request size prompt.") from exc
             graph.invoke(Command(resume=answer), config, durability="sync")
         elif not saved.values:
             loaded = client.load_issue(repo, issue)

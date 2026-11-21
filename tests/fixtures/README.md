@@ -91,6 +91,21 @@ text without fetching from the network during tests.
 FOREMAN_PINNED_SKILL_REPO=/path/to/cursor/plugins \
   python -m unittest discover -s tests -p test_skill_rules.py
 ```
+
+## Pull request size
+
+Git 2.56.0 reported a binary numstat row for a synthetic 500-line file with one NUL byte per line. The corresponding text patch reported a 500-line hunk. The review gate reads the text hunk ranges when numstat supplies dashes.
+
+```text
+$ git show --format= --numstat --text
+-	-	x
+$ git show --format= --text --patch --unified=0 --inter-hunk-context=0 --no-color
+...
+@@ -0,0 +1,500 @@
+```
+
+[Git 2.43 fetch refspecs](https://git-scm.com/docs/git-fetch/2.43.0) document the exact base ref fetch. [Git 2.43 rev-parse](https://git-scm.com/docs/git-rev-parse/2.43.0) documents resolving the repository's attributes path with `--git-path`. [Git's diff format](https://git-scm.com/docs/diff-format/2.43.0) defines the hunk ranges.
+
 ## Redaction detector
 
 Foreman pins detect-secrets v1.5.0 and loads its plugins using
