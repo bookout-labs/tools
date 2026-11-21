@@ -248,7 +248,20 @@ uv sync
 uv run python -m unittest discover -s tests
 ```
 
-### Token admission
+### Run limits
+
+`foreman run delivery --max-budget-usd X` stores an optional Claude dollar
+allowance. The amount must be finite and positive (for example, `1.50` or
+`1e-4`); it is saved as canonical decimal text. Omitting the flag on a new run
+stores an unbounded allowance. On resume, omit the flag to keep the saved value,
+or supply an equal amount. A different amount, including adding a bound to an
+unbounded run, is an error.
+
+Bounded runs print `claude spend $S of $L`. This total includes Claude attempts
+across resumes, including failed and quota attempts, but excludes missing CLIs
+and Codex or Grok costs. If any counted attempt lacks a dollar cost, the display
+is `claude spend unknown of $L`. Resumable checkpoints predating the stored
+dollar allowance require a new run; finished legacy runs remain readable.
 
 `foreman run delivery --max-tokens N` stores a positive token cap, defaulting to
 20,000,000. Resume keeps the stored cap and rejects a differing flag.

@@ -137,7 +137,7 @@ class TokenCapTests(unittest.TestCase):
                 graph = compile_delivery(FailoverDispatcher(ScriptHandler()), config, run=live, checkpointer=saver)
                 graph.update_state(invocation, {"repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"],
                     "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
-                graph.update_state(invocation, {"token_cap": 100, "halt": "env_unavailable", "stop": "env_unavailable",
+                graph.update_state(invocation, {"token_cap": 100, "max_budget_usd": None, "halt": "env_unavailable", "stop": "env_unavailable",
                                                 "path": ["implement", "done"]}, as_node="done")
             with self.assertRaisesRegex(ValueError, "unknown usage history"):
                 run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=live,
