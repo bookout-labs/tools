@@ -9,7 +9,6 @@ Each citation has side (base or head), repository-relative path and line (positi
 Paths and text lines must exist in that committed tree. Use base for deleted or renamed-from paths. Binary and mode-only changes permit whole-path citations; binaries have no text lines.
 Unchanged dependency evidence is allowed alongside changed-path evidence. Findings may cite any existing head text line, regardless of inline posting eligibility.
 These rules apply in every round even with no findings or new added lines. The schema checks structural grounding, not prose truth or completeness.
-Write prose strings as plain text. Let JSON serialization encode line breaks and quotes. Preserve literal backslashes only when quoting code.
 Set level to low, medium, or high. The graph derives the verdict from findings and resolutions.
 
 The model list is config outside this node. Do not edit it.

@@ -1,5 +1,6 @@
 """Propose one graph fix per halt and file, with one evidence write per run."""
 
+from textwrap import indent
 from typing import NewType
 
 from foreman.config import family
@@ -38,9 +39,9 @@ def watch(state: DeliveryResult, forge: Forge, repo: str, run_key: RunKey) -> Wa
     for issue in matches:
         if any(run_marker in comment.splitlines() for comment in forge.issue_comments(repo, issue.number)):
             return {"issue": issue.number, "action": "commented"}
-    detail = state.get("halt_detail", "").replace("\r", "\\r").replace("\n", "\\n")
+    detail = indent(state.get("halt_detail", ""), "    ")
     attempts = ", ".join(f"{a['stage']}/{a['model']}={a['outcome']}" for a in state.get("attempts", []))
-    evidence = f"Evidence: {state['repo']}#{state.get('issue', '<issue>')}; stop={halt}; detail={detail}; attempts={attempts}"
+    evidence = f"Evidence: {state['repo']}#{state.get('issue', '<issue>')}; stop={halt}; attempts={attempts}\n\nDetail:\n\n{detail}\n"
     if matches:
         number = matches[0].number
         forge.comment_issue(repo, number, f"{evidence}\n{run_marker}")

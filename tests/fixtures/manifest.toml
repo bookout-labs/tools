@@ -1148,4 +1148,4 @@ kind = "quoted_source"
 tool = "claude"
 version = "2.1.329 / claude-opus-5-5 high"
 sources = ["https://github.com/bookout-labs/foreman-smoke/pull/29"]
-notes = "Exact StructuredOutput tool input from the 2026-11-21 T1 smoke, session 10647253-43b2-4668-8548-6395fadc3dd9. The model pre-escaped detail, while its risk dimensions contain ordinary quotes and intentional code escapes. The old freeform schema is rejected after #142. Tests migrate the risk shape, join captured assessments into paragraphs, include the captured literal-code claim and attach test-tree citations to exercise current posting."
+notes = "Exact StructuredOutput tool input from the 2026-11-21 T1 smoke, session 10647253-43b2-4668-8548-6395fadc3dd9. The captured pre-escaped detail is rejected by the current review contract after #142."
