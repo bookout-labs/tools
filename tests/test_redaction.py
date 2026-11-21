@@ -1,6 +1,7 @@
 import tests
 
 import ast
+import json
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
 from importlib.metadata import version
@@ -170,17 +171,18 @@ class RedactionTest(unittest.TestCase):
 
     @patch("foreman.github.subprocess.run")
     def test_commit_sha_is_preserved_in_live_and_dry_merge_arguments(self, gh):
-        gh.side_effect = [
-            subprocess.CompletedProcess([], 0, (
-                '{"number":42,"state":"OPEN","headRefOid":"' + SYNTHETIC_SHA
-                + '","headRefName":"8-sample","baseRefName":"main","baseRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","autoMergeRequest":null}'
-            ), ""),
-            subprocess.CompletedProcess([], 0, "", ""),
-        ]
-        forge = LiveForge()
-        forge._defaults["Example/Target"] = "main"
-        forge.arm_auto_merge("Example/Target", 8, "8-sample", SYNTHETIC_SHA)
-        self.assertEqual(gh.call_args.args[0][-2:], ["--match-head-commit", SYNTHETIC_SHA])
+        from test_merge_receipt import OBSERVATION, SNAPSHOT, QUEUED, REPO, BRANCH
+        observation = OBSERVATION.model_copy(deep=True)
+        observation.pr.head.sha = SYNTHETIC_SHA
+        before = {**SNAPSHOT, "headRefOid": SYNTHETIC_SHA}
+        after = {**QUEUED, "headRefOid": SYNTHETIC_SHA,
+                 "mergeQueueEntry": QUEUED["mergeQueueEntry"]}
+        gh.side_effect = [subprocess.CompletedProcess([], 0, json.dumps(before), ""),
+                          subprocess.CompletedProcess([], 0, "", ""),
+                          subprocess.CompletedProcess([], 0, json.dumps(after), "")]
+        LiveForge().arm_auto_merge(REPO, 82, BRANCH, SYNTHETIC_SHA, observation)
+        live = next(call.args[0] for call in gh.call_args_list if call.args[0][1:3] == ["pr", "merge"])
+        self.assertEqual(live[-2:], ["--match-head-commit", SYNTHETIC_SHA])
         self.assertEqual(DryRun().record_merge("Example/Target", SYNTHETIC_SHA)[-1], SYNTHETIC_SHA)
         gh.side_effect = None
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")

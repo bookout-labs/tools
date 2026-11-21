@@ -6,20 +6,18 @@ import json
 import re
 import subprocess
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, NotRequired
 
 from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
-from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages
+from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
 from foreman.credentials import CredentialFailure, credentials, failure
 from foreman.redaction import redact
 if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
 from foreman.workspace import commit_sha
 
-SQUASH_MERGE_FLAG = "--squash"
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
-PullRequestState = Literal["OPEN", "CLOSED", "MERGED"]
 Model = TypeVar("Model", bound=BaseModel)
 
 
@@ -29,6 +27,14 @@ class ForgeError(RuntimeError):
 
 class MergeNotArmed(ForgeError):
     pass
+
+
+class HandoffChanged(MergeNotArmed):
+    pass
+
+
+class QueueRejected(MergeNotArmed):
+    outcome: Literal["queue_rejected"] = "queue_rejected"
 
 
 class MergeHoldUnreadable(ForgeError):
@@ -61,12 +67,9 @@ class RepositoryDefaultBranch(BaseModel, strict=True):
     defaultBranchRef: DefaultBranch
 
 
-class AutoMergeRequest(BaseModel, strict=True):
-    mergeMethod: Literal["MERGE", "REBASE", "SQUASH"]
-
-
 @with_config(ConfigDict(extra="forbid"))
 class AutoMergeRequestRecord(TypedDict):
+    enabledAt: NotRequired[str | None]
     mergeMethod: Literal["MERGE", "REBASE", "SQUASH"]
 
 
@@ -232,6 +235,26 @@ class ReviewPages(RootModel[list[list[ListedReview]]]):
     pass
 
 
+def queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str,
+                  base_ref: str, policy: QueuePolicy) -> MergeReceipt | None:
+    if (snapshot.number != number or snapshot.headRefOid.lower() != head.lower()
+            or snapshot.baseRefName != base_ref or snapshot.state == "CLOSED" or snapshot.isDraft):
+        raise HandoffChanged("PR changed during merge handoff. Renew readiness, verification and review.")
+    if snapshot.state == "MERGED":
+        identity, status = f"merged:{head}", "MERGED"
+    elif (entry := snapshot.mergeQueueEntry) is not None:
+        if entry.state == "UNMERGEABLE":
+            raise QueueRejected(f"Queue rejected receipt {entry.id}: UNMERGEABLE. Repair and resume.")
+        identity, status = entry.id, entry.state
+    elif (request := snapshot.autoMergeRequest) is not None and request.enabledAt:
+        identity, status = request.enabledAt, "AUTO_MERGE_ENABLED"
+    else:
+        return None
+    return MergeReceipt(repo=repo, pr=number, source_head=head, base=snapshot.baseRefOid,
+                        base_ref=base_ref, method=policy.merge_method, queue_policy=policy,
+                        identity=identity, status=status)
+
+
 class Forge(Protocol):
     def default_branch(self, repo: str) -> str: ...
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
@@ -255,8 +278,9 @@ class Forge(Protocol):
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt: ...
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation: ...
+    def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt: ...
     def merge_hold(self, repo: str) -> str | None: ...
-    def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
+    def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str, observation: Observation) -> MergeReceipt: ...
 
 
 def pull_request_command(repo: str, head: str, base: str, title: str, body: str) -> list[str]:
@@ -265,7 +289,7 @@ def pull_request_command(repo: str, head: str, base: str, title: str, body: str)
 
 
 def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
-    return ["gh", "pr", "merge", pull_request, "--repo", repo, SQUASH_MERGE_FLAG, "--auto", "--match-head-commit", sha]
+    return ["gh", "pr", "merge", pull_request, "--repo", repo, "--auto", "--match-head-commit", sha]
 
 
 def render_slice_body(prose: str, child: StoredSlice) -> str:
@@ -482,10 +506,11 @@ class LiveForge:
         target = self._view_pr(repo, branch)
         endpoint = f"repos/{repo}"
         pr = self._read(PullSnapshot, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
+        queue_policy: QueuePolicy | None = None
         def observed(outcome: Outcome, recovery: str,
                      checks: list[CheckEvidence] | None = None) -> Observation:
-            return Observation(repo=repo, pr=pr, checks=checks or [], outcome=outcome, recovery=recovery)
-        if pr.state != "open":
+            return Observation(repo=repo, pr=pr, checks=checks or [], outcome=outcome, recovery=recovery, queue_policy=queue_policy)
+        if pr.state != "open" and not pr.merged:
             return observed("closed", "Restore an open PR before resuming.")
         if pr.base.ref != self.default_branch(repo) or target.isCrossRepository or pr.head.ref != branch or not branch.startswith(f"{issue}-"):
             return observed("retargeted", "Restore the same-repository PR and default-branch target before resuming.")
@@ -493,11 +518,17 @@ class LiveForge:
             return observed("head_changed", "Fetch the repaired PR head, then renew verification and review.")
         if pr.draft:
             return observed("pending", "Mark the PR ready, then resume.")
-        if pr.mergeable is False:
+        if not pr.merged and pr.mergeable is False:
             return observed("conflict", "Request a merge-base repair round, then renew verification and review.")
-        if pr.mergeable is None or pr.mergeable_state == "unknown":
+        if not pr.merged and (pr.mergeable is None or pr.mergeable_state == "unknown"):
             return observed("pending", "Resume when GitHub has computed mergeability.")
         rules = self._read(Rules, ["gh", "api", f"{endpoint}/rules/branches/{pr.base.ref}"])
+        policies = [rule.parameters for rule in rules.root if rule.type == "merge_queue"]
+        if len(policies) != 1 or policies[0].merge_method is None:
+            return observed("policy", "Effective merge queue policy is missing or ambiguous. Restore readable queue policy.")
+        queue_policy = QueuePolicy(merge_method=policies[0].merge_method, grouping_strategy=policies[0].grouping_strategy)
+        if pr.merged:
+            return observed("ready", "Verified head has merged. Reconcile the handoff receipt.")
         legacy = self._read(BranchPolicy, ["gh", "api", f"{endpoint}/branches/{pr.base.ref}"])
         requirements = [check for rule in rules.root if rule.type == "required_status_checks"
                         for check in rule.parameters.required_status_checks]
@@ -541,9 +572,9 @@ class LiveForge:
             return observed("pending", "Wait for required checks, then resume.", effective)
         return observed("ready", "Eligible for merge arming.", effective)
 
-    def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
+    def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str, observation: Observation) -> MergeReceipt:
         try:
-            self._arm_auto_merge(repo, issue, branch, sha)
+            return self._arm_auto_merge(repo, issue, branch, sha, observation)
         except MergeNotArmed:
             raise
         except ForgeError as exc:
@@ -561,24 +592,50 @@ class LiveForge:
             raise ForgeError("The pull request must target the repository default branch.")
         return pr
 
-    def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
+    def _queue_snapshot(self, repo: str, number: int) -> QueueSnapshot:
+        owner, name = repo.split("/", 1)
+        query = """query($owner:String!, $name:String!, $number:Int!) {
+          repository(owner:$owner, name:$name) { pullRequest(number:$number) {
+            number state headRefOid baseRefOid baseRefName isDraft
+            autoMergeRequest { enabledAt mergeMethod }
+            mergeQueueEntry { id state }
+          } }
+        }"""
+        return self._read(QueueSnapshot, ["gh", "api", "graphql", "-f", f"query={query}",
+            "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={number}",
+            "--jq", ".data.repository.pullRequest"])
+
+    def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt:
+        try:
+            confirmed = queue_receipt(self._queue_snapshot(receipt.repo, receipt.pr), receipt.repo, receipt.pr,
+                                      receipt.source_head, receipt.base_ref, receipt.queue_policy)
+            if confirmed is None:
+                raise QueueRejected(f"Queue receipt {receipt.identity} disappeared. Inspect rejection and repair before a new admission.")
+            return confirmed
+        except MergeNotArmed:
+            raise
+        except ForgeError as exc:
+            raise MergeNotArmed(str(exc)) from exc
+
+    def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str, observation: Observation) -> MergeReceipt:
         head = commit_sha(sha)
         if head is None:
             raise MergeNotArmed("Merge arming requires a full 40-hex commit SHA.")
-        pr = self.review_target(repo, issue, branch, head)
-        command = merge_command(redact(repo), str(pr.number), head)
+        policy, pr = observation.queue_policy, observation.pr
+        if policy is None or observation.outcome != "ready" or observation.repo != repo or pr.head.sha.lower() != head or pr.head.ref != branch or not branch.startswith(f"{issue}-"):
+            raise MergeNotArmed("Merge requires a ready observation for this PR and head.")
+        existing = queue_receipt(self._queue_snapshot(repo, pr.number), repo, pr.number, head, pr.base.ref, policy)
+        if existing is not None:
+            return existing
+        timeout: CommandTimedOut | None = None
         try:
-            self._run_command(command)
+            self._run_command(merge_command(redact(repo), str(pr.number), head))
         except CommandTimedOut as exc:
-            confirmed = self._view_pr(repo, str(pr.number))
-            open_squash_request = (
-                confirmed.state == "OPEN"
-                and confirmed.autoMergeRequest is not None
-                and confirmed.autoMergeRequest.mergeMethod == "SQUASH"
-            )
-            same_head = confirmed.number == pr.number and confirmed.headRefOid.lower() == head.lower()
-            if not (same_head and (confirmed.state == "MERGED" or open_squash_request)):
-                raise MergeNotArmed("Merge arming timed out and was not confirmed.") from exc
+            timeout = exc
+        confirmed = queue_receipt(self._queue_snapshot(repo, pr.number), repo, pr.number, head, pr.base.ref, policy)
+        if confirmed is None:
+            raise MergeNotArmed("Merge handoff was not confirmed. Inspect queue admission and resume.") from timeout
+        return confirmed
 
     def _view_pr(self, repo: str, selector: str) -> PullRequest:
         command = [
