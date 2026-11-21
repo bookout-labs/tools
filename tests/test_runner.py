@@ -1,4 +1,5 @@
 import contextlib
+from dataclasses import replace
 import io
 import json
 import os
@@ -9,12 +10,12 @@ import shlex
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.adapters import Outcome
-from foreman.cli import _write_check_log, main
+from foreman.cli import _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, halted, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
@@ -22,9 +23,11 @@ from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
 
 from foreman.runner import AnswerError, run_live_delivery
+from foreman.skill_rules import git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
+from skill_fixture import fixture_pin, skill_fixture
 from test_adapters import codex_events, fixture_process
 
 
@@ -42,6 +45,7 @@ SLICE = {
     "uses": [],
     "screen": "docs/screens/items.md",
     "properties": [{"name": "Unique", "constraint": "unique_item_id"}],
+    "stateful": False,
 }
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
@@ -80,7 +84,7 @@ class FakeWorkspace(LiveWorkspace):
 def worker_reply(args, reply):
     if isinstance(reply, dict):
         if "triage" in reply:
-            reply = {"slice": None, "human_question": None, **reply}
+            reply = {"work_kind": "feature", "slice": None, "human_question": None, **reply}
         if "spec" in reply:
             reply = {"slices": None, "human_question": None, **reply}
         if "implementation" in reply and args[0] == "codex":
@@ -240,8 +244,9 @@ class CliWorkerTest(unittest.TestCase):
     def walk_triage(self, models, run):
         config = load_config()
         config.nodes["triage"] = NodeConfig("coordinator", tuple(ModelSpec.parse(model) for model in models))
-        return run_delivery(FailoverDispatcher(CliWorker(Path("."), run)), repo="Example/Engine",
-                            request="List items", check="exit 0", config=config, slice=EMPTY_SLICE)
+        with skill_fixture(config) as (fixture_config, scratch):
+            return run_delivery(FailoverDispatcher(CliWorker(Path("."), run)), repo="Example/Engine",
+                                request="List items", check="exit 0", config=fixture_config, slice=EMPTY_SLICE, scratch=scratch)
 
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
         for cli, model in (("claude", "claude-opus-5-5-high"), ("grok", "grok-4.7-high")):
@@ -265,6 +270,8 @@ class CliWorkerTest(unittest.TestCase):
                     result = self.walk_triage((model, "gpt-6.1-sol-high"), run)
                     self.assertEqual(result["stop"], stop)
                     self.assertEqual(calls, [cli, "codex"] if stop == "needs_human" else [cli])
+                    expected = [case, "ran"] if stop == "needs_human" else ["failed"]
+                    self.assertEqual([item["outcome"] for item in result["skill_attempts"]], expected)
                     if case == "is_error":
                         message = "turn_handoff:" if cli == "claude" else "unknown model id"
                         self.assertIn(message, result["halt_detail"])
@@ -386,6 +393,11 @@ class StageOutputTest(unittest.TestCase):
 
 
 class LiveRunnerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(cls.enterClassContext(TemporaryDirectory()))
+        cls.pin = fixture_pin(root / "fixture")
+
     def setUp(self):
         directory = self.enterContext(TemporaryDirectory())
         self.cwd = Path(directory)
@@ -393,6 +405,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.calls = []
         self.prompts = []
         self.github = FakeGitHub()
+        self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin)))
 
     def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None):
         outputs = iter(replies)
@@ -454,6 +467,7 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(self.github.merge_calls, [])
 
     def test_review_halts_when_git_fetch_times_out(self):
+        real_run = subprocess.run
         outputs = {
             ("git", "rev-parse", "HEAD"): HEAD + "\n",
             ("git", "status", "--porcelain"): "",
@@ -463,7 +477,9 @@ class LiveRunnerTest(unittest.TestCase):
 
         def run(
             command: str | list[str], *, timeout: float | None = None, **kwargs: object,
-        ) -> subprocess.CompletedProcess[str]:
+        ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+            if isinstance(command, list) and command[:2] == ["git", "-C"]:
+                return real_run(command, check=True, capture_output=True, text=True)
             if command == ["git", "fetch", "--no-tags", "origin", BASE, HEAD]:
                 self.assertEqual(timeout, 30)
                 raise subprocess.TimeoutExpired(command, 30)
@@ -498,9 +514,108 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(self.calls, [])
                 self.assertEqual(self.walk([])["stop"], "missing_slice")
 
+    def test_missing_inactive_method_halts_the_cli_before_loading_the_issue(self):
+        pin = fixture_pin(self.cwd / "incomplete")
+        source = Path(pin.repository)
+        absent = "benchmark-checklist/SKILL.md"
+        (source / "pstack" / "skills" / absent).unlink()
+        git(source, "add", "--", "pstack")
+        git(source, "-c", "user.name=Foreman", "-c", "user.email=foreman@example.invalid",
+            "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "Synthetic skill fixture")
+        commit = git(source, "rev-parse", "HEAD")
+        config = replace(load_config(), pstack=pin.model_copy(update={"commit": commit}))
+        worker = Mock()
+        with (
+            patch("foreman.runner.load_config", return_value=config),
+            patch.object(self.github, "load_issue") as load_issue,
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                worker_runner=worker, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("done skill_missing", stdout.getvalue())
+        self.assertIn(f"method missing at pin ({absent})", stdout.getvalue())
+        self.assertIn(commit, stdout.getvalue())
+        load_issue.assert_not_called()
+        worker.assert_not_called()
+
+    def test_empty_or_truncated_method_halts_before_dispatch(self):
+        for method, content, detail in (
+            ("poteto-mode/SKILL.md", "", "method is empty"),
+            ("poteto-mode/SKILL.md", "Synthetic method.\n" * 109, "requires lines 110 through 110, has 109"),
+            ("why/SKILL.md", "", "method is empty"),
+        ):
+            with self.subTest(method=method, detail=detail), TemporaryDirectory(dir=self.cwd) as directory:
+                pin = fixture_pin(Path(directory) / "fixture")
+                source = Path(pin.repository)
+                (source / "pstack" / "skills" / method).write_text(content, encoding="utf-8")
+                git(source, "add", "--", "pstack")
+                git(source, "-c", "user.name=Foreman", "-c", "user.email=foreman@example.invalid",
+                    "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "Synthetic invalid method")
+                commit = git(source, "rev-parse", "HEAD")
+                config = replace(load_config(), pstack=pin.model_copy(update={"commit": commit}))
+                with patch("foreman.runner.load_config", return_value=config), patch.object(self.github, "load_issue") as load_issue:
+                    result = self.walk([])
+                self.assertEqual(result.get("stop", ""), "skill_missing")
+                self.assertEqual(run_exit_code(result), 1)
+                self.assertEqual(result.get("skill_reason", ""), "method_missing")
+                self.assertIn(method, result.get("halt_detail", ""))
+                self.assertIn(commit, result.get("halt_detail", ""))
+                self.assertIn(detail, result.get("halt_detail", ""))
+                self.assertEqual(self.calls, [])
+                load_issue.assert_not_called()
+
+    def test_unavailable_pin_has_a_distinct_reason(self):
+        commit = "f" * 40
+        pin = self.pin.model_copy(update={"commit": commit})
+        with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
+            result = self.walk([])
+        self.assertEqual(result["stop"], "skill_missing")
+        self.assertEqual(run_exit_code(result), 1)
+        self.assertEqual(result["skill_reason"], "pin_unavailable")
+        self.assertEqual(result["halt_detail"], f"pstack pin unavailable, commit {commit}")
+        self.assertEqual(self.calls, [])
+
+    def test_quota_pause_returns_the_resumable_cli_exit_code(self):
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                worker_runner=lambda args, cwd, env: fixture_process(args, "quota", 1),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            )
+        self.assertEqual(code, 75)
+        self.assertIn("paused quota_exhausted", stdout.getvalue())
+        self.assertIn("triage quota exhausted", stdout.getvalue())
+
+    def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
+        def exhaust(node, model, state, instruction):
+            if node == "triage":
+                return Outcome("ran", {"triage": "implement", "work_kind": "feature", "human_question": None, "slice": None})
+            return Outcome("quota")
+
+        paused = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+            dispatcher=FailoverDispatcher(exhaust), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+        )
+        self.assertEqual(paused["stop"], "quota_exhausted")
+        self.assertEqual(run_exit_code(paused), 75)
+        self.assertNotIn("done", paused["path"])
+        self.assertEqual(paused["pstack_pin"], self.pin.model_dump())
+        attempts = paused["skill_attempts"]
+        self.assertEqual([a["outcome"] for a in attempts], ["ran"] + ["quota"] * 4)
+        self.assertTrue(all(a["stage"] == "implement" and a["commit"] == self.pin.commit for a in attempts[1:]))
+
+        resumed = self.walk([{"implementation": "built"}, APPROVE])
+        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["path"].count("triage"), 1)
+        self.assertEqual(resumed["skill_attempts"][:len(attempts)], attempts)
+        self.assertEqual([a["stage"] for a in resumed["skill_attempts"][len(attempts):]], ["implement", "review"])
+
     def test_load_parent_and_file_slices_only_once(self):
         self.github = FakeGitHub(["factory"])
-        result = self.walk([{"triage": "spec"}, {
+        result = self.walk([{"triage": "spec", "work_kind": "bug_fix"}, {
             "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
         }])
         self.assertEqual(result["issue_kind"], "parent")
@@ -517,7 +632,7 @@ class LiveRunnerTest(unittest.TestCase):
         for item, (_, body, _) in zip(expected, self.github.created):
             prose, fence, encoded = body.partition("\n\n```json\n")
             self.assertEqual(fence, "\n\n```json\n")
-            self.assertEqual(json.loads(encoded.removesuffix("\n```")), item)
+            self.assertEqual(json.loads(encoded.removesuffix("\n```")), {**item, "work_kind": "bug_fix"})
             self.assertTrue(prose.startswith("Acceptance:\n" + item["acceptance"]))
         self.assertEqual(self.github.dependencies, {102: [101]})
         resumed = self.walk([])
@@ -543,6 +658,8 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
         child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
         self.assertEqual(child["slice"], child_payload)
+        self.assertEqual(child["work_kind"], "bug_fix")
+        self.assertIn("why/SKILL.md", self.prompts[-1])
 
     def test_existing_seam_resolves_in_workspace_and_skips_a_dependency(self):
         self.github = FakeGitHub(["factory"])
@@ -1061,7 +1178,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_resume_at_implement_rechecks_saved_preflight(self):
         def interrupted_run(node, model, state, instruction):
             if node == "triage":
-                return Outcome("ran", {"triage": "implement", "slice": None, "human_question": None})
+                return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None})
             self.assertEqual(node, "implement")
             raise RuntimeError("worker stopped")
 
@@ -1292,15 +1409,24 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.created, [])
 
     def test_main_dry_run_reports_a_skipped_merge(self):
-        with contextlib.redirect_stdout(io.StringIO()) as stdout, patch("foreman.github.subprocess.run") as run:
-            code = main(["run", "delivery", "--repo", "Example/Target", "--request", "List items", "--dry-run"])
+        worker = Mock()
+        with (
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+            patch.object(FakeGitHub, "arm_auto_merge") as arm,
+            patch("foreman.skill_rules.git") as git_call,
+        ):
+            code = main(["run", "delivery", "--repo", "Example/Target", "--request", "List items", "--dry-run"],
+                        worker_runner=worker, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(code, 0)
         self.assertIn(
             "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --squash --auto --match-head-commit '<sha>'\n"
             "done verified",
             stdout.getvalue(),
         )
-        run.assert_not_called()
+        self.assertIn("pstack pin not checked (dry run)", stdout.getvalue())
+        worker.assert_not_called()
+        arm.assert_not_called()
+        git_call.assert_not_called()
 
     def test_main_rerun_arms_once_after_the_repository_hold_is_cleared(self):
         self.github.hold = "  Maintenance window "
@@ -1346,8 +1472,11 @@ class LiveRunnerTest(unittest.TestCase):
 import json
 from pathlib import Path
 import sys
-from foreman.cli import _write_check_log, main
+from foreman.cli import _write_check_log, main, run_exit_code
 from foreman.delivery import LiveRun
+from dataclasses import replace
+from unittest.mock import patch
+from foreman.config import PstackPin, load_config
 from test_runner import APPROVE, HEAD, SYNTHETIC_QUESTION_TOKEN, FakeGitHub, FakeWorkspace, worker_reply
 
 def run(args, cwd, env):
@@ -1375,15 +1504,17 @@ def run(args, cwd, env):
         return worker_reply(args, {"implementation": "built", "head_sha": HEAD})
     return worker_reply(args, APPROVE)
 
-sys.exit(main(
-    sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]),
-    live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())),
-))
+pin = PstackPin.model_validate_json(sys.argv[2])
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
+    sys.exit(main(
+        sys.argv[3:], worker_runner=run, checkpoint=Path(sys.argv[1]),
+        live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())),
+    ))
 """
-        def invoke(*flags, expected=0):
+        def invoke(*flags, pin=None, expected=0):
             bootstrap = f"import sys; sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n"
             process = subprocess.run(
-                [sys.executable, "-c", bootstrap + script, str(self.checkpoint), "run", "delivery",
+                [sys.executable, "-c", bootstrap + script, str(self.checkpoint), (pin or self.pin).model_dump_json(), "run", "delivery",
                  "--repo", "Example/Engine", "--issue", "8", "--check", "echo checked >> check.log", *flags],
                 cwd=self.cwd, text=True, capture_output=True, check=False,
             )
@@ -1395,7 +1526,7 @@ sys.exit(main(
         self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, first)
         self.assertEqual(invoke(expected=3), first)
         self.assertFalse((self.cwd / "check.log").exists())
-        completed = invoke("--answer", "Only open items")
+        completed = invoke("--answer", "Only open items", pin=self.pin.model_copy(update={"commit": "f" * 40}))
         self.assertEqual(completed.count("triage "), 1)
         self.assertEqual(completed.count("spec "), 2)
         self.assertIn("merge armed", completed)

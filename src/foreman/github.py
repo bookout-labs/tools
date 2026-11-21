@@ -171,11 +171,14 @@ def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
 def render_slice_body(prose: str, child: StoredSlice) -> str:
     dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
     constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
+    stored = child.model_dump(exclude_unset=True)
+    if child.work_kind is not None:
+        stored["work_kind"] = child.work_kind
     return (
         (f"{prose}\n\n" if prose else "")
         + f"Acceptance:\n{child.acceptance}\n\nDependencies:\n{dependencies}"
         + f"\n\nScreen:\n{child.screen or 'None'}\n\nConstraints:\n{constraints}"
-        + f"\n\n```json\n{json.dumps(child.model_dump(exclude_unset=True), indent=2)}\n```"
+        + f"\n\n```json\n{json.dumps(stored, indent=2)}\n```"
     )
 
 

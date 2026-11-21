@@ -2,6 +2,7 @@
 # pyright: basic
 """The delivery graph. Edges live here. Models live in models.toml."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cached_property
 from enum import StrEnum
@@ -21,7 +22,7 @@ from typing_extensions import TypedDict
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
-from foreman.adapters import Outcome
+from foreman.adapters import Outcome, OutcomeKind
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, recorded_fixtures
@@ -29,9 +30,10 @@ from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
+from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, Finding, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, parse_output,
+    Contract, Finding, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.workspace import CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
@@ -39,15 +41,12 @@ GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
-SKILLS_FOR = {
-    "review": ("review-quality", "merge-risk"),
-}
 MergeHalt = Literal["merge_held", "merge_not_armed"]
-ResumableHalt = Literal[MergeHalt, "env_unavailable"]
+ResumableHalt = Literal[MergeHalt, "env_unavailable", "quota_exhausted"]
 HaltReason = Literal[
     ResumableHalt, "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+    "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
@@ -78,6 +77,14 @@ class DryRun:
     def record_merge(self, repo: str, head: str | None) -> list[str]:
         revision = (commit_sha(head) or redact(head)) if head else "<sha>"
         return merge_command(redact(repo), "<number>", revision)
+
+
+class SkillAttempt(TypedDict):
+    stage: str
+    model: str | None
+    commit: str
+    methods: list[str]
+    outcome: OutcomeKind
 
 
 SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle", "existing_seam_builder"]
@@ -120,6 +127,10 @@ class DeliveryFields(TypedDict, total=False):
     child_issue_numbers: list[int]
     slice: dict[str, object]
     issue_kind: str
+    work_kind: WorkKind
+    pstack_pin: dict[str, str]
+    skill_reason: SkillFailureReason
+    skill_attempts: Annotated[list[SkillAttempt], operator.add]
     research: str
     implementation: str
     head_sha: str | None
@@ -145,7 +156,7 @@ class DeliveryFields(TypedDict, total=False):
     review_rounds: int
     models_used: dict[str, str]
     implement_models: list[str]
-    halt: HaltReason
+    halt: HaltReason | None
     halt_detail: str
 
 
@@ -195,12 +206,7 @@ def halted(reason: HaltReason, detail: str, path: str | None) -> DeliveryUpdate:
 
 
 def stage_text(name: str) -> str:
-    path = PACKAGE / "stages" / f"{name}.md"
-    text = path.read_text().strip()
-    for skill in SKILLS_FOR.get(name, ()):
-        skill_text = (PACKAGE / "skills" / f"{skill}.md").read_text().strip()
-        text = f"{text}\n\n{skill_text}"
-    return text
+    return (PACKAGE / "stages" / f"{name}.md").read_text().strip()
 
 
 def clean_slices(
@@ -240,8 +246,12 @@ def clean_slices(
     return [{**slices[title].model_dump(), "depends_on": list(graph[title])} for title in ordered]
 
 
-def load_slice(raw: object) -> dict[str, object]:
-    return parse_output(StoredSlice, raw).model_dump(exclude_unset=True)
+def load_slice(raw: object) -> DeliveryUpdate:
+    stored = parse_output(StoredSlice, raw)
+    state: DeliveryUpdate = {"slice": stored.model_dump(exclude_unset=True)}
+    if stored.work_kind is not None:
+        state["work_kind"] = stored.work_kind
+    return state
 
 
 def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | None) -> ReviewOutput:
@@ -272,7 +282,7 @@ def stage_update(
 ) -> DeliveryUpdate:
     update: DeliveryUpdate = {}
     if isinstance(output, TriageOutput):
-        update["triage"] = output.triage
+        update.update(triage=output.triage, work_kind=output.work_kind)
     elif isinstance(output, ResearchOutput):
         update["research"] = output.research
     elif isinstance(output, SpecOutput):
@@ -293,6 +303,8 @@ def stage_update(
         update["verify"] = output.verify
     if isinstance(output, HumanQuestionOutput):
         update["human_question"] = output.human_question or ""
+    if isinstance(output, TriageOutput) and state.get("issue_kind") == "slice" and "work_kind" in state:
+        update["work_kind"] = state["work_kind"]
     if isinstance(output, SpecOutput):
         update["spec_rejection"] = None
         slices = (
@@ -393,11 +405,13 @@ def compile_delivery(
     config: Config,
     *,
     run: LiveRun | DryRun,
+    scratch: Path | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
+    methods_root = export_skills(config.pstack, scratch) if scratch is not None else None
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
     plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
@@ -417,12 +431,11 @@ def compile_delivery(
             except ConfigError as exc:
                 return halted("no_reviewer", str(exc), name)
             instruction = prompts[name]
-            if name == "implement":
-                slice = _active_slice(state)
-                for required, skill in ((browser_required, "browser-proof"), (formal_required, "formal-proof")):
-                    if required(slice):
-                        proof = (PACKAGE / "skills" / f"{skill}.md").read_text().strip()
-                        instruction = f"{instruction}\n\n{proof}"
+            if isinstance(run, LiveRun) and methods_root is None:
+                raise RuntimeError("Delivery execution requires a compiled skill export.")
+            methods_text, methods = stage_methods(name, state, methods_root) if methods_root is not None else ("", [])
+            if methods_text:
+                instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
@@ -447,28 +460,40 @@ def compile_delivery(
                     return halted("review_unavailable", str(exc), name)
                 review_context = (run.forge, target, diff)
                 instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
-            outcome, model = dispatcher.run(name, models, state, instruction)
+            attempts: list[SkillAttempt] = []
+
+            def record_attempt(model: str | None, kind: OutcomeKind) -> None:
+                attempts.append({
+                    "stage": name, "model": model, "commit": config.pstack.commit, "methods": methods, "outcome": kind,
+                })
+
+            outcome, model = dispatcher.run(
+                name, models, state, instruction, on_attempt=record_attempt if methods_root and name != "verify" else None,
+            )
+            stopped: DeliveryUpdate = {"path": [name], "skill_attempts": attempts}
             if outcome.kind == "failed":
-                return halted("invalid_output", f"{model}: {outcome.detail}", name)
+                return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
-                return halted("cli_missing", outcome.detail, name)
+                return {**stopped, **halted("cli_missing", outcome.detail, name)}
             if outcome.kind == "quota":
-                if name != "review":
+                if name != "review" and isinstance(run, DryRun):
                     raise QuotaExhausted(model)
-                return halted("no_reviewer", f"review quota exhausted: {model}", name)
+                reason: HaltReason = "no_reviewer" if isinstance(run, DryRun) else "quota_exhausted"
+                return {**stopped, **halted(reason, f"{name} quota exhausted: {model}", name)}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
                 if isinstance(output, ReviewOutput):
                     output = _check_tool_facts(output, run, state.get("verified_head"))
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
+                update["skill_attempts"] = attempts
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
-                update: DeliveryUpdate = {"path": [name], "spec_rejection": exc.reason, "review_rounds": rounds}
+                update: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
                 if rounds >= config.max_review_rounds:
                     update.update(halted("spec_cap", str(exc), name))
                 return update
             except InvalidOutput as exc:
-                return halted("invalid_output", str(exc), name)
+                return {**stopped, **halted("invalid_output", str(exc), name)}
 
             if review_context is not None and isinstance(output, ReviewOutput):
                 forge, target, diff = review_context
@@ -534,6 +559,10 @@ def compile_delivery(
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
         answer = interrupt({"stage": stage, "question": question})
         return {"human_answers": [*state.get("human_answers", []), answer]}
+
+    def quota_wait(state: DeliveryState) -> DeliveryUpdate:
+        interrupt({"reason": "quota_exhausted", "detail": state.get("halt_detail")})
+        return {"halt": None, "halt_detail": ""}
 
     def decide_pr_size(state: DeliveryState) -> DeliveryUpdate:
         size = oversized_pr(state)
@@ -723,24 +752,33 @@ def compile_delivery(
         return update
 
     builder = StateGraph(DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun)
+
+    def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str]) -> None:
+        def next_stage(state: DeliveryState) -> str:
+            return "quota_wait" if state.get("halt") == "quota_exhausted" else route(state)
+
+        builder.add_conditional_edges(stage, next_stage, {**targets, "quota_wait": "quota_wait"})
+
     graph_nodes = {"verify": verify, "review": review}
     for name in REQUIRED_NODES:
         builder.add_node(name, graph_nodes[name] if name in graph_nodes else bind(name))
     builder.add_node("proof", prove)
     builder.add_node("needs_human", needs_human)
+    builder.add_node("quota_wait", quota_wait)
+
     builder.add_node("decide_pr_size", decide_pr_size)
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_conditional_edges(
         START, lambda state: "done" if state.get("halt") else "triage", {"done": "done", "triage": "triage"},
     )
-    builder.add_conditional_edges(
+    add_agent_edges(
         "triage",
         after_triage,
         {"implement": "implement", "spec": "spec", "research": "research",
          "needs_human": "needs_human", "done": "done"},
     )
-    builder.add_conditional_edges(
+    add_agent_edges(
         "spec", after_spec,
         {"spec": "spec", "implement": "implement", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
     )
@@ -750,9 +788,12 @@ def compile_delivery(
     builder.add_conditional_edges(
         "needs_human", _last_stage, {"triage": "triage", "spec": "spec"},
     )
-    builder.add_edge("research", "done")
-    builder.add_conditional_edges("implement", after_implement, {"verify": "verify", "done": "done"})
     builder.add_conditional_edges(
+        "quota_wait", lambda state: state["path"][-1], {name: name for name in REQUIRED_NODES if name != "verify"},
+    )
+    add_agent_edges("research", lambda _: "done", {"done": "done"})
+    add_agent_edges("implement", after_implement, {"verify": "verify", "done": "done"})
+    add_agent_edges(
         "review",
         after_review,
         {"merge": "merge", "implement": "implement", "spec": "spec", "decide_pr_size": "decide_pr_size", "done": "done"},
@@ -778,6 +819,7 @@ def run_delivery(
     check: str = "",
     config: Config | None = None,
     slice: dict[str, object] | None = None,
+    scratch: Path | None = None,
 ) -> DeliveryResult:
     state: DeliveryState = {
         "repo": repo,
@@ -789,8 +831,15 @@ def run_delivery(
         "path": [],
     }
     if slice is not None:
-        state["slice"] = load_slice(slice)
-    graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
+        state.update(load_slice(slice))
+    config = config if config is not None else load_config()
+    if scratch is not None:
+        state["pstack_pin"] = config.pstack.model_dump()
+    try:
+        graph = compile_delivery(dispatcher, config, run=DryRun(), scratch=scratch)
+    except SkillMissing as exc:
+        return read_delivery_state({**state, **halted("skill_missing", str(exc), "done"), "stop": exc.halt,
+                                    "skill_reason": exc.reason})
     return graph.invoke(state, version="v2").value
 
 

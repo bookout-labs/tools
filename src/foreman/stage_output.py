@@ -14,6 +14,7 @@ PULL_REQUEST_LINES = 400
 Text = Annotated[str, StringConstraints(pattern=r"\S")]
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Output = TypeVar("Output", bound=BaseModel)
+WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
 
 
 class Contract(BaseModel):
@@ -45,6 +46,7 @@ class Slice(Contract):
     model_config = ConfigDict(json_schema_extra=_describe_slice)
 
     title: TrimmedText = Field(description="Name the outcome.")
+    stateful: bool = Field(description="Set true when the slice changes behavior across states or transitions.")
     acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
     builds: list[Seam] = Field(description="List interfaces, modules, and contracts this slice builds for other slices. Use an empty list when there are none.")
     uses: list[Seam] = Field(description="List seams this slice needs. Use an empty list when there are none.")
@@ -68,6 +70,8 @@ class Slice(Contract):
 
 
 class StoredSlice(Slice):
+    stateful: bool = False
+    work_kind: WorkKind | None = Field(default=None, exclude=True)
     builds: list[Seam] = Field(default_factory=list)
     uses: list[Seam] = Field(default_factory=list)
     depends_on: list[TrimmedText] = Field(default_factory=list)
@@ -81,6 +85,9 @@ class HumanQuestionOutput(Contract):
 
 
 class TriageOutput(HumanQuestionOutput):
+    work_kind: WorkKind = Field(
+        description="Classify the work. Keep the inherited work_kind when the delivery state already has one for a slice.",
+    )
     triage: Literal["implement", "spec", "question", "needs_human"] = Field(
         description=(
             "Use implement when the behavior is decided and the change fits in one pull request "
