@@ -104,10 +104,13 @@ class RecordedEvidenceTest(unittest.TestCase):
         from foreman.delivery import LiveRun, _check_tool_facts
         from foreman.dry_run import DEFAULT_RISK
         from foreman.stage_output import ReviewOutput, StoredToolFact, ToolFact
+        from foreman.review_round import GraphCheck, ReviewRound
 
         fact = StoredToolFact.from_fact(ToolFact(claim="CLI accepts --debug", fixture=None))
         state = {"repo": "example/repo", "check": "", "path": [],
-                 "tool_facts": [fact.model_dump()], "verified_head": self.commit()}
+                 "review_findings": [ReviewRound(round=1, reviewed_head="a" * 40, findings=[], resolutions={},
+                     graph_check=GraphCheck(detail="Unrecorded fact", tool_facts=[fact])).model_dump()],
+                 "verified_head": self.commit()}
         output = ReviewOutput(resolutions=[], risk=DEFAULT_RISK, findings=[], detail="Reviewed.", tool_facts=[])
         run = LiveRun(Mock(), self.workspace)
         self.manifest.write_text(self.manifest.read_text() + f'claim_ids = ["{fact.claim_id}"]\n')
@@ -169,7 +172,9 @@ class GraphFactGateTest(unittest.TestCase):
 
     def test_omission_cannot_resolve_an_unrecorded_fact(self):
         fact = {"claim": "CLI accepts --debug", "fixture": None}
-        state = {"repo": "example/repo", "check": "exit 0", "path": [], "tool_facts": [fact]}
+        first = self.gate([fact], {"repo": "example/repo", "check": "exit 0", "path": []})
+        state = {"repo": "example/repo", "check": "exit 0", "path": [],
+                 "review_findings": [entry.model_dump() for entry in first.history.rounds]}
         self.assertEqual(self.gate([], state).review, "changes")
 
     def test_record_paths_are_relative_and_normalized(self):

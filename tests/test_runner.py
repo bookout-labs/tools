@@ -17,7 +17,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.adapters import Outcome
 from foreman.cli import _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
-from foreman.delivery import LiveRun, halted, run_delivery
+from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
@@ -824,9 +824,12 @@ class LiveRunnerTest(unittest.TestCase):
                         self.assertIn("captured_run", args[-1])
                         self.assertIn("quoted_source", args[-1])
                         self.assertIn("The CLI accepts --debug.", args[-1])
-                        claims = json.loads(args[-1].split("Delivery state:\n", 1)[1])["tool_facts"]
+                        worker_state = json.loads(args[-1].split("Delivery state:\n", 1)[1])
+                        self.assertNotIn("tool_facts", worker_state)
+                        claims = carried_tool_facts(worker_state)
+                        self.assertIn("Carried tool facts:\n" + json.dumps([fact.model_dump() for fact in claims]), args[-1])
                         self.assertIn("claim_ids", args[-1])
-                        manifest_path.write_text(manifest("result.txt") + f'claim_ids = {json.dumps([f["claim_id"] for f in claims])}\n')
+                        manifest_path.write_text(manifest("result.txt") + f'claim_ids = {json.dumps([f.claim_id for f in claims])}\n')
                     return worker_reply(args, reply)
                 file = root / "items.txt"
                 file.write_text((file.read_text() if file.exists() else "") + "synthetic edit\n")
@@ -847,6 +850,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(result.get("merge"), "armed")
         self.assertEqual(result.get("fact_record"), "tests/fixtures/manifest.toml")
+        self.assertNotIn("tool_facts", result)
 
     def test_null_claim_resolves_by_id_when_reviewer_paraphrases(self):
         result = self.review_tool_fact(None, recover=True, paraphrase=True)

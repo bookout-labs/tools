@@ -34,7 +34,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, StoredToolFact, ToolFact, GraphCheck as GraphEvidence, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
+    Contract, StoredToolFact, GraphCheck as GraphEvidence, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -160,7 +160,6 @@ class DeliveryFields(TypedDict, total=False):
     reviewed_head: str
     settled_rulings: list[dict[str, object]]
     fact_record: str
-    tool_facts: list[dict[str, object]]
     findings: list[dict[str, object]]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
@@ -274,17 +273,17 @@ def graph_check(state: DeliveryState) -> GraphEvidence | None:
     return None
 
 
+def carried_tool_facts(state: DeliveryFields) -> list[StoredToolFact]:
+    gate = history({"rounds": state.get("review_findings", [])}).gate
+    return gate.tool_facts if gate else []
+
+
 def _check_tool_facts(
     output: ReviewOutput, run: LiveRun | DryRun, state: DeliveryState,
 ) -> GraphCheck | None:
     head = state.get("verified_head")
-    past_gate = history({"rounds": state.get("review_findings", [])}).gate
-    carried = [fact.model_dump() for fact in past_gate.tool_facts] if past_gate else state.get("tool_facts", [])
     manifest_path = state.get("fact_record", MANIFEST_PATH)
-    facts = {fact.claim: fact for fact in (
-        StoredToolFact.model_validate(raw) if "claim_id" in raw else StoredToolFact.from_fact(ToolFact.model_validate(raw))
-        for raw in carried
-    )}
+    facts = {fact.claim: fact for fact in carried_tool_facts(state)}
     for fact in output.tool_facts:
         facts.setdefault(fact.claim, StoredToolFact.from_fact(fact))
     proven = graph_check(state)
@@ -329,7 +328,6 @@ def stage_update(
         update.update(
             risk=output.risk.model_dump(), detail=output.detail,
             findings=[finding.model_dump() for finding in output.findings],
-            tool_facts=[fact.model_dump() for fact in output.tool_facts],
         )
     elif isinstance(output, VerifyOutput):
         update["verify"] = output.verify
@@ -465,8 +463,9 @@ def compile_delivery(
                     " kind = \"captured_run\" and argv = [\"tool\", \"arg\"] for captured output, or"
                     " kind = \"quoted_source\" and sources = [\"https://source\"] for quoted source evidence."
                     ' Add claim_ids = ["<claim_id>"] to the evidence entry for each carried claim.'
-                    " Support each claim in tool_facts; the graph rechecks the published verified head."
+                    " Support each carried tool fact; the graph rechecks the published verified head."
                 )
+                instruction += "\nCarried tool facts:\n" + json.dumps([fact.model_dump() for fact in carried_tool_facts(state)])
             if name == "review" and (proven := graph_check(state)) is not None:
                 instruction += f"\nGraph fact: {proven.claim}\nGraph check evidence: {proven.model_dump_json()}"
             if name == "verify":
@@ -537,12 +536,10 @@ def compile_delivery(
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
                 update["skill_attempts"] = attempts
                 if accepted is not None:
-                    gate = accepted.history.gate
                     update.update(review=accepted.review, detail=accepted.detail,
                                   review_findings=[r.model_dump(mode="json") for r in accepted.history.rounds],
                                   reviewed_head=accepted.history.rounds[-1].reviewed_head,
                                   findings=[f.model_dump() for f in accepted.findings],
-                                  tool_facts=[f.model_dump() for f in gate.tool_facts] if gate else [],
                                   review_change_kind=accepted.change_kind,
                                   review_rounds=state.get("review_rounds", 0) + (accepted.review == "changes"))
                     if accepted.rethink:
