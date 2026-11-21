@@ -66,8 +66,8 @@ wrong behavior fails that same answer, and an independent acceptance receipt is
 pinned. A fresh independent acceptance review of the answer's coverage remains
 necessary before promoting newly curated answers. Isolation is a separate receipt.
 
-The commitments cover a feature case and a provisional bug case. Their private
-bundles are local curation staging only. They must be transferred into an
+The commitments cover a feature case, a provisional bug case, and a provisional
+parent fixture case. Their private bundles are local curation staging only. They must be transferred into an
 evaluator-only private store outside all worker mounts, credentials, and network
 access before use. Each curation PR identifies its staging location and unmet
 obligations. The bug case has positive and negative grader evidence, but its
@@ -81,3 +81,18 @@ contract revision, and work kind. For the synthetic parent fixture, dispatch wai
 for foundation merge and resume repeats no create or link effects. Keeping titles
 while dropping or reversing an edge, or weakening acceptance, must fail.
 A synthetic fixture does not complete the requirement for a real shipped parent.
+
+The parent fixture staging bundle uses the same v1 contract without extensions.
+Its answer compares children by acceptance criteria and seams, checks exact
+coverage and the parent checkpoint's child association, and rejects missing or
+reversed dependency edges and weakened acceptance with unchanged titles.
+The shipped result and two equivalent call/formatting variants pass. Renamed
+child titles and nonsequential generated IDs are also exercised. Dispatch waits
+for foundation merge, and resume repeats neither create nor link effects.
+
+This historical fixture predates native parent links, contract revisions, and
+work kinds. Those D3 obligations remain incomplete; checkpoint association and
+slice labels do not establish them. Its independent acceptance receipt and fresh
+answer coverage review remain pending. Green historical CI is not acceptance.
+The fixture remains provisional under 164-D1, and a real shipped parent job is
+still needed for completeness. Transfer and #165 isolation remain incomplete.

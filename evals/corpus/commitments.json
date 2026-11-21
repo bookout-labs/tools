@@ -12,6 +12,12 @@
       "sha256": "a178476b882394be9ef21673524c903baab6937a500fa8dd56c0c64fe8323fb0",
       "request_sha256": "3ec9c555bee85683027b4901fcfdaf5d17fcdeb9111286551a7659f42cb5da92",
       "answer_sha256": "d6ee0efd95b4b7848a4365df8e873a4c71bba50fd3036bb1d2e81192ca204236"
+    },
+    {
+      "id": "parent-001",
+      "sha256": "d79bab88d38e7666b624de07f63692826c57e54d755854a12490a901ed46b7de",
+      "request_sha256": "3f4fab3d40130288efd9cc5da3990355cd7879b499c64b41d3ec35771f74e538",
+      "answer_sha256": "860b432de92dbd815f7c474fe01672ca93a184c594cb5af32f791cc76e747e06"
     }
   ]
 }
