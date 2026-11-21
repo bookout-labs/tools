@@ -67,3 +67,16 @@ All names below are methods in `tests/test_publication.py`.
 The statechart tool generated `.tmp/Publication.tla`, `.tmp/Publication.cfg` and `.tmp/Publication.map.mjs` from `.tmp/publication.mmd`. Command `node /Users/booko/.claude/plugins/marketplaces/cursor-plugins/pstack/skills/statechart/scripts/statechart.mjs from-chart "$PWD/.tmp/publication.mmd" --out "$PWD/.tmp/statechart"` stopped with exit 2 because this machine has neither TLC nor a Java runtime. No formal-model verification is claimed. The tests above replay the chart against the real graph, SQLite checkpoints, local Git checkouts and bare remotes.
 
 Model the Domain shaped the choice of graph nodes and checkpoint fields. Make Operations Idempotent shaped commit reconciliation and the remote SHA comparison. The code has no publication journal separate from the existing SQLite checkpointer.
+
+
+## Verification record
+
+The original 6e3de512 checkout reproduced the crash-after-commit defect with a local Git repository and SQLite checkpoint. Rerunning invoked the worker twice, then stopped at `failed: no changes`. The fixed graph's crash-after-commit test observes the original commit pushed with no duplicate worker or commit.
+
+The merged b67cc3c base retains `--preflight`, `env_unavailable`, `ResumableHalt` and `Runtime[LiveRun]`. Resuming every publication halt creates the same invocation context as a new run. The environment tests cover probe timing, quota-independent round counts and answer replay.
+
+Local verification passed 248 unit tests, 12 evals, the README dry run with `done verified`, and `git diff --check`. Pyright 1.1.414 checked all eight changed Python modules against the same modules on b67cc3c. Both report 16 pre-existing diagnostics and zero warnings; there are no new diagnostics.
+
+Against b67cc3c the diff contains 283 changed source lines and 698 handwritten test lines. Fixtures and generated schemas add 52 lines and are excluded from T5. The coordinator's no-split ruling is recorded in issue #55. Crash recovery and publication remain one contract.
+
+PRODUCTION PROOF for this PR is fixture-only by instruction. `TMPDIR="$PWD/.tmp" uv run python -m unittest discover -s tests -p test_publication.py` must exit 0. Its pass path ends with an open PR fixture and matching local/remote HEAD; failure cases stop with typed, detailed halts. The pty authentication server, local bare remotes and all fixtures use synthetic data. No live delivery graph run was used.

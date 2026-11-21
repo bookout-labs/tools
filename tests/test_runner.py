@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from foreman.adapters import Outcome
 from foreman.cli import _write_check_log, main
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, halted, run_delivery
@@ -20,7 +21,7 @@ from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
 
-from foreman.runner import run_live_delivery
+from foreman.runner import AnswerError, run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
@@ -417,7 +418,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.prompts = []
         self.github = FakeGitHub()
 
-    def walk(self, replies, *, issue=8, check="exit 0", snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None):
+    def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None):
         outputs = iter(replies)
         active = workspace if workspace is not None else FakeWorkspace(self.cwd, snapshots)
 
@@ -429,7 +430,7 @@ class LiveRunnerTest(unittest.TestCase):
             return active.reply(args, reply) if isinstance(active, FakeWorkspace) else worker_reply(args, reply)
 
         return run_live_delivery(
-            repo="Example/Engine", issue=issue, check=check,
+            repo="Example/Engine", issue=issue, check=check, preflight=preflight, answer=answer,
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
             run=LiveRun(self.github, active),
         )
@@ -881,6 +882,224 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn("done no_dispatcher", stdout.getvalue())
         self.assertFalse((self.cwd / "ran").exists())
 
+    def test_cli_preflight_stops_before_dispatch_and_uses_engine_checkout(self):
+        root = self.cwd / "checkout"
+        root.mkdir()
+        preflight = "echo probed > preflight.log; exit 9"
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
+                 "--check", "touch checked", "--preflight", preflight],
+                worker_runner=lambda args, cwd, env: worker_reply(args, {"triage": "implement"}),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(root)),
+            )
+        self.assertEqual(code, 75)
+        self.assertIn("done env_unavailable", stdout.getvalue())
+        self.assertIn(f"Preflight {preflight!r} exited with 9", stdout.getvalue())
+        self.assertEqual((root / "preflight.log").read_text(), "probed\n")
+        self.assertFalse((self.cwd / "preflight.log").exists())
+        self.assertFalse((root / "checked").exists())
+
+    def test_cli_preflight_output_streams_through_redacted_log(self):
+        preflight = f"echo {SYNTHETIC_QUESTION_TOKEN}; echo warning >&2; exit 9"
+        stdout = io.StringIO()
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(stdout):
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
+                 "--check", "exit 0", "--preflight", preflight],
+                worker_runner=lambda args, cwd, env: worker_reply(args, {"triage": "implement"}),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            )
+        self.assertEqual(code, 75)
+        self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, stdout.getvalue())
+        self.assertIn("[redacted:GitHub Token]", stdout.getvalue())
+        self.assertIn("warning", stdout.getvalue())
+
+    def test_cli_rejects_changed_answer_without_traceback(self):
+        self.walk([{"triage": "needs_human", "human_question": "Which items?"}], preflight="exit 9")
+        self.walk([{"triage": "implement"}], answer="Only open")
+        stderr = io.StringIO()
+        with contextlib.chdir(self.cwd), contextlib.redirect_stderr(stderr):
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
+                 "--check", "exit 0", "--answer", "All items"],
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("already answered differently", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_rerunning_same_command_after_preflight_recovers_without_using_a_round(self):
+        preflight = "test -f ready"
+        halted = self.walk([{"triage": "implement"}], preflight=preflight)
+        self.assertEqual(halted.get("stop"), "env_unavailable")
+        self.assertEqual(halted.get("review_rounds"), 0)
+        self.assertEqual(halted.get("path"), ["triage", "implement", "done"])
+        self.assertEqual(self.calls, ["claude"])
+
+        (self.cwd / "ready").touch()
+        result = self.walk(
+            [{"implementation": "built"}, APPROVE],
+            preflight=preflight,
+        )
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("review_rounds"), 0)
+        self.assertNotIn("halt_detail", result)
+        self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "review", "merge", "done"])
+
+    def test_answer_resume_is_idempotent_after_environment_halt(self):
+        preflight = "test -f ready"
+        question = self.walk(
+            [{"triage": "needs_human", "human_question": "Which items?"}], preflight=preflight,
+        )
+        self.assertEqual(question.get("stop"), "needs_human")
+        halted = self.walk([{"triage": "implement"}], answer="Only open")
+        self.assertEqual(halted.get("stop"), "env_unavailable")
+        self.assertEqual(halted.get("human_answers"), ["Only open"])
+        with self.assertRaisesRegex(AnswerError, "already answered differently"):
+            self.walk([], answer="All items")
+        (self.cwd / "ready").touch()
+        resumed = self.walk([{"implementation": "built"}, APPROVE], answer="Only open")
+        self.assertEqual(resumed.get("stop"), "verified")
+        self.assertEqual(resumed.get("human_answers"), ["Only open"])
+        self.assertEqual(self.walk([], answer="Only open").get("stop"), "verified")
+
+    def test_non_implement_slice_routes_skip_preflight(self):
+        for issue, replies, stop in (
+            (8, [{"triage": "question"}, {"research": "answer"}], "answered"),
+            (9, [{"triage": "spec"}, {"spec": "not ready", "spec_gate": "needs_human",
+                                       "human_question": "Which items?"}], "needs_human"),
+        ):
+            with self.subTest(stop=stop):
+                result = self.walk(replies, issue=issue, preflight="touch probed; exit 9")
+                self.assertEqual(result.get("stop"), stop)
+                self.assertFalse((self.cwd / "probed").exists())
+
+    def test_parent_and_slice_probe_once_plus_failed_check_reprobe(self):
+        for issue, labels in ((8, ["factory"]), (9, ["slice"])):
+            with self.subTest(labels=labels):
+                self.github = FakeGitHub(labels)
+                marker = f"checked-{issue}"
+                probe_log = f"probes-{issue}"
+                result = self.walk(
+                    [{"triage": "implement", "slice": EMPTY_SLICE},
+                     {"implementation": "built"}, {"implementation": "fixed"}, APPROVE], issue=issue,
+                    check=f"test -f {marker} || {{ touch {marker}; exit 1; }}",
+                    preflight=f"echo probed >> {probe_log}",
+                )
+                self.assertEqual(result.get("stop"), "verified")
+                self.assertEqual(result.get("review_rounds"), 1)
+                self.assertEqual(result.get("path", []).count("implement"), 2)
+                self.assertEqual((self.cwd / probe_log).read_text().splitlines(), ["probed", "probed"])
+
+    def test_successful_slice_probes_only_once(self):
+        result = self.walk(
+            [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
+            preflight="echo probed >> probes",
+        )
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual((self.cwd / "probes").read_text(), "probed\n")
+
+    def test_parent_preflight_halts_at_implement(self):
+        self.github = FakeGitHub(["factory"])
+        result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}], preflight="exit 9")
+        self.assertEqual(result.get("stop"), "env_unavailable")
+        self.assertEqual(result.get("path"), ["triage", "implement", "done"])
+        self.assertEqual(self.calls, ["claude"])
+
+    def test_parent_stops_sliced_without_running_preflight(self):
+        self.github = FakeGitHub(["factory"])
+        result = self.walk(
+            [{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}],
+            preflight="touch probed; exit 9",
+        )
+        self.assertEqual(result.get("stop"), "sliced")
+        self.assertFalse((self.cwd / "probed").exists())
+
+    def test_dry_run_does_not_run_preflight(self):
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--dry-run", "--request", "List items",
+                 "--preflight", "touch preflight.log; exit 9"],
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("done verified", stdout.getvalue())
+        self.assertFalse((self.cwd / "preflight.log").exists())
+
+    def test_failed_check_with_failed_preflight_preserves_rounds(self):
+        (self.cwd / "ready").touch()
+        result = self.walk(
+            [{"triage": "implement"}, {"implementation": "built"}],
+            check="test -f checked || { touch checked; rm ready; exit 1; }", preflight="test -f ready",
+        )
+        self.assertEqual(result.get("stop"), "env_unavailable")
+        self.assertEqual(result.get("review_rounds"), 0)
+        self.assertEqual(result.get("check_exit_code"), 1)
+        self.assertIn("test -f ready", result.get("halt_detail", ""))
+        self.assertIn("exited with 1", result.get("halt_detail", ""))
+        self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "done"])
+
+        (self.cwd / "ready").touch()
+        resumed = self.walk([APPROVE])
+        self.assertEqual(resumed.get("stop"), "verified")
+        self.assertEqual(resumed.get("check_exit_code"), 0)
+        self.assertEqual(resumed.get("review_rounds"), 0)
+        self.assertEqual(self.calls, ["claude", "codex", "claude"])
+
+    def test_failed_check_consumes_round_with_healthy_or_unspecified_environment(self):
+        for issue, preflight in enumerate(("", "echo probed >> preflight.log"), start=8):
+            with self.subTest(preflight=preflight):
+                marker = f"checked-{issue}"
+                built = {"implementation": "built"}
+                result = self.walk(
+                    [{"triage": "implement"}, built, built, APPROVE], issue=issue,
+                    check=f"test -f {marker} || {{ touch {marker}; exit 1; }}", preflight=preflight,
+                )
+                self.assertEqual(result.get("stop"), "verified")
+                self.assertEqual(result.get("review_rounds"), 1)
+                self.assertEqual(result.get("path", []).count("implement"), 2)
+        self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\nprobed\n")
+
+    def test_check_that_cannot_start_stops_without_spending_a_round(self):
+        (self.cwd / "non-executable").write_text("#!/bin/sh\nexit 0\n")
+        cases = (
+            ("./non-executable", 126, "command is not executable", ""),
+            ("./missing-check", 127, "command not found", "echo probed >> preflight.log"),
+        )
+        for issue, (command, exit_code, reason, preflight) in enumerate(cases, start=8):
+            with self.subTest(exit_code=exit_code):
+                result = self.walk(
+                    [{"triage": "implement"}, {"implementation": "built"}],
+                    issue=issue, check=command, preflight=preflight,
+                )
+                self.assertEqual(result.get("stop"), "env_unavailable")
+                self.assertEqual(result.get("review_rounds"), 0)
+                self.assertEqual(result.get("check_exit_code"), exit_code)
+                for detail in (command, str(exit_code), reason):
+                    self.assertIn(detail, result.get("halt_detail", ""))
+        self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\n")
+
+    def test_resume_at_implement_rechecks_saved_preflight(self):
+        def interrupted_run(node, model, state, instruction):
+            if node == "triage":
+                return Outcome("ran", {"triage": "implement", "slice": None, "human_question": None})
+            self.assertEqual(node, "implement")
+            raise RuntimeError("worker stopped")
+
+        ready = self.cwd / "ready"
+        ready.touch()
+        with self.assertRaisesRegex(RuntimeError, "worker stopped"):
+            run_live_delivery(
+                repo="Example/Engine", issue=8, check="exit 0", preflight="test -f ready",
+                checkpoint=self.checkpoint, run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                dispatcher=FailoverDispatcher(interrupted_run),
+            )
+        ready.unlink()
+        result = self.walk([])
+        self.assertEqual(result.get("stop"), "env_unavailable")
+        self.assertEqual(result.get("review_rounds"), 0)
+        self.assertEqual(self.calls, [])
+
     def test_dirty_or_invalid_worktree_skips_the_check(self):
         for snapshot in (WorktreeState(HEAD, False, BRANCH), WorktreeInspectionFailed("Invalid HEAD")):
             with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd) as directory:
@@ -1215,7 +1434,7 @@ sys.exit(main(
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
 
 class HaltExitCodeTest(unittest.TestCase):
-    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", dispatcher=True, hold=None):
+    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", preflight="", dispatcher=True, hold=None):
         directory = self.enterContext(TemporaryDirectory())
         root = Path(directory)
         forge = FakeGitHub()
@@ -1226,7 +1445,7 @@ class HaltExitCodeTest(unittest.TestCase):
         workspace = FakeWorkspace(root, snapshots)
         with contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", check],
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", check, "--preflight", preflight],
                 checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace),
                 worker_runner=(lambda args, cwd, env: workspace.reply(args, next(outputs))) if dispatcher else None,
             )
@@ -1283,6 +1502,21 @@ class HaltExitCodeTest(unittest.TestCase):
         self.assert_halt(self.live(replies, hold="Maintenance"), "merge_held", "FOREMAN_MERGE_HOLD is set: Maintenance", 75)
         self.assert_halt(self.live(replies, snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, True, None))),
                          "merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.", 75)
+
+    def test_environment_halts_have_detail_and_resumable_exit(self):
+        self.assert_halt(self.live(
+            [{"triage": "implement"}], preflight="exit 9",
+        ), "env_unavailable", "Preflight 'exit 9' exited with 9", 75)
+        for command, code, reason in (
+            ("./missing-check", 127, "command not found"),
+            ("./non-executable", 126, "command is not executable"),
+        ):
+            with self.subTest(code=code):
+                result = self.live(
+                    [{"triage": "implement"}, {"implementation": "built"}], check=command,
+                    preflight="touch non-executable" if code == 126 else "",
+                )
+                self.assert_halt(result, "env_unavailable", f"Check {command!r} exited with {code} ({reason})", 75)
 
     def test_invalid_merge_sha_halts_with_detail_and_resumable_exit(self):
         detail = "Merge arming requires a full 40-hex commit SHA."

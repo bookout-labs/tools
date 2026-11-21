@@ -19,7 +19,7 @@ from foreman.github import ForgeError, LiveForge
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
-from foreman.runner import RESUMABLE_HALTS, run_live_delivery
+from foreman.runner import AnswerError, RESUMABLE_HALTS, run_live_delivery
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
 
@@ -97,6 +97,7 @@ def main(
     run.add_argument("--issue", type=int)
     run.add_argument("--request")
     run.add_argument("--check", default="")
+    run.add_argument("--preflight", default="")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
 
@@ -175,13 +176,14 @@ def main(
                 repo=args.repo,
                 issue=args.issue,
                 check=args.check,
+                preflight=args.preflight,
                 checkpoint=checkpoint,
                 dispatcher=dispatcher,
                 request=args.request,
                 run=live_run,
                 answer=args.answer,
             )
-        except (ForgeError, OSError, QuotaExhausted, ValueError) as exc:
+        except (AnswerError, ForgeError, OSError, QuotaExhausted, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
     _print_run(result)

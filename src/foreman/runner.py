@@ -1,21 +1,27 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import re
+from typing import cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Command
+from langgraph.types import Command, StateSnapshot
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted
+from foreman.delivery import DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.github import Forge
 from foreman.stage_output import StoredSlice, parse_output
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
+
+
+class AnswerError(RuntimeError):
+    """An answer cannot be applied to this checkpoint's question."""
 
 
 def _load_slice(body: str) -> StoredSlice:
@@ -38,7 +44,11 @@ def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice) -> s
     return ""
 
 
-def _replay_halted_node(graph: CompiledStateGraph, config: RunnableConfig, path: list[str], partial_edits: str = "") -> None:
+def _checkpoint_before_halt(
+    graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryState],
+    config: RunnableConfig,
+    path: list[str],
+) -> StateSnapshot:
     if path and path[-1] == "done":
         path = path[:-1]
     if not path:
@@ -47,10 +57,7 @@ def _replay_halted_node(graph: CompiledStateGraph, config: RunnableConfig, path:
     before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (node,)), None)
     if before is None:
         raise ValueError(f"Cannot resume a run without a checkpoint before {node}.")
-    replay = before.config
-    if partial_edits:
-        replay = graph.update_state(replay, {"partial_edits": partial_edits})
-    graph.invoke(None, replay, durability="sync")
+    return before
 
 
 def run_live_delivery(
@@ -60,6 +67,7 @@ def run_live_delivery(
     check: str,
     checkpoint: Path,
     run: LiveRun,
+    preflight: str = "",
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
     answer: str | None = None,
@@ -70,21 +78,36 @@ def run_live_delivery(
     client = run.forge
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         graph = compile_delivery(dispatcher, load_config(), run=run, checkpointer=saver)
+
+        def invoke(
+            graph_input: DeliveryState | Command | None,
+            state: DeliveryState,
+            invocation_config: RunnableConfig = config,
+        ) -> None:
+            environment = EnvironmentProbe(run.workspace, state.get("preflight", ""), run.check_log)
+            graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync")
+
         saved = graph.get_state(config)
+        saved_values = cast(DeliveryState, saved.values)
         saved_workspace = saved.values.get("workspace")
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
         if answer is not None:
-            if not saved.interrupts:
-                raise ValueError("This issue has no pending question.")
             if not answer.strip():
-                raise ValueError("The answer must contain text.")
+                raise AnswerError("The answer must contain text.")
+            if not saved.interrupts:
+                answers = saved_values.get("human_answers", [])
+                if not answers:
+                    raise AnswerError("This issue has no pending question.")
+                if answer != answers[-1]:
+                    raise AnswerError("This question was already answered differently. Resume with the recorded answer.")
+        if answer is not None and saved.interrupts:
             if saved.interrupts[0].value["stage"] == "pr_size":
                 try:
                     answer = PullRequestSizeDecision(answer).value
                 except ValueError as exc:
-                    raise ValueError("Answer split or override at the pull request size prompt.") from exc
-            graph.invoke(Command(resume=answer), config, durability="sync")
+                    raise AnswerError("Answer split or override at the pull request size prompt.") from exc
+            invoke(Command(resume=answer), saved_values)
         elif not saved.values:
             loaded = client.load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
@@ -94,7 +117,9 @@ def run_live_delivery(
                 "workspace": workspace,
                 "request": text,
                 "check": check,
+                "preflight": preflight,
                 "issue_kind": "slice" if "slice" in loaded["labels"] else "parent",
+                "review_rounds": 0,
             }
             if initial["issue_kind"] == "slice":
                 try:
@@ -105,11 +130,15 @@ def run_live_delivery(
                     if detail := _blocker_detail(client, repo, issue, item):
                         return {**initial, "path": ["done"], "stop": "blocked", "halt_detail": detail}
                     initial["slice"] = item.model_dump(exclude_unset=True)
-            graph.invoke(initial, config, durability="sync")
+            invoke(initial, initial)
         elif saved.values.get("halt") in RESUMABLE_HALTS:
-            _replay_halted_node(graph, config, saved.values.get("path", []), saved.values.get("partial_edits", ""))
+            before = _checkpoint_before_halt(graph, config, saved.values.get("path", []))
+            replay = before.config
+            if partial := saved.values.get("partial_edits"):
+                replay = graph.update_state(replay, {"partial_edits": partial})
+            invoke(None, cast(DeliveryState, before.values), replay)
         elif saved.next and not saved.interrupts:
-            graph.invoke(None, config, durability="sync")
+            invoke(None, saved_values)
 
         saved = graph.get_state(config)
         if saved.values.get("stop") == "sliced":

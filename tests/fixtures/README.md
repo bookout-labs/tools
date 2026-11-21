@@ -65,6 +65,22 @@ codex exec -m gpt-6.1-sol -c model_reasoning_effort=high --color never \
   -s read-only "$codex_prompt_with_schema"
 ```
 
+In a temporary checkout, `/bin/sh --version` reported Bash 3.2.57(1) on macOS.
+`/bin/sh -c './non-executable'` returned 126 for a script with mode 0644.
+`/bin/sh -c './missing-check'` returned 127 for an absent file.
+Both statuses follow POSIX.1-2017's
+[Command Search and Execution, section 2.9.1.1](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_09_01_01).
+
+CI uses dash on Ubuntu 26.04. The runner image's
+[published software list](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2604-Readme.md)
+records dash `0.5.12-12ubuntu3` (image `20261116.202.1`). The CI
+`Record check shell` step runs `readlink -f /bin/sh` and `dpkg-query -W dash`
+to record the actual interpreter and package version on every run.
+`test_check_that_cannot_start_stops_without_spending_a_round` executes the same
+126 and 127 cases through `/bin/sh` on that runner. The POSIX section above
+specifies 127 when command search fails and 126 when the found command cannot
+execute.
+
 ## GitHub issue dependency contract
 
 Foreman calls the GitHub REST API through `gh api`.
