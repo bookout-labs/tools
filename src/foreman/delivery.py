@@ -438,7 +438,7 @@ def compile_delivery(
                 except (ForgeError, WorktreeInspectionFailed) as exc:
                     return halted(Halt.review_unavailable, str(exc), name)
                 review_context = (run.forge, target, diff)
-                instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
+                instruction = f"{instruction}\n\nRead the labeled review diffs with these commands in the checkout:\n{diff.command}"
             if name == "review":
                 scope = "Full PR review." if not past.rounds else "Check unresolved findings and added interdiff lines also in the PR diff."
                 instruction += "\n\n" + scope
