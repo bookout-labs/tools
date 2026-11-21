@@ -15,7 +15,9 @@ from unidiff.patch import PatchSet
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.github import Forge, ForgeError, MergeNotArmed, PullRequest, ReviewComment, merge_command
+from foreman.github import (
+    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command,
+)
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.stage_output import (
     Contract, HumanQuestionOutput, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
@@ -29,6 +31,9 @@ STAGE_ORDER = REQUIRED_NODES + ("merge",)
 SKILLS_FOR = {
     "review": ("review-quality", "merge-risk"),
 }
+MergeHalt = Literal["merge_held", "merge_not_armed"]
+
+
 @dataclass(frozen=True)
 class LiveRun:
     forge: Forge
@@ -350,36 +355,50 @@ def compile_delivery(
         return "done" if state.get("halt") else "verify"
 
     def arm_merge(state: DeliveryState) -> DeliveryState:
-        def halted(detail: str) -> DeliveryState:
-            return {"merge": "not_armed", "halt": "merge_not_armed", "halt_detail": detail, "path": ["merge"]}
+        repo = state["repo"]
+        head = state.get("verified_head")
+
+        def halted(halt: MergeHalt, detail: str) -> DeliveryState:
+            return {
+                "merge": "not_armed", "halt": halt, "halt_detail": detail, "path": ["merge"],
+                "merge_command": merge_command(repo, "<number>", head or "<sha>"),
+            }
 
         match run:
             case DryRun():
                 return {
                     "merge": "skipped", "path": ["merge"],
-                    "merge_command": merge_command(state["repo"], "<number>", state.get("head_sha") or "<sha>"),
+                    "merge_command": merge_command(repo, "<number>", state.get("head_sha") or "<sha>"),
                 }
             case LiveRun(forge=forge, workspace=workspace):
-                head = state.get("verified_head")
                 if head is None:
-                    return halted("The run did not record a verified HEAD.")
+                    return halted("merge_not_armed", "The run did not record a verified HEAD.")
                 try:
                     worktree = workspace.inspect()
                 except WorktreeInspectionFailed as exc:
-                    return halted(str(exc))
+                    return halted("merge_not_armed", str(exc))
                 if not worktree.clean:
-                    return halted("The worktree has changes or Git could not inspect it.")
+                    return halted("merge_not_armed", "The worktree has changes or Git could not inspect it.")
                 if worktree.head != head:
                     return halted(
+                        "merge_not_armed",
                         f"HEAD is {worktree.head}, verification checked {head}. "
-                        "This run is finished and the merge was not armed."
+                        "Reset the PR branch to the verified commit.\n"
+                        f"  git reset --keep {head}\n"
+                        "Then rerun the same command. New commits need a new run."
                     )
                 if worktree.branch is None:
-                    return halted("HEAD is detached. Merge requires a checked-out branch.")
+                    return halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")
                 try:
-                    forge.arm_auto_merge(state["repo"], state["issue"], worktree.branch, head)
+                    hold = forge.merge_hold(repo)
+                except MergeHoldUnreadable as exc:
+                    return halted("merge_held", f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
+                if hold:
+                    return halted("merge_held", hold)
+                try:
+                    forge.arm_auto_merge(repo, state["issue"], worktree.branch, head)
                 except MergeNotArmed as exc:
-                    return halted(str(exc))
+                    return halted("merge_not_armed", str(exc))
                 return {"merge": "armed", "path": ["merge"]}
 
     def finish(state: DeliveryState) -> DeliveryState:
