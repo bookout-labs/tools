@@ -14,7 +14,7 @@ from foreman.cli import main
 from foreman.delivery import LiveRun
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
-from foreman.github import MergeNotArmed
+from foreman.github import MergeHoldUnreadable, MergeNotArmed
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, parse_output
 from foreman.worker import CliWorker
@@ -74,6 +74,12 @@ class FakeGitHub:
         self.label_calls = []
         self.issue_labels = {}
         self.merge_calls = []
+        self.hold = None
+        self.hold_reads = []
+
+    def merge_hold(self, repo):
+        self.hold_reads.append(repo)
+        return self.hold
 
     def arm_auto_merge(self, repo, issue, branch, sha):
         self.merge_calls.append((repo, issue, branch, sha))
@@ -435,7 +441,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_worktree_changes_after_check_leave_the_command_unarmed(self):
         for snapshot, detail in (
             (WorktreeState(HEAD, False, BRANCH), "worktree has changes"),
-            (WorktreeState("b" * 40, True, BRANCH), f"HEAD is {'b' * 40}, verification checked {HEAD}. This run is finished"),
+            (WorktreeState("b" * 40, True, BRANCH), f"Check out {HEAD} and rerun the same command. New commits need a new run."),
             (WorktreeState(HEAD, True, None), "HEAD is detached"),
         ):
             with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd) as directory:
@@ -449,6 +455,42 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(result["stop"], "merge_not_armed")
                 self.assertIn(detail, result["halt_detail"])
                 self.assertEqual(self.github.merge_calls, [])
+
+    def test_retry_after_failed_hold_read_arms_once(self):
+        reason = "HTTP 503: Service Unavailable"
+        with patch.object(self.github, "merge_hold", side_effect=MergeHoldUnreadable(reason)):
+            held = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(held["stop"], "merge_held")
+        self.assertEqual(held["merge"], "not_armed")
+        self.assertEqual(held["halt_detail"], f"could not read FOREMAN_MERGE_HOLD: {reason}")
+        self.assertEqual(held["merge_command"], [
+            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--squash", "--auto", "--match-head-commit", HEAD,
+        ])
+        self.assertEqual(self.github.merge_calls, [])
+        released = self.walk([])
+        self.assertEqual(released["stop"], "verified")
+        self.assertEqual(released["merge"], "armed")
+        self.assertEqual(released["path"], held["path"])
+        self.assertNotIn("halt_detail", released)
+        self.assertEqual(self.walk([]), released)
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
+
+    def test_retry_after_worktree_is_cleaned_arms_once(self):
+        halted = self.walk(
+            [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
+            snapshots=(CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
+        )
+        self.assertEqual(halted["stop"], "merge_not_armed")
+        self.assertEqual(halted["merge"], "not_armed")
+        self.assertEqual(self.github.hold_reads, [])
+        self.assertEqual(self.github.merge_calls, [])
+        released = self.walk([])
+        self.assertEqual(released["stop"], "verified")
+        self.assertEqual(released["merge"], "armed")
+        self.assertEqual(released["path"], halted["path"])
+        self.assertEqual(self.walk([]), released)
+        self.assertEqual(self.github.hold_reads, ["Example/Engine"])
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
 
     def test_live_workspace_reports_head_status_and_branch(self):
         for status, branch in (("", BRANCH + "\n"), ("?? untracked\n", ""), ("", "")):
@@ -509,6 +551,33 @@ class LiveRunnerTest(unittest.TestCase):
             stdout.getvalue(),
         )
         run.assert_not_called()
+
+    def test_main_rerun_arms_once_after_the_repository_hold_is_cleared(self):
+        self.github.hold = "  Maintenance window "
+        repo = "Example/Target"
+        replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        live_run = LiveRun(self.github, FakeWorkspace(self.cwd))
+
+        def invoke():
+            with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
+                code = main(
+                    ["run", "delivery", "--repo", repo, "--issue", "8", "--check", "exit 0"],
+                    worker_runner=lambda args, cwd: worker_reply(args, next(replies)),
+                    checkpoint=self.checkpoint, live_run=live_run,
+                )
+            self.assertEqual(code, 0)
+            return stdout.getvalue()
+
+        held = invoke()
+        self.assertIn(f"done merge_held\n{self.github.hold}\n", held)
+        self.assertEqual(invoke(), held)
+        self.assertEqual(self.github.merge_calls, [])
+        self.github.hold = ""
+        armed = invoke()
+        self.assertIn("merge armed\ncheck exit 0\ndone verified", armed)
+        self.assertEqual(invoke(), armed)
+        self.assertEqual(self.github.hold_reads, [repo, repo, repo])
+        self.assertEqual(self.github.merge_calls, [(repo, 8, BRANCH, HEAD)])
 
     def test_completed_legacy_checkpoint_keeps_its_merge_outcome(self):
         result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
