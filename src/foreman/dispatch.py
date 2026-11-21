@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from foreman.adapters import Outcome
 from foreman.config import ModelSpec
+from foreman.grant import Grant
 
 if TYPE_CHECKING:
     from foreman.delivery import DeliveryState
@@ -21,7 +22,7 @@ class InvalidOutput(ValueError):
 
 
 class Handler(Protocol):
-    def __call__(self, node: str, model: ModelSpec | None, state: "DeliveryState", instruction: str, /) -> Outcome: ...
+    def __call__(self, node: str, model: ModelSpec | None, state: "DeliveryState", instruction: str, grant: Grant, /) -> Outcome: ...
 
 
 class FailoverDispatcher:
@@ -29,10 +30,10 @@ class FailoverDispatcher:
         self.handler = handler
 
     def run(
-        self, node: str, model: ModelSpec | None, state: "DeliveryState", instruction: str,
+        self, node: str, model: ModelSpec | None, state: "DeliveryState", instruction: str, grant: Grant,
         *, on_attempt: Callable[[str | None, Outcome], None] | None = None,
     ) -> tuple[Outcome, ModelSpec | None]:
-        outcome = self.handler(node, model, state, instruction)
+        outcome = self.handler(node, model, state, instruction, grant)
         name = model.name if model else None
         if on_attempt is not None:
             on_attempt(name, outcome)

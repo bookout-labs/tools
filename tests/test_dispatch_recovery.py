@@ -24,7 +24,7 @@ from test_runner import FakeGitHub, FakeWorkspace
 mode, checkpoint, raw_pin = sys.argv[1:]
 script = ScriptHandler()
 calls = 0
-def handler(node, model, state, instruction):
+def handler(node, model, state, instruction, grant):
     global calls
     calls += 1
     if mode == "recover":
@@ -37,7 +37,7 @@ def handler(node, model, state, instruction):
         if calls == 1:
             return Outcome("quota", usage=Usage(input_tokens=9, output_tokens=1))
         os._exit(19)
-    return script(node, model, state, instruction)
+    return script(node, model, state, instruction, grant)
 def crash(*args, **kwargs):
     os._exit(19)
 original_run = FailoverDispatcher.run

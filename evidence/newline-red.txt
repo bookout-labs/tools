@@ -1,0 +1,23 @@
+FF
+======================================================================
+FAIL: test_shell_programs_cannot_be_granted_as_commands (tests.test_grant.GrantTest.test_shell_programs_cannot_be_granted_as_commands) (command='\n')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-c45869e2-768e404e5ae28487/.scratch.anbst87b/tests/test_grant.py", line 45, in test_shell_programs_cannot_be_granted_as_commands
+    with self.subTest(command=command), self.assertRaises(UngrantableCheck):
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: UngrantableCheck not raised
+
+======================================================================
+FAIL: test_shell_programs_cannot_be_granted_as_commands (tests.test_grant.GrantTest.test_shell_programs_cannot_be_granted_as_commands) (command='\r')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-c45869e2-768e404e5ae28487/.scratch.anbst87b/tests/test_grant.py", line 45, in test_shell_programs_cannot_be_granted_as_commands
+    with self.subTest(command=command), self.assertRaises(UngrantableCheck):
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: UngrantableCheck not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (failures=2)

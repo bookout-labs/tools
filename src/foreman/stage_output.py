@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, Po
 from pydantic.config import JsonDict
 
 from foreman.config import ModelSpec
+from foreman.grant import GrantRecord
 from foreman.adapters import OutcomeKind
 from foreman.usd import CostUsd
 from foreman.github import PullRequest, PullRequestRecord
@@ -213,6 +214,7 @@ class PendingDispatch(RecordContract[PendingDispatchRecord]):
 
 @with_config(ConfigDict(extra="forbid"))
 class DispatchPlanRecord(TypedDict):
+    grant: NotRequired[GrantRecord]
     models: list[str]
     instruction: str
     methods: list[str]
@@ -221,6 +223,8 @@ class DispatchPlanRecord(TypedDict):
 
 
 class DispatchPlan(RecordContract[DispatchPlanRecord]):
+    optional_record_fields: ClassVar[set[str]] = RecordContract.optional_record_fields | {"grant"}
+    grant: GrantRecord | None = None
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[DispatchPlanRecord]:

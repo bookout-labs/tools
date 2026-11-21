@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 
+from foreman.grant import Grant
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
 from foreman.stage_output import MergeRiskRecord, WorkKind
@@ -54,7 +55,7 @@ class ScriptHandler:
         self.risk = dict(DEFAULT_RISK if risk is None else risk)
         self.calls: list[dict[str, str | None]] = []
 
-    def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
+    def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str, grant: Grant) -> Outcome:
         self.calls.append({"node": node, "model": model.name if model else None, "instruction": instruction})
         if node == "triage":
             return Outcome("ran", {

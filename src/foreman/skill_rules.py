@@ -1,6 +1,7 @@
 """Worker methods selected by delivery state."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import tarfile
@@ -143,13 +144,25 @@ def export_skills(pin: PstackPin, scratch: Path) -> Path:
     return root
 
 
-def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, list[str]]:
+@dataclass(frozen=True)
+class StageMethods:
+    text: str
+    methods: list[str]
+    read_roots: tuple[Path, ...]
+
+
+def stage_methods(stage: str, state: "DeliveryState", root: Path) -> StageMethods:
+    root = root.resolve()
+    read_roots: list[Path] = []
     instructions: list[str] = []
     methods: list[str] = []
     for rule in SKILL_RULES:
         if rule.stage != stage or not rule.applies(state):
             continue
         method = rule.skill
+        read_root = PACKAGE_SKILLS.resolve() if isinstance(method, str) else root
+        if read_root not in read_roots:
+            read_roots.append(read_root)
         if isinstance(method, str):
             path = PACKAGE_SKILLS / f"{method}.md"
             methods.append(f"foreman/skills/{path.name}")
@@ -161,4 +174,4 @@ def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, 
         else:
             methods.append(method.path)
             instructions.append(f"Read {root / method.path} in full and follow it.")
-    return "\n\n".join(instructions), methods
+    return StageMethods("\n\n".join(instructions), methods, tuple(read_roots))

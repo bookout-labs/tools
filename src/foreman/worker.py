@@ -8,6 +8,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 from typing import Callable
 
+from foreman.grant import Grant
 from foreman.adapters import Call, CliAdapter, Outcome
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
@@ -35,7 +36,7 @@ class CliWorker:
         self.cwd = cwd
         self.run = run
 
-    def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
+    def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str, grant: Grant) -> Outcome:
         if model is None:
             raise ConfigError(f"{node} has no model configured")
         prompt = (
@@ -48,7 +49,7 @@ class CliWorker:
 
         adapter = ADAPTERS[model.family](model, contract)
         with TemporaryDirectory(prefix="foreman-worker-") as directory:
-            args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory)))
+            args = adapter.command(Call(prompt, schema, grant=grant, temp_dir=Path(directory)))
             try:
                 process = self.run(args, self.cwd, adapter.env)
             except FileNotFoundError:

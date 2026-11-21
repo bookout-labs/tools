@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from foreman.grant import Editing
 from foreman.adapters import Call, Outcome, Usage
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
@@ -36,7 +37,7 @@ class DollarBudgetTests(unittest.TestCase):
 
     def test_only_claude_receives_the_optional_dollar_budget(self):
         directory = self.enterContext(TemporaryDirectory())
-        call = Call(prompt="Do work", schema="{}", edit=True, temp_dir=Path(directory))
+        call = Call(prompt="Do work", schema="{}", grant=Editing(), temp_dir=Path(directory))
         budgeted = replace(call, budget_usd=BudgetUsd(Decimal("0.1")))
         claude = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
         self.assertEqual(claude.command(call), [
@@ -62,10 +63,10 @@ class DollarBudgetTests(unittest.TestCase):
                 script = ScriptHandler()
                 usage = Usage(input_tokens=7, output_tokens=3, total_cost_usd=0.1)
 
-                def handler(node, model, state, instruction):
+                def handler(node, model, state, instruction, grant):
                     calls.append((node, model.name))
                     if node != stage:
-                        return script(node, model, state, instruction)
+                        return script(node, model, state, instruction, grant)
                     if node == "implement":
                         (root / "partial.txt").write_text("unfinished edits\n")
                         workspace.current = replace(workspace.current, clean=False)

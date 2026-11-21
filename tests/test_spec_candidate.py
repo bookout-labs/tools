@@ -69,10 +69,10 @@ class CandidateTests(unittest.TestCase):
                 script = ScriptHandler(triage="implement" if stage == "triage" else "spec",
                                        slices=[{k: v for k, v in SLICE.items() if k not in {"depends_on", "blocker_numbers"}}])
 
-                def handler(node, model, state, instruction):
+                def handler(node, model, state, instruction, grant):
                     if node == stage and model.name == "gpt-test":
                         return Outcome("quota")
-                    return script(node, model, state, instruction)
+                    return script(node, model, state, instruction, grant)
                 with skill_fixture(replace(config, nodes=nodes)) as (configured, scratch):
                     result = run_delivery(FailoverDispatcher(handler), repo="org/repo", request="Save", config=configured, scratch=scratch)
                 candidate = SpecCandidate.from_record(result["spec_candidate"])

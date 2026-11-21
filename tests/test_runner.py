@@ -27,6 +27,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Liv
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
+from foreman.grant import ReadOnly
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
@@ -250,7 +251,7 @@ class CliWorkerTest(unittest.TestCase):
                     return worker_reply(args, {"triage": "implement"})
 
                 result = CliWorker(Path("engine"), run)(
-                    "triage", ModelSpec.parse(model), {"issue": 12}, "Read the issue.",
+                    "triage", ModelSpec.parse(model), {"issue": 12}, "Read the issue.", ReadOnly(),
                 )
                 self.assertEqual(result.kind, "ran")
                 self.assertEqual(result.output["triage"], "implement")
@@ -270,7 +271,7 @@ class CliWorkerTest(unittest.TestCase):
     def test_worker_without_a_model_raises_a_config_error(self):
         worker = CliWorker(Path("."), lambda *_: self.fail("CLI must not run"))
         with self.assertRaisesRegex(ConfigError, "triage has no model configured"):
-            worker("triage", None, {}, "")
+            worker("triage", None, {}, "", ReadOnly())
 
     def test_non_object_replies_are_invalid(self):
         replies = (
@@ -280,7 +281,7 @@ class CliWorkerTest(unittest.TestCase):
         for reply, detail in replies:
             with self.subTest(reply=reply):
                 worker = CliWorker(Path("."), lambda args, cwd, env: worker_reply(args, reply))
-                outcome = worker("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
+                outcome = worker("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "", ReadOnly())
                 self.assertEqual(outcome.kind, "failed")
                 self.assertIn(detail, outcome.detail)
 
@@ -352,7 +353,7 @@ class CliWorkerTest(unittest.TestCase):
             paths.append(path)
             raise FileNotFoundError(args[0])
 
-        outcome = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
+        outcome = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "", ReadOnly())
         self.assertEqual((outcome.kind, outcome.detail), ("cli_missing", "codex executable is unavailable"))
         self.assertFalse(paths[0].exists())
 
@@ -657,7 +658,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.walk([])["stop"], "verified")
 
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
-        def exhaust(node, model, state, instruction):
+        def exhaust(node, model, state, instruction, grant):
             if node == "triage":
                 return Outcome("ran", {"triage": "implement", "work_kind": "feature", "human_question": None, "slice": None}, usage=Usage(input_tokens=1, output_tokens=1))
             return Outcome("quota")
@@ -1234,10 +1235,11 @@ class LiveRunnerTest(unittest.TestCase):
                 self.github = FakeGitHub(labels)
                 marker = f"checked-{issue}"
                 probe_log = f"probes-{issue}"
+                (self.cwd / f"{marker}.sh").write_text(f"test -f {marker} || {{ touch {marker}; exit 1; }}\n")
                 result = self.walk(
                     [{"triage": "implement", "slice": EMPTY_SLICE},
                      {"implementation": "built"}, {"implementation": "fixed"}, APPROVE], issue=issue,
-                    check=f"test -f {marker} || {{ touch {marker}; exit 1; }}",
+                    check=f"sh {marker}.sh",
                     preflight=f"echo probed >> {probe_log}",
                 )
                 self.assertEqual(result.get("stop"), "verified")
@@ -1281,9 +1283,10 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_failed_check_with_failed_preflight_preserves_rounds(self):
         (self.cwd / "ready").touch()
+        (self.cwd / "check.sh").write_text("test -f checked || { touch checked; rm ready; exit 1; }\n")
         result = self.walk(
             [{"triage": "implement"}, {"implementation": "built"}],
-            check="test -f checked || { touch checked; rm ready; exit 1; }", preflight="test -f ready",
+            check="sh check.sh", preflight="test -f ready",
         )
         self.assertEqual(result.get("stop"), "env_unavailable")
         self.assertEqual(result.get("review_rounds"), 0)
@@ -1303,10 +1306,11 @@ class LiveRunnerTest(unittest.TestCase):
         for issue, preflight in enumerate(("", "echo probed >> preflight.log"), start=8):
             with self.subTest(preflight=preflight):
                 marker = f"checked-{issue}"
+                (self.cwd / f"{marker}.sh").write_text(f"test -f {marker} || {{ touch {marker}; exit 1; }}\n")
                 built = {"implementation": "built"}
                 result = self.walk(
                     [{"triage": "implement"}, built, built, APPROVE], issue=issue,
-                    check=f"test -f {marker} || {{ touch {marker}; exit 1; }}", preflight=preflight,
+                    check=f"sh {marker}.sh", preflight=preflight,
                 )
                 self.assertEqual(result.get("stop"), "verified")
                 self.assertEqual(result.get("review_rounds"), 1)
@@ -1349,7 +1353,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.walk([{"implementation": "built"}, APPROVE])["stop"], "verified")
 
     def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
-        def interrupted_run(node, model, state, instruction):
+        def interrupted_run(node, model, state, instruction, grant):
             if node == "triage":
                 return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None}, usage=Usage(input_tokens=1, output_tokens=1))
             self.assertEqual(node, "implement")
@@ -1659,6 +1663,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn("done merge_held\nFOREMAN_MERGE_HOLD is set.\n", stdout.getvalue())
 
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
+        (self.cwd / "check.sh").write_text("echo checked >> check.log\n")
         script = """
 import json
 from pathlib import Path
@@ -1716,7 +1721,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                          f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
             process = subprocess.run(
                 [sys.executable, "-c", bootstrap + script, str(self.checkpoint), (pin or self.pin).model_dump_json(), "run", "delivery",
-                 "--repo", "Example/Engine", "--issue", "8", "--check", "echo checked >> check.log", *flags],
+                 "--repo", "Example/Engine", "--issue", "8", "--check", "sh check.sh", *flags],
                 cwd=self.cwd, text=True, capture_output=True, check=False,
             )
             self.assertEqual(process.returncode, expected, process.stderr)
@@ -1875,12 +1880,13 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 root = self.cwd / scenario
                 root.mkdir()
                 checkpoint = root / "runs.sqlite3"
+                (root / "check.sh").write_text("echo checked >> check.log\n")
 
                 def invoke(phase, expected):
                     process = subprocess.run(
                         [sys.executable, "-c", bootstrap + script, str(checkpoint), self.pin.model_dump_json(),
                          phase, "run", "delivery", "--repo", "Example/Engine", "--issue", "8",
-                         "--check", "echo checked >> check.log"],
+                         "--check", "sh check.sh"],
                         cwd=root, text=True, capture_output=True, check=False,
                     )
                     self.assertEqual(process.returncode, expected, process.stderr)
