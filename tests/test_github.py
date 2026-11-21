@@ -205,7 +205,8 @@ class LiveForgeTest(unittest.TestCase):
 
     @patch("foreman.github.subprocess.run")
     def test_posts_the_review_and_inline_comments_for_the_verified_head(self, run):
-        run.side_effect = [pr_result(), pr_result(PR, CONFIRM), gh_result("[[]]"),
+        unrelated = {"id": 9, "state": "COMMENTED", "commit_id": None, "body": "Another author"}
+        run.side_effect = [pr_result(), pr_result(PR, CONFIRM), gh_result(json.dumps([[unrelated]])),
                            gh_result(json.dumps({"id": 1, "state": "COMMENTED", "commit_id": PR["headRefOid"], "body": "posted"}))]
         forge = LiveForge()
         target = forge.review_target(REPO, 8, BRANCH, HEAD)
@@ -244,6 +245,16 @@ class LiveForgeTest(unittest.TestCase):
         receipt = forge.post_review(REPO, target, "Graph verdict: changes.", [], marker="run:2:head")
         self.assertEqual(receipt, {k: posted[k] for k in ("id", "state", "commit_id")})
         self.assertEqual(sum("POST" in c.args[0] for c in run.call_args_list), 1)
+
+    @patch("foreman.github.subprocess.run")
+    def test_marked_review_with_null_commit_is_rejected(self, run):
+        marked = {"id": 42, "state": "COMMENTED", "commit_id": None,
+                  "body": "<!-- foreman-review:run:2:head -->"}
+        run.side_effect = [pr_result(), pr_result(), gh_result(json.dumps([[marked]]))]
+        forge = LiveForge()
+        target = forge.review_target(REPO, 8, BRANCH, HEAD)
+        with self.assertRaises(ForgeError):
+            forge.post_review(REPO, target, "Graph verdict: changes.", [], marker="run:2:head")
 
     @patch("foreman.github.subprocess.run")
     def test_review_permission_rejection_and_invalid_receipt_fail_closed(self, run):

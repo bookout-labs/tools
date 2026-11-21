@@ -15,7 +15,7 @@ class StageRecordTests(unittest.TestCase):
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
         cases = (
             (PendingDispatch, PendingDispatchRecord, {"stage": "triage", "index": 0, "quota_model": None}),
-            (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)], "eligible": []}}),
+            (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)]}}),
             (AttemptUsage, AttemptUsageRecord, usage),
             (Attempt, AttemptRecord, {"stage": "triage", "model": None, "commit": "pin", "methods": [], "outcome": "ran", "usage": usage}),
             (ConstraintResult, ConstraintResultRecord, {"constraint": "positive", "rejected": True}),
@@ -50,6 +50,14 @@ class StageRecordTests(unittest.TestCase):
         for extra in ({"index": -1}, {"model": "worker"}):
             with self.subTest(extra=extra), self.assertRaises(ValidationError):
                 PendingDispatch.model_validate({"stage": "review", "index": 0, "quota_model": None, **extra})
+
+    def test_legacy_review_scope_remains_readable(self):
+        from foreman.workspace import ReviewScope
+        scope = {"command": "diff", "inline": [("a.py", 2)], "eligible": []}
+        plan = DispatchPlan.model_validate({"models": [], "instruction": "review", "methods": [],
+                                           "target": None, "scope": scope})
+        self.assertEqual(TypeAdapter(ReviewScope).validate_python(plan.scope).record(),
+                         {"command": "diff", "inline": [("a.py", 2)]})
 
     def test_attempt_usage_rejects_negative_counts(self):
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}

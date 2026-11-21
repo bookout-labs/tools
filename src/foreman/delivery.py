@@ -183,7 +183,7 @@ class DeliveryFields(TypedDict, total=False):
     proof_failures: int
     spec_failures: int
     review_run_id: str
-    review_receipt: ReviewReceipt
+    review_receipt: ReviewReceipt | None
     models_used: dict[str, str]
     implement_models: list[str]
     halt: HaltReason | None
@@ -217,11 +217,15 @@ class DeliveryResult(DeliveryFields):
 _DELIVERY_STATE = TypeAdapter(DeliveryResult)
 
 
+def review_count(state: DeliveryFields) -> int:
+    return len(state.get("review_findings", []))
+
+
 def read_delivery_state(raw: object) -> DeliveryResult:
     result = _DELIVERY_STATE.validate_python(raw, strict=True)
     for key in ("verify_failures", "proof_failures", "spec_failures"):
         result.setdefault(key, result.get("review_rounds", 0))
-    result["review_rounds"] = len(result.get("review_findings", []))
+    result["review_rounds"] = review_count(result)
     return result
 
 
@@ -522,7 +526,7 @@ def compile_delivery(
                 instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
             return {"verify_failures": failure_count(state, "verify_failures"),
                     "proof_failures": failure_count(state, "proof_failures"), "spec_failures": failure_count(state, "spec_failures"),
-                    "review_rounds": len(state.get("review_findings", [])), "review_run_id": state.get("review_run_id") or uuid4().hex, "dispatch_plan": DispatchPlan(
+                    "review_run_id": state.get("review_run_id") or uuid4().hex, "dispatch_plan": DispatchPlan(
                 models=[model.name for model in models], instruction=instruction, methods=methods,
                 target=review_context[1] if review_context else None,
                 scope=review_context[2].record() if review_context else None,
@@ -536,7 +540,6 @@ def compile_delivery(
             pending, plan = state["pending_dispatch"], state["dispatch_plan"]
             assert pending is not None
             models, methods = plan["models"], plan["methods"]
-            scope = TypeAdapter(ReviewScope).validate_python(plan["scope"]) if plan["scope"] is not None else None
             attempts: list[AttemptRecord] = []
             def record_attempt(model: str | None, outcome: Outcome) -> None:
                 attempts.append(Attempt(
@@ -585,7 +588,7 @@ def compile_delivery(
                 if isinstance(output, ReviewOutput):
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
                     head = state.get("verified_head") or state.get("head_sha") or ""
-                    accepted = accept(past, output, head, _check_tool_facts(output, run, state), scope)
+                    accepted = accept(past, output, head, _check_tool_facts(output, run, state))
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
                 update.update(attempts=attempts, pending_dispatch=None)
                 if accepted is not None:
@@ -594,7 +597,7 @@ def compile_delivery(
                                   reviewed_head=accepted.history.rounds[-1].reviewed_head,
                                   findings=[f.record() for f in accepted.findings],
                                   review_change_kind=accepted.change_kind,
-                                  review_rounds=len(accepted.history.rounds))
+                                  review_receipt=None)
                     if accepted.rethink:
                         update.update(halt="design_rethink", halt_detail=accepted.rethink, human_question=accepted.rethink)
             except InvalidSlicePlan as exc:
@@ -611,7 +614,7 @@ def compile_delivery(
         return node
 
     def post_review(state: DeliveryState) -> DeliveryUpdate:
-        if not isinstance(run, LiveRun) or state.get("halt"):
+        if not isinstance(run, LiveRun):
             return {}
         assert "dispatch_plan" in state and "review_findings" in state and "detail" in state and "review_run_id" in state
         plan = state["dispatch_plan"]
@@ -890,7 +893,7 @@ def compile_delivery(
             return "spec"
         if state.get("review") == "approve":
             return "merge"
-        if state.get("review_rounds", 0) < config.max_review_rounds:
+        if review_count(state) < config.max_review_rounds:
             return "prepare"
         return "done"
 
@@ -961,7 +964,7 @@ def compile_delivery(
     def finish(state: DeliveryState) -> DeliveryUpdate:
         reason = stop_reason(state)
         if not state.get("halt"):
-            rounds = failure_count(state, "verify_failures") if reason == "verify_cap" else len(state.get("review_findings", []))
+            rounds = failure_count(state, "verify_failures") if reason == "verify_cap" else review_count(state)
             if reason == "verify_cap":
                 detail = f"Verification failed after {rounds} rounds. Check {state.get('check') or '(none)'} failed."
                 return {**halted("verify_cap", detail, "done"), "stop": reason}
@@ -1046,7 +1049,7 @@ def compile_delivery(
     add_agent_edges("implement", after_halt("commit"), {"commit": "commit", "done": "done"})
     add_agent_edges(
         "review",
-        lambda state: after_review(state) if state.get("halt") or oversized_pr(state) else "review_post",
+        lambda state: after_review(state) if state.get("halt") not in (None, "design_rethink") or oversized_pr(state) else "review_post",
         {"review_post": "review_post", "merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges("review_post", after_review,

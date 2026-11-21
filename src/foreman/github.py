@@ -187,7 +187,14 @@ class PostedReview(BaseModel, strict=True):
         return {"id": self.id, "state": "COMMENTED", "commit_id": self.commit_id}
 
 
-class ReviewPages(RootModel[list[list[PostedReview]]]):
+class ListedReview(BaseModel, strict=True):
+    id: PositiveInt
+    state: str
+    commit_id: str | None
+    body: str
+
+
+class ReviewPages(RootModel[list[list[ListedReview]]]):
     pass
 
 
@@ -349,7 +356,11 @@ class LiveForge:
         for page in pages.root:
             for review in page:
                 if tag in review.body:
-                    return review.receipt(target.headRefOid)
+                    try:
+                        posted = PostedReview.model_validate(review.model_dump())
+                    except ValidationError as exc:
+                        raise ForgeError("Marked review has an invalid receipt.") from exc
+                    return posted.receipt(target.headRefOid)
         payload = {
             "commit_id": target.headRefOid, "event": "COMMENT", "body": redact(body) + "\n\n" + tag,
             "comments": [{**comment, "body": redact(comment["body"]), "path": redact(comment["path"])} for comment in comments],

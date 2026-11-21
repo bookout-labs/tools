@@ -7,7 +7,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from foreman.review_round import GraphCheck, ReviewHistory, accept
-from foreman.delivery import LiveRun, compile_delivery
+from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
 from foreman.config import load_config
 from foreman.dispatch import FailoverDispatcher
 from foreman.adapters import Outcome
@@ -18,7 +18,7 @@ from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, F
 
 
 class ReviewRoundsTest(unittest.TestCase):
-    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False):
+    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False, review_crash=False, review_quota=False, bad_interdiff=False):
         self.prompts = []
         self.diffs = []
         self.gate_reads = []
@@ -54,19 +54,26 @@ class ReviewRoundsTest(unittest.TestCase):
                     diff = super().review_diff(base, head, interdiff=interdiff)
                     if divergent and interdiff:
                         return type(diff)(diff.command, "diff --git a/main.txt b/main.txt\n--- a/main.txt\n+++ b/main.txt\n@@ -0,0 +1 @@\n+mainline\n")
-                    if bad_diff:
+                    if bad_diff or (bad_interdiff and interdiff):
                         return type(diff)(diff.command, "--- a/x\n+++ b/x\n@@ -1 +1 @@\ninvalid\n")
                     return diff
 
             replies = iter(reviews)
             crashed = False
+            quota_returned = False
             workspace = Workspace(Path(directory))
             implementations = 0
 
             def dispatch(node, model, state, instruction):
-                nonlocal crashed, implementations
+                nonlocal crashed, implementations, quota_returned
                 self.prompts.append((node, state, instruction))
                 if node == "review":
+                    if review_crash and not crashed:
+                        crashed = True
+                        raise RuntimeError("process lost")
+                    if review_quota and not quota_returned:
+                        quota_returned = True
+                        return Outcome("quota")
                     raw = next(replies)
                     return Outcome("ran", parse_output(ReviewOutput, raw).model_dump(), usage=SCRIPTED_USAGE)
                 if crash and state.get("review_findings") and not crashed:
@@ -85,9 +92,10 @@ class ReviewRoundsTest(unittest.TestCase):
                 config = {"configurable": {"thread_id": "rounds"}}
                 state = {"repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": EMPTY_SLICE,
                          "check": "exit 0", "token_cap": 20_000_000, **(initial or {})}
-                if crash or post_crash:
+                if crash or post_crash or review_crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
                         graph.invoke(state, config)
+                    self.interrupted = read_delivery_state({"stop": "interrupted", **graph.get_state(config).values})
                     (scratch / "resume").mkdir()
                     graph = compile_delivery(FailoverDispatcher(dispatch), settings, scratch=scratch / "resume",
                                              run=LiveRun(self.forge, workspace), checkpointer=saver)
@@ -96,9 +104,9 @@ class ReviewRoundsTest(unittest.TestCase):
                     result = graph.invoke(state, config)
                 if answer:
                     self.assertEqual(result["halt"], "design_rethink")
-                    self.assertEqual(result["review_rounds"], 2)
+                    self.assertEqual(read_delivery_state({"stop": "needs_human", **result})["review_rounds"], 2)
                     result = graph.invoke(Command(resume="Redesign the ownership."), config)
-                return result
+                return read_delivery_state({"stop": "needs_human", **result})
 
     def test_missing_duplicate_unknown_resolutions_and_reused_ids_fail_closed(self):
         resolved = {"id": "f1", "status": "resolved"}
@@ -162,6 +170,8 @@ class ReviewRoundsTest(unittest.TestCase):
                                   "findings": [{**FINDING, "id": "again"}]}])
         self.assertEqual(result["halt"], "design_rethink")
         self.assertEqual(result["review_rounds"], 2)
+        self.assertEqual(len(self.forge.reviews), 2)
+        self.assertEqual(result["review_receipt"]["id"], 2)
         self.assertEqual(result["path"].count("implement"), 2)
         self.assertEqual([json.loads(line)["id"] for line in result["halt_detail"].splitlines()[1:]], ["f1", "again"])
         self.assertFalse(self.forge.merge_calls)
@@ -205,12 +215,38 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(result["merge"], "armed")
         self.assertIn("Graph verdict: changes", self.forge.reviews[0][3])
 
+    def test_review_dispatch_crash_resumes_with_one_accepted_round(self):
+        result = self.run_rounds([APPROVE], review_crash=True)
+        self.assertEqual(self.interrupted["pending_dispatch"]["stage"], "review")
+        self.assertEqual(self.interrupted["review_rounds"], 0)
+        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["review_rounds"], 1)
+        self.assertEqual(len(result["review_findings"]), 1)
+        self.assertEqual(len(self.forge.reviews), 1)
+        self.assertEqual([p[0] for p in self.prompts].count("review"), 2)
+
+    def test_review_quota_failover_accepts_one_round(self):
+        result = self.run_rounds([APPROVE], review_quota=True)
+        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["review_rounds"], 1)
+        self.assertEqual(len(result["review_findings"]), 1)
+        attempts = [a for a in result["attempts"] if a["stage"] == "review"]
+        self.assertEqual([a["outcome"] for a in attempts], ["quota", "ran"])
+        self.assertNotEqual(attempts[0]["model"], attempts[1]["model"])
+        self.assertEqual(len(self.forge.reviews), 1)
+
     def test_post_crash_reuses_accepted_round(self):
         result = self.run_rounds([APPROVE], post_crash=True)
         self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(len(self.forge.reviews), 1)
         self.assertEqual(result["review_receipt"]["id"], 1)
         self.assertEqual([p[0] for p in self.prompts].count("review"), 1)
+
+    def test_interdiff_need_not_parse_for_focused_instruction(self):
+        result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
+            {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}], bad_interdiff=True)
+        self.assertEqual(result["merge"], "armed")
+        self.assertIn((HEAD, HEAD, True), self.diffs)
 
     def test_diff_parse_failure_is_tolerated_first_and_unavailable_later(self):
         result = self.run_rounds([APPROVE], bad_diff=True)
