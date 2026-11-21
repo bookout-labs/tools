@@ -1,6 +1,7 @@
 import tests
 
 import json
+from pathlib import Path
 import subprocess
 import unittest
 from unittest.mock import call, patch
@@ -8,13 +9,14 @@ from unittest.mock import call, patch
 from pydantic import ValidationError
 
 from foreman.github import (
-    CommandFailed, CommandTimedOut, ForgeError, LiveForge, MergeHoldUnreadable, MergeNotArmed, ReviewComment,
+    CommandFailed, CommandTimedOut, ForgeError, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, ReviewComment,
 )
 
 
 HEAD = "a" * 40
 BASE = "b" * 40
 REPO = "Example/Target"
+GITHUB_FIXTURES = Path(__file__).with_name("fixtures") / "github"
 BRANCH = "8-list-items"
 CLOSING_PR = {
     "id": "PR_synthetic", "number": 3, "repository": {"name": "Closing", "owner": {"login": "Other"}},
@@ -157,6 +159,80 @@ class LiveForgeTest(unittest.TestCase):
         with self.assertRaises(ForgeError):
             forge.create_issue(REPO, "Plan", "", [])
         self.assertIsNone(run.call_args.kwargs["timeout"])
+
+    @patch("foreman.github.subprocess.run")
+    def test_open_issues_reads_both_pages_and_excludes_pull_requests(self, run):
+        run.return_value = gh_result((GITHUB_FIXTURES / "open-issues.json").read_text())
+        self.assertEqual(LiveForge().open_issues(REPO), [
+            OpenIssue(number=1347, body="I'm having a problem with this."), OpenIssue(number=1349, body=""),
+        ])
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], [
+            "gh", "api", f"repos/{REPO}/issues?state=open&per_page=100", "--paginate", "--slurp",
+        ])
+        run.return_value = gh_result('[[{"number":1,"body":"PR","pull_request":null},{"number":2,"body":"Issue"}]]')
+        self.assertEqual(LiveForge().open_issues(REPO), [OpenIssue(number=2, body="Issue")])
+
+    @patch("foreman.github.subprocess.run")
+    def test_issue_comments_preserves_the_second_page_marker_and_normalizes_null(self, run):
+        run.return_value = gh_result((GITHUB_FIXTURES / "issue-comments.json").read_text())
+        self.assertEqual(LiveForge().issue_comments(REPO, 1347), ["Me too", "<!-- foreman:issue-93 -->", ""])
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], [
+            "gh", "api", f"repos/{REPO}/issues/1347/comments?per_page=100", "--paginate", "--slurp",
+        ])
+
+    @patch("foreman.github.subprocess.run")
+    def test_issue_lists_return_empty_results_after_successful_reads(self, run):
+        forge = LiveForge()
+        for payload in ('[]', '[[]]', '[[], []]'):
+            with self.subTest(payload=payload):
+                run.return_value = gh_result(payload)
+                self.assertEqual(forge.open_issues(REPO), [])
+                self.assertEqual(forge.issue_comments(REPO, 8), [])
+        run.return_value = gh_result('[[{"number":1,"body":"PR","pull_request":{}}]]')
+        self.assertEqual(forge.open_issues(REPO), [])
+
+    @patch("foreman.github.subprocess.run")
+    def test_issue_lists_reject_failed_or_malformed_responses(self, run):
+        forge = LiveForge()
+        for read in (lambda: forge.open_issues(REPO), lambda: forge.issue_comments(REPO, 8)):
+            for result in (
+                subprocess.CompletedProcess([], 1, '[[{"number":1,"body":"valid"}]]', "HTTP 502"),
+                gh_result('[[{"number":1,"body":"valid"}],{"message":"Bad Gateway"}]'),
+                gh_result('[[{"number":1,"body":"valid"}],[{"number":2,"body":12}]]'),
+                gh_result('[[{"number":1,"body":"valid"}],[{}]]'),
+                gh_result('[[{"number":1,"body":"valid"}],'),
+            ):
+                with self.subTest(read=read, result=result):
+                    run.return_value = result
+                    with self.assertRaises(ForgeError):
+                        read()
+        for number in (0, -1, "2", True):
+            with self.subTest(number=number):
+                run.return_value = gh_result(json.dumps([[{"number": number, "body": "invalid"}]]))
+                with self.assertRaises(ForgeError):
+                    forge.open_issues(REPO)
+
+    @patch("foreman.github.subprocess.run")
+    def test_comment_issue_posts_literal_body_and_redacts_secrets(self, run):
+        run.return_value = gh_result((GITHUB_FIXTURES / "created-comment.json").read_text())
+        forge = LiveForge()
+        self.assertIsNone(forge.comment_issue(REPO, 1347, "@draft {repo}\nMe too"))
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], [
+            "gh", "api", f"repos/{REPO}/issues/1347/comments", "--method", "POST", "-f", "body=@draft {repo}\nMe too",
+        ])
+        token = "ghp_" + "a" * 36
+        forge.comment_issue(f"Example/{token}", 48, f"#48 secret: {token}")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0], [
+            "gh", "api", "repos/Example/[redacted:GitHub Token]/issues/48/comments", "--method", "POST",
+            "-f", "body=#48 secret: [redacted:GitHub Token]",
+        ])
+        run.return_value = subprocess.CompletedProcess([], 1, "", "HTTP 403")
+        with self.assertRaises(ForgeError):
+            forge.comment_issue(REPO, 48, "Me too")
 
     @patch("foreman.github.subprocess.run")
     def test_issue_transport_errors_leave_the_boundary_as_forge_errors(self, run):

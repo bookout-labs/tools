@@ -239,6 +239,7 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge.add_label"): 1,
             ("github.py", "LiveForge.add_blocker"): 1,
             ("github.py", "LiveForge.create_issue"): 1,
+            ("github.py", "LiveForge.comment_issue"): 1,
             ("github.py", "LiveForge.post_review"): 4,
             ("github.py", "pull_request_command"): 5,
             ("delivery.py", "compile_delivery.prepare"): 1,

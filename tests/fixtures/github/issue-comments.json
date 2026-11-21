@@ -1,0 +1,9 @@
+[
+  [
+    {"id": 1, "body": "Me too"}
+  ],
+  [
+    {"id": 2, "body": "<!-- foreman:issue-93 -->"},
+    {"id": 3, "body": null}
+  ]
+]
