@@ -360,6 +360,13 @@ class SpecCandidate(RecordContract[SpecCandidateRecord]):
     def record_adapter(cls) -> TypeAdapter[SpecCandidateRecord]:
         return TypeAdapter(SpecCandidateRecord)
 
+    @field_validator("slices")
+    @classmethod
+    def unique_titles(cls, value: list[CandidateSlice]) -> list[CandidateSlice]:
+        if len({s.title for s in value}) != len(value):
+            raise ValueError("candidate.slices: titles must be unique")
+        return value
+
     @computed_field
     @property
     def revision(self) -> str:
@@ -673,13 +680,9 @@ class SpecCheckOutput(StageOutput):
     notes: list[SpecFinding] = Field(description="Nonblocking observations, separate from requested fixes.")
     resolutions: list[FindingResolution]
 
-    @property
-    def verdict(self) -> Literal["clear", "gaps"]:
-        return "gaps" if self.findings else "clear"
-
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        raise InvalidOutput("spec_check: use candidate-bound spec_check.accept")
+        raise NotImplementedError("spec_check: use candidate-bound spec_check.accept")
 
 
 class VerifyOutput(StageOutput):

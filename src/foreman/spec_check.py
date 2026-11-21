@@ -1,8 +1,8 @@
 """Pure candidate-bound spec acceptance over the shared resolution ledger."""
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, PositiveInt, field_validator
+from pydantic import Field, PositiveInt, field_validator, model_validator
 
 from foreman.dispatch import InvalidOutput
 from foreman.resolution import ResolutionLedger
@@ -12,8 +12,14 @@ from foreman.stage_output import (
 )
 
 
+class SpecInterdiff(Contract):
+    slices: list[str]
+    sections: list[Literal["slice", "spec", "work_kind"]]
+
+
 class SpecRound(Contract):
     candidate: SpecCandidateRecord
+    interdiff: SpecInterdiff
     findings: list[SpecFinding]
     notes: list[SpecFinding]
     resolutions: dict[str, ResolutionStatus]
@@ -49,19 +55,39 @@ class AcceptedSpecCheck(Contract):
     def verdict(self) -> Literal["clear", "gaps"]:
         return "gaps" if self.history.accounting().unresolved() else "clear"
 
+    @model_validator(mode="after")
+    def valid_approval(self) -> Self:
+        expected = None
+        if self.history.rounds and self.verdict == "clear":
+            expected = SpecApproval(revision=self.history.rounds[-1].candidate["revision"], round=len(self.history.rounds))
+        if self.approval != expected:
+            raise ValueError("approval must match the accepted history")
+        return self
+
 
 def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate, *, max_rounds: int) -> AcceptedSpecCheck:
     if max_rounds < 1 or len(past.rounds) >= max_rounds:
         raise InvalidOutput("spec_check: round cap reached")
     candidate = SpecCandidate.from_record(candidate.record())
     slices = {s.title: s for s in candidate.slices}
-    if len(slices) != len(candidate.slices):
-        raise InvalidOutput("candidate.slices: titles must be unique")
     accounting = past.accounting()
-    resolutions = accounting.account([*output.findings, *output.notes], output.resolutions)
+    new = [*output.findings, *output.notes]
+    reserved = {note.id for entry in past.rounds for note in entry.notes}
+    if reserved.intersection(f.id for f in new):
+        raise InvalidOutput("findings: IDs must be unique across rounds, including notes")
+    resolutions = accounting.account(new, output.resolutions)
+    for finding in accounting.unresolved():
+        if resolutions[finding.id] == "unresolved" and finding.slice not in slices:
+            raise InvalidOutput("resolutions: unresolved finding targets unknown candidate slice")
     previous = SpecCandidate.from_record(past.rounds[-1].candidate) if past.rounds else None
     old_slices = {s.title: (index, s) for index, s in enumerate(previous.slices)} if previous else {}
-    changed = {s.title for index, s in enumerate(candidate.slices) if old_slices.get(s.title) != (index, s)}
+    new_slices = {s.title: (index, s) for index, s in enumerate(candidate.slices)}
+    changed = sorted(title for title in old_slices.keys() | new_slices.keys() if old_slices.get(title) != new_slices.get(title))
+    sections: list[Literal["slice", "spec", "work_kind"]] = ["slice"] if changed else []
+    if previous is None or candidate.spec != previous.spec:
+        sections.append("spec")
+    if previous is None or candidate.work_kind != previous.work_kind:
+        sections.append("work_kind")
     findings: list[SpecFinding] = []
     notes = list(output.notes)
     for finding in [*output.findings, *output.notes]:
@@ -71,14 +97,9 @@ def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate,
         if finding.ruling_id is not None:
             notes.append(finding)
             continue
-        eligible = (previous is None or
-                    (finding.section == "slice" and finding.slice in changed) or
-                    (finding.section == "spec" and candidate.spec != previous.spec) or
-                    (finding.section == "work_kind" and candidate.work_kind != previous.work_kind))
-        if not eligible:
-            raise InvalidOutput("findings: new blocker outside changed candidate sections")
         findings.append(finding)
-    entry = SpecRound(candidate=candidate.record(), findings=findings, notes=notes, resolutions=resolutions)
+    entry = SpecRound(candidate=candidate.record(), interdiff=SpecInterdiff(slices=changed, sections=sections),
+                      findings=findings, notes=notes, resolutions=resolutions)
     history = SpecHistory(rounds=[*past.rounds, entry], settled=past.settled)
     unresolved = history.accounting().unresolved()
     recurrence = accounting.recurrence(findings)
