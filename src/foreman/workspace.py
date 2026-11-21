@@ -255,14 +255,10 @@ class LiveWorkspace:
         from foreman.github import ForgeError, LiveForge
 
         if self._identity is None:
-            login = "bookout-labs-foreman[bot]"
             try:
-                user_id = LiveForge().bot_user_id(self.repo)
+                self._identity = LiveForge().bot_identity(self.repo)
             except ForgeError as exc:
                 raise WorktreeInspectionFailed(str(exc)) from None
-            email = f"{user_id}+{login}@users.noreply.github.com"
-            self._identity = {f"GIT_{role}_{field}": value for role in ("AUTHOR", "COMMITTER")
-                              for field, value in (("NAME", login), ("EMAIL", email))}
         return self._identity
 
     def committed(self, parent: str, message: str) -> bool:

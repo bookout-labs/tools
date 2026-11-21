@@ -32,9 +32,10 @@ class BotIdentityTest(unittest.TestCase):
             workspace = LiveWorkspace(root, 'org/repo')
             workspace.soft_reset(base)
             message = 'Adopt worker tree\n\nCo-Authored-By: GPT <noreply@openai.com>'
-            with patch.dict(os.environ, FOREMAN_APP_ID='1'), patch.object(
+            with patch.dict(os.environ, FOREMAN_APP_ID='1', GIT_AUTHOR_NAME='Ambient',
+                            GIT_COMMITTER_EMAIL='ambient@example.com'), patch.object(
                 LiveForge, '_run_command', return_value='{"id":359513816}',
-            ) as api, patch.dict(os.environ, GIT_AUTHOR_NAME='Ambient', GIT_COMMITTER_EMAIL='ambient@example.com'):
+            ) as api:
                 workspace.commit(message)
                 self.assertTrue(workspace.committed(base, message))
                 api.assert_called_once_with('org/repo', [

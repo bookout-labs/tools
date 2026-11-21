@@ -7,6 +7,7 @@ import re
 import subprocess
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict, NotRequired
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
 from foreman.workspace import commit_sha
 
+BOT_LOGIN = "bookout-labs-foreman[bot]"
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
 Model = TypeVar("Model", bound=BaseModel)
 
@@ -310,10 +312,13 @@ class LiveForge:
     def __init__(self):
         self._defaults: dict[str, str] = {}
 
-    def bot_user_id(self, repo: str) -> int:
-        return self._read(repo, IssueIdentity, [
-            "gh", "api", "users/bookout-labs-foreman%5Bbot%5D",
+    def bot_identity(self, repo: str) -> dict[str, str]:
+        user_id = self._read(repo, IssueIdentity, [
+            "gh", "api", f"users/{quote(BOT_LOGIN, safe='')}",
         ]).id
+        email = f"{user_id}+{BOT_LOGIN}@users.noreply.github.com"
+        return {f"GIT_{role}_{field}": value for role in ("AUTHOR", "COMMITTER")
+                for field, value in (("NAME", BOT_LOGIN), ("EMAIL", email))}
 
     def default_branch(self, repo: str) -> str:
         if repo not in self._defaults:
