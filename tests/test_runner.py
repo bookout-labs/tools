@@ -1848,6 +1848,36 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             _print_run(resumed)
         self.assertNotIn("HEAD is", out.getvalue())
 
+    def test_multi_round_repair_prepare_halt_clears_attempt_observations(self):
+        workspace = FakeWorkspace(self.cwd)
+        heads = iter(("1" * 40, "2" * 40))
+
+        def commit(message):
+            workspace.current = WorktreeState(next(heads), True, BRANCH)
+
+        changes = {**APPROVE, "findings": [FINDING]}
+        resolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}
+        ready = self.github.readiness("Example/Engine", 8, BRANCH, "2" * 40)
+        with patch.object(workspace, "commit", side_effect=commit), patch.object(
+            self.github, "readiness", return_value=ready.model_copy(update={"outcome": "conflict"}),
+        ):
+            halted = self.walk([{"triage": "implement"}, {"implementation": "first"}, changes,
+                                {"implementation": "second"}, resolved], workspace=workspace)
+        self.assertEqual(halted["stop"], "pr_conflict")
+        self.assertEqual(halted["work"].head_sha, "2" * 40)
+        remote = ready.model_copy(deep=True)
+        remote.outcome, remote.pr.head.sha = "head_changed", "3" * 40
+        workspace.current = WorktreeState("2" * 40, False, BRANCH)
+        with patch.object(self.github, "readiness", return_value=remote):
+            resumed = self.walk([], workspace=workspace)
+        self.assertEqual(resumed["stop"], "dirty_worktree")
+        expected = WorkState(branch=BRANCH, base="main", repair_head="3" * 40)
+        self.assertEqual(resumed["work"], expected)
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
+        self.assertEqual(saved.checkpoint["channel_values"]["work"], expected)
+
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
         with patch.object(self.github, "merge_hold", side_effect=MergeHoldUnreadable(reason)):

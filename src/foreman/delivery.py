@@ -378,10 +378,11 @@ def compile_delivery(
                     return halted(Halt.env_unavailable, detail, name)
                 try:
                     before = current_run.workspace.inspect()
-                    branch, parent = state.get("work", WorkState()).branch, state.get("work", WorkState()).attempt_head
+                    work = state.get("work", WorkState())
+                    branch, parent = work.branch, work.attempt_head
                     if before.branch != branch or before.head != parent:
                         return halted(Halt.dirty_worktree, "Restore the attempt's branch and starting HEAD before resuming edits.", "implement")
-                    partial = state.get("work", WorkState()).partial_edits
+                    partial = work.partial_edits
                     if not before.clean and partial and current_run.workspace.fingerprint() != partial:
                         return halted(Halt.dirty_worktree, "Edits changed after the quota stop; restore the run's partial edits.", "implement")
                 except WorkspaceError as exc:
@@ -583,14 +584,15 @@ def compile_delivery(
         assert "slice" in state and "repo" in state
         title = redact(str(state["slice"]["title"]))
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
-        branch = state.get("work", WorkState()).branch or f"{state.get('issue') or '<issue>'}-{slug}"
+        work = state.get("work", WorkState())
+        branch = work.branch or f"{state.get('issue') or '<issue>'}-{slug}"
         try:
             before = run.workspace.inspect()
             if not before.clean:
                 return halted(Halt.dirty_worktree, "Unowned edits exist before this attempt; save them before rerunning.", "prepare")
-            base = state.get("work", WorkState()).base or run.forge.default_branch(state["repo"])
+            base = work.base or run.forge.default_branch(state["repo"])
             run.workspace.create_branch(branch, base)
-            if repair_head := state.get("work", WorkState()).repair_head:
+            if repair_head := work.repair_head:
                 run.workspace.refresh(branch, repair_head)
             ready = run.workspace.inspect()
             return {"work": WorkState(branch=branch, base=base, attempt_head=ready.head)}
@@ -641,7 +643,7 @@ def compile_delivery(
             observed = run.workspace.inspect()
             if observed.branch != state["work"].branch:
                 raise WorkspaceError("Restore the delivery branch before committing.")
-            candidate = state.get("work", WorkState()).candidate
+            candidate = state["work"].candidate
             assert candidate is not None
             if candidate["disposition"] == "adopted" and observed.head == candidate["head"]:
                 if not observed.clean:
@@ -673,7 +675,7 @@ def compile_delivery(
         body = f"Closes #{state.get('issue') or '<issue>'}"
         try:
             observed = run.workspace.inspect()
-            if not observed.clean or observed.branch != branch or observed.head != state.get("work", WorkState()).head_sha:
+            if not observed.clean or observed.branch != branch or observed.head != state["work"].head_sha:
                 raise WorkspaceError("Restore the clean delivery branch at its implementation commit before publishing.")
             run.workspace.push(branch, repo)
             run.forge.open_pull_request(repo, branch, base, title, body)

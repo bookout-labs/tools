@@ -316,11 +316,15 @@ def run_live_delivery(
                 presentation.restore(before)
             replay = before.config
             receipt = None if repaired else saved_values.get("merge", MergeState()).receipt
-            retained: DeliveryUpdate = {"work": restored.get("work", WorkState()).model_copy(update={"repair_head": repair_head}), "merge": MergeState(receipt=receipt)}
+            prior_work = restored.get("work", WorkState())
+            reset_work = repaired or before.next == ("prepare",)
+            work = (WorkState(branch=prior_work.branch, base=prior_work.base, repair_head=repair_head)
+                    if reset_work else prior_work.model_copy(update={"repair_head": None}))
+            if not reset_work and (partial := saved_values.get("work", WorkState()).partial_edits):
+                work = work.model_copy(update={"partial_edits": partial})
+            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt)}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
-            if partial := saved_values.get("work", WorkState()).partial_edits:
-                retained["work"] = retained["work"].model_copy(update={"partial_edits": partial})
             if retained:
                 replay = graph.update_state(replay, retained)
                 restored = checkpoint_state(graph.get_state(replay).values)

@@ -31,9 +31,11 @@ class CheckpointBoundaryTests(unittest.TestCase):
                         saved = saver.get_tuple({"configurable": {"thread_id": "before-move"}})
                         if version is not None:
                             saved.checkpoint["channel_values"]["schema_version"] = version
-                        if version == 1:
+                        if type(version) is int and version == 1:
                             saved.checkpoint["channel_values"].update(merge="not_armed", merge_receipt={"status": "QUEUED"},
                                 readiness_observation={"outcome": "ready"}, merge_observed_head="c" * 40, merge_command=["gh", "pr", "merge"])
+                        if type(version) is int and version == 2:
+                            saved.checkpoint["channel_values"]["merge"] = MergeState(status="not_armed", observed_head="c" * 40)
                         if type(version) is int and version in (1, 2):
                             saved.checkpoint["channel_values"].update(delivery_branch="8-change", delivery_base="main",
                                 attempt_head="a" * 40, implementation_candidate={"disposition": "edits", "fingerprint": "edits"},
