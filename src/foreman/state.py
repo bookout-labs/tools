@@ -30,6 +30,10 @@ class RunState(BaseModel, frozen=True, extra="forbid"):
 
 
 class ChecksState(BaseModel, frozen=True, extra="forbid"):
+    # Failed checks cannot be recovered after attempt observations are reset.
+    verify_failures: int = 0
+    # Blocking proof verdicts cannot be recovered after attempt observations are reset.
+    proof_failures: int = 0
     check: str = ""
     preflight: str = ""
     check_exit_code: int | None = None
@@ -40,7 +44,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     proof_labels: dict[str, str] = Field(default_factory=dict)
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -85,10 +89,6 @@ class DeliveryFields(TypedDict, total=False):
     human_answers: list[str]
     pr_size: PullRequestSize
     pr_size_override: PullRequestSize
-    review_rounds: int
-    verify_failures: int
-    proof_failures: int
-    spec_failures: int
     models_used: dict[str, str]
     implement_models: list[str]
     watch: WatchRecord | None

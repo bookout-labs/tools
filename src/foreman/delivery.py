@@ -112,11 +112,7 @@ def review_count(state: DeliveryState | DeliveryResult) -> int:
 
 
 def read_delivery_state(raw: object) -> DeliveryResult:
-    result = _DELIVERY_STATE.validate_python(raw, strict=True)
-    for key in ("verify_failures", "proof_failures", "spec_failures"):
-        result.setdefault(key, result.get("review_rounds", 0))
-    result["review_rounds"] = review_count(result)
-    return result
+    return _DELIVERY_STATE.validate_python(raw, strict=True)
 
 
 def _active_slice(state: DeliveryState) -> SliceRecord:
@@ -267,11 +263,6 @@ def _check_tool_facts(
                       detail="\n".join(notes), passed=not unrecorded, tool_facts=outside)
 
 
-def failure_count(state: DeliveryState, key: Literal["verify_failures", "proof_failures", "spec_failures"]) -> int:
-    # Older checkpoints combined failures and reviews. Retain that budget conservatively.
-    return state.get(key, state.get("review_rounds", 0))
-
-
 def stage_update(
     name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None,
 ) -> DeliveryUpdate:
@@ -287,12 +278,11 @@ def stage_update(
             "formal_proof": output.formal_proof.record() if output.formal_proof else None,
         })}
     elif isinstance(output, VerifyOutput):
-        update = {"checks": checks.model_copy(update={"verify": output.verify})}
+        update = {"checks": checks.model_copy(update={"verify": output.verify,
+            "verify_failures": checks.verify_failures + (output.verify == "fail")})}
     else:
         update = {**output.update(context)}
     update["path"] = [name]
-    if isinstance(output, VerifyOutput) and output.verify == "fail":
-        update["verify_failures"] = failure_count(state, "verify_failures") + 1
     if model:
         used = state.get("models_used", {})
         update["models_used"] = {**used, name: model}
@@ -467,7 +457,7 @@ def compile_delivery(
                 instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
                 instruction += "\nGraph checks, not yours to resolve:\n" + json.dumps(past.rounds[-1].graph_check.model_dump(mode="json") if past.rounds and past.rounds[-1].graph_check else None)
                 instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
-            return {"verify_failures": failure_count(state, "verify_failures"), "proof_failures": failure_count(state, "proof_failures"), "spec_failures": failure_count(state, "spec_failures"), "dispatch_plan": DispatchPlan(
+            return {"dispatch_plan": DispatchPlan(
                 models=[model.name for model in models], instruction=instruction, methods=methods, read_roots=read_roots,
                 budget_usd=dispatch_budget(admission),
                 target=review_context[1] if review_context else None,
@@ -578,8 +568,8 @@ def compile_delivery(
                         update.update(halted(Halt.design_rethink, accepted.rethink, name))
                         update["human_question"] = accepted.rethink
             except InvalidSlicePlan as exc:
-                rounds = failure_count(state, "spec_failures") + 1
-                rejected: DeliveryUpdate = {**stopped, "plan": state["plan"].model_copy(update={"spec_rejection": exc.reason}), "spec_failures": rounds}
+                rounds = state["plan"].spec_failures + 1
+                rejected: DeliveryUpdate = {**stopped, "plan": state["plan"].model_copy(update={"spec_rejection": exc.reason, "spec_failures": rounds})}
                 if rounds >= config.max_review_rounds:
                     rejected.update(halted(Halt.spec_cap, str(exc), name))
                 return rejected
@@ -623,7 +613,8 @@ def compile_delivery(
             ready = run.workspace.inspect()
             checks = state["checks"]
             return {"work": WorkState(branch=branch, base=base, attempt_head=ready.head),
-                    "checks": ChecksState(check=checks.check, preflight=checks.preflight)}
+                    "checks": ChecksState(check=checks.check, preflight=checks.preflight,
+                                          verify_failures=checks.verify_failures, proof_failures=checks.proof_failures)}
         except (WorkspaceError, ForgeError) as exc:
             return halted(Halt.git_failed, str(exc), "prepare")
 
@@ -735,7 +726,7 @@ def compile_delivery(
             return {**halted(Halt.env_unavailable, detail, "verify"), "checks": checked}
         update: DeliveryUpdate = {"path": ["verify"], "checks": checked}
         if exit_code:
-            update["verify_failures"] = failure_count(state, "verify_failures") + 1
+            update["checks"] = update["checks"].model_copy(update={"verify_failures": checks.verify_failures + 1})
         return update
 
     def prove(state: DeliveryState) -> DeliveryUpdate:
@@ -749,9 +740,10 @@ def compile_delivery(
         if "insufficient_evidence" in labels.values():
             update.update(halted(Halt.insufficient_evidence, "Required proof is missing.", "proof"))
         elif "block" in labels.values():
-            update["proof_failures"] = failure_count(state, "proof_failures") + 1
-            if update["proof_failures"] >= config.max_review_rounds:
-                detail = f"Proof failed after {update['proof_failures']} rounds: {update['checks'].proof_labels}."
+            rounds = checks.proof_failures + 1
+            update["checks"] = update["checks"].model_copy(update={"proof_failures": rounds})
+            if rounds >= config.max_review_rounds:
+                detail = f"Proof failed after {rounds} rounds: {update['checks'].proof_labels}."
                 update.update(halted(Halt.review_cap, detail, "proof"))
         return update
 
@@ -883,7 +875,7 @@ def compile_delivery(
             if browser_required(slice) or formal_required(slice):
                 return "proof"
             return "review"
-        if failure_count(state, "verify_failures") < config.max_review_rounds:
+        if state["checks"].verify_failures < config.max_review_rounds:
             return "prepare"
         return "done"
 
@@ -985,7 +977,7 @@ def compile_delivery(
         planning = state["plan"]
         reason = stop_reason(state)
         if not state.get("halt"):
-            rounds = failure_count(state, "verify_failures") if reason == Halt.verify_cap else review_count(state)
+            rounds = state["checks"].verify_failures if reason == Halt.verify_cap else review_count(state)
             if reason == Halt.verify_cap:
                 detail = f"Verification failed after {rounds} rounds. Check {state['checks'].check or '(none)'} failed."
                 return {**halted(Halt.verify_cap, detail, "done"), "stop": str(reason)}
@@ -1126,7 +1118,6 @@ def run_delivery(
                         max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
         "checks": ChecksState(check=check),
         "plan": PlanState(issue_kind="parent" if slice is None else "slice"),
-        "review_rounds": 0,
         "models_used": {},
         "path": [],
         "review": ReviewState(fact_record=fact_record_path(fact_record)),

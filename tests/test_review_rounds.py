@@ -1,3 +1,4 @@
+"""Test review rounds."""
 import tests
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 import json
@@ -174,7 +175,7 @@ class ReviewRoundsTest(unittest.TestCase):
                             checkpoint=Path(directory) / 'checkpoint', run=LiveRun(self.forge, workspace), dispatcher=dispatch)
                 if answer:
                     self.assertEqual(result["halt"], "design_rethink")
-                    self.assertEqual(read_delivery_state({"stop": "needs_human", **result})["review_rounds"], 2)
+                    self.assertEqual(len(read_delivery_state({"stop": "needs_human", **result})["review"].review_findings), 2)
                     result = graph.invoke(Command(resume="Redesign the ownership."), config)
                 return read_delivery_state({"stop": "needs_human", **result})
 
@@ -188,7 +189,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 {**APPROVE, "resolutions": [{"id": "f2", "status": "resolved"}]},
             ], trees=trees, review_quota=True, quota_after=1)
             self.assertEqual(result["merge"].status, "armed")
-            self.assertEqual(result["review_rounds"], 3)
+            self.assertEqual(len(result["review"].review_findings), 3)
             prompts = [p[2] for p in self.prompts if p[0] == "review"]
             self.assertEqual(len(prompts), 4)
             self.assertNotEqual(tip, base)
@@ -281,7 +282,7 @@ class ReviewRoundsTest(unittest.TestCase):
                                  {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
                                   "findings": [{**FINDING, "id": "again"}]}])
         self.assertEqual(result["halt"], "design_rethink")
-        self.assertEqual(result["review_rounds"], 2)
+        self.assertEqual(len(result["review"].review_findings), 2)
         self.assertEqual(len(self.forge.reviews), 2)
         self.assertEqual(result["review"].review_receipt["id"], 2)
         self.assertEqual(result["path"].count("implement"), 2)
@@ -306,7 +307,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
                  "findings": [{**nit, "id": "main", "file": "main.txt", "line": 1}, {**nit, "id": "old"}]},
                 {**APPROVE, "resolutions": [{"id": "main", "status": status}, {"id": "old", "status": status}]}], divergent=True)
-            self.assertEqual(result["review_rounds"], 3)
+            self.assertEqual(len(result["review"].review_findings), 3)
             self.assertEqual(result["stop"], "verified" if status == "resolved" else "review_cap")
             self.assertIn("main.txt:1 [nit]", self.forge.reviews[1][3])
             self.assertNotIn("Coordinator note main", self.forge.reviews[1][3])
@@ -323,16 +324,15 @@ class ReviewRoundsTest(unittest.TestCase):
             {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
             {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}],
             advance_head=True, gate_heads=["2" * 40, "3" * 40])
-        self.assertEqual(result["review_rounds"], 3)
+        self.assertEqual(len(result["review"].review_findings), 3)
         self.assertEqual(result["merge"].status, "armed")
         self.assertIn("Graph verdict: changes", self.forge.reviews[0][3])
 
     def test_review_dispatch_crash_resumes_with_one_accepted_round(self):
         result = self.run_rounds([APPROVE], review_crash=True)
         self.assertEqual(self.interrupted["pending_dispatch"]["stage"], "review")
-        self.assertEqual(self.interrupted["review_rounds"], 0)
+        self.assertEqual(len(self.interrupted["review"].review_findings), 0)
         self.assertEqual(result["merge"].status, "armed")
-        self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(len(self.forge.reviews), 1)
         self.assertEqual([p[0] for p in self.prompts].count("review"), 2)
@@ -340,7 +340,6 @@ class ReviewRoundsTest(unittest.TestCase):
     def test_review_quota_failover_accepts_one_round(self):
         result = self.run_rounds([APPROVE], review_quota=True)
         self.assertEqual(result["merge"].status, "armed")
-        self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(len(result["review"].review_findings), 1)
         attempts = [a for a in result["attempts"] if a["stage"] == "review"]
         self.assertEqual([a["outcome"] for a in attempts], ["quota", "ran"])
@@ -349,7 +348,7 @@ class ReviewRoundsTest(unittest.TestCase):
 
     def test_post_crash_reuses_accepted_round(self):
         result = self.run_rounds([APPROVE], post_crash=True)
-        self.assertEqual(result["review_rounds"], 1)
+        self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(len(self.forge.reviews), 1)
         self.assertEqual(result["review"].review_receipt["id"], 1)
         self.assertEqual([p[0] for p in self.prompts].count("review"), 1)

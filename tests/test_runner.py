@@ -877,11 +877,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         with patch.object(self.github, "post_review", side_effect=ForgeError("Unavailable")):
             stopped = self.walk([{"triage": "implement"}, {"implementation": "Built."}, APPROVE])
         self.assertEqual(stopped["halt"], "review_not_posted")
-        self.assertEqual(stopped["review_rounds"], 1)
+        self.assertEqual(len(stopped["review"].review_findings), 1)
         calls = self.calls.copy()
         result = self.walk([])
         self.assertEqual(self.calls, calls)
-        self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(result["review"].review_receipt["state"], "COMMENTED")
         self.assertEqual(result["merge"].status, "armed")
@@ -1147,7 +1146,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertIn("no merged pull request", self.walk([], issue=102)["halt_detail"])
         self.github.merged.add(101)
         self.walk([])
-        self.walk([])
         self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
         child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
@@ -1209,8 +1207,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
             result = self.walk([{"triage": "spec"}, spec, spec, spec])
         self.assertEqual(result["stop"], "spec_cap")
-        self.assertEqual(result["review_rounds"], 0)
-        self.assertEqual(result["spec_failures"], 3)
+        self.assertEqual(len(result["review"].review_findings), 0)
+        self.assertEqual(result["plan"].spec_failures, 3)
         self.assertEqual(result["plan"].spec_rejection["kind"], "dangling_seam")
         self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
@@ -1373,7 +1371,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.review_tool_fact("result.txt", record_during_review=True)
         self.assertEqual(result["review"].review, "changes")
         self.assertIn("The CLI accepts --debug.", result["review"].detail or "")
-        self.assertEqual(result.get("review_rounds"), 1)
+        self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(self.github.merge_calls, [])
 
     def test_approve_with_recorded_tool_fact_stays_approve(self):
@@ -1534,7 +1532,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["path"], [
             "triage", "implement", "publish", "verify", "proof", "implement", "publish", "verify", "proof", "review", "merge", "done",
         ])
-        self.assertEqual(result["review_rounds"], 1)
+        self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
 
@@ -1547,8 +1545,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.walk([{"triage": "implement"}] + [blocked] * 3)
         self.assertEqual(result["stop"], "review_cap")
         self.assertEqual(result["checks"].proof_labels, {"formal": "block"})
-        self.assertEqual(result["review_rounds"], 0)
-        self.assertEqual(result["proof_failures"], 3)
+        self.assertEqual(len(result["review"].review_findings), 0)
+        self.assertEqual(result["checks"].proof_failures, 3)
         self.assertNotIn("review", result["path"])
 
     def test_cli_preflight_stops_before_dispatch_and_uses_engine_checkout(self):
@@ -1602,7 +1600,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         preflight = "test -f ready"
         halted = self.walk([{"triage": "implement"}], preflight=preflight)
         self.assertEqual(halted.get("stop"), "env_unavailable")
-        self.assertEqual(halted.get("review_rounds"), 0)
+        self.assertEqual(len(halted["review"].review_findings), 0)
         self.assertEqual(halted.get("path"), ["triage", "implement", "done"])
         self.assertEqual(self.calls, ["claude"])
 
@@ -1612,7 +1610,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             preflight=preflight,
         )
         self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(result.get("review_rounds"), 1)
+        self.assertEqual(len(result["review"].review_findings), 1)
         self.assertNotIn("halt_detail", result)
         self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "review", "merge", "done"])
 
@@ -1657,7 +1655,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     preflight=f"echo probed >> {probe_log}",
                 )
                 self.assertEqual(result.get("stop"), "verified")
-                self.assertEqual(result.get("review_rounds"), 1)
+                self.assertEqual(len(result["review"].review_findings), 1)
                 self.assertEqual(result.get("path", []).count("implement"), 2)
                 self.assertEqual((self.cwd / probe_log).read_text().splitlines(), ["probed", "probed"])
 
@@ -1702,7 +1700,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             check="test -f checked || { touch checked; rm ready; exit 1; }", preflight="test -f ready",
         )
         self.assertEqual(result.get("stop"), "env_unavailable")
-        self.assertEqual(result.get("review_rounds"), 0)
+        self.assertEqual(len(result["review"].review_findings), 0)
         self.assertEqual(result["checks"].check_exit_code, 1)
         self.assertEqual(result["checks"].verify, "")
         self.assertIn("test -f ready", result.get("halt_detail", ""))
@@ -1713,7 +1711,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         resumed = self.walk([APPROVE])
         self.assertEqual(resumed.get("stop"), "verified")
         self.assertEqual(resumed["checks"].check_exit_code, 0)
-        self.assertEqual(resumed.get("review_rounds"), 1)
+        self.assertEqual(len(resumed["review"].review_findings), 1)
         self.assertEqual(self.calls, ["claude", "codex", "claude"])
 
     def test_failed_check_consumes_round_with_healthy_or_unspecified_environment(self):
@@ -1726,7 +1724,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     check=f"test -f {marker} || {{ touch {marker}; exit 1; }}", preflight=preflight,
                 )
                 self.assertEqual(result.get("stop"), "verified")
-                self.assertEqual(result.get("review_rounds"), 1)
+                self.assertEqual(len(result["review"].review_findings), 1)
                 self.assertEqual(result.get("path", []).count("implement"), 2)
         self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\nprobed\n")
 
@@ -1743,7 +1741,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     issue=issue, check=command, preflight=preflight,
                 )
                 self.assertEqual(result.get("stop"), "env_unavailable")
-                self.assertEqual(result.get("review_rounds"), 0)
+                self.assertEqual(len(result["review"].review_findings), 0)
                 self.assertEqual(result["checks"].check_exit_code, exit_code)
                 self.assertEqual(result["checks"].verify, "")
                 for detail in (command, str(exit_code), reason):
@@ -1784,7 +1782,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         ready.unlink()
         result = self.walk([])
         self.assertEqual(result.get("stop"), "usage_unknown")
-        self.assertEqual(result.get("review_rounds"), 0)
+        self.assertEqual(len(result["review"].review_findings), 0)
         self.assertEqual(self.calls, [])
 
     def test_dirty_or_invalid_worktree_skips_the_check(self):

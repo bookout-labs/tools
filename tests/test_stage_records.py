@@ -1,3 +1,4 @@
+"""Stage records and ownership contracts."""
 import tests
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION
 from foreman.dry_run import DEFAULT_RISK
@@ -144,7 +145,7 @@ class StageOwnershipTests(unittest.TestCase):
         from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import STAGE_OUTPUTS, parse_output
 
-        state = {"review": ReviewState(), "run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "review_rounds": 2, "plan": PlanState(issue_kind="slice")}
+        state = {"review": ReviewState(), "run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "plan": PlanState(issue_kind="slice")}
         handler = ScriptHandler(reviews=["changes"])
         for stage, contract in STAGE_OUTPUTS.items():
             with self.subTest(stage=stage):
@@ -161,14 +162,7 @@ class StageOwnershipTests(unittest.TestCase):
                 self.assertEqual(update["models_used"][stage], "model")
                 if stage == "verify":
                     self.assertEqual(update["checks"].verify, "fail")
-                    self.assertEqual(update["verify_failures"], 3)
-
-    def test_legacy_failure_budget_is_preserved_separately(self):
-        from foreman.delivery import read_delivery_state
-        result = read_delivery_state({"review": ReviewState(), "run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "stop": "verify_cap", "review_rounds": 2, "plan": PlanState()})
-        self.assertEqual(result["review_rounds"], 0)
-        for key in ("verify_failures", "proof_failures", "spec_failures"):
-            self.assertEqual(result[key], 2)
+                    self.assertEqual(update["checks"].verify_failures, 1)
 
     def test_checkpoint_rejects_incomplete_nested_record(self):
         from foreman.delivery import read_delivery_state

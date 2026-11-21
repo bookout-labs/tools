@@ -263,7 +263,6 @@ def run_live_delivery(
                 "pstack_pin": pin.model_dump(),
                 "path": [],
                 "plan": PlanState(issue_kind="slice" if "slice" in loaded["labels"] else "parent"),
-                "review_rounds": 0,
                 "review": ReviewState(fact_record=fact_record or MANIFEST_PATH),
             }
             if initial["plan"].issue_kind == "slice":
@@ -315,7 +314,8 @@ def run_live_delivery(
             if not reset_work and (partial := saved_values.get("work", WorkState()).partial_edits):
                 work = work.model_copy(update={"partial_edits": partial})
             prior_checks = restored["checks"]
-            checks = ChecksState(check=prior_checks.check, preflight=prior_checks.preflight) if reset_work else prior_checks
+            checks = ChecksState(check=prior_checks.check, preflight=prior_checks.preflight,
+                                 verify_failures=prior_checks.verify_failures, proof_failures=prior_checks.proof_failures) if reset_work else prior_checks
             assert saved_review is not None
             retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": saved_review}
             if halted_attempts := attempts[len(previous_attempts):]:

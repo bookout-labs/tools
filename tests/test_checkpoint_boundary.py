@@ -22,7 +22,7 @@ from foreman.runner import run_live_delivery
 from foreman.state import DeliveryState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
 from foreman.config import ModelSpec, load_config
 from foreman.worker import CliWorker
-from owner_contract import OWNERS, assert_channels, historical_channels
+from owner_contract import COUNTERS, OWNERS, assert_channels, historical_channels
 from test_runner import worker_reply
 
 
@@ -176,3 +176,82 @@ with SqliteSaver.from_conn_string(path) as saver:
                         payload = outputs[1]["interrupts"][0]
                         self.assertEqual(payload.get("stage", payload.get("reason")),
                                          "quota_exhausted" if name == "quota" else name)
+
+
+    def test_caps_survive_fresh_process_resume(self):
+        from skill_fixture import fixture_pin
+        script = r'''
+import tests
+import json
+from dataclasses import replace
+from pathlib import Path
+import sys
+from unittest.mock import patch
+from foreman.adapters import Outcome
+from foreman.config import PstackPin, load_config
+from foreman.delivery import LiveRun
+from foreman.dry_run import ScriptHandler
+from foreman.runner import run_live_delivery
+from foreman.workspace import WorktreeState
+from owner_contract import COUNTERS
+from test_runner import FakeGitHub, FakeWorkspace, BRANCH, BROWSER, FORMAL, SLICE, slice_body
+
+root, pin, stage, phase = sys.argv[1:]
+root = Path(root)
+_, owner, field, stop = next(row for row in COUNTERS if row[0] == stage)
+workspace = FakeWorkspace(root)
+workspace.current = WorktreeState(workspace.current.head, True, BRANCH)
+forge = FakeGitHub(["factory"] if stage == "spec" else ["slice"])
+if stage == "proof":
+    forge.body = slice_body(SLICE)
+handler = ScriptHandler(triage="spec" if stage == "spec" else "implement", reviews=["changes"] * 3, slices=[SLICE])
+calls = []
+def count(state):
+    value = getattr(state[owner], field)
+    return len(value) if stage == "review" else value
+
+def worker(node, model, state, instruction):
+    if phase == "pause" and count(state) >= 1:
+        return Outcome("quota")
+    calls.append(node)
+    if node == "implement":
+        workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
+    result = handler(node, model, state, instruction)
+    if stage == "proof" and node == "implement":
+        result.output.update(browser_proof=BROWSER, formal_proof={**FORMAL,
+            "constraints": [{"constraint": "unique_item_id", "rejected": False}]})
+    if stage == "spec" and node == "spec":
+        result.output["slices"] = [result.output["slices"][0]] * 2
+    return result
+
+config = replace(load_config(), pstack=PstackPin.model_validate_json(pin))
+with patch("foreman.runner.load_config", return_value=config), patch.object(
+    workspace, "run", side_effect=lambda command, **kwargs: 1 if stage == "verify" and command == "check" else 0,
+):
+    result = run_live_delivery(repo="Example/Engine", issue=8, check="check", preflight="env",
+        checkpoint=root / "run.sqlite", run=LiveRun(forge, workspace), dispatcher=worker)
+assert count(result) == (1 if phase == "pause" else config.max_review_rounds), result
+assert result["stop"] == ("quota_exhausted" if phase == "pause" else stop), result
+assert not any(key in result for key in ("review_rounds", "verify_failures", "proof_failures", "spec_failures"))
+print(json.dumps({"count": count(result), "calls": calls, "path": result["path"]}))
+'''
+        env = {**os.environ, "LANGGRAPH_STRICT_MSGPACK": "true",
+               "PYTHONPATH": os.pathsep.join([str(Path(__file__).parent), os.environ.get("PYTHONPATH", "")])}
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pin = fixture_pin(root / "skills")
+            for stage, _, _, _ in COUNTERS:
+                with self.subTest(cap=stage):
+                    workspace = root / stage
+                    workspace.mkdir()
+                    results = []
+                    for phase in ("pause", "resume", "terminal"):
+                        process = subprocess.run([sys.executable, "-c", script, str(workspace),
+                                                  pin.model_dump_json(), stage, phase],
+                                                 capture_output=True, text=True, env=env)
+                        self.assertEqual(process.returncode, 0, process.stderr)
+                        results.append(json.loads(process.stdout))
+                    self.assertEqual(results[0]["count"], 1)
+                    self.assertEqual(results[1]["count"], load_config().max_review_rounds)
+                    self.assertEqual(results[2]["calls"], [])
+                    self.assertEqual(results[1]["path"], results[2]["path"])
