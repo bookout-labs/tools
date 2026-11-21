@@ -156,19 +156,30 @@ class RecordedEvidenceTest(unittest.TestCase):
 
     def test_committed_claude_evidence_carries_budget_claim_ids(self):
         from foreman.fixture_manifest import recorded_evidence
+        from foreman.stage_output import StoredToolFact, ToolFact
 
         claims = {
-            "claude/help.txt": ["claude-max-budget-usd-flag", "tool-fact-2a92f2eddc7bfdf6f61eec3f700b8512cc517afc17977276c8a0000775275e13"],
-            "claude/max_budget.json": ["tool-fact-7d1a336df8270445c34c1277e0e173d23ecdaaf1bf67e67eacd343124632d16a"],
-            "claude/success.json": ["tool-fact-3142c20a0ada3df91b980473d80bae425e03984b9367f162c8a58597c57959f0"],
+            "claude/help.txt": "Claude Code 2.1.329 accepts `--max-budget-usd <amount>` (only with --print), "
+                               "so the adapter can place it before `-p` in the argv.",
+            "claude/max_budget.json": "When Claude Code 2.1.329 hits its dollar budget it emits a result envelope "
+                                      "with subtype `error_max_budget_usd`, is_error true, and an errors entry "
+                                      "`Reached maximum budget ($<amount>)`; no exit status is claimed.",
+            "claude/success.json": "A Claude JSON result's top-level total_cost_usd equals the sum of the per-model "
+                                   "modelUsage[*].costUSD values. It corroborates the ledger and is not an extra "
+                                   "charge (0.0001657 + 0.037721 = 0.0378867).",
         }
+        expected = {
+            fixture: [StoredToolFact.from_fact(ToolFact(claim=claim, fixture=fixture)).claim_id]
+            for fixture, claim in claims.items()
+        }
+        expected["claude/help.txt"].insert(0, "claude-max-budget-usd-flag")
         source = Path(__file__).with_name("fixtures")
         self.manifest.write_bytes((source / "manifest.toml").read_bytes())
         for fixture in claims:
             destination = self.fixtures / fixture
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes((source / fixture).read_bytes())
-        self.assertEqual(recorded_evidence(self.workspace, self.commit()), claims)
+        self.assertEqual(recorded_evidence(self.workspace, self.commit()), expected)
 
     def test_only_regular_tracked_files_are_recorded(self):
         from foreman.fixture_manifest import recorded_fixtures
