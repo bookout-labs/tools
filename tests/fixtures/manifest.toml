@@ -908,3 +908,10 @@ version = "2.14.4"
 kind = "captured_run"
 argv = ["python", "-c", "from foreman.stage_output import SpecCheckOutput; print(SpecCheckOutput(findings=[dict(id='f1',kind='contract',slice='Save',section='slice',summary='Keep IDs unique.',ruling_id=None)],notes=[],resolutions=[]).model_dump_json(indent=2))"]
 notes = "Synthetic spec-check contract example serialized by Pydantic. No model or external service was called. test_spec_check.py parses it through the native contract and checks rejection of supplied verdicts."
+
+[fixtures."github/readiness-evidence.json"]
+tool = "GitHub REST API"
+version = "2022-11-28"
+kind = "captured_run"
+argv = ["gh", "api", "repos/bookout-labs/tools/pulls/97"]
+notes = "API excerpts captured 2026-11-21. Contract source: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request (pull_request GITHUB_SHA identifies the synthetic merge). The JSON records all exact queried URLs. PR base.sha can differ from the current base tip; the synthetic merge parents are validated against branches/{base}.commit.sha. A head-attached check run and its check_suite id identify source-head evidence, not the synthetic tested commit. Capture uses additional gh api GETs for the branch, merge commit and source check runs named in sources in the JSON."
