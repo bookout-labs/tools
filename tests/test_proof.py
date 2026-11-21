@@ -2,10 +2,13 @@ import unittest
 
 from foreman.proof import (
     ProofError,
+    browser_proof_label,
     browser_required,
+    formal_proof_label,
     formal_required,
     score_verdict,
 )
+from foreman.stage_output import BrowserProof, FormalProof
 
 
 class ProofTest(unittest.TestCase):
@@ -39,28 +42,45 @@ class ProofTest(unittest.TestCase):
 
 class ProofLabelTest(unittest.TestCase):
     def test_browser_evidence_boundary(self):
-        from foreman.proof import browser_proof_label
-        slice = {"screen": "docs/screens/deals.md"}
-        for artifact in (None, {}, {"screen": slice["screen"]}):
-            self.assertEqual(browser_proof_label(slice, artifact), "insufficient_evidence")
-        self.assertEqual(browser_proof_label(slice, {"screen": "other", "trace": "trace.zip"}), "block")
-        self.assertEqual(browser_proof_label(slice, {"screen": slice["screen"], "trace": "trace.zip", "passed": False}), "block")
-        self.assertIsNone(browser_proof_label(slice, {"screen": slice["screen"], "trace": "trace.zip"}))
+        screen = "docs/screens/deals.md"
+        slice = {"screen": screen}
+        cases = (
+            (None, "insufficient_evidence"),
+            ({}, "insufficient_evidence"),
+            ({"screen": screen}, "insufficient_evidence"),
+            ({"screen": screen, "trace": "  "}, "insufficient_evidence"),
+            ({"screen": "other", "trace": "trace.zip"}, "block"),
+            ({"screen": screen, "trace": "trace.zip", "passed": False}, "block"),
+            ({"screen": screen, "trace": "trace.zip"}, None),
+        )
+        for raw, label in cases:
+            with self.subTest(raw=raw):
+                artifact = None if raw is None else BrowserProof.model_validate(raw).model_dump()
+                self.assertEqual(browser_proof_label(slice, artifact), label)
 
     def test_formal_evidence_boundary(self):
-        from foreman.proof import formal_proof_label
         slice = {"properties": [{"name": "Positive amount", "constraint": "positive_amount"}]}
-        for artifact in (None, {}, {"constraints": []}):
-            self.assertEqual(formal_proof_label(slice, artifact), "insufficient_evidence")
-        self.assertEqual(formal_proof_label(slice, {"typecheck": "passed"}), "block")
-        self.assertEqual(formal_proof_label(slice, {"constraints": [{"constraint": "positive_amount", "rejected": False}]}), "block")
-        rejected_amount = {"constraints": [{"constraint": "positive_amount", "rejected": True}]}
+        cases = (
+            (None, "insufficient_evidence"),
+            ({}, "insufficient_evidence"),
+            ({"ran": False, "typecheck": "passed"}, "insufficient_evidence"),
+            ({"constraints": []}, "insufficient_evidence"),
+            ({"typecheck": "passed"}, "block"),
+            ({"constraints": [{"constraint": "positive_amount", "rejected": False}]}, "block"),
+            ({"constraints": [{"constraint": "owner_required", "rejected": True}]}, "insufficient_evidence"),
+        )
+        for raw, label in cases:
+            with self.subTest(raw=raw):
+                artifact = None if raw is None else FormalProof.model_validate(raw).model_dump()
+                self.assertEqual(formal_proof_label(slice, artifact), label)
+
+        rejected_amount = FormalProof.model_validate({
+            "constraints": [{"constraint": "positive_amount", "rejected": True}],
+        }).model_dump()
         self.assertIsNone(formal_proof_label(slice, rejected_amount))
 
         two_properties = {"properties": [*slice["properties"], {"name": "Owner is required", "constraint": "owner_required"}]}
         self.assertEqual(formal_proof_label(two_properties, rejected_amount), "insufficient_evidence")
-        wrong_constraint = {"constraints": [{"constraint": "owner_required", "rejected": True}]}
-        self.assertEqual(formal_proof_label(slice, wrong_constraint), "insufficient_evidence")
 
 
 if __name__ == "__main__":
