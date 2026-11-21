@@ -19,7 +19,6 @@ class SpecInterdiff(Contract):
 
 class SpecRound(Contract):
     candidate: SpecCandidateRecord
-    interdiff: SpecInterdiff
     findings: list[SpecFinding]
     notes: list[SpecFinding]
     resolutions: dict[str, ResolutionStatus]
@@ -33,6 +32,21 @@ class SpecRound(Contract):
 class SpecHistory(Contract):
     rounds: list[SpecRound] = Field(default_factory=list[SpecRound])
     settled: list[SettledRuling] = Field(default_factory=list[SettledRuling])
+
+    def interdiff(self, index: int = -1) -> SpecInterdiff:
+        """Derive scope for a round by list index, defaulting to the latest round."""
+        index = range(len(self.rounds))[index]
+        candidate = SpecCandidate.from_record(self.rounds[index].candidate)
+        previous = SpecCandidate.from_record(self.rounds[index - 1].candidate) if index else None
+        old_slices = {s.title: (index, s) for index, s in enumerate(previous.slices)} if previous else {}
+        new_slices = {s.title: (index, s) for index, s in enumerate(candidate.slices)}
+        changed = sorted(title for title in old_slices.keys() | new_slices.keys() if old_slices.get(title) != new_slices.get(title))
+        sections: list[Literal["slice", "spec", "work_kind"]] = ["slice"] if changed else []
+        if previous is None or candidate.spec != previous.spec:
+            sections.append("spec")
+        if previous is None or candidate.work_kind != previous.work_kind:
+            sections.append("work_kind")
+        return SpecInterdiff(slices=changed, sections=sections)
 
     def accounting(self) -> ResolutionLedger[SpecFinding]:
         return ResolutionLedger(self.rounds, self.settled)
@@ -79,15 +93,6 @@ def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate,
     for finding in accounting.unresolved():
         if resolutions[finding.id] == "unresolved" and finding.slice not in slices:
             raise InvalidOutput("resolutions: unresolved finding targets unknown candidate slice")
-    previous = SpecCandidate.from_record(past.rounds[-1].candidate) if past.rounds else None
-    old_slices = {s.title: (index, s) for index, s in enumerate(previous.slices)} if previous else {}
-    new_slices = {s.title: (index, s) for index, s in enumerate(candidate.slices)}
-    changed = sorted(title for title in old_slices.keys() | new_slices.keys() if old_slices.get(title) != new_slices.get(title))
-    sections: list[Literal["slice", "spec", "work_kind"]] = ["slice"] if changed else []
-    if previous is None or candidate.spec != previous.spec:
-        sections.append("spec")
-    if previous is None or candidate.work_kind != previous.work_kind:
-        sections.append("work_kind")
     findings: list[SpecFinding] = []
     notes = list(output.notes)
     for finding in [*output.findings, *output.notes]:
@@ -98,7 +103,7 @@ def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate,
             notes.append(finding)
             continue
         findings.append(finding)
-    entry = SpecRound(candidate=candidate.record(), interdiff=SpecInterdiff(slices=changed, sections=sections),
+    entry = SpecRound(candidate=candidate.record(),
                       findings=findings, notes=notes, resolutions=resolutions)
     history = SpecHistory(rounds=[*past.rounds, entry], settled=past.settled)
     unresolved = history.accounting().unresolved()

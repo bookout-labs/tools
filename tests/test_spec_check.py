@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from foreman.dispatch import InvalidOutput
-from foreman.spec_check import AcceptedSpecCheck, SpecHistory, accept
+from foreman.spec_check import AcceptedSpecCheck, SpecHistory, SpecRound, accept
 from foreman.stage_output import SpecAuthor, SpecCandidate, SpecCheckOutput, parse_output
 from test_spec_candidate import SLICE
 
@@ -56,6 +56,26 @@ class SpecCheckTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "approval must match"):
                 AcceptedSpecCheck.model_validate_json(json.dumps(raw))
 
+    def test_interdiff_is_derived_and_forged_scope_is_rejected(self):
+        first = accept(SpecHistory(), output(), candidate(), max_rounds=3).history
+        history = accept(first, output(), candidate(spec="Changed"), max_rounds=3).history
+        restored = SpecHistory.model_validate_json(history.model_dump_json())
+        self.assertEqual(restored.interdiff(0).slices, ["Save"])
+        self.assertEqual(restored.interdiff(0).sections, ["slice", "spec", "work_kind"])
+        self.assertEqual(restored.interdiff().slices, [])
+        self.assertEqual(restored.interdiff().sections, ["spec"])
+        for index in range(len(history.rounds)):
+            raw = history.model_dump()
+            self.assertNotIn("interdiff", raw["rounds"][index])
+            raw["rounds"][index]["interdiff"] = dict(slices=["Nope"], sections=[])
+            with self.subTest(index=index):
+                with self.assertRaisesRegex(ValueError, "Extra inputs are not permitted"):
+                    SpecRound(**raw["rounds"][index])
+                with self.assertRaisesRegex(ValueError, "Extra inputs are not permitted"):
+                    SpecHistory(**raw)
+                with self.assertRaisesRegex(ValueError, "Extra inputs are not permitted"):
+                    SpecHistory.model_validate_json(json.dumps(raw))
+
     def test_targets_missing_renamed_and_duplicate_titles(self):
         for payload in (output([{**FINDING, "slice": "Missing"}]), output(notes=[{**FINDING, "slice": "Missing"}])):
             with self.assertRaisesRegex(InvalidOutput, "unknown candidate slice"):
@@ -99,8 +119,8 @@ class SpecCheckTests(unittest.TestCase):
                 accepted = accept(past, output([new], resolved), changed, max_rounds=3)
                 self.assertEqual(accepted.verdict, "gaps")
                 self.assertIsNone(accepted.approval)
-                self.assertEqual(accepted.history.rounds[-1].interdiff.slices, titles)
-                self.assertEqual(accepted.history.rounds[-1].interdiff.sections, sections)
+                self.assertEqual(accepted.history.interdiff().slices, titles)
+                self.assertEqual(accepted.history.interdiff().sections, sections)
                 cleared = accept(accepted.history, output(resolutions=[{"id": "f2", "status": "resolved"}]), changed, max_rounds=3)
                 self.assertEqual(cleared.verdict, "clear")
                 self.assertTrue(cleared.approval.matches(changed))
@@ -159,4 +179,4 @@ class SpecCheckTests(unittest.TestCase):
         first = accept(SpecHistory(), output(), candidate(slices=[SLICE, other]), max_rounds=3)
         accepted = accept(first.history, output([FINDING]), candidate(slices=[other, SLICE]), max_rounds=3)
         self.assertEqual(accepted.verdict, "gaps")
-        self.assertEqual(accepted.history.rounds[-1].interdiff.slices, ["Other", "Save"])
+        self.assertEqual(accepted.history.interdiff().slices, ["Other", "Save"])
