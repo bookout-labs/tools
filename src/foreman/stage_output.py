@@ -18,20 +18,20 @@ Output = TypeVar("Output", bound=BaseModel)
 WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
 
 
-@with_config(extra="forbid")
+@with_config(ConfigDict(extra="forbid"))
 class SlicePropertyRecord(TypedDict):
     name: str
     constraint: str
 
 
-@with_config(extra="forbid")
+@with_config(ConfigDict(extra="forbid"))
 class SeamRecord(TypedDict):
     name: str
     exists: bool
     path: str | None
 
 
-@with_config(extra="forbid")
+@with_config(ConfigDict(extra="forbid"))
 class SliceRecord(TypedDict):
     title: str
     stateful: bool
@@ -44,27 +44,27 @@ class SliceRecord(TypedDict):
     blocker_numbers: NotRequired[list[int]]
 
 
-@with_config(extra="forbid")
+@with_config(ConfigDict(extra="forbid"))
 class BrowserProofRecord(TypedDict):
     screen: str | None
     trace: str | None
     passed: bool | None
 
 
-@with_config(extra="forbid")
+@with_config(ConfigDict(extra="forbid"))
 class ConstraintResultRecord(TypedDict):
     constraint: str
     rejected: bool
 
 
-@with_config(extra="forbid")
+@with_config(ConfigDict(extra="forbid"))
 class FormalProofRecord(TypedDict):
     ran: bool | None
     constraints: list[ConstraintResultRecord] | None
     typecheck: str | bool | None
 
 
-@with_config(extra="forbid")
+@with_config(ConfigDict(extra="forbid"))
 class MergeRiskRecord(TypedDict):
     alignment: str
     impact: str
@@ -74,13 +74,13 @@ class MergeRiskRecord(TypedDict):
     level: Literal["low", "medium", "high"]
 
 
-@with_config(extra="forbid")
+@with_config(ConfigDict(extra="forbid"))
 class ToolFactRecord(TypedDict):
     claim: str
     fixture: str | None
 
 
-@with_config(extra="forbid")
+@with_config(ConfigDict(extra="forbid"))
 class FindingRecord(TypedDict):
     id: str
     kind: Literal["correctness", "contract-unenforced", "duplicate-owner", "hand-built-parsing", "untested-path", "docs"]
