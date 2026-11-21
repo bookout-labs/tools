@@ -6,6 +6,12 @@
       "sha256": "7740b0cff5f9527cdde0d65ac8637754e0905ef5d4f9129f3a87ff24511cd495",
       "request_sha256": "81284aebe65960b2bdfcb482761f33e341cd8e32532af8f79d7801b32182b80f",
       "answer_sha256": "9a8b4d239944993bb3b72b6eb7636a5bbe705c2ddc9b3a53ea27cb593a4ff685"
+    },
+    {
+      "id": "bug-001",
+      "sha256": "9afbaf00cabf9f4af170c14b950c779c8b2e47ee4a1995cdf67d8ffac7bd8480",
+      "request_sha256": "3ec9c555bee85683027b4901fcfdaf5d17fcdeb9111286551a7659f42cb5da92",
+      "answer_sha256": "95c8e08b53a2f41a68c38f667769c7b796251f206ff8a1f8230d3c8f773ece7f"
     }
   ]
 }

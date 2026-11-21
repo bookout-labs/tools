@@ -66,10 +66,13 @@ wrong behavior fails that same answer, and an independent acceptance receipt is
 pinned. A fresh independent acceptance review of the answer's coverage remains
 necessary before promoting newly curated answers. Isolation is a separate receipt.
 
-The first commitment is a feature case. Its private bundle is local curation
-staging only. It must be transferred into an evaluator-only private store outside
-all worker mounts, credentials, and network access before use. Its PR identifies
-that staging location and the unmet obligations.
+The commitments cover a feature case and a provisional bug case. Their private
+bundles are local curation staging only. They must be transferred into an
+evaluator-only private store outside all worker mounts, credentials, and network
+access before use. Each curation PR identifies its staging location and unmet
+obligations. The bug case has positive and negative grader evidence, but its
+independent acceptance receipt is not yet pinned. It remains incomplete under
+164-D1. Both answers still need independent coverage review and #165 isolation.
 
 A parent answer must compare semantic children and dependencies after normalizing
 IDs and titles. It checks acceptance criteria, seams, parent links, coverage,
