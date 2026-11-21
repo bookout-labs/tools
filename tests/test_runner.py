@@ -159,6 +159,16 @@ class StageOutputTest(unittest.TestCase):
         with self.assertRaisesRegex(InvalidOutput, r"^browser_proof\.extra:"):
             parse_output(ImplementOutput, raw)
 
+    def test_formal_rejection_requires_a_boolean(self):
+        for fields in ({}, {"rejected": "true"}, {"rejected": 1}):
+            with self.subTest(fields=fields):
+                raw = {
+                    "implementation": "Done",
+                    "formal_proof": {"constraints": [{"constraint": "unique_item_id", **fields}]},
+                }
+                with self.assertRaisesRegex(InvalidOutput, r"^formal_proof\.constraints\.0\.rejected:"):
+                    parse_output(ImplementOutput, raw)
+
     def test_sectioned_implementation_becomes_one_document(self):
         result = parse_output(ImplementOutput, {"implementation": {"Changes": "Built.", "Tests": "Passed."}})
         self.assertEqual(result.implementation, "Changes\nBuilt.\n\nTests\nPassed.")

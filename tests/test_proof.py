@@ -50,7 +50,7 @@ class ProofLabelTest(unittest.TestCase):
     def test_formal_evidence_boundary(self):
         from foreman.proof import formal_proof_label
         slice = {"properties": [{"name": "Positive amount", "constraint": "positive_amount"}]}
-        for artifact in (None, {}, {"constraints": []}, {"constraints": [{"constraint": "positive_amount"}]}):
+        for artifact in (None, {}, {"constraints": []}):
             self.assertEqual(formal_proof_label(slice, artifact), "insufficient_evidence")
         self.assertEqual(formal_proof_label(slice, {"typecheck": "passed"}), "block")
         self.assertEqual(formal_proof_label(slice, {"constraints": [{"constraint": "positive_amount", "rejected": False}]}), "block")
@@ -61,10 +61,6 @@ class ProofLabelTest(unittest.TestCase):
         self.assertEqual(formal_proof_label(two_properties, rejected_amount), "insufficient_evidence")
         wrong_constraint = {"constraints": [{"constraint": "owner_required", "rejected": True}]}
         self.assertEqual(formal_proof_label(slice, wrong_constraint), "insufficient_evidence")
-        for rejected in ("true", 1):
-            with self.subTest(rejected=rejected):
-                artifact = {"constraints": [{"constraint": "positive_amount", "rejected": rejected}]}
-                self.assertEqual(formal_proof_label(slice, artifact), "insufficient_evidence")
 
 
 if __name__ == "__main__":
