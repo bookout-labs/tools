@@ -1,34 +1,40 @@
 # Publication recovery
 
-Throughput checkpoint. One serial builder owns workspace and graph changes. Independent checks run together after recovery tests pass. No live graph writes are permitted in verification.
+This statechart abstracts publication recovery. The [native delivery graph](graph/delivery.mmd) shows the graph topology.
 
-The checkpoint owns the attempt's starting HEAD, branch, model dispatch result and worker edits fingerprint. Git owns completed commits and remote refs. Forge owns the open PR. Each step reads those observations before writing. A prepared checkpoint precedes worker edits. A completed worker checkpoint precedes commit. Commit recovery accepts only the single expected commit whose parent and complete message match the checkpoint. Push compares the remote branch SHA; PR lookup uses the same parsed branch lookup as review.
+The checkpoint owns the attempt's starting HEAD, branch, dispatch result, and reconciled candidate. Git owns commits and remote refs. Forge owns the open PR. Preparation precedes worker edits. Reconciliation checkpoints either the edits fingerprint or an adopted worker HEAD, tree, and fingerprint before commit. A clean worker history is adopted only on the delivery branch, with nonempty linear commits after the attempt head, a net tree change, and a remote branch that is absent or still at the attempt head. Foreman soft-resets adopted commits to the attempt head and creates its own commit with attribution and redaction, preserving the adopted tree. Commit recovery accepts the expected parent and complete message, and checks the tree for an adopted candidate. Push compares the remote branch SHA. PR lookup matches the repository head and base.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Preparing
     Preparing --> Editing: clean checkout, create or reuse slice branch
     Preparing --> Paused: git failure
-    Editing --> Committing: edits and dispatch result checkpointed
+    Preparing --> Rejected: unowned initial edits
+    Editing --> Reconciling: edits and dispatch result checkpointed
     Editing --> Paused: quota, save owned edits fingerprint
-    Editing --> Rejected: unrelated dirty checkout or worker moved HEAD
-    Committing --> Publishing: commit succeeds
-    Committing --> Publishing: rerun sees expected commit after crash
-    Committing --> Paused: lock or hook timeout
+    Editing --> UsageUnknown: crash leaves pending dispatch
+    UsageUnknown --> [*]: stop without redispatch
+    Reconciling --> Committing: checkpoint edits or adopted worker tree
+    Reconciling --> Rejected: invalid worker history or changed branch
+    Reconciling --> Rejected: no changes
+    Reconciling --> Paused: git failure
+    Committing --> Committing: soft-reset adopted history, preserve tree
+    Committing --> Publishing: Foreman commit succeeds or expected commit recovered
+    Committing --> Paused: lock, timeout, or candidate mismatch
     Publishing --> Opening: remote already matches or push succeeds
     Publishing --> Paused: push fails or times out
     Opening --> Verifying: matching open PR exists or create succeeds
     Opening --> Paused: create fails without matching PR
+    Opening --> Paused: existing PR targets wrong base
     Paused --> Preparing: retry branch preparation
-    Paused --> Editing: retry worker on unchanged owned partial edits
-    Paused --> Committing: retry commit using checkpointed worker output
+    Paused --> Editing: quota retry on unchanged owned partial edits
+    Paused --> Reconciling: retry reconciliation with checkpointed worker output
+    Paused --> Committing: retry using checkpointed candidate, including after soft reset
     Paused --> Publishing: retry push after commit
     Paused --> Opening: rerun sees pushed SHA
 ```
 
-Crashes before preparation, after branch creation, during edits, before commit, after commit, after push and after PR creation resume at their current checkpoint. Observations skip finished writes. A crash inside worker execution can repeat that uncompleted worker invocation; finished, checkpointed worker invocations never repeat. External changes after a quota stop are rejected by the fingerprint. No parallel writers are supported for one checkout.
-
-System design. One checkout and SQLite checkpoint per run; no queues, cache or fanout. At 10x load independent workspaces remain required. Git and gh have bounded calls; one failure halts the graph for explicit retry. Branch plus expected parent/message identifies a commit; branch/ref/SHA identifies a push; same repository head/base identifies a PR. No automatic retry loop or circuit breaker counter is needed.
+Only one writer owns a checkout. Fingerprints reject foreign edits after a quota stop and changed implementation edits after reconciliation. An interrupted dispatch with unknown usage stops as `usage_unknown` without repeating the worker. A quota stop can continue unchanged partial edits. Publication Git and gh calls have timeouts. Git disables credential prompts, and publication gh calls receive no stdin. Recoverable failures halt for explicit retry.
 
 ## Transition tests
 
@@ -41,11 +47,16 @@ All names below are methods in `tests/test_publication.py`.
 | Branch created before checkpoint, crash and retry | `test_crash_windows_resume_without_duplicate_completed_work` |
 | Preparation lock, halt and retry | `test_index_lock_is_resumable` |
 | Worker edits to checkpointed result | `test_graph_commits_and_pushes_before_opening_one_pull_request` |
-| Crash during edits, retry unfinished worker | `test_crash_during_worker_continues_partial_edits` |
+| Crash during worker dispatch, stop with `usage_unknown` without redispatch | `test_crash_during_worker_stops_with_unknown_usage` |
 | Quota halt, retry same partial edits | `test_quota_stop_continues_owned_partial_edits` |
 | Foreign changes after quota halt, reject | `test_foreign_edits_after_quota_stop_are_rejected` |
 | Unowned initial edits, reject | `test_dirty_initial_worktree_has_specific_detail` |
-| Worker moves HEAD, reject | `test_worker_commit_is_detected_using_the_actual_head` |
+| Empty worker commit, reject | `test_worker_commit_is_detected_using_the_actual_head` |
+| Clean, unpublished, nonempty linear worker history, adopt tree and replace with Foreman commit | `test_worker_tree_replays_reconciliation_and_publication` |
+| Crash before or after soft reset, resume from candidate without repeating worker or reconciliation | `test_worker_tree_replays_reconciliation_and_publication` |
+| Adopted tree committed before checkpoint, recover Foreman commit | `test_worker_tree_replays_reconciliation_and_publication` |
+| Invalid worker history or changed branch, reject and preserve checkout | `test_worker_history_rejections_preserve_checkout_and_usage` |
+| Candidate changes after reconciliation, reject before publication | `test_reconciled_candidate_mutation_is_rejected_before_publication` |
 | Worker produces no edits, reject | `test_no_changes_fails_without_pushing` |
 | Completed worker checkpoint, crash before commit, retry commit | `test_crash_windows_resume_without_duplicate_completed_work` |
 | Commit lock, halt and retry commit | `test_index_lock_is_resumable` |
@@ -63,24 +74,3 @@ All names below are methods in `tests/test_publication.py`.
 | Fetch, push, ls-remote and commit timeout, typed failure | `test_git_calls_disable_prompts_and_bound_network_and_commit` |
 | Authentication fails under a pseudo-terminal, return | `test_auth_failure_under_pty_returns_without_prompting` |
 | Repository default drives branch, PR and merge | `test_repository_default_branch` |
-
-The statechart tool generated `.tmp/Publication.tla`, `.tmp/Publication.cfg` and `.tmp/Publication.map.mjs` from `.tmp/publication.mmd`. Command `node /Users/booko/.claude/plugins/marketplaces/cursor-plugins/pstack/skills/statechart/scripts/statechart.mjs from-chart "$PWD/.tmp/publication.mmd" --out "$PWD/.tmp/statechart"` stopped with exit 2 because this machine has neither TLC nor a Java runtime. No formal-model verification is claimed. The tests above replay the chart against the real graph, SQLite checkpoints, local Git checkouts and bare remotes.
-
-Model the Domain shaped the choice of graph nodes and checkpoint fields. Make Operations Idempotent shaped commit reconciliation and the remote SHA comparison. The code has no publication journal separate from the existing SQLite checkpointer.
-
-
-## Verification record
-
-The original 6e3de512 checkout reproduced the crash-after-commit defect with a local Git repository and SQLite checkpoint. Rerunning invoked the worker twice, then stopped at `failed: no changes`. The fixed graph's crash-after-commit test observes the original commit pushed with no duplicate worker or commit.
-
-The merged b67cc3c base retains `--preflight`, `env_unavailable`, `ResumableHalt` and `Runtime[LiveRun]`. Resuming every publication halt creates the same invocation context as a new run. The environment tests cover probe timing, quota-independent round counts and answer replay.
-
-Local verification passed 252 unit tests, 12 evals, the README dry run with `done verified`, and `git diff --check`. After merging the conflicting 23ede48 type gate, Pyright 1.1.414 checked all source modules under the repository strict configuration and passed with zero errors and zero warnings. No casts or ignore directives were added. The six basic-mode modules are the unchanged exceptions allowed by the type gate.
-
-Against 23ede48 the diff contains 287 changed source lines and 706 handwritten test lines. Fixtures and generated schemas add 51 lines and are excluded from T5. The coordinator's no-split ruling is recorded in issue #55. Crash recovery and publication remain one contract.
-
-PRODUCTION PROOF for this PR is fixture-only by instruction. `TMPDIR="$PWD/.tmp" uv run python -m unittest discover -s tests -p test_publication.py` must exit 0. Its pass path ends with an open PR fixture and matching local/remote HEAD; failure cases stop with typed, detailed halts. The pty authentication server, local bare remotes and all fixtures use synthetic data. No live delivery graph run was used.
-
-The hosted Linux run exposed a fixture that inherited a global Git author. The real-checkout reset fixture now configures a synthetic author explicitly and passes with global Git configuration disabled. The controlling-pty test waits within its deadline for the child exit status after terminal EOF; ten consecutive runs passed with global Git configuration disabled.
-
-GitHub reported a real conflict with 23ede48. A normal merge retained its strict type gate, validated checkpoint/result types and native Codex output. The final merged local suite passed 252 tests and 12 evals.

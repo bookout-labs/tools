@@ -4,6 +4,8 @@ Shared tools for the engine repositories. This repo lives in the bookout-labs or
 
 `foreman` is the graph runner in this repo. Promptfoo grades the graph. Both are invoked from here, so every engine follows the same loop.
 
+Design docs hold current design; PR evidence stays in the PR.
+
 ## Delivery graph
 
 Outside-tool facts cited by review need recorded evidence at the verified head.

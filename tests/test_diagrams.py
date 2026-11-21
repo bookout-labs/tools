@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 import re
 import tomllib
@@ -63,6 +64,27 @@ class DiagramTests(unittest.TestCase):
         self.assertIn(f"### Blueprint\n\n```mermaid\n{blueprint}```\n\n{LEGEND}", embedded)
         self.assertIn(f"### Today's code\n\n```mermaid\n{pictures['delivery']}```", embedded)
         self.assertIn(f"```mermaid\n{dispatch_blueprint}```", embedded)
+
+    def test_publication_transition_tests_exist(self):
+        module = ast.parse((ROOT / "tests/test_publication.py").read_text())
+        methods = {
+            method.name
+            for cls in module.body if isinstance(cls, ast.ClassDef)
+            for method in cls.body
+            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and method.name.startswith("test_")
+        }
+        document = (ROOT / "docs/publication-recovery.md").read_text()
+        section = document.split("## Transition tests\n", 1)[1].split("\n## ", 1)[0]
+        table = re.search(
+            r"(?m)^\| Transition or crash window \| Test \|\n\| --- \| --- \|\n((?:\|.*\|\n)*)",
+            section,
+        )
+        self.assertIsNotNone(table, "publication transition table is missing")
+        assert table is not None
+        references = set(re.findall(r"`(test_\w+)`", table[1]))
+        self.assertTrue(references, "publication transition table has no test references")
+        self.assertFalse(references - methods, f"unknown publication tests: {references - methods}")
 
     def test_drift_is_exactly_the_scheduled_gaps(self):
         path = GRAPH / "gaps.toml"
