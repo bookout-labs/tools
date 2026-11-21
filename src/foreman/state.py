@@ -18,14 +18,14 @@ from foreman.stage_output import (
     FormalProofRecord, MergeRiskRecord, PendingDispatchRecord, PullRequestSplit,
     SliceRecord, SpecCandidateRecord, WorkKind,
 )
-from foreman.workspace import ImplementationCandidate, PullRequestSize
+from foreman.workspace import PullRequestSize, WorkState
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState])
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState])
 
 
 class CheckpointVersionError(ValueError):
@@ -83,15 +83,9 @@ class DeliveryFields(TypedDict, total=False):
     skill_reason: SkillFailureReason
     attempts: Annotated[list[AttemptRecord], operator.add]
     research: str
+    work: WorkState
     implementation: str
-    delivery_branch: str
-    delivery_base: str
-    attempt_head: str
-    implementation_candidate: ImplementationCandidate | None
-    partial_edits: str
-    head_sha: str | None
     verified_head: str
-    repair_head: str | None
     merge: MergeState
     browser_proof: BrowserProofRecord | None
     formal_proof: FormalProofRecord | None

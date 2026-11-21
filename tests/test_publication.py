@@ -17,7 +17,7 @@ from foreman.delivery import LiveRun
 from foreman.redaction import redact
 from foreman.github import LiveForge
 from foreman.runner import run_live_delivery
-from foreman.workspace import WorkspaceError, LiveWorkspace
+from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
 from skill_fixture import fixture_pin
 from test_runner import BRANCH, EMPTY_SLICE, slice_body
 
@@ -186,7 +186,7 @@ class PublicationTest(unittest.TestCase):
                 self.git("commit", "--allow-empty", "-m", "Unrelated change")
                 result = self.walk(family=family)
                 self.assertEqual(result.get("merge", MergeState()).status, "armed")
-                self.assertEqual(self.remote_head(), result.get("head_sha"))
+                self.assertEqual(self.remote_head(), result.get("work", WorkState()).head_sha)
                 self.assertEqual(result.get("verified_head"), self.remote_head())
                 self.assertEqual(self.created, [self.remote_head()])
                 self.assertEqual(self.git("rev-parse", f"{self.ref}^"), self.git("rev-parse", self.base))
@@ -270,18 +270,18 @@ class PublicationTest(unittest.TestCase):
                     result = self.walk(self.no_worker)
                 self.assertEqual(len(commits), int(crash_at == "soft_reset"))
                 self.assertEqual(result["stop"], "verified")
-                candidate = result["implementation_candidate"]
+                candidate = result["work"].candidate
                 self.assertEqual(candidate["disposition"], "adopted")
                 self.assertEqual(candidate["head"], worker_heads[0])
-                self.assertNotEqual(result["head_sha"], worker_heads[0])
+                self.assertNotEqual(result["work"].head_sha, worker_heads[0])
                 self.assertEqual(candidate["tree"], self.git("rev-parse", "HEAD^{tree}"))
                 self.assertEqual(self.git("rev-parse", "HEAD^"), self.git("rev-parse", "main"))
                 message = self.git("show", "-s", "--format=%B", "HEAD")
                 self.assertTrue(message.startswith("8: List items once"))
                 self.assertIn("Co-Authored-By:", message)
                 self.assertNotIn("ghp_SECRETtoken123", message)
-                self.assertEqual(self.git("--git-dir", str(self.remote), "rev-list", self.ref, "^main").splitlines(), [result["head_sha"]])
-                self.assertEqual(self.walk(self.no_worker)["head_sha"], result["head_sha"])
+                self.assertEqual(self.git("--git-dir", str(self.remote), "rev-list", self.ref, "^main").splitlines(), [result["work"].head_sha])
+                self.assertEqual(self.walk(self.no_worker)["work"].head_sha, result["work"].head_sha)
 
     def test_worker_history_rejections_preserve_checkout_and_usage(self):
         for kind, detail in (("branch", "not attached"), ("detached", "not attached"), ("rewind", "non-descendant"),
@@ -413,7 +413,7 @@ class PublicationTest(unittest.TestCase):
                 self.assertEqual(again["stop"], "implementation_rejected")
                 self.assertEqual(again["attempts"], result["attempts"])
                 if mode == "committed":
-                    self.git("reset", "--soft", result["attempt_head"])
+                    self.git("reset", "--soft", result["work"].attempt_head)
                 for name in paths:
                     (self.checkout / "evidence" / name).unlink()
                 if mode in ("staged", "committed", "tracked"):
@@ -618,7 +618,7 @@ class PublicationTest(unittest.TestCase):
         self.git("reset", "--soft", self.git("rev-parse", "main"))
         recovered = self.walk(self.no_worker)
         self.assertEqual(recovered["stop"], "verified")
-        self.assertEqual(recovered["implementation_candidate"]["disposition"], "edits")
+        self.assertEqual(recovered["work"].candidate["disposition"], "edits")
         self.assertEqual(recovered["attempts"][:2], rejected["attempts"])
 
     def test_reconcile_git_errors_remain_git_failed(self):
@@ -649,11 +649,11 @@ class PublicationTest(unittest.TestCase):
         self.create_error = True
         failed = self.walk()
         self.assertEqual(failed.get("stop"), "publish_failed")
-        self.assertEqual(failed.get("head_sha"), self.remote_head())
+        self.assertEqual(failed.get("work", WorkState()).head_sha, self.remote_head())
         self.create_error = False
         result = self.walk(lambda: self.fail("The committed change should be reused"))
         self.assertEqual(result.get("merge", MergeState()).status, "armed")
-        self.assertEqual(self.created, [failed.get("head_sha")])
+        self.assertEqual(self.created, [failed.get("work", WorkState()).head_sha])
 
     def test_crash_windows_resume_without_duplicate_completed_work(self):
         cases = (
@@ -883,7 +883,7 @@ class PublicationTest(unittest.TestCase):
                 original = self.subprocess
                 with patch("foreman.github.subprocess.run", side_effect=original) as call:
                     result = self.walk()
-                self.assertEqual(result.get("delivery_base"), base)
+                self.assertEqual(result.get("work", WorkState()).base, base)
                 self.assertEqual(result.get("stop"), "verified")
                 self.assertEqual(self.git("rev-parse", "HEAD^"), self.git("rev-parse", base))
                 commands = [c.args[0] for c in call.call_args_list if c.args[0][:3] == ["gh", "repo", "view"]]
