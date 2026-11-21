@@ -1,0 +1,28 @@
+GitHub documentation evidence, retrieved 2026-11-21.
+REST API version shown in the published examples: 2026-03-10.
+Quoted fragments are in quotation marks; other text summarizes their context.
+
+Add parameters and ownership
+https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue
+The request example uses POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues.
+The body parameter table requires the integer "sub_issue_id", identifying the
+child issue by its global id. It also offers the optional boolean "replace_parent"
+to move an existing relationship. The ownership requirement is explicit:
+"The sub-issue must belong to the same repository owner as the parent issue".
+The published issue example has id 1 and number 1347, illustrating the distinction.
+
+Hierarchy limits
+https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/adding-sub-issues
+"You can add up to 100 sub-issues per parent issue and create up to eight levels of nested sub-issues."
+
+Fine-grained token permissions
+https://docs.github.com/en/rest/issues/sub-issues#fine-grained-access-tokens-for-get-parent-issue
+https://docs.github.com/en/rest/issues/sub-issues#fine-grained-access-tokens-for-list-sub-issues
+Both read endpoints list: '"Issues" repository permissions (read)'.
+https://docs.github.com/en/rest/issues/sub-issues#fine-grained-access-tokens-for-add-sub-issue
+The add endpoint lists: '"Issues" repository permissions (write)'.
+These sections cover fine-grained personal tokens and GitHub App user and
+installation tokens; public relationship reads can be unauthenticated.
+https://docs.github.com/en/rest/issues/issues#fine-grained-access-tokens-for-update-an-issue
+The update endpoint includes '"Issues" repository permissions (write)' among
+its accepted permission sets. This supplies permission to update issue bodies.
