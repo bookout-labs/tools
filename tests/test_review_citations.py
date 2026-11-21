@@ -12,7 +12,6 @@ import test_review_rounds
 from test_runner import FakeWorkspace, FINDING
 
 FIXTURES = Path(__file__).with_name('fixtures') / 'review'
-
 def payload(name='grounded'):
     return json.loads((FIXTURES / f'{name}.json').read_text())
 
@@ -93,8 +92,7 @@ class CitationGraphTests(unittest.TestCase):
         self.assertIn('review claude-opus-5-5-high:', result['halt_detail'])
         self.assertFalse(result.get('review_findings'))
         self.assertFalse(result.get('review_receipt'))
-        self.assertFalse(self.forge.reviews)
-        self.assertFalse(self.forge.merge_calls)
+        self.assertEqual((self.forge.reviews, self.forge.merge_calls), ([], []))
         self.assertEqual((result['attempts'][-1]['outcome'], result['attempts'][-1]['usage']['input']), ('ran', 1))
 
     def test_later_rejection_keeps_only_prior_accepted_round(self):
@@ -118,5 +116,4 @@ class CitationGraphTests(unittest.TestCase):
                 self.assertEqual(result['halt'], Halt.review_unavailable)
                 self.assertIsNone(result.get('pending_dispatch'))
                 self.assertFalse([a for a in result['attempts'] if a['stage'] == 'review'])
-                self.assertFalse(self.forge.reviews)
-                self.assertFalse(self.forge.merge_calls)
+                self.assertEqual((self.forge.reviews, self.forge.merge_calls), ([], []))
