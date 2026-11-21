@@ -29,9 +29,14 @@ def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
     normalized = dict(values)
     if normalized.get("slice") is not None:
         normalized["slice"] = StoredSlice.model_validate(normalized["slice"]).record()
-    if normalized.get("spec_candidate") is not None:
-        normalized["spec_candidate"] = SpecCandidate.model_validate(normalized["spec_candidate"]).record()
-    return _CHECKPOINT_STATE.validate_python(normalized, strict=True)
+    state = _CHECKPOINT_STATE.validate_python(normalized, strict=True)
+    if "spec_candidate" in state:
+        candidate = SpecCandidate.from_record(state["spec_candidate"])
+        expected = candidate.update(single="slice" in state)
+        for key in ("slice", "slices", "spec", "work_kind"):
+            if key in state and state.get(key) != expected.get(key):
+                raise ValueError(f"{key} differs from candidate")
+    return state
 
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)

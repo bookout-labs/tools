@@ -64,7 +64,7 @@ class DeliveryTest(unittest.TestCase):
     def test_passing_a_slice_starts_a_slice_run(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[1])
         self.assertEqual(result["issue_kind"], "slice")
-        self.assertEqual({k: v for k, v in result["slice"].items() if k != "provenance"}, SLICES[1])
+        self.assertEqual(result["slice"], SLICES[1])
         self.assertEqual(result["stop"], "verified")
 
     def test_clear_change_skips_spec(self):
@@ -119,9 +119,9 @@ class DeliveryTest(unittest.TestCase):
                 result = walk(ScriptHandler(triage=triage, slices=SLICES[::-1]), slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "sliced")
-                self.assertEqual([{k: v for k, v in item.items() if k != "provenance"} for item in result["slices"]], [
-                    {**SLICES[0], "depends_on": []},
-                    {**SLICES[1], "depends_on": [SLICES[0]["title"]]},
+                self.assertEqual(result["slices"], [
+                    {**SLICES[0], "depends_on": [], "blocker_numbers": [], "provenance": {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]}},
+                    {**SLICES[1], "depends_on": [SLICES[0]["title"]], "blocker_numbers": [], "provenance": {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]}},
                 ])
 
     def test_single_slice_parents_skip_seam_ordering(self):
@@ -129,7 +129,7 @@ class DeliveryTest(unittest.TestCase):
         triaged = walk(ScriptHandler(slice=consumer), slice=None)
         self.assertEqual(triaged["stop"], "verified")
         specified = walk(ScriptHandler(triage="spec", slices=[consumer]), slice=None)
-        self.assertEqual(specified["slices"], [{**consumer, "depends_on": [], "provenance": {"author": specified["spec_candidate"]["author"], "revision": specified["spec_candidate"]["revision"]}}])
+        self.assertEqual(specified["slices"], [{**consumer, "depends_on": [], "blocker_numbers": [], "provenance": {"author": specified["spec_candidate"]["author"], "revision": specified["spec_candidate"]["revision"]}}])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES

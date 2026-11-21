@@ -1001,7 +1001,7 @@ class LiveRunnerTest(unittest.TestCase):
             APPROVE,
         ])
         self.assertEqual(result["path"][-5:], ["verify", "proof", "review", "merge", "done"])
-        self.assertEqual({k: v for k, v in result["slice"].items() if k != "provenance"}, SLICE)
+        self.assertEqual(result["slice"], SLICE)
         self.assertEqual(result["proof_labels"], {})
         self.assertEqual(result["merge"], "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])

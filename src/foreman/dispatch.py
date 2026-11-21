@@ -31,9 +31,9 @@ class FailoverDispatcher:
     def run(
         self, node: str, models: list[ModelSpec], state: "DeliveryState", instruction: str,
         *, on_attempt: Callable[[str | None, OutcomeKind], None] | None = None,
-    ) -> tuple[Outcome, str | None]:
+    ) -> tuple[Outcome, ModelSpec | None]:
         candidates: list[ModelSpec | None] = list(models) or [None]
-        quota: tuple[Outcome, str | None] | None = None
+        quota: tuple[Outcome, ModelSpec | None] | None = None
         missing = Outcome("cli_missing")
         for model in candidates:
             outcome = self.handler(node, model, state, instruction)
@@ -41,9 +41,9 @@ class FailoverDispatcher:
             if on_attempt is not None:
                 on_attempt(name, outcome.kind)
             if outcome.kind == "quota":
-                quota = outcome, name
+                quota = outcome, model
             elif outcome.kind == "cli_missing":
                 missing = outcome
             else:
-                return outcome, name
+                return outcome, model
         return quota if quota else (missing, None)

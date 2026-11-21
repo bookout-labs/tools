@@ -22,7 +22,7 @@ from pydantic import TypeAdapter, ValidationError
 from typing_extensions import TypedDict
 
 from foreman.adapters import Outcome, OutcomeKind
-from foreman.config import Config, ConfigError, family, load_config, order_for
+from foreman.config import Config, ConfigError, ModelSpec, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
@@ -32,7 +32,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, SliceProvenanceRecord, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
+    SpecCandidateRecord, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -314,10 +314,10 @@ def _check_tool_facts(
 
 
 def stage_update(
-    name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None,
+    name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None,
 ) -> DeliveryUpdate:
     slices = clean_slices(output.slices, workspace) if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready" else []
-    context = UpdateContext(state.get("issue_kind"), state.get("work_kind"), bool(oversized_pr(state)), slices)
+    context = UpdateContext(state.get("issue_kind"), state.get("work_kind"), bool(oversized_pr(state)), slices, accepted_model)
     update: DeliveryUpdate = {**output.update(context)}
     update["path"] = [name]
     if update.get("verify") == "fail":
@@ -485,9 +485,10 @@ def compile_delivery(
                     "stage": name, "model": model, "commit": config.pstack.commit, "methods": methods, "outcome": kind,
                 })
 
-            outcome, model = dispatcher.run(
-                name, models, worker_state, instruction, on_attempt=record_attempt if name != "verify" else None,
+            outcome, accepted_model = dispatcher.run(
+                name, models, worker_state, instruction, on_attempt=record_attempt if methods_root and name != "verify" else None,
             )
+            model = accepted_model.name if accepted_model else None
             stopped: DeliveryUpdate = {"path": [name], "skill_attempts": attempts}
             if outcome.kind == "failed":
                 return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
@@ -504,29 +505,8 @@ def compile_delivery(
                 if isinstance(output, ReviewOutput):
                     head = state.get("verified_head") or state.get("head_sha") or ""
                     accepted = accept(past, output, head, _check_tool_facts(output, run, state), review_context[2] if review_context else None)
-                update = stage_update(name, output, state, model, workspace=plan_workspace)
+                update = stage_update(name, output, state, model, workspace=plan_workspace, accepted_model=accepted_model)
                 update["skill_attempts"] = attempts
-                authored = update.get("slices") or ([update["slice"]] if "slice" in update else [])
-                if name == "spec" and update.get("spec_gate") == "ready" and not authored and "slice" in state:
-                    authored = [state["slice"]]
-                if name in {"triage", "spec"} and authored:
-                    accepted_model = next((item for item in models if attempts and item.name == attempts[-1]["model"] and attempts[-1]["outcome"] == "ran"), None)
-                    if accepted_model is None:
-                        raise InvalidOutput("candidate requires an accepted author attempt")
-                    work_kind = update.get("work_kind", state.get("work_kind"))
-                    if work_kind is None:
-                        raise InvalidOutput("candidate requires an accepted work kind")
-                    candidate = SpecCandidate(
-                        slices=[CandidateSlice.model_validate({k: v for k, v in item.items() if k != "provenance"}) for item in authored],
-                        spec=update.get("spec", ""), work_kind=work_kind,
-                        author=SpecAuthor(stage="triage" if name == "triage" else "spec", model=accepted_model.name, family=accepted_model.family),
-                    )
-                    update["spec_candidate"] = candidate.record()
-                    provenance: SliceProvenanceRecord = {"author": candidate.author.record(), "revision": candidate.revision}
-                    if "slices" in update:
-                        update["slices"] = [{**item, "provenance": provenance} for item in authored]
-                    else:
-                        update["slice"] = {**authored[0], "provenance": provenance}
                 if accepted is not None:
                     update.update(review=accepted.review, detail=accepted.detail,
                                   review_findings=[r.model_dump(mode="json") for r in accepted.history.rounds],
@@ -553,8 +533,7 @@ def compile_delivery(
                 try:
                     forge.post_review(repo, target, body, comments)
                 except ForgeError as exc:
-                    update.update(halted("review_not_posted", str(exc), name))
-                    return update
+                    return {**update, **halted("review_not_posted", str(exc), name)}
             return update
 
         return node

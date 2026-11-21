@@ -2,17 +2,18 @@
 
 import json
 from hashlib import sha256
-from typing import Annotated, Generic, Literal, Self, TypeVar
+from typing import Annotated, Generic, ClassVar, Literal, Self, TypeVar
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from typing_extensions import NotRequired, TypedDict, override
 
-from pydantic import BaseModel, ConfigDict, JsonValue, Field, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, JsonValue, Field, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator, computed_field
 
 from pydantic.config import JsonDict
 
+from foreman.config import ModelSpec
 from foreman.dispatch import InvalidOutput
 
 PULL_REQUEST_LINES = 400
@@ -46,7 +47,7 @@ class SpecAuthorRecord(TypedDict):
 @with_config(ConfigDict(extra="forbid"))
 class SliceProvenanceRecord(TypedDict):
     author: SpecAuthorRecord
-    revision: str
+    revision: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -60,7 +61,7 @@ class SliceRecord(TypedDict):
     properties: list[SlicePropertyRecord]
     depends_on: NotRequired[list[str]]
     blocker_numbers: NotRequired[list[int]]
-    provenance: NotRequired[SliceProvenanceRecord | None]
+    provenance: NotRequired[SliceProvenanceRecord]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -127,13 +128,16 @@ Record = TypeVar("Record")
 
 
 class RecordContract(Contract, Generic[Record]):
+    optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance"}
     @classmethod
     @abstractmethod
     def record_adapter(cls) -> TypeAdapter[Record]:
         raise NotImplementedError
 
     def record(self) -> Record:
-        excluded = {key for key in ("depends_on", "blocker_numbers", "provenance") if key not in self.model_fields_set}
+        excluded = {key for key in self.optional_record_fields if key not in self.model_fields_set}
+        if getattr(self, "provenance", None) is None:
+            excluded.add("provenance")
         return self.record_adapter().validate_python(self.model_dump(exclude=excluded), strict=True)
 
 
@@ -166,11 +170,7 @@ def _describe_slice(schema: dict[str, JsonValue]) -> None:
     schema["description"] = f"One pull request's outcome, about {PULL_REQUEST_LINES} changed lines or fewer, and its proof obligations."
 
 
-class Slice(RecordContract[SliceRecord]):
-    @classmethod
-    @override
-    def record_adapter(cls) -> TypeAdapter[SliceRecord]:
-        return TypeAdapter(SliceRecord)
+class SliceContent(RecordContract[Record], Generic[Record]):
     model_config = ConfigDict(json_schema_extra=_describe_slice)
 
     title: TrimmedText = Field(description="Name the outcome.")
@@ -197,6 +197,13 @@ class Slice(RecordContract[SliceRecord]):
         return value
 
 
+class Slice(SliceContent[SliceRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SliceRecord]:
+        return TypeAdapter(SliceRecord)
+
+
 class SpecAuthor(RecordContract[SpecAuthorRecord]):
     stage: Literal["triage", "spec"]
     model: TrimmedText
@@ -218,18 +225,36 @@ class SliceProvenance(RecordContract[SliceProvenanceRecord]):
         return TypeAdapter(SliceProvenanceRecord)
 
 
-class CandidateSlice(Slice):
+@with_config(ConfigDict(extra="forbid"))
+class CandidateSliceRecord(TypedDict):
+    title: str
+    stateful: bool
+    acceptance: str
+    builds: list[SeamRecord]
+    uses: list[SeamRecord]
+    screen: str
+    properties: list[SlicePropertyRecord]
+    depends_on: list[str]
+    blocker_numbers: list[int]
+
+
+class CandidateSlice(SliceContent[CandidateSliceRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[CandidateSliceRecord]:
+        return TypeAdapter(CandidateSliceRecord)
+    optional_record_fields: ClassVar[set[str]] = set()
     depends_on: list[TrimmedText] = Field(default_factory=list[str])
     blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
 
 
 @with_config(ConfigDict(extra="forbid"))
 class SpecCandidateRecord(TypedDict):
-    slices: list[SliceRecord]
+    slices: list[CandidateSliceRecord]
     spec: str
     work_kind: WorkKind
     author: SpecAuthorRecord
-    revision: str
+    revision: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
 class SpecCandidate(RecordContract[SpecCandidateRecord]):
@@ -237,34 +262,46 @@ class SpecCandidate(RecordContract[SpecCandidateRecord]):
     spec: str
     work_kind: WorkKind
     author: SpecAuthor
-    revision: str = ""
+    model_config = ConfigDict(frozen=True)
 
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[SpecCandidateRecord]:
         return TypeAdapter(SpecCandidateRecord)
 
-    @override
-    def record(self) -> SpecCandidateRecord:
-        type(self).model_validate(self.model_dump())
-        return super().record()
-
-    @model_validator(mode="after")
-    def bind_revision(self) -> Self:
+    @computed_field
+    @property
+    def revision(self) -> str:
         content = json.dumps(self.model_dump(exclude={"revision"}), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        revision = sha256(content.encode("utf-8")).hexdigest()
-        if self.revision and self.revision != revision:
+        return sha256(content.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def from_record(cls, raw: object) -> Self:
+        record = cls.record_adapter().validate_python(raw, strict=True)
+        candidate = cls.model_validate({k: v for k, v in record.items() if k != "revision"})
+        if record["revision"] != candidate.revision:
             raise ValueError("candidate revision does not match its content")
-        self.revision = revision
-        return self
+        return candidate
+
+    def update(self, *, single: bool) -> "StageUpdate":
+        provenance: SliceProvenanceRecord = {"author": self.author.record(), "revision": self.revision}
+        slices: list[SliceRecord] = [{**item, "provenance": provenance} for item in self.record()["slices"]]
+        update: StageUpdate = {"spec_candidate": self.record(), "spec": self.spec, "work_kind": self.work_kind}
+        if single:
+            update["slice"] = slices[0]
+        else:
+            update["slices"] = slices
+        return update
 
 
-class StoredSlice(CandidateSlice):
+class StoredSlice(Slice):
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
     provenance: SliceProvenance | None = None
     builds: list[Seam] = Field(default_factory=list[Seam])
     uses: list[Seam] = Field(default_factory=list[Seam])
+    depends_on: list[TrimmedText] = Field(default_factory=list[str])
+    blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
 
 
 class PullRequestSplit(TypedDict):
@@ -275,6 +312,7 @@ class PullRequestSplit(TypedDict):
 
 
 class StageUpdate(TypedDict, total=False):
+    spec_candidate: SpecCandidateRecord
     triage: str
     work_kind: WorkKind
     human_question: str
@@ -300,6 +338,7 @@ class UpdateContext:
     work_kind: WorkKind | None
     oversized: bool
     slices: list[SliceRecord]
+    model: ModelSpec | None = None
 
 
 class StageOutput(Contract, ABC):
@@ -338,7 +377,12 @@ class TriageOutput(HumanQuestionOutput):
         if context.issue_kind == "parent" and self.triage == "implement":
             if self.slice is None:
                 raise InvalidOutput("slice: required when a parent triages as implement")
-            update["slice"] = self.slice.record()
+            if context.model is not None:
+                update.update(SpecCandidate(slices=[CandidateSlice.model_validate(self.slice.record())], spec="",
+                    work_kind=self.work_kind, author=SpecAuthor(stage="triage", model=context.model.name,
+                    family=context.model.family)).update(single=True))
+            else:
+                update["slice"] = self.slice.record()
         return update
 
 
@@ -370,7 +414,12 @@ class SpecOutput(HumanQuestionOutput):
             "human_question": self.human_question or "", "spec_rejection": None,
         }
         if context.issue_kind == "parent" and self.spec_gate == "ready":
-            update["slices"] = slices
+            if context.model is not None and context.work_kind is not None:
+                update.update(SpecCandidate(slices=[CandidateSlice.model_validate(item) for item in slices],
+                    spec=self.spec, work_kind=context.work_kind, author=SpecAuthor(stage="spec",
+                    model=context.model.name, family=context.model.family)).update(single=False))
+            else:
+                update["slices"] = slices
         return update
 
 
