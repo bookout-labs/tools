@@ -390,6 +390,11 @@ and Codex or Grok costs. If any counted attempt lacks a dollar cost, the display
 is `claude spend unknown of $L`. Resumable checkpoints predating the stored
 dollar allowance require a new run; finished legacy runs remain readable.
 
+Claude dispatches receive the remaining allowance through `--max-budget-usd`.
+Reaching the allowance halts `budget_exceeded` before output or fallback.
+Unknown Claude costs halt bounded runs as `usage_unknown`. Missing CLIs fall through.
+Both halts exit 1. Dry runs record zero dollar cost.
+
 `foreman run delivery --max-tokens N` stores a positive token cap, defaulting to
 20,000,000. Resume keeps the stored cap and rejects a differing flag.
 Each dispatch checks the sum of all attempt input, output, cache read and cache
@@ -401,6 +406,8 @@ retried. Checkpoints from before usage accounting require a new run.
 
 Claude's `error_max_budget_usd` result also halts as `budget_exceeded`, retaining
 the attempt's usage without applying its output or trying the next model.
+It precedes missing usage and the token cap. Otherwise missing successful usage
+halts first, then the token cap, then the dollar allowance.
 Claude dollar costs are known only when every model ledger cost is finite and
 nonnegative and their sum agrees with the envelope total within floating-point
 tolerance; invalid costs leave token accounting intact.

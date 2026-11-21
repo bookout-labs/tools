@@ -249,6 +249,7 @@ class PendingDispatch(RecordContract[PendingDispatchRecord]):
 
 @with_config(ConfigDict(extra="forbid"))
 class DispatchPlanRecord(TypedDict):
+    budget_usd: NotRequired[str | None]
     models: list[str]
     instruction: str
     methods: list[str]
@@ -262,6 +263,7 @@ class DispatchPlan(RecordContract[DispatchPlanRecord]):
     def record_adapter(cls) -> TypeAdapter[DispatchPlanRecord]:
         return TypeAdapter(DispatchPlanRecord)
 
+    budget_usd: str | None = None
     models: list[str]
     instruction: str
     methods: list[str]
