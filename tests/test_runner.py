@@ -39,7 +39,7 @@ from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, ReviewD
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
 from test_adapters import codex_events, fixture_process
 from test_spec_candidate import CandidateTests
-from owner_contract import assert_channels, assert_repaired
+from owner_contract import OWNERS, assert_channels, assert_repaired
 
 
 HEAD = "a" * 40
@@ -991,8 +991,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 {"implementation": "built", "browser_proof": BROWSER, "formal_proof": FORMAL}, APPROVE], preflight="exit 0")
         self.assertEqual(halted["stop"], "ci_pending")
         result = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
-        self.assertEqual(result["checks"], halted["checks"])
-        self.assertEqual(result["plan"], halted["plan"])
+        assert_channels(self, result, halted, names={"run", "checks", "plan"})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
@@ -1874,12 +1873,17 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "pr_conflict")
         self.assertEqual(halted["work"].head_sha, "2" * 40)
-        halted["plan"] = halted["plan"].model_copy(update={"pr_split": {
-            "plan": "Split", "gate": "ready", "question": None, "slices": [EMPTY_SLICE]}})
+        for owner in OWNERS:
+            transient = type(owner.value).model_fields.keys() - owner.durable
+            halted[owner.name] = halted[owner.name].model_copy(
+                update=owner.value.model_dump(include=transient))
+        # An empty receipt is non-default and still permits the head recheck.
+        halted["merge"] = halted["merge"].model_copy(update={"receipt": {}})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(self.github, workspace), checkpointer=saver)
-            graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {"plan": halted["plan"]}, as_node="done")
+            graph.update_state({"configurable": {"thread_id": "example/engine#8"}},
+                               {owner.name: halted[owner.name] for owner in OWNERS}, as_node="done")
         remote = ready.model_copy(deep=True)
         remote.outcome, remote.pr.head.sha = "head_changed", "3" * 40
         workspace.current = WorktreeState("2" * 40, False, BRANCH)
@@ -1912,6 +1916,16 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "git_failed")
         self.assertIsNotNone(halted["work"].candidate)
+        for owner in OWNERS:
+            transient = type(owner.value).model_fields.keys() - owner.durable
+            halted[owner.name] = halted.get(owner.name, type(owner.value)()).model_copy(
+                update=owner.value.model_dump(include=transient))
+        halted["merge"] = halted["merge"].model_copy(update={"receipt": {"status": "QUEUED"}})
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(self.github, workspace), checkpointer=saver)
+            graph.update_state({"configurable": {"thread_id": "example/engine#8"}},
+                               {owner.name: halted[owner.name] for owner in OWNERS}, as_node="done")
         workspace.current = WorktreeState(HEAD, False, BRANCH)
         resumed = self.walk([], workspace=workspace)
         self.assertEqual(resumed["stop"], "dirty_worktree")
