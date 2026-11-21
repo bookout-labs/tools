@@ -190,6 +190,7 @@ class LiveWorkspace:
         self.root = root
         self.repo = repo
         self._urls: list[str] = []
+        self._identity: dict[str, str] | None = None
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int:
         with subprocess.Popen(
@@ -250,7 +251,26 @@ class LiveWorkspace:
         for command in commit_commands(message):
             self._git(*command[1:])
 
+    def _bot_identity(self) -> dict[str, str]:
+        from foreman.github import ForgeError, LiveForge
+
+        if self._identity is None:
+            login = "bookout-labs-foreman[bot]"
+            try:
+                user_id = LiveForge().bot_user_id(self.repo)
+            except ForgeError as exc:
+                raise WorktreeInspectionFailed(str(exc)) from None
+            email = f"{user_id}+{login}@users.noreply.github.com"
+            self._identity = {f"GIT_{role}_{field}": value for role in ("AUTHOR", "COMMITTER")
+                              for field, value in (("NAME", login), ("EMAIL", email))}
+        return self._identity
+
     def committed(self, parent: str, message: str) -> bool:
+        if credentials.configured:
+            identity = self._bot_identity()
+            actual = os.fsdecode(self._git("show", "-s", "--format=%an%n%ae%n%cn%n%ce", "HEAD")).splitlines()
+            if actual != [identity[f"GIT_{role}_{field}"] for role in ("AUTHOR", "COMMITTER") for field in ("NAME", "EMAIL")]:
+                return False
         return (os.fsdecode(self._git("show", "-s", "--format=%P%n%B", "HEAD")).strip()
                 == f"{parent}\n{redact(message)}".strip())
 
@@ -468,6 +488,8 @@ class LiveWorkspace:
         if timeout is None:
             timeout = 30 if args[0] in {"fetch", "push", "ls-remote", "commit"} else 10
         env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
+        if args[0] == "commit" and credentials.configured:
+            env.update(self._bot_identity())
         auth: tuple[str, ...] = ()
         if args[0] in {"fetch", "push", "ls-remote"}:
             if credentials.configured and not self._urls:

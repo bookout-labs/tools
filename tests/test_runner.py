@@ -1675,7 +1675,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(held["merge"], "not_armed")
         self.assertEqual(held["halt_detail"], f"could not read FOREMAN_MERGE_HOLD: {reason}")
         self.assertEqual(held["merge_command"], [
-            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--auto", "--match-head-commit", HEAD,
+            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--auto", "--squash", "--match-head-commit", HEAD,
         ])
         self.assertEqual(self.github.merge_calls, [])
         released = self.walk([])
@@ -1852,7 +1852,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         worker_runner=worker, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(code, 0)
         self.assertIn(
-            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --match-head-commit '<sha>'\n"
+            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --squash --match-head-commit '<sha>'\n"
             "tokens 8 of 20000000\ndone verified",
             stdout.getvalue(),
         )

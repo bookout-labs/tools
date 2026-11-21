@@ -289,7 +289,7 @@ def pull_request_command(repo: str, head: str, base: str, title: str, body: str)
 
 
 def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
-    return ["gh", "pr", "merge", pull_request, "--repo", repo, "--auto", "--match-head-commit", sha]
+    return ["gh", "pr", "merge", pull_request, "--repo", repo, "--auto", "--squash", "--match-head-commit", sha]
 
 
 def render_slice_body(prose: str, child: StoredSlice) -> str:
@@ -309,6 +309,11 @@ def render_slice_body(prose: str, child: StoredSlice) -> str:
 class LiveForge:
     def __init__(self):
         self._defaults: dict[str, str] = {}
+
+    def bot_user_id(self, repo: str) -> int:
+        return self._read(repo, IssueIdentity, [
+            "gh", "api", "users/bookout-labs-foreman%5Bbot%5D",
+        ]).id
 
     def default_branch(self, repo: str) -> str:
         if repo not in self._defaults:
