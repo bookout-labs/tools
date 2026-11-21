@@ -11,8 +11,7 @@ from foreman.adapters import Outcome, Usage
 from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
 from foreman.delivery import run_delivery, stage_text
 from unittest.mock import patch
-from foreman.delivery import DryRun
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import DryRun, ScriptHandler
 from skill_fixture import FixtureSkills, skill_fixture
 
 
@@ -41,11 +40,11 @@ SLICES = [
 EMPTY_SLICE = {**SLICES[1], "builds": [], "uses": []}
 
 
-def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
+def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, commands=None):
     with skill_fixture(config) as (fixture_config, scratch):
         return run_delivery(
             handler, repo="DoctorCRE/doctorcre-engine", request="Add a field",
-            check=check, slice=slice, config=fixture_config, scratch=scratch,
+            check=check, slice=slice, config=fixture_config, scratch=scratch, commands=commands,
         )
 
 
@@ -74,7 +73,7 @@ class DeliveryTest(unittest.TestCase):
         def check_review_context(node, model, state, instruction):
             if node == "review":
                 self.assertEqual(state["verify"], "pass")
-                self.assertNotIn("head_sha", state)
+                self.assertEqual(state["head_sha"], state["verified_head"])
             return handler(node, model, state, instruction)
 
         result = walk(check_review_context)
@@ -85,7 +84,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["risk"]["level"], "low")
         self.assertEqual(result["merge"], "skipped")
-        self.assertNotIn("head_sha", result)
+        self.assertEqual(result["head_sha"], result["verified_head"])
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
         self.assertNotIn("verify", result["models_used"])

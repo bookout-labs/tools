@@ -1,4 +1,5 @@
 import tests
+from foreman.dry_run import DryRun
 
 import json
 import unittest
@@ -8,7 +9,7 @@ from pydantic import ValidationError
 
 from foreman.adapters import Outcome
 from foreman.config import ModelSpec, NodeConfig, load_config
-from foreman.delivery import DEFAULT_TOKEN_CAP, DryRun, compile_delivery, run_delivery
+from foreman.delivery import LiveRun, DEFAULT_TOKEN_CAP, compile_delivery, run_delivery
 from foreman.dry_run import ScriptHandler
 from foreman.github import render_slice_body
 from foreman.runner import _load_slice, checkpoint_state
@@ -121,7 +122,7 @@ class CandidateTests(unittest.TestCase):
 
 
     def test_without_methods_records_dispatch_author_independently_of_attempts(self):
-        result = compile_delivery(ScriptHandler(), load_config(), run=DryRun()).invoke(
+        result = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=DryRun(), workspace=DryRun())).invoke(
             {"repo": "org/repo", "check": "", "path": [], "token_cap": DEFAULT_TOKEN_CAP, "issue_kind": "parent"})
         self.assertNotIn("skill_attempts", result)
         self.assertEqual(result["spec_candidate"]["author"]["model"], result["models_used"]["triage"])
