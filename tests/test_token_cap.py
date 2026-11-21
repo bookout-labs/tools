@@ -13,6 +13,7 @@ from foreman.cli import _print_run, main, run_exit_code
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import ScriptHandler
 from foreman.runner import run_live_delivery
+from foreman.state import SCHEMA_VERSION, CheckpointVersionError
 from foreman.skill_rules import SkillMissing
 from tests.skill_fixture import skill_fixture
 from test_runner import FakeGitHub, FakeWorkspace
@@ -135,7 +136,7 @@ class TokenCapTests(unittest.TestCase):
             live = LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)))
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 graph = compile_delivery(ScriptHandler(), config, run=live, checkpointer=saver)
-                graph.update_state(invocation, {"repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"],
+                graph.update_state(invocation, {"schema_version": SCHEMA_VERSION, "repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"],
                     "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
                 graph.update_state(invocation, {"token_cap": 100, "max_budget_usd": None, "halt": "env_unavailable", "stop": "env_unavailable",
                                                 "path": ["implement", "done"]}, as_node="done")
@@ -143,16 +144,13 @@ class TokenCapTests(unittest.TestCase):
                 run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=live,
                                   dispatcher=ScriptHandler())
 
-    def test_finished_legacy_checkpoint_can_be_printed(self):
+    def test_finished_legacy_checkpoint_is_refused(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
             checkpoint = Path(folder) / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
                                    {"repo": "a/b", "check": "", "path": ["done"], "stop": "answered"}, as_node="done")
-            result = run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint, dispatcher=ScriptHandler(),
-                                       run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))
-            with contextlib.redirect_stdout(io.StringIO()) as output:
-                _print_run(result)
-            self.assertIn("done answered", output.getvalue())
-            self.assertNotIn("tokens", output.getvalue())
+            with self.assertRaisesRegex(CheckpointVersionError, "Start a new run"):
+                run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint, dispatcher=ScriptHandler(),
+                                  run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))

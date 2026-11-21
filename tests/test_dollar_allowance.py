@@ -1,3 +1,4 @@
+from foreman.state import SCHEMA_VERSION
 from foreman.dry_run import DryRun
 import contextlib
 from decimal import Decimal
@@ -240,7 +241,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             historical = root / "historical.sqlite"
             with SqliteSaver.from_conn_string(str(historical)) as saver:
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
-                graph.update_state(THREAD, {"repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"], "token_cap": 100,
+                graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"], "token_cap": 100,
                     "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
                 graph.update_state(THREAD, {"max_budget_usd": None, "halt": "env_unavailable", "stop": "env_unavailable",
                                             "path": ["implement", "done"]}, as_node="done")
@@ -251,8 +252,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             finished = root / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(finished)) as saver:
                 graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
-                graph.update_state(THREAD, {"repo": "a/b", "check": "", "path": ["done"], "stop": "answered",
-                                            "token_cap": 100}, as_node="done")
+                graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "repo": "a/b", "check": "", "path": ["done"], "stop": "answered",
+                                            "token_cap": 100, "max_budget_usd": None}, as_node="done")
             output = printed(run_live_delivery(**kwargs, checkpoint=finished))
             self.assertIn("done answered", output)
             self.assertNotIn("claude spend", output)

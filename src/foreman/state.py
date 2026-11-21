@@ -1,8 +1,10 @@
 """Delivery graph state channels and their reducers."""
 
+from collections.abc import Mapping
 import operator
 from typing import Annotated, Literal, NotRequired
 
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from pydantic import JsonValue, PlainValidator
 from typing_extensions import TypedDict
 
@@ -15,6 +17,29 @@ from foreman.stage_output import (
     SliceRecord, SpecCandidateRecord, WorkKind,
 )
 from foreman.workspace import ImplementationCandidate, PullRequestSize
+
+
+SCHEMA_VERSION = 1
+
+
+def checkpoint_serializer() -> JsonPlusSerializer:
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt])
+
+
+class CheckpointVersionError(ValueError):
+    """The checkpoint belongs to an incompatible delivery state schema."""
+
+    def __init__(self, version: object):
+        super().__init__(
+            f"Unsupported checkpoint schema_version {version!r}; expected {SCHEMA_VERSION}. "
+            "Start a new run with a new checkpoint path."
+        )
+
+
+def require_schema_version(values: Mapping[str, object]) -> None:
+    version = values.get("schema_version")
+    if type(version) is not int or version != SCHEMA_VERSION:
+        raise CheckpointVersionError(version)
 
 
 class WatchRecord(TypedDict):
@@ -31,6 +56,7 @@ class SpecRejection(TypedDict):
 
 
 class DeliveryFields(TypedDict, total=False):
+    schema_version: int
     max_budget_usd: str | None
     pending_dispatch: PendingDispatchRecord | None
     dispatch_plan: DispatchPlanRecord

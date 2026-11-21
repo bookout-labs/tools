@@ -1,5 +1,7 @@
 import tests
 
+from foreman.state import SCHEMA_VERSION
+
 import unittest
 from typing import get_args
 
@@ -22,7 +24,7 @@ class HaltPolicyTest(unittest.TestCase):
     def test_checkpoint_refuses_unknown_and_retired_codes(self):
         for code in ("no_reviewer", "no_reviewr"):
             with self.subTest(code=code), self.assertRaisesRegex(ValueError, code):
-                checkpoint_state(dict(halt=code, token_cap=100, repo="Example/Engine", check="true", path=[]))
+                checkpoint_state(dict(schema_version=SCHEMA_VERSION, halt=code, token_cap=100, repo="Example/Engine", check="true", path=[]))
 
     def test_retry_and_merge_recovery_preserve_the_existing_choices(self):
         merge = {"merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red",
