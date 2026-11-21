@@ -89,10 +89,45 @@ spec_check = [["file_slices", "parent plan"], ["prepare", "approved slice"], ["s
 triage = [["spec_check", "one slice"]]
 
 [delivery.missing.slice_16]
+spec = [["size", "override: keep this PR"]]
 size = [["spec", "too big: re-plan"]]
 
 [dispatch.missing.slice_13]
 __start__ = [["plan", ""]]
-call = [["__end__", "result"], ["plan", "quota or CLI missing: next model"], ["wait", "no eligible model now"]]
-plan = [["call", ""]]
+run = [["__end__", "result"], ["plan", "quota or CLI missing: next model"], ["wait", "no eligible model now"]]
+plan = [["run", ""]]
 wait = [["plan", "resume"]]
+
+
+[stages.triage]
+slice_11b = ["A question on an issue not labelled slice is treated as a planning request.", "A missing slice halts at the start node, before triage."]
+
+[stages.research]
+slice_12 = ["The answer stays in the run result instead of being posted on the issue once by marker."]
+
+[stages.spec]
+slice_14b = ["The runner files child issues after the graph ends."]
+slice_16 = ["A re-plan does not check that each slice has a new seam and is strictly smaller."]
+slice_14a = ["Plan fields live in several places and the runner re-checks they agree."]
+
+[stages.spec_check]
+slice_15 = ["The checker and prompt exist, but spec_check has no graph step or model-config row.", "Children do not consume approval of their exact candidate revision."]
+slice_14a = ["A parent plan does not carry revision-bound approval to its children."]
+
+[stages.file_slices]
+slice_14b = ["The runner files children without a confirmed sub-issue link.", "A dependent child becomes ready on a later parent rerun instead of its last blocker marking it ready."]
+
+[stages.prepare]
+slice_9 = ["Preflight, branch and attempt-start checks run inside implement's setup."]
+slice_11a = ["Recovery rewinds history instead of resuming at prepare."]
+slice_5 = ["The worker gets no scratch folder of its own."]
+
+[stages.implement]
+slice_13 = ["The partial-edits fingerprint check runs in implement's setup when the run resumes instead of the dispatch cell."]
+
+[stages.reconcile]
+slice_11a = ["Recovery after implementation_rejected rewinds history instead of resuming at reconcile."]
+
+[stages.size]
+slice_12 = ["The split-or-override question uses the shared decide_pr_size node."]
+slice_16 = ["The size override does not carry across fix rounds."]
