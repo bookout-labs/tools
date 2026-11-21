@@ -48,7 +48,7 @@ def run_live_delivery(
     answer: str | None = None,
 ) -> DeliveryState:
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    config = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
+    config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(run.workspace.root.resolve())
     client = run.forge
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:

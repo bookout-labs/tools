@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -441,7 +442,10 @@ class LiveRunnerTest(unittest.TestCase):
     def test_worktree_changes_after_check_leave_the_command_unarmed(self):
         for snapshot, detail in (
             (WorktreeState(HEAD, False, BRANCH), "worktree has changes"),
-            (WorktreeState("b" * 40, True, BRANCH), f"Check out {HEAD} and rerun the same command. New commits need a new run."),
+            (
+                WorktreeState("b" * 40, True, BRANCH),
+                f"git reset --keep {HEAD}\nThen rerun the same command. New commits need a new run.",
+            ),
             (WorktreeState(HEAD, True, None), "HEAD is detached"),
         ):
             with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd) as directory:
@@ -491,6 +495,46 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.walk([]), released)
         self.assertEqual(self.github.hold_reads, ["Example/Engine"])
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
+
+    def test_retry_after_reset_to_verified_head_arms_merge(self):
+        repo = self.cwd / "engine"
+        repo.mkdir()
+
+        def git(*args):
+            return subprocess.run(
+                ["git", "-c", "user.name=Foreman Test", "-c", "user.email=foreman@example.com", *args],
+                cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+        git("init", "-b", BRANCH)
+        git("commit", "--allow-empty", "-m", "Verified commit")
+        verified_head = git("rev-parse", "HEAD")
+        replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+
+        def run_worker(args, cwd):
+            reply = next(replies)
+            if reply is APPROVE:
+                git("commit", "--allow-empty", "-m", "Commit after verification")
+            return worker_reply(args, reply)
+
+        def run_delivery():
+            return run_live_delivery(
+                repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+                dispatcher=FailoverDispatcher(CliWorker(repo, run_worker)),
+                run=LiveRun(self.github, LiveWorkspace(repo)),
+            )
+
+        halted = run_delivery()
+        self.assertEqual(halted["stop"], "merge_not_armed")
+        self.assertEqual(self.github.merge_calls, [])
+        reset = re.search(rf"^  git reset --keep {verified_head}$", halted["halt_detail"], re.MULTILINE)
+        self.assertIsNotNone(reset, halted["halt_detail"])
+        git(*reset.group().split()[1:])
+
+        resumed = run_delivery()
+        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["merge"], "armed")
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, verified_head)])
 
     def test_live_workspace_reports_head_status_and_branch(self):
         for status, branch in (("", BRANCH + "\n"), ("?? untracked\n", ""), ("", "")):

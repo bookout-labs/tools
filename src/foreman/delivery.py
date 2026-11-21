@@ -322,7 +322,9 @@ def compile_delivery(
                     return halted(
                         "merge_not_armed",
                         f"HEAD is {worktree.head}, verification checked {head}. "
-                        f"Check out {head} and rerun the same command. New commits need a new run."
+                        "Reset the PR branch to the verified commit.\n"
+                        f"  git reset --keep {head}\n"
+                        "Then rerun the same command. New commits need a new run."
                     )
                 if worktree.branch is None:
                     return halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")

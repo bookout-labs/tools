@@ -92,6 +92,8 @@ class ActionsVariable(BaseModel, strict=True):
 class ActionsVariables(RootModel[list[ActionsVariable]], strict=True):
     # gh variable list --json name,value, v2.102.0:
     # https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/variable/list/list_test.go#L112-L122
+    # gh fetches every page with per_page=100 and RESTWithNext.
+    # https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/variable/list/list.go#L237-L250
     pass
 
 
