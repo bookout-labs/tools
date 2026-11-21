@@ -35,7 +35,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    SpecRejection, SpecRejectionKind, PlanState, TriageOutput, ImplementOutput, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
+    SpecRejection, SpecRejectionKind, PlanState, ImplementOutput, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
 )
 from foreman.state import ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.readiness import MergeReceipt, MergeState
@@ -274,12 +274,10 @@ def stage_update(
 ) -> DeliveryUpdate:
     plan = state["plan"]
     slices = clean_slices(output.slices, workspace) if isinstance(output, SpecOutput) and plan.issue_kind == "parent" and output.spec_gate == "ready" else []
-    context = UpdateContext(plan.issue_kind, plan.work_kind, bool(oversized_pr(state)), slices, accepted_model)
+    context = UpdateContext(plan, bool(oversized_pr(state)), slices, accepted_model)
     checks = state["checks"]
     update: DeliveryUpdate
-    if isinstance(output, (TriageOutput, SpecOutput)):
-        update = {**output.plan_update(plan, context)}
-    elif isinstance(output, ImplementOutput):
+    if isinstance(output, ImplementOutput):
         update = {"implementation": output.implementation, "checks": checks.model_copy(update={
             "browser_proof": output.browser_proof.record() if output.browser_proof else None,
             "formal_proof": output.formal_proof.record() if output.formal_proof else None,
@@ -687,7 +685,7 @@ def compile_delivery(
             return halted(Halt.git_failed, str(exc), "commit")
 
     def publish(state: DeliveryState) -> DeliveryUpdate:
-        assert "work" in state and state["work"].branch and state["work"].base and "run" in state
+        assert "work" in state and state["work"].branch and state["work"].base
         run_state = state["run"]
         branch, base, repo = state["work"].branch, state["work"].base, run_state.repo
         title = " ".join(redact(str(_active_slice(state)["title"])).split())

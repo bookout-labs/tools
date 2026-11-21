@@ -315,7 +315,7 @@ def run_live_delivery(
                 work = work.model_copy(update={"partial_edits": partial})
             prior_checks = restored["checks"]
             checks = ChecksState(check=prior_checks.check, preflight=prior_checks.preflight) if reset_work else prior_checks
-            retained: DeliveryUpdate = {"plan": saved_values["plan"], "work": work, "merge": MergeState(receipt=receipt), "checks": checks}
+            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt), "checks": checks}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             if retained:

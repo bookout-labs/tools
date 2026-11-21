@@ -487,8 +487,7 @@ class StageUpdate(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class UpdateContext:
-    issue_kind: str | None
-    work_kind: WorkKind | None
+    plan: PlanState
     oversized: bool
     slices: list[SliceRecord]
     model: ModelSpec | None = None
@@ -522,13 +521,11 @@ class TriageOutput(HumanQuestionOutput):
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        raise NotImplementedError("TriageOutput: use plan-bound stage_update")
-
-    def plan_update(self, plan: PlanState, context: UpdateContext) -> StageUpdate:
+        plan = context.plan
         current = plan.model_copy(update={"triage": self.triage, "work_kind": self.work_kind})
-        if context.issue_kind == "slice" and context.work_kind is not None:
-            current = current.model_copy(update={"work_kind": context.work_kind})
-        if context.issue_kind == "parent" and self.triage == "implement":
+        if plan.issue_kind == "slice" and plan.work_kind is not None:
+            current = current.model_copy(update={"work_kind": plan.work_kind})
+        if plan.issue_kind == "parent" and self.triage == "implement":
             if self.slice is None:
                 raise InvalidOutput("slice: required when a parent triages as implement")
             if context.model is not None:
@@ -557,18 +554,16 @@ class SpecOutput(HumanQuestionOutput):
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        raise NotImplementedError("SpecOutput: use plan-bound stage_update")
-
-    def plan_update(self, plan: PlanState, context: UpdateContext) -> StageUpdate:
+        plan = context.plan
         slices = context.slices
         if context.oversized:
             return {"plan": plan.model_copy(update={"pr_split": {"plan": self.spec, "gate": self.spec_gate,
                 "question": self.human_question, "slices": slices}, "spec_rejection": None})}
         current = plan.model_copy(update={"spec": self.spec, "spec_gate": self.spec_gate, "spec_rejection": None})
-        if context.issue_kind == "parent" and self.spec_gate == "ready":
-            if context.model is not None and context.work_kind is not None:
+        if plan.issue_kind == "parent" and self.spec_gate == "ready":
+            if context.model is not None and plan.work_kind is not None:
                 current = SpecCandidate(slices=[CandidateSlice.model_validate(item) for item in slices],
-                    spec=self.spec, work_kind=context.work_kind, author=SpecAuthor(stage="spec",
+                    spec=self.spec, work_kind=plan.work_kind, author=SpecAuthor(stage="spec",
                     model=context.model.name, family=context.model.family)).update(current, single=False)
             else:
                 current = current.model_copy(update={"slices": slices})
