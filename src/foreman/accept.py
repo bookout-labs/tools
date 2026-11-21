@@ -1,6 +1,7 @@
 """Decide whether an outside event enters the graph. This does not call a model."""
 
-from typing import Literal, TypedDict
+from typing import Literal
+from typing_extensions import TypedDict
 
 from foreman._raw import is_dict, is_list
 
