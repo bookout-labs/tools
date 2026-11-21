@@ -82,7 +82,7 @@ class DispatchRecoveryTests(unittest.TestCase):
                     self.assertEqual(result["run"]["max_budget_usd"], limit or None)
                     self.assertEqual(result["attempts"][-1]["outcome"], "interrupted")
                     self.assertIsNone(result["pending_dispatch"])
-                    self.assertNotIn("triage", result)
+                    self.assertEqual(result["plan"]["triage"], "")
                     self.assertEqual(len(result["attempts"]), 2 if mode == "quota" else 1)
                     again = invoke("recover")
                     self.assertEqual(json.loads(again.stdout), result)

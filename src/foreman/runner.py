@@ -18,7 +18,7 @@ from foreman.config import PstackPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
 from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state
 from foreman.readiness import MergeState
-from foreman.state import ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
+from foreman.state import PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -59,15 +59,13 @@ def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
     if not values:
         return None
     require_schema_version(values)
-    normalized = dict(values)
-    if normalized.get("slice") is not None:
-        normalized["slice"] = StoredSlice.model_validate(normalized["slice"]).record()
-    state = _CHECKPOINT_STATE.validate_python(normalized, strict=True)
-    if "spec_candidate" in state:
-        candidate = SpecCandidate.from_record(state["spec_candidate"])
-        expected = candidate.update(single="slice" in state)
+    state = _CHECKPOINT_STATE.validate_python(values, strict=True)
+    plan = state["plan"]
+    if plan.spec_candidate is not None:
+        candidate = SpecCandidate.from_record(plan.spec_candidate)
+        expected = candidate.update(plan, single=plan.slice is not None)
         for key in ("slice", "slices", "spec", "work_kind"):
-            if key in state and state.get(key) != expected.get(key):
+            if getattr(plan, key) != getattr(expected, key):
                 raise ValueError(f"{key} differs from candidate")
     return state
 
@@ -189,6 +187,7 @@ def run_live_delivery(
                                           "run": run_state if prior else RunState(issue=issue, workspace=workspace, repo=repo,
                                               max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None,
                                               token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
+                                          "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
                                           "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(check=check, preflight=preflight)}
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
@@ -263,10 +262,10 @@ def run_live_delivery(
                 "checks": ChecksState(check=check, preflight=preflight),
                 "pstack_pin": pin.model_dump(),
                 "path": [],
-                "issue_kind": "slice" if "slice" in loaded["labels"] else "parent",
+                "plan": PlanState(issue_kind="slice" if "slice" in loaded["labels"] else "parent"),
                 "review_rounds": 0,
             }
-            if initial["issue_kind"] == "slice":
+            if initial["plan"].issue_kind == "slice":
                 try:
                     item = _load_slice(loaded["body"])
                 except (InvalidOutput, json.JSONDecodeError) as exc:
@@ -274,9 +273,7 @@ def run_live_delivery(
                 else:
                     if detail := _blocker_detail(client, repo, issue, item):
                         initial.update(path=["done"], stop="blocked", halt_detail=detail)
-                    initial["slice"] = item.record()
-                    if item.work_kind is not None:
-                        initial["work_kind"] = item.work_kind
+                    initial["plan"] = initial["plan"].model_copy(update={"slice": item.record(), "work_kind": item.work_kind})
             if initial.get("stop") == "blocked":
                 early_result = read_delivery_state(initial)
             else:
@@ -318,7 +315,7 @@ def run_live_delivery(
                 work = work.model_copy(update={"partial_edits": partial})
             prior_checks = restored["checks"]
             checks = ChecksState(check=prior_checks.check, preflight=prior_checks.preflight) if reset_work else prior_checks
-            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt), "checks": checks}
+            retained: DeliveryUpdate = {"plan": saved_values["plan"], "work": work, "merge": MergeState(receipt=receipt), "checks": checks}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             if retained:
@@ -334,11 +331,12 @@ def run_live_delivery(
         if result.get("stop") == "sliced":
             saved_values = checkpoint_state(saved.values)
             assert saved_values is not None
-            if "slices" not in saved_values:
+            owner = saved_values["plan"]
+            if not owner.slices:
                 raise ValueError("Sliced checkpoint has no slice plan.")
-            numbers = list(saved_values.get("child_issue_numbers", []))
-            work_kind = saved_values.get("work_kind")
-            plan = [parse_output(StoredSlice, {**raw, "work_kind": work_kind}) for raw in saved_values["slices"]]
+            numbers = list(owner.child_issue_numbers)
+            work_kind = owner.work_kind
+            plan = [parse_output(StoredSlice, {**raw, "work_kind": work_kind}) for raw in owner.slices]
             siblings = {item.title: number for item, number in zip(plan, numbers)}
             for item in plan[len(numbers):]:
                 child = item.model_copy(update={"blocker_numbers": [siblings[title] for title in item.depends_on]})
@@ -346,7 +344,7 @@ def run_live_delivery(
                 number = client.create_issue(repo, item.title, "", labels, child=child)
                 numbers.append(number)
                 siblings[item.title] = number
-                graph.update_state(config, {"child_issue_numbers": numbers})
+                graph.update_state(config, {"plan": owner.model_copy(update={"child_issue_numbers": numbers})})
             for item, number in zip(plan, numbers):
                 if not item.depends_on:
                     continue

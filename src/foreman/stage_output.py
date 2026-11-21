@@ -422,13 +422,13 @@ class SpecCandidate(RecordContract[SpecCandidateRecord]):
             raise ValueError("candidate revision does not match its content")
         return candidate
 
-    def update(self, *, single: bool) -> "StageUpdate":
+    def update(self, plan: "PlanState", *, single: bool) -> "PlanState":
         provenance: SliceProvenanceRecord = {"author": self.author.record(), "revision": self.revision}
         slices: list[SliceRecord] = [{**item, "provenance": provenance} for item in self.record()["slices"]]
-        update: StageUpdate = {"spec_candidate": self.record(), "spec": self.spec, "work_kind": self.work_kind, "slices": slices}
+        fields: dict[str, object] = {"spec_candidate": self.record(), "spec": self.spec, "work_kind": self.work_kind, "slices": slices}
         if single:
-            update["slice"] = slices[0]
-        return update
+            fields["slice"] = slices[0]
+        return plan.model_copy(update=fields)
 
 
 class StoredSlice(Slice):
@@ -448,18 +448,37 @@ class PullRequestSplit(TypedDict):
     slices: list[SliceRecord]
 
 
+SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle", "existing_seam_builder"]
+
+
+class SpecRejection(TypedDict):
+    kind: SpecRejectionKind
+    detail: str
+
+
+class PlanState(BaseModel, frozen=True, extra="forbid"):
+    triage: Literal["", "implement", "spec", "question", "needs_human"] = ""
+    spec: str = ""
+    spec_gate: Literal["", "ready", "needs_human"] = ""
+    spec_candidate: SpecCandidateRecord | None = None
+    spec_rejection: SpecRejection | None = None
+    slices: list[SliceRecord] = Field(default_factory=list[SliceRecord])
+    child_issue_numbers: list[int] = Field(default_factory=list[int])
+    slice: SliceRecord | None = None
+    issue_kind: Literal["parent", "slice"] | None = None
+    work_kind: WorkKind | None = None
+    pr_split: PullRequestSplit | None = None
+
+    @field_validator("slice", mode="before")
+    @classmethod
+    def stored_slice(cls, value: object) -> SliceRecord | None:
+        return StoredSlice.model_validate(value).record() if value is not None else None
+
+
 class StageUpdate(TypedDict, total=False):
-    spec_candidate: SpecCandidateRecord
-    triage: str
-    work_kind: WorkKind
+    plan: PlanState
     human_question: str
-    slice: SliceRecord
     research: str
-    spec: str
-    spec_gate: str
-    spec_rejection: None
-    slices: list[SliceRecord]
-    pr_split: PullRequestSplit
     implementation: str
     risk: MergeRiskRecord
     detail: str
@@ -503,21 +522,22 @@ class TriageOutput(HumanQuestionOutput):
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        update: StageUpdate = {
-            "triage": self.triage, "work_kind": self.work_kind, "human_question": self.human_question or "",
-        }
+        raise NotImplementedError("TriageOutput: use plan-bound stage_update")
+
+    def plan_update(self, plan: PlanState, context: UpdateContext) -> StageUpdate:
+        current = plan.model_copy(update={"triage": self.triage, "work_kind": self.work_kind})
         if context.issue_kind == "slice" and context.work_kind is not None:
-            update["work_kind"] = context.work_kind
+            current = current.model_copy(update={"work_kind": context.work_kind})
         if context.issue_kind == "parent" and self.triage == "implement":
             if self.slice is None:
                 raise InvalidOutput("slice: required when a parent triages as implement")
             if context.model is not None:
-                update.update(SpecCandidate(slices=[CandidateSlice.model_validate(self.slice.record())], spec="",
+                current = SpecCandidate(slices=[CandidateSlice.model_validate(self.slice.record())], spec="",
                     work_kind=self.work_kind, author=SpecAuthor(stage="triage", model=context.model.name,
-                    family=context.model.family)).update(single=True))
+                    family=context.model.family)).update(current, single=True)
             else:
-                update["slice"] = self.slice.record()
-        return update
+                current = current.model_copy(update={"slice": self.slice.record()})
+        return {"plan": current, "human_question": self.human_question or ""}
 
 
 class ResearchOutput(StageOutput):
@@ -537,24 +557,22 @@ class SpecOutput(HumanQuestionOutput):
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
+        raise NotImplementedError("SpecOutput: use plan-bound stage_update")
+
+    def plan_update(self, plan: PlanState, context: UpdateContext) -> StageUpdate:
         slices = context.slices
         if context.oversized:
-            return {
-                "pr_split": {"plan": self.spec, "gate": self.spec_gate, "question": self.human_question, "slices": slices},
-                "spec_rejection": None,
-            }
-        update: StageUpdate = {
-            "spec": self.spec, "spec_gate": self.spec_gate,
-            "human_question": self.human_question or "", "spec_rejection": None,
-        }
+            return {"plan": plan.model_copy(update={"pr_split": {"plan": self.spec, "gate": self.spec_gate,
+                "question": self.human_question, "slices": slices}, "spec_rejection": None})}
+        current = plan.model_copy(update={"spec": self.spec, "spec_gate": self.spec_gate, "spec_rejection": None})
         if context.issue_kind == "parent" and self.spec_gate == "ready":
             if context.model is not None and context.work_kind is not None:
-                update.update(SpecCandidate(slices=[CandidateSlice.model_validate(item) for item in slices],
+                current = SpecCandidate(slices=[CandidateSlice.model_validate(item) for item in slices],
                     spec=self.spec, work_kind=context.work_kind, author=SpecAuthor(stage="spec",
-                    model=context.model.name, family=context.model.family)).update(single=False))
+                    model=context.model.name, family=context.model.family)).update(current, single=False)
             else:
-                update["slices"] = slices
-        return update
+                current = current.model_copy(update={"slices": slices})
+        return {"plan": current, "human_question": self.human_question or ""}
 
 
 class BrowserProof(RecordContract[BrowserProofRecord]):

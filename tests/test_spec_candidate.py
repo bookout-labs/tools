@@ -1,6 +1,6 @@
 import tests
 
-from foreman.state import ChecksState, RunState, SCHEMA_VERSION
+from foreman.state import PlanState, ChecksState, RunState, SCHEMA_VERSION
 from foreman.dry_run import DryRun
 
 import json
@@ -59,8 +59,8 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(restored.work_kind, "bug_fix")
         with self.assertRaises(ValidationError):
             StoredSlice.model_validate({**SLICE, "provenance": {"author": candidate.author.record(), "revision": "bad"}})
-        state = checkpoint_state({"schema_version": SCHEMA_VERSION, "run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "checks": ChecksState(check=""), "path": [], "slice": restored.record()})
-        self.assertEqual(state["slice"]["provenance"], provenance.record())
+        state = checkpoint_state({"schema_version": SCHEMA_VERSION, "run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "checks": ChecksState(check=""), "path": [], "plan": PlanState(slice=restored.record())})
+        self.assertEqual(state["plan"].slice["provenance"], provenance.record())
         self.assertNotIn("provenance", StoredSlice.model_validate({**SLICE, "provenance": None}).record())
 
     def test_actual_accepted_failover_authors(self):
@@ -77,11 +77,11 @@ class CandidateTests(unittest.TestCase):
                     return script(node, model, state, instruction)
                 with skill_fixture(replace(config, nodes=nodes)) as (configured, scratch):
                     result = run_delivery(handler, repo="org/repo", request="Save", config=configured, scratch=scratch)
-                candidate = SpecCandidate.from_record(result["spec_candidate"])
+                candidate = SpecCandidate.from_record(result["plan"].spec_candidate)
                 self.assertEqual(candidate.author.record(), {"stage": stage, "model": "claude-test", "family": "claude"})
                 attempts = [a for a in result["attempts"] if a["stage"] == stage]
                 self.assertEqual([a["outcome"] for a in attempts], ["quota", "ran"])
-                stored = result["slice"] if stage == "triage" else result["slices"][0]
+                stored = result["plan"].slice if stage == "triage" else result["plan"].slices[0]
                 self.assertEqual(stored["provenance"], {"revision": candidate.revision, "author": candidate.author.record()})
                 self.assertIn("implement" if stage == "triage" else "done", result["path"])
 
@@ -92,26 +92,26 @@ class CandidateTests(unittest.TestCase):
             with skill_fixture() as (config, scratch):
                 result = run_delivery(ScriptHandler(triage=triage), repo="org/repo", request="Save",
                                       slice={**SLICE, "provenance": provenance}, config=config, scratch=scratch)
-            self.assertEqual(result["slice"]["provenance"], provenance)
-            self.assertNotIn("spec_candidate", result)
+            self.assertEqual(result["plan"].slice["provenance"], provenance)
+            self.assertIsNone(result["plan"].spec_candidate)
 
     def test_checkpoint_rejects_divergent_candidate_copies(self):
         candidate = self.candidate()
-        state = {"schema_version": SCHEMA_VERSION, "run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "checks": ChecksState(check=""), "path": [], **candidate.update(single=True)}
+        state = {"schema_version": SCHEMA_VERSION, "run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "checks": ChecksState(check=""), "path": [], "plan": candidate.update(PlanState(), single=True)}
         self.assertIsNotNone(checkpoint_state(state))
         for field, value in (("acceptance", "Changed"), ("provenance", {"author": candidate.author.record(), "revision": "0" * 64}),
                              ("provenance", {"author": {"stage": "spec", "model": "other", "family": "gpt"}, "revision": candidate.revision})):
             with self.subTest(field=field), self.assertRaises(ValueError):
-                checkpoint_state({**state, "slice": {**state["slice"], field: value}})
+                checkpoint_state({**state, "plan": state["plan"].model_copy(update={"slice": {**state["plan"].slice, field: value}})})
         for key, value in (("work_kind", "bug_fix"), ("spec", "Changed")):
             with self.subTest(key=key), self.assertRaises(ValueError):
-                checkpoint_state({**state, key: value})
+                checkpoint_state({**state, "plan": state["plan"].model_copy(update={key: value})})
         for revision in (None, "", "bad", "0" * 64):
             raw = {**candidate.record(), "revision": revision}
             if revision is None:
                 del raw["revision"]
             with self.subTest(revision=revision), self.assertRaises(ValueError):
-                checkpoint_state({**state, "spec_candidate": raw})
+                checkpoint_state({**state, "plan": state["plan"].model_copy(update={"spec_candidate": raw})})
         with self.assertRaises(ValidationError):
             candidate.spec = "Changed"
 
@@ -120,11 +120,11 @@ class CandidateTests(unittest.TestCase):
             result = run_delivery(lambda *_: Outcome("failed", detail="Malformed output"),
                                   repo="org/repo", request="Save", config=config, scratch=scratch)
         self.assertEqual(result["halt"], "invalid_output")
-        self.assertNotIn("spec_candidate", result)
+        self.assertIsNone(result["plan"].spec_candidate)
 
 
     def test_without_methods_records_dispatch_author_independently_of_attempts(self):
         result = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=DryRun(), workspace=DryRun())).invoke(
-            {"run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "checks": ChecksState(check=""), "path": [], "issue_kind": "parent"})
+            {"run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "checks": ChecksState(check=""), "path": [], "plan": PlanState(issue_kind="parent")})
         self.assertNotIn("skill_attempts", result)
-        self.assertEqual(result["spec_candidate"]["author"]["model"], result["models_used"]["triage"])
+        self.assertEqual(result["plan"].spec_candidate["author"]["model"], result["models_used"]["triage"])

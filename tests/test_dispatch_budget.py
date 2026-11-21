@@ -17,7 +17,7 @@ from foreman.config import ModelSpec, load_config
 from foreman.delivery import MODEL_STAGES, LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import snapshot_result
-from foreman.state import ChecksState, RunState, checkpoint_serializer
+from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer
 from foreman.worker import CliWorker
 from test_dollar_allowance import NEEDS_HUMAN, attempt
 from test_runner import EMPTY_SLICE, fixture_process, worker_reply
@@ -43,7 +43,7 @@ def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000):
     dry = DryRun()
     graph = compile_delivery(handler, config or configured(), run=LiveRun(forge=dry, workspace=dry), checkpointer=saver).with_config({"configurable": {"thread_id": "budget"}})
     graph.invoke({
-        "run": RunState(issue=dry.issue_placeholder, repo="a/b", request="x", token_cap=token_cap, max_budget_usd=limit), "checks": ChecksState(check="exit 0"), "path": [], "issue_kind": "slice", "slice": EMPTY_SLICE,
+        "run": RunState(issue=dry.issue_placeholder, repo="a/b", request="x", token_cap=token_cap, max_budget_usd=limit), "checks": ChecksState(check="exit 0"), "path": [], "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE),
 
         "attempts": [attempt(CLAUDE.name, prior)],
     })
@@ -69,7 +69,7 @@ class DispatchBudgetTests(unittest.TestCase):
                 result = walk(handler, config=configured(stage))
                 self.assertEqual(result["stop"], "answered" if stage == "research" else "verified")
                 self.assertEqual(calls, [(CLAUDE.name, "0.2"), (NEXT_CLAUDE.name, "0.1")])
-                self.assertIn(stage if stage != "implement" else "implementation", result)
+                self.assertTrue(getattr(result["plan"], stage) if stage in {"triage", "spec"} else result["implementation" if stage == "implement" else stage])
 
     def test_cli_worker_sends_one_exact_remainder_flag_only_to_claude(self):
         argv = []
@@ -135,14 +135,14 @@ class DispatchBudgetTests(unittest.TestCase):
                     self.assertEqual(claude_spend(result["attempts"]), Decimal("0.8") + Decimal(str(cost)))
                     if expected == "budget_exceeded":
                         self.assertEqual(run_exit_code(result), 1)
-                        self.assertNotIn("triage", result)
+                        self.assertEqual(result["plan"].triage, "")
                         self.assertIsNone(result["pending_dispatch"])
                         self.assertEqual(result["halt_detail"], {
                             0.2: "Run Claude spend: $1.0. Dollar allowance: $1.",
                             0.25: "Run Claude spend: $1.05. Dollar allowance: $1.",
                         }[cost])
                     else:
-                        self.assertEqual(result["triage"], "needs_human")
+                        self.assertEqual(result["plan"].triage, "needs_human")
 
     def test_spent_or_unknown_allowance_never_starts_a_candidate(self):
         for prior, expected in ((1.0, "budget_exceeded"), (1.05, "budget_exceeded"), (None, "usage_unknown")):
@@ -152,7 +152,7 @@ class DispatchBudgetTests(unittest.TestCase):
                 result = walk(unexpected, prior=prior, config=configured(models=(GPT, GROK, CLAUDE)))
                 self.assertEqual(result["stop"], expected)
                 self.assertEqual(run_exit_code(result), 1)
-                self.assertNotIn("triage", result)
+                self.assertEqual(result["plan"].triage, "")
                 self.assertEqual(len(result["attempts"]), 1)
 
     def test_unknown_claude_cost_stops_bounded_attempts_but_preserves_unbounded_behavior(self):
@@ -176,7 +176,7 @@ class DispatchBudgetTests(unittest.TestCase):
                         self.assertIn("without a dollar cost", result["halt_detail"])
                         self.assertIn("Dollar allowance: $1.", result["halt_detail"])
                         self.assertEqual(run_exit_code(result), 1)
-                        self.assertNotIn("triage", result)
+                        self.assertEqual(result["plan"].triage, "")
 
     def test_zero_cost_and_missing_cli_allow_the_next_candidate(self):
         for kind in ("quota", "cli_missing"):
@@ -216,7 +216,7 @@ class DispatchBudgetTests(unittest.TestCase):
                 self.assertEqual(received, ["0.2"])
                 self.assertEqual(result["stop"], expected)
                 self.assertIn(detail, result["halt_detail"])
-                self.assertNotIn("triage", result)
+                self.assertEqual(result["plan"].triage, "")
                 self.assertEqual(run_exit_code(result), 1)
 
     def test_mixed_providers_spend_only_the_claude_allowance(self):

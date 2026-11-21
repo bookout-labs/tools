@@ -1,5 +1,5 @@
 import tests
-from foreman.state import ChecksState
+from foreman.state import PlanState, ChecksState
 
 import json
 from pathlib import Path
@@ -28,7 +28,7 @@ class PermissionsTest(unittest.TestCase):
             root = export_skills(config.pstack, scratch)
             for stage in {rule.stage for rule in SKILL_RULES}:
                 for kind in ("feature", "bug_fix", "perf_issue"):
-                    state = {"work_kind": kind, "issue_kind": "slice", "slice": {**EMPTY_SLICE, "stateful": True, "screen": "UI", "properties": [{"name": "rule", "constraint": "unique"}]}}
+                    state = {"plan": PlanState(work_kind=kind, issue_kind="slice", slice={**EMPTY_SLICE, "stateful": True, "screen": "docs/screens/ui.md", "properties": [{"name": "rule", "constraint": "unique"}]})}
                     text, methods, roots = stage_methods(stage, state, root)
                     self.assertEqual(len(roots), len(set(roots)))
                     self.assertTrue(set(roots) <= {str(root.resolve()), str(PACKAGE_SKILLS.resolve())})

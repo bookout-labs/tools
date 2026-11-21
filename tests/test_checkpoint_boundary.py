@@ -11,13 +11,14 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+import test_spec_candidate
 from foreman.delivery import LiveRun
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.outcomes import Halt
 from foreman.readiness import MergeState
 from foreman.workspace import WorkState
 from foreman.runner import run_live_delivery
-from foreman.state import ChecksState, RunState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
+from foreman.state import PlanState, ChecksState, RunState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
 
 
 class CheckpointBoundaryTests(unittest.TestCase):
@@ -25,14 +26,14 @@ class CheckpointBoundaryTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "old.sqlite"
             shutil.copyfile(Path(__file__).parent / "fixtures/state/before-move.sqlite", checkpoint)
-            for version in (None, 0, 1, 2, 3, 4, SCHEMA_VERSION + 1, True, "1"):
+            for version in (None, 0, 1, 2, 3, 4, 5, SCHEMA_VERSION + 1, True, "1"):
                 with self.subTest(version=version):
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                         saver.serde = checkpoint_serializer()
                         saved = saver.get_tuple({"configurable": {"thread_id": "before-move"}})
                         values = saved.checkpoint["channel_values"]
                         values.clear()
-                        values.update(path=["triage"], attempts=[], review_rounds=2)
+                        values.update(path=["triage"], attempts=[], review_rounds=2, triage="implement", spec="Plan", spec_gate="ready", issue_kind="slice", work_kind="feature", child_issue_numbers=[9])
                         checks = ChecksState(check="true", preflight="env", check_exit_code=0, verify="pass",
                             verified_head="b" * 40, browser_proof={"screen": "page", "trace": "trace", "passed": True},
                             formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
@@ -104,6 +105,10 @@ class CheckpointBoundaryTests(unittest.TestCase):
                 formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
                 proof_labels={"browser": "block"})
             self.assertEqual(serde.loads_typed(serde.dumps_typed(checks)), checks)
+            plan = test_spec_candidate.CandidateTests().candidate().update(PlanState(triage="implement", spec_gate="ready", issue_kind="parent",
+                spec_rejection={"kind": "dangling_seam", "detail": "Missing"}, child_issue_numbers=[9],
+                pr_split={"plan": "Split", "gate": "ready", "question": "Keep?", "slices": [test_spec_candidate.SLICE]}), single=True)
+            self.assertEqual(serde.loads_typed(serde.dumps_typed(plan)), plan)
         blocked = HumanPrompt(stage="triage", question="Which?")
         with self.assertLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
             restored = serde.loads_typed(serde.dumps_typed(blocked))
@@ -119,7 +124,7 @@ from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import checkpoint_state, snapshot_result
-from foreman.state import ChecksState, RunState, checkpoint_serializer
+from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer
 from foreman.readiness import MergeState
 from foreman.workspace import WorkState
 
@@ -131,6 +136,7 @@ with SqliteSaver.from_conn_string(path) as saver:
                              run=LiveRun(DryRun(), DryRun()), checkpointer=saver)
     if phase == "write":
         graph.update_state(config, {**json.loads(state_json),
+            "plan": PlanState.model_validate(json.loads(state_json)["plan"]),
             "checks": ChecksState.model_validate(json.loads(state_json)["checks"]),
             "run": RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout", token_cap=100, max_budget_usd="1.5"),
             "merge": MergeState(status="not_armed", receipt={"status": "QUEUED"}, observed_head="c" * 40,
@@ -145,6 +151,7 @@ with SqliteSaver.from_conn_string(path) as saver:
     assert saved.values["work"] == WorkState(branch="8-change", base="main", attempt_head="a" * 40,
         candidate={"disposition": "adopted", "head": "b" * 40, "tree": "c" * 40, "fingerprint": "tree"},
         partial_edits="partial", head_sha="b" * 40, repair_head="d" * 40)
+    assert saved.values["plan"] == PlanState.model_validate(json.loads(state_json)["plan"])
     assert saved.values["checks"] == ChecksState.model_validate(json.loads(state_json)["checks"])
     assert saved.values["run"] == RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout", token_cap=100, max_budget_usd="1.5")
     assert isinstance(saved.values["merge"], MergeState)
@@ -170,15 +177,18 @@ with SqliteSaver.from_conn_string(path) as saver:
             for name, predecessor, extra in cases:
                 with self.subTest(pause=name):
                     stage = "spec" if name == "pr_size" else "triage" if name == "quota" else name
+                    plan = PlanState(triage="implement", spec="Plan", spec_gate="ready", issue_kind="parent", work_kind="feature",
+                        spec_rejection={"kind": "dangling_seam", "detail": "Missing seam"}, child_issue_numbers=[9],
+                        pr_split={"plan": "Split", "gate": "ready", "question": "Keep?", "slices": [test_spec_candidate.SLICE]})
                     state = {"schema_version": SCHEMA_VERSION, "checks": ChecksState(check="true", preflight="env", check_exit_code=0,
                         verify="pass", verified_head="b" * 40, browser_proof={"screen": "page", "trace": "trace", "passed": True},
                         formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
-                        proof_labels={"browser": "block"}),
-                              "path": [stage], "human_question": "Which?",
-                             "halt_detail": "Waiting.", "attempts": [{"stage": "triage", "model": "gpt",
+                        proof_labels={"browser": "block"}), "path": [stage], "human_question": "Which?", "halt_detail": "Waiting.", "attempts": [{"stage": "triage", "model": "gpt",
                                  "commit": "a" * 40, "methods": [], "outcome": "ran", "usage": {
                                      "input": 1, "output": 2, "cache_read": 0, "cache_creation": 0,
-                                     "cost_usd": None}}], **extra}
+                                     "cost_usd": None}}], **extra, "plan": PlanState()}
+                    plan = test_spec_candidate.CandidateTests().candidate().update(plan, single=True).model_copy(update={"spec_rejection": None})
+                    state["plan"] = plan.model_copy(update={key: state.pop(key) for key in ("triage", "spec_gate") if key in state})
                     checkpoint = str(Path(directory) / f"{name}.sqlite")
                     outputs = []
                     for phase in ("write", "read"):

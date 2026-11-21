@@ -48,17 +48,18 @@ class SkillRule(BaseModel):
     when: Condition | None = None
 
     def applies(self, state: "DeliveryState") -> bool:
+        plan = state["plan"]
         match self.when:
             case None:
                 return True
             case "stateful":
-                return state.get("issue_kind") == "slice" and state.get("slice", {}).get("stateful") is True
+                return plan.issue_kind == "slice" and plan.slice is not None and plan.slice["stateful"] is True
             case "browser":
-                return bool(item := state.get("slice")) and browser_required(item)
+                return bool(item := plan.slice) and browser_required(item)
             case "formal":
-                return bool(item := state.get("slice")) and formal_required(item)
+                return bool(item := plan.slice) and formal_required(item)
             case work_kind:
-                return state.get("work_kind") == work_kind
+                return plan.work_kind == work_kind
 
 
 def principle(stage: AgentStage, name: str) -> SkillRule:

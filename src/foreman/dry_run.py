@@ -6,7 +6,7 @@ from pathlib import Path
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
-from foreman.stage_output import DispatchPlan, MergeRiskRecord, SpecCheckOutput, StoredSlice, WorkKind
+from foreman.stage_output import PlanState, DispatchPlan, MergeRiskRecord, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import PullRequest, Issue, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt, pull_request_command
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
@@ -65,7 +65,7 @@ class ScriptHandler:
         if node == "triage":
             return Outcome("ran", {
                 "triage": self.triage, "work_kind": self.work_kind, "human_question": None,
-                "slice": self.slice if self.triage == "implement" and state["issue_kind"] == "parent" else None,
+                "slice": self.slice if self.triage == "implement" and PlanState.model_validate(state["plan"]).issue_kind == "parent" else None,
             }, usage=SCRIPTED_USAGE)
         if node == "spec":
             return Outcome("ran", {

@@ -10,7 +10,7 @@ from foreman.config import Config, PstackPin, load_config
 from foreman.delivery import stage_text
 from foreman.dry_run import CLEAR
 from foreman.spec_check import SpecHistory, accept
-from foreman.stage_output import CandidateSlice, SliceProvenanceRecord, SpecCandidate, SpecAuthor
+from foreman.stage_output import PlanState, CandidateSlice, SliceProvenanceRecord, SpecCandidate, SpecAuthor
 from foreman.skill_rules import PstackMethod, SKILL_RULES, export_skills, git
 
 
@@ -62,7 +62,7 @@ def approved_spec(item: Mapping[str, object], spec: str = "") -> dict[str, objec
     candidate = SpecCandidate(slices=[CandidateSlice.model_validate(item)], spec=spec, work_kind="feature",
                               author=AUTHOR)
     checked = accept(SpecHistory(), CLEAR, candidate, max_rounds=3)
-    return {**candidate.update(single=True), "spec_history": checked.history.model_dump(mode="json"),
+    return {"plan": candidate.update(PlanState(), single=True), "spec_history": checked.history.model_dump(mode="json"),
             "spec_approval": checked.approval.model_dump()}
 
 

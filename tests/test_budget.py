@@ -1,6 +1,6 @@
 import tests
 
-from foreman.state import ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
+from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 
 from dataclasses import replace
 from decimal import Decimal
@@ -74,7 +74,7 @@ class DollarBudgetTests(unittest.TestCase):
                         graph = compile_delivery(handler, config, run=LiveRun(forge, workspace),
                                                  scratch=scratch, checkpointer=saver)
                         graph.invoke({"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", issue=8, token_cap=100, request="x"), "checks": ChecksState(check="exit 0"), "path": [],
-                                        "issue_kind": "slice", "slice": EMPTY_SLICE},
+                                        "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE)},
                                      invocation, durability="sync")
                         snapshot = graph.get_state(invocation)
                         state = checkpoint_state(snapshot.values)
@@ -93,7 +93,7 @@ class DollarBudgetTests(unittest.TestCase):
                 self.assertEqual((state["halt"], state["stop"]), ("budget_exceeded", "budget_exceeded"))
                 self.assertIn("dollar", state["halt_detail"])
                 self.assertEqual(run_exit_code(state), 1)
-                self.assertNotIn(stage, state)
+                self.assertFalse(getattr(state["plan"], stage)) if stage in {"triage", "spec"} else self.assertNotIn(stage, state)
                 self.assertNotIn(stage, state.get("models_used", {}))
                 self.assertNotIn("commit", state["path"])
                 self.assertNotIn("publish", state["path"])
