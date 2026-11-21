@@ -66,6 +66,11 @@ class QuotaPause(Contract):
     detail: str | None
 
 
+class WatchRecord(TypedDict):
+    issue: int
+    action: Literal["filed", "commented"]
+
+
 @dataclass(frozen=True)
 class EnvironmentProbe:
     workspace: Workspace
