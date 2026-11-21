@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
-from typing import Annotated, NewType, Protocol
+from typing import Annotated, Literal, NewType, Protocol
 from typing_extensions import TypedDict
 from pydantic import BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
@@ -38,6 +38,24 @@ def head_mismatch_detail(observed: str, verified: str) -> str:
 
 class WorkspaceError(RuntimeError):
     pass
+
+
+class ImplementationRejected(WorkspaceError):
+    """Recoverable implementation history or metadata mismatch; keep the checkout."""
+
+
+class ImplementationEdits(TypedDict):
+    disposition: Literal["edits"]
+    fingerprint: str
+
+
+class AdoptedImplementation(TypedDict):
+    disposition: Literal["adopted"]
+    head: str
+    tree: str
+
+
+ImplementationCandidate = ImplementationEdits | AdoptedImplementation
 
 
 class WorktreeInspectionFailed(WorkspaceError):
@@ -97,6 +115,8 @@ class Workspace(Protocol):
     def create_branch(self, branch: str, base: str) -> None: ...
     def commit(self, message: str) -> None: ...
     def committed(self, parent: str, message: str) -> bool: ...
+    def reconcile(self, parent: str, branch: str, attribution: str) -> ImplementationCandidate: ...
+    def tree(self, head: str) -> str: ...
     def fingerprint(self) -> str: ...
     def push(self, branch: str, repo: str) -> None: ...
     def files_at(self, head: str, directory: str) -> set[str]: ...
@@ -176,6 +196,34 @@ class LiveWorkspace:
     def committed(self, parent: str, message: str) -> bool:
         return (os.fsdecode(self._git("show", "-s", "--format=%P%n%B", "HEAD")).strip()
                 == f"{parent}\n{redact(message)}".strip())
+
+    def tree(self, head: str) -> str:
+        return os.fsdecode(self._git("--no-replace-objects", "rev-parse", f"{head}^{{tree}}")).strip()
+
+    def reconcile(self, parent: str, branch: str, attribution: str) -> ImplementationCandidate:
+        observed = self.inspect()
+        if observed.branch != branch:
+            raise ImplementationRejected("Restore the delivery branch with an attached HEAD; checkout preserved.")
+        if observed.head == parent:
+            return {"disposition": "edits", "fingerprint": self.fingerprint()}
+        if not observed.clean:
+            raise ImplementationRejected("Moved HEAD has uncommitted edits; checkout preserved.")
+        try:
+            self._git("--no-replace-objects", "merge-base", "--is-ancestor", parent, observed.head)
+            commits = os.fsdecode(self._git("--no-replace-objects", "rev-list", f"{parent}..{observed.head}")).splitlines()
+            for sha in commits:
+                parents = self._git("--no-replace-objects", "show", "-s", "--format=%P", sha).split()
+                trailers = os.fsdecode(self._git("--no-replace-objects", "show", "-s", "--format=%(trailers:only,unfold)", sha)).splitlines()
+                subject = os.fsdecode(self._git("--no-replace-objects", "show", "-s", "--format=%s", sha)).strip()
+                if len(parents) != 1 or self.tree(sha) == self.tree(os.fsdecode(parents[0])):
+                    raise ImplementationRejected("Worker history must be linear and each commit nonempty; checkout preserved.")
+                if not subject or len(subject) > 72 or attribution not in trailers:
+                    raise ImplementationRejected("Worker commit needs a subject of at most 72 characters and " + attribution)
+            if not commits or self.tree(parent) == self.tree(observed.head):
+                raise ImplementationRejected("Worker history has no net tree change; checkout preserved.")
+        except WorktreeInspectionFailed as exc:
+            raise ImplementationRejected(f"Worker history is not an inspectable descendant: {exc}") from exc
+        return {"disposition": "adopted", "head": observed.head, "tree": self.tree(observed.head)}
 
     def push(self, branch: str, repo: str) -> None:
         remote = os.fsdecode(self._git("remote", "get-url", "origin")).strip()

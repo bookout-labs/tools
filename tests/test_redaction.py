@@ -243,6 +243,7 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "pull_request_command"): 5,
             ("delivery.py", "compile_delivery.prepare"): 1,
             ("delivery.py", "compile_delivery.commit"): 2,
+            ("delivery.py", "compile_delivery.reconcile"): 1,
             ("delivery.py", "compile_delivery.publish"): 1,
             ("workspace.py", "branch_command"): 1,
             ("workspace.py", "commit_commands"): 1,
