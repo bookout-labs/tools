@@ -10,8 +10,9 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery, load_slice
+from foreman.delivery import DeliveryState, LiveRun, MergeHalt, PullRequestSizeDecision, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
+from foreman.stage_output import Slice, parse_output
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 RESUMABLE_HALTS: frozenset[MergeHalt] = frozenset({"merge_held", "merge_not_armed"})
@@ -62,6 +63,11 @@ def run_live_delivery(
                 raise ValueError("This issue has no pending question.")
             if not answer.strip():
                 raise ValueError("The answer must contain text.")
+            if saved.interrupts[0].value["stage"] == "pr_size":
+                try:
+                    answer = PullRequestSizeDecision(answer).value
+                except ValueError as exc:
+                    raise ValueError("Answer split or override at the pull request size prompt.") from exc
             graph.invoke(Command(resume=answer), config, durability="sync")
         elif not saved.values:
             loaded = client.load_issue(repo, issue)
@@ -89,13 +95,9 @@ def run_live_delivery(
         if saved.values.get("stop") == "sliced":
             numbers = list(saved.values.get("child_issue_numbers", []))
             for item in saved.values["slices"][len(numbers):]:
-                dependencies = "\n".join(f"- {title}" for title in item["depends_on"]) or "None"
-                constraints = "\n".join(f"- {prop['constraint']}" for prop in item["properties"]) or "None"
-                body = (f"Acceptance:\n{item['acceptance']}\n\nDependencies:\n{dependencies}"
-                        f"\n\nScreen:\n{item['screen'] or 'None'}\n\nConstraints:\n{constraints}"
-                        f"\n\n```json\n{json.dumps(item, indent=2)}\n```")
-                labels = ["slice"] + ([] if item["depends_on"] else ["factory"])
-                numbers.append(client.create_issue(repo, item["title"], body, labels))
+                child = parse_output(Slice, item)
+                labels = ["slice"] + ([] if child.depends_on else ["factory"])
+                numbers.append(client.create_issue(repo, child.title, "", labels, child=child))
                 graph.update_state(config, {"child_issue_numbers": numbers})
             siblings = {item["title"]: number for item, number in zip(saved.values["slices"], numbers)}
             for item, number in zip(saved.values["slices"], numbers):
