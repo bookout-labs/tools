@@ -1,4 +1,5 @@
-from foreman.state import RunState, checkpoint_serializer, SCHEMA_VERSION
+import tests
+from foreman.state import ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 import json
 import subprocess
 from contextlib import contextmanager
@@ -154,7 +155,7 @@ class ReviewRoundsTest(unittest.TestCase):
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "example/repo#8"}}
                 state = {"schema_version": SCHEMA_VERSION, "run": RunState(repo="Example/Repo", issue=8, token_cap=20_000_000, max_budget_usd=None), "issue_kind": "slice", "slice": EMPTY_SLICE,
-                         "check": "exit 0", "pstack_pin": settings.pstack.model_dump(), **(initial or {})}
+                         "checks": ChecksState(check="exit 0"), "pstack_pin": settings.pstack.model_dump(), **(initial or {})}
                 if crash or post_crash or review_crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
                         graph.invoke(state, config)

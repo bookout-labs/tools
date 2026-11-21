@@ -1,4 +1,5 @@
 import tests
+from foreman.state import ChecksState
 
 import json
 from pathlib import Path
@@ -87,7 +88,7 @@ class PermissionsTest(unittest.TestCase):
         plan = {"models": [], "instruction": "review", "methods": [], "read_roots": [],
                 "target": None, "scope": {"command": "git diff --no-color abc...def --", "inline": []}}
         CliWorker(Path.cwd(), runner)("review", ModelSpec.parse("claude-opus-5-5-high"),
-                                     {"check": "sh check.sh", "dispatch_plan": plan}, "review")
+                                     {"checks": ChecksState(check="sh check.sh"), "dispatch_plan": plan}, "review")
         args = args_seen[0]
         self.assertEqual(json.loads(args[args.index("--settings") + 1])["permissions"]["allow"],
                          ["Bash(git diff --no-color abc...def --)"])

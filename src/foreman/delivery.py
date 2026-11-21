@@ -35,9 +35,9 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
+    ImplementOutput, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
 )
-from foreman.state import RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult, SpecRejection, SpecRejectionKind
+from foreman.state import ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult, SpecRejection, SpecRejectionKind
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
@@ -225,8 +225,9 @@ def load_slice(raw: object) -> DeliveryUpdate:
 
 
 def graph_check(state: DeliveryState) -> GraphEvidence | None:
-    head, command, code = state.get("verified_head"), state.get("check"), state.get("check_exit_code")
-    if head and command and code == 0 and state.get("verify") == "pass":
+    checks = state["checks"]
+    head, command, code = checks.verified_head, checks.check, checks.check_exit_code
+    if head and command and code == 0 and checks.verify == "pass":
         return GraphEvidence(head=head, command=command, exit_code=code)
     return None
 
@@ -239,7 +240,7 @@ def carried_tool_facts(state: DeliveryFields) -> list[StoredToolFact]:
 def _check_tool_facts(
     output: ReviewOutput, workspace: Workspace, state: DeliveryState,
 ) -> GraphCheck | None:
-    head = state.get("verified_head")
+    head = state["checks"].verified_head
     manifest_path = state.get("fact_record", MANIFEST_PATH)
     facts = {fact.claim: fact for fact in carried_tool_facts(state)}
     for fact in output.tool_facts:
@@ -276,9 +277,18 @@ def stage_update(
 ) -> DeliveryUpdate:
     slices = clean_slices(output.slices, workspace) if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready" else []
     context = UpdateContext(state.get("issue_kind"), state.get("work_kind"), bool(oversized_pr(state)), slices, accepted_model)
-    update: DeliveryUpdate = {**output.update(context)}
+    checks = state["checks"]
+    if isinstance(output, ImplementOutput):
+        update: DeliveryUpdate = {"implementation": output.implementation, "checks": checks.model_copy(update={
+            "browser_proof": output.browser_proof.record() if output.browser_proof else None,
+            "formal_proof": output.formal_proof.record() if output.formal_proof else None,
+        })}
+    elif isinstance(output, VerifyOutput):
+        update = {"checks": checks.model_copy(update={"verify": output.verify})}
+    else:
+        update = {**output.update(context)}
     update["path"] = [name]
-    if update.get("verify") == "fail":
+    if isinstance(output, VerifyOutput) and output.verify == "fail":
         update["verify_failures"] = failure_count(state, "verify_failures") + 1
     if model:
         used = state.get("models_used", {})
@@ -309,6 +319,7 @@ def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, 
 def stop_reason(state: DeliveryState) -> Halt | Literal[
     "sliced", "pr_split_required", "needs_human", "answered", "verified", "stopped"
 ]:
+    checks = state["checks"]
     if halt := state.get("halt"):
         return halt
     if oversized_pr(state):
@@ -325,11 +336,11 @@ def stop_reason(state: DeliveryState) -> Halt | Literal[
             return "sliced"
     if state.get("triage") == "question":
         return "answered"
-    if state.get("verify") == "fail":
+    if checks.verify == "fail":
         return Halt.verify_cap
     if state.get("review") == "changes":
         return Halt.review_cap
-    if state.get("verify") == "pass":
+    if checks.verify == "pass":
         return "verified"
     return "stopped"
 
@@ -368,13 +379,14 @@ def compile_delivery(
 
     def bind(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+            checks = state["checks"]
             admission = dollar_admission_for(state["run"], state.get("attempts", []))
             if stop := admission_stop(state, state.get("attempts", []), name, admission):
                 return stop
             current_run = runtime.context or run
             if name == "implement":
                 probe = current_run.environment or EnvironmentProbe(
-                    current_run.workspace, state.get("preflight", ""), current_run.check_log,
+                    current_run.workspace, checks.preflight, current_run.check_log,
                 )
                 if detail := probe.error:
                     return halted(Halt.env_unavailable, detail, name)
@@ -432,7 +444,7 @@ def compile_delivery(
             run_state = state["run"]
             repo = run_state.repo
             if name == "review":
-                head, issue = state.get("verified_head"), run_state.issue
+                head, issue = checks.verified_head, run_state.issue
                 try:
                     worktree = run.workspace.inspect()
                     if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
@@ -529,7 +541,7 @@ def compile_delivery(
                 accepted: AcceptedReview | None = None
                 if isinstance(output, ReviewOutput):
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
-                    head = state.get("verified_head") or state.get("work", WorkState()).head_sha or ""
+                    head = state["checks"].verified_head or state.get("work", WorkState()).head_sha or ""
                     accepted = accept(past, output, head, _check_tool_facts(output, run.workspace, state))
                 if accepted is not None and accepted_model is not None:
                     contributors, families = contributors_for(name, config, state.get("models_used", {}), state.get("implement_models"))
@@ -599,7 +611,9 @@ def compile_delivery(
             if repair_head := work.repair_head:
                 run.workspace.refresh(branch, repair_head)
             ready = run.workspace.inspect()
-            return {"work": WorkState(branch=branch, base=base, attempt_head=ready.head)}
+            checks = state["checks"]
+            return {"work": WorkState(branch=branch, base=base, attempt_head=ready.head),
+                    "checks": ChecksState(check=checks.check, preflight=checks.preflight)}
         except (WorkspaceError, ForgeError) as exc:
             return halted(Halt.git_failed, str(exc), "prepare")
 
@@ -697,37 +711,34 @@ def compile_delivery(
             return halted(Halt.dirty_worktree, str(exc), "verify")
         if not worktree.clean:
             return halted(Halt.dirty_worktree, "The worktree has changes.", "verify")
-        command = state["check"]
+        checks = state["checks"]
+        command = checks.check
         exit_code = workspace.run(command, log=check_log)
         detail = None
         if reason := CHECK_START_FAILURES.get(exit_code):
             detail = f"Check {command!r} exited with {exit_code} ({reason})"
         elif exit_code:
-            detail = failed_preflight(workspace, state.get("preflight", ""), log=check_log)
+            detail = failed_preflight(workspace, checks.preflight, log=check_log)
+        checked = checks.model_copy(update={"check_exit_code": exit_code, "proof_labels": {},
+            "verify": "pass" if exit_code == 0 else "fail", "verified_head": worktree.head if exit_code == 0 else ""})
         if detail:
-            return {**halted(Halt.env_unavailable, detail, "verify"), "check_exit_code": exit_code}
-        verdict = "pass" if exit_code == 0 else "fail"
-        checked: DeliveryUpdate = {"verified_head": worktree.head} if exit_code == 0 else {}
-        return {
-            **stage_update("verify", VerifyOutput(verify=verdict), state),
-            "check_exit_code": exit_code,
-            "proof_labels": {},
-            **checked,
-        }
+            return {**halted(Halt.env_unavailable, detail, "verify"), "checks": checked}
+        return {**stage_update("verify", VerifyOutput(verify="pass" if exit_code == 0 else "fail"), state), "checks": checked}
 
     def prove(state: DeliveryState) -> DeliveryUpdate:
         slice = _active_slice(state)
+        checks = state["checks"]
         labels = {
-            "browser": browser_proof_label(slice, state.get("browser_proof")),
-            "formal": formal_proof_label(slice, state.get("formal_proof")),
+            "browser": browser_proof_label(slice, checks.browser_proof),
+            "formal": formal_proof_label(slice, checks.formal_proof),
         }
-        update: DeliveryUpdate = {"path": ["proof"], "proof_labels": {key: label for key, label in labels.items() if label}}
+        update: DeliveryUpdate = {"path": ["proof"], "checks": checks.model_copy(update={"proof_labels": {key: label for key, label in labels.items() if label}})}
         if "insufficient_evidence" in labels.values():
             update.update(halted(Halt.insufficient_evidence, "Required proof is missing.", "proof"))
         elif "block" in labels.values():
             update["proof_failures"] = failure_count(state, "proof_failures") + 1
             if update["proof_failures"] >= config.max_review_rounds:
-                detail = f"Proof failed after {update['proof_failures']} rounds: {update['proof_labels']}."
+                detail = f"Proof failed after {update['proof_failures']} rounds: {update['checks'].proof_labels}."
                 update.update(halted(Halt.review_cap, detail, "proof"))
         return update
 
@@ -780,8 +791,8 @@ def compile_delivery(
 
     def review(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
         try:
-            head = state.get("verified_head")
-            if head is None:
+            head = state["checks"].verified_head
+            if not head:
                 raise WorktreeInspectionFailed("The run did not record a verified HEAD.")
             worktree = run.workspace.inspect()
             if worktree.head != head:
@@ -847,7 +858,7 @@ def compile_delivery(
     def after_verify(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
-        if state.get("verify") == "pass":
+        if state["checks"].verify == "pass":
             slice = _active_slice(state)
             if browser_required(slice) or formal_required(slice):
                 return "proof"
@@ -859,12 +870,12 @@ def compile_delivery(
     def after_proof(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
-        return "prepare" if state.get("proof_labels") else "review"
+        return "prepare" if state["checks"].proof_labels else "review"
 
     def arm_merge(state: DeliveryState) -> DeliveryUpdate:
         run_state = state["run"]
         repo = run_state.repo
-        head = state.get("verified_head")
+        head = state["checks"].verified_head
         merge = MergeState(
             status="not_armed", receipt=state.get("merge", MergeState()).receipt,
             command=merge_command(repo, "<number>", head or "<sha>"),
@@ -877,7 +888,7 @@ def compile_delivery(
             }
 
         forge, workspace = run.forge, run.workspace
-        if head is None:
+        if not head:
             return merge_halted(Halt.merge_not_armed, "The run did not record a verified HEAD.")
         try:
             worktree = workspace.inspect()
@@ -953,7 +964,7 @@ def compile_delivery(
         if not state.get("halt"):
             rounds = failure_count(state, "verify_failures") if reason == Halt.verify_cap else review_count(state)
             if reason == Halt.verify_cap:
-                detail = f"Verification failed after {rounds} rounds. Check {state.get('check') or '(none)'} failed."
+                detail = f"Verification failed after {rounds} rounds. Check {state['checks'].check or '(none)'} failed."
                 return {**halted(Halt.verify_cap, detail, "done"), "stop": str(reason)}
             if reason == Halt.review_cap:
                 detail = f"Review requested changes after {rounds} rounds. Last review: {state.get('detail', '')}"
@@ -1091,7 +1102,7 @@ def run_delivery(
         "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens,
                         max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
         "fact_record": fact_record_path(fact_record),
-        "check": check,
+        "checks": ChecksState(check=check),
         "issue_kind": "parent" if slice is None else "slice",
         "review_rounds": 0,
         "models_used": {},

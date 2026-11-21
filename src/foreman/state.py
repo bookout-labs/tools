@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-from pydantic import BaseModel, PlainValidator
+from pydantic import BaseModel, Field, PlainValidator
 from typing_extensions import TypedDict
 
 from foreman.github import ReviewReceipt
@@ -30,11 +30,22 @@ class RunState(BaseModel, frozen=True, extra="forbid"):
     max_budget_usd: str | None = None
 
 
-SCHEMA_VERSION = 4
+class ChecksState(BaseModel, frozen=True, extra="forbid"):
+    check: str = ""
+    preflight: str = ""
+    check_exit_code: int | None = None
+    verify: str = ""
+    verified_head: str = ""
+    browser_proof: BrowserProofRecord | None = None
+    formal_proof: FormalProofRecord | None = None
+    proof_labels: dict[str, str] = Field(default_factory=dict)
+
+
+SCHEMA_VERSION = 5
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState])
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState, ChecksState])
 
 
 class CheckpointVersionError(ValueError):
@@ -72,8 +83,6 @@ class DeliveryFields(TypedDict, total=False):
     schema_version: int
     pending_dispatch: PendingDispatchRecord | None
     dispatch_plan: DispatchPlanRecord
-    preflight: str
-    check_exit_code: int
     triage: str
     spec: str
     spec_gate: str
@@ -90,11 +99,7 @@ class DeliveryFields(TypedDict, total=False):
     research: str
     work: WorkState
     implementation: str
-    verified_head: str
     merge: MergeState
-    browser_proof: BrowserProofRecord | None
-    formal_proof: FormalProofRecord | None
-    proof_labels: dict[str, str]
     human_question: str
     human_answers: list[str]
     pr_size: PullRequestSize
@@ -109,7 +114,6 @@ class DeliveryFields(TypedDict, total=False):
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
     risk: MergeRiskRecord
-    verify: str
     review_rounds: int
     verify_failures: int
     proof_failures: int
@@ -124,21 +128,21 @@ class DeliveryFields(TypedDict, total=False):
 
 
 class DeliveryUpdate(DeliveryFields, total=False):
+    checks: ChecksState
     run: RunState
     stop: str
-    check: str
     path: Annotated[list[str], operator.add]
 
 
 class DeliveryState(DeliveryFields):
+    checks: ChecksState
     run: RunState
     stop: NotRequired[str]
-    check: str
     path: Annotated[list[str], operator.add]
 
 
 class DeliveryResult(DeliveryFields):
+    checks: ChecksState
     run: RunState
-    check: str
     path: Annotated[list[str], operator.add]
     stop: str

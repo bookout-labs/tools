@@ -29,7 +29,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
-from foreman.state import RunState, checkpoint_serializer, CheckpointVersionError
+from foreman.state import ChecksState, RunState, checkpoint_serializer, CheckpointVersionError
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
@@ -310,14 +310,18 @@ class CliWorkerTest(unittest.TestCase):
 
         run_state = RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout", token_cap=100, max_budget_usd="1.5")
 
+        checks = ChecksState(check="true", preflight="env", check_exit_code=0, verify="pass", verified_head=HEAD,
+            browser_proof=BROWSER, formal_proof=FORMAL, proof_labels={"browser": "block"})
+
         def run(args, cwd, env):
             state = json.loads(args[-1].split("Delivery state:\n")[1])
+            self.assertEqual(state["checks"], checks.model_dump(mode="json"))
             self.assertEqual(state["run"], run_state.model_dump(mode="json"))
             self.assertEqual(state["work"], work.model_dump(mode="json"))
             self.assertEqual(state["merge"], merge.model_dump(mode="json"))
             return worker_reply(args, {"triage": "implement"})
 
-        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge, "work": work, "run": run_state}, "Read.")
+        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge, "work": work, "run": run_state, "checks": checks}, "Read.")
         self.assertEqual(result.kind, "ran")
 
     def test_commands_use_the_configured_models_and_parse_the_final_result(self):
@@ -822,7 +826,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             result = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
         fetch.assert_called_once_with(BRANCH, "d"*40)
         self.assertEqual(result["stop"], "verified", result)
-        self.assertEqual((result["verified_head"], result["reviewed_head"], result["review_receipt"]["commit_id"]), ("d"*40,)*3)
+        self.assertEqual((result["checks"].verified_head, result["reviewed_head"], result["review_receipt"]["commit_id"]), ("d"*40,)*3)
 
     def test_external_conflict_repair_renews_entire_lifecycle(self):
         workspace = FakeWorkspace(self.cwd)
@@ -839,7 +843,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             resumed = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
         self.assertEqual(resumed["stop"], "verified")
         self.assertEqual(resumed["reviewed_head"], repaired)
-        self.assertEqual(resumed["verified_head"], repaired)
+        self.assertEqual(resumed["checks"].verified_head, repaired)
         self.assertEqual(resumed["review_receipt"]["commit_id"], repaired)
         self.assertEqual(len(self.github.reviews), 2)
 
@@ -1235,8 +1239,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         )
         self.assertEqual(self.calls, ["claude", "codex", "claude"])
         self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "merge", "done"])
-        self.assertEqual(result["check_exit_code"], 0)
-        self.assertEqual(result["verified_head"], HEAD)
+        self.assertEqual(result["checks"].check_exit_code, 0)
+        self.assertEqual(result["checks"].verified_head, HEAD)
         self.assertEqual(result["work"].head_sha, HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"].status, "armed")
@@ -1342,9 +1346,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertEqual(result["path"].count("verify"), 2)
                     self.assertEqual(result["path"].count("review"), 2)
                     self.assertEqual(result["path"].count("proof"), 2)
-                    self.assertEqual(result["pr_size"]["head"], result["verified_head"])
-                    self.assertEqual(rounds[-1]["reviewed_head"], result["verified_head"])
-                    self.assertEqual(self.github.merge_calls[-1][-1], result["verified_head"])
+                    self.assertEqual(result["pr_size"]["head"], result["checks"].verified_head)
+                    self.assertEqual(rounds[-1]["reviewed_head"], result["checks"].verified_head)
+                    self.assertEqual(self.github.merge_calls[-1][-1], result["checks"].verified_head)
                     self.assertEqual(result["work"].candidate["disposition"], "adopted" if committed else "edits")
 
     def test_missing_manifest_can_be_recorded_by_implement(self):
@@ -1380,9 +1384,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.review_tool_fact("result.txt", entry="result.txt")
         self.assertEqual(result.get("review"), "approve")
         self.assertEqual(result.get("findings"), [])
-        self.assertEqual(result.get("work", WorkState()).head_sha, result.get("verified_head"))
-        self.assertNotEqual(result.get("verified_head"), HEAD)
-        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, result.get("verified_head"))])
+        self.assertEqual(result.get("work", WorkState()).head_sha, result["checks"].verified_head)
+        self.assertNotEqual(result["checks"].verified_head, HEAD)
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, result["checks"].verified_head)])
 
     def test_dangling_tool_fact_citation_blocks_approval(self):
         result = self.review_tool_fact("absent.txt", entry="absent.txt")
@@ -1474,7 +1478,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_nonzero_check_exit_consumes_the_cap_without_dispatched_verify_or_review(self):
         result = self.walk([{"triage": "implement"}] + [{"implementation": "built"}] * 3, check="exit 17")
-        self.assertEqual(result["check_exit_code"], 17)
+        self.assertEqual(result["checks"].check_exit_code, 17)
         self.assertEqual(result["stop"], "verify_cap")
         self.assertEqual(self.calls, ["claude", "codex", "codex", "codex"])
         self.assertNotIn("merge", result["path"])
@@ -1489,7 +1493,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         ])
         self.assertEqual(result["path"][-5:], ["verify", "proof", "review", "merge", "done"])
         self.assertEqual(result["slice"], SLICE)
-        self.assertEqual(result["proof_labels"], {})
+        self.assertEqual(result["checks"].proof_labels, {})
         self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
 
@@ -1502,7 +1506,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     {"triage": "implement", "slice": EMPTY_SLICE}, {"implementation": "built", field: artifact},
                 ])
                 self.assertEqual(result["stop"], "insufficient_evidence")
-                self.assertEqual(result["proof_labels"], {missing: "insufficient_evidence"})
+                self.assertEqual(result["checks"].proof_labels, {missing: "insufficient_evidence"})
                 self.assertNotIn("review", result["path"])
 
     def test_parent_stops_before_review_when_its_proof_is_missing(self):
@@ -1510,7 +1514,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.walk([{"triage": "implement", "slice": SLICE}, {"implementation": "built"}, APPROVE])
         self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "proof", "done"])
         self.assertEqual(result["stop"], "insufficient_evidence")
-        self.assertEqual(result["proof_labels"], {"browser": "insufficient_evidence", "formal": "insufficient_evidence"})
+        self.assertEqual(result["checks"].proof_labels, {"browser": "insufficient_evidence", "formal": "insufficient_evidence"})
 
     def test_parent_cannot_implement_without_a_slice(self):
         self.github = FakeGitHub(["factory"])
@@ -1546,7 +1550,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         }
         result = self.walk([{"triage": "implement"}] + [blocked] * 3)
         self.assertEqual(result["stop"], "review_cap")
-        self.assertEqual(result["proof_labels"], {"formal": "block"})
+        self.assertEqual(result["checks"].proof_labels, {"formal": "block"})
         self.assertEqual(result["review_rounds"], 0)
         self.assertEqual(result["proof_failures"], 3)
         self.assertNotIn("review", result["path"])
@@ -1703,7 +1707,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         )
         self.assertEqual(result.get("stop"), "env_unavailable")
         self.assertEqual(result.get("review_rounds"), 0)
-        self.assertEqual(result.get("check_exit_code"), 1)
+        self.assertEqual(result["checks"].check_exit_code, 1)
         self.assertIn("test -f ready", result.get("halt_detail", ""))
         self.assertIn("exited with 1", result.get("halt_detail", ""))
         self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "done"])
@@ -1711,7 +1715,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         (self.cwd / "ready").touch()
         resumed = self.walk([APPROVE])
         self.assertEqual(resumed.get("stop"), "verified")
-        self.assertEqual(resumed.get("check_exit_code"), 0)
+        self.assertEqual(resumed["checks"].check_exit_code, 0)
         self.assertEqual(resumed.get("review_rounds"), 1)
         self.assertEqual(self.calls, ["claude", "codex", "claude"])
 
@@ -1743,7 +1747,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 )
                 self.assertEqual(result.get("stop"), "env_unavailable")
                 self.assertEqual(result.get("review_rounds"), 0)
-                self.assertEqual(result.get("check_exit_code"), exit_code)
+                self.assertEqual(result["checks"].check_exit_code, exit_code)
                 for detail in (command, str(exit_code), reason):
                     self.assertIn(detail, result.get("halt_detail", ""))
         self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\n")
@@ -1796,7 +1800,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual(result["stop"], "dirty_worktree")
                 self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "done"])
                 self.assertFalse((self.cwd / "ran").exists())
-                self.assertNotIn("check_exit_code", result)
+                self.assertIsNone(result["checks"].check_exit_code)
                 self.assertEqual(self.github.merge_calls, [])
 
     def test_worktree_changes_after_check_leave_the_command_unarmed(self):
@@ -1814,7 +1818,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
                     snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
                 )
-                self.assertEqual(result["check_exit_code"], 0)
+                self.assertEqual(result["checks"].check_exit_code, 0)
                 self.assertEqual(result["merge"].status, "not_armed")
                 self.assertEqual(result["stop"], "merge_not_armed")
                 self.assertIn(detail, result["halt_detail"])
@@ -1876,6 +1880,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(resumed["stop"], "dirty_worktree")
         expected = WorkState(branch=BRANCH, base="main", repair_head="3" * 40)
         self.assertEqual(resumed["work"], expected)
+        self.assertEqual(resumed["checks"], ChecksState(check=halted["checks"].check, preflight=halted["checks"].preflight))
         self.assertEqual(resumed["run"], halted["run"])
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
@@ -1906,6 +1911,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(resumed["run"], halted["run"])
         self.assertEqual(resumed["work"], WorkState(branch=BRANCH, base="main"))
         self.assertEqual(resumed["merge"], MergeState())
+        self.assertEqual(halted["checks"].verified_head, HEAD)
+        self.assertEqual(resumed["checks"], ChecksState(check=halted["checks"].check, preflight=halted["checks"].preflight))
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
@@ -1983,7 +1990,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         with patch.object(LiveWorkspace, "push"):
             halted = run_delivery()
         self.assertEqual(halted["stop"], "merge_not_armed", halted)
-        verified_head = halted["verified_head"]
+        verified_head = halted["checks"].verified_head
         self.assertEqual(self.github.merge_calls, [])
         reset = re.search(rf"^  git reset --keep {verified_head}$", halted["halt_detail"], re.MULTILINE)
         self.assertIsNotNone(reset, halted["halt_detail"])
@@ -2501,7 +2508,7 @@ class HaltExitCodeTest(unittest.TestCase):
         detail = "Merge arming requires a full 40-hex commit SHA."
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
-        result = {"run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed")}
+        result = {"checks": ChecksState(), "run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed")}
         with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)

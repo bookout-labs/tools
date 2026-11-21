@@ -17,6 +17,7 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
+from foreman.state import ChecksState
 from foreman.stage_output import STAGE_OUTPUTS, DispatchPlan
 from foreman.usd import BudgetUsd
 
@@ -57,7 +58,7 @@ class CliWorker:
         plan = DispatchPlan.model_validate(plan) if plan else None
         budget = plan.budget_usd if plan else None
         edit = node == "implement"
-        check = state.get("check") if edit else plan.scope["command"] if plan and plan.scope else None
+        check = ChecksState.model_validate(state["checks"]).check if edit else plan.scope["command"] if plan and plan.scope else None
         adapter = ADAPTERS[model.family](model)
         checkout = self.cwd.resolve()
         temp_root = Path(tempfile.gettempdir()).resolve()
