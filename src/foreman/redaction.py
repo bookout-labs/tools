@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from string import ascii_letters, digits
 from threading import Lock
+import re
 
 from detect_secrets.plugins.base import BasePlugin, RegexBasedDetector
 from detect_secrets.plugins.high_entropy_strings import HighEntropyStringsPlugin
@@ -71,6 +72,8 @@ def _private_key_span(text: str, start: int, header: str) -> tuple[int, int]:
 
 
 def _matches(text: str, plugins: list[BasePlugin]) -> Iterator[_Match]:
+    for match in re.finditer(r"\bgh[pousr]_[A-Za-z0-9]+", text):
+        yield _Match(*match.span(), "GitHub Token", 0)
     offset = 0
     for raw_line in text.splitlines(keepends=True):
         line = raw_line.rstrip("\r\n")

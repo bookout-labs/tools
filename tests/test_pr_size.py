@@ -1,3 +1,6 @@
+from dataclasses import replace
+from unittest.mock import patch
+from skill_fixture import fixture_pin
 import contextlib
 import io
 import json
@@ -9,14 +12,21 @@ import unittest
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.cli import main
-from foreman.delivery import LiveRun
+from foreman.delivery import LiveRun, compile_delivery
+from foreman.config import load_config
 from foreman.stage_output import PULL_REQUEST_LINES
 from foreman.workspace import LiveWorkspace
 from test_runner import APPROVE, BRANCH, EMPTY_SLICE, FakeGitHub, worker_reply
 
 
 class PullRequestSizeTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(cls.enterClassContext(TemporaryDirectory()))
+        cls.config = replace(load_config(), pstack=fixture_pin(root / "fixture"))
+
     def setUp(self):
+        self.enterContext(patch("foreman.runner.load_config", return_value=self.config))
         directory = Path(self.enterContext(TemporaryDirectory()))
         self.root = directory / "checkout"
         self.root.mkdir()
@@ -78,6 +88,16 @@ class PullRequestSizeTest(unittest.TestCase):
         return worker_reply(args, replies[stage])
 
     def invoke(self, *flags, expected_code=0):
+        if not self.checkpoint.exists():
+            with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+                graph = compile_delivery(None, self.config, run=LiveRun(self.forge, LiveWorkspace(self.root)), checkpointer=saver)
+                graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
+                    "pstack_pin": self.config.pstack.model_dump(),
+                    "repo": "Example/Engine", "issue": 8, "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
+                    **({"spec": self.original_spec} if self.original_spec else {}),
+                    "workspace": str(self.root.resolve()), "check": "exit 0", "head_sha": self.git("rev-parse", "HEAD"),
+                    "models_used": {"implement": "gpt-6.1-sol-high"}, "path": ["triage", "implement", "publish"],
+                }, as_node="publish")
         with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0", *flags],
@@ -112,14 +132,14 @@ class PullRequestSizeTest(unittest.TestCase):
         self.write("tests/test_items.py", "handwritten\n" * (PULL_REQUEST_LINES + 1))
         head = self.commit()
         stdout, _ = self.invoke(expected_code=3)
-        self.assertEqual(self.stages, ["TriageOutput", "ImplementOutput", "SpecOutput"])
+        self.assertEqual(self.stages, ["SpecOutput"])
         self.assertEqual(self.spec_state["pr_size"], {
             "head": head, "merge_base": self.base, "lines": PULL_REQUEST_LINES + 1,
         })
         self.assertIn("paused needs_human", stdout)
         self.assertIn(f"{PULL_REQUEST_LINES + 1} changed lines", stdout)
         self.assertIn("done pr_split_required", self.invoke("--answer", "split", expected_code=1)[0])
-        self.assertEqual(self.stages, ["TriageOutput", "ImplementOutput", "SpecOutput"])
+        self.assertEqual(self.stages, ["SpecOutput"])
         self.assertEqual(self.forge.merge_calls, [])
 
     def test_generated_only_diff_reaches_review(self):
@@ -194,7 +214,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(values["spec"], self.original_spec)
         self.assertEqual(values["pr_size_override"]["head"], old_head)
         self.assertEqual(values["pr_size"]["head"], new_head)
-        self.assertEqual(self.stages, ["TriageOutput", "SpecOutput", "ImplementOutput", "SpecOutput"])
+        self.assertEqual(self.stages, ["SpecOutput"])
         self.assertEqual(self.forge.merge_calls, [])
         self.assertIn("done verified", self.invoke("--answer", "override")[0])
 
