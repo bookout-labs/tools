@@ -22,7 +22,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Mer
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
-from foreman.workspace import LiveWorkspace, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from test_adapters import fixture_process
 
 
@@ -68,6 +68,9 @@ class FakeWorkspace(LiveWorkspace):
             raise self.last
         return self.last
 
+    def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
+        return {"head": head, "merge_base": "b" * 40, "lines": 1}
+
     def review_diff(self, base, head):
         return ReviewDiff(f"git diff {base}...{head}", DIFF)
 
@@ -97,10 +100,14 @@ class FakeGitHub:
         self.issue_labels: dict[int, list[str]] = {}
         self.merge_calls = []
         self.dependencies = {}
+        self.base_branch = "main"
         self.reviews = []
         self.base = BASE
         self.hold = None
         self.hold_reads = []
+
+    def pull_request_base(self, repo: str, branch: str) -> str:
+        return self.base_branch
 
     def review_target(self, repo, issue, branch, sha):
         return PullRequest.model_validate({
@@ -432,9 +439,9 @@ class LiveRunnerTest(unittest.TestCase):
                 raise subprocess.TimeoutExpired(command, 30)
             self.assertIsNone(timeout)
             key = (command,) if isinstance(command, str) else tuple(command)
-            return subprocess.CompletedProcess(command, 0, outputs[key])
+            return subprocess.CompletedProcess(command, 0, outputs[key].encode())
 
-        with patch("foreman.workspace.subprocess.run", side_effect=run):
+        with patch.object(LiveWorkspace, "pull_request_size", return_value={"head": HEAD, "merge_base": BASE, "lines": 1}), patch("foreman.workspace.subprocess.run", side_effect=run):
             result = self.walk(
                 [{"triage": "implement"}, {"implementation": "Built."}],
                 workspace=LiveWorkspace(self.cwd),
@@ -780,13 +787,29 @@ class LiveRunnerTest(unittest.TestCase):
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk(
                     [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
+                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
                 )
                 self.assertEqual(result["check_exit_code"], 0)
                 self.assertEqual(result["merge"], "not_armed")
                 self.assertEqual(result["stop"], "merge_not_armed")
                 self.assertIn(detail, result["halt_detail"])
                 self.assertEqual(self.github.merge_calls, [])
+
+    def test_head_moved_before_review_uses_the_existing_merge_stop(self):
+        moved = WorktreeState("b" * 40, True, BRANCH)
+        for snapshots in ((CLEAN_WORKTREE, moved), (CLEAN_WORKTREE, CLEAN_WORKTREE, moved)):
+            with self.subTest(snapshots=snapshots), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "run.sqlite3"
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}], snapshots=snapshots)
+                self.assertEqual(result.get("stop"), "merge_not_armed")
+                self.assertEqual(result.get("merge"), "not_armed")
+                self.assertIn(f"HEAD is {moved.head}, verification checked {HEAD}.", result.get("halt_detail", ""))
+                self.assertNotIn("review", result.get("models_used", {}))
+                self.assertEqual(self.github.merge_calls, [])
+                resumed = self.walk([APPROVE])
+                self.assertIn("review", resumed.get("models_used", {}))
+                self.assertEqual(resumed.get("merge"), "armed")
+                self.github.merge_calls.clear()
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
@@ -810,7 +833,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_retry_after_worktree_is_cleaned_arms_once(self):
         halted = self.walk(
             [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-            snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
+            snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
         )
         self.assertEqual(halted["stop"], "merge_not_armed")
         self.assertEqual(halted["merge"], "not_armed")
@@ -836,8 +859,9 @@ class LiveRunnerTest(unittest.TestCase):
 
         git("init", "-b", BRANCH)
         git("commit", "--allow-empty", "-m", "Verified commit")
+        git("branch", "main")
+        git("remote", "add", "origin", ".")
         verified_head = git("rev-parse", "HEAD")
-        git("remote", "add", "origin", str(repo))
         self.github.base = verified_head
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
@@ -869,9 +893,9 @@ class LiveRunnerTest(unittest.TestCase):
     def test_live_workspace_reports_head_status_and_branch(self):
         for status, branch in (("", BRANCH + "\n"), ("?? untracked\n", ""), ("", "")):
             with self.subTest(status=status, branch=branch), patch("foreman.workspace.subprocess.run", side_effect=[
-                subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, HEAD + "\n"),
-                subprocess.CompletedProcess(["git", "status", "--porcelain"], 0, status),
-                subprocess.CompletedProcess(["git", "branch", "--show-current"], 0, branch),
+                subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, (HEAD + "\n").encode()),
+                subprocess.CompletedProcess(["git", "status", "--porcelain"], 0, status.encode()),
+                subprocess.CompletedProcess(["git", "branch", "--show-current"], 0, branch.encode()),
             ]) as run:
                 self.assertEqual(LiveWorkspace(self.cwd).inspect(), WorktreeState(HEAD, not status, branch.strip() or None))
                 self.assertEqual([call.args[0] for call in run.call_args_list], [
@@ -916,7 +940,7 @@ class LiveRunnerTest(unittest.TestCase):
         for head in ("", "abc123", "z" * 40):
             with self.subTest(head=head), patch(
                 "foreman.workspace.subprocess.run",
-                return_value=subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, head + "\n", ""),
+                return_value=subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, (head + "\n").encode(), b""),
             ) as run:
                 with self.assertRaisesRegex(WorktreeInspectionFailed, "full 40-hex HEAD SHA"):
                     LiveWorkspace(self.cwd).inspect()

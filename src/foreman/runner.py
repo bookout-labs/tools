@@ -10,7 +10,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery
+from foreman.delivery import DeliveryState, LiveRun, MergeHalt, PullRequestSizeDecision, compile_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.github import Forge
 from foreman.stage_output import StoredSlice, parse_output
@@ -77,6 +77,11 @@ def run_live_delivery(
                 raise ValueError("This issue has no pending question.")
             if not answer.strip():
                 raise ValueError("The answer must contain text.")
+            if saved.interrupts[0].value["stage"] == "pr_size":
+                try:
+                    answer = PullRequestSizeDecision(answer).value
+                except ValueError as exc:
+                    raise ValueError("Answer split or override at the pull request size prompt.") from exc
             graph.invoke(Command(resume=answer), config, durability="sync")
         elif not saved.values:
             loaded = client.load_issue(repo, issue)
