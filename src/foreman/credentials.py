@@ -115,6 +115,10 @@ def command_environment(token: str | None = None) -> dict[str, str]:
     return env
 
 
+def normalize_remote_url(url: str) -> str:
+    return url.removesuffix(".git")
+
+
 def validate_remote(repo: str, cwd: Path | None = None, *, app: bool = True,
                     urls: list[str] | None = None) -> list[str]:
     env = command_environment() if app else None
@@ -133,7 +137,7 @@ def validate_remote(repo: str, cwd: Path | None = None, *, app: bool = True,
     for candidate in urls:
         resolved = subprocess.run(["git", "ls-remote", "--get-url", candidate], cwd=cwd,
                                   env=env, capture_output=True, text=True, timeout=10)
-        if resolved.returncode or os.fsdecode(resolved.stdout).strip().removesuffix(".git") not in expected:
+        if resolved.returncode or normalize_remote_url(os.fsdecode(resolved.stdout).strip()) not in expected:
             raise CredentialFailure("Transport requires the selected token-free GitHub repository.")
     return urls
 

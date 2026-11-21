@@ -126,6 +126,7 @@ class WorkerTest(unittest.TestCase):
             [('http.sslCAInfo', '/synthetic/ca.pem'), ('http.curloptResolve', 'github.com:443:127.0.0.1')],
             [('http.curloptResolve', 'github.com:443:127.0.0.1')],
             [('remote.other.url', good + '-other')],
+            [('remote.origin.url', good + '-other.git')],
             [('remote.origin.pushurl', good + '.git')],
             [('url.http://127.0.0.1:9/.insteadOf', good)],
             [('url.http://127.0.0.1:9/.pushInsteadOf', good)],
@@ -192,14 +193,19 @@ class WorkerTest(unittest.TestCase):
             good = f'https://github.com/{REPO}'
             git('remote', 'set-url', 'origin', good, cwd=root / 'clone')
             git('worktree', 'add', '-b', 'topic', str(root / 'linked'), cwd=root / 'clone')
-            git('config', 'branch.topic.gh-merge-base', 'main', cwd=root / 'linked')
-            for checkout in [root / 'clone', root / 'linked']:
-                with self.subTest(checkout=checkout):
-                    def run(command, **kwargs):
-                        return real_run(command, cwd=checkout, **kwargs)
+            for key in ['gh-merge-base', 't3-merge-base', 't3-merge-base-ref']:
+                git('config', f'branch.topic.{key}', 'main', cwd=root / 'linked')
+            for suffix in ['', '.git']:
+                git('remote', 'set-url', 'origin', good + suffix, cwd=root / 'clone')
+                for checkout in [root / 'clone', root / 'linked']:
+                    with self.subTest(checkout=checkout, suffix=suffix):
+                        def run(command, **kwargs):
+                            kwargs.setdefault('cwd', checkout)
+                            return real_run(command, **kwargs)
 
-                    with patch('foreman.worker_auth.subprocess.run', side_effect=run):
-                        validate_config(good)
+                        with patch('foreman.worker_auth.subprocess.run', side_effect=run):
+                            validate_config(good)
+                            self.assertEqual(validate_remote(REPO, checkout), [good + suffix, good + suffix])
 
     def test_real_push_ignores_follow_tags_and_pre_push_hook(self):
         with tempfile.TemporaryDirectory() as directory:
