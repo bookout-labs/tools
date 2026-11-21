@@ -119,6 +119,7 @@ class PublicationTest(unittest.TestCase):
         def handler(node, model, state, instruction):
             if node == "implement":
                 self.assertEqual(workspace.inspect().branch, self.branch)
+                self.assertEqual(instruction.count("Foreman owns commits and publishing"), 1)
                 if family and model.family != family:
                     return Outcome("cli_missing")
                 outcome = (edit or self.edit)()
@@ -184,12 +185,199 @@ class PublicationTest(unittest.TestCase):
             self.git("commit", "--allow-empty", "-m", "Out-of-band commit")
 
         result = self.walk(commit)
-        self.assertEqual(result.get("stop"), "failed")
-        self.assertIn("worker changed HEAD", result.get("halt_detail", ""))
+        self.assertEqual(result.get("stop"), "implementation_rejected")
+        self.assertIn("nonempty", result.get("halt_detail", ""))
         self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement"])
-        self.assertEqual(result.get("head_sha"), self.git("rev-parse", "HEAD"))
         self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
         self.assertEqual(self.created, [])
+
+    def worker_commit(self, message=None):
+        self.git("add", "--all")
+        self.git("commit", "-m", message or "Worker change\n\nCo-Authored-By: gpt-6.1-sol-high <noreply@openai.com>")
+
+    def test_worker_tree_replays_reconciliation_and_publication(self):
+        for crash_at, completed in (("soft_reset", False), ("soft_reset", True), ("commit", True),
+                                    ("push", False), ("open_pull_request", False)):
+            with self.subTest(crash_at=crash_at, completed=completed):
+                self.reset_fixture()
+                worker_heads = []
+                def edit():
+                    self.edit()
+                    self.worker_commit("Record Python title-casing tool evidence" +
+                                       ("\n\nghp_SECRETtoken123" if crash_at == "push" else ""))
+                    worker_heads.append(self.git("rev-parse", "HEAD"))
+                owner = LiveForge if crash_at == "open_pull_request" else LiveWorkspace
+                original = getattr(owner, crash_at)
+                def crash(*args, **kwargs):
+                    if completed:
+                        original(*args, **kwargs)
+                    raise SystemExit(crash_at)
+                with patch.object(owner, crash_at, crash), self.assertRaises(SystemExit):
+                    self.walk(edit)
+                commits = []
+                original_commit = LiveWorkspace.commit
+                def commit(workspace, message):
+                    self.assertFalse(commits, "duplicate commit")
+                    commits.append(message)
+                    original_commit(workspace, message)
+                with patch.object(LiveWorkspace, "commit", commit), patch.object(
+                    LiveWorkspace, "reconcile", side_effect=AssertionError("reconciliation must use its checkpoint"),
+                ):
+                    result = self.walk(self.no_worker)
+                self.assertEqual(len(commits), int(crash_at == "soft_reset"))
+                self.assertEqual(result["stop"], "verified")
+                candidate = result["implementation_candidate"]
+                self.assertEqual(candidate["disposition"], "adopted")
+                self.assertEqual(candidate["head"], worker_heads[0])
+                self.assertNotEqual(result["head_sha"], worker_heads[0])
+                self.assertEqual(candidate["tree"], self.git("rev-parse", "HEAD^{tree}"))
+                self.assertEqual(self.git("rev-parse", "HEAD^"), self.git("rev-parse", "main"))
+                message = self.git("show", "-s", "--format=%B", "HEAD")
+                self.assertTrue(message.startswith("8: List items once"))
+                self.assertIn("Co-Authored-By:", message)
+                self.assertNotIn("ghp_SECRETtoken123", message)
+                self.assertEqual(self.git("--git-dir", str(self.remote), "rev-list", self.ref, "^main").splitlines(), [result["head_sha"]])
+                self.assertEqual(self.walk(self.no_worker)["head_sha"], result["head_sha"])
+
+    def test_worker_history_rejections_preserve_checkout_and_usage(self):
+        for kind, detail in (("branch", "not attached"), ("detached", "not attached"), ("rewind", "non-descendant"),
+                             ("unrelated", "non-descendant"), ("merge", "merge commit"),
+                             ("dirty", "uncommitted edits"), ("empty", "is empty"), ("published", "already published")):
+            with self.subTest(kind=kind):
+                self.reset_fixture()
+                if kind == "rewind":
+                    self.git("commit", "--allow-empty", "-m", "New base")
+                def edit():
+                    if kind == "unrelated":
+                        self.git("switch", "--orphan", "orphan")
+                        self.edit()
+                        self.worker_commit()
+                        sha = self.git("rev-parse", "HEAD")
+                        self.git("branch", "-f", self.branch, sha)
+                        self.git("switch", self.branch)
+                        return
+                    if kind == "merge":
+                        self.git("switch", "-c", "side")
+                        (self.checkout / "side.txt").write_text("side")
+                        self.worker_commit()
+                        self.git("switch", self.branch)
+                    self.edit()
+                    self.worker_commit()
+                    if kind == "branch":
+                        self.git("switch", "-c", "other")
+                    elif kind == "detached":
+                        self.git("switch", "--detach")
+                    elif kind == "rewind":
+                        self.git("reset", "--keep", self.git("rev-parse", "main^"))
+                    elif kind == "merge":
+                        self.git("merge", "--no-ff", "side", "-m", "Merge")
+                    elif kind == "dirty":
+                        (self.checkout / "extra.txt").write_text("dirty")
+                    elif kind == "published":
+                        self.git("push", "origin", self.branch)
+                    elif kind == "empty":
+                        self.git("commit", "--allow-empty", "-m", "Empty")
+                result = self.walk(edit)
+                self.assertEqual(result["stop"], "implementation_rejected")
+                self.assertIn(detail, result["halt_detail"])
+                self.assertIn(self.git("rev-parse", "HEAD"), result["halt_detail"])
+                self.assertIn("then rerun", result["halt_detail"])
+                if kind in ("rewind", "unrelated"):
+                    self.assertEqual(self.git("status", "--porcelain"), "")
+                before = self.git("status", "--porcelain"), self.git("rev-parse", "HEAD")
+                again = self.walk(self.no_worker)
+                self.assertEqual(again["stop"], "implementation_rejected")
+                self.assertEqual(again["attempts"], result["attempts"])
+                self.assertEqual(before, (self.git("status", "--porcelain"), self.git("rev-parse", "HEAD")))
+                self.assertFalse(self.created)
+                if kind == "branch":
+                    self.git("switch", self.branch)
+                    recovered = self.walk(self.no_worker)
+                    self.assertEqual(recovered["stop"], "verified")
+                    self.assertEqual([a for a in recovered["attempts"] if a["stage"] == "implement"],
+                                     [a for a in result["attempts"] if a["stage"] == "implement"])
+
+    def test_non_descendant_history_is_rejected_before_merge_inspection(self):
+        for kind in ("rewind", "unrelated"):
+            with self.subTest(kind=kind):
+                self.reset_fixture()
+                self.git("switch", "-c", "side")
+                (self.checkout / "side.txt").write_text("side")
+                self.worker_commit()
+                self.git("switch", "main")
+                self.git("merge", "--no-ff", "side", "-m", "Merge into main")
+                main = self.git("rev-parse", "HEAD")
+                self.git("commit", "--allow-empty", "-m", "Attempt base")
+                parent = self.git("rev-parse", "HEAD")
+
+                def edit():
+                    if kind == "rewind":
+                        self.git("reset", "--keep", main)
+                    else:
+                        self.git("switch", "--orphan", "unrelated")
+                        self.git("commit", "--allow-empty", "-m", "Unrelated root")
+                        self.git("branch", "-f", self.branch, "HEAD")
+                        self.git("switch", self.branch)
+
+                result = self.walk(edit)
+                head = self.git("rev-parse", "HEAD")
+                self.assertEqual(result["stop"], "implementation_rejected")
+                self.assertIn(f"Worker HEAD {head} is a non-descendant of {parent}", result["halt_detail"])
+                self.assertNotIn("merge commit", result["halt_detail"])
+
+    def test_reconciled_candidate_mutation_is_rejected_before_publication(self):
+        original = LiveWorkspace.reconcile
+        def mutate(workspace, *args):
+            candidate = original(workspace, *args)
+            (self.checkout / "extra.txt").write_text("later")
+            self.worker_commit()
+            return candidate
+        def edit():
+            self.edit()
+            self.worker_commit()
+        with patch.object(LiveWorkspace, "reconcile", mutate):
+            result = self.walk(edit)
+        self.assertEqual(result["stop"], "git_failed")
+        self.assertIn("expected implementation commit", result["halt_detail"])
+        self.assertFalse(self.created)
+
+    def test_recovery_with_edits_uses_reconciled_fingerprint(self):
+        def edit():
+            self.edit()
+            self.worker_commit("Record Python title-casing tool evidence")
+            self.git("switch", "-c", "other")
+        rejected = self.walk(edit)
+        self.assertEqual(rejected["stop"], "implementation_rejected")
+        self.git("switch", self.branch)
+        self.git("reset", "--soft", self.git("rev-parse", "main"))
+        recovered = self.walk(self.no_worker)
+        self.assertEqual(recovered["stop"], "verified")
+        self.assertEqual(recovered["implementation_candidate"]["disposition"], "edits")
+        self.assertEqual(recovered["attempts"][:2], rejected["attempts"])
+
+    def test_reconcile_git_errors_remain_git_failed(self):
+        for operation in ("show", "merge-base"):
+            for detail in ("timed out", "index.lock"):
+                with self.subTest(operation=operation, detail=detail):
+                    self.check_reconcile_git_error(detail, operation)
+
+    def check_reconcile_git_error(self, detail, operation):
+        self.reset_fixture()
+        original = self.subprocess
+        def fail(command, **kwargs):
+            if command[:3] == ["git", "--no-replace-objects", operation]:
+                if detail == "timed out":
+                    raise subprocess.TimeoutExpired(f"git {operation}", 10)
+                return subprocess.CompletedProcess(command, 128, b"", b"index.lock exists")
+            return original(command, **kwargs)
+        def edit():
+            self.edit()
+            self.worker_commit()
+        with patch("foreman.workspace.subprocess.run", side_effect=fail):
+            result = self.walk(edit)
+        self.assertEqual(result["stop"], "git_failed")
+        self.assertIn(detail, result["halt_detail"])
+        self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
 
     def test_rerun_retries_publication_without_rerunning_the_worker(self):
         self.create_error = True

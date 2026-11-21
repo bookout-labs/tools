@@ -815,10 +815,12 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
 
-    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml", paraphrase: bool = False):
+    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml", paraphrase: bool = False, worker_commits: bool = False, residual: bool = False):
         root = self.cwd / "checkout"
         root.mkdir()
         subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=root, check=True)
+        subprocess.run(["git", "init", "-q", "--bare", str(self.cwd / "remote.git")], check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(self.cwd / "remote.git")], cwd=root, check=True)
         fixtures = (root / record_path).parent
         fixtures.mkdir(parents=True)
         (fixtures / "result.txt").write_text("debug output\n")
@@ -846,7 +848,7 @@ class LiveRunnerTest(unittest.TestCase):
         subprocess.run(["git", "config", "user.email", "synthetic@example.invalid"], cwd=root, check=True)
         subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=root, check=True)
         self.github.base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-        built = {"implementation": "Built."}
+        built = {"implementation": "Built.", "browser_proof": BROWSER, "formal_proof": FORMAL}
         review = {
             **APPROVE,
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": fixture}],
@@ -870,7 +872,12 @@ class LiveRunnerTest(unittest.TestCase):
                         claims = carried_tool_facts(worker_state)
                         self.assertIn("Carried tool facts:\n" + json.dumps([fact.model_dump() for fact in claims]), args[-1])
                         self.assertIn("claim_ids", args[-1])
-                        manifest_path.write_text(manifest("result.txt") + f'claim_ids = {json.dumps([f.claim_id for f in claims])}\n')
+                        self.assertIn("Foreman owns commits and publishing", args[-1])
+                        self.assertIn(record_path, args[-1])
+                        manifest_path.write_text(manifest("result.txt") + f'claim_ids = {json.dumps([] if residual else [f.claim_id for f in claims])}\n# round {implementations}\n')
+                        if worker_commits:
+                            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+                            subprocess.run(["git", "commit", "-qm", "Record evidence\n\nCo-Authored-By: gpt-6.1-sol-high <noreply@openai.com>"], cwd=root, check=True)
                     return worker_reply(args, reply)
                 file = root / "items.txt"
                 file.write_text((file.read_text() if file.exists() else "") + "synthetic edit\n")
@@ -881,10 +888,37 @@ class LiveRunnerTest(unittest.TestCase):
             return worker_reply(args, reply)
 
         return run_live_delivery(
-            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, fact_record=record_path,
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+            **({"fact_record": record_path} if record_path != "tests/fixtures/manifest.toml" else {}),
             dispatcher=FailoverDispatcher(CliWorker(root, worker)),
             run=LiveRun(self.github, FixtureWorkspace(root)),
         )
+
+    def test_fact_repair_adopts_worker_commits_and_rechecks_exact_head(self):
+        for committed, record, residual in ((False, "tests/fixtures/manifest.toml", False),
+                                             (True, "tests/fixtures/manifest.toml", False),
+                                             (True, "evidence/facts.toml", False),
+                                             (True, "evidence/facts.toml", True)):
+            with self.subTest(committed=committed, record=record, residual=residual), TemporaryDirectory() as directory:
+                self.cwd = Path(directory)
+                self.checkpoint = self.cwd / "runs.sqlite3"
+                self.github.body = slice_body(SLICE)
+                result = self.review_tool_fact(None, recover=True, record_path=record,
+                                               worker_commits=committed, residual=residual)
+                self.assertEqual(result["stop"], "review_cap" if residual else "verified")
+                rounds = result["review_findings"]
+                self.assertFalse(rounds[0]["graph_check"]["passed"])
+                self.assertEqual(rounds[-1]["graph_check"]["passed"], not residual)
+                self.assertIn(rounds[0]["reviewed_head"], rounds[-1]["graph_check"]["failing_heads"])
+                if not residual:
+                    self.assertEqual(result["path"].count("implement"), 2)
+                    self.assertEqual(result["path"].count("verify"), 2)
+                    self.assertEqual(result["path"].count("review"), 2)
+                    self.assertEqual(result["path"].count("proof"), 2)
+                    self.assertEqual(result["pr_size"]["head"], result["verified_head"])
+                    self.assertEqual(rounds[-1]["reviewed_head"], result["verified_head"])
+                    self.assertEqual(self.github.merge_calls[-1][-1], result["verified_head"])
+                    self.assertEqual(result["implementation_candidate"]["disposition"], "adopted" if committed else "edits")
 
     def test_missing_manifest_can_be_recorded_by_implement(self):
         result = self.review_tool_fact("result.txt", recover=True)
