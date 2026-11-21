@@ -1,6 +1,6 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 import re
@@ -13,7 +13,7 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
+from foreman.delivery import HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -21,6 +21,26 @@ from foreman.github import Forge
 from foreman.stage_output import StoredSlice, parse_output
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
+_DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
+
+
+@dataclass
+class RunPresentation:
+    """Invocation-local console data, kept outside graph state and return values."""
+
+    restored: DeliveryResult | None = None
+    updates: list[DeliveryUpdate] = field(default_factory=list[DeliveryUpdate])
+
+    def restore(self, snapshot: StateSnapshot) -> None:
+        values = checkpoint_state(snapshot.values)
+        assert values is not None
+        result = read_delivery_state({**values, "stop": values.get("stop", "")})
+        if snapshot.interrupts:
+            if values.get("halt") == "quota_exhausted":
+                result["stop"] = "quota_exhausted"
+            else:
+                result.update(stop="needs_human", halt_detail=parse_output(HumanPrompt, snapshot.interrupts[0].value).question)
+        self.restored = result
 
 
 def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
@@ -87,7 +107,11 @@ def run_live_delivery(
     request: str | None = None,
     answer: str | None = None,
     fact_record: str | None = None,
+    presentation: RunPresentation | None = None,
 ) -> DeliveryResult:
+    if presentation is not None:
+        presentation.restored = None
+        presentation.updates.clear()
     if fact_record is not None:
         fact_record = fact_record_path(fact_record)
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -118,10 +142,19 @@ def run_live_delivery(
             invocation_config: RunnableConfig = config,
         ) -> None:
             environment = EnvironmentProbe(run.workspace, state.get("preflight", ""), run.check_log)
-            graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync", version="v2")
+            for part in graph.stream(
+                graph_input, invocation_config, context=replace(run, environment=environment),
+                durability="sync", stream_mode="updates", version="v2",
+            ):
+                if presentation is not None:
+                    for node, raw in part["data"].items():
+                        if not node.startswith("__") and raw is not None:
+                            presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
         saved = graph.get_state(config)
         saved_values = checkpoint_state(saved.values)
+        if presentation is not None and saved_values is not None:
+            presentation.restore(saved)
         if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
             raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values.get("workspace") if saved_values else None
@@ -178,6 +211,8 @@ def run_live_delivery(
             invoke(Command(resume=True), saved_values)
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
+            if presentation is not None:
+                presentation.restore(before)
             replay = before.config
             if partial := saved_values.get("partial_edits"):
                 replay = graph.update_state(replay, {"partial_edits": partial})

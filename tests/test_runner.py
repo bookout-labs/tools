@@ -1554,12 +1554,19 @@ class LiveRunnerTest(unittest.TestCase):
 
         held = invoke()
         self.assertIn(f"done merge_held\nFOREMAN_MERGE_HOLD is set: {self.github.hold}\n", held)
-        self.assertEqual(invoke(), held)
+        retried = invoke()
+        restored, current = retried.split("this invocation:\n")
+        self.assertIn("restored triage ", restored)
+        self.assertNotIn("triage", current)
+        self.assertIn("merge not armed\ndone merge_held", current)
+        self.assertNotIn("check exit", current)
         self.assertEqual(self.github.merge_calls, [])
         self.github.hold = ""
         armed = invoke()
-        self.assertIn("merge armed\ncheck exit 0\ndone verified", armed)
-        self.assertEqual(invoke(), armed)
+        self.assertIn("merge armed\ndone verified", armed)
+        terminal = invoke()
+        self.assertIn("restored done verified", terminal)
+        self.assertIn("this invocation: no nodes executed", terminal)
         self.assertEqual(self.github.hold_reads, [repo, repo, repo])
         self.assertEqual(self.github.merge_calls, [(repo, 8, BRANCH, HEAD)])
 
@@ -1595,6 +1602,8 @@ def run(args, cwd, env):
         schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
     else:
         schema = json.loads(args[args.index("--json-schema") + 1])
+    with Path("workers.log").open("a") as log:
+        log.write(schema["title"] + "\\n")
     if schema["title"] == "TriageOutput":
         assert not state.get("human_answers")
         assert state["request"] == "List items"
@@ -1613,12 +1622,18 @@ def run(args, cwd, env):
         return workspace.reply(args, {"implementation": "built"})
     return worker_reply(args, APPROVE)
 
+class Forge(FakeGitHub):
+    def arm_auto_merge(self, *args):
+        with Path("merges.log").open("a") as log:
+            log.write("merge\\n")
+        super().arm_auto_merge(*args)
+
 workspace = FakeWorkspace(Path.cwd())
 pin = PstackPin.model_validate_json(sys.argv[2])
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
     sys.exit(main(
         sys.argv[3:], worker_runner=run, checkpoint=Path(sys.argv[1]),
-        live_run=LiveRun(FakeGitHub(), workspace),
+        live_run=LiveRun(Forge(), workspace),
     ))
 """
         def invoke(*flags, pin=None, expected=0):
@@ -1635,15 +1650,199 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         first = invoke("--request", "List items", expected=3)
         self.assertIn("paused needs_human\nWhich items? [redacted:GitHub Token]", first)
         self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, first)
-        self.assertEqual(invoke(expected=3), first)
+        waiting = invoke(expected=3)
+        self.assertIn("restored triage ", waiting)
+        self.assertIn("restored spec ", waiting)
+        self.assertIn("restored paused needs_human\nrestored Which items? [redacted:GitHub Token]", waiting)
+        self.assertIn("this invocation: no nodes executed", waiting)
+        self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, waiting)
         self.assertFalse((self.cwd / "check.log").exists())
         completed = invoke("--answer", "Only open items", pin=self.pin.model_copy(update={"commit": "f" * 40}))
-        self.assertEqual(completed.count("triage "), 1)
-        self.assertEqual(completed.count("spec "), 2)
+        restored, current = completed.split("this invocation:\n")
+        self.assertEqual(restored.count("restored triage "), 1)
+        self.assertEqual(restored.count("restored spec "), 1)
+        self.assertNotIn("triage", current)
+        self.assertEqual(sum(line.startswith("spec ") for line in current.splitlines()), 1)
         self.assertIn("merge armed", completed)
         self.assertIn("done verified", completed)
-        self.assertEqual(invoke(), completed)
+        terminal = invoke()
+        self.assertIn("restored done verified", terminal)
+        self.assertIn("restored merge armed", terminal)
+        self.assertIn("restored check exit 0", terminal)
+        self.assertIn("this invocation: no nodes executed", terminal)
+        self.assertEqual((self.cwd / "workers.log").read_text().splitlines(),
+                         ["TriageOutput", "SpecOutput", "SpecOutput", "ImplementOutput", "ReviewOutput"])
+        self.assertEqual((self.cwd / "merges.log").read_text(), "merge\n")
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            stored = saver.get({"configurable": {"thread_id": "example/engine#8"}})
+        self.assertEqual(stored["channel_values"]["path"],
+                         ["triage", "spec", "spec", "implement", "publish", "verify", "review", "merge", "done"])
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
+
+    def test_terminal_proof_failure_is_entirely_restored(self):
+        self.github.body = slice_body(SLICE)
+        self.walk([{"triage": "implement"}, {"implementation": "built"}])
+        worker = Mock(side_effect=AssertionError("terminal checkpoint dispatched a worker"))
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as output:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                worker_runner=worker, checkpoint=self.checkpoint,
+                live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            )
+        self.assertEqual(code, 1)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(lines[-1], "this invocation: no nodes executed")
+        self.assertTrue(all(line.startswith("restored ") for line in lines[:-1]))
+        self.assertIn("restored browser proof insufficient_evidence", lines)
+        self.assertIn("restored formal proof insufficient_evidence", lines)
+        self.assertIn("restored check exit 0", lines)
+        self.assertIn("restored done insufficient_evidence", lines)
+        worker.assert_not_called()
+        self.assertEqual(self.github.merge_calls, [])
+
+    def test_answer_rerun_without_a_dispatcher_does_not_claim_the_saved_model(self):
+        self.walk([{"triage": "spec"}, {"spec": "Needs input", "spec_gate": "needs_human", "human_question": "Which items?"}])
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as output:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0",
+                 "--answer", "Only open items"],
+                worker_runner=None, checkpoint=self.checkpoint,
+                live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            )
+        self.assertEqual(code, 1)
+        restored, current = output.getvalue().split("this invocation:\n")
+        self.assertIn("restored spec claude-opus-5-5-high", restored)
+        self.assertEqual(current, "spec\ndone no_dispatcher\nNo dispatcher is configured.\n")
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.github.merge_calls, [])
+
+    def test_fresh_process_retries_quota_and_an_older_merge_checkpoint(self):
+        script = r'''
+import json
+from dataclasses import replace
+from pathlib import Path
+import sys
+from unittest.mock import patch
+from foreman.cli import main
+from foreman.config import PstackPin, load_config
+from foreman.delivery import LiveRun
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, worker_reply, fixture_process
+
+phase = sys.argv[3]
+
+def record(event):
+    with Path("effects.log").open("a") as log:
+        log.write(event + "\n")
+
+class Workspace(FakeWorkspace):
+    def commit(self, message):
+        record("commit")
+        super().commit(message)
+
+    def push(self, branch, repo):
+        record("push")
+        super().push(branch, repo)
+
+class Forge(FakeGitHub):
+    def arm_auto_merge(self, *args):
+        record("merge")
+        super().arm_auto_merge(*args)
+
+    def post_review(self, *args):
+        record("post_review")
+        super().post_review(*args)
+
+def worker(args, cwd, env):
+    if args[0] == "codex":
+        schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
+    else:
+        schema = json.loads(args[args.index("--json-schema") + 1])
+    stage = schema["title"]
+    record(stage)
+    if stage == "TriageOutput":
+        return worker_reply(args, {"triage": "implement"})
+    if stage == "ImplementOutput":
+        if phase == "quota":
+            return fixture_process(args, "quota", 1)
+        return workspace.reply(args, {"implementation": "built"})
+    assert stage == "ReviewOutput", stage
+    return worker_reply(args, APPROVE)
+
+workspace = Workspace(Path.cwd())
+forge = Forge()
+forge.hold = "Maintenance" if phase == "held" else ""
+pin = PstackPin.model_validate_json(sys.argv[2])
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
+    sys.exit(main(sys.argv[4:], worker_runner=worker, checkpoint=Path(sys.argv[1]),
+                  live_run=LiveRun(forge, workspace)))
+'''
+        bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
+                     f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
+        for scenario in ("held", "quota"):
+            with self.subTest(scenario=scenario):
+                root = self.cwd / scenario
+                root.mkdir()
+                checkpoint = root / "runs.sqlite3"
+
+                def invoke(phase, expected):
+                    process = subprocess.run(
+                        [sys.executable, "-c", bootstrap + script, str(checkpoint), self.pin.model_dump_json(),
+                         phase, "run", "delivery", "--repo", "Example/Engine", "--issue", "8",
+                         "--check", "echo checked >> check.log"],
+                        cwd=root, text=True, capture_output=True, check=False,
+                    )
+                    self.assertEqual(process.returncode, expected, process.stderr)
+                    return process.stdout
+
+                def saved_path():
+                    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                        saved = saver.get({"configurable": {"thread_id": "example/engine#8"}})
+                    return saved["channel_values"]["path"]
+
+                first = invoke(scenario, 75)
+                self.assertNotIn("restored ", first)
+                previous_path = saved_path()
+                if scenario == "held":
+                    # Replaying the older pre-merge checkpoint ends with exactly the same path.
+                    retried = invoke("held", 75)
+                    restored, current = retried.split("this invocation:\n")
+                    self.assertEqual(saved_path(), previous_path)
+                    self.assertIn("restored review ", restored)
+                    self.assertIn("risk low", restored)
+                    self.assertEqual(current, "merge not armed\ndone merge_held\nFOREMAN_MERGE_HOLD is set: Maintenance\n")
+                    self.assertEqual((root / "effects.log").read_text().splitlines(),
+                                     ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review"])
+                    self.assertEqual((root / "check.log").read_text(), "checked\n")
+                else:
+                    self.assertIn("paused quota_exhausted", first)
+                    self.assertFalse((root / "check.log").exists())
+                    attempts = len(load_config().nodes["implement"].models)
+                    self.assertEqual((root / "effects.log").read_text().splitlines(),
+                                     ["TriageOutput"] + ["ImplementOutput"] * attempts)
+
+                resumed = invoke("ready", 0)
+                restored, current = resumed.split("this invocation:\n")
+                self.assertIn("restored triage ", restored)
+                self.assertNotIn("triage", current)
+                self.assertIn("merge armed\n", current)
+                self.assertIn("done verified\n", current)
+                if scenario == "held":
+                    self.assertEqual(saved_path(), previous_path)
+                    self.assertEqual(current, "merge armed\ndone verified\n")
+                    expected_workers = ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"]
+                else:
+                    self.assertIn("restored implement\nrestored paused quota_exhausted", restored)
+                    self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
+                    self.assertEqual(saved_path(), ["triage", "implement", "implement", "publish", "verify", "review", "merge", "done"])
+                    expected_workers = (["TriageOutput"] + ["ImplementOutput"] * attempts
+                                        + ["ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"])
+                terminal = invoke("ready", 0)
+                self.assertIn("restored merge armed", terminal)
+                self.assertIn("restored check exit 0", terminal)
+                self.assertIn("restored done verified", terminal)
+                self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
+                self.assertEqual((root / "effects.log").read_text().splitlines(), expected_workers)
+                self.assertEqual((root / "check.log").read_text(), "checked\n")
 
 class HaltExitCodeTest(unittest.TestCase):
     def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", preflight="", dispatcher=True, hold=None):

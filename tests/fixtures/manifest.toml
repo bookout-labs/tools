@@ -629,5 +629,5 @@ notes = "TypedDict requires typing_extensions below Python 3.12. Strict mode alo
 tool = "langgraph"
 version = "1.2.24"
 kind = "quoted_source"
-sources = ["https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/graph/state.py", "https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py"]
-notes = "Synchronous graph subset declared in typings/langgraph/graph. Signatures cover nodes, compile, invoke v1/v2, state/history/update (including as_node), and diagram output. Runtime graph tests exercise this pinned package."
+sources = ["https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/graph/state.py", "https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py", "https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/types.py"]
+notes = "Synchronous graph subset declared in typings/langgraph/graph. Signatures cover nodes, compile, invoke v1/v2, stream updates v2, state/history/update (including as_node), and diagram output. Runtime graph tests exercise this pinned package."
