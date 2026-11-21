@@ -916,6 +916,12 @@ kind = "captured_run"
 argv = ["gh", "api", "repos/bookout-labs/tools/pulls/97"]
 notes = "API excerpts captured 2026-11-21. Contract source: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request (pull_request GITHUB_SHA identifies the synthetic merge). The JSON records all exact queried URLs. PR base.sha can differ from the current base tip; the synthetic merge parents are validated against branches/{base}.commit.sha. A head-attached check run and its check_suite id identify source-head evidence, not the synthetic tested commit. Capture uses additional gh api GETs for the branch, merge commit and source check runs named in sources in the JSON."
 
+[fixtures."github/app-credentials.txt"]
+tool = "GitHub App REST, gh and Git credential helpers"
+version = "Documentation read 2026-11-21"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app", "https://cli.github.com/manual/gh_help_environment", "https://git-scm.com/docs/gitcredentials", "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github#githubs-token-formats", "https://git-scm.com/docs/git-config", "https://git-scm.com/docs/git", "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation", "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app"]
+notes = "Published source excerpts. Offline tests use generated keys, fake HTTP and a fake clock. No real installation token was minted."
 [fixtures."git/grep-lines.z"]
 tool = "git"
 version = "2.56.0"

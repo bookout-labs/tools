@@ -183,7 +183,7 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler()
         result = walk(handler, config=config)
         self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "done"])
-        self.assertEqual(result["stop"], "no_reviewer")
+        self.assertEqual(result["stop"], "model_family_exhausted")
         self.assertIn("gpt family", result["halt_detail"])
         self.assertNotIn("review", [call["node"] for call in handler.calls])
 
@@ -192,9 +192,15 @@ class DeliveryTest(unittest.TestCase):
         config.nodes["implement"] = NodeConfig(role="check", models=())
         handler = ScriptHandler()
         result = walk(handler, config=config)
-        self.assertEqual(result["stop"], "no_reviewer")
+        self.assertEqual(result["stop"], "publication_model_missing")
         self.assertIn("implement model", result["halt_detail"])
         self.assertNotIn("review", [call["node"] for call in handler.calls])
+
+    def test_model_selection_stops_when_its_dependency_is_missing(self):
+        config = load_config()
+        config.nodes["research"] = replace(config.nodes["research"], other_family_from="implement")
+        result = walk(ScriptHandler(triage="question"), config=config)
+        self.assertEqual(result["stop"], "model_dependency_missing")
 
     def test_open_spec_stops_for_a_person(self):
         result = walk(ScriptHandler(triage="spec", spec_gate="needs_human"))
@@ -236,7 +242,7 @@ class DeliveryTest(unittest.TestCase):
                     self.assertEqual(result["stop"], "verified")
                 else:
                     self.assertEqual(reviewers, ["claude-opus-5-5-high"])
-                    self.assertEqual(result["stop"], "no_reviewer")
+                    self.assertEqual(result["stop"], "model_family_exhausted")
                     self.assertNotIn("merge", result["path"])
                 self.assertEqual(result["implement_models"], ["gpt-6.1-sol-high", "claude-opus-5-5-high"])
 

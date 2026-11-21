@@ -33,7 +33,7 @@ VIEW_FIELDS = [
 ]
 VIEW = [*VIEW_FIELDS, BRANCH]
 CONFIRM = [*VIEW_FIELDS, "12"]
-MERGE = ["gh", "pr", "merge", "12", "--repo", REPO, "--auto", "--match-head-commit", HEAD]
+MERGE = ["gh", "pr", "merge", "12", "--repo", REPO, "--auto", "--squash", "--match-head-commit", HEAD]
 
 
 def gh_result(stdout):
@@ -176,6 +176,13 @@ class LiveForgeTest(unittest.TestCase):
             LiveForge().merge_hold(REPO)
         with self.assertRaisesRegex(MergeHoldUnreadable, "gh variable list timed out"):
             LiveForge().merge_hold(REPO)
+
+    @patch("foreman.github.subprocess.run")
+    def test_app_hold_permission_denial_is_fail_closed(self, run):
+        with patch("foreman.github.credentials.environment", return_value={"GH_TOKEN": "synthetic"}):
+            run.return_value = subprocess.CompletedProcess([], 1, "", "HTTP 403")
+            with self.assertRaisesRegex(MergeHoldUnreadable, "permission denied"):
+                LiveForge().merge_hold(REPO)
 
     @patch("foreman.github.subprocess.run")
     def test_load_issue_validates_labels_and_normalizes_an_empty_body(self, run):
