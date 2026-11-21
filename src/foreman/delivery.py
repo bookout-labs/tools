@@ -4,25 +4,28 @@ from dataclasses import dataclass
 from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
+from tomllib import TOMLDecodeError
 from typing import Annotated, Literal, TypedDict, cast, get_args
 import operator
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from pydantic import ValidationError
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.fixture_manifest import MANIFEST_PATH, recorded_fixtures
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, parse_output,
+    Contract, Finding, HumanQuestionOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, parse_output,
 )
 from foreman.workspace import CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
@@ -113,6 +116,7 @@ class DeliveryState(TypedDict, total=False):
     pr_size_override: PullRequestSize
     pr_split: PullRequestSplit
     review: str
+    tool_facts: list[dict[str, str | None]]
     findings: list[dict[str, object]]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
@@ -181,6 +185,29 @@ def clean_slices(
 
 def load_slice(raw: object) -> dict[str, object]:
     return parse_output(StoredSlice, raw).model_dump(exclude_unset=True)
+
+
+def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | None) -> ReviewOutput:
+    recorded: set[str] = set()
+    notes = [output.detail]
+    if isinstance(run, LiveRun) and head and any(fact.fixture is not None for fact in output.tool_facts):
+        try:
+            recorded = recorded_fixtures(run.workspace, head)
+        except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
+            notes.append(f"Could not check {MANIFEST_PATH} at {head}. {exc}")
+    unrecorded = [fact for fact in output.tool_facts if fact.fixture not in recorded]
+    if not unrecorded:
+        return output
+    for fact in unrecorded:
+        citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
+        notes.append(f"Unrecorded outside-tool fact{citation}: {fact.claim}")
+    return output.model_copy(update={
+        "review": "changes", "detail": "\n".join(notes),
+        "findings": [*output.findings, Finding(
+            file=MANIFEST_PATH, line=1, severity="blocking",
+            summary="Record the outside-tool facts listed in the review detail.",
+        )],
+    })
 
 
 def stage_update(
@@ -341,6 +368,8 @@ def compile_delivery(
                 return halted("no_reviewer", f"review quota exhausted: {model}", name)
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                if isinstance(output, ReviewOutput):
+                    output = _check_tool_facts(output, run, state.get("verified_head"))
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
