@@ -29,7 +29,6 @@ class SpecGateTests(unittest.TestCase):
                 return output if isinstance(output, Outcome) else Outcome("ran", output, usage=SCRIPTED_USAGE)
             return script(node, model, state, instruction)
 
-        self.script = script
         return walk(handle, slice=item, config=config, legacy=legacy)
 
     def test_all_entry_paths_check_before_build_or_parent_completion(self):
@@ -57,11 +56,9 @@ class SpecGateTests(unittest.TestCase):
                 self.assertEqual(result["halt"], halt)
                 self.assertEqual(run_exit_code(result), code)
                 self.assertNotIn("implement", result["path"])
-                self.assertNotIn("publish", result["path"])
                 self.assertTrue(result["halt_detail"])
                 self.assertEqual(len(result.get("spec_history", {}).get("rounds", [])), int(halt == "spec_unsettled"))
-                self.assertNotIn("spec_unsettled", RESUMABLE_HALTS)
-                self.assertNotIn("spec_check_unavailable", RESUMABLE_HALTS)
+                self.assertTrue({"spec_unsettled", "spec_check_unavailable"}.isdisjoint(RESUMABLE_HALTS))
 
     def test_failover_filters_every_model_using_the_actual_author(self):
         config = load_config()

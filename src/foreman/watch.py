@@ -42,6 +42,8 @@ WATCH: dict[HaltReason, Watch | None] = {
     "implement_quota": None,
     "failed": None,
     "design_rethink": None,
+    "spec_unsettled": None,
+    "spec_check_unavailable": None,
 }
 
 RunKey = NewType("RunKey", str)
