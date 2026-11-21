@@ -1,6 +1,7 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict
@@ -21,9 +22,9 @@ from foreman.github import (
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+    Contract, HumanQuestionOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
 )
-from foreman.workspace import CheckLog, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
+from foreman.workspace import CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -47,6 +48,18 @@ class DryRun:
     def record_merge(self, repo: str, head: str | None) -> list[str]:
         revision = (commit_sha(head) or redact(head)) if head else "<sha>"
         return merge_command(redact(repo), "<number>", revision)
+
+
+class PullRequestSizeDecision(StrEnum):
+    SPLIT = "split"
+    OVERRIDE = "override"
+
+
+class PullRequestSplit(TypedDict):
+    plan: str
+    gate: Literal["ready", "needs_human"]
+    question: str | None
+    slices: list[dict[str, object]]
 
 
 class DeliveryState(TypedDict, total=False):
@@ -75,6 +88,9 @@ class DeliveryState(TypedDict, total=False):
     proof_labels: dict[str, str]
     human_question: str
     human_answers: list[str]
+    pr_size: PullRequestSize
+    pr_size_override: PullRequestSize
+    pr_split: PullRequestSplit
     review: str
     findings: list[dict[str, object]]
     detail: str
@@ -132,11 +148,21 @@ def load_slice(raw: object) -> dict[str, object]:
 
 def stage_update(name: str, output: Contract, state: DeliveryState, model: str | None = None) -> dict[str, object]:
     update: dict[str, object] = output.model_dump(exclude={"slice", "slices"})
-    update["path"] = [name]
-    if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready":
-        update["slices"] = clean_slices(output.slices, "slices")
     if isinstance(output, HumanQuestionOutput):
         update["human_question"] = output.human_question or ""
+    if isinstance(output, SpecOutput):
+        slices = (
+            clean_slices(output.slices, "slices")
+            if state.get("issue_kind") == "parent" and output.spec_gate == "ready" else []
+        )
+        if oversized_pr(state):
+            split: PullRequestSplit = {
+                "plan": output.spec, "gate": output.spec_gate, "question": output.human_question, "slices": slices,
+            }
+            update = {"pr_split": split}
+        elif slices:
+            update["slices"] = slices
+    update["path"] = [name]
     if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
         if output.slice is None:
             raise InvalidOutput("slice: required when a parent triages as implement")
@@ -182,10 +208,18 @@ def review_submission(output: ReviewOutput, diff: ReviewDiff) -> tuple[str, list
 def stop_reason(state: DeliveryState) -> str:
     if halt := state.get("halt"):
         return halt
+    if oversized_pr(state):
+        split = state.get("pr_split")
+        gate = split["gate"] if split else state.get("spec_gate")
+        if gate == "ready":
+            return "sliced" if state.get("issue_kind") == "parent" else "pr_split_required"
+        if gate == "needs_human":
+            return "needs_human"
     if state.get("triage") == "needs_human" or state.get("spec_gate") == "needs_human":
         return "needs_human"
-    if state.get("issue_kind") == "parent" and state.get("spec_gate") == "ready":
-        return "sliced"
+    if state.get("spec_gate") == "ready" and state.get("path", [])[-1:] == ["spec"]:
+        if state.get("issue_kind") == "parent":
+            return "sliced"
     if state.get("triage") == "question":
         return "answered"
     if state.get("verify") == "fail":
@@ -195,6 +229,13 @@ def stop_reason(state: DeliveryState) -> str:
     if state.get("verify") == "pass":
         return "verified"
     return "stopped"
+
+
+def oversized_pr(state: DeliveryState) -> PullRequestSize | None:
+    size = state.get("pr_size")
+    if size is not None and size["lines"] > PULL_REQUEST_LINES and size != state.get("pr_size_override"):
+        return size
+    return None
 
 
 def compile_delivery(
@@ -227,6 +268,13 @@ def compile_delivery(
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
+            if name == "spec" and (size := oversized_pr(state)):
+                instruction += (
+                    f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."
+                    " Split the work into independently shippable pull requests."
+                    " For a slice issue, describe the split in spec."
+                )
+
             review_context: tuple[Forge, PullRequest, ReviewDiff] | None = None
             repo = state.get("repo", "")
             if name == "review" and isinstance(run, LiveRun):
@@ -307,9 +355,71 @@ def compile_delivery(
 
     def needs_human(state: DeliveryState) -> DeliveryState:
         stage = state["path"][-1]
-        question = state.get("human_question") or "What should Foreman know to continue?"
+        split = state.get("pr_split") if stage == "spec" and oversized_pr(state) else None
+        question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
         answer = interrupt({"stage": stage, "question": question})
         return {"human_answers": [*state.get("human_answers", []), answer]}
+
+    def decide_pr_size(state: DeliveryState) -> DeliveryState:
+        size = oversized_pr(state)
+        assert size is not None
+        split = state.get("pr_split")
+        plan = split["plan"] if split else state.get("spec", "")
+        answer = PullRequestSizeDecision(interrupt({
+            "stage": "pr_size",
+            "question": (
+                f"The pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}.\n"
+                f"{plan}\n"
+                "Use --answer split to accept the split or --answer override to review this diff."
+            ),
+        }))
+        if answer == PullRequestSizeDecision.OVERRIDE:
+            return {"pr_size_override": size}
+        return {}
+
+    dispatch_review = bind("review")
+
+    def moved_head_detail(actual: str, verified: str) -> str:
+        return (
+            f"HEAD is {actual}, verification checked {verified}. "
+            "Reset the PR branch to the verified commit.\n"
+            f"  git reset --keep {verified}\n"
+            "Then rerun the same command. New commits need a new run."
+        )
+
+    def moved_before_review(actual: str, verified: str) -> dict[str, object]:
+        return {
+            "merge": "not_armed", "halt": "merge_not_armed", "path": ["review"],
+            "halt_detail": moved_head_detail(actual, verified),
+        }
+
+    def review(state: DeliveryState) -> dict[str, object]:
+        if isinstance(run, DryRun):
+            return dispatch_review(state)
+        try:
+            head = state.get("verified_head")
+            if head is None:
+                raise WorktreeInspectionFailed("The run did not record a verified HEAD.")
+            worktree = run.workspace.inspect()
+            if worktree.head != head:
+                return moved_before_review(worktree.head, head)
+            if worktree.branch is None:
+                raise WorktreeInspectionFailed("HEAD is detached. Pull request sizing requires a checked-out branch.")
+            repo = state.get("repo")
+            assert repo is not None
+            base = run.forge.pull_request_base(repo, worktree.branch)
+            size = run.workspace.pull_request_size(head, base)
+            checked = run.workspace.inspect()
+            if checked.head != head:
+                return moved_before_review(checked.head, head)
+            if not checked.clean or checked.branch != worktree.branch:
+                raise WorktreeInspectionFailed("The worktree changed after verification.")
+        except (ForgeError, WorktreeInspectionFailed) as exc:
+            return {"halt": "pr_size_unavailable", "halt_detail": str(exc)}
+        measured: DeliveryState = {**state, "pr_size": size}
+        if oversized_pr(measured):
+            return {"pr_size": size}
+        return {**dispatch_review(measured), "pr_size": size}
 
     def after_triage(state: DeliveryState) -> str:
         if state.get("halt"):
@@ -324,6 +434,13 @@ def compile_delivery(
     def after_spec(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
+        if oversized_pr(state):
+            if checkpointer is None:
+                return "done"
+            split = state.get("pr_split")
+            if split and split["gate"] == "needs_human":
+                return "needs_human"
+            return "decide_pr_size"
         if state.get("spec_gate") == "needs_human" and checkpointer is not None:
             return "needs_human"
         if state.get("issue_kind") == "parent":
@@ -333,6 +450,10 @@ def compile_delivery(
     def after_review(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
+        if oversized_pr(state):
+            if state.get("pr_size_override"):
+                return "decide_pr_size" if checkpointer is not None else "done"
+            return "spec"
         if state.get("review") == "approve":
             return "merge"
         if state.get("review_rounds", 0) < config.max_review_rounds:
@@ -404,13 +525,22 @@ def compile_delivery(
                 return {"merge": "armed", "path": ["merge"]}
 
     def finish(state: DeliveryState) -> DeliveryState:
-        return {"stop": stop_reason(state), "path": ["done"]}
+        stop = stop_reason(state)
+        update: DeliveryState = {"stop": stop, "path": ["done"]}
+        split = state.get("pr_split")
+        if stop == "sliced" and split:
+            update["slices"] = split["slices"]
+        if stop == "pr_split_required":
+            update["halt_detail"] = split["plan"] if split else state.get("spec", "")
+        return update
 
     builder = StateGraph(DeliveryState)
+    graph_nodes = {"verify": verify, "review": review}
     for name in REQUIRED_NODES:
-        builder.add_node(name, verify if name == "verify" else bind(name))
+        builder.add_node(name, graph_nodes[name] if name in graph_nodes else bind(name))
     builder.add_node("proof", prove)
     builder.add_node("needs_human", needs_human)
+    builder.add_node("decide_pr_size", decide_pr_size)
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_conditional_edges(
@@ -423,7 +553,11 @@ def compile_delivery(
          "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges(
-        "spec", after_spec, {"implement": "implement", "needs_human": "needs_human", "done": "done"},
+        "spec", after_spec,
+        {"implement": "implement", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
+    )
+    builder.add_conditional_edges(
+        "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify"},
     )
     builder.add_conditional_edges(
         "needs_human", lambda state: state["path"][-1], {"triage": "triage", "spec": "spec"},
@@ -433,7 +567,7 @@ def compile_delivery(
     builder.add_conditional_edges(
         "review",
         after_review,
-        {"merge": "merge", "implement": "implement", "done": "done"},
+        {"merge": "merge", "implement": "implement", "spec": "spec", "decide_pr_size": "decide_pr_size", "done": "done"},
     )
     builder.add_conditional_edges(
         "verify",
