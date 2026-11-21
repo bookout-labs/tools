@@ -1795,9 +1795,9 @@ class Forge(FakeGitHub):
         record("merge")
         super().arm_auto_merge(*args)
 
-    def post_review(self, *args):
+    def post_review(self, *args, marker):
         record("post_review")
-        super().post_review(*args)
+        return super().post_review(*args, marker=marker)
 
 def worker(args, cwd, env):
     if args[0] == "codex":
