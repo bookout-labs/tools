@@ -289,10 +289,12 @@ def run_live_delivery(
             if presentation is not None:
                 presentation.restore(before, saver)
             replay = before.config
-            retained: DeliveryUpdate = {"attempts": attempts[len(previous_attempts):]}
+            retained: DeliveryUpdate = {}
+            if halted_attempts := attempts[len(previous_attempts):]:
+                retained["attempts"] = halted_attempts
             if partial := saved_values.get("partial_edits"):
                 retained["partial_edits"] = partial
-            if retained["attempts"] or "partial_edits" in retained:
+            if retained:
                 replay = graph.update_state(replay, retained)
                 restored = checkpoint_state(graph.get_state(replay).values)
                 assert restored is not None

@@ -51,8 +51,6 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
         return
     current["path"] = [node for node, _ in rows]
     current["stop"] = result["stop"]
-    if "token_cap" in result:
-        current["token_cap"] = result["token_cap"]
     current["max_budget_usd"] = result.get("max_budget_usd")
     current["attempts"] = result.get("attempts", [])
     if result["stop"] in {"needs_human", "quota_exhausted"}:
