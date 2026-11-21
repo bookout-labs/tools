@@ -1,3 +1,4 @@
+from foreman.dry_run import DryRun
 import ast
 from pathlib import Path
 import re
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 from foreman.cli import main
 from foreman.config import load_config
-from foreman.delivery import DryRun, compile_delivery
+from foreman.delivery import LiveRun, compile_delivery
 from foreman.diagrams import LEGEND, drawings, readme_diagrams
 from foreman.dry_run import ScriptHandler
 
@@ -49,8 +50,13 @@ def edges(text):
 
 
 class DiagramTests(unittest.TestCase):
+    def test_model_stage_loops_do_not_filter_verify(self):
+        tree = ast.parse(Path(compile_delivery.__code__.co_filename).read_text())
+        comparisons = (node for node in ast.walk(tree) if isinstance(node, ast.Compare))
+        self.assertFalse(any(isinstance(value, ast.Constant) and value.value == "verify" for node in comparisons for value in node.comparators))
+
     def test_native_drawings_and_readme_are_exact(self):
-        compiled = compile_delivery(ScriptHandler(), load_config(), run=DryRun())
+        compiled = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=DryRun(), workspace=DryRun()))
         pictures = drawings()
         self.assertEqual(pictures["delivery"], compiled.get_graph().draw_mermaid())
         for name, text in pictures.items():

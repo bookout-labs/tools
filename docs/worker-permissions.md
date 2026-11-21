@@ -69,3 +69,11 @@ Source references are the [Grok sandbox guide](https://github.com/xai-org/grok-b
 [Grok hook contract](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md),
 [TanStack adapter](https://github.com/TanStack/ai/blob/main/packages/ai-grok-build/src/adapters/text.ts),
 and [Superserve credential isolation](https://www.superserve.ai/blog/introducing-secrets/).
+
+Claude matches denied Bash text against `Call.check` by literal containment in both directions.
+This covers exact checks, wrappers, and compound segments without shell parsing.
+Unrelated quoted commands and non-Bash denials stay `ran`. Missing, blank, or malformed evidence
+fails closed only on successful checked calls. Existing failures, quota, budget, and usage stay intact.
+Claude names commands, not allow rules. Obfuscated wrappers without literal check text cannot be
+reliably attributed; `verify` remains authoritative. T1 joins tool IDs, successful results, and a marker.
+Separate captures prove wrapper and compound-segment denials.

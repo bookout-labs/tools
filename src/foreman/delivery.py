@@ -16,6 +16,7 @@ import re
 import textwrap
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
@@ -26,15 +27,14 @@ from typing_extensions import TypedDict
 from foreman.adapters import Outcome
 from foreman.budget import CostUnknown, Exhausted, Remaining, claude_spend, dollar_admission
 from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, contributors_for, family, load_config, order_for
-from foreman.dry_run import ScriptHandler
-from foreman.dispatch import Handler, InvalidOutput, QuotaExhausted, clean_outcome
+from foreman.dry_run import DryRun, ScriptHandler
+from foreman.dispatch import Handler, InvalidOutput, clean_outcome
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
-    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
+    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, ReviewReceipt, merge_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
-from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
 from foreman.stage_output import (
     ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
@@ -43,12 +43,13 @@ from foreman.readiness import MergeReceipt
 from foreman.outcomes import Halt, READINESS_HALTS
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.usd import BudgetUsd, usd_text
-from foreman.workspace import ImplementationCandidate, ImplementationRejected, WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
+from foreman.workspace import ImplementationCandidate, ImplementationRejected, WorkspaceError, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 DEFAULT_TOKEN_CAP = 20_000_000
 PACKAGE = Path(__file__).parent
-REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
+MODEL_STAGES = ("triage", "research", "spec", "implement", "review")
+REQUIRED_NODES = (*MODEL_STAGES, "verify")
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 
@@ -86,16 +87,6 @@ class LiveRun:
     check_log: CheckLog | None = None
     environment: EnvironmentProbe | None = None
     skills: SkillSource = export_skills
-
-
-@dataclass(frozen=True)
-class DryRun:
-    review_context: ReviewContext = SCRIPTED_REVIEW_CONTEXT
-    skills: SkillSource = export_skills
-
-    def record_merge(self, repo: str, head: str | None) -> list[str]:
-        revision = (commit_sha(head) or redact(head)) if head else "<sha>"
-        return merge_command(redact(repo), "<number>", revision)
 
 
 def unknown_usage(stage: str, model: str | None) -> str:
@@ -155,7 +146,6 @@ class DeliveryFields(TypedDict, total=False):
     attempt_head: str
     implementation_candidate: ImplementationCandidate | None
     partial_edits: str
-    commands: Annotated[list[list[str]], operator.add]
     head_sha: str | None
     verified_head: str
     repair_head: str | None
@@ -351,7 +341,7 @@ def carried_tool_facts(state: DeliveryFields) -> list[StoredToolFact]:
 
 
 def _check_tool_facts(
-    output: ReviewOutput, run: LiveRun | DryRun, state: DeliveryState,
+    output: ReviewOutput, workspace: Workspace, state: DeliveryState,
 ) -> GraphCheck | None:
     head = state.get("verified_head")
     manifest_path = state.get("fact_record", MANIFEST_PATH)
@@ -364,9 +354,9 @@ def _check_tool_facts(
     )]
     recorded: dict[str, list[str]] = {}
     notes: list[str] = []
-    if isinstance(run, LiveRun) and head and outside:
+    if head and outside:
         try:
-            recorded = recorded_evidence(run.workspace, head, manifest_path)
+            recorded = recorded_evidence(workspace, head, manifest_path)
         except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
             notes.append(f"Could not check {manifest_path} at {head}. {exc}")
     claim_ids = {claim_id for ids in recorded.values() for claim_id in ids}
@@ -469,7 +459,7 @@ def compile_delivery(
     dispatcher: Handler,
     config: Config,
     *,
-    run: LiveRun | DryRun,
+    run: LiveRun,
     scratch: Path | None = None,
     checkpointer: BaseCheckpointSaver[str] | None = None,
 ) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
@@ -477,16 +467,16 @@ def compile_delivery(
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     methods_root = run.skills(config.pstack, scratch) if scratch is not None else None
-    prompts = {name: stage_text(name) for name in REQUIRED_NODES}
-    plan_workspace = run.workspace if isinstance(run, LiveRun) else None
+    prompts = {name: stage_text(name) for name in MODEL_STAGES}
+    plan_workspace = run.workspace
 
     def bind(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
             admission = dollar_admission_for(state, state.get("attempts", []))
             if stop := admission_stop(state, state.get("attempts", []), name, admission):
                 return stop
-            current_run = run if isinstance(run, DryRun) else runtime.context or run
-            if name == "implement" and isinstance(current_run, LiveRun):
+            current_run = runtime.context or run
+            if name == "implement":
                 probe = current_run.environment or EnvironmentProbe(
                     current_run.workspace, state.get("preflight", ""), current_run.check_log,
                 )
@@ -509,8 +499,6 @@ def compile_delivery(
             except ConfigError as exc:
                 return halted(Halt.model_family_exhausted, str(exc), name)
             instruction = prompts[name]
-            if isinstance(run, LiveRun) and methods_root is None:
-                raise RuntimeError("Delivery execution requires a compiled skill export.")
             methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
@@ -530,9 +518,6 @@ def compile_delivery(
                 instruction += "\nCarried tool facts:\n" + json.dumps([fact.model_dump() for fact in carried_tool_facts(state)])
             if name == "review" and (proven := graph_check(state)) is not None:
                 instruction += f"\nGraph fact: {proven.claim}\nGraph check evidence: {proven.model_dump_json()}"
-            if name == "verify":
-                command = state.get("check") or "(none)"
-                instruction = f"{instruction}\n\nCommand: {command}"
             if name == "spec" and (size := oversized_pr(state)):
                 instruction += (
                     f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."
@@ -548,7 +533,7 @@ def compile_delivery(
                     return halted(Halt.invalid_output, str(exc), name)
             review_context: tuple[Forge, PullRequest, ReviewScope] | None = None
             repo = state.get("repo", "")
-            if name == "review" and isinstance(run, LiveRun):
+            if name == "review":
                 head, issue = state.get("verified_head"), state.get("issue")
                 try:
                     worktree = run.workspace.inspect()
@@ -589,12 +574,9 @@ def compile_delivery(
             citation_context = None
             if name == "review":
                 try:
-                    if isinstance(run, LiveRun):
-                        assert plan["target"] is not None
-                        target = plan["target"]
-                        citation_context = run.workspace.review_context(target["baseRefOid"], target["headRefOid"])
-                    else:
-                        citation_context = run.review_context
+                    assert plan["target"] is not None
+                    target = plan["target"]
+                    citation_context = run.workspace.review_context(target["baseRefOid"], target["headRefOid"])
                 except WorktreeInspectionFailed as exc:
                     return {"pending_dispatch": None, **halted(Halt.review_unavailable, str(exc), name)}
                 if not (citation_context.base.changed or citation_context.head.changed):
@@ -643,8 +625,6 @@ def compile_delivery(
             if outcome.kind == "cli_missing":
                 return {**stopped, **halted(Halt.cli_missing, outcome.detail, name)}
             if outcome.kind == "quota":
-                if isinstance(run, DryRun):
-                    raise QuotaExhausted(model)
                 return {**stopped, **halted(Halt.quota_exhausted, f"{name} quota exhausted: {model}", name)}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output, context=citation_context)
@@ -652,7 +632,7 @@ def compile_delivery(
                 if isinstance(output, ReviewOutput):
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
                     head = state.get("verified_head") or state.get("head_sha") or ""
-                    accepted = accept(past, output, head, _check_tool_facts(output, run, state))
+                    accepted = accept(past, output, head, _check_tool_facts(output, run.workspace, state))
                 if accepted is not None and accepted_model is not None:
                     contributors, families = contributors_for(name, config, state.get("models_used", {}), state.get("implement_models"))
                     same_family = accepted_model.family in families
@@ -691,8 +671,6 @@ def compile_delivery(
         return node
 
     def post_review(state: DeliveryState) -> DeliveryUpdate:
-        if not isinstance(run, LiveRun):
-            return {}
         assert "dispatch_plan" in state and "review_findings" in state and "detail" in state and "review_run_id" in state
         plan = state["dispatch_plan"]
         assert plan["target"] is not None and plan["scope"] is not None
@@ -707,17 +685,11 @@ def compile_delivery(
             return halted(Halt.review_not_posted, str(exc), "review_post")
         return {"review_receipt": receipt}
 
-    scripted_verify = bind("verify")
-
     def prepare(state: DeliveryState) -> DeliveryUpdate:
         assert "slice" in state and "repo" in state
         title = redact(str(state["slice"]["title"]))
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
-        branch = state.get("delivery_branch") or f"{state.get('issue', '<issue>')}-{slug}"
-        if isinstance(run, DryRun):
-            base = state.get("delivery_base", "<default-branch>")
-            commands = [] if "delivery_branch" in state else [branch_command(branch, base)]
-            return {"delivery_branch": branch, "delivery_base": base, "commands": commands}
+        branch = state.get("delivery_branch") or f"{state.get('issue') or '<issue>'}-{slug}"
         try:
             before = run.workspace.inspect()
             if not before.clean:
@@ -734,8 +706,6 @@ def compile_delivery(
     dispatch_implement = call("implement")
 
     def implement(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-        if isinstance(run, DryRun):
-            return dispatch_implement(state, runtime)
         assert "delivery_branch" in state and "attempt_head" in state
         assert "pending_dispatch" in state and state["pending_dispatch"] is not None and "dispatch_plan" in state
         update: DeliveryUpdate = {}
@@ -748,8 +718,6 @@ def compile_delivery(
             return {**update, **halted(Halt.git_failed, str(exc), "implement")}
 
     def reconcile(state: DeliveryState) -> DeliveryUpdate:
-        if isinstance(run, DryRun):
-            return {}
         assert "attempt_head" in state and "delivery_branch" in state and "delivery_base" in state
         try:
             candidate = run.workspace.reconcile(state["attempt_head"], state["delivery_branch"],
@@ -768,14 +736,12 @@ def compile_delivery(
 
     def commit(state: DeliveryState) -> DeliveryUpdate:
         assert "slice" in state
-        subject = f"{state.get('issue', '<issue>')}: {' '.join(redact(str(state['slice']['title'])).split())}"
+        subject = f"{state.get('issue') or '<issue>'}: {' '.join(redact(str(state['slice']['title'])).split())}"
         subject = textwrap.shorten(subject, width=72, placeholder="")
         model = state.get("models_used", {}).get("implement")
         if not model:
             return halted(Halt.publication_model_missing, "Publication needs the implement model.", None)
         message = f"{subject}\n\nCo-Authored-By: {redact(model)} <{COAUTHOR_EMAILS[family(model)]}>"
-        if isinstance(run, DryRun):
-            return {"commands": commit_commands(message)}
         assert "delivery_branch" in state and "attempt_head" in state
         try:
             observed = run.workspace.inspect()
@@ -810,9 +776,7 @@ def compile_delivery(
         assert "delivery_branch" in state and "delivery_base" in state and "repo" in state and "slice" in state
         branch, base, repo = state["delivery_branch"], state["delivery_base"], state["repo"]
         title = " ".join(redact(str(state["slice"]["title"])).split())
-        body = f"Closes #{state.get('issue', '<issue>')}"
-        if isinstance(run, DryRun):
-            return {"path": ["publish"], "commands": [push_command("origin", branch), pull_request_command(repo, branch, base, title, body)]}
+        body = f"Closes #{state.get('issue') or '<issue>'}"
         try:
             observed = run.workspace.inspect()
             if not observed.clean or observed.branch != branch or observed.head != state.get("head_sha"):
@@ -824,33 +788,31 @@ def compile_delivery(
         return {"path": ["publish"]}
 
     def verify(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-        match run if isinstance(run, DryRun) else runtime.context or run:
-            case DryRun():
-                return scripted_verify(state, runtime)
-            case LiveRun(workspace=workspace, check_log=check_log):
-                try:
-                    worktree = workspace.inspect()
-                except WorktreeInspectionFailed as exc:
-                    return halted(Halt.dirty_worktree, str(exc), "verify")
-                if not worktree.clean:
-                    return halted(Halt.dirty_worktree, "The worktree has changes.", "verify")
-                command = state["check"]
-                exit_code = workspace.run(command, log=check_log)
-                detail = None
-                if reason := CHECK_START_FAILURES.get(exit_code):
-                    detail = f"Check {command!r} exited with {exit_code} ({reason})"
-                elif exit_code:
-                    detail = failed_preflight(workspace, state.get("preflight", ""), log=check_log)
-                if detail:
-                    return {**halted(Halt.env_unavailable, detail, "verify"), "check_exit_code": exit_code}
-                verdict = "pass" if exit_code == 0 else "fail"
-                checked: DeliveryUpdate = {"verified_head": worktree.head} if exit_code == 0 else {}
-                return {
-                    **stage_update("verify", VerifyOutput(verify=verdict), state),
-                    "check_exit_code": exit_code,
-                    "proof_labels": {},
-                    **checked,
-                }
+        current = runtime.context or run
+        workspace, check_log = current.workspace, current.check_log
+        try:
+            worktree = workspace.inspect()
+        except WorktreeInspectionFailed as exc:
+            return halted(Halt.dirty_worktree, str(exc), "verify")
+        if not worktree.clean:
+            return halted(Halt.dirty_worktree, "The worktree has changes.", "verify")
+        command = state["check"]
+        exit_code = workspace.run(command, log=check_log)
+        detail = None
+        if reason := CHECK_START_FAILURES.get(exit_code):
+            detail = f"Check {command!r} exited with {exit_code} ({reason})"
+        elif exit_code:
+            detail = failed_preflight(workspace, state.get("preflight", ""), log=check_log)
+        if detail:
+            return {**halted(Halt.env_unavailable, detail, "verify"), "check_exit_code": exit_code}
+        verdict = "pass" if exit_code == 0 else "fail"
+        checked: DeliveryUpdate = {"verified_head": worktree.head} if exit_code == 0 else {}
+        return {
+            **stage_update("verify", VerifyOutput(verify=verdict), state),
+            "check_exit_code": exit_code,
+            "proof_labels": {},
+            **checked,
+        }
 
     def prove(state: DeliveryState) -> DeliveryUpdate:
         slice = _active_slice(state)
@@ -916,8 +878,6 @@ def compile_delivery(
         return {**halted(Halt.merge_not_armed, moved_head_detail(actual, verified), "review"), "merge": "not_armed"}
 
     def review(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-        if isinstance(run, DryRun):
-            return dispatch_review(state, runtime)
         try:
             head = state.get("verified_head")
             if head is None:
@@ -948,7 +908,7 @@ def compile_delivery(
             return "done"
         decision = state.get("triage")
         if decision == "needs_human":
-            return "needs_human" if checkpointer is not None else "done"
+            return "needs_human"
         if decision == "question":
             return "spec" if state.get("issue_kind") == "parent" else "research"
         return "prepare" if decision == "implement" else decision or "done"
@@ -959,26 +919,24 @@ def compile_delivery(
         if state.get("spec_rejection"):
             return "spec"
         if oversized_pr(state):
-            if checkpointer is None:
-                return "done"
             split = state.get("pr_split")
             if split and split["gate"] == "needs_human":
                 return "needs_human"
             return "decide_pr_size"
-        if state.get("spec_gate") == "needs_human" and checkpointer is not None:
+        if state.get("spec_gate") == "needs_human":
             return "needs_human"
         if state.get("issue_kind") == "parent":
             return "done"
         return "prepare" if state.get("spec_gate") == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
-        if state.get("halt") == Halt.design_rethink and checkpointer is not None:
+        if state.get("halt") == Halt.design_rethink:
             return "needs_human"
         if state.get("halt"):
             return "done"
         if oversized_pr(state):
             if state.get("pr_size_override"):
-                return "decide_pr_size" if checkpointer is not None else "done"
+                return "decide_pr_size"
             return "spec"
         if state.get("review") == "approve":
             return "merge"
@@ -1013,79 +971,76 @@ def compile_delivery(
                 "merge_command": merge_command(repo, "<number>", head or "<sha>"),
             }
 
-        match run:
-            case DryRun():
-                return {
-                    "merge": "skipped", "path": ["merge"],
-                    "merge_command": run.record_merge(repo, state.get("head_sha")),
-                }
-            case LiveRun(forge=forge, workspace=workspace):
-                if head is None:
-                    return merge_halted(Halt.merge_not_armed, "The run did not record a verified HEAD.")
+        forge, workspace = run.forge, run.workspace
+        if head is None:
+            return merge_halted(Halt.merge_not_armed, "The run did not record a verified HEAD.")
+        try:
+            worktree = workspace.inspect()
+        except WorktreeInspectionFailed as exc:
+            return merge_halted(Halt.merge_not_armed, str(exc))
+        if not worktree.clean:
+            return merge_halted(Halt.merge_not_armed, "The worktree has changes or Git could not inspect it.")
+        if worktree.head != head:
+            return {
+                **merge_halted(Halt.merge_not_armed, head_mismatch_detail(worktree.head, head)),
+                "merge_observed_head": worktree.head,
+            }
+        if worktree.branch is None:
+            return merge_halted(Halt.merge_not_armed, "HEAD is detached. Merge requires a checked-out branch.")
+        try:
+            hold = forge.merge_hold(repo)
+        except MergeHoldUnreadable as exc:
+            return merge_halted(Halt.merge_held, f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
+        if hold:
+            return merge_halted(Halt.merge_held, f"{MERGE_HOLD_VARIABLE} is set" + (f": {hold}" if hold.strip() else "."))
+        issue = state.get("issue")
+        if issue is None:
+            return merge_halted(Halt.merge_not_armed, "Live merge requires an issue number.")
+        receipt = state.get("review_receipt")
+        past = history({"rounds": state.get("review_findings", [])})
+        if (state.get("reviewed_head") != head or not receipt or receipt["commit_id"] != head
+                or past.unresolved() or (past.gate and not past.gate.passed)):
+            return merge_halted(Halt.merge_not_armed, "Renew review and its posted receipt at the verified head.")
+        if previous := state.get("merge_receipt"):
+            saved = MergeReceipt.model_validate(previous)
+            if saved.source_head == head:
                 try:
-                    worktree = workspace.inspect()
-                except WorktreeInspectionFailed as exc:
-                    return merge_halted(Halt.merge_not_armed, str(exc))
-                if not worktree.clean:
-                    return merge_halted(Halt.merge_not_armed, "The worktree has changes or Git could not inspect it.")
-                if worktree.head != head:
-                    return {
-                        **merge_halted(Halt.merge_not_armed, head_mismatch_detail(worktree.head, head)),
-                        "merge_observed_head": worktree.head,
-                    }
-                if worktree.branch is None:
-                    return merge_halted(Halt.merge_not_armed, "HEAD is detached. Merge requires a checked-out branch.")
-                try:
-                    hold = forge.merge_hold(repo)
-                except MergeHoldUnreadable as exc:
-                    return merge_halted(Halt.merge_held, f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
-                if hold:
-                    return merge_halted(Halt.merge_held, f"{MERGE_HOLD_VARIABLE} is set" + (f": {hold}" if hold.strip() else "."))
-                issue = state.get("issue")
-                if issue is None:
-                    return merge_halted(Halt.merge_not_armed, "Live merge requires an issue number.")
-                receipt = state.get("review_receipt")
-                past = history({"rounds": state.get("review_findings", [])})
-                if (state.get("reviewed_head") != head or not receipt or receipt["commit_id"] != head
-                        or past.unresolved() or (past.gate and not past.gate.passed)):
-                    return merge_halted(Halt.merge_not_armed, "Renew review and its posted receipt at the verified head.")
-                if previous := state.get("merge_receipt"):
-                    saved = MergeReceipt.model_validate(previous)
-                    if saved.source_head == head:
-                        try:
-                            confirmed_receipt = forge.reconcile_merge(saved)
-                        except HandoffChanged as exc:
-                            return {**merge_halted(Halt.merge_not_armed, str(exc)), "merge_receipt": None}
-                        except QueueRejected as exc:
-                            return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
-                        except MergeNotArmed as exc:
-                            return merge_halted(Halt.merge_not_armed, str(exc))
-                        return {"merge": "armed", "path": ["merge"], "merge_receipt": confirmed_receipt.model_dump(mode="json")}
-                try:
-                    observation = forge.readiness(repo, issue, worktree.branch, head)
-                except ForgeError as exc:
-                    return merge_halted(Halt.readiness_unavailable, f"Platform/policy observation unavailable: {exc}")
-                if observation.outcome != "ready":
-                    return {**merge_halted(READINESS_HALTS[observation.outcome], observation.detail()),
-                            "readiness_observation": observation.model_dump(mode="json")}
-                try:
-                    merge_receipt = forge.arm_auto_merge(repo, issue, worktree.branch, head, observation).model_dump(mode="json")
+                    confirmed_receipt = forge.reconcile_merge(saved)
+                except HandoffChanged as exc:
+                    return {**merge_halted(Halt.merge_not_armed, str(exc)), "merge_receipt": None}
                 except QueueRejected as exc:
                     return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
                 except MergeNotArmed as exc:
                     return merge_halted(Halt.merge_not_armed, str(exc))
-                if merge_receipt["status"] == "MERGED":
-                    return {"merge": "armed", "path": ["merge"], "merge_receipt": merge_receipt}
-                try:
-                    confirmed = forge.readiness(repo, issue, worktree.branch, head)
-                except ForgeError as exc:
-                    return {**merge_halted(Halt.readiness_unavailable, str(exc)), "merge": "armed", "merge_receipt": merge_receipt}
-                update: DeliveryUpdate = {"merge": "armed", "merge_receipt": merge_receipt, "path": ["merge"], "readiness_observation": confirmed.model_dump(mode="json")}
-                if confirmed.outcome != "ready":
-                    update.update(halted(READINESS_HALTS[confirmed.outcome], confirmed.detail(), "merge"))
-                elif (confirmed.pr.number, confirmed.pr.head.sha, confirmed.pr.base.ref, confirmed.pr.state) != (observation.pr.number, observation.pr.head.sha, observation.pr.base.ref, observation.pr.state):
-                    update.update(halted(Halt.merge_not_armed, confirmed.detail(), "merge"))
-                return update
+                return {"merge": "armed", "path": ["merge"], "merge_receipt": confirmed_receipt.model_dump(mode="json")}
+        try:
+            observation = forge.readiness(repo, issue, worktree.branch, head)
+        except ForgeError as exc:
+            return merge_halted(Halt.readiness_unavailable, f"Platform/policy observation unavailable: {exc}")
+        if observation.outcome != "ready":
+            return {**merge_halted(READINESS_HALTS[observation.outcome], observation.detail()),
+                    "readiness_observation": observation.model_dump(mode="json")}
+        try:
+            receipt = forge.arm_auto_merge(repo, issue, worktree.branch, head, observation)
+            if receipt is None:
+                return {"merge": "skipped", "path": ["merge"], "merge_command": merge_command(repo, "<number>", head)}
+            merge_receipt = receipt.model_dump(mode="json")
+        except QueueRejected as exc:
+            return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
+        except MergeNotArmed as exc:
+            return merge_halted(Halt.merge_not_armed, str(exc))
+        if merge_receipt["status"] == "MERGED":
+            return {"merge": "armed", "path": ["merge"], "merge_receipt": merge_receipt}
+        try:
+            confirmed = forge.readiness(repo, issue, worktree.branch, head)
+        except ForgeError as exc:
+            return {**merge_halted(Halt.readiness_unavailable, str(exc)), "merge": "armed", "merge_receipt": merge_receipt}
+        update: DeliveryUpdate = {"merge": "armed", "merge_receipt": merge_receipt, "path": ["merge"], "readiness_observation": confirmed.model_dump(mode="json")}
+        if confirmed.outcome != "ready":
+            update.update(halted(READINESS_HALTS[confirmed.outcome], confirmed.detail(), "merge"))
+        elif (confirmed.pr.number, confirmed.pr.head.sha, confirmed.pr.base.ref, confirmed.pr.state) != (observation.pr.number, observation.pr.head.sha, observation.pr.base.ref, observation.pr.state):
+            update.update(halted(Halt.merge_not_armed, confirmed.detail(), "merge"))
+        return update
 
     def finish(state: DeliveryState) -> DeliveryUpdate:
         reason = stop_reason(state)
@@ -1140,10 +1095,11 @@ def compile_delivery(
         builder.add_conditional_edges(stage, after_setup, mapped)
         builder.add_conditional_edges(stage + "_call", after_setup, mapped)
 
-    graph_nodes: dict[str, DeliveryNode] = {"implement": implement, "verify": verify, "review": review}
-    for name in REQUIRED_NODES:
+    graph_nodes: dict[str, DeliveryNode] = {"implement": implement, "review": review}
+    for name in MODEL_STAGES:
         builder.add_node(name, graph_nodes[name] if name in graph_nodes and name != "implement" else bind(name))
         builder.add_node(name + "_call", implement if name == "implement" else call(name))
+    builder.add_node("verify", verify)
     builder.add_node("prepare", prepare)
     builder.add_node("reconcile", reconcile)
     builder.add_node("commit", commit)
@@ -1181,7 +1137,7 @@ def compile_delivery(
     builder.add_conditional_edges("commit", after_halt("publish"), {"done": "done", "publish": "publish"})
     builder.add_conditional_edges("publish", after_halt("verify"), {"done": "done", "verify": "verify"})
     builder.add_conditional_edges(
-        "quota_wait", _last_stage, {name: name for name in REQUIRED_NODES if name != "verify"},
+        "quota_wait", _last_stage, {name: name for name in MODEL_STAGES},
     )
     add_agent_edges("research", lambda _: "done", {"done": "done"})
     add_agent_edges("implement", after_halt("reconcile"), {"reconcile": "reconcile", "done": "done"})
@@ -1192,7 +1148,7 @@ def compile_delivery(
     )
     builder.add_conditional_edges("review_post", after_review,
         {"merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"})
-    add_agent_edges(
+    builder.add_conditional_edges(
         "verify",
         after_verify,
         {"proof": "proof", "review": "review", "prepare": "prepare", "done": "done"},
@@ -1221,8 +1177,11 @@ def run_delivery(
     max_budget_usd: BudgetUsd | None = None,
     skills: SkillSource = export_skills,
     fact_record: str = MANIFEST_PATH,
+    commands: list[list[str]] | None = None,
 ) -> DeliveryResult:
+    dry = DryRun(commands=commands if commands is not None else [])
     state: DeliveryState = {
+        "issue": dry.issue_placeholder,
         "repo": repo,
         "token_cap": max_tokens,
         "max_budget_usd": usd_text(max_budget_usd) if max_budget_usd is not None else None,
@@ -1240,13 +1199,19 @@ def run_delivery(
     if scratch is not None:
         state["pstack_pin"] = config.pstack.model_dump()
     try:
-        graph = compile_delivery(dispatcher, config, run=DryRun(skills=skills), scratch=scratch)
+        saver = InMemorySaver()
+        graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills), scratch=scratch, checkpointer=saver)
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,
                                     "skill_reason": exc.reason})
-    return read_delivery_state(graph.invoke(state, version="v2").value)
+    from foreman.runner import snapshot_result
+
+    thread_id = uuid4().hex
+    graph.invoke(state, {"configurable": {"thread_id": thread_id}}, version="v2")
+    return snapshot_result(graph.get_state({"configurable": {"thread_id": thread_id}}), saver)
 
 
 def diagram() -> str:
-    graph = compile_delivery(ScriptHandler(), load_config(), run=DryRun())
+    dry = DryRun()
+    graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry))
     return graph.get_graph().draw_mermaid()

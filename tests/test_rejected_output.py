@@ -4,7 +4,7 @@ import unittest
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import load_config
-from foreman.delivery import REQUIRED_NODES
+from foreman.delivery import MODEL_STAGES
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import ScriptHandler
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
@@ -16,11 +16,9 @@ class RejectedStageOutputTest(unittest.TestCase):
     def test_every_dispatched_stage_names_the_returning_model_and_keeps_usage(self):
         usage = Usage(input_tokens=11, output_tokens=7, cache_read_input_tokens=5,
                       cache_creation_input_tokens=3, total_cost_usd=0.125)
-        for stage in REQUIRED_NODES:
+        for stage in MODEL_STAGES:
             for kind in ("ran", "failed"):
                 for fallback in (None, "quota", "cli_missing"):
-                    if stage == "verify" and fallback:
-                        continue
                     with self.subTest(stage=stage, kind=kind, fallback=fallback):
                         config = load_config()
                         script = ScriptHandler(triage="question" if stage == "research" else "spec" if stage == "spec" else "implement")
@@ -54,5 +52,3 @@ class RejectedStageOutputTest(unittest.TestCase):
                         if fallback:
                             self.assertEqual(len(calls), 2)
                             self.assertNotEqual(calls[0], calls[1])
-                        elif stage == "verify":
-                            self.assertEqual(calls, [None])

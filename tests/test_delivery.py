@@ -10,8 +10,8 @@ from tempfile import TemporaryDirectory
 from foreman.adapters import Outcome, Usage
 from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
 from foreman.delivery import run_delivery, stage_text
-from foreman.dispatch import QuotaExhausted
-from foreman.dry_run import ScriptHandler
+from unittest.mock import patch
+from foreman.dry_run import DryRun, ScriptHandler
 from skill_fixture import FixtureSkills, skill_fixture
 
 
@@ -40,11 +40,11 @@ SLICES = [
 EMPTY_SLICE = {**SLICES[1], "builds": [], "uses": []}
 
 
-def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
+def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, commands=None):
     with skill_fixture(config) as (fixture_config, scratch):
         return run_delivery(
             handler, repo="DoctorCRE/doctorcre-engine", request="Add a field",
-            check=check, slice=slice, config=fixture_config, scratch=scratch,
+            check=check, slice=slice, config=fixture_config, scratch=scratch, commands=commands,
         )
 
 
@@ -73,7 +73,7 @@ class DeliveryTest(unittest.TestCase):
         def check_review_context(node, model, state, instruction):
             if node == "review":
                 self.assertEqual(state["verify"], "pass")
-                self.assertNotIn("head_sha", state)
+                self.assertEqual(state["head_sha"], state["verified_head"])
             return handler(node, model, state, instruction)
 
         result = walk(check_review_context)
@@ -84,7 +84,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["risk"]["level"], "low")
         self.assertEqual(result["merge"], "skipped")
-        self.assertNotIn("head_sha", result)
+        self.assertEqual(result["head_sha"], result["verified_head"])
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
         self.assertNotIn("verify", result["models_used"])
@@ -202,7 +202,7 @@ class DeliveryTest(unittest.TestCase):
 
     def test_open_spec_stops_for_a_person(self):
         result = walk(ScriptHandler(triage="spec", spec_gate="needs_human"))
-        self.assertEqual(result["path"], ["triage", "spec", "done"])
+        self.assertEqual(result["path"], ["triage", "spec"])
         self.assertEqual(result["stop"], "needs_human")
         self.assertNotIn("implement", result["path"])
 
@@ -251,7 +251,8 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "review_cap")
 
     def test_verify_cap_stops_without_review(self):
-        result = walk(ScriptHandler(verify="fail"))
+        with patch.object(DryRun, "run", return_value=1):
+            result = walk(ScriptHandler())
         self.assertEqual(result["path"].count("verify"), 3)
         self.assertNotIn("review", result["path"])
         self.assertNotIn("merge", result["path"])
@@ -259,7 +260,7 @@ class DeliveryTest(unittest.TestCase):
 
     def test_needs_human_stops_at_triage(self):
         result = walk(ScriptHandler(triage="needs_human"))
-        self.assertEqual(result["path"], ["triage", "done"])
+        self.assertEqual(result["path"], ["triage"])
         self.assertEqual(result["stop"], "needs_human")
 
     def test_review_without_risk_is_rejected(self):
@@ -319,12 +320,12 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
         self.assertEqual(result["stop"], "verified")
 
-    def test_every_model_exhausted_raises(self):
+    def test_every_model_exhausted_halts(self):
         def exhaust(node, model, state, instruction):
             return Outcome("quota")
 
-        with self.assertRaises(QuotaExhausted):
-            walk(exhaust)
+        result = walk(exhaust)
+        self.assertEqual(result["stop"], "quota_exhausted")
 
     def test_node_instruction_comes_from_the_stage_file(self):
         handler = ScriptHandler(triage="spec")
@@ -339,7 +340,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertIn("review-quality.md", by_node["review"])
         self.assertNotIn("insufficient_evidence", by_node["implement"])
         self.assertIn("merge-risk.md", by_node["review"])
-        self.assertIn("Command: npm run check", by_node["verify"])
+        self.assertNotIn("verify", by_node)
         self.assertNotIn("gpt-6.1-sol-high", " ".join(by_node.values()))
 
     def test_work_kind_selects_implement_and_research_methods(self):
@@ -389,7 +390,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(read_methods)
         self.assertEqual(result["stop"], "verified")
-        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec", "implement", "verify", "review"])
+        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec", "implement", "review"])
 
 
 if __name__ == "__main__":

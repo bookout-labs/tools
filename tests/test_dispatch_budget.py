@@ -9,12 +9,14 @@ from pathlib import Path
 from subprocess import CompletedProcess
 import unittest
 
+from langgraph.checkpoint.memory import InMemorySaver
+from foreman.runner import snapshot_result
 from foreman.adapters import Outcome, Usage
 from foreman.budget import claude_spend
 from foreman.cli import run_exit_code
 from foreman.config import ModelSpec, load_config
-from foreman.delivery import DryRun, compile_delivery
-from foreman.dry_run import ScriptHandler
+from foreman.delivery import MODEL_STAGES, LiveRun, compile_delivery
+from foreman.dry_run import DryRun, ScriptHandler
 from foreman.worker import CliWorker
 from test_dollar_allowance import NEEDS_HUMAN, attempt
 from test_runner import EMPTY_SLICE, fixture_process, worker_reply
@@ -36,17 +38,20 @@ def configured(stage="triage", models=(CLAUDE, NEXT_CLAUDE)):
 
 
 def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000):
-    graph = compile_delivery(handler, config or configured(), run=DryRun())
-    return graph.invoke({
-        "repo": "a/b", "request": "x", "check": "exit 0", "path": [], "issue_kind": "slice", "slice": EMPTY_SLICE,
+    saver = InMemorySaver()
+    dry = DryRun()
+    graph = compile_delivery(handler, config or configured(), run=LiveRun(forge=dry, workspace=dry), checkpointer=saver).with_config({"configurable": {"thread_id": "budget"}})
+    graph.invoke({
+        "issue": dry.issue_placeholder, "repo": "a/b", "request": "x", "check": "exit 0", "path": [], "issue_kind": "slice", "slice": EMPTY_SLICE,
         "token_cap": token_cap, "max_budget_usd": limit,
         "attempts": [attempt(CLAUDE.name, prior)],
     })
+    return snapshot_result(graph.get_state(graph.config), saver)
 
 
 class DispatchBudgetTests(unittest.TestCase):
     def test_every_dispatching_stage_recomputes_the_budget_for_each_claude_attempt(self):
-        for stage in ("triage", "research", "spec", "implement", "verify", "review"):
+        for stage in MODEL_STAGES:
             with self.subTest(stage=stage):
                 script = ScriptHandler(triage="question" if stage == "research" else "spec")
                 calls = []
@@ -106,7 +111,7 @@ class DispatchBudgetTests(unittest.TestCase):
         script = ScriptHandler()
         result = walk(script, config=load_config())
         self.assertEqual(result["stop"], "verified")
-        self.assertEqual([call["budget_usd"] for call in script.calls], ["0.2"] * 4)
+        self.assertEqual([call["budget_usd"] for call in script.calls], ["0.2"] * 3)
         self.assertEqual(claude_spend(result["attempts"]), Decimal("0.8"))
         self.assertTrue(all(a["usage"]["cost_usd"] == 0.0 for a in result["attempts"][1:]))
 

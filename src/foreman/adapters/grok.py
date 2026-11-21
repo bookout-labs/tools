@@ -29,7 +29,7 @@ class GrokEnvelope(NativeEnvelope):
     usage_is_incomplete: bool = False
 
     @override
-    def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
+    def outcome(self, process: CompletedProcess[str], model_id: str, call: Call) -> Outcome:
         kind: OutcomeKind = "ran"
         detail = self.message or self.error or self.structured_output_error or process.stderr.strip()
         if self.type == "error" and self.message in QUOTA_MESSAGES:

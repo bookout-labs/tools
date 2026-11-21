@@ -173,7 +173,7 @@ class PermissionsTest(unittest.TestCase):
                 roots = tuple(root / name for name in ('methods', 'scratch/methods', 'repo/methods'))
                 call = Call(capture['argv'][-1].replace('<probe>', str(root)), '{}', mode == 'edit', root, read_roots=roots)
                 self.assertEqual([arg.replace(str(root), '<probe>') for arg in adapter.command(call)], capture['argv'])
-            outcome = adapter.read(CompletedProcess(capture['argv'], capture['returncode'], capture['stdout'], capture['stderr']))
+            outcome = adapter.read(CompletedProcess(capture['argv'], capture['returncode'], capture['stdout'], capture['stderr']), call)
             self.assertEqual((outcome.kind, outcome.output), ('ran', {'done': True}))
             roots = ('methods', 'scratch/methods', 'repo/methods')
             expected = {'sh check.sh', 'echo outside > <probe>/outside/escape', 'echo scratch > <probe>/scratch/shell.txt',

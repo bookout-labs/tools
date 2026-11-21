@@ -4,7 +4,7 @@ import json
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal
 
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from typing_extensions import override
 
 from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
@@ -12,6 +12,11 @@ from foreman.usd import CostUsd, usd_text
 
 
 QUOTA_ERRORS = {"usage_limit_reached", "model_requires_usage_credits"}
+
+
+class PermissionDenial(BaseModel):
+    tool_name: str
+    tool_input: dict[str, object] = Field(default_factory=dict)
 
 
 class ClaudeEnvelope(NativeEnvelope):
@@ -25,6 +30,7 @@ class ClaudeEnvelope(NativeEnvelope):
     structured_output: dict[str, object] | None = None
     session_id: str | None = None
     total_cost_usd: object = None
+    permission_denials: object = Field(default_factory=list)
 
     @override
     def read_usage(self) -> Usage | None:
@@ -41,7 +47,7 @@ class ClaudeEnvelope(NativeEnvelope):
         return usage
 
     @override
-    def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
+    def outcome(self, process: CompletedProcess[str], model_id: str, call: Call) -> Outcome:
         kind: OutcomeKind = "ran"
         detail = "\n".join(self.errors) or self.result or process.stderr.strip()
         if self.subtype == "error_max_budget_usd":
@@ -62,6 +68,21 @@ class ClaudeEnvelope(NativeEnvelope):
         elif self.structured_output is None:
             kind = "failed"
             detail = detail or "missing structured output"
+        if kind == "ran" and call.check:
+            try:
+                denials = TypeAdapter(list[PermissionDenial]).validate_python(self.permission_denials, strict=True)
+            except ValidationError:
+                kind, detail = "failed", f"Claude denied-check evidence malformed: {call.check}"
+            else:
+                for denial in denials:
+                    command = denial.tool_input.get("command")
+                    if denial.tool_name == "Bash" and (
+                        not isinstance(command, str) or not command.strip()
+                        or call.check in command or command in call.check
+                    ):
+                        kind = "failed"
+                        detail = f"Claude denied the granted check: {call.check}; denied command: {command!r}"
+                        break
         return build_outcome(
             kind, output=self.structured_output, usage=self.read_usage(),
             session_id=self.session_id, detail=detail,
