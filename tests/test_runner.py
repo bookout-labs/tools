@@ -274,15 +274,18 @@ class LiveRunnerTest(unittest.TestCase):
         ), ("Example/Engine", 12, HEAD, APPROVE["detail"], [])])
 
     def test_review_failures_halt_without_merging(self):
+        changes = {**APPROVE, "review": "changes", "findings": [FINDING]}
         for method, stop, replies in (
             ("review_target", "review_unavailable", []),
-            ("post_review", "review_not_posted", [APPROVE]),
+            ("post_review", "review_not_posted", [changes]),
         ):
             with self.subTest(method=method), patch.object(self.github, method, side_effect=ForgeError("Unavailable")):
                 self.checkpoint = self.cwd / f"{method}.sqlite3"
                 result = self.walk([{"triage": "implement"}, {"implementation": "Built."}, *replies])
-                self.assertEqual(result["stop"], stop)
-                self.assertEqual(result["halt_detail"], "Unavailable")
+                self.assertEqual(result.get("stop"), stop)
+                self.assertEqual(result.get("halt_detail"), "Unavailable")
+                if replies:
+                    self.assertEqual(result.get("findings"), [FINDING])
                 self.assertEqual(self.github.merge_calls, [])
 
     def test_load_slice_issue(self):
