@@ -18,6 +18,12 @@
       "sha256": "1f7e8bf0e4f0253858bf6de2c1347bcd3c2cc030daffc61de5725172368c77e9",
       "request_sha256": "a19349f7c973f1fc1920d6d4a352f5c230cfe40c148528d0653e55d2bbcd5c65",
       "answer_sha256": "202741a3f5837c0264c6073a5413c80e6cfb299d2794b72bae2c88a0acc804a1"
+    },
+    {
+      "id": "parent-002",
+      "sha256": "7a3bdd8dc377ac245c0ee9b3970efd01b48ab7a29625c83064296b685665b6d3",
+      "request_sha256": "6cef26f8b475af7c2c222845db2b7b2fbbe29d85b8a2f8e4562e8246d5c342ae",
+      "answer_sha256": "0ed68f695f6162d1ad6ff65992276fc6b05d9aee37bc1e88c998ced8e6dd26af"
     }
   ]
 }

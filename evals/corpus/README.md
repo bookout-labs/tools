@@ -99,3 +99,26 @@ slice labels do not establish them. Its independent acceptance receipt and fresh
 answer coverage review remain pending. Green historical CI is not acceptance.
 The fixture remains provisional under 164-D1, and a real shipped parent job is
 still needed for completeness. Transfer and #165 isolation remain incomplete.
+
+A fourth commitment stages a real parent plan in the same v1 format. Its frozen
+request is the complete amended parent body, and its start is the commit named
+by the pre-split design. Private provenance records the accepted re-slice,
+three shipped core slices, their checked heads and squash results, and a residual
+child that remains open. This is a real job with shipped parts, not a fully
+shipped parent. It remains provisional under 164-D1.
+
+This answer grades a normalized submitted graph against acceptance predicates
+and producer/consumer seams transcribed from the request. It checks textual
+parent association, coverage, no extra or duplicate acceptance, and acyclic
+dependencies. The historical graph is a trusted transcription of the human
+split, not graph output extracted from the shipped source. Passing it does not
+establish implementation behavior or live Forge effects. Two alternatives
+change the acceptance partition and pass. Mutations preserve titles while
+dropping or reversing an edge or weakening acceptance and fail.
+
+Native parent links, inherited contract revision, and work kind are not recorded
+in this job's issue bodies and remain unverified. The fixture-only dispatch and
+resume obligations are outside this parent's request. Independent acceptance
+receipts, fresh answer coverage review, private-store transfer, and #165 isolation
+remain incomplete. The private bundle also records an unrelated test expectation
+change between one checked head and its squash result.
