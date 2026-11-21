@@ -14,14 +14,15 @@ from foreman.cli import main
 from foreman.delivery import LiveRun
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
-from foreman.github import MergeNotArmed
+from foreman.github import ForgeError, MergeNotArmed, PullRequest
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, parse_output
 from foreman.worker import CliWorker
-from foreman.workspace import LiveWorkspace, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import LiveWorkspace, ReviewDiff, WorktreeInspectionFailed, WorktreeState
 
 
 HEAD = "a" * 40
+BASE = "b" * 40
 BRANCH = "8-list-items"
 CLEAN_WORKTREE = WorktreeState(HEAD, True, BRANCH)
 SLICE = {
@@ -34,7 +35,9 @@ SLICE = {
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
 FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}]}
-APPROVE = {"review": "approve", "risk": DEFAULT_RISK}
+APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request."}
+FINDING = {"file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
+DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
 
 def slice_body(item):
@@ -52,6 +55,9 @@ class FakeWorkspace(LiveWorkspace):
         if isinstance(self.last, WorktreeInspectionFailed):
             raise self.last
         return self.last
+
+    def review_diff(self, base, head):
+        return ReviewDiff(f"git diff {base}...{head}", DIFF)
 
 
 def worker_reply(args, reply, model=None):
@@ -74,6 +80,16 @@ class FakeGitHub:
         self.label_calls = []
         self.issue_labels = {}
         self.merge_calls = []
+        self.reviews = []
+
+    def review_target(self, repo, issue, branch, sha):
+        return PullRequest.model_validate({
+            "number": 12, "state": "OPEN", "headRefOid": sha, "headRefName": branch,
+            "baseRefName": "main", "baseRefOid": BASE, "autoMergeRequest": None,
+        })
+
+    def post_review(self, repo, target, body, comments):
+        self.reviews.append((repo, target.number, target.headRefOid, body, comments))
 
     def arm_auto_merge(self, repo, issue, branch, sha):
         self.merge_calls.append((repo, issue, branch, sha))
@@ -188,22 +204,20 @@ class StageOutputTest(unittest.TestCase):
         result = parse_output(ImplementOutput, {"implementation": {"Changes": "Built.", "Tests": "Passed."}})
         self.assertEqual(result.implementation, "Changes\nBuilt.\n\nTests\nPassed.")
 
-    def test_punctuated_changes_without_a_note_keeps_null(self):
-        result = parse_output(ReviewOutput, {**APPROVE, "review": "changes."})
-        self.assertEqual((result.review, result.review_note), ("changes", None))
-
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
             parse_output(ReviewOutput, {**APPROVE, "review": "approve, but please fix X first"})
 
-    def test_review_verdicts_require_lowercase(self):
-        for verdict in ("Approve.", "Changes. Add a check."):
+    def test_review_requires_an_exact_verdict(self):
+        for verdict in ("Approve.", "approve.", "changes.", "changes. Add a check."):
             with self.subTest(verdict=verdict), self.assertRaisesRegex(InvalidOutput, "^review:"):
                 parse_output(ReviewOutput, {**APPROVE, "review": verdict})
 
-    def test_review_rejects_two_change_notes(self):
-        with self.assertRaisesRegex(InvalidOutput, "inline change note conflicts with review_note"):
-            parse_output(ReviewOutput, {**APPROVE, "review": "changes. Add a check.", "review_note": "Update the docs."})
+    def test_review_summary_is_limited_to_200_characters(self):
+        self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["Finding"]["properties"]["summary"]["maxLength"], 200)
+        raw = {**APPROVE, "review": "changes", "findings": [{**FINDING, "summary": "a" * 201}]}
+        with self.assertRaisesRegex(InvalidOutput, r"^findings\.0\.summary:"):
+            parse_output(ReviewOutput, raw)
 
 
 class LiveRunnerTest(unittest.TestCase):
@@ -230,13 +244,46 @@ class LiveRunnerTest(unittest.TestCase):
             run=LiveRun(self.github, FakeWorkspace(self.cwd, snapshots)),
         )
 
-    def test_review_note_reaches_the_next_implement_prompt(self):
+    def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes. Add a check."}
+        changes = {**APPROVE, "review": "changes", "detail": "Check the bounds."}
+        for severity, kind in (("nit", "nits"), ("blocking", "blocking")):
+            with self.subTest(severity=severity):
+                self.checkpoint = self.cwd / f"{severity}.sqlite3"
+                finding = {**FINDING, "severity": severity}
+                self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, APPROVE])
+                state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
+                self.assertEqual(state["findings"], [finding])
+                self.assertEqual(state["detail"], changes["detail"])
+                self.assertEqual(state["review_change_kind"], kind)
+
+    def test_review_posts_only_changed_lines_inline(self):
+        findings = [
+            FINDING,
+            {**FINDING, "line": 1, "summary": "Untouched context."},
+            {**FINDING, "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
+        ]
+        built = {"implementation": "Built."}
+        changes = {**APPROVE, "review": "changes", "findings": findings, "detail": "Check the bounds."}
         self.walk([{"triage": "implement"}, built, changes, built, APPROVE])
-        prompt = self.prompts[3]
-        self.assertIn('"title": "ImplementOutput"', prompt)
-        self.assertEqual(json.loads(prompt.split("Delivery state:\n")[1])["review_note"], "Add a check.")
+        self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
+        self.assertEqual(self.github.reviews, [(
+            "Example/Engine", 12, HEAD,
+            "Check the bounds.\n\nitems.txt:1 [blocking] Untouched context.\n\ndeleted.txt:1 [blocking] Deleted file.",
+            [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[blocking] Add a check."}],
+        ), ("Example/Engine", 12, HEAD, APPROVE["detail"], [])])
+
+    def test_review_failures_halt_without_merging(self):
+        for method, stop, replies in (
+            ("review_target", "review_unavailable", []),
+            ("post_review", "review_not_posted", [APPROVE]),
+        ):
+            with self.subTest(method=method), patch.object(self.github, method, side_effect=ForgeError("Unavailable")):
+                self.checkpoint = self.cwd / f"{method}.sqlite3"
+                result = self.walk([{"triage": "implement"}, {"implementation": "Built."}, *replies])
+                self.assertEqual(result["stop"], stop)
+                self.assertEqual(result["halt_detail"], "Unavailable")
+                self.assertEqual(self.github.merge_calls, [])
 
     def test_load_slice_issue(self):
         result = self.walk([{"triage": "question"}, {"research": "answer"}])
@@ -442,7 +489,7 @@ class LiveRunnerTest(unittest.TestCase):
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk(
                     [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-                    snapshots=(CLEAN_WORKTREE, snapshot),
+                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
                 )
                 self.assertEqual(result["check_exit_code"], 0)
                 self.assertEqual(result["merge"], "not_armed")

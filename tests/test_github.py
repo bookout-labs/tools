@@ -5,10 +5,11 @@ from unittest.mock import call, patch
 
 from pydantic import ValidationError
 
-from foreman.github import CommandFailed, CommandTimedOut, ForgeError, LiveForge, MergeNotArmed
+from foreman.github import CommandFailed, CommandTimedOut, ForgeError, LiveForge, MergeNotArmed, ReviewComment
 
 
 HEAD = "a" * 40
+BASE = "b" * 40
 REPO = "Example/Target"
 BRANCH = "8-list-items"
 CLOSING_PR = {
@@ -17,11 +18,11 @@ CLOSING_PR = {
 }
 PR = {
     "number": 12, "state": "OPEN", "headRefOid": HEAD.upper(), "headRefName": "8-list-items",
-    "baseRefName": "main", "autoMergeRequest": None,
+    "baseRefName": "main", "baseRefOid": BASE, "autoMergeRequest": None,
 }
 VIEW_FIELDS = [
     "gh", "pr", "view", "--repo", REPO, "--json",
-    "number,state,headRefOid,headRefName,baseRefName,autoMergeRequest", "--",
+    "number,state,headRefOid,headRefName,baseRefName,baseRefOid,autoMergeRequest", "--",
 ]
 VIEW = [*VIEW_FIELDS, BRANCH]
 CONFIRM = [*VIEW_FIELDS, "12"]
@@ -116,13 +117,40 @@ class LiveForgeTest(unittest.TestCase):
         self.assertNotIsInstance(error.exception, MergeNotArmed)
 
     @patch("foreman.github.subprocess.run")
+    def test_posts_the_review_and_inline_comments_for_the_verified_head(self, run):
+        run.side_effect = [pr_result(), pr_result(command=CONFIRM), gh_result("")]
+        forge = LiveForge()
+        target = forge.review_target(REPO, 8, BRANCH, HEAD)
+        comments: list[ReviewComment] = [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[nit] Use @literal."}]
+        forge.post_review(REPO, target, "Longer review detail.", comments)
+        self.assertEqual(run.call_args.args[0], [
+            "gh", "api", "repos/Example/Target/pulls/12/reviews", "--method", "POST",
+            "-H", "X-GitHub-Api-Version: 2022-11-28", "--input", "-",
+        ])
+        self.assertEqual(json.loads(run.call_args.kwargs["input"]), {
+            "commit_id": HEAD.upper(), "event": "COMMENT", "body": "Longer review detail.", "comments": comments,
+        })
+
+    @patch("foreman.github.subprocess.run")
+    def test_review_does_not_post_after_either_pull_request_ref_changes(self, run):
+        for field in ("baseRefOid", "headRefOid"):
+            with self.subTest(field=field):
+                run.reset_mock()
+                run.side_effect = [pr_result(), pr_result({**PR, field: "c" * 40}, CONFIRM)]
+                forge = LiveForge()
+                target = forge.review_target(REPO, 8, BRANCH, HEAD)
+                with self.assertRaisesRegex(ForgeError, "changed during review"):
+                    forge.post_review(REPO, target, "Longer review detail.", [])
+                self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW, CONFIRM])
+
+    @patch("foreman.github.subprocess.run")
     def test_arms_the_checked_pull_request_in_the_requested_repository(self, run):
         run.side_effect = [
             pr_result(),
             subprocess.CompletedProcess(MERGE, 0, "", ""),
         ]
         self.assertIsNone(LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD))
-        options = {"stdin": subprocess.DEVNULL, "capture_output": True, "text": True, "timeout": 30}
+        options = {"stdin": subprocess.DEVNULL, "input": None, "capture_output": True, "text": True, "timeout": 30}
         self.assertEqual(run.call_args_list, [call(command, **options) for command in (VIEW, MERGE)])
 
     @patch("foreman.github.subprocess.run")

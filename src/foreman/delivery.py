@@ -9,15 +9,17 @@ import operator
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from unidiff.errors import UnidiffParseError
+from unidiff.patch import PatchSet
 
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.github import Forge, MergeNotArmed, merge_command
+from foreman.github import Forge, ForgeError, MergeNotArmed, PullRequest, ReviewComment, merge_command
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+    Contract, HumanQuestionOutput, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
 )
-from foreman.workspace import Workspace, WorktreeInspectionFailed
+from foreman.workspace import ReviewDiff, Workspace, WorktreeInspectionFailed
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -63,7 +65,9 @@ class DeliveryState(TypedDict, total=False):
     human_question: str
     human_answers: list[str]
     review: str
-    review_note: str | None
+    findings: list[dict[str, object]]
+    detail: str
+    review_change_kind: Literal["blocking", "nits"] | None
     risk: dict[str, str]
     verify: str
     review_rounds: int
@@ -126,6 +130,11 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
         if output.slice is None:
             raise InvalidOutput("slice: required when a parent triages as implement")
         update["slice"] = clean_slices([output.slice], "slice")[0]
+    if isinstance(output, ReviewOutput):
+        update["review_change_kind"] = None
+        if output.review == "changes" and output.findings:
+            only_nits = all(finding.severity == "nit" for finding in output.findings)
+            update["review_change_kind"] = "nits" if only_nits else "blocking"
     if update.get("review") == "changes" or update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -136,6 +145,27 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
             history = state.get("implement_models", [latest] if latest else [])
             update["implement_models"] = [*history, model]
     return update
+
+
+def review_submission(output: ReviewOutput, diff: ReviewDiff) -> tuple[str, list[ReviewComment]]:
+    try:
+        patch = PatchSet(diff.patch)
+    except UnidiffParseError:
+        patch = PatchSet("")
+    changed = {
+        (file.path, line.target_line_no)
+        for file in patch if not file.is_removed_file
+        for hunk in file for line in hunk if line.is_added
+    }
+    body = [output.detail]
+    comments: list[ReviewComment] = []
+    for finding in output.findings:
+        message = f"[{finding.severity}] {finding.summary}"
+        if (finding.file, finding.line) in changed:
+            comments.append({"path": finding.file, "line": finding.line, "side": "RIGHT", "body": message})
+        else:
+            body.append(f"{finding.file}:{finding.line} {message}")
+    return "\n\n".join(body), comments
 
 
 def stop_reason(state: DeliveryState) -> str:
@@ -186,15 +216,38 @@ def compile_delivery(
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
+            target: PullRequest | None = None
+            diff: ReviewDiff | None = None
+            repo = state.get("repo", "")
+            if name == "review" and isinstance(run, LiveRun):
+                head, issue = state.get("verified_head"), state.get("issue")
+                try:
+                    worktree = run.workspace.inspect()
+                    if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
+                        raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
+                    target = run.forge.review_target(repo, issue, worktree.branch, head)
+                    diff = run.workspace.review_diff(target.baseRefOid, head)
+                except (ForgeError, WorktreeInspectionFailed) as exc:
+                    return {"path": [name], "halt": "review_unavailable", "halt_detail": str(exc)}
+                instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
             try:
                 raw, model = dispatcher.run(name, models, state, instruction)
-                return stage_update(name, parse_output(STAGE_OUTPUTS[name], raw), state, model)
+                output = parse_output(STAGE_OUTPUTS[name], raw)
+                update = stage_update(name, output, state, model)
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
             except QuotaExhausted as exc:
                 if name != "review":
                     raise
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {exc}"}
+
+            if isinstance(run, LiveRun) and isinstance(output, ReviewOutput) and target is not None and diff is not None:
+                body, comments = review_submission(output, diff)
+                try:
+                    run.forge.post_review(repo, target, body, comments)
+                except ForgeError as exc:
+                    return {**update, "halt": "review_not_posted", "halt_detail": str(exc)}
+            return update
 
         return node
 

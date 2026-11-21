@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import shlex
 import subprocess
 from typing import Protocol
 
@@ -20,11 +21,18 @@ class WorktreeState:
     branch: str | None
 
 
+@dataclass(frozen=True)
+class ReviewDiff:
+    command: str
+    patch: str
+
+
 class Workspace(Protocol):
     root: Path
 
     def run(self, command: str) -> int: ...
     def inspect(self) -> WorktreeState: ...
+    def review_diff(self, base: str, head: str) -> ReviewDiff: ...
 
 
 class LiveWorkspace:
@@ -41,6 +49,15 @@ class LiveWorkspace:
         status = self._git("status", "--porcelain")
         branch = self._git("branch", "--show-current").strip()
         return WorktreeState(head, not status, branch or None)
+
+    def review_diff(self, base: str, head: str) -> ReviewDiff:
+        if not (FULL_SHA.fullmatch(base) and FULL_SHA.fullmatch(head)):
+            raise WorktreeInspectionFailed("Review requires full base and head SHAs.")
+        args = (
+            "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
+            "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}...{head}", "--",
+        )
+        return ReviewDiff(shlex.join(("git", *args)), self._git(*args))
 
     def _git(self, *args: str) -> str:
         operation = " ".join(("git", *args))

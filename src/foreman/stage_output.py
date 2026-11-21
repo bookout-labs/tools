@@ -3,7 +3,7 @@
 import re
 from typing import Annotated, Literal, TypeVar, cast
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, field_validator
 from pydantic.config import JsonDict
 
 from foreman.dispatch import InvalidOutput
@@ -145,29 +145,18 @@ class MergeRisk(Contract):
     level: Literal["low", "medium", "high"]
 
 
+class Finding(Contract):
+    file: Text = Field(description="Give the path relative to the repository root.")
+    line: int = Field(description="Give the line number in the reviewed commit.")
+    severity: Literal["blocking", "nit"]
+    summary: Text = Field(max_length=200)
+
+
 class ReviewOutput(Contract):
     review: Literal["approve", "changes"]
     risk: MergeRisk
-    review_note: str | None = Field(
-        default=None,
-        description="Put the reviewer's requested changes here and keep the verdict in review. Use null when there is no note.",
-    )
-
-    # CLIs without schema enforcement can punctuate verdicts until S2/S3.
-    @model_validator(mode="before")
-    @classmethod
-    def split_verdict(cls, value: object) -> object:
-        if isinstance(value, dict) and isinstance(verdict := value.get("review"), str):
-            verdict = verdict.strip()
-            if verdict in {"approve", "approve."}:
-                return {**value, "review": "approve"}
-            match = re.fullmatch(r"changes(?:[.,:;]\s*(.*))?", verdict, re.S)
-            if match:
-                note = value.get("review_note")
-                if match[1] and note is not None:
-                    raise ValueError("inline change note conflicts with review_note")
-                return {**value, "review": "changes", "review_note": match[1] or note}
-        return value
+    findings: list[Finding] = Field(description="Return each requested fix, including nits. Use an empty list when there are none.")
+    detail: Text = Field(description="Write the pull request review body, including any longer explanation.")
 
 
 class VerifyOutput(Contract):
