@@ -6,6 +6,10 @@ from typing import Literal, Protocol, TypedDict, TypeVar
 
 from pydantic import BaseModel, PositiveInt, RootModel, ValidationError
 
+from foreman.redaction import redact
+from foreman.stage_output import Slice, StoredSlice
+from foreman.workspace import commit_sha
+
 SQUASH_MERGE_FLAG = "--squash"
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
 PullRequestState = Literal["OPEN", "CLOSED", "MERGED"]
@@ -114,7 +118,9 @@ class ReviewComment(TypedDict):
 
 class Forge(Protocol):
     def load_issue(self, repo: str, number: int) -> Issue: ...
-    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int: ...
+    def create_issue(
+        self, repo: str, title: str, body: str, labels: list[str], *, child: Slice | None = None,
+    ) -> int: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
@@ -127,6 +133,20 @@ def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
     return ["gh", "pr", "merge", pull_request, "--repo", repo, SQUASH_MERGE_FLAG, "--auto", "--match-head-commit", sha]
 
 
+def render_slice_body(prose: str, child: Slice) -> str:
+    dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
+    constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
+    stored = child.model_dump()
+    if isinstance(child, StoredSlice) and child.work_kind is not None:
+        stored["work_kind"] = child.work_kind
+    return (
+        (f"{prose}\n\n" if prose else "")
+        + f"Acceptance:\n{child.acceptance}\n\nDependencies:\n{dependencies}"
+        + f"\n\nScreen:\n{child.screen or 'None'}\n\nConstraints:\n{constraints}"
+        + f"\n\n```json\n{json.dumps(stored, indent=2)}\n```"
+    )
+
+
 class LiveForge:
     def load_issue(self, repo: str, number: int) -> Issue:
         issue = self._read(
@@ -134,11 +154,31 @@ class LiveForge:
         )
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
-    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int:
+    def create_issue(
+        self, repo: str, title: str, body: str, labels: list[str], *, child: Slice | None = None,
+    ) -> int:
+        repo, title, body, *labels = (redact(value) for value in (repo, title, body, *labels))
+        if child is not None:
+            child = self._redact_slice(child)
+            body = render_slice_body(body, child)
         args = ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={body}"]
         for label in labels:
             args.extend(["-f", f"labels[]={label}"])
         return self._read(CreatedIssue, args, timeout=None).number
+
+    @staticmethod
+    def _redact_slice(child: Slice) -> Slice:
+        screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
+        return child.model_copy(update={
+            "title": redact(child.title),
+            "acceptance": redact(child.acceptance),
+            "depends_on": [redact(title) for title in child.depends_on],
+            "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
+            "properties": [
+                prop.model_copy(update={"name": redact(prop.name), "constraint": redact(prop.constraint)})
+                for prop in child.properties
+            ],
+        })
 
     def is_merged(self, repo: str, number: int) -> bool:
         issue = self._read(
@@ -157,13 +197,18 @@ class LiveForge:
         return False
 
     def add_label(self, repo: str, number: int, label: str) -> None:
+        repo, label = (redact(value) for value in (repo, label))
         self._run_command(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
 
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None:
         current = self._view_pr(repo, str(target.number))
         if current.state != "OPEN" or current.baseRefName != target.baseRefName:
             raise ForgeError("The pull request changed during review.")
-        payload = {"commit_id": target.headRefOid, "event": "COMMENT", "body": body, "comments": comments}
+        payload = {
+            "commit_id": target.headRefOid, "event": "COMMENT", "body": redact(body),
+            "comments": [{**comment, "body": redact(comment["body"]), "path": redact(comment["path"])} for comment in comments],
+        }
+        repo = redact(repo)
         self._run_command(
             ["gh", "api", f"repos/{repo}/pulls/{target.number}/reviews", "--method", "POST",
              "-H", "X-GitHub-Api-Version: 2022-11-28", "--input", "-"],
@@ -198,8 +243,11 @@ class LiveForge:
         return pr
 
     def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
-        pr = self.review_target(repo, issue, branch, sha)
-        command = merge_command(repo, str(pr.number), sha)
+        head = commit_sha(sha)
+        if head is None:
+            raise MergeNotArmed("Merge arming requires a full 40-hex commit SHA.")
+        pr = self.review_target(repo, issue, branch, head)
+        command = merge_command(redact(repo), str(pr.number), head)
         try:
             self._run_command(command)
         except CommandTimedOut as exc:
@@ -209,7 +257,7 @@ class LiveForge:
                 and confirmed.autoMergeRequest is not None
                 and confirmed.autoMergeRequest.mergeMethod == "SQUASH"
             )
-            same_head = confirmed.number == pr.number and confirmed.headRefOid.lower() == sha.lower()
+            same_head = confirmed.number == pr.number and confirmed.headRefOid.lower() == head.lower()
             if not (same_head and (confirmed.state == "MERGED" or open_squash_request)):
                 raise MergeNotArmed("Merge arming timed out and was not confirmed.") from exc
 

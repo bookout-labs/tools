@@ -16,6 +16,7 @@ from foreman.config import PstackPin, load_config
 from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
+from foreman.stage_output import StoredSlice, parse_output
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 RESUMABLE_HALTS: frozenset[MergeHalt] = frozenset({"merge_held", "merge_not_armed"})
@@ -112,14 +113,9 @@ def run_live_delivery(
             numbers = list(saved.values.get("child_issue_numbers", []))
             work_kind = saved.values.get("work_kind")
             for item in saved.values["slices"][len(numbers):]:
-                dependencies = "\n".join(f"- {title}" for title in item["depends_on"]) or "None"
-                constraints = "\n".join(f"- {prop['constraint']}" for prop in item["properties"]) or "None"
-                stored = {**item, "work_kind": work_kind} if work_kind is not None else item
-                body = (f"Acceptance:\n{item['acceptance']}\n\nDependencies:\n{dependencies}"
-                        f"\n\nScreen:\n{item['screen'] or 'None'}\n\nConstraints:\n{constraints}"
-                        f"\n\n```json\n{json.dumps(stored, indent=2)}\n```")
-                labels = ["slice"] + ([] if item["depends_on"] else ["factory"])
-                numbers.append(client.create_issue(repo, item["title"], body, labels))
+                child = parse_output(StoredSlice, {**item, "work_kind": work_kind})
+                labels = ["slice"] + ([] if child.depends_on else ["factory"])
+                numbers.append(client.create_issue(repo, child.title, "", labels, child=child))
                 graph.update_state(config, {"child_issue_numbers": numbers})
             siblings = {item["title"]: number for item, number in zip(saved.values["slices"], numbers)}
             for item, number in zip(saved.values["slices"], numbers):
