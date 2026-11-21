@@ -2,6 +2,7 @@
 
 import argparse
 from dataclasses import replace
+from decimal import Decimal, InvalidOperation
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,7 @@ from typing import TextIO, assert_never
 import yaml
 
 from foreman.accept import AcceptError, accept_event
+from foreman.budget import claude_spend
 from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
@@ -21,6 +23,7 @@ from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
 from foreman.runner import AnswerError, RESUMABLE_HALTS, RunPresentation, run_live_delivery
+from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
 
@@ -48,6 +51,10 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
         return
     current["path"] = [node for node, _ in rows]
     current["stop"] = result["stop"]
+    if "token_cap" in result:
+        current["token_cap"] = result["token_cap"]
+    current["max_budget_usd"] = result.get("max_budget_usd")
+    current["attempts"] = result.get("attempts", [])
     if result["stop"] in {"needs_human", "quota_exhausted"}:
         current["halt_detail"] = result.get("halt_detail", "")
     _write_run_log("this invocation:")
@@ -63,6 +70,10 @@ def _print_run_rows(
     def write_literal(text: str) -> None:
         print("\n".join(prefix + line for line in text.split("\n")))
 
+    if (limit := result.get("max_budget_usd")) is not None:
+        spent = claude_spend(result.get("attempts", []))
+        amount = "unknown" if spent is None else f"${spent:f}"
+        write_literal(f"claude spend {amount} of ${limit}")
     for command in result.get("commands", []):
         write(f"dry run: {shlex.join(command)}")
     models = result.get("models_used", {})
@@ -128,6 +139,13 @@ def positive_tokens(raw: str) -> int:
     return value
 
 
+def positive_budget(raw: str) -> BudgetUsd:
+    try:
+        return BudgetUsd(Decimal(raw))
+    except (InvalidOperation, ValueError) as exc:
+        raise argparse.ArgumentTypeError("--max-budget-usd must be finite and positive") from exc
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -155,6 +173,7 @@ def main(
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
     run.add_argument("--max-tokens", type=positive_tokens)
+    run.add_argument("--max-budget-usd", type=positive_budget)
 
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")
     accept.add_argument("path")
@@ -215,6 +234,7 @@ def main(
             request=args.request or f"Issue #{args.issue}",
             check=args.check,
             max_tokens=args.max_tokens if args.max_tokens is not None else DEFAULT_TOKEN_CAP,
+            max_budget_usd=args.max_budget_usd,
             fact_record=args.fact_record or MANIFEST_PATH,
         )
         print("pstack pin not checked (dry run)")
@@ -244,6 +264,7 @@ def main(
                 answer=args.answer,
                 presentation=presentation,
                 max_tokens=args.max_tokens,
+                max_budget_usd=args.max_budget_usd,
             )
         except (AnswerError, ForgeError, OSError, QuotaExhausted, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)

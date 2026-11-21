@@ -36,6 +36,7 @@ from foreman.stage_output import (
     CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
+from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import ImplementationCandidate, ImplementationRejected, WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
@@ -128,6 +129,7 @@ class PullRequestSizeDecision(StrEnum):
 
 
 class DeliveryFields(TypedDict, total=False):
+    max_budget_usd: str | None
     pending_dispatch: PendingDispatchRecord | None
     dispatch_plan: DispatchPlanRecord
     request: str
@@ -1112,12 +1114,14 @@ def run_delivery(
     slice: object = None,
     scratch: Path | None = None,
     max_tokens: int = DEFAULT_TOKEN_CAP,
+    max_budget_usd: BudgetUsd | None = None,
     skills: SkillSource = export_skills,
     fact_record: str = MANIFEST_PATH,
 ) -> DeliveryResult:
     state: DeliveryState = {
         "repo": repo,
         "token_cap": max_tokens,
+        "max_budget_usd": usd_text(max_budget_usd) if max_budget_usd is not None else None,
         "fact_record": fact_record_path(fact_record),
         "request": request,
         "check": check,

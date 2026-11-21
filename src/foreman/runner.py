@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 import json
 from pathlib import Path
 import re
@@ -20,6 +21,7 @@ from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import Forge
 from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
+from foreman.usd import BudgetUsd, usd_text
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
@@ -119,6 +121,18 @@ def require_token_cap(values: Mapping[str, object], checkpoint: Path) -> None:
         raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run with a new checkpoint path.")
 
 
+def require_same_budget(stored: object, max_budget_usd: BudgetUsd | None) -> None:
+    if max_budget_usd is not None and (stored is None or Decimal(str(stored)) != max_budget_usd.amount):
+        raise ValueError("--max-budget-usd differs from the stored dollar allowance")
+
+
+def require_run_limits(values: Mapping[str, object], checkpoint: Path, max_budget_usd: BudgetUsd | None) -> None:
+    require_token_cap(values, checkpoint)
+    if "max_budget_usd" not in values:
+        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history for --max-budget-usd. Start a new run with a new checkpoint path.")
+    require_same_budget(values["max_budget_usd"], max_budget_usd)
+
+
 def run_live_delivery(
     *,
     repo: str,
@@ -131,6 +145,7 @@ def run_live_delivery(
     request: str | None = None,
     answer: str | None = None,
     max_tokens: int | None = None,
+    max_budget_usd: BudgetUsd | None = None,
     fact_record: str | None = None,
     presentation: RunPresentation | None = None,
 ) -> DeliveryResult:
@@ -149,8 +164,10 @@ def run_live_delivery(
         channels = prior["channel_values"] if prior else {}
         if prior and "token_cap" in channels and max_tokens is not None and channels["token_cap"] != max_tokens:
             raise ValueError("--max-tokens differs from the stored token cap")
+        if prior and "max_budget_usd" in channels:
+            require_same_budget(channels["max_budget_usd"], max_budget_usd)
         if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
-            require_token_cap(channels, checkpoint)
+            require_run_limits(channels, checkpoint, max_budget_usd)
         saved_pin = channels.get("pstack_pin")
         if prior and not channels.get("stop") and saved_pin is None:
             raise ValueError("Cannot resume a delivery checkpoint without a pstack pin.")
@@ -165,6 +182,7 @@ def run_live_delivery(
                                         "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
                                         "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
                                         "repo": repo, "check": check,
+                                        "max_budget_usd": channels.get("max_budget_usd") if prior else (usd_text(max_budget_usd) if max_budget_usd is not None else None),
                                         "token_cap": channels["token_cap"] if prior else (max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)})
         def invoke(
             graph_input: DeliveryState | Command[str] | None,
@@ -184,11 +202,11 @@ def run_live_delivery(
         saved = graph.get_state(config)
         if saved.values:
             if not saved.next and not saved.interrupts and saved.values.get("halt") not in RESUMABLE_HALTS:
-                if "token_cap" not in saved.values:
+                if "token_cap" not in saved.values or "max_budget_usd" not in saved.values:
                     if presentation is not None:
                         presentation.restore(saved, saver)
                     return snapshot_result(saved, saver)
-            require_token_cap(saved.values, checkpoint)
+            require_run_limits(saved.values, checkpoint, max_budget_usd)
         saved_values = checkpoint_state(saved.values)
         if presentation is not None and saved_values is not None:
             presentation.restore(saved, saver)
@@ -234,6 +252,7 @@ def run_live_delivery(
                 "fact_record": fact_record or MANIFEST_PATH,
                 "repo": repo,
                 "token_cap": max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
+                "max_budget_usd": usd_text(max_budget_usd) if max_budget_usd is not None else None,
                 "issue": issue,
                 "workspace": workspace,
                 "request": text,
@@ -260,14 +279,23 @@ def run_live_delivery(
             invoke(Command(resume=True), saved_values)
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
-            require_token_cap(before.values, checkpoint)
+            require_run_limits(before.values, checkpoint, max_budget_usd)
+            restored = checkpoint_state(before.values)
+            assert restored is not None
+            previous_attempts = restored.get("attempts", [])
+            attempts = saved_values.get("attempts", [])
+            if attempts[:len(previous_attempts)] != previous_attempts:
+                raise ValueError("Cannot resume a run with non-prefix attempt history.")
             if presentation is not None:
                 presentation.restore(before, saver)
             replay = before.config
+            retained: DeliveryUpdate = {"attempts": attempts[len(previous_attempts):]}
             if partial := saved_values.get("partial_edits"):
-                replay = graph.update_state(replay, {"partial_edits": partial})
-            restored = checkpoint_state(before.values)
-            assert restored is not None
+                retained["partial_edits"] = partial
+            if retained["attempts"] or "partial_edits" in retained:
+                replay = graph.update_state(replay, retained)
+                restored = checkpoint_state(graph.get_state(replay).values)
+                assert restored is not None
             invoke(None, restored, replay)
         elif saved.next and not saved.interrupts:
             invoke(None, saved_values)
