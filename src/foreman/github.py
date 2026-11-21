@@ -1,19 +1,28 @@
 """GitHub operations for delivery runs."""
 
-from copy import deepcopy
-from pathlib import Path
+from datetime import UTC, datetime
 import subprocess
-from typing import Literal, Protocol, TypedDict
+from typing import Literal, Protocol, TypedDict, TypeVar
 
-from pydantic import BaseModel, PositiveInt, ValidationError
+from pydantic import AwareDatetime, BaseModel, PositiveInt, ValidationError
 
 SQUASH_MERGE_FLAG = "--squash"
 PullRequestState = Literal["OPEN", "CLOSED", "MERGED"]
-MergeOutcome = Literal["armed", "skipped"]
+Model = TypeVar("Model", bound=BaseModel)
 
 
-class MergeNotArmed(RuntimeError):
+class ForgeError(RuntimeError):
     pass
+
+
+class MergeNotArmed(ForgeError):
+    pass
+
+
+class CommandTimedOut(MergeNotArmed):
+    def __init__(self, operation: str):
+        self.operation = operation
+        super().__init__(f"{operation} timed out.")
 
 
 class PullRequestStatus(BaseModel, strict=True):
@@ -21,7 +30,7 @@ class PullRequestStatus(BaseModel, strict=True):
 
 
 class AutoMergeRequest(BaseModel, strict=True):
-    enabledAt: str
+    enabledAt: AwareDatetime
     mergeMethod: Literal["MERGE", "REBASE", "SQUASH"]
 
 
@@ -53,6 +62,10 @@ class IssueClosure(BaseModel, strict=True):
     closedByPullRequestsReferences: list[ClosingPullRequest]
 
 
+class CreatedIssue(BaseModel, strict=True):
+    number: PositiveInt
+
+
 class Issue(TypedDict):
     title: str
     body: str
@@ -64,57 +77,47 @@ class Forge(Protocol):
     def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
-    def arm_auto_merge(self, repo: str, issue: int | None, sha: str | None) -> MergeOutcome: ...
+    def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
 
 
-def _merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
+def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
     return ["gh", "pr", "merge", pull_request, "--repo", repo, SQUASH_MERGE_FLAG, "--auto", "--match-head-commit", sha]
 
 
 class LiveForge:
-    def __init__(self, cwd: Path | None = None):
-        self.cwd = cwd
-
     def load_issue(self, repo: str, number: int) -> Issue:
-        output = subprocess.check_output(
-            ["gh", "issue", "view", str(number), "--repo", repo, "--json", "title,body,labels"], text=True
+        issue = self._read_issue_response(
+            IssueView, ["gh", "issue", "view", str(number), "--repo", repo, "--json", "title,body,labels"],
         )
-        issue = IssueView.model_validate_json(output)
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
     def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int:
-        args = ["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body]
+        args = ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={body}"]
         for label in labels:
-            args.extend(["--label", label])
-        url = subprocess.check_output(args, text=True).strip()
-        return int(url.rsplit("/", 1)[-1])
+            args.extend(["-f", f"labels[]={label}"])
+        return self._read_issue_response(CreatedIssue, args).number
 
     def is_merged(self, repo: str, number: int) -> bool:
-        issue = IssueClosure.model_validate_json(subprocess.check_output(
-            ["gh", "issue", "view", str(number), "--repo", repo, "--json",
-             "closed,closedByPullRequestsReferences"], text=True
-        ))
+        issue = self._read_issue_response(
+            IssueClosure, ["gh", "issue", "view", str(number), "--repo", repo, "--json",
+                           "closed,closedByPullRequestsReferences"],
+        )
         if not issue.closed:
             return False
         for pr in issue.closedByPullRequestsReferences:
             state = pr.state
             if state is None:
-                state = PullRequestStatus.model_validate_json(subprocess.check_output(
-                    ["gh", "pr", "view", str(pr.number), "--repo", repo, "--json", "state"], text=True
-                )).state
+                state = self._read_issue_response(
+                    PullRequestStatus, ["gh", "pr", "view", str(pr.number), "--repo", repo, "--json", "state"],
+                ).state
             if state == "MERGED":
                 return True
         return False
 
     def add_label(self, repo: str, number: int, label: str) -> None:
-        subprocess.check_output(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label], text=True)
+        self._run_issue_command(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
 
-    def arm_auto_merge(self, repo: str, issue: int | None, sha: str | None) -> MergeOutcome:
-        if issue is None or not sha:
-            raise MergeNotArmed("Live merge requires an issue number and a verified SHA.")
-        branch = self._run_command(["git", "branch", "--show-current"]).strip()
-        if not branch:
-            raise MergeNotArmed("HEAD is detached. Merge requires a checked-out branch.")
+    def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
         pr = self._view_pr(repo, branch)
         if pr.state != "OPEN":
             raise MergeNotArmed("The pull request is not open.")
@@ -124,11 +127,11 @@ class LiveForge:
             raise MergeNotArmed(f"The pull request head branch must start with {issue}-.")
         if pr.baseRefName != "main":
             raise MergeNotArmed("The pull request must target main.")
+        command = merge_command(repo, str(pr.number), sha)
+        started_at = datetime.now(UTC)
         try:
-            self._run_command(_merge_command(repo, str(pr.number), sha))
-        except MergeNotArmed as exc:
-            if not isinstance(exc.__cause__, subprocess.TimeoutExpired):
-                raise
+            self._run_command(command)
+        except CommandTimedOut as exc:
             try:
                 confirmed = self._view_pr(repo, str(pr.number))
             except MergeNotArmed as confirmation_error:
@@ -136,12 +139,14 @@ class LiveForge:
                     f"Merge arming timed out and was not confirmed ({confirmation_error})."
                 ) from exc
             if (
-                confirmed.number != pr.number
+                pr.autoMergeRequest is not None
+                or confirmed.number != pr.number
                 or confirmed.headRefOid.lower() != sha.lower()
                 or confirmed.autoMergeRequest is None
+                or confirmed.autoMergeRequest.mergeMethod != "SQUASH"
+                or confirmed.autoMergeRequest.enabledAt < started_at
             ):
                 raise MergeNotArmed("Merge arming timed out and was not confirmed.") from exc
-        return "armed"
 
     def _view_pr(self, repo: str, selector: str) -> PullRequest:
         command = [
@@ -154,44 +159,28 @@ class LiveForge:
             raise MergeNotArmed(f"Invalid response from gh pr view ({exc}).") from exc
 
     def _run_command(self, command: list[str]) -> str:
-        operation = " ".join(command[:3])
+        operation = " ".join(command[:2] if command[1] == "api" else command[:3])
         try:
             result = subprocess.run(
-                command, cwd=self.cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+                command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise CommandTimedOut(operation) from exc
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
             raise MergeNotArmed(f"{operation} failed ({exc}).") from exc
         if result.returncode:
             raise MergeNotArmed(result.stderr.strip() or f"{operation} exited with code {result.returncode}.")
         return result.stdout
 
+    def _run_issue_command(self, command: list[str]) -> str:
+        try:
+            return self._run_command(command)
+        except MergeNotArmed as exc:
+            raise ForgeError(str(exc)) from exc
 
-class DryRunForge:
-    def __init__(
-        self,
-        issues: dict[tuple[str, int], Issue] | None = None,
-        merged: set[tuple[str, int]] | None = None,
-    ):
-        self.issues = deepcopy(issues or {})
-        self.merged = set(merged or ())
-        self.merge_commands: list[list[str]] = []
-
-    def load_issue(self, repo: str, number: int) -> Issue:
-        return deepcopy(self.issues[(repo, number)])
-
-    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int:
-        number = max((n for issue_repo, n in self.issues if issue_repo == repo), default=0) + 1
-        self.issues[(repo, number)] = {"title": title, "body": body, "labels": list(labels)}
-        return number
-
-    def is_merged(self, repo: str, number: int) -> bool:
-        return (repo, number) in self.merged
-
-    def add_label(self, repo: str, number: int, label: str) -> None:
-        labels = self.issues[(repo, number)]["labels"]
-        if label not in labels:
-            labels.append(label)
-
-    def arm_auto_merge(self, repo: str, issue: int | None, sha: str | None) -> MergeOutcome:
-        self.merge_commands.append(_merge_command(repo, "<number>", sha or "<sha>"))
-        return "skipped"
+    def _read_issue_response(self, model: type[Model], command: list[str]) -> Model:
+        output = self._run_issue_command(command)
+        try:
+            return model.model_validate_json(output)
+        except ValidationError as exc:
+            raise ForgeError(f"Invalid {model.__name__} response ({exc}).") from exc

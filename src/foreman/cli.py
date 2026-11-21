@@ -6,21 +6,23 @@ from pathlib import Path
 import re
 import shlex
 import sys
+from typing import assert_never
 
 import yaml
 
 from foreman.accept import AcceptError, accept_event
-from foreman.delivery import GRAPH_NAME, diagram, run_delivery
+from foreman.delivery import DeliveryState, GRAPH_NAME, LiveRun, diagram, run_delivery
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
-from foreman.github import Forge
+from foreman.github import ForgeError, LiveForge
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
-from foreman.runner import WorktreeInspector, run_live_delivery
+from foreman.runner import run_live_delivery
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
+from foreman.workspace import LiveWorkspace
 
 
-def _print_run(result: dict) -> None:
+def _print_run(result: DeliveryState) -> None:
     models = result.get("models_used", {})
     for node in result["path"]:
         if node == "verify":
@@ -34,14 +36,15 @@ def _print_run(result: dict) -> None:
             if detail := result.get("halt_detail"):
                 print(detail)
         elif node == "merge":
-            if result.get("merge") == "armed":
-                print("merge armed")
-            elif result.get("merge") == "skipped":
-                print(f"merge skipped (dry run): {shlex.join(result['merge_command'])}")
-            elif result.get("merge") == "not_armed":
-                print("merge not armed")
-            else:
-                print("merge outcome unavailable")
+            match outcome := result["merge"]:
+                case "armed":
+                    print("merge armed")
+                case "skipped":
+                    print(f"merge skipped (dry run): {shlex.join(result['merge_command'])}")
+                case "not_armed":
+                    print("merge not armed")
+                case _:
+                    assert_never(outcome)
         else:
             fields = [node]
             if model := models.get(node):
@@ -59,8 +62,7 @@ def main(
     *,
     worker_runner: CommandRunner | None = run_worker_command,
     checkpoint: Path | None = None,
-    forge: Forge | None = None,
-    inspect_worktree: WorktreeInspector | None = None,
+    live_run: LiveRun | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -157,11 +159,10 @@ def main(
                 checkpoint=checkpoint,
                 dispatcher=dispatcher,
                 request=args.request,
-                forge=forge,
+                run=live_run if live_run is not None else LiveRun(LiveForge(), LiveWorkspace(cwd)),
                 answer=args.answer,
-                inspect_worktree=inspect_worktree,
             )
-        except (OSError, QuotaExhausted, ValueError) as exc:
+        except (ForgeError, OSError, QuotaExhausted, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
     _print_run(result)

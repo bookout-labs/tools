@@ -3,17 +3,13 @@
 import json
 from pathlib import Path
 import re
-import subprocess
-from typing import Callable
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from foreman.delivery import DeliveryState, compile_delivery, load_slice
+from foreman.delivery import DeliveryState, LiveRun, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
-from foreman.github import Forge, LiveForge
 
-WorktreeInspector = Callable[[Path], tuple[str, bool]]
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 
 
@@ -24,12 +20,6 @@ def _load_slice(body: str) -> dict[str, object]:
     return load_slice(json.loads(blocks[-1]))
 
 
-def _inspect_worktree(cwd: Path) -> tuple[str, bool]:
-    head = subprocess.run(["git", "rev-parse", "HEAD"], shell=False, cwd=cwd, capture_output=True, text=True)
-    status = subprocess.run(["git", "status", "--porcelain"], shell=False, cwd=cwd, capture_output=True, text=True)
-    return head.stdout.strip(), head.returncode == status.returncode == 0 and not status.stdout
-
-
 def run_live_delivery(
     *,
     repo: str,
@@ -37,25 +27,17 @@ def run_live_delivery(
     check: str,
     cwd: Path,
     checkpoint: Path,
+    run: LiveRun,
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
-    forge: Forge | None = None,
     answer: str | None = None,
-    inspect_worktree: WorktreeInspector | None = None,
 ) -> dict:
-    def run_check(command: str) -> int:
-        return subprocess.run(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL).returncode
-
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     config = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(cwd.resolve())
-    inspect = inspect_worktree or _inspect_worktree
-    client = forge if forge is not None else LiveForge(cwd)
+    client = run.forge
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-        graph = compile_delivery(
-            dispatcher, checkpointer=saver, run_check=run_check, forge=client,
-            inspect_worktree=lambda: inspect(cwd),
-        )
+        graph = compile_delivery(dispatcher, None, run=run, checkpointer=saver)
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")
         if saved_workspace and saved_workspace != workspace:
@@ -108,4 +90,11 @@ def run_live_delivery(
         if saved.interrupts:
             question = saved.interrupts[0].value["question"]
             return {**saved.values, "stop": "needs_human", "halt_detail": question}
-        return dict(saved.values)
+        result = dict(saved.values)
+        if "merge" in result.get("path", []) and "merge" not in result:
+            legacy = saver.get(saved.config)
+            if legacy is not None:
+                armed = legacy["channel_values"].get("merge_armed")
+                if isinstance(armed, bool):
+                    result["merge"] = "armed" if armed else "not_armed"
+        return result

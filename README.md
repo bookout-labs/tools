@@ -68,7 +68,9 @@ The cap is three failures across verify, proof, and review. It is config. A node
 
 After approval, Foreman looks up the pull request for the checked-out branch and arms it with `gh pr merge <pull-request> --repo <repo> --squash --auto --match-head-commit <sha>`. The worktree and pull request must still be at the verified SHA, the worktree must be clean, and the open pull request must target `main` from a branch starting with the issue number and a hyphen.
 
-If the merge command times out, Foreman checks the same pull request for an auto-merge request at the verified SHA. A failed merge check or unconfirmed command finishes the run as `merge_not_armed` and records the reason. If HEAD moved, the reason includes the current and verified SHAs. A dry run prints `merge skipped (dry run)` with the command template and reports the scripted verification result.
+Foreman looks up the local branch by name. If the pull request uses a differently named upstream branch, the lookup fails and Foreman leaves the merge unarmed.
+
+If the merge command times out, Foreman checks the same pull request for a new squash auto-merge request at the verified SHA. A failed merge check or unconfirmed command finishes the run as `merge_not_armed` and records the reason. If HEAD moved, the reason includes the current and verified SHAs. A dry run prints `merge skipped (dry run)` with the command template and reports the scripted verification result.
 
 Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 
