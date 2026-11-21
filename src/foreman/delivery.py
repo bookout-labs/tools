@@ -79,6 +79,10 @@ class DeliveryState(TypedDict, total=False):
     path: Annotated[list[str], operator.add]
 
 
+def halted(reason: str, detail: str, path: str) -> DeliveryState:
+    return {"halt": reason, "halt_detail": detail or f"{reason} at {path}", "path": [path]}
+
+
 def stage_text(name: str) -> str:
     path = PACKAGE / "stages" / f"{name}.md"
     text = path.read_text().strip()
@@ -175,11 +179,11 @@ def compile_delivery(
     def bind(name: str):
         def node(state: DeliveryState) -> dict[str, object]:
             if dispatcher is None:
-                return {"path": [name], "halt": "no_dispatcher"}
+                return dict(halted("no_dispatcher", "No dispatcher is configured.", name))
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
-                return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
+                return dict(halted("no_reviewer", str(exc), name))
             instruction = prompts[name]
             if name == "implement":
                 slice = state["slice"]
@@ -192,17 +196,17 @@ def compile_delivery(
                 instruction = f"{instruction}\n\nCommand: {command}"
             outcome, model = dispatcher.run(name, models, state, instruction)
             if outcome.kind == "failed":
-                return {"path": [name], "halt": "invalid_output", "halt_detail": f"{model}: {outcome.detail}"}
+                return dict(halted("invalid_output", f"{model}: {outcome.detail}", name))
             if outcome.kind == "cli_missing":
-                return {"path": [name], "halt": "cli_missing", "halt_detail": outcome.detail}
+                return dict(halted("cli_missing", outcome.detail, name))
             if outcome.kind == "quota":
                 if name != "review":
                     raise QuotaExhausted(model)
-                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
+                return dict(halted("no_reviewer", f"review quota exhausted: {model}", name))
             try:
                 return stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model)
             except InvalidOutput as exc:
-                return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
+                return dict(halted("invalid_output", str(exc), name))
 
         return node
 
@@ -216,9 +220,9 @@ def compile_delivery(
                 try:
                     worktree = workspace.inspect()
                 except WorktreeInspectionFailed as exc:
-                    return {"path": ["verify"], "halt": "dirty_worktree", "halt_detail": str(exc)}
+                    return dict(halted("dirty_worktree", str(exc), "verify"))
                 if not worktree.clean:
-                    return {"path": ["verify"], "halt": "dirty_worktree"}
+                    return dict(halted("dirty_worktree", "The worktree has changes.", "verify"))
                 exit_code = workspace.run(state["check"])
                 verdict = "pass" if exit_code == 0 else "fail"
                 checked = {"verified_head": worktree.head} if exit_code == 0 else {}
@@ -237,11 +241,11 @@ def compile_delivery(
         }
         update: DeliveryState = {"path": ["proof"], "proof_labels": {key: label for key, label in labels.items() if label}}
         if "insufficient_evidence" in labels.values():
-            update["halt"] = "insufficient_evidence"
+            update.update(halted("insufficient_evidence", "Required proof is missing.", "proof"))
         elif "block" in labels.values():
             update["review_rounds"] = state.get("review_rounds", 0) + 1
             if update["review_rounds"] >= config.max_review_rounds:
-                update["halt"] = "review_cap"
+                update.update(halted("review_cap", "Proof failed at the review round limit.", "proof"))
         return update
 
     def needs_human(state: DeliveryState) -> DeliveryState:
@@ -302,9 +306,9 @@ def compile_delivery(
         repo = state["repo"]
         head = state.get("verified_head")
 
-        def halted(halt: MergeHalt, detail: str) -> DeliveryState:
+        def merge_halted(halt: MergeHalt, detail: str) -> DeliveryState:
             return {
-                "merge": "not_armed", "halt": halt, "halt_detail": detail, "path": ["merge"],
+                **halted(halt, detail, "merge"), "merge": "not_armed",
                 "merge_command": merge_command(repo, "<number>", head or "<sha>"),
             }
 
@@ -316,15 +320,15 @@ def compile_delivery(
                 }
             case LiveRun(forge=forge, workspace=workspace):
                 if head is None:
-                    return halted("merge_not_armed", "The run did not record a verified HEAD.")
+                    return merge_halted("merge_not_armed", "The run did not record a verified HEAD.")
                 try:
                     worktree = workspace.inspect()
                 except WorktreeInspectionFailed as exc:
-                    return halted("merge_not_armed", str(exc))
+                    return merge_halted("merge_not_armed", str(exc))
                 if not worktree.clean:
-                    return halted("merge_not_armed", "The worktree has changes or Git could not inspect it.")
+                    return merge_halted("merge_not_armed", "The worktree has changes or Git could not inspect it.")
                 if worktree.head != head:
-                    return halted(
+                    return merge_halted(
                         "merge_not_armed",
                         f"HEAD is {worktree.head}, verification checked {head}. "
                         "Reset the PR branch to the verified commit.\n"
@@ -332,21 +336,24 @@ def compile_delivery(
                         "Then rerun the same command. New commits need a new run."
                     )
                 if worktree.branch is None:
-                    return halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")
+                    return merge_halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")
                 try:
                     hold = forge.merge_hold(repo)
                 except MergeHoldUnreadable as exc:
-                    return halted("merge_held", f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
+                    return merge_halted("merge_held", f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
                 if hold:
-                    return halted("merge_held", hold)
+                    return merge_halted("merge_held", hold)
                 try:
                     forge.arm_auto_merge(repo, state["issue"], worktree.branch, head)
                 except MergeNotArmed as exc:
-                    return halted("merge_not_armed", str(exc))
+                    return merge_halted("merge_not_armed", str(exc))
                 return {"merge": "armed", "path": ["merge"]}
 
     def finish(state: DeliveryState) -> DeliveryState:
-        return {"stop": stop_reason(state), "path": ["done"]}
+        reason = stop_reason(state)
+        if reason in ("verify_cap", "review_cap") and not state.get("halt"):
+            return {**halted(reason, f"{reason.replace(chr(95), chr(32)).capitalize()} reached.", "done"), "stop": reason}
+        return {"stop": reason, "path": ["done"]}
 
     builder = StateGraph(DeliveryState)
     for name in REQUIRED_NODES:

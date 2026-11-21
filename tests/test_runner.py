@@ -502,7 +502,7 @@ class LiveRunnerTest(unittest.TestCase):
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "touch ran"],
                 worker_runner=None, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
             )
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertIn("done no_dispatcher", stdout.getvalue())
         self.assertFalse((self.cwd / "ran").exists())
 
@@ -653,7 +653,7 @@ class LiveRunnerTest(unittest.TestCase):
                 worker_runner=lambda args, cwd, env: worker_reply(args, next(replies)),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
             )
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 75)
         arm.assert_called_once_with("Example/Target", 8, BRANCH, HEAD)
         self.assertIn(f"merge not armed\ncheck exit 0\ndone merge_not_armed\n{detail}", stdout.getvalue())
 
@@ -690,7 +690,7 @@ class LiveRunnerTest(unittest.TestCase):
                     worker_runner=lambda args, cwd, env=None: worker_reply(args, next(replies)),
                     checkpoint=self.checkpoint, live_run=live_run,
                 )
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 75 if self.github.hold else 0)
             return stdout.getvalue()
 
         held = invoke()
@@ -757,7 +757,7 @@ sys.exit(main(
             return subprocess.run(
                 [sys.executable, "-c", bootstrap + script, str(self.checkpoint), "run", "delivery",
                  "--repo", "Example/Engine", "--issue", "8", "--check", "echo checked >> check.log", *flags],
-                cwd=self.cwd, text=True, capture_output=True, check=True,
+                cwd=self.cwd, text=True, capture_output=True, check=False,
             ).stdout
 
         first = invoke("--request", "List items")
@@ -771,3 +771,20 @@ sys.exit(main(
         self.assertIn("done verified", completed)
         self.assertEqual(invoke(), completed)
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
+
+class HaltExitCodeTest(unittest.TestCase):
+    def test_halt_reasons_print_detail_and_exit_nonzero(self):
+        reasons = {
+            "no_dispatcher": 1, "no_reviewer": 1, "invalid_output": 1,
+            "cli_missing": 1, "dirty_worktree": 1, "insufficient_evidence": 1,
+            "review_cap": 1, "verify_cap": 1, "missing_slice": 1,
+            "merge_held": 75, "merge_not_armed": 75,
+        }
+        for reason, expected in reasons.items():
+            with self.subTest(reason=reason), patch("foreman.cli.run_delivery") as run:
+                run.return_value = {"path": ["done"], "stop": reason, "halt": reason,
+                                    "halt_detail": f"Explanation for {reason}"}
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    code = main(["run", "delivery", "--repo", "example/repo", "--request", "test", "--dry-run"])
+                self.assertEqual(code, expected)
+                self.assertIn(run.return_value["halt_detail"], output.getvalue())

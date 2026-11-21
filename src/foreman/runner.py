@@ -10,7 +10,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery, load_slice
+from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery, halted, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
@@ -78,7 +78,7 @@ def run_live_delivery(
                 try:
                     initial["slice"] = _load_slice(loaded["body"])
                 except (InvalidOutput, json.JSONDecodeError) as exc:
-                    initial.update(halt="missing_slice", halt_detail=str(exc))
+                    initial.update(halted("missing_slice", str(exc), "load_slice"))
             graph.invoke(initial, config, durability="sync")
         elif saved.values.get("halt") in RESUMABLE_HALTS:
             _replay_halted_node(graph, config, saved.values.get("path", []))
