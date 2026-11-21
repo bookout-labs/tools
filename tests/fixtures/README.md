@@ -205,3 +205,7 @@ defines `stderr=STDOUT` as sending stderr to the same handle as stdout.
 one text stream. Foreman iterates its lines and passes each to the CLI's
 redacting writer before waiting for the exit code. The writer flushes every
 line. An unterminated final line is emitted at EOF.
+
+### LangGraph typed invocation
+
+LangGraph 1.2.24 exposes typed graph output through `invoke(..., version="v2").value`. The pinned package's [Pregel.invoke overloads](https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py) return `GraphOutput[OutputT]` for version v2 and an untyped dictionary for v1. `run_delivery` uses the graph's output schema through that API. Existing delivery tests and the README dry run exercise the real installed package.
