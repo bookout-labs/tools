@@ -91,10 +91,10 @@ SKILL_RULES = (
 class SkillMissing(ValueError):
     halt: Literal["skill_missing"] = "skill_missing"
 
-    def __init__(self, pin: PstackPin, method: str | None = None):
+    def __init__(self, pin: PstackPin, method: str | None = None, detail: str | None = None):
         self.reason: SkillFailureReason = "pin_unavailable" if method is None else "method_missing"
-        detail = "pin unavailable" if method is None else f"method missing at pin ({method})"
-        super().__init__(f"pstack {detail}, commit {pin.commit}")
+        reason = "pin unavailable" if method is None else f"method missing at pin ({method})"
+        super().__init__(f"pstack {reason}, commit {pin.commit}" + (f": {detail}" if detail else ""))
 
 
 def git(root: Path, *args: str) -> str:
@@ -122,9 +122,16 @@ def export_skills(pin: PstackPin, scratch: Path) -> Path:
         method = rule.skill
         path = root / method.path if isinstance(method, PstackMethod) else PACKAGE_SKILLS / f"{method}.md"
         try:
-            path.read_text(encoding="utf-8")
+            content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             raise SkillMissing(pin, method.path if isinstance(method, PstackMethod) else path.name) from exc
+        name = method.path if isinstance(method, PstackMethod) else path.name
+        if not content.strip():
+            raise SkillMissing(pin, name, "method is empty")
+        if isinstance(method, PstackMethod) and method.lines:
+            first, last = method.lines
+            if len(content.splitlines()) < last:
+                raise SkillMissing(pin, name, f"requires lines {first} through {last}, has {len(content.splitlines())}")
 
     for path in sorted(root.rglob("*"), key=lambda entry: -len(entry.parts)):
         if not path.is_symlink():

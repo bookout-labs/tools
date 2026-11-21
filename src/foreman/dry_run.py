@@ -74,7 +74,13 @@ class ScriptHandler:
             return Outcome("ran", {"research": self.research})
         if node == "review":
             verdict = self.reviews.pop(0) if self.reviews else "changes"
-            return Outcome("ran", {"review": verdict, "risk": dict(self.risk), "review_note": None})
+            findings = (
+                [{"file": "example.txt", "line": 1, "severity": "blocking", "summary": "Add a check."}]
+                if verdict == "changes" else []
+            )
+            return Outcome("ran", {
+                "review": verdict, "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.",
+            })
         if node == "verify":
             return Outcome("ran", {"verify": self.verify})
         raise ValueError(f"no script for {node}")

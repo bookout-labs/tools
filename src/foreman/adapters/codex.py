@@ -37,15 +37,6 @@ def normalize_output(contract: type[Contract], output: dict[str, object]) -> Non
     if isinstance(sections := output.get("implementation"), dict):
         sections = SECTIONS.validate_python(sections, strict=True)
         output["implementation"] = "\n\n".join(f"{title}\n{body}" for title, body in sections.items())
-    if isinstance(verdict := output.get("review"), str):
-        verdict = verdict.strip()
-        if verdict in {"approve", "approve."}:
-            output["review"] = "approve"
-        elif match := re.fullmatch(r"changes(?:[.,:;]\s*(.*))?", verdict, re.S):
-            note = output.get("review_note")
-            if match[1] and note is not None:
-                raise ValueError("inline change note conflicts with review_note")
-            output.update(review="changes", review_note=match[1] or note)
 
 
 @dataclass(frozen=True)
@@ -80,6 +71,4 @@ class CodexAdapter:
             normalize_output(self.contract, output)
         except ValidationError as exc:
             return Outcome("failed", detail=f"implementation: {exc.errors(include_input=False)[0]['msg']}")
-        except ValueError as exc:
-            return Outcome("failed", detail=str(exc))
         return Outcome("ran", output)
