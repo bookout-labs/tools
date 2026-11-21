@@ -29,7 +29,6 @@ class ProofTest(unittest.TestCase):
         self.assertFalse(formal_required({"properties": []}))
 
 
-
 class ProofLabelTest(unittest.TestCase):
     def test_browser_evidence_boundary(self):
         screen = "docs/screens/deals.md"
