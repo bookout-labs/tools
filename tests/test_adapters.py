@@ -45,9 +45,10 @@ class NativeAdaptersTest(unittest.TestCase):
             ("success", 0, "ran", True),
             ("is_error", 1, "failed", False),
             ("quota", 1, "quota", True),
-            ("missing_model_usage", 0, "ran", True),
+            ("model_substitution_disabled", 1, "failed", False),
+            ("missing_model_usage", 0, "failed", True),
             ("wrong_model", 0, "failed", True),
-            ("zero_usage", 0, "ran", False),
+            ("zero_usage", 0, "failed", False),
         ), input_tokens=4, cached_tokens=3985, cost=0.037886699999999995)
 
     def test_grok_envelopes(self):
@@ -56,11 +57,49 @@ class NativeAdaptersTest(unittest.TestCase):
             ("success", 0, "ran", True),
             ("is_error", 1, "failed", False),
             ("quota", 1, "quota", False),
-            ("missing_model_usage", 0, "ran", True),
-            ("wrong_model", 0, "failed", True),
-            ("zero_usage", 0, "ran", False),
+            ("missing_model_usage", 0, "failed", True),
+            ("zero_usage", 0, "failed", False),
             ("incomplete_usage", 0, "ran", False),
         ), input_tokens=18007, cached_tokens=9344, cost=0.01448196)
+
+    def test_claude_quota_by_status_or_api_error(self):
+        adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+        recorded = fixture_process(["claude"], "quota", 1)
+        envelope = json.loads(recorded.stdout)
+        for status, api_error in ((429, None), (None, "usage_limit_reached"), (None, "model_requires_usage_credits")):
+            with self.subTest(status=status, api_error=api_error):
+                envelope.update(api_error_status=status, api_error=api_error)
+                process = CompletedProcess(recorded.args, 1, json.dumps(envelope), "")
+                self.assertEqual(adapter.read(process).kind, "quota")
+
+    def test_claude_model_substitution_is_a_failure(self):
+        adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+        outcome = adapter.read(fixture_process(["claude"], "model_substitution_disabled", 1))
+        self.assertEqual(outcome.kind, "failed")
+        self.assertIn("forbids model substitution", outcome.detail)
+
+    def test_missing_or_empty_model_usage_fails_but_zero_token_usage_can_run(self):
+        cases = (
+            ("claude", ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high")),
+             "modelUsage missing; cannot confirm claude-opus-5-5"),
+            ("grok", GrokAdapter(ModelSpec.parse("grok-4.7-high")),
+             "modelUsage missing; cannot confirm a model ran"),
+        )
+        for cli, adapter, detail in cases:
+            with self.subTest(cli=cli):
+                recorded = fixture_process([cli], "zero_usage", 0)
+                envelope = json.loads(recorded.stdout)
+                envelope.pop("modelUsage", None)
+                for fields in ({}, {"modelUsage": {}}):
+                    process = CompletedProcess(recorded.args, 0, json.dumps({**envelope, **fields}), "")
+                    outcome = adapter.read(process)
+                    self.assertEqual((outcome.kind, outcome.detail), ("failed", detail))
+                success = fixture_process([cli], "success", 0)
+                envelope["modelUsage"] = json.loads(success.stdout)["modelUsage"]
+                process = CompletedProcess(recorded.args, 0, json.dumps(envelope), "")
+                outcome = adapter.read(process)
+                self.assertEqual(outcome.kind, "ran")
+                self.assertIsNone(outcome.usage)
 
     def test_grok_other_quota_messages(self):
         adapter = GrokAdapter(ModelSpec.parse("grok-4.7-high"))
@@ -92,13 +131,12 @@ class NativeAdaptersTest(unittest.TestCase):
                 self.assertEqual((outcome.kind, outcome.detail),
                                  ("failed", f"Grok stopReason: {stop_reason or 'missing'}"))
 
-    def test_grok_requires_only_the_reported_canonical_model(self):
+    def test_grok_accepts_the_recorded_usage_key_for_a_valid_cli_model(self):
         adapter = GrokAdapter(ModelSpec.parse("grok-4.7-high"))
-        reply = fixture_process(["grok"], "success", 0)
-        envelope = json.loads(reply.stdout)
-        envelope["modelUsage"]["grok-4.6"] = {}
-        outcome = adapter.read(CompletedProcess(reply.args, 0, json.dumps(envelope), ""))
-        self.assertEqual(outcome.kind, "failed")
+        recorded = fixture_process(["grok"], "catalog_alias", 0)
+        self.assertEqual(list(json.loads(recorded.stdout)["modelUsage"]), ["grok-4.7-build"])
+        outcome = adapter.read(recorded)
+        self.assertEqual((outcome.kind, outcome.output), ("ran", {"answer": "ok"}))
 
 
 class CodexCompatibilityTest(unittest.TestCase):

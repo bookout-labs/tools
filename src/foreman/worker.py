@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 import json
+import os
 from pathlib import Path
 import subprocess
 from typing import Callable
@@ -13,7 +14,7 @@ from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
 from foreman.stage_output import STAGE_OUTPUTS, Contract
 
-CommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
+CommandRunner = Callable[[list[str], Path, Mapping[str, str]], subprocess.CompletedProcess[str]]
 
 ADAPTERS: dict[str, Callable[[ModelSpec, type[Contract]], CliAdapter]] = {
     "claude": lambda model, _: ClaudeAdapter(model),
@@ -22,8 +23,10 @@ ADAPTERS: dict[str, Callable[[ModelSpec, type[Contract]], CliAdapter]] = {
 }
 
 
-def run_worker_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args, cwd=cwd, env={**os.environ, **adapter_env}, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+    )
 
 
 class CliWorker:
@@ -40,13 +43,14 @@ class CliWorker:
         )
         contract = STAGE_OUTPUTS[node]
         schema = json.dumps(contract.model_json_schema())
-        prompt += f"\n\nOutput schema:\n{schema}"
+        if model.family == "gpt":
+            prompt += f"\n\nOutput schema:\n{schema}"
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
         adapter = ADAPTERS[model.family](model, contract)
         args = adapter.command(Call(prompt, schema, edit=node == "implement"))
         try:
-            process = self.run(args, self.cwd)
+            process = self.run(args, self.cwd, adapter.env)
         except FileNotFoundError:
             return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable")
         return adapter.read(process)

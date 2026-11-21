@@ -32,7 +32,7 @@ def _stop(handler: Handler, *, slice: dict[str, object] | None = None) -> str:
         check="npm run check",
         slice=slice,
     )
-    return result.get("stop", "missing stop")
+    return result["stop"]
 
 
 def _with_quota_gap() -> str:
@@ -55,7 +55,7 @@ def _with_quota_gap() -> str:
     review = models["review"]
     if implement.split("-", 1)[0] == review.split("-", 1)[0]:
         return "same-family"
-    return result.get("stop", "missing stop")
+    return result["stop"]
 
 
 def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, object]]) -> dict[str, str]:

@@ -1,6 +1,7 @@
 """CLI subprocess contracts."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal, Protocol
@@ -8,6 +9,7 @@ from typing import ClassVar, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from foreman.config import ModelSpec
+
 
 class Usage(BaseModel):
     model_config = ConfigDict(strict=True, frozen=True)
@@ -38,6 +40,8 @@ class Call:
 
 
 class CliAdapter(Protocol):
+    env: ClassVar[Mapping[str, str]]
+
     def command(self, call: Call) -> list[str]: ...
     def read(self, process: CompletedProcess[str]) -> Outcome: ...
 
@@ -53,6 +57,7 @@ class NativeEnvelope(BaseModel, ABC):
 class NativeAdapter:
     model: ModelSpec
     envelope: ClassVar[type[NativeEnvelope]]
+    env: ClassVar[Mapping[str, str]] = {}
 
     @staticmethod
     def permission_mode(call: Call) -> str:

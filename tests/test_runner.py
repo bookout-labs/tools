@@ -15,7 +15,7 @@ from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
-from foreman.worker import CliWorker
+from foreman.worker import CliWorker, run_worker_command
 from test_adapters import fixture_process
 
 
@@ -100,11 +100,16 @@ class CliWorkerTest(unittest.TestCase):
         }
         for model, prefix in models.items():
             with self.subTest(model=model):
-                def run(args, cwd):
+                def run(args, cwd, env):
                     self.assertEqual(args[:len(prefix)], prefix)
                     self.assertEqual(cwd, Path("engine"))
                     self.assertIn('{"issue": 12}', args[-1])
-                    if args[0] != "codex":
+                    expected_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"} if args[0] == "claude" else {}
+                    self.assertEqual(env, expected_env)
+                    if args[0] == "codex":
+                        self.assertIn("Output schema:", args[-1])
+                    else:
+                        self.assertNotIn("Output schema:", args[-1])
                         self.assertEqual(json.loads(args[args.index("--json-schema") + 1]),
                                          STAGE_OUTPUTS["triage"].model_json_schema())
                     return worker_reply(args, {"triage": "implement"})
@@ -115,6 +120,16 @@ class CliWorkerTest(unittest.TestCase):
                 self.assertEqual(result.kind, "ran")
                 self.assertEqual(result.output["triage"], "implement")
 
+    def test_subprocess_merges_adapter_environment_with_inherited_environment(self):
+        inherited = {"PATH": "/bin", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0"}
+        adapter_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
+        with patch.dict("os.environ", inherited, clear=True), patch("foreman.worker.subprocess.run") as run:
+            run_worker_command(["claude"], Path("engine"), adapter_env)
+        run.assert_called_once_with(
+            ["claude"], cwd=Path("engine"), env={**inherited, **adapter_env},
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        )
+
     def test_worker_without_a_model_raises_a_config_error(self):
         worker = CliWorker(Path("."), lambda *_: self.fail("CLI must not run"))
         with self.assertRaisesRegex(ConfigError, "triage has no model configured"):
@@ -124,7 +139,7 @@ class CliWorkerTest(unittest.TestCase):
         replies = ('Here is the result: {"triage": "implement"}', '["implement"]')
         for reply in replies:
             with self.subTest(reply=reply):
-                worker = CliWorker(Path("."), lambda args, cwd: worker_reply(args, reply))
+                worker = CliWorker(Path("."), lambda args, cwd, env: worker_reply(args, reply))
                 outcome = worker("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
                 self.assertEqual(outcome.kind, "failed")
                 self.assertIn("did not return a JSON object", outcome.detail)
@@ -137,18 +152,21 @@ class CliWorkerTest(unittest.TestCase):
 
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
         for cli, model in (("claude", "claude-opus-5-5-high"), ("grok", "grok-4.7-high")):
-            for case, stop in (("quota", "needs_human"), ("cli_missing", "needs_human"),
-                               ("is_error", "invalid_output"), ("wrong_model", "invalid_output")):
+            cases = [("quota", "needs_human"), ("cli_missing", "needs_human"),
+                     ("is_error", "invalid_output"), ("missing_model_usage", "invalid_output")]
+            if cli == "claude":
+                cases.append(("wrong_model", "invalid_output"))
+            for case, stop in cases:
                 with self.subTest(cli=cli, case=case):
                     calls = []
 
-                    def run(args, cwd):
+                    def run(args, cwd, env):
                         calls.append(args[0])
                         if args[0] == "codex":
                             return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
                         if case == "cli_missing":
                             raise FileNotFoundError(args[0])
-                        exit_code = 0 if case == "wrong_model" else 1
+                        exit_code = 1 if case in {"quota", "is_error"} else 0
                         return fixture_process(args, case, exit_code)
 
                     result = self.walk_triage((model, "gpt-6.1-sol-high"), run)
@@ -159,7 +177,7 @@ class CliWorkerTest(unittest.TestCase):
                         self.assertIn(message, result["halt_detail"])
 
     def test_delivery_stops_for_an_incomplete_native_stage_reply(self):
-        def run(args, cwd):
+        def run(args, cwd, env):
             self.assertEqual(args[0], "claude")
             recorded = fixture_process(args, "success", 0)
             envelope = json.loads(recorded.stdout)
@@ -173,7 +191,7 @@ class CliWorkerTest(unittest.TestCase):
     def test_delivery_stops_when_every_cli_is_missing(self):
         calls = []
 
-        def run(args, cwd):
+        def run(args, cwd, env):
             calls.append(args[0])
             raise FileNotFoundError(args[0])
 
@@ -183,7 +201,7 @@ class CliWorkerTest(unittest.TestCase):
         self.assertIn("codex executable is unavailable", result["halt_detail"])
 
     def test_codex_reroute_is_rejected_even_with_the_requested_banner(self):
-        def run(args, cwd):
+        def run(args, cwd, env):
             return subprocess.CompletedProcess(
                 args, 0, '{"triage":"implement"}', "model: gpt-first\nmodel rerouted: gpt-first -> gpt-other\n"
             )
@@ -267,7 +285,7 @@ class LiveRunnerTest(unittest.TestCase):
     def walk(self, replies, *, issue=8, check="exit 0", run_gh=None, inspect_worktree=clean_worktree):
         outputs = iter(replies)
 
-        def run(args, cwd):
+        def run(args, cwd, env):
             self.assertEqual(cwd, self.cwd)
             self.calls.append(args[0])
             self.prompts.append(args[-1])
@@ -538,7 +556,7 @@ class LiveRunnerTest(unittest.TestCase):
             APPROVE,
         ])
 
-        def worker(args, cwd):
+        def worker(args, cwd, env):
             return worker_reply(args, next(replies))
 
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
@@ -614,10 +632,13 @@ import sys
 from foreman.cli import main
 from test_runner import APPROVE, HEAD, OPEN_PR, FakeGitHub, clean_worktree, worker_reply
 
-def run(args, cwd):
+def run(args, cwd, env):
     prompt = args[-1]
     state = json.loads(prompt.split("Delivery state:\\n")[1])
-    schema = json.loads(prompt.split("Output schema:\\n")[1].split("\\n\\nDelivery state:")[0])
+    if args[0] == "codex":
+        schema = json.loads(prompt.split("Output schema:\\n")[1].split("\\n\\nDelivery state:")[0])
+    else:
+        schema = json.loads(args[args.index("--json-schema") + 1])
     if schema["title"] == "TriageOutput":
         assert not state.get("human_answers")
         assert state["request"] == "List items"

@@ -1,10 +1,11 @@
 """Legacy Codex command and result parsing, to be replaced in S3."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import re
 from subprocess import CompletedProcess
-from typing import cast, get_args
+from typing import ClassVar, cast, get_args
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -51,6 +52,7 @@ def normalize_output(contract: type[Contract], output: dict[str, object]) -> Non
 class CodexAdapter:
     model: ModelSpec
     contract: type[Contract]
+    env: ClassVar[Mapping[str, str]] = {}
 
     def command(self, call: Call) -> list[str]:
         sandbox = "workspace-write" if call.edit else "read-only"

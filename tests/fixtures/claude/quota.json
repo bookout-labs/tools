@@ -56,6 +56,8 @@
   "num_turns": 3,
   "subtype": "success",
   "api_error_status": 429,
+  "api_error": "usage_limit_reached",
+  "api_error_type": "rate_limit_error",
   "result": "You've hit your limit",
   "ttft_ms": 2778,
   "type": "result",

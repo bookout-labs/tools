@@ -14,8 +14,6 @@ QUOTA_MESSAGES = {
     "You’ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, "
     "or try again later: https://grok.com/supergrok?referrer=grok-build",
 }
-# The installed CLI resolves the configured shortcut to this catalog ID in modelUsage.
-REPORTED_MODEL_IDS = {"grok-4.7": "grok-4.7-build"}
 
 
 class GrokEnvelope(NativeEnvelope):
@@ -34,7 +32,6 @@ class GrokEnvelope(NativeEnvelope):
     def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
         kind: OutcomeKind = "ran"
         detail = self.message or self.error or self.structured_output_error or process.stderr.strip()
-        reported_id = REPORTED_MODEL_IDS.get(model_id, model_id)
         if self.type == "error" and self.message in QUOTA_MESSAGES:
             kind = "quota"
         elif process.returncode or self.type == "error" or self.error:
@@ -43,9 +40,10 @@ class GrokEnvelope(NativeEnvelope):
         elif self.stop_reason != "end_turn":
             kind = "failed"
             detail = detail or f"Grok stopReason: {self.stop_reason or 'missing'}"
-        elif self.model_usage and self.model_usage.keys() != {reported_id}:
+        # Grok validates -m. Its catalog and usage ledger can use different IDs.
+        elif not self.model_usage:
             kind = "failed"
-            detail = f"requested {reported_id}, modelUsage reported {', '.join(self.model_usage)}"
+            detail = "modelUsage missing; cannot confirm a model ran"
         elif self.structured_output is None:
             kind = "failed"
             detail = detail or "missing structured output"
