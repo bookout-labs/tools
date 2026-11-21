@@ -1,24 +1,30 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, compile_delivery, load_slice
+from foreman.config import PstackPin, load_config
+from foreman.delivery import DeliveryState, LiveRun, clean_slices, compile_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
+from foreman.skill_rules import SkillMissing
+from foreman.stage_output import StoredSlice, WorkKind, parse_output
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 
 
-def _load_slice(body: str) -> dict[str, object]:
+def _load_slice(body: str) -> tuple[dict[str, object], WorkKind | None]:
     blocks = SLICE_FENCE.findall(body)
     if not blocks:
         raise InvalidOutput("slice issue needs a fenced JSON object")
-    return load_slice(json.loads(blocks[-1]))
+    stored = parse_output(StoredSlice, json.loads(blocks[-1]))
+    return clean_slices([stored], "slice", allow_external_dependencies=True)[0], stored.work_kind
 
 
 def run_live_delivery(
@@ -33,11 +39,25 @@ def run_live_delivery(
     answer: str | None = None,
 ) -> DeliveryState:
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    config = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
+    config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(run.workspace.root.resolve())
     client = run.forge
-    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-        graph = compile_delivery(dispatcher, load_config(), run=run, checkpointer=saver)
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver, TemporaryDirectory(prefix="foreman-skills-") as scratch:
+        delivery_config = load_config()
+        prior = saver.get(config)
+        channels = prior["channel_values"] if prior else {}
+        saved_pin = channels.get("pstack_pin")
+        if prior and not channels.get("stop") and saved_pin is None:
+            raise ValueError("Cannot resume a delivery checkpoint without a pstack pin.")
+        pin = PstackPin.model_validate(saved_pin) if saved_pin is not None else delivery_config.pstack
+        try:
+            graph = compile_delivery(
+                dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver,
+                scratch=None if channels.get("stop") else Path(scratch),
+            )
+        except SkillMissing as exc:
+            return {"path": ["done"], "halt": exc.halt, "stop": exc.halt,
+                    "halt_detail": str(exc), "pstack_pin": pin.model_dump()}
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")
         if saved_workspace and saved_workspace != workspace:
@@ -57,11 +77,15 @@ def run_live_delivery(
                 "workspace": workspace,
                 "request": text,
                 "check": check,
+                "pstack_pin": pin.model_dump(),
                 "issue_kind": "slice" if "slice" in loaded["labels"] else "parent",
             }
             if initial["issue_kind"] == "slice":
                 try:
-                    initial["slice"] = _load_slice(loaded["body"])
+                    item, inherited_kind = _load_slice(loaded["body"])
+                    initial["slice"] = item
+                    if inherited_kind is not None:
+                        initial["work_kind"] = inherited_kind
                 except (InvalidOutput, json.JSONDecodeError) as exc:
                     initial.update(halt="missing_slice", halt_detail=str(exc))
             graph.invoke(initial, config, durability="sync")
@@ -71,12 +95,14 @@ def run_live_delivery(
         saved = graph.get_state(config)
         if saved.values.get("stop") == "sliced":
             numbers = list(saved.values.get("child_issue_numbers", []))
+            work_kind = saved.values.get("work_kind")
             for item in saved.values["slices"][len(numbers):]:
                 dependencies = "\n".join(f"- {title}" for title in item["depends_on"]) or "None"
                 constraints = "\n".join(f"- {prop['constraint']}" for prop in item["properties"]) or "None"
+                stored = {**item, "work_kind": work_kind} if work_kind is not None else item
                 body = (f"Acceptance:\n{item['acceptance']}\n\nDependencies:\n{dependencies}"
                         f"\n\nScreen:\n{item['screen'] or 'None'}\n\nConstraints:\n{constraints}"
-                        f"\n\n```json\n{json.dumps(item, indent=2)}\n```")
+                        f"\n\n```json\n{json.dumps(stored, indent=2)}\n```")
                 labels = ["slice"] + ([] if item["depends_on"] else ["factory"])
                 numbers.append(client.create_issue(repo, item["title"], body, labels))
                 graph.update_state(config, {"child_issue_numbers": numbers})

@@ -2,6 +2,7 @@ import unittest
 
 from dataclasses import replace
 from pathlib import Path
+import re
 
 from foreman.config import NodeConfig, load_config
 from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
@@ -16,6 +17,7 @@ SLICES = [
         "depends_on": [],
         "screen": "docs/screens/deals.md",
         "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
+        "stateful": False,
     },
     {
         "title": "Board saves a move",
@@ -23,6 +25,7 @@ SLICES = [
         "depends_on": ["Board lists the deals"],
         "screen": "",
         "properties": [],
+        "stateful": False,
     },
 ]
 EMPTY_SLICE = {**SLICES[1], "depends_on": []}
@@ -86,7 +89,7 @@ class DeliveryTest(unittest.TestCase):
 
     def test_triage_slice_rejects_a_dependency(self):
         result = walk(
-            lambda *_: {"triage": "implement", "slice": {**SLICES[0], "depends_on": ["Other"]}},
+            lambda *_: {"triage": "implement", "work_kind": "feature", "slice": {**SLICES[0], "depends_on": ["Other"]}},
             slice=None,
         )
         self.assertEqual(result["path"], ["triage", "done"])
@@ -270,6 +273,9 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(exhaust_claude)
         self.assertEqual(result["models_used"]["triage"], "grok-4.7-high")
+        triage = [item for item in result["skill_attempts"] if item["stage"] == "triage"]
+        self.assertEqual([item["model"] for item in triage], ["claude-opus-5-5-high", "grok-4.7-high"])
+        self.assertEqual([item["methods"] for item in triage], [["poteto-mode/SKILL.md#L110-L110"]] * 2)
         self.assertEqual(result["models_used"]["review"], "grok-4.7-high")
         self.assertNotEqual(
             result["models_used"]["implement"].split("-", 1)[0],
@@ -287,14 +293,64 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler(triage="spec")
         walk(handler)
         by_node = {call["node"]: call["instruction"] for call in handler.calls}
-        self.assertEqual(by_node["triage"], stage_text("triage"))
+        self.assertTrue(by_node["triage"].startswith(stage_text("triage")))
         self.assertIn("Do not edit it.", by_node["implement"])
         self.assertIn("Do not add a test that restates the code.", by_node["implement"])
-        self.assertIn("Alignment", by_node["review"])
+        self.assertIn("review-quality.md", by_node["review"])
         self.assertNotIn("insufficient_evidence", by_node["implement"])
-        self.assertIn("formal method", by_node["review"])
+        self.assertIn("merge-risk.md", by_node["review"])
         self.assertIn("Command: npm run check", by_node["verify"])
         self.assertNotIn("gpt-6.1-sol-high", " ".join(by_node.values()))
+
+    def test_work_kind_selects_implement_and_research_methods(self):
+        for kind in ("feature", "bug_fix", "refactoring", "perf_issue"):
+            with self.subTest(kind=kind):
+                built = walk(ScriptHandler(work_kind=kind))
+                methods = next(record["methods"] for record in built["skill_attempts"] if record["stage"] == "implement")
+                self.assertEqual("poteto-mode/playbooks/feature.md#L12-L13" in methods, kind == "feature")
+                self.assertEqual("tdd/SKILL.md" in methods, kind == "bug_fix")
+                self.assertEqual("benchmark-checklist/SKILL.md" in methods, kind == "perf_issue")
+                self.assertIn("principle-prove-it-works/SKILL.md", methods)
+
+                researched = walk(ScriptHandler(triage="question", work_kind=kind))
+                research = researched["skill_attempts"][-1]["methods"]
+                self.assertIn("how/SKILL.md#L17-L17", research)
+                self.assertEqual("why/SKILL.md" in research, kind == "bug_fix")
+
+    def test_spec_uses_statechart_only_for_a_stored_stateful_slice(self):
+        for item in (None, EMPTY_SLICE, {**EMPTY_SLICE, "stateful": True}):
+            with self.subTest(item=item):
+                result = walk(ScriptHandler(triage="spec", slices=[{**EMPTY_SLICE, "stateful": True}]), slice=item)
+                methods = next(record["methods"] for record in result["skill_attempts"] if record["stage"] == "spec")
+                self.assertEqual("statechart/SKILL.md" in methods, item is not None and item["stateful"])
+
+    def test_local_proof_methods_keep_independent_conditions(self):
+        for screen in ("", SLICES[0]["screen"]):
+            for properties in ([], SLICES[0]["properties"]):
+                with self.subTest(screen=screen, properties=properties):
+                    result = walk(ScriptHandler(), slice={**EMPTY_SLICE, "screen": screen, "properties": properties})
+                    methods = next(record["methods"] for record in result["skill_attempts"] if record["stage"] == "implement")
+                    self.assertEqual("foreman/skills/browser-proof.md" in methods, bool(screen))
+                    self.assertEqual("foreman/skills/formal-proof.md" in methods, bool(properties))
+
+    def test_worker_gets_absolute_read_only_method_paths(self):
+        script = ScriptHandler(triage="spec")
+
+        def read_methods(node, model, state, instruction):
+            paths = re.findall(r"^(?:Read |Use only lines \d+ through \d+ of )(/.*?\.md) ", instruction, re.M)
+            if node != "verify":
+                self.assertTrue(paths)
+            for path in paths:
+                method = Path(path)
+                text = method.read_text().strip()
+                self.assertTrue(text)
+                if text.startswith("Synthetic method."):
+                    self.assertEqual(method.stat().st_mode & 0o222, 0)
+            return script(node, model, state, instruction)
+
+        result = walk(read_methods)
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual([item["stage"] for item in result["skill_attempts"]], ["triage", "spec", "implement", "review"])
 
     def test_diagram_names_the_nodes(self):
         picture = diagram()

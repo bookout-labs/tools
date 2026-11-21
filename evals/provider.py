@@ -18,6 +18,7 @@ FIELD_SLICE = {
     "depends_on": [],
     "screen": "",
     "properties": [],
+    "stateful": False,
 }
 
 
@@ -76,6 +77,7 @@ def call_api(prompt, options, context):
                         "depends_on": [],
                         "screen": "docs/screens/deals.md",
                         "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
+                        "stateful": False,
                     },
                     {
                         "title": "Board saves a move",
@@ -83,6 +85,7 @@ def call_api(prompt, options, context):
                         "depends_on": ["Board lists the deals"],
                         "screen": "",
                         "properties": [],
+                        "stateful": False,
                     },
                 ],
             ),

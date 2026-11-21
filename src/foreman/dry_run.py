@@ -1,5 +1,12 @@
 """A handler that walks the graph without calling a model."""
 
+from pathlib import Path
+
+from foreman.config import PstackPin
+from foreman.skill_rules import PstackMethod, SKILL_RULES, git
+from foreman.stage_output import WorkKind
+
+
 DEFAULT_RISK = {
     "alignment": "The change matches the request.",
     "impact": "The change is limited to the requested surface.",
@@ -24,8 +31,10 @@ class ScriptHandler:
         risk: dict | None = None,
         head_sha: str | None = None,
         slice: dict | None = None,
+        work_kind: WorkKind = "feature",
     ):
         self.triage = triage
+        self.work_kind = work_kind
         self.spec_gate = spec_gate
         self.reviews = list(reviews if reviews is not None else ["approve"])
         self.verify = verify
@@ -37,6 +46,7 @@ class ScriptHandler:
             "depends_on": [],
             "screen": "",
             "properties": [],
+            "stateful": False,
         }
         self.implementation = implementation
         self.head_sha = head_sha
@@ -48,8 +58,8 @@ class ScriptHandler:
         self.calls.append({"node": node, "model": model, "instruction": instruction})
         if node == "triage":
             if self.triage == "implement" and state["issue_kind"] == "parent":
-                return {"triage": self.triage, "slice": self.slice}
-            return {"triage": self.triage}
+                return {"triage": self.triage, "work_kind": self.work_kind, "slice": self.slice}
+            return {"triage": self.triage, "work_kind": self.work_kind}
         if node == "spec":
             payload = {"spec": self.spec, "spec_gate": self.spec_gate}
             if self.slices is not None:
@@ -65,3 +75,20 @@ class ScriptHandler:
         if node == "verify":
             return {"verify": self.verify}
         raise ValueError(f"no script for {node}")
+
+
+def fixture_pin(root: Path) -> PstackPin:
+    root.mkdir()
+    git(root, "init", "--quiet")
+    for rule in SKILL_RULES:
+        method = rule.skill
+        if isinstance(method, PstackMethod):
+            path = root / "pstack" / "skills" / method.path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("Synthetic method.\n" * (method.lines[1] if method.lines else 1), encoding="utf-8")
+    git(root, "add", "--", "pstack")
+    git(
+        root, "-c", "user.name=Foreman", "-c", "user.email=foreman@example.invalid",
+        "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "Synthetic skill fixture",
+    )
+    return PstackPin(repository=str(root.resolve()), commit=git(root, "rev-parse", "HEAD"))

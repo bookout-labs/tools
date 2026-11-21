@@ -1,5 +1,6 @@
 """Try the configured models in order. Quota exhaustion is not a rule change."""
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -27,10 +28,13 @@ class FailoverDispatcher:
 
     def run(
         self, node: str, models: list[str], state: "DeliveryState", instruction: str,
+        *, on_attempt: Callable[[str | None], None] | None = None,
     ) -> tuple[dict[str, object], str | None]:
         candidates: list[str | None] = list(models) or [None]
         last: QuotaExhausted | None = None
         for model in candidates:
+            if on_attempt is not None:
+                on_attempt(model)
             try:
                 update = self.handler(node, model, state, instruction)
             except QuotaExhausted as exc:

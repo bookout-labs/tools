@@ -1,8 +1,9 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Annotated, Literal, TypedDict
 import operator
 
@@ -12,10 +13,12 @@ from langgraph.types import interrupt
 
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.dry_run import fixture_pin
 from foreman.github import Forge, MergeNotArmed, merge_command
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
+from foreman.skill_rules import SkillMissing, export_skills, stage_methods
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.workspace import Workspace, WorktreeInspectionFailed
 
@@ -23,9 +26,8 @@ GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
-SKILLS_FOR = {
-    "review": ("review-quality", "merge-risk"),
-}
+
+
 @dataclass(frozen=True)
 class LiveRun:
     forge: Forge
@@ -35,6 +37,13 @@ class LiveRun:
 @dataclass(frozen=True)
 class DryRun:
     pass
+
+
+class SkillAttempt(TypedDict):
+    stage: str
+    model: str | None
+    commit: str
+    methods: list[str]
 
 
 class DeliveryState(TypedDict, total=False):
@@ -51,6 +60,9 @@ class DeliveryState(TypedDict, total=False):
     child_issue_numbers: list[int]
     slice: dict[str, object]
     issue_kind: str
+    work_kind: WorkKind
+    pstack_pin: dict[str, str]
+    skill_attempts: Annotated[list[SkillAttempt], operator.add]
     research: str
     implementation: str
     head_sha: str | None
@@ -76,12 +88,7 @@ class DeliveryState(TypedDict, total=False):
 
 
 def stage_text(name: str) -> str:
-    path = PACKAGE / "stages" / f"{name}.md"
-    text = path.read_text().strip()
-    for skill in SKILLS_FOR.get(name, ()):
-        skill_text = (PACKAGE / "skills" / f"{skill}.md").read_text().strip()
-        text = f"{text}\n\n{skill_text}"
-    return text
+    return (PACKAGE / "stages" / f"{name}.md").read_text().strip()
 
 
 def clean_slices(
@@ -122,6 +129,8 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
         update["slices"] = clean_slices(output.slices, "slices")
     if isinstance(output, HumanQuestionOutput):
         update["human_question"] = output.human_question or ""
+    if isinstance(output, TriageOutput) and state.get("issue_kind") == "slice" and "work_kind" in state:
+        update["work_kind"] = state["work_kind"]
     if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
         if output.slice is None:
             raise InvalidOutput("slice: required when a parent triages as implement")
@@ -161,11 +170,13 @@ def compile_delivery(
     config: Config,
     *,
     run: LiveRun | DryRun,
+    scratch: Path | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
 ):
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
+    methods_root = export_skills(config.pstack, scratch) if scratch is not None else None
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
 
     def bind(name: str):
@@ -177,24 +188,32 @@ def compile_delivery(
             except ConfigError as exc:
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
             instruction = prompts[name]
-            if name == "implement":
-                slice = state["slice"]
-                for required, skill in ((browser_required, "browser-proof"), (formal_required, "formal-proof")):
-                    if required(slice):
-                        proof = (PACKAGE / "skills" / f"{skill}.md").read_text().strip()
-                        instruction = f"{instruction}\n\n{proof}"
+            if methods_root is None:
+                raise RuntimeError("Delivery execution requires a compiled skill export.")
+            methods_text, methods = stage_methods(name, state, methods_root)
+            if methods_text:
+                instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
+            attempts: list[SkillAttempt] = []
+
+            def record_attempt(model: str | None) -> None:
+                attempts.append({"stage": name, "model": model, "commit": config.pstack.commit, "methods": methods})
+
             try:
-                raw, model = dispatcher.run(name, models, state, instruction)
-                return stage_update(name, parse_output(STAGE_OUTPUTS[name], raw), state, model)
+                raw, model = dispatcher.run(
+                    name, models, state, instruction, on_attempt=record_attempt if name != "verify" else None,
+                )
+                update = stage_update(name, parse_output(STAGE_OUTPUTS[name], raw), state, model)
             except InvalidOutput as exc:
-                return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
+                update = {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
             except QuotaExhausted as exc:
-                if name != "review":
+                if name != "review" and isinstance(run, DryRun):
                     raise
-                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {exc}"}
+                halt = "no_reviewer" if name == "review" else "quota_exhausted"
+                update = {"path": [name], "halt": halt, "halt_detail": f"{name} quota exhausted: {exc}"}
+            return {**update, "skill_attempts": attempts}
 
         return node
 
@@ -388,8 +407,16 @@ def run_delivery(
     }
     if slice is not None:
         state["slice"] = load_slice(slice)
-    graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
-    return graph.invoke(state)
+    with TemporaryDirectory(prefix="foreman-skills-") as directory:
+        scratch = Path(directory)
+        pin = fixture_pin(scratch / "fixture")
+        config = replace(config if config is not None else load_config(), pstack=pin)
+        state["pstack_pin"] = pin.model_dump()
+        try:
+            graph = compile_delivery(dispatcher, config, run=DryRun(), scratch=scratch)
+        except SkillMissing as exc:
+            return {**state, "path": ["done"], "halt": exc.halt, "stop": exc.halt, "halt_detail": str(exc)}
+        return graph.invoke(state)
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:

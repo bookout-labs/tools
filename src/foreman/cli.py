@@ -166,4 +166,4 @@ def main(
             print(str(exc), file=sys.stderr)
             return 1
     _print_run(result)
-    return 0
+    return 1 if result.get("stop") in {"skill_missing", "quota_exhausted"} else 0
