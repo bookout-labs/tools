@@ -3,6 +3,9 @@
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
+from foreman.adapters import Outcome, OutcomeKind
+from foreman.config import ModelSpec
+
 if TYPE_CHECKING:
     from foreman.delivery import DeliveryState
 
@@ -18,8 +21,7 @@ class InvalidOutput(ValueError):
 
 
 class Handler(Protocol):
-    def __call__(self, node: str, model: str | None, state: "DeliveryState", instruction: str) -> dict[str, object]:
-        pass
+    def __call__(self, node: str, model: ModelSpec | None, state: "DeliveryState", instruction: str, /) -> Outcome: ...
 
 
 class FailoverDispatcher:
@@ -27,20 +29,21 @@ class FailoverDispatcher:
         self.handler = handler
 
     def run(
-        self, node: str, models: list[str], state: "DeliveryState", instruction: str,
-        *, on_attempt: Callable[[str | None], None] | None = None,
-    ) -> tuple[dict[str, object], str | None]:
-        candidates: list[str | None] = list(models) or [None]
-        last: QuotaExhausted | None = None
+        self, node: str, models: list[ModelSpec], state: "DeliveryState", instruction: str,
+        *, on_attempt: Callable[[str | None, OutcomeKind], None] | None = None,
+    ) -> tuple[Outcome, str | None]:
+        candidates: list[ModelSpec | None] = list(models) or [None]
+        quota: tuple[Outcome, str | None] | None = None
+        missing = Outcome("cli_missing")
         for model in candidates:
+            outcome = self.handler(node, model, state, instruction)
+            name = model.name if model else None
             if on_attempt is not None:
-                on_attempt(model)
-            try:
-                update = self.handler(node, model, state, instruction)
-            except QuotaExhausted as exc:
-                last = exc
-                continue
-            if not isinstance(update, dict):
-                raise InvalidOutput(f"{node} returned {type(update).__name__}")
-            return update, model
-        raise last or QuotaExhausted(None)
+                on_attempt(name, outcome.kind)
+            if outcome.kind == "quota":
+                quota = outcome, name
+            elif outcome.kind == "cli_missing":
+                missing = outcome
+            else:
+                return outcome, name
+        return quota if quota else (missing, None)

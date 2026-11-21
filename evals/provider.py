@@ -1,18 +1,21 @@
 """Promptfoo provider. It walks the delivery graph without calling a model."""
 
+from collections.abc import Mapping
 from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from foreman.delivery import run_delivery  # noqa: E402
-from foreman.dispatch import FailoverDispatcher, QuotaExhausted  # noqa: E402
+from foreman.adapters import Outcome  # noqa: E402
+from foreman.config import ModelSpec  # noqa: E402
+from foreman.delivery import DeliveryState, run_delivery  # noqa: E402
+from foreman.dispatch import FailoverDispatcher, Handler  # noqa: E402
 from foreman.dry_run import ScriptHandler  # noqa: E402
 from foreman.measure import grade, propose, selected  # noqa: E402
 
 
-FIELD_SLICE = {
+FIELD_SLICE: dict[str, object] = {
     "title": "Add a field",
     "acceptance": "The response includes the new field.",
     "depends_on": [],
@@ -22,7 +25,7 @@ FIELD_SLICE = {
 }
 
 
-def _stop(handler, *, slice=None) -> str:
+def _stop(handler: Handler, *, slice: dict[str, object] | None = None) -> str:
     result = run_delivery(
         FailoverDispatcher(handler),
         repo="DoctorCRE/doctorcre-engine",
@@ -36,9 +39,9 @@ def _stop(handler, *, slice=None) -> str:
 def _with_quota_gap() -> str:
     handler = ScriptHandler()
 
-    def exhaust_claude(node, model, state, instruction):
-        if model == "claude-opus-5-5-high":
-            raise QuotaExhausted(model)
+    def exhaust_claude(node: str, model: ModelSpec | None, state: DeliveryState, instruction: str) -> Outcome:
+        if model and model.name == "claude-opus-5-5-high":
+            return Outcome("quota")
         return handler(node, model, state, instruction)
 
     result = run_delivery(
@@ -48,14 +51,15 @@ def _with_quota_gap() -> str:
         check="npm run check",
         slice=FIELD_SLICE,
     )
-    implement = result["models_used"]["implement"]
-    review = result["models_used"]["review"]
+    models = result.get("models_used", {})
+    implement = models["implement"]
+    review = models["review"]
     if implement.split("-", 1)[0] == review.split("-", 1)[0]:
         return "same-family"
     return result["stop"]
 
 
-def call_api(prompt, options, context):
+def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, object]]) -> dict[str, str]:
     case = (context.get("vars") or {}).get("case") or prompt
     if case == "clear":
         output = _stop(ScriptHandler(triage="implement"), slice=FIELD_SLICE)

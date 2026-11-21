@@ -11,6 +11,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from foreman.adapters import Outcome, OutcomeKind
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import fixture_pin
@@ -44,6 +45,7 @@ class SkillAttempt(TypedDict):
     model: str | None
     commit: str
     methods: list[str]
+    outcome: OutcomeKind
 
 
 class DeliveryState(TypedDict, total=False):
@@ -198,22 +200,29 @@ def compile_delivery(
                 instruction = f"{instruction}\n\nCommand: {command}"
             attempts: list[SkillAttempt] = []
 
-            def record_attempt(model: str | None) -> None:
-                attempts.append({"stage": name, "model": model, "commit": config.pstack.commit, "methods": methods})
+            def record_attempt(model: str | None, kind: OutcomeKind) -> None:
+                attempts.append({
+                    "stage": name, "model": model, "commit": config.pstack.commit, "methods": methods, "outcome": kind,
+                })
 
-            try:
-                raw, model = dispatcher.run(
-                    name, models, state, instruction, on_attempt=record_attempt if name != "verify" else None,
-                )
-                update = stage_update(name, parse_output(STAGE_OUTPUTS[name], raw), state, model)
-            except InvalidOutput as exc:
-                update = {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
-            except QuotaExhausted as exc:
+            outcome, model = dispatcher.run(
+                name, models, state, instruction, on_attempt=record_attempt if name != "verify" else None,
+            )
+            stopped: dict[str, object] = {"path": [name], "skill_attempts": attempts}
+            if outcome.kind == "failed":
+                return {**stopped, "halt": "invalid_output", "halt_detail": f"{model}: {outcome.detail}"}
+            if outcome.kind == "cli_missing":
+                return {**stopped, "halt": "cli_missing", "halt_detail": outcome.detail}
+            if outcome.kind == "quota":
                 if name != "review" and isinstance(run, DryRun):
-                    raise
+                    raise QuotaExhausted(model)
                 halt = "no_reviewer" if name == "review" else "quota_exhausted"
-                update = {"path": [name], "halt": halt, "halt_detail": f"{name} quota exhausted: {exc}"}
-            return {**update, "skill_attempts": attempts}
+                return {**stopped, "halt": halt, "halt_detail": f"{name} quota exhausted: {model}"}
+            try:
+                update = stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model)
+                return {**update, "skill_attempts": attempts}
+            except InvalidOutput as exc:
+                return {**stopped, "halt": "invalid_output", "halt_detail": str(exc)}
 
         return node
 
@@ -421,6 +430,10 @@ def run_delivery(
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
     if dispatcher is None:
-        dispatcher = FailoverDispatcher(lambda *args: {"triage": "implement"})
+        dispatcher = FailoverDispatcher(
+            lambda node, model, state, instruction: Outcome(
+                "ran", {"triage": "implement", "slice": None, "human_question": None},
+            ),
+        )
     graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
     return graph.get_graph().draw_mermaid()
