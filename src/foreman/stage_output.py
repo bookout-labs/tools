@@ -152,6 +152,29 @@ class AttemptUsageRecord(TypedDict):
     cost_usd: CostUsd | None
 
 
+SelectionReason = Literal["no_other_family_configured", "preceding_candidates_unavailable"]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class ReviewSelectionRecord(TypedDict):
+    reviewer: str
+    contributors: list[str]
+    same_family: bool
+    reason: SelectionReason | None
+
+
+class ReviewSelection(RecordContract[ReviewSelectionRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[ReviewSelectionRecord]:
+        return TypeAdapter(ReviewSelectionRecord)
+
+    reviewer: str
+    contributors: list[str]
+    same_family: bool
+    reason: SelectionReason | None
+
+
 @with_config(ConfigDict(extra="forbid"))
 class AttemptRecord(TypedDict):
     stage: str
@@ -160,6 +183,7 @@ class AttemptRecord(TypedDict):
     methods: list[str]
     outcome: OutcomeKind | Literal["interrupted"]
     usage: AttemptUsageRecord | None
+    provenance: NotRequired[ReviewSelectionRecord]
 
 
 class AttemptUsage(RecordContract[AttemptUsageRecord]):
@@ -187,6 +211,7 @@ class Attempt(RecordContract[AttemptRecord]):
     methods: list[str]
     outcome: OutcomeKind | Literal["interrupted"]
     usage: AttemptUsage | None
+    provenance: ReviewSelection | None = None
 
 
 @with_config(ConfigDict(extra="forbid"))
