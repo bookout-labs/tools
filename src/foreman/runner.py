@@ -160,12 +160,12 @@ def run_live_delivery(
             invoke(initial, initial)
         elif waiting_for_quota:
             invoke(Command(resume=True), saved_values)
-        elif (halt := saved_values.get("halt")) in RESUMABLE_HALTS:
+        elif saved_values.get("halt") in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
-            if halt == "env_unavailable":
-                invoke(None, _CHECKPOINT_STATE.validate_python(before.values, strict=True), before.config)
-            else:
-                graph.invoke(None, before.config, durability="sync")
+            replay = before.config
+            if partial := saved_values.get("partial_edits"):
+                replay = graph.update_state(replay, {"partial_edits": partial})
+            invoke(None, _CHECKPOINT_STATE.validate_python(before.values, strict=True), replay)
         elif saved.next and not saved.interrupts:
             invoke(None, saved_values)
 

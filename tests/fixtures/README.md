@@ -206,6 +206,52 @@ one text stream. Foreman iterates its lines and passes each to the CLI's
 redacting writer before waiting for the exit code. The writer flushes every
 line. An unterminated final line is emitted at EOF.
 
+## Delivery publication
+
+A Git 2.56.0 probe used a temporary checkout with a local `main` and a bare `origin`. These commands all exited 0.
+
+| Command | Observed result |
+| --- | --- |
+| `git switch -c 55-probe refs/heads/main` | Switched to a new branch named `55-probe`. |
+| `git rev-parse HEAD` | Printed a full 40-hex SHA before and after the commit. |
+| `git branch --show-current` | Printed `55-probe`. |
+| `git status --porcelain --untracked-files=all` | Printed `?? probe.txt` after creating the file. Printed nothing after committing it. |
+| `git add --all` and `git commit -m '55: Probe'` | Staged the untracked file and created commit `cb9dc37`. |
+| `git push --no-follow-tags origin refs/heads/55-probe:refs/heads/55-probe` | Created the remote branch. Repeating the command printed `Everything up-to-date`. |
+| `git ls-remote origin refs/heads/55-probe` | Printed the same SHA as local HEAD, followed by a tab and `refs/heads/55-probe`. |
+
+A push repository can be a remote name or URL. An explicit source and destination ref publish that branch. Git rejects non-fast-forward branch updates by default. `--no-follow-tags` overrides `push.followTags`. [Git 2.56.0 push documentation](https://github.com/git/git/blob/v2.56.0/Documentation/git-push.adoc)
+
+Publication looks up the branch with `gh pr view BRANCH --repo OWNER/REPO --json number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest`. Its captured response and command are recorded in [manifest.toml](manifest.toml).
+
+GitHub CLI 2.102.0 documents that `gh pr create --repo OWNER/REPO --base main --head BRANCH --title TITLE --body BODY` selects the repo and both refs, supplies the title and body without prompting, and skips pushing or forking. Success prints the PR URL. Foreman leaves that output unparsed and uses `gh pr view` to resolve retries. The body uses the documented `Closes #N` syntax. [GitHub CLI 2.102.0 create command](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/pr/create/create.go)
+
+## Publication recovery probes, 2026-11-20
+
+Git 2.56.0 and gh 2.102.0 were used. Read-only capture commands and outputs:
+
+```text
+git remote get-url origin
+https://github.com/bookout-labs/tools.git
+gh repo view bookout-labs/tools --json defaultBranchRef
+{"defaultBranchRef":{"name":"main"}}
+gh pr view 60 --repo bookout-labs/tools --json number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest
+{"autoMergeRequest":null,"baseRefName":"main","baseRefOid":"84c08237e585eef84306d6d42ec1f2451b8a058e","headRefName":"55-graph-git-ops","headRefOid":"6e3de512844fff969c17976adc4f1df790ffff8b","isCrossRepository":false,"number":60,"state":"OPEN"}
+```
+
+Origin identity and credential-helper provenance live in [manifest.toml](manifest.toml), with the captured origin and quoted gh documentation. The graph uses the existing origin and does not mutate authentication configuration.
+
+Git's `GIT_TERMINAL_PROMPT=0` prevents terminal authentication prompts. Fetch, push, ls-remote and commit are bounded to 30 seconds, including credential helpers, hooks and signing. Other git calls are bounded to 10 seconds. [Git 2.56.0 environment documentation](https://github.com/git/git/blob/v2.56.0/Documentation/git.adoc).
+
+Recovery uses `git for-each-ref --format=%(refname) refs/heads/<branch>` to find an existing branch, `git merge-base --is-ancestor refs/heads/<base> refs/heads/<branch>` to validate its base, and `git show -s --format=%P%n%B HEAD` to compare the complete parent/message of an observed commit. [Git 2.56.0 for-each-ref](https://github.com/git/git/blob/v2.56.0/Documentation/git-for-each-ref.adoc), [merge-base](https://github.com/git/git/blob/v2.56.0/Documentation/git-merge-base.adoc), [pretty formats](https://github.com/git/git/blob/v2.56.0/Documentation/pretty-formats.adoc). The publication tests execute these production commands against local repositories. `git diff HEAD --binary --no-ext-diff --no-textconv` and `git ls-files --others --exclude-standard -z` fingerprint owned partial edits. [Git 2.56.0 diff](https://github.com/git/git/blob/v2.56.0/Documentation/git-diff.adoc), [ls-files](https://github.com/git/git/blob/v2.56.0/Documentation/git-ls-files.adoc).
+
+The publication integration fixture substitutes only the recorded `remote get-url` identity and gh responses. Push and ls-remote still execute against its local bare origin. The auth repro uses a local HTTP 401 server under a pseudo-terminal; no GitHub graph write runs in verification.
+
+`git remote get-url --push --all origin` also validates every configured push URL, so a separate push URL cannot redirect publication to another repository. Git 2.56.0 documents that `--push` queries push URLs and `--all` returns every URL. [Versioned remote documentation](https://github.com/git/git/blob/v2.56.0/Documentation/git-remote.adoc). The wrong push URL row in `test_publication_failures` covers a mismatched push URL.
 ### LangGraph typed invocation
 
 LangGraph 1.2.24 exposes typed graph output through `invoke(..., version="v2").value`. The pinned package's [Pregel.invoke overloads](https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py) return `GraphOutput[OutputT]` for version v2 and an untyped dictionary for v1. `run_delivery` uses the graph's output schema through that API. Existing delivery tests and the README dry run exercise the real installed package.
+
+Derived usage fixtures include `negative_side`, `partial_side`, `fractional_side`, `zero_tokens_with_cost` (Claude and Grok), and `codex/cached_success.jsonl`.
+
+Pydantic strict integer validation rejects fractional numbers and booleans. ModelUsage ignores extra ledger keys. `tests/test_usage.py` exercises ledger rejection without changing the envelope outcome.

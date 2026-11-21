@@ -1,0 +1,1 @@
+This command configures `git` to use GitHub CLI as a credential helper.

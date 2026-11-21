@@ -525,7 +525,7 @@ notes = "Published evidence for the PR fields, stdin request body, review endpoi
 # at `rust-v0.171.0`, including their zero clamps. Claude's existing cache fields
 # already fit this shape. Missing cached totals leave Codex usage unknown.
 #
-# `codex/cached-success.jsonl` was captured from `codex-cli 0.171.0`, exit 0,
+# `codex/cached_success.jsonl` was captured from `codex-cli 0.171.0`, exit 0,
 # with the success argv above plus `-c model_provider=synthetic` and the same
 # loopback provider configuration as the quota probe. `CODEX_HOME` was an empty
 # temporary directory and `FOREMAN_PROBE_KEY` was synthetic. The loopback Responses
@@ -569,7 +569,7 @@ kind = "captured_run"
 argv = ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", "-c", "approval_policy=never", "-c", "model_provider=synthetic", "-c", "model_providers.synthetic={name=\"Synthetic\", env_key=\"FOREMAN_PROBE_KEY\", base_url=\"http://127.0.0.1:<port>/v1\", request_max_retries=0, wire_api=\"responses\"}", "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", "triage.json", "--color", "never", "-s", "read-only", "Do not use tools or read files. Choose needs_human, with no slice, and ask \"Which items?\""]
 notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGE_OUTPUTS[\"triage\"].model_json_schema(); <port> is the loopback stub port."
 
-[fixtures."codex/cached-success.jsonl"]
+[fixtures."codex/cached_success.jsonl"]
 tool = "codex"
 version = "0.171.0"
 kind = "captured_run"
@@ -583,66 +583,94 @@ kind = "quoted_source"
 sources = ["https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L823-L959"]
 notes = "Synthetic substitutions for source formatter cases; see Codex quota formatter notes above."
 
-[fixtures."claude/negative-side.json"]
+[fixtures."claude/negative_side.json"]
 tool = "claude"
 version = "2.1.329"
 kind = "captured_run"
 derived_from = "claude/success.json"
 argv = ["claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "dontAsk", "--tools", "WebFetch", "--allowedTools", "WebFetch", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\""]
-notes = "Synthetic negative-side ledger derived from the captured success."
+notes = "Synthetic negative_side ledger derived from the captured success."
 
-[fixtures."claude/partial-side.json"]
+[fixtures."claude/partial_side.json"]
 tool = "claude"
 version = "2.1.329"
 kind = "captured_run"
 derived_from = "claude/success.json"
 argv = ["claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "dontAsk", "--tools", "WebFetch", "--allowedTools", "WebFetch", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\""]
-notes = "Synthetic partial-side ledger derived from the captured success."
+notes = "Synthetic partial_side ledger derived from the captured success."
 
-[fixtures."claude/fractional-side.json"]
+[fixtures."claude/fractional_side.json"]
 tool = "claude"
 version = "2.1.329"
 kind = "captured_run"
 derived_from = "claude/success.json"
 argv = ["claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "dontAsk", "--tools", "WebFetch", "--allowedTools", "WebFetch", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\""]
-notes = "Synthetic fractional-side ledger derived from the captured success."
+notes = "Synthetic fractional_side ledger derived from the captured success."
 
-[fixtures."claude/zero-cost.json"]
+[fixtures."claude/zero_tokens_with_cost.json"]
 tool = "claude"
 version = "2.1.329"
 kind = "captured_run"
 derived_from = "claude/success.json"
 argv = ["claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "dontAsk", "--tools", "WebFetch", "--allowedTools", "WebFetch", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\""]
-notes = "Synthetic zero-cost ledger derived from the captured success."
+notes = "Synthetic zero_tokens_with_cost ledger derived from the captured success."
 
-[fixtures."grok/negative-side.json"]
+[fixtures."grok/negative_side.json"]
 tool = "grok"
 version = "1.0.89"
 kind = "captured_run"
 derived_from = "grok/success.json"
 argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema."]
-notes = "Synthetic negative-side ledger derived from the captured success."
+notes = "Synthetic negative_side ledger derived from the captured success."
 
-[fixtures."grok/partial-side.json"]
+[fixtures."grok/partial_side.json"]
 tool = "grok"
 version = "1.0.89"
 kind = "captured_run"
 derived_from = "grok/success.json"
 argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema."]
-notes = "Synthetic partial-side ledger derived from the captured success."
+notes = "Synthetic partial_side ledger derived from the captured success."
 
-[fixtures."grok/fractional-side.json"]
+[fixtures."grok/fractional_side.json"]
 tool = "grok"
 version = "1.0.89"
 kind = "captured_run"
 derived_from = "grok/success.json"
 argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema."]
-notes = "Synthetic fractional-side ledger derived from the captured success."
+notes = "Synthetic fractional_side ledger derived from the captured success."
 
-[fixtures."grok/zero-cost.json"]
+[fixtures."grok/zero_tokens_with_cost.json"]
 tool = "grok"
 version = "1.0.89"
 kind = "captured_run"
 derived_from = "grok/success.json"
 argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema."]
-notes = "Synthetic zero-cost ledger derived from the captured success."
+notes = "Synthetic zero_tokens_with_cost ledger derived from the captured success."
+
+[fixtures."git/origin.txt"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "remote", "get-url", "origin"]
+notes = "The checkout's existing origin is checked against the selected repository before pushing. Its HTTPS transport uses the configured credential helper."
+
+[fixtures."git/push-origin.txt"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "remote", "get-url", "--push", "--all", "origin"]
+notes = "All push URLs are checked against the selected repository before pushing."
+
+[fixtures."github/setup-git.txt"]
+tool = "gh"
+version = "2.102.0"
+kind = "quoted_source"
+sources = ["https://cli.github.com/manual/gh_auth_setup-git", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/auth/setupgit/setup_git.go"]
+notes = "Quoted documentation: This command configures `git` to use GitHub CLI as a credential helper. Confirmed with gh auth setup-git --help at this version. The operator configures the helper once; the graph does not change authentication configuration."
+
+[fixtures."github/publication-pr.json"]
+tool = "gh"
+version = "2.102.0"
+kind = "captured_run"
+argv = ["gh", "pr", "view", "--repo", "bookout-labs/tools", "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest", "--", "60"]
+notes = "Recorded recovery probe for PR 60. Production uses the same argument order with a branch or PR number as the selector."

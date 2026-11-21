@@ -24,7 +24,7 @@ PR = {
 }
 VIEW_FIELDS = [
     "gh", "pr", "view", "--repo", REPO, "--json",
-    "number,state,headRefOid,headRefName,baseRefName,baseRefOid,autoMergeRequest", "--",
+    "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest", "--",
 ]
 VIEW = [*VIEW_FIELDS, BRANCH]
 CONFIRM = [*VIEW_FIELDS, "12"]
@@ -40,6 +40,9 @@ def pr_result(pr=PR, command=VIEW):
 
 
 class LiveForgeTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.object(LiveForge, "default_branch", return_value="main"))
+
     @patch("foreman.github.subprocess.run")
     def test_pull_request_base_uses_the_forge_base_ref(self, run):
         run.return_value = pr_result({**PR, "baseRefName": "release/current"})
@@ -243,7 +246,7 @@ class LiveForgeTest(unittest.TestCase):
             ("state", "MERGED", "pull request is not open"),
             ("headRefOid", "b" * 40, "head differs"),
             ("headRefName", "80-list-items", "must start with 8-"),
-            ("baseRefName", "release", "must target main"),
+            ("baseRefName", "release", "must target the repository default branch"),
         ):
             with self.subTest(field=field, value=value):
                 run.reset_mock()
