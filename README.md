@@ -243,7 +243,7 @@ Before arming, Foreman reads the target repository's GitHub Actions variable `FO
 
 If the merge command times out, Foreman checks the same pull request at the verified SHA. An open pull request with a squash auto-merge request or a merged pull request confirms the result. A failed merge check or unconfirmed command pauses the run as `merge_not_armed` and records the reason. Resolve it and rerun the same command to retry. If HEAD moved, run `git reset --keep <verified-sha>` on the PR branch before rerunning. New commits need a new run. A dry run prints `merge skipped (dry run)` with the command template and reports the scripted verification result.
 
-Stage prompts live in `src/foreman/stages/`. The graph selects worker methods from the rule table and validated delivery state. The code-quality skill supplies the scorer rubric.
+Stage prompts live in `src/foreman/stages/`. The graph selects worker methods from the rule table and validated delivery state.
 
 Before live dispatch, Foreman exports the pstack skills from the repository and commit pinned in `src/foreman/config.py`. It records that pin in the checkpoint and reuses it on resume. A failed fetch or export stops with `skill_missing` and reports `pin unavailable` with the commit. A missing method in a successful export reports `method missing at pin` with the path and commit. Dry runs print `pstack pin not checked (dry run)`.
 

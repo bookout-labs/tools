@@ -1,6 +1,10 @@
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 import re
 import unittest
+
+from foreman.cli import main
 
 
 class DeletionTests(unittest.TestCase):
@@ -11,3 +15,9 @@ class DeletionTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertIsNone(retired.search(path.read_text()))
         self.assertFalse((root / "measure.py").exists())
+
+    def test_improve_command_is_rejected(self):
+        with redirect_stderr(StringIO()) as error, self.assertRaises(SystemExit) as stopped:
+            main(["improve", "x"])
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertIn("invalid choice: 'improve'", error.getvalue())

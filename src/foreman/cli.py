@@ -16,7 +16,6 @@ from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend
 from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
-from foreman.dispatch import QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import ForgeError, LiveForge
@@ -262,7 +261,7 @@ def main(
                 max_tokens=args.max_tokens,
                 max_budget_usd=args.max_budget_usd,
             )
-        except (AnswerError, ForgeError, OSError, QuotaExhausted, ValueError) as exc:
+        except (AnswerError, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
     _print_run(result, presentation)
