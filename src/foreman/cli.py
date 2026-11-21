@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import subprocess
 import sys
 from typing import TextIO, assert_never
 
@@ -194,9 +193,10 @@ def main(
                   "reinstall the selected bookout-tools revision", file=sys.stderr)
             return 1
         try:
-            return subprocess.run(["claude", "--append-system-prompt", instruction]).returncode
+            os.execvp("claude", ["claude", "--append-system-prompt", instruction])
         except OSError as exc:
-            print(f"cannot start coordinator: {exc.strerror}", file=sys.stderr)
+            detail = exc.strerror or str(exc)
+            print(f"cannot start coordinator: failed to run claude: {detail}", file=sys.stderr)
             return 1
     if args.command == "diagram":
         if args.graph != GRAPH_NAME:
