@@ -17,6 +17,7 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
+from foreman.state import ChecksState
 from foreman.stage_output import STAGE_OUTPUTS, DispatchPlan
 from foreman.usd import BudgetUsd
 
@@ -57,7 +58,7 @@ class CliWorker:
         plan = DispatchPlan.model_validate(plan) if plan else None
         budget = plan.budget_usd if plan else None
         edit = node == "implement"
-        check = state.get("check") if edit else plan.scope["command"] if plan and plan.scope else None
+        check = ChecksState.model_validate(state["checks"]).check if edit else plan.scope["command"] if plan and plan.scope else None
         adapter = ADAPTERS[model.family](model)
         checkout = self.cwd.resolve()
         temp_root = Path(tempfile.gettempdir()).resolve()
@@ -66,7 +67,7 @@ class CliWorker:
         with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
             scratch = Path(directory) / "scratch"
             scratch.mkdir()
-            call = Call(prompt, schema, edit=edit, check=check if isinstance(check, str) else None,
+            call = Call(prompt, schema, edit=edit, check=check,
                         read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                         temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None)
             try:

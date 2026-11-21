@@ -461,12 +461,9 @@ class StageUpdate(TypedDict, total=False):
     slices: list[SliceRecord]
     pr_split: PullRequestSplit
     implementation: str
-    browser_proof: BrowserProofRecord | None
-    formal_proof: FormalProofRecord | None
     risk: MergeRiskRecord
     detail: str
     findings: list[FindingRecord]
-    verify: str
 
 
 @dataclass(frozen=True)
@@ -602,11 +599,7 @@ class ImplementOutput(StageOutput):
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        return {
-            "implementation": self.implementation,
-            "browser_proof": self.browser_proof.record() if self.browser_proof else None,
-            "formal_proof": self.formal_proof.record() if self.formal_proof else None,
-        }
+        raise NotImplementedError("implement: use checks-bound stage_update")
 
 
 class Citation(Contract):
@@ -775,7 +768,7 @@ class VerifyOutput(StageOutput):
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        return {"verify": self.verify}
+        raise NotImplementedError("verify: use checks-bound stage_update")
 
 
 STAGE_OUTPUTS: dict[str, type[StageOutput]] = {

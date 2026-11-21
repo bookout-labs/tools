@@ -1,4 +1,5 @@
 import tests
+from foreman.state import ChecksState
 
 import json
 from pathlib import Path
@@ -87,7 +88,7 @@ class PermissionsTest(unittest.TestCase):
         plan = {"models": [], "instruction": "review", "methods": [], "read_roots": [],
                 "target": None, "scope": {"command": "git diff --no-color abc...def --", "inline": []}}
         CliWorker(Path.cwd(), runner)("review", ModelSpec.parse("claude-opus-5-5-high"),
-                                     {"check": "sh check.sh", "dispatch_plan": plan}, "review")
+                                     {"checks": ChecksState(check="sh check.sh"), "dispatch_plan": plan}, "review")
         args = args_seen[0]
         self.assertEqual(json.loads(args[args.index("--settings") + 1])["permissions"]["allow"],
                          ["Bash(git diff --no-color abc...def --)"])
@@ -131,7 +132,7 @@ class PermissionsTest(unittest.TestCase):
                 with patch('foreman.adapters.grok.platform.system', return_value=system):
                     with self.assertRaises(CapabilityUnavailable):
                         GrokAdapter(ModelSpec.parse('grok-4.7-high')).command(Call('probe', '{}', stage == 'implement', Path.cwd()))
-                    outcome = CliWorker(Path.cwd(), runner)(stage, ModelSpec.parse('grok-4.7-high'), {}, 'probe')
+                    outcome = CliWorker(Path.cwd(), runner)(stage, ModelSpec.parse('grok-4.7-high'), {'checks': ChecksState()}, 'probe')
                 self.assertEqual(outcome.kind, 'cli_missing')
                 self.assertIn(system, outcome.detail)
                 self.assertIn('editing requires an isolated worker launcher' if stage == 'implement' else 'temp writes', outcome.detail)
@@ -159,7 +160,7 @@ class PermissionsTest(unittest.TestCase):
                         self.assertEqual(policy['filesystem'], filesystem)
                         return fixture_process(args, 'success', 0)
                     plan = {'models': [], 'instruction': '', 'methods': [], 'read_roots': [str(r) for r in roots], 'target': None, 'scope': None}
-                    self.assertEqual(CliWorker(root, run)(stage, adapter.model, {'dispatch_plan': plan}, 'probe').kind, 'ran')
+                    self.assertEqual(CliWorker(root, run)(stage, adapter.model, {'checks': ChecksState(), 'dispatch_plan': plan}, 'probe').kind, 'ran')
                     args = adapter.command(Call('probe', '{}', stage == 'implement', root, read_roots=roots))
                     run(args, root, {'TMPDIR': str(root / 'scratch')})
 

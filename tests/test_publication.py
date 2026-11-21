@@ -187,7 +187,7 @@ class PublicationTest(unittest.TestCase):
                 result = self.walk(family=family)
                 self.assertEqual(result.get("merge", MergeState()).status, "armed")
                 self.assertEqual(self.remote_head(), result.get("work", WorkState()).head_sha)
-                self.assertEqual(result.get("verified_head"), self.remote_head())
+                self.assertEqual(result["checks"].verified_head, self.remote_head())
                 self.assertEqual(self.created, [self.remote_head()])
                 self.assertEqual(self.git("rev-parse", f"{self.ref}^"), self.git("rev-parse", self.base))
                 self.assertEqual(self.git("--git-dir", str(self.remote), "show", f"{self.ref}:items.txt"), "one")
@@ -573,7 +573,7 @@ class PublicationTest(unittest.TestCase):
                     files = self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines()
                     self.assertIn(record, files)
                     self.assertIn(str(Path(record).parent / "capture.log"), files)
-                    self.assertEqual(result["verified_head"], self.remote_head())
+                    self.assertEqual(result["checks"].verified_head, self.remote_head())
 
     def test_reconciled_candidate_mutation_is_rejected_before_publication(self):
         original = LiveWorkspace.reconcile

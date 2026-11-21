@@ -1,5 +1,5 @@
 import tests
-from foreman.state import RunState
+from foreman.state import ChecksState, RunState
 from foreman.dry_run import DryRun
 
 from pathlib import Path
@@ -95,7 +95,7 @@ class RecordedEvidenceTest(unittest.TestCase):
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": "result.txt"}],
         }, context=SCRIPTED_REVIEW_CONTEXT)
         gate = _check_tool_facts(output, self.workspace, {
-            "run": RunState(repo="example/repo"), "check": "", "path": [], **({"verified_head": head} if head else {}),
+            "run": RunState(repo="example/repo"), "checks": ChecksState(check="", verified_head=head or ""), "path": [],
         })
         from foreman.review_round import ReviewHistory, accept
         return accept(ReviewHistory(), output, head or "", gate)
@@ -140,22 +140,21 @@ class RecordedEvidenceTest(unittest.TestCase):
         from foreman.review_round import GraphCheck, ReviewRound
 
         fact = StoredToolFact.from_fact(ToolFact(claim="CLI accepts --debug", fixture=None))
-        state = {"run": RunState(repo="example/repo"), "check": "", "path": [],
+        state = {"run": RunState(repo="example/repo"), "checks": ChecksState(check="", verified_head=self.commit()), "path": [],
                  "review_findings": [ReviewRound(round=1, reviewed_head="a" * 40, findings=[], resolutions={},
-                     graph_check=GraphCheck(detail="Unrecorded fact", tool_facts=[fact])).model_dump()],
-                 "verified_head": self.commit()}
+                     graph_check=GraphCheck(detail="Unrecorded fact", tool_facts=[fact])).model_dump()]}
         output = ReviewOutput.model_validate(dict(resolutions=[], risk=DEFAULT_RISK, findings=[], tool_facts=[]), context=SCRIPTED_REVIEW_CONTEXT)
         run = LiveRun(Mock(), self.workspace)
         self.manifest.write_text(self.manifest.read_text() + f'claim_ids = ["{fact.claim_id}"]\n')
         self.assertEqual(_check_tool_facts(output, run.workspace, state).passed, False)
-        state["verified_head"] = self.commit()
+        state["checks"] = state["checks"].model_copy(update={"verified_head": self.commit()})
         self.assertEqual(_check_tool_facts(output, run.workspace, state).passed, True)
         repeated = output.model_copy(update={"tool_facts": [ToolFact(claim=fact.claim, fixture="result.txt")]})
         self.assertEqual(_check_tool_facts(repeated, run.workspace, state).tool_facts[0].model_dump()["claim_id"], fact.claim_id)
         unrelated = output.model_copy(update={"tool_facts": [ToolFact(claim="Other behavior", fixture=None)]})
         self.assertEqual(_check_tool_facts(unrelated, run.workspace, state).passed, False)
         (self.fixtures / "result.txt").unlink()
-        state["verified_head"] = self.commit()
+        state["checks"] = state["checks"].model_copy(update={"verified_head": self.commit()})
         self.assertEqual(_check_tool_facts(output, run.workspace, state).passed, False)
 
     def test_committed_claude_evidence_carries_budget_claim_ids(self):
@@ -218,13 +217,12 @@ class GraphFactGateTest(unittest.TestCase):
             "tool_facts": facts,
         }, context=SCRIPTED_REVIEW_CONTEXT)
         from foreman.review_round import ReviewHistory, accept
-        return accept(ReviewHistory(), output, state.get("verified_head", ""), _check_tool_facts(output, DryRun(), state))
+        return accept(ReviewHistory(), output, state["checks"].verified_head, _check_tool_facts(output, DryRun(), state))
 
     def test_only_exact_graph_check_restatement_is_exempt(self):
         from foreman.stage_output import GraphCheck
         check = GraphCheck(head="a" * 40, command="exit 0", exit_code=0)
-        state = {"run": RunState(repo="example/repo"), "check": check.command, "path": [],
-                 "verified_head": check.head, "check_exit_code": 0, "verify": "pass"}
+        state = {"run": RunState(repo="example/repo"), "checks": ChecksState(check=check.command, verified_head=check.head, check_exit_code=0, verify="pass"), "path": []}
         fact = {"claim": check.claim, "fixture": None, "graph_check": check.model_dump()}
         self.assertEqual(self.gate([fact], state).review, "approve")
         for altered in ({"claim": "CLI accepts --debug"}, {"graph_check": None},
@@ -233,12 +231,12 @@ class GraphFactGateTest(unittest.TestCase):
                         {"graph_check": {**check.model_dump(), "exit_code": 1}}):
             with self.subTest(altered=altered):
                 self.assertEqual(self.gate([{**fact, **altered}], state).review, "changes")
-        self.assertEqual(self.gate([fact], {**state, "verify": "fail"}).review, "changes")
+        self.assertEqual(self.gate([fact], {**state, "checks": state["checks"].model_copy(update={"verify": "fail"})}).review, "changes")
 
     def test_omission_cannot_resolve_an_unrecorded_fact(self):
         fact = {"claim": "CLI accepts --debug", "fixture": None}
-        first = self.gate([fact], {"run": RunState(repo="example/repo"), "check": "exit 0", "path": []})
-        state = {"run": RunState(repo="example/repo"), "check": "exit 0", "path": [],
+        first = self.gate([fact], {"run": RunState(repo="example/repo"), "checks": ChecksState(check="exit 0"), "path": []})
+        state = {"run": RunState(repo="example/repo"), "checks": ChecksState(check="exit 0"), "path": [],
                  "review_findings": [entry.model_dump() for entry in first.history.rounds]}
         self.assertEqual(self.gate([], state).review, "changes")
 

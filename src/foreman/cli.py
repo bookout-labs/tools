@@ -16,7 +16,7 @@ import yaml
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend
 from foreman.readiness import MergeState
-from foreman.state import RunState, DeliveryResult
+from foreman.state import ChecksState, RunState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.dry_run import ScriptHandler
@@ -44,8 +44,9 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
         _print_run_rows(result, dry_run=dry_run, commands=presentation.commands if presentation else None)
         return
     rows: list[tuple[str, str | None]] = []
+    checks = result["checks"]
     run_state = result["run"]
-    current: DeliveryResult = {"run": RunState(repo=run_state.repo, max_budget_usd=run_state.max_budget_usd), "check": result["check"], "path": [], "stop": result["stop"]}
+    current: DeliveryResult = {"run": RunState(repo=run_state.repo, max_budget_usd=run_state.max_budget_usd), "checks": ChecksState(check=checks.check), "path": [], "stop": result["stop"]}
     for update in presentation.updates:
         current.update(update)
         rows.extend((node, update.get("models_used", {}).get(node)) for node in update.get("path", []))
@@ -71,6 +72,7 @@ def _print_run_rows(
     def write_literal(text: str) -> None:
         print("\n".join(prefix + line for line in text.split("\n")))
 
+    checks = result["checks"]
     run_state = result["run"]
     if (limit := run_state.max_budget_usd) is not None:
         spent = claude_spend(result.get("attempts", []))
@@ -85,11 +87,11 @@ def _print_run_rows(
         rows = [(node, models.get(node)) for node in result["path"]]
     for node, model in rows:
         if node == "verify":
-            write(f"verify {result.get('check') or '(no check)'}")
+            write(f"verify {checks.check or '(no check)'}")
         elif node == "done":
-            if "check_exit_code" in result:
-                write_literal(f"check exit {result['check_exit_code']}")
-            for proof, label in result.get("proof_labels", {}).items():
+            if checks.check_exit_code is not None:
+                write_literal(f"check exit {checks.check_exit_code}")
+            for proof, label in checks.proof_labels.items():
                 write(f"{proof} proof {label}")
             if run_state.token_cap is not None:
                 write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {run_state.token_cap}")
@@ -99,7 +101,7 @@ def _print_run_rows(
                 if pin_commit:
                     write_literal(f"pstack commit {pin_commit}")
             observed = commit_sha(result.get("merge", MergeState()).observed_head)
-            verified = commit_sha(result.get("verified_head", ""))
+            verified = commit_sha(checks.verified_head)
             if observed and verified:
                 write_literal(head_mismatch_detail(observed, verified))
             elif detail := result.get("halt_detail"):

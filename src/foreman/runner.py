@@ -18,7 +18,7 @@ from foreman.config import PstackPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
 from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state
 from foreman.readiness import MergeState
-from foreman.state import RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
+from foreman.state import ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -189,7 +189,7 @@ def run_live_delivery(
                                           "run": run_state if prior else RunState(issue=issue, workspace=workspace, repo=repo,
                                               max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None,
                                               token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
-                                          "check": check}
+                                          "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(check=check, preflight=preflight)}
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
             else:
@@ -199,7 +199,7 @@ def run_live_delivery(
             state: DeliveryState,
             invocation_config: RunnableConfig = config,
         ) -> None:
-            environment = EnvironmentProbe(run.workspace, state.get("preflight", ""), run.check_log)
+            environment = EnvironmentProbe(run.workspace, state["checks"].preflight, run.check_log)
             for part in graph.stream(
                 graph_input, invocation_config, context=replace(run, environment=environment),
                 durability="sync", stream_mode="updates", version="v2",
@@ -260,10 +260,9 @@ def run_live_delivery(
                 "run": RunState(repo=repo, issue=issue, workspace=workspace, request=text,
                                 token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
                                 max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
-                "check": check,
+                "checks": ChecksState(check=check, preflight=preflight),
                 "pstack_pin": pin.model_dump(),
                 "path": [],
-                "preflight": preflight,
                 "issue_kind": "slice" if "slice" in loaded["labels"] else "parent",
                 "review_rounds": 0,
             }
@@ -287,7 +286,7 @@ def run_live_delivery(
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             repaired = False
             repair_head: str | None = None
-            if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge", MergeState()).receipt and (head := saved_values.get("verified_head")) and (branch := saved_values.get("work", WorkState()).branch):
+            if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge", MergeState()).receipt and (head := saved_values["checks"].verified_head) and (branch := saved_values.get("work", WorkState()).branch):
                 worktree = run.workspace.inspect()
                 try:
                     observed = client.readiness(repo, issue, branch, head)
@@ -317,7 +316,9 @@ def run_live_delivery(
                     if reset_work else prior_work.model_copy(update={"repair_head": None}))
             if not reset_work and (partial := saved_values.get("work", WorkState()).partial_edits):
                 work = work.model_copy(update={"partial_edits": partial})
-            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt)}
+            prior_checks = restored["checks"]
+            checks = ChecksState(check=prior_checks.check, preflight=prior_checks.preflight) if reset_work else prior_checks
+            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt), "checks": checks}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             if retained:

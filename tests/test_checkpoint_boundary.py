@@ -1,3 +1,4 @@
+import tests
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ from foreman.outcomes import Halt
 from foreman.readiness import MergeState
 from foreman.workspace import WorkState
 from foreman.runner import run_live_delivery
-from foreman.state import RunState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer
+from foreman.state import ChecksState, RunState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
 
 
 class CheckpointBoundaryTests(unittest.TestCase):
@@ -24,37 +25,61 @@ class CheckpointBoundaryTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "old.sqlite"
             shutil.copyfile(Path(__file__).parent / "fixtures/state/before-move.sqlite", checkpoint)
-            for version in (None, 0, 1, 2, 3, SCHEMA_VERSION + 1, True, "1"):
+            for version in (None, 0, 1, 2, 3, 4, SCHEMA_VERSION + 1, True, "1"):
                 with self.subTest(version=version):
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                         saver.serde = checkpoint_serializer()
                         saved = saver.get_tuple({"configurable": {"thread_id": "before-move"}})
+                        values = saved.checkpoint["channel_values"]
+                        values.clear()
+                        values.update(path=["triage"], attempts=[], review_rounds=2)
+                        checks = ChecksState(check="true", preflight="env", check_exit_code=0, verify="pass",
+                            verified_head="b" * 40, browser_proof={"screen": "page", "trace": "trace", "passed": True},
+                            formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
+                            proof_labels={"browser": "block"})
+                        run = RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
+                                       token_cap=100, max_budget_usd="1.5")
+                        work = WorkState(branch="8-change", base="main", attempt_head="a" * 40,
+                            candidate={"disposition": "edits", "fingerprint": "edits"}, partial_edits="partial",
+                            head_sha="b" * 40, repair_head="c" * 40)
+                        merge = MergeState(status="not_armed", receipt={"status": "QUEUED"},
+                            observation={"outcome": "ready"}, observed_head="c" * 40, command=["gh", "pr", "merge"])
+                        revision = version if type(version) is int else 1
                         if version is not None:
-                            saved.checkpoint["channel_values"]["schema_version"] = version
-                        if type(version) is int and version == 1:
-                            saved.checkpoint["channel_values"].update(merge="not_armed", merge_receipt={"status": "QUEUED"},
-                                readiness_observation={"outcome": "ready"}, merge_observed_head="c" * 40, merge_command=["gh", "pr", "merge"])
-                        if type(version) is int and version == 2:
-                            saved.checkpoint["channel_values"]["merge"] = MergeState(status="not_armed", observed_head="c" * 40)
-                        if type(version) is int and version == 3:
-                            saved.checkpoint["channel_values"].update(merge=MergeState(status="not_armed"), work=WorkState(branch="8-change"))
-                        if type(version) is int and version in (1, 2):
-                            saved.checkpoint["channel_values"].update(delivery_branch="8-change", delivery_base="main",
-                                attempt_head="a" * 40, implementation_candidate={"disposition": "edits", "fingerprint": "edits"},
-                                partial_edits="partial", head_sha="b" * 40, repair_head="c" * 40)
-                        if type(version) is int and version in (1, 2, 3):
-                            saved.checkpoint["channel_values"].update(issue=8, request="Build it", workspace="/checkout", max_budget_usd="1.5")
+                            values["schema_version"] = version
+                        if revision >= 5:
+                            values["checks"] = checks
+                        else:
+                            values.update(checks.model_dump())
+                        if revision >= 4:
+                            values["run"] = run
+                        else:
+                            values.update(run.model_dump())
+                        if revision >= 3:
+                            values["work"] = work
+                        else:
+                            values.update(delivery_branch=work.branch, delivery_base=work.base, attempt_head=work.attempt_head,
+                                implementation_candidate=work.candidate, partial_edits=work.partial_edits,
+                                head_sha=work.head_sha, repair_head=work.repair_head)
+                        if revision >= 2:
+                            values["merge"] = merge
+                        else:
+                            values.update(merge=merge.status, merge_receipt=merge.receipt, readiness_observation=merge.observation,
+                                merge_observed_head=merge.observed_head, merge_command=merge.command)
                         saver.put({"configurable": {"thread_id": "a/b#8", "checkpoint_ns": ""}}, saved.checkpoint, saved.metadata, {})
                     before = checkpoint.read_bytes()
                     with patch("foreman.runner.compile_delivery") as compile_graph, \
                          patch("foreman.runner.checkpoint_state") as validate, \
-                         patch("foreman.runner.load_config") as config:
+                         patch("foreman.runner.load_config") as config, \
+                         patch("foreman.runner.require_schema_version", wraps=require_schema_version) as refuse:
                         with self.assertRaisesRegex(CheckpointVersionError, "schema_version.*Start a new run") as raised:
                             run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint,
                                               dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun()))
                         self.assertIn(str(checkpoint), str(raised.exception))
                         if version is None:
                             self.assertIn("schema_version missing", str(raised.exception))
+                        refuse.assert_called_once()
+                        self.assertEqual(refuse.call_args.args[0], values)
                         compile_graph.assert_not_called()
                         validate.assert_not_called()
                         config.assert_not_called()
@@ -74,6 +99,11 @@ class CheckpointBoundaryTests(unittest.TestCase):
             self.assertEqual(serde.loads_typed(serde.dumps_typed(work)), work)
             run = RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout", token_cap=100, max_budget_usd="1.5")
             self.assertEqual(serde.loads_typed(serde.dumps_typed(run)), run)
+            checks = ChecksState(check="true", preflight="env", check_exit_code=0, verify="pass", verified_head="b" * 40,
+                browser_proof={"screen": "page", "trace": "trace", "passed": True},
+                formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
+                proof_labels={"browser": "block"})
+            self.assertEqual(serde.loads_typed(serde.dumps_typed(checks)), checks)
         blocked = HumanPrompt(stage="triage", question="Which?")
         with self.assertLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
             restored = serde.loads_typed(serde.dumps_typed(blocked))
@@ -89,7 +119,7 @@ from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import checkpoint_state, snapshot_result
-from foreman.state import RunState, checkpoint_serializer
+from foreman.state import ChecksState, RunState, checkpoint_serializer
 from foreman.readiness import MergeState
 from foreman.workspace import WorkState
 
@@ -101,6 +131,7 @@ with SqliteSaver.from_conn_string(path) as saver:
                              run=LiveRun(DryRun(), DryRun()), checkpointer=saver)
     if phase == "write":
         graph.update_state(config, {**json.loads(state_json),
+            "checks": ChecksState.model_validate(json.loads(state_json)["checks"]),
             "run": RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout", token_cap=100, max_budget_usd="1.5"),
             "merge": MergeState(status="not_armed", receipt={"status": "QUEUED"}, observed_head="c" * 40,
                 observation={"outcome": "ready"}, command=["gh", "pr", "merge"]),
@@ -114,6 +145,7 @@ with SqliteSaver.from_conn_string(path) as saver:
     assert saved.values["work"] == WorkState(branch="8-change", base="main", attempt_head="a" * 40,
         candidate={"disposition": "adopted", "head": "b" * 40, "tree": "c" * 40, "fingerprint": "tree"},
         partial_edits="partial", head_sha="b" * 40, repair_head="d" * 40)
+    assert saved.values["checks"] == ChecksState.model_validate(json.loads(state_json)["checks"])
     assert saved.values["run"] == RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout", token_cap=100, max_budget_usd="1.5")
     assert isinstance(saved.values["merge"], MergeState)
     assert saved.values["merge"].receipt == {"status": "QUEUED"}
@@ -138,7 +170,10 @@ with SqliteSaver.from_conn_string(path) as saver:
             for name, predecessor, extra in cases:
                 with self.subTest(pause=name):
                     stage = "spec" if name == "pr_size" else "triage" if name == "quota" else name
-                    state = {"schema_version": SCHEMA_VERSION, "check": "",
+                    state = {"schema_version": SCHEMA_VERSION, "checks": ChecksState(check="true", preflight="env", check_exit_code=0,
+                        verify="pass", verified_head="b" * 40, browser_proof={"screen": "page", "trace": "trace", "passed": True},
+                        formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
+                        proof_labels={"browser": "block"}),
                               "path": [stage], "human_question": "Which?",
                              "halt_detail": "Waiting.", "attempts": [{"stage": "triage", "model": "gpt",
                                  "commit": "a" * 40, "methods": [], "outcome": "ran", "usage": {
@@ -148,7 +183,7 @@ with SqliteSaver.from_conn_string(path) as saver:
                     outputs = []
                     for phase in ("write", "read"):
                         process = subprocess.run([sys.executable, "-c", script, checkpoint, phase,
-                                                  json.dumps(state), predecessor],
+                                                  json.dumps(state, default=lambda value: value.model_dump(mode="json")), predecessor],
                                                  text=True, capture_output=True, env=env, check=False)
                         self.assertEqual(process.returncode, 0, process.stderr)
                         self.assertEqual(process.stderr, "")
