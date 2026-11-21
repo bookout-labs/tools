@@ -7,6 +7,8 @@ from typing import TypeGuard
 
 from foreman._raw import is_dict, is_list
 
+from pydantic import BaseModel, ConfigDict, Field
+
 DEFAULT_PATH = Path(__file__).with_name("models.toml")
 ROLES = {"coordinator", "builder", "verifier", "check"}
 FAMILIES = {"claude", "gpt", "grok"}
@@ -22,6 +24,19 @@ EFFORTS = {
 
 class ConfigError(ValueError):
     pass
+
+
+class PstackPin(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    repository: str = Field(min_length=1)
+    commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
+PSTACK_PIN = PstackPin(
+    repository="https://github.com/cursor/plugins",
+    commit="d42aff08aa58965d2735c4ead61a9af82b89d0d0",
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +66,7 @@ class NodeConfig:
 class Config:
     max_review_rounds: int
     nodes: dict[str, NodeConfig]
+    pstack: PstackPin = PSTACK_PIN
 
 
 def family(model: str) -> str:
@@ -96,7 +112,8 @@ def parse_config(data: object) -> Config:
     for name, node in nodes.items():
         if node.other_family_from and node.other_family_from not in nodes:
             raise ConfigError(f"{name} refers to a missing node {node.other_family_from}")
-    return Config(max_review_rounds=rounds, nodes=nodes)
+    pin = PstackPin.model_validate(data["pstack"]) if "pstack" in data else PSTACK_PIN
+    return Config(max_review_rounds=rounds, nodes=nodes, pstack=pin)
 
 
 def load_config(path: Path | None = None) -> Config:

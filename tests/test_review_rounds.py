@@ -11,16 +11,17 @@ from foreman.config import load_config
 from foreman.dispatch import FailoverDispatcher
 from foreman.adapters import Outcome
 from foreman.stage_output import ReviewOutput, parse_output
+from skill_fixture import skill_fixture
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
 class ReviewRoundsTest(unittest.TestCase):
-    def run_rounds(self, reviews, *, initial=None, crash=False, bad_diff=False, gate_heads=None):
+    def run_rounds(self, reviews, *, initial=None, crash=False, gate_heads=None):
         self.prompts = []
         self.diffs = []
         self.gate_reads = []
         self.forge = FakeGitHub()
-        with TemporaryDirectory() as directory:
+        with TemporaryDirectory() as directory, skill_fixture() as (settings, scratch):
             outer = self
 
             class Workspace(FakeWorkspace):
@@ -39,8 +40,6 @@ class ReviewRoundsTest(unittest.TestCase):
                 def review_diff(self, base, head, *, interdiff=False):
                     outer.diffs.append((base, head, interdiff))
                     diff = super().review_diff(base, head)
-                    if bad_diff:
-                        return type(diff)(diff.command, "--- a/x\n+++ b/x\n@@ -1 +1 @@\ninvalid\n")
                     return diff
 
             replies = iter(reviews)
@@ -58,7 +57,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     crashed = True
                     raise RuntimeError("process lost")
                 if node == "triage":
-                    return Outcome("ran", {"triage": "implement", "slice": None, "human_question": None})
+                    return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None})
                 implementations += 1
                 if gate_heads is not None and HEAD not in gate_heads:
                     workspace.current_head = str(implementations) * 40
@@ -66,7 +65,7 @@ class ReviewRoundsTest(unittest.TestCase):
                                        "browser_proof": None, "formal_proof": None})
 
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint")) as saver:
-                graph = compile_delivery(FailoverDispatcher(dispatch), load_config(),
+                graph = compile_delivery(FailoverDispatcher(dispatch), settings, scratch=scratch,
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "rounds"}}
                 state = {"repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": EMPTY_SLICE,
@@ -74,7 +73,8 @@ class ReviewRoundsTest(unittest.TestCase):
                 if crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
                         graph.invoke(state, config)
-                    graph = compile_delivery(FailoverDispatcher(dispatch), load_config(),
+                    (scratch / "resume").mkdir()
+                    graph = compile_delivery(FailoverDispatcher(dispatch), settings, scratch=scratch / "resume",
                                              run=LiveRun(self.forge, workspace), checkpointer=saver)
                     result = graph.invoke(None, config)
                 else:

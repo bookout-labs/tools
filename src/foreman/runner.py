@@ -6,6 +6,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -13,9 +14,10 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
-from foreman.config import load_config
+from foreman.config import PstackPin, load_config
 from foreman.delivery import DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
+from foreman.skill_rules import SkillMissing
 from foreman.github import Forge
 from foreman.stage_output import StoredSlice, parse_output
 
@@ -80,9 +82,23 @@ def run_live_delivery(
     config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(run.workspace.root.resolve())
     client = run.forge
-    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-        graph = compile_delivery(dispatcher, load_config(), run=run, checkpointer=saver)
-
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver, TemporaryDirectory(prefix="foreman-skills-") as scratch:
+        delivery_config = load_config()
+        prior = saver.get(config)
+        channels = prior["channel_values"] if prior else {}
+        saved_pin = channels.get("pstack_pin")
+        if prior and not channels.get("stop") and saved_pin is None:
+            raise ValueError("Cannot resume a delivery checkpoint without a pstack pin.")
+        pin = PstackPin.model_validate(saved_pin) if saved_pin is not None else delivery_config.pstack
+        try:
+            graph = compile_delivery(
+                dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver,
+                scratch=None if channels.get("stop") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
+            )
+        except SkillMissing as exc:
+            return read_delivery_state({**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
+                                        "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
+                                        "repo": repo, "check": check})
         def invoke(
             graph_input: DeliveryState | Command | None,
             state: DeliveryState,
@@ -96,7 +112,10 @@ def run_live_delivery(
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
+        waiting_for_quota = bool(saved.interrupts) and saved.values.get("halt") == "quota_exhausted"
         if answer is not None:
+            if waiting_for_quota:
+                raise AnswerError("This issue has no pending question.")
             if not answer.strip():
                 raise AnswerError("The answer must contain text.")
             if not saved.interrupts:
@@ -121,6 +140,7 @@ def run_live_delivery(
                 "workspace": workspace,
                 "request": text,
                 "check": check,
+                "pstack_pin": pin.model_dump(),
                 "path": [],
                 "preflight": preflight,
                 "issue_kind": "slice" if "slice" in loaded["labels"] else "parent",
@@ -135,7 +155,11 @@ def run_live_delivery(
                     if detail := _blocker_detail(client, repo, issue, item):
                         return {**initial, "path": ["done"], "stop": "blocked", "halt_detail": detail}
                     initial["slice"] = item.model_dump(exclude_unset=True)
+                    if item.work_kind is not None:
+                        initial["work_kind"] = item.work_kind
             invoke(initial, initial)
+        elif waiting_for_quota:
+            invoke(Command(resume=True), saved_values)
         elif (halt := saved_values.get("halt")) in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
             if halt == "env_unavailable":
@@ -148,7 +172,8 @@ def run_live_delivery(
         saved = graph.get_state(config)
         if saved.values.get("stop") == "sliced":
             numbers = list(saved.values.get("child_issue_numbers", []))
-            plan = [parse_output(StoredSlice, raw) for raw in saved.values["slices"]]
+            work_kind = saved.values.get("work_kind")
+            plan = [parse_output(StoredSlice, {**raw, "work_kind": work_kind}) for raw in saved.values["slices"]]
             siblings = {item.title: number for item, number in zip(plan, numbers)}
             for item in plan[len(numbers):]:
                 child = item.model_copy(update={"blocker_numbers": [siblings[title] for title in item.depends_on]})
@@ -172,7 +197,15 @@ def run_live_delivery(
                     client.add_label(repo, number, "factory")
             saved = graph.get_state(config)
         if saved.interrupts:
+            if saved.values.get("halt") == "quota_exhausted":
+                return read_delivery_state({**saved.values, "stop": "quota_exhausted"})
             question: object = saved.interrupts[0].value["question"]
             return read_delivery_state({**saved.values, "stop": "needs_human", "halt_detail": question})
         result = read_delivery_state(saved.values)
+        if "merge" in result["path"] and "merge" not in result:
+            legacy = saver.get(saved.config)
+            if legacy is not None:
+                armed = legacy["channel_values"].get("merge_armed")
+                if isinstance(armed, bool):
+                    result["merge"] = "armed" if armed else "not_armed"
         return result
