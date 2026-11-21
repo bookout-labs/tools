@@ -15,7 +15,6 @@ from foreman.adapters import Outcome, Usage
 from foreman.budget import CostUnknown, Exhausted, Remaining, dollar_admission
 from foreman.cli import _print_run, main
 from foreman.delivery import DryRun, LiveRun, compile_delivery, run_delivery, run_tokens
-from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.runner import run_live_delivery
 from foreman.usd import BudgetUsd
@@ -142,9 +141,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             self.assertIn(f"claude spend unknown of ${stored}", output.getvalue())
 
     def test_run_delivery_stores_canonical_text_or_null(self):
-        bounded = run_delivery(FailoverDispatcher(ScriptHandler()), repo="a/b", request="x", max_budget_usd=usd("1.50"))
+        bounded = run_delivery(ScriptHandler(), repo="a/b", request="x", max_budget_usd=usd("1.50"))
         self.assertEqual(bounded["max_budget_usd"], "1.5")
-        unbounded = run_delivery(FailoverDispatcher(ScriptHandler()), repo="a/b", request="x")
+        unbounded = run_delivery(ScriptHandler(), repo="a/b", request="x")
         self.assertIn("max_budget_usd", unbounded)
         self.assertIsNone(unbounded["max_budget_usd"])
         self.assertNotIn("claude spend", printed(unbounded))
@@ -174,7 +173,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         return Outcome("quota")
 
                     kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=Path(folder) / "allowance.sqlite",
-                                  run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))), dispatcher=FailoverDispatcher(handler))
+                                  run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))), dispatcher=handler)
                     state = run_live_delivery(**kwargs, max_budget_usd=usd("1.50") if stored else None)
                     self.assertEqual(state["stop"], pause)
                     self.assertIn("max_budget_usd", state)
@@ -201,17 +200,17 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
             root = Path(folder)
             kwargs = dict(repo="a/b", issue=8, check="exit 0", run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
-                          dispatcher=FailoverDispatcher(quota))
+                          dispatcher=quota)
             first = run_live_delivery(**kwargs, checkpoint=root / "modern.sqlite")
             self.assertEqual(first["stop"], "quota_exhausted")
             dispatched = len(calls)
             snapshots = (first, {**first, "stop": "needs_human", "halt": None},
-                         *({**first, "stop": halt, "halt": halt} for halt in ("env_unavailable", "implement_quota", "git_failed")))
+                         *({**first, "stop": halt, "halt": halt} for halt in ("env_unavailable", "git_failed")))
             for snapshot in snapshots:
                 with self.subTest(stop=snapshot["stop"]):
                     legacy = root / f"{snapshot['stop']}.sqlite"
                     with SqliteSaver.from_conn_string(str(legacy)) as saver:
-                        graph = compile_delivery(FailoverDispatcher(quota), config, run=DryRun(), checkpointer=saver)
+                        graph = compile_delivery(quota, config, run=DryRun(), checkpointer=saver)
                         graph.update_state(THREAD, {key: value for key, value in snapshot.items() if key != "max_budget_usd"})
                     with self.assertRaisesRegex(ValueError, "unknown usage history for --max-budget-usd.*new run"):
                         run_live_delivery(**kwargs, checkpoint=legacy)
@@ -219,7 +218,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
             historical = root / "historical.sqlite"
             with SqliteSaver.from_conn_string(str(historical)) as saver:
-                graph = compile_delivery(FailoverDispatcher(quota), config, run=kwargs["run"], checkpointer=saver)
+                graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
                 graph.update_state(THREAD, {"repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"], "token_cap": 100,
                     "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
                 graph.update_state(THREAD, {"max_budget_usd": None, "halt": "env_unavailable", "stop": "env_unavailable",
@@ -230,7 +229,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
             finished = root / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(finished)) as saver:
-                graph = compile_delivery(None, config, run=DryRun(), checkpointer=saver)
+                graph = compile_delivery(ScriptHandler(), config, run=DryRun(), checkpointer=saver)
                 graph.update_state(THREAD, {"repo": "a/b", "check": "", "path": ["done"], "stop": "answered",
                                             "token_cap": 100}, as_node="done")
             output = printed(run_live_delivery(**kwargs, checkpoint=finished))
@@ -264,7 +263,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
                 checkpoint = root / "replay.sqlite"
                 kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=LiveRun(FakeGitHub(), workspace),
-                              dispatcher=FailoverDispatcher(handler), max_budget_usd=usd("1"))
+                              dispatcher=handler, max_budget_usd=usd("1"))
                 halted = run_live_delivery(**kwargs)
                 self.assertEqual(halted["stop"], "git_failed")
                 implement = [a for a in halted["attempts"] if a["stage"] == "implement"]
@@ -273,7 +272,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 dispatched = len(calls)
                 if case == "non_prefix":
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-                        graph = compile_delivery(None, config, run=DryRun(), checkpointer=saver)
+                        graph = compile_delivery(ScriptHandler(), config, run=DryRun(), checkpointer=saver)
                         graph.update_state(THREAD, {"attempts": Overwrite(implement)}, as_node="done")
                     with self.assertRaisesRegex(ValueError, "non-prefix attempt history"):
                         run_live_delivery(**kwargs)

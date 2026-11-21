@@ -17,7 +17,6 @@ from unittest.mock import patch
 from foreman.adapters import Outcome, Usage
 from foreman.config import PstackPin, load_config
 from foreman.delivery import LiveRun
-from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.runner import RunPresentation, run_live_delivery
 from test_runner import FakeGitHub, FakeWorkspace
@@ -40,16 +39,12 @@ def handler(node, model, state, instruction):
     return script(node, model, state, instruction)
 def crash(*args, **kwargs):
     os._exit(19)
-original_run = FailoverDispatcher.run
-def uncommitted(*args, **kwargs):
-    original_run(*args, **kwargs)
-    os._exit(19)
 pin = PstackPin.model_validate_json(raw_pin)
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
-    with patch("foreman.dispatch.FailoverDispatcher.run", new=uncommitted) if mode == "quota-uncommitted" else contextlib.nullcontext():
+    with patch("foreman.delivery.Attempt.record", side_effect=crash) if mode == "quota-uncommitted" else contextlib.nullcontext():
         with patch("foreman.delivery.stage_update", side_effect=crash) if mode == "success" else contextlib.nullcontext():
             result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=Path(checkpoint),
-                dispatcher=FailoverDispatcher(handler), presentation=RunPresentation(), run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())))
+                dispatcher=handler, presentation=RunPresentation(), run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())))
 print(json.dumps(result))
 '''
 

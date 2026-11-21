@@ -33,11 +33,10 @@ FILING = {
     "pr_size_unavailable": ("Pull request size is measurable before review", "workspace.py"),
     "git_failed": ("Git operations complete before publication", "workspace.py"),
     "usage_unknown": ("codex attempts report usage", "adapters/codex.py"),
-    "no_dispatcher": ("A live run always has a dispatcher", "cli.py"),
     "skill_missing": ("Pinned skills are available before dispatch", "skill_rules.py"),
 }
 SKIPPED = {"reviewer_unavailable", "no_reviewer", "cli_missing", "merge_held", "merge_not_armed", "budget_exceeded",
-           "env_unavailable", "quota_exhausted", "publish_failed", "implement_quota", "failed",
+           "env_unavailable", "quota_exhausted", "publish_failed", "failed",
            "design_rethink", "implementation_rejected", "pr_conflict", "ci_pending", "ci_red",
            "readiness_unavailable", "queue_rejected"}
 

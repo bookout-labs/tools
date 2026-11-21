@@ -91,7 +91,7 @@ class PullRequestSizeTest(unittest.TestCase):
     def invoke(self, *flags, expected_code=0, from_triage=False):
         if not self.checkpoint.exists() and not from_triage:
             with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-                graph = compile_delivery(None, self.config, run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills), checkpointer=saver)
+                graph = compile_delivery(lambda *_: self.fail("unexpected dispatch"), self.config, run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
                     "pstack_pin": self.config.pstack.model_dump(), "token_cap": DEFAULT_TOKEN_CAP, "max_budget_usd": None,
                     "repo": "Example/Engine", "issue": 8, "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
