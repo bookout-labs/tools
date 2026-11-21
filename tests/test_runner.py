@@ -186,7 +186,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.prompts = []
         self.github = FakeGitHub()
 
-    def walk(self, replies, *, issue=8, check="exit 0", run_gh=None, inspect_worktree=clean_worktree):
+    def walk(self, replies, *, issue=8, check="exit 0", preflight="", run_gh=None, inspect_worktree=clean_worktree):
         outputs = iter(replies)
 
         def run(args, cwd):
@@ -196,7 +196,7 @@ class LiveRunnerTest(unittest.TestCase):
             return worker_reply(args, next(outputs))
 
         return run_live_delivery(
-            repo="Example/Engine", issue=issue, check=check, cwd=self.cwd,
+            repo="Example/Engine", issue=issue, check=check, preflight=preflight, cwd=self.cwd,
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
             run_gh=run_gh, github=self.github, inspect_worktree=inspect_worktree,
         )
@@ -350,6 +350,100 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("done no_dispatcher", stdout.getvalue())
         self.assertFalse((self.cwd / "ran").exists())
+
+    def test_cli_preflight_stops_before_dispatch_and_uses_engine_checkout(self):
+        preflight = "echo probed > preflight.log; exit 9"
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
+                 "--check", "touch checked", "--preflight", preflight],
+                worker_runner=lambda args, cwd: self.fail("preflight dispatched a worker"),
+                checkpoint=self.checkpoint, github=self.github, inspect_worktree=clean_worktree,
+            )
+        result = self.walk([])
+        self.assertEqual(code, 0)
+        self.assertIn("done env_unavailable", stdout.getvalue())
+        self.assertIn(preflight, result["halt_detail"])
+        self.assertIn("9", result["halt_detail"])
+        self.assertEqual(result["review_rounds"], 0)
+        self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\n")
+        self.assertFalse((self.cwd / "checked").exists())
+
+    def test_dry_run_does_not_run_preflight(self):
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--dry-run", "--request", "List items",
+                 "--preflight", "touch preflight.log; exit 9"],
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("done verified", stdout.getvalue())
+        self.assertFalse((self.cwd / "preflight.log").exists())
+
+    def test_failed_check_with_failed_preflight_preserves_rounds(self):
+        (self.cwd / "ready").touch()
+        result = self.walk(
+            [{"triage": "implement"}, {"implementation": "built"}],
+            check="rm ready; exit 1", preflight="test -f ready",
+        )
+        self.assertEqual(result["stop"], "env_unavailable")
+        self.assertEqual(result["review_rounds"], 0)
+        self.assertEqual(result["check_exit_code"], 1)
+        self.assertIn("test -f ready", result["halt_detail"])
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "done"])
+
+    def test_failed_check_consumes_round_with_healthy_or_unspecified_environment(self):
+        for issue, preflight in enumerate(("", "echo probed >> preflight.log"), start=8):
+            with self.subTest(preflight=preflight):
+                marker = f"checked-{issue}"
+                built = {"implementation": "built"}
+                result = self.walk(
+                    [{"triage": "implement"}, built, built, APPROVE], issue=issue,
+                    check=f"test -f {marker} || {{ touch {marker}; exit 1; }}", preflight=preflight,
+                )
+                self.assertEqual(result["stop"], "verified")
+                self.assertEqual(result["review_rounds"], 1)
+                self.assertEqual(result["path"].count("implement"), 2)
+        self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\nprobed\n")
+
+    def test_check_that_cannot_start_stops_without_spending_a_round(self):
+        (self.cwd / "non-executable").write_text("#!/bin/sh\nexit 0\n")
+        cases = (
+            ("./non-executable", 126, "command is not executable", ""),
+            ("./missing-check", 127, "command not found", "echo probed >> preflight.log"),
+        )
+        for issue, (command, exit_code, reason, preflight) in enumerate(cases, start=8):
+            with self.subTest(exit_code=exit_code):
+                result = self.walk(
+                    [{"triage": "implement"}, {"implementation": "built"}],
+                    issue=issue, check=command, preflight=preflight,
+                )
+                self.assertEqual(result["stop"], "env_unavailable")
+                self.assertEqual(result["review_rounds"], 0)
+                self.assertEqual(result["check_exit_code"], exit_code)
+                for detail in (command, str(exit_code), reason):
+                    self.assertIn(detail, result["halt_detail"])
+        self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\n")
+
+    def test_resume_at_implement_rechecks_saved_preflight(self):
+        def interrupted_run(node, model, state, instruction):
+            if node == "triage":
+                return {"triage": "implement"}
+            self.assertEqual(node, "implement")
+            raise RuntimeError("worker stopped")
+
+        ready = self.cwd / "ready"
+        ready.touch()
+        with self.assertRaisesRegex(RuntimeError, "worker stopped"):
+            run_live_delivery(
+                repo="Example/Engine", issue=8, check="exit 0", preflight="test -f ready",
+                cwd=self.cwd, checkpoint=self.checkpoint, github=self.github,
+                dispatcher=FailoverDispatcher(interrupted_run), inspect_worktree=clean_worktree,
+            )
+        ready.unlink()
+        result = self.walk([])
+        self.assertEqual(result["stop"], "env_unavailable")
+        self.assertEqual(result["review_rounds"], 0)
+        self.assertEqual(self.calls, [])
 
     def test_dirty_or_invalid_worktree_skips_the_check(self):
         for snapshot in ((HEAD, False), ("", True), ("abc123", True), ("z" * 40, True)):

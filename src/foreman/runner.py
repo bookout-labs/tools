@@ -9,7 +9,7 @@ from typing import Callable
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from foreman.delivery import DeliveryState, clean_slices, compile_delivery
+from foreman.delivery import DeliveryContext, DeliveryState, clean_slices, compile_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.github import GhClient, GitHub
 from foreman.stage_output import Slice, parse_output
@@ -38,6 +38,7 @@ def run_live_delivery(
     check: str,
     cwd: Path,
     checkpoint: Path,
+    preflight: str = "",
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
     github: GitHub | None = None,
@@ -45,16 +46,17 @@ def run_live_delivery(
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: WorktreeInspector | None = None,
 ) -> dict:
-    def run_check(command: str) -> int:
+    def run_command(command: str) -> int:
         return subprocess.run(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL).returncode
 
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     config = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(cwd.resolve())
     inspect = inspect_worktree or _inspect_worktree
+    context = DeliveryContext()
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         graph = compile_delivery(
-            dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
+            dispatcher, checkpointer=saver, run_check=run_command, run_preflight=run_command, run_gh=run_gh,
             inspect_worktree=lambda: inspect(cwd),
         )
         saved = graph.get_state(config)
@@ -66,7 +68,7 @@ def run_live_delivery(
                 raise ValueError("This issue has no pending question.")
             if not answer.strip():
                 raise ValueError("The answer must contain text.")
-            graph.invoke(Command(resume=answer), config, durability="sync")
+            graph.invoke(Command(resume=answer), config, context=context, durability="sync")
         elif not saved.values:
             loaded = (github or GhClient()).load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
@@ -77,15 +79,18 @@ def run_live_delivery(
                 "request": text,
                 "check": check,
                 "issue_kind": "slice" if "slice" in loaded["labels"] else "parent",
+                "review_rounds": 0,
             }
+            if preflight:
+                initial["preflight"] = preflight
             if initial["issue_kind"] == "slice":
                 try:
                     initial["slice"] = _load_slice(loaded["body"])
                 except (InvalidOutput, json.JSONDecodeError) as exc:
                     initial.update(halt="missing_slice", halt_detail=str(exc))
-            graph.invoke(initial, config, durability="sync")
+            graph.invoke(initial, config, context=context, durability="sync")
         elif saved.next and not saved.interrupts:
-            graph.invoke(None, config, durability="sync")
+            graph.invoke(None, config, context=context, durability="sync")
 
         saved = graph.get_state(config)
         if saved.values.get("stop") == "sliced":

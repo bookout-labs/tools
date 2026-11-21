@@ -14,23 +14,25 @@ flowchart TD
   triage -->|parent, larger change, or open choice| spec
   triage -->|question| research
   triage -->|needs a person| needs_human
+  triage -->|halt| done
   needs_human -->|answer to triage| triage
   needs_human -->|answer to spec| spec
   spec -->|slice ready| implement
   spec -->|needs a person| needs_human
-  spec -->|parent sliced| done
+  spec -->|parent sliced or halt| done
   research --> done
   implement --> verify
+  implement -->|halt| done
   verify -->|pass with proof obligations| proof
   verify -->|pass without proof obligations| review
   proof -->|accepted| review
   proof -->|blocked, under the cap| implement
   proof -->|missing evidence or cap reached| done
   verify -->|fail, under the cap| implement
-  verify -->|dirty worktree, invalid HEAD, or cap reached| done
+  verify -->|dirty worktree, invalid HEAD, environment unavailable, or cap reached| done
   review -->|approve| merge
   review -->|changes, under the cap| implement
-  review -->|cap reached or no reviewer| done
+  review -->|cap reached or halt| done
   merge --> done
   done --> __end__([end])
 ```
@@ -39,7 +41,11 @@ The edges are code. The model list is `src/foreman/models.toml`. Quota exhaustio
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If the builder model is missing or every eligible reviewer is unavailable, the run stops with `no_reviewer`. The record includes `halt_detail` for both stops.
 
-Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs use a scripted verdict. When the check passes, the graph evaluates the browser and formal evidence required by the slice. Missing evidence stops the run. A failed proof consumes a round and sends the slice back to implement while rounds remain.
+Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes.
+
+Use `--preflight <command>` to check environment readiness in the engine checkout before the first model call of a new or resumed live run. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (cannot execute) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code. Dry runs use a scripted verdict.
+
+When the check passes, the graph evaluates the browser and formal evidence required by the slice. Missing evidence stops the run. A failed proof consumes a round and sends the slice back to implement while rounds remain.
 
 The cap is three failures across verify, proof, and review. It is config. A node cannot raise it.
 
@@ -126,7 +132,7 @@ Start a live run from the root of the engine checkout. Use `--request` to supply
 foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm run check" --request "Add a field"
 ```
 
-The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request and check command.
+The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request, check command, and any preflight command.
 
 ## Tests
 

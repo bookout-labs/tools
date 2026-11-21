@@ -101,6 +101,7 @@ def main(
     run.add_argument("--issue", type=int)
     run.add_argument("--request")
     run.add_argument("--check", default="")
+    run.add_argument("--preflight", default="", help="check environment readiness before live work")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
 
@@ -197,6 +198,7 @@ def main(
                 repo=args.repo,
                 issue=args.issue,
                 check=args.check,
+                preflight=args.preflight,
                 cwd=cwd,
                 checkpoint=checkpoint,
                 dispatcher=dispatcher,

@@ -1,5 +1,6 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
+from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, Callable, Literal, TypedDict
@@ -8,6 +9,7 @@ import re
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 
 from foreman.config import Config, ConfigError, load_config, order_for
@@ -23,6 +25,12 @@ SKILLS_FOR = {
     "review": ("review-quality", "merge-risk"),
 }
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
+
+
+@dataclass
+class DeliveryContext:
+    preflight_passed: bool = False
 
 
 class DeliveryState(TypedDict, total=False):
@@ -31,6 +39,7 @@ class DeliveryState(TypedDict, total=False):
     issue: int
     workspace: str
     check: str
+    preflight: str
     check_exit_code: int
     triage: str
     spec: str
@@ -145,6 +154,7 @@ def compile_delivery(
     *,
     checkpointer: BaseCheckpointSaver | None = None,
     run_check: Callable[[str], int] | None = None,
+    run_preflight: Callable[[str], int] | None = None,
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
 ):
@@ -154,10 +164,24 @@ def compile_delivery(
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
 
+    def failed_preflight(state: DeliveryState, runtime: Runtime[DeliveryContext]) -> str | None:
+        command = state.get("preflight")
+        if run_preflight is None or not command:
+            return None
+        exit_code = run_preflight(command)
+        if exit_code:
+            return f"Preflight {command!r} exited with {exit_code}"
+        if runtime.context is not None:
+            runtime.context.preflight_passed = True
+        return None
+
     def bind(name: str):
-        def node(state: DeliveryState) -> dict[str, object]:
+        def node(state: DeliveryState, runtime: Runtime[DeliveryContext]) -> dict[str, object]:
             if dispatcher is None:
                 return {"path": [name], "halt": "no_dispatcher"}
+            if runtime.context is None or not runtime.context.preflight_passed:
+                if detail := failed_preflight(state, runtime):
+                    return {"path": ["preflight"], "halt": "env_unavailable", "halt_detail": detail}
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
@@ -186,7 +210,7 @@ def compile_delivery(
 
         return node
 
-    def verify(state: DeliveryState) -> dict[str, object]:
+    def verify(state: DeliveryState, runtime: Runtime[DeliveryContext]) -> dict[str, object]:
         assert run_check is not None
         checked = {}
         if inspect_worktree is not None:
@@ -194,7 +218,17 @@ def compile_delivery(
             if not clean or not FULL_SHA.fullmatch(head):
                 return {"path": ["verify"], "halt": "dirty_worktree"}
             checked = {"head_sha": head, "head_checked": True}
-        exit_code = run_check(state["check"])
+        command = state["check"]
+        exit_code = run_check(command)
+        if reason := CHECK_START_FAILURES.get(exit_code):
+            detail = f"Check {command!r} exited with {exit_code} ({reason})"
+        else:
+            detail = failed_preflight(state, runtime) if exit_code else None
+        if detail:
+            return {
+                "path": ["verify"], "check_exit_code": exit_code,
+                "halt": "env_unavailable", "halt_detail": detail,
+            }
         verdict = "pass" if exit_code == 0 else "fail"
         return {
             **stage_update("verify", VerifyOutput(verify=verdict), state),
@@ -289,7 +323,7 @@ def compile_delivery(
     def finish(state: DeliveryState) -> DeliveryState:
         return {"stop": stop_reason(state), "path": ["done"]}
 
-    builder = StateGraph(DeliveryState)
+    builder = StateGraph(DeliveryState, context_schema=DeliveryContext)
     for name in REQUIRED_NODES:
         builder.add_node(name, verify if name == "verify" and run_check is not None else bind(name))
     builder.add_node("proof", prove)
