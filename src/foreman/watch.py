@@ -4,7 +4,7 @@ from textwrap import indent
 from typing import NewType
 
 from foreman.config import family
-from foreman.delivery import DeliveryResult, WatchRecord
+from foreman.state import DeliveryResult, WatchRecord
 from foreman.github import Forge
 from foreman.outcomes import HALTS, Halt
 

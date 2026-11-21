@@ -9,7 +9,7 @@ from foreman.config import ModelSpec
 from foreman.redaction import redact
 
 if TYPE_CHECKING:
-    from foreman.delivery import DeliveryState
+    from foreman.state import DeliveryState
 
 
 class QuotaExhausted(Exception):

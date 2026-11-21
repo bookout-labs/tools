@@ -15,7 +15,8 @@ import yaml
 
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend
-from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
+from foreman.state import DeliveryResult
+from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.dry_run import ScriptHandler
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path

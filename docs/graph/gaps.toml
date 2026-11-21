@@ -116,7 +116,6 @@ slice_14b = ["The runner files children without a confirmed sub-issue link.", "A
 [stages.prepare]
 slice_9 = ["Preflight, branch and attempt-start checks run inside implement's setup."]
 slice_11a = ["Recovery rewinds history instead of resuming at prepare."]
-slice_5 = ["The worker gets no scratch folder of its own."]
 
 [stages.implement]
 slice_13 = ["The partial-edits fingerprint check runs in implement's setup when the run resumes instead of the dispatch cell."]
