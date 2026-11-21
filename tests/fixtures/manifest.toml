@@ -9,6 +9,14 @@
 # A derived fixture records the argv of its original capture.
 # Source quotes link to published evidence without a capture command.
 
+[fixtures."github/child-body-contract.txt"]
+tool = "GitHub REST API, GitHub Issues, and gh"
+version = "gh 2.102.0; documentation and REST response retrieved 2026-11-21"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/fields.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/http.go", "https://github.com/cli/cli/blob/v2.102.0/api/queries_issue.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/issue/view/view.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmdutil/json_flags.go", "https://api.github.com/repos/cli/cli/issues/5680"]
+claim_ids = ["tool-fact-7e9c498cf0d0ab7423fcb5acb185eb415e6eb0a9477c261410a93ebc6536a664", "tool-fact-8a0370a2afa92181dff5670cb27a790f3fb61896de563282b1ae90e0220bfaa5"]
+notes = "Closing-keyword contract and gh string transport sources, with an observed CRLF body. Explicitly corrects the carried universal LF/byte-exact idempotency assumption; no live REST-write/gh-view round trip or web-edit provenance is claimed."
+
 [fixtures."github/linked-issue.json"]
 tool = "GitHub REST API"
 version = "2026-03-10"
@@ -21,7 +29,7 @@ notes = "Selected fields from the published issue response example. The global i
 tool = "gh and GitHub REST API"
 version = "gh 2.102.0; GitHub REST API 2026-03-10"
 kind = "quoted_source"
-claim_ids = ["tool-fact-d810e24b7980bffd2fa900daf24077057fb1de243e68295f189561fb901b6dfd"]
+claim_ids = ["tool-fact-105ae3c9e4144180d9a33fb3cc1ee5da02ba7ae1cbd567936c1f75b30c038668", "tool-fact-d810e24b7980bffd2fa900daf24077057fb1de243e68295f189561fb901b6dfd"]
 sources = ["https://docs.github.com/en/rest/issues/sub-issues#list-sub-issues", "https://cli.github.com/manual/gh_api"]
 notes = "Reduced published response example, with a synthetic second page (id 2, number 1349, closed) in gh --paginate --slurp format. Tests consume both pages and distinguish id from number."
 
@@ -29,7 +37,7 @@ notes = "Reduced published response example, with a synthetic second page (id 2,
 tool = "GitHub connector fetch"
 version = "GitHub REST API; captured 2026-11-21"
 kind = "captured_run"
-claim_ids = ["tool-fact-7e6aa77feee0e8037222175897642e2896bc4b02a2c319e3042779a177ca96cf"]
+claim_ids = ["tool-fact-aba4f2994162d61359c9f34088c34ff1359395dfacb23864bbadec4be93f79d9", "tool-fact-7e6aa77feee0e8037222175897642e2896bc4b02a2c319e3042779a177ca96cf"]
 argv = ["mcp__codex_apps__github_fetch", '{"url":"https://api.github.com/repos/octocat/Hello-World/issues/1347/parent"}']
 notes = "Unmodified JSON error_data from the connector's HTTP 404 response. gh cannot reach api.github.com from this sandbox; this is a connector capture, not a gh run. Tests render the diagnostic using the versioned CLI formatter recorded in github/gh-api-fields-and-errors.txt."
 
@@ -37,7 +45,7 @@ notes = "Unmodified JSON error_data from the connector's HTTP 404 response. gh c
 tool = "gh and GitHub REST API"
 version = "gh 2.102.0; GitHub REST API 2026-03-10"
 kind = "quoted_source"
-claim_ids = ["tool-fact-c7bf1a80f3c39a9e80ef9e966139d04b90ea5bdcc4172bce16a477161ccee978"]
+claim_ids = ["tool-fact-71b11ed36a120eb96823433d5b3d2165fa7d774bfb919b35f91c06588d2bf93a", "tool-fact-c7bf1a80f3c39a9e80ef9e966139d04b90ea5bdcc4172bce16a477161ccee978"]
 sources = ["https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go", "https://github.com/cli/cli/blob/v2.102.0/internal/ghcmd/cmd.go", "https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue"]
 notes = "Synthetic error cases using gh's published HTTP error formatter and exit code 1, not live permission/validation probes. Includes generic 404 and a no-parent message with the wrong status to prevent broad exception suppression."
 
@@ -45,7 +53,7 @@ notes = "Synthetic error cases using gh's published HTTP error formatter and exi
 tool = "gh and GitHub REST API"
 version = "gh 2.102.0; GitHub REST API 2026-03-10"
 kind = "quoted_source"
-claim_ids = ["tool-fact-40728bfb14309980599b7c49fe28c5fdc2ffa7ea8bc13f5b67ea0e4ef78f5d9a"]
+claim_ids = ["tool-fact-f0acbc5387b8abacb189e9034c87c872ba6acf1c9558a4ebe33b0da47b4d7afb", "tool-fact-40728bfb14309980599b7c49fe28c5fdc2ffa7ea8bc13f5b67ea0e4ef78f5d9a"]
 sources = ["https://docs.github.com/en/rest/issues/issues#list-repository-issues", "https://cli.github.com/manual/gh_api"]
 notes = "Reduced issue response schema with synthetic two-page bodies, exact markers, states and PR entries (including pull_request:null). state=all includes closed issues; the pull_request key distinguishes PRs; --slurp wraps pages."
 
@@ -54,7 +62,7 @@ tool = "GitHub REST API and GitHub Issues"
 version = "REST API 2026-03-10; documentation retrieved 2026-11-21"
 kind = "quoted_source"
 sources = ["https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue", "https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue", "https://docs.github.com/en/rest/issues/sub-issues#list-sub-issues", "https://docs.github.com/en/rest/issues/issues#update-an-issue", "https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/adding-sub-issues"]
-claim_ids = ["tool-fact-173ba0e7208604c1d3c163fe565d00e6c97970de7e7e13b0c6b6daa8d8b2524f", "tool-fact-297e2634ebaa29cab98824048a22e80a756129eb2fda4a8ed01b1c7dc7e3f2da", "tool-fact-b52299208e96e6f4ad971a58f6ca72ce969a721a0d78a441285b079905365cb5"]
+claim_ids = ["tool-fact-5e4b91c7d5a6bfbab073787d7f4c9692ee507afa77a2e04e93941843277820db", "tool-fact-0d8402d1f7e3e4748f14498c070c0d1a4f3888c1dbb5eb1e8b70bacfddf2219a", "tool-fact-173ba0e7208604c1d3c163fe565d00e6c97970de7e7e13b0c6b6daa8d8b2524f", "tool-fact-297e2634ebaa29cab98824048a22e80a756129eb2fda4a8ed01b1c7dc7e3f2da", "tool-fact-b52299208e96e6f4ad971a58f6ca72ce969a721a0d78a441285b079905365cb5"]
 notes = "Short source excerpts and attributed summaries of the add parameters, ownership requirement, hierarchy limits, and fine-grained token permissions. No live mutations."
 
 [fixtures."claude/help.txt"]

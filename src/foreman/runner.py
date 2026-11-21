@@ -152,7 +152,7 @@ def _reconcile_children(
         assert number is not None
         siblings[item.title] = number
         body = forge.load_issue(repo, number)["body"]
-        if not body.startswith(header):
+        if not body.replace("\r\n", "\n").startswith(header):
             forge.update_issue_body(repo, number, header + body)
         if number in linked:
             continue

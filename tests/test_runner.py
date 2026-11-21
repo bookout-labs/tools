@@ -804,6 +804,20 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(child["work_kind"], "bug_fix")
         self.assertIn("why/SKILL.md", self.prompts[-1])
 
+    def test_child_headers_survive_crlf_edits_without_rewriting_bodies(self):
+        self.github = FakeGitHub(["factory"])
+        result = self.walk([{"triage": "spec"}, {
+            "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
+        }])
+        for number in (101, 102):
+            self.github.bodies["Example/Engine", number] = self.github.bodies["Example/Engine", number].replace("\n", "\r\n")
+        bodies = dict(self.github.bodies)
+        with patch.object(self.github, "update_issue_body", wraps=self.github.update_issue_body) as update:
+            for _ in range(2):
+                self.assertEqual(self.walk([]), result)
+                self.assertEqual(self.github.bodies, bodies)
+            update.assert_not_called()
+
     def test_child_plan_survives_interruption_and_recovers_a_closed_created_child(self):
         self.github = FakeGitHub(["factory"])
         create = self.github.create_issue

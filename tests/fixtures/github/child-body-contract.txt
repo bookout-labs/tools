@@ -1,0 +1,43 @@
+GitHub issue body contract evidence, retrieved 2026-11-21.
+Source excerpts are distinguished from deductions and limits below.
+
+Closing references
+https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue
+The documented closing keywords are:
+"close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved".
+They apply in a PR description or commit message for a default-branch merge.
+Deduction: `Parent: https://github.com/<repo>/issues/<n>` does not contain a
+closing keyword. This header alone does not close the parent when a child's
+PR merges. Separate explicit closing references or manual PR links still can.
+
+Body strings through gh (v2.102.0)
+https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/fields.go
+Raw fields bypass magicFieldValue; the literal body string is retained.
+https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/http.go
+Non-GET map parameters are serialized with json.Marshal(pp), preserving the
+string value in the request JSON (line endings are escaped on the wire).
+https://github.com/cli/cli/blob/v2.102.0/api/queries_issue.go
+The Issue struct stores the fetched body in a Go string: `Body string`.
+https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/issue/view/view.go
+For --json, viewRun returns `opts.Exporter.Write(opts.IO, issue)` rather than
+using the Markdown renderer.
+https://github.com/cli/cli/blob/v2.102.0/pkg/cmdutil/json_flags.go
+The exporter encodes selected fields using encoding/json:
+`encoder.Encode(e.exportData(reflect.ValueOf(data)))`.
+Deduction: gh's JSON path preserves LF or CRLF in the decoded body string;
+JSON output bytes themselves contain escapes, not literal embedded newlines.
+
+Observed counterexample to assuming all fetched bodies use LF
+https://api.github.com/repos/cli/cli/issues/5680
+The read-only REST response retrieved on 2026-11-21 has CRLF throughout its
+body, including the first separator, represented by `\r\n\r\n` in JSON.
+This establishes that CRLF bodies exist; it does not establish how this issue
+was authored. The capture is summarized here without copying its prose.
+
+Scope correction for the carried LF/idempotency claim
+No live REST-write/gh-view round trip was performed. The sources above support
+gh's string transport, not a universal server-side byte-preservation guarantee
+or a claim about the origin of CRLF. The old inference that byte-exact
+startswith(header) suffices is withdrawn. Reconciliation must recognize an
+existing header with LF or CRLF and leave the original body untouched. The
+FakeGitHub rerun regression exercises that behavior, including no body update.
