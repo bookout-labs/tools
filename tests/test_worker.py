@@ -127,6 +127,8 @@ class WorkerTest(unittest.TestCase):
             [('http.curloptResolve', 'github.com:443:127.0.0.1')],
             [('remote.other.url', good + '-other')],
             [('remote.origin.url', good + '-other.git')],
+            [('remote.origin.url', good + '.git.evil')],
+            [('remote.origin.url', 'https://github.com/evil/tools.git')],
             [('remote.origin.pushurl', good + '.git')],
             [('url.http://127.0.0.1:9/.insteadOf', good)],
             [('url.http://127.0.0.1:9/.pushInsteadOf', good)],
@@ -323,6 +325,12 @@ class WorkerTest(unittest.TestCase):
             good = f'https://github.com/{REPO}'
             git('remote', 'add', 'origin', good)
             self.assertEqual(validate_remote(REPO, Path(directory)), [good, good])
+            for bad in [good + '.git.evil', 'https://github.com/evil/tools.git']:
+                with self.subTest(url=bad):
+                    git('remote', 'set-url', 'origin', bad)
+                    with self.assertRaises(CredentialFailure):
+                        validate_remote(REPO, Path(directory))
+            git('remote', 'set-url', 'origin', good)
             git('config', f'url.https://example.invalid/.pushInsteadOf', 'https://github.com/')
             with self.assertRaises(CredentialFailure):
                 validate_remote(REPO, Path(directory))
