@@ -12,9 +12,12 @@ from foreman.stage_output import (
 
 class StageRecordTests(unittest.TestCase):
     def test_validated_records_round_trip(self):
+        usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
         cases = (
             (PendingDispatch, PendingDispatchRecord, {"stage": "triage", "index": 0, "model": None, "quota_model": None}),
             (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": None, "scope": None}),
+            (AttemptUsage, AttemptUsageRecord, usage),
+            (Attempt, AttemptRecord, {"stage": "triage", "model": None, "commit": "pin", "methods": [], "outcome": "ran", "usage": usage}),
             (ConstraintResult, ConstraintResultRecord, {"constraint": "positive", "rejected": True}),
             (BrowserProof, BrowserProofRecord, {"screen": None, "trace": None, "passed": None}),
             (FormalProof, FormalProofRecord, {"ran": True, "constraints": [{"constraint": "positive", "rejected": True}], "typecheck": False}),
@@ -31,6 +34,7 @@ class StageRecordTests(unittest.TestCase):
                 self.assertEqual(set(model.model_fields), set(record.__annotations__) - {"depends_on", "blocker_numbers"})
                 value = model.model_validate(raw).record()
                 self.assertEqual(value, raw)
+                self.assertEqual(model.model_validate(value).record(), raw)
                 self.assertEqual(TypeAdapter(record).validate_python(value, strict=True), raw)
                 for key in record.__required_keys__:
                     with self.assertRaises(ValidationError):
@@ -39,6 +43,16 @@ class StageRecordTests(unittest.TestCase):
                     model.model_validate({**raw, "extra": True})
                 with self.assertRaises(ValidationError):
                     TypeAdapter(record).validate_python({**raw, "extra": True}, strict=True)
+
+    def test_attempt_usage_rejects_negative_counts(self):
+        usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
+        for key in ("input", "output", "cache_read", "cache_creation"):
+            for shape in (AttemptUsage, TypeAdapter(AttemptUsageRecord)):
+                with self.subTest(key=key, shape=shape), self.assertRaises(ValidationError):
+                    if shape is AttemptUsage:
+                        shape.model_validate({**usage, key: -1})
+                    else:
+                        shape.validate_python({**usage, key: -1}, strict=True)
 
     def test_nested_boundaries_reject_coercion(self):
         for raw in ({"ran": "true", "constraints": None, "typecheck": None},
@@ -62,8 +76,7 @@ class StageRecordTests(unittest.TestCase):
         self.assertEqual(state["slice"]["uses"], [])
 
     def test_attempt_record_keeps_usage_and_rejects_extra_fields(self):
-        from foreman.adapters import Usage
-        usage = AttemptUsage.model_validate(Usage(input_tokens=3, output_tokens=4).model_dump())
+        usage = AttemptUsage(input=3, output=4, cache_read=0, cache_creation=0, cost_usd=None)
         record = Attempt(stage="triage", model=None, commit="pin", methods=[], outcome="ran", usage=usage).record()
         self.assertEqual(record["usage"], {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None})
         for shape, value in ((AttemptRecord, record), (AttemptUsageRecord, record["usage"])):

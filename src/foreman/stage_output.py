@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from typing_extensions import NotRequired, TypedDict, override
 
-from pydantic import BaseModel, ConfigDict, JsonValue, Field, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator
 
 from pydantic.config import JsonDict
 
@@ -125,10 +125,10 @@ class RecordContract(Contract, Generic[Record]):
 
 @with_config(ConfigDict(extra="forbid"))
 class AttemptUsageRecord(TypedDict):
-    input: int
-    output: int
-    cache_read: int
-    cache_creation: int
+    input: NonNegativeInt
+    output: NonNegativeInt
+    cache_read: NonNegativeInt
+    cache_creation: NonNegativeInt
     cost_usd: float | None
 
 
@@ -148,16 +148,11 @@ class AttemptUsage(RecordContract[AttemptUsageRecord]):
     def record_adapter(cls) -> TypeAdapter[AttemptUsageRecord]:
         return TypeAdapter(AttemptUsageRecord)
 
-    input: int = Field(validation_alias="input_tokens")
-    output: int = Field(validation_alias="output_tokens")
-    cache_read: int = Field(validation_alias="cache_read_input_tokens")
-    cache_creation: int = Field(validation_alias="cache_creation_input_tokens")
-    cost_usd: float | None = Field(validation_alias="total_cost_usd")
-
-    @field_validator("cache_read", "cache_creation", mode="before")
-    @classmethod
-    def absent_cache(cls, value: object) -> object:
-        return 0 if value is None else value
+    input: NonNegativeInt
+    output: NonNegativeInt
+    cache_read: NonNegativeInt
+    cache_creation: NonNegativeInt
+    cost_usd: float | None
 
 
 class Attempt(RecordContract[AttemptRecord]):
