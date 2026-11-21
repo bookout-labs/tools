@@ -1,0 +1,6 @@
+from contextlib import AbstractContextManager
+
+from detect_secrets.plugins.base import BasePlugin
+
+def default_settings() -> AbstractContextManager[object]: ...
+def get_plugins() -> list[BasePlugin]: ...

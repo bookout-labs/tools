@@ -80,7 +80,7 @@ def parse_config(data: object) -> Config:
         role = raw.get("role")
         models = raw.get("models")
         other = raw.get("other_family_from")
-        if role not in ROLES or not isinstance(role, str):
+        if not isinstance(role, str) or role not in ROLES:
             raise ConfigError(f"{name} has an unknown role")
         if not _model_names(models):
             raise ConfigError(f"{name} models must be a list of names")

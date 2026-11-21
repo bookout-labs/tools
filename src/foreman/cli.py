@@ -3,57 +3,70 @@
 """Command line for the foreman tool."""
 
 import argparse
+from dataclasses import replace
 import os
 from pathlib import Path
 import re
 import shlex
 import sys
-from typing import assert_never
+from typing import TextIO, assert_never
 
 import yaml
 
 from foreman.accept import AcceptError, accept_event
-from foreman.delivery import DeliveryState, GRAPH_NAME, LiveRun, diagram, run_delivery
+from foreman.delivery import DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from foreman.github import ForgeError, LiveForge
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
+from foreman.redaction import redact
 from foreman.runner import run_live_delivery
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
-from foreman.workspace import LiveWorkspace
+from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
 
 
-def _print_run(result: DeliveryState) -> None:
+def _write_run_log(text: str, *, file: TextIO | None = None, end: str = "\n") -> None:
+    print(redact(text), file=file, end=end, flush=True)
+
+
+def _write_check_log(line: str) -> None:
+    _write_run_log(line, end="")
+
+
+def _print_run(result: DeliveryResult) -> None:
     models = result.get("models_used", {})
-    if "path" not in result:
-        raise KeyError("path")
-    path = result["path"]
-    for node in path:
+    if size := result.get("pr_size"):
+        print(f"pull request lines {size['lines']}")
+    for node in result["path"]:
         if node == "verify":
-            print(f"verify {result.get('check') or '(no check)'}")
+            _write_run_log(f"verify {result.get('check') or '(no check)'}")
         elif node == "done":
             if "check_exit_code" in result:
                 print(f"check exit {result['check_exit_code']}")
             for proof, label in result.get("proof_labels", {}).items():
-                print(f"{proof} proof {label}")
-            if "stop" not in result:
-                raise KeyError("stop")
-            print(f"done {result['stop']}")
-            if detail := result.get("halt_detail"):
-                print(detail)
+                _write_run_log(f"{proof} proof {label}")
+            _write_run_log(f"done {result['stop']}")
+            observed = commit_sha(result.get("merge_observed_head", ""))
+            verified = commit_sha(result.get("verified_head", ""))
+            if observed and verified:
+                print(head_mismatch_detail(observed, verified))
+            elif detail := result.get("halt_detail"):
+                _write_run_log(detail)
         elif node == "merge":
-            if "merge" not in result:
-                raise KeyError("merge")
-            match outcome := result["merge"]:
+            match outcome := result.get("merge"):
                 case "armed":
                     print("merge armed")
                 case "skipped":
-                    if "merge_command" not in result:
-                        raise KeyError("merge_command")
-                    print(f"merge skipped (dry run): {shlex.join(result['merge_command'])}")
+                    command = result.get("merge_command")
+                    if command:
+                        print(f"merge skipped (dry run): {shlex.join(command)}")
+                    else:
+                        print("merge skipped (dry run)")
                 case "not_armed":
                     print("merge not armed")
+                case None:
+                    print("merge outcome unavailable")
                 case _:
                     assert_never(outcome)
         else:
@@ -62,12 +75,11 @@ def _print_run(result: DeliveryState) -> None:
                 fields.append(model)
             if node == "review" and (risk := result.get("risk")):
                 fields.extend(("risk", risk["level"]))
-            print(" ".join(fields))
-    if result.get("stop") == "needs_human" and "done" not in path:
+            _write_run_log(" ".join(fields))
+    if result.get("stop") == "needs_human" and "done" not in result["path"]:
         print("paused needs_human")
-        if "halt_detail" not in result:
-            raise KeyError("halt_detail")
-        print(result["halt_detail"])
+        if detail := result.get("halt_detail"):
+            _write_run_log(detail)
 
 
 def main(
@@ -163,6 +175,7 @@ def main(
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
         if live_run is None:
             live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd()))
+        live_run = replace(live_run, check_log=_write_check_log)
         dispatcher = FailoverDispatcher(CliWorker(live_run.workspace.root, worker_runner)) if worker_runner else None
         try:
             result = run_live_delivery(
@@ -176,7 +189,7 @@ def main(
                 answer=args.answer,
             )
         except (ForgeError, OSError, QuotaExhausted, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
+            _write_run_log(str(exc), file=sys.stderr)
             return 1
     _print_run(result)
     return 0

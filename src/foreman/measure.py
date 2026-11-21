@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import tomllib
 
-from foreman._raw import is_dict, sorted_keys
+from foreman._raw import is_dict
 
 DEFAULT_PATH = Path(__file__).with_name("measure.toml")
 LABELS = ("approve", "block", "insufficient_evidence")
@@ -56,9 +56,14 @@ def parse_measure(data: object) -> MeasureConfig:
         if not isinstance(score, (int, float)) or isinstance(score, bool) or not 0 <= float(score) <= 1:
             raise MeasureError(f"{name} needs a score from 0 to 1")
         parsed[name] = float(score)
-    extra = set(labels) - set(LABELS)
+    names: set[str] = set()
+    for key in labels:
+        if not isinstance(key, str):
+            raise MeasureError("label names must be strings")
+        names.add(key)
+    extra = names - set(LABELS)
     if extra:
-        raise MeasureError(f"unknown label {sorted_keys(extra)[0]}")
+        raise MeasureError(f"unknown label {sorted(extra)[0]}")
     return MeasureConfig(sampling_rate=rate, passing_score=float(bar), labels=parsed)
 
 
@@ -77,9 +82,9 @@ def grade(label: str, config: MeasureConfig | None = None) -> Grade:
     return Grade(label=label, score=score, passed=passed)
 
 
-def selected(run_index: object, config: MeasureConfig | None = None) -> bool:
+def selected(run_index: int, config: MeasureConfig | None = None) -> bool:
     config = config or load_measure()
-    if not isinstance(run_index, int) or isinstance(run_index, bool) or run_index < 0:
+    if isinstance(run_index, bool) or run_index < 0:
         raise MeasureError("run index must be zero or greater")
     return run_index % config.sampling_rate == 0
 

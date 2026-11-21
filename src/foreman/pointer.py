@@ -6,7 +6,7 @@ from typing import NotRequired, TypedDict
 
 import yaml
 
-from foreman._raw import is_dict, sorted_keys
+from foreman._raw import is_dict
 
 SOURCE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REQUIRED = ("source", "ref", "graph")
@@ -29,14 +29,14 @@ def load_pointer(path: Path) -> Pointer:
     data: object = yaml.safe_load(path.read_text())
     if not is_dict(data):
         raise PointerError("pointer must be a mapping")
-    unknown = set(data) - set(REQUIRED) - set(OPTIONAL)
+    keys: set[str] = set()
+    for key in data:
+        if not isinstance(key, str):
+            raise PointerError(f"pointer keys must be strings, got {type(key).__name__}")
+        keys.add(key)
+    unknown = keys - set(REQUIRED) - set(OPTIONAL)
     if unknown:
-        names: list[str] = []
-        for index, key in enumerate(sorted_keys(unknown)):
-            if not isinstance(key, str):
-                raise TypeError(f"sequence item {index}: expected str instance, {type(key).__name__} found")
-            names.append(key)
-        raise PointerError(f"unknown pointer keys: {', '.join(names)}")
+        raise PointerError(f"unknown pointer keys: {', '.join(sorted(unknown))}")
     required: dict[str, str] = {}
     for key in REQUIRED:
         value = data.get(key)
