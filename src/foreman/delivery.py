@@ -23,7 +23,7 @@ from pydantic import JsonValue, TypeAdapter, ValidationError, PlainValidator
 from typing_extensions import TypedDict
 
 from foreman.adapters import Outcome
-from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, family, load_config, order_for
+from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, contributors_for, family, load_config, order_for
 from foreman.dry_run import ScriptHandler
 from foreman.dispatch import Handler, InvalidOutput, QuotaExhausted, clean_outcome
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
@@ -376,7 +376,8 @@ def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, 
     body = [f"Graph verdict: {output.review}. Review event: COMMENT (Foreman authors this PR).", output.detail]
     provenance = output.history.rounds[-1].provenance if output.history.rounds else None
     if provenance is not None:
-        body.append("Graph review selection: " + provenance.model_dump_json())
+        reason = provenance.reason.replace("_", " ") if provenance.reason else "not needed"
+        body.append(f"Reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; same-family fallback: {reason}.")
     comments: list[ReviewComment] = []
     for finding in output.findings:
         message = f"[{finding.severity}] {finding.summary}"
@@ -604,9 +605,7 @@ def compile_delivery(
                     head = state.get("verified_head") or state.get("head_sha") or ""
                     accepted = accept(past, output, head, _check_tool_facts(output, run, state))
                 if accepted is not None and accepted_model is not None:
-                    assert "models_used" in state
-                    contributors = list(dict.fromkeys(state.get("implement_models") or [state["models_used"]["implement"]]))
-                    families = {family(contributor) for contributor in contributors}
+                    contributors, families = contributors_for(name, config, state.get("models_used", {}), state.get("implement_models"))
                     same_family = accepted_model.family in families
                     other_configured = any(ModelSpec.parse(candidate).family not in families for candidate in models)
                     provenance = ReviewSelection(

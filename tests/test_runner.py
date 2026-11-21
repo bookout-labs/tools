@@ -741,7 +741,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         changes = {**APPROVE, "findings": findings, "detail": "Check the bounds."}
         self.walk([{"triage": "implement"}, built, changes, built, {**APPROVE, "resolutions": [{"id": f["id"], "status": "resolved"} for f in findings]}])
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
-        selection = '\n\nGraph review selection: {"reviewer":"claude-opus-5-5-high","contributors":["gpt-6.1-sol-high"],"same_family":false,"reason":null}'
+        selection = '\n\nReviewer claude-opus-5-5-high; implemented by gpt-6.1-sol-high; same-family fallback: not needed.'
         self.assertEqual(self.github.reviews, [(
             "Example/Engine", 12, HEAD,
             "Graph verdict: changes. Review event: COMMENT (Foreman authors this PR).\n\nCheck the bounds." + selection + "\n\nitems.txt:1 [blocking] Untouched context.\n\ndeleted.txt:1 [blocking] Deleted file.",

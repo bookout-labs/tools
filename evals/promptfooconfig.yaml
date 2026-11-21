@@ -64,4 +64,4 @@ tests:
       case: review-fallback
     assert:
       - type: equals
-        value: verified claude-opus-5-5-high,gpt-6.1-sol-high rounds=1
+        value: verified claude-opus-5-5-high,gpt-6.1-sol-high rounds=1 same_family=True reason=preceding_candidates_unavailable

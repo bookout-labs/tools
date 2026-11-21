@@ -126,19 +126,21 @@ def load_config(path: Path | None = None) -> Config:
         return parse_config(tomllib.load(handle))
 
 
-def order_for(
+def contributors_for(
     node: str, config: Config, models_used: dict[str, str], implement_models: list[str] | None = None,
-) -> list[ModelSpec]:
-    spec = config.nodes[node]
-    models = list(spec.models)
-    source = "implement" if node == "review" else spec.other_family_from
+) -> tuple[list[str], set[str]]:
+    source = "implement" if node == "review" else config.nodes[node].other_family_from
     if not source:
-        return models
+        return [], set()
     latest = models_used.get(source)
     used = (implement_models if node == "review" else None) or ([latest] if latest else [])
     if not used:
         raise ModelDependencyMissing(f"{node} needs the {source} model")
-    contributing = {family(model) for model in used}
-    return [model for model in models if model.family not in contributing] + [
-        model for model in models if model.family in contributing
-    ]
+    return list(dict.fromkeys(used)), {family(model) for model in used}
+
+
+def order_for(
+    node: str, config: Config, models_used: dict[str, str], implement_models: list[str] | None = None,
+) -> list[ModelSpec]:
+    _, contributing = contributors_for(node, config, models_used, implement_models)
+    return sorted(config.nodes[node].models, key=lambda model: model.family in contributing)

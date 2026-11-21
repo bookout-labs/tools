@@ -52,7 +52,6 @@ class ConfigTest(unittest.TestCase):
                                   (["claude-model"], names[::2] + names[1::2]),
                                   (["gpt-model", "claude-model"], names)):
             self.assertEqual([m.name for m in order_for("review", config, {}, authors)], expected)
-        # A future checker uses its actual author's model, not implementation history.
         selected = order_for("spec_check", config, {"spec": "claude-model", "implement": "gpt-model"}, ["gpt-model"])
         self.assertEqual([m.name for m in selected], names[::2] + names[1::2])
 

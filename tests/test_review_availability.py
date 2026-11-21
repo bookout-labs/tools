@@ -184,7 +184,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                     self.assertEqual(provenance["reviewer"], models[-1])
                     self.assertTrue(provenance["same_family"])
                     self.assertEqual(provenance["reason"], "preceding_candidates_unavailable")
-                    self.assertIn(json.dumps(provenance, separators=(",", ":")), result["posted"][-1]["body"])
+                    self.assertIn(f"Reviewer {provenance['reviewer']}; implemented by {', '.join(provenance['contributors'])}; same-family fallback: preceding candidates unavailable.", result["posted"][-1]["body"])
                 if code:
                     self.assertEqual(result["result"]["halt"], "invalid_output")
                     self.assertIn(f"review {models[-1]}:", result["result"]["halt_detail"])
@@ -205,7 +205,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 provenance = result["result"]["review_findings"][-1]["provenance"]
                 self.assertTrue(provenance["same_family"])
                 self.assertEqual(provenance["reason"], "no_other_family_configured")
-                self.assertIn(json.dumps(provenance, separators=(",", ":")), result["posted"][-1]["body"])
+                self.assertIn(f"Reviewer {provenance['reviewer']}; implemented by {', '.join(provenance['contributors'])}; same-family fallback: no other family configured.", result["posted"][-1]["body"])
 
     def test_budget_and_indeterminate_usage_stop_before_same_family_call(self):
         for outcome, halt in (("quota_budget", "budget_exceeded"), ("unknown", "usage_unknown")):
@@ -226,7 +226,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
             self.assertFalse(second["provenance"]["same_family"])
             self.assertIsNone(second["provenance"]["reason"])
             self.assertEqual(second["provenance"]["contributors"], ["gpt-6.1-sol-high"])
-            self.assertIn(json.dumps(second["provenance"], separators=(",", ":")), result["posted"][-1]["body"])
+            self.assertIn("Reviewer claude-opus-5-5-high; implemented by gpt-6.1-sol-high; same-family fallback: not needed.", result["posted"][-1]["body"])
 
     def test_post_retry_keeps_provenance_and_marker_without_another_call(self):
         with TemporaryDirectory(dir=self.root) as directory:
