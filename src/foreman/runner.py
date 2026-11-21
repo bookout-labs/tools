@@ -130,7 +130,9 @@ def run_live_delivery(
             raise ValueError(f"Run this issue from {saved_workspace}.")
         if saved_values is not None and (pending := saved_values.get("pending_dispatch")):
             assert "dispatch_plan" in saved_values
-            stage, model = pending["stage"], pending["model"]
+            stage = pending["stage"]
+            models = saved_values["dispatch_plan"]["models"]
+            model = models[pending["index"]] if models else None
             graph.update_state(config, {**halted("usage_unknown", unknown_usage(stage, model), stage),
                                        "attempts": [Attempt(stage=stage, model=model, commit=pin.commit,
                                                             methods=saved_values["dispatch_plan"]["methods"], outcome="interrupted", usage=None).record()],

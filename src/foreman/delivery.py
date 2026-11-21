@@ -494,9 +494,9 @@ def compile_delivery(
                 instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
             return {"dispatch_plan": DispatchPlan(
                 models=[model.name for model in models], instruction=instruction, methods=methods,
-                target=review_context[1].model_dump() if review_context else None,
-                scope=TypeAdapter(ReviewScope).dump_json(review_context[2]).decode() if review_context else None,
-            ).record(), "pending_dispatch": PendingDispatch(stage=name, index=0, model=models[0].name if models else None, quota_model=None).record()}
+                target=review_context[1] if review_context else None,
+                scope=review_context[2].record() if review_context else None,
+            ).record(), "pending_dispatch": PendingDispatch(stage=name, index=0, quota_model=None).record()}
         return node
 
     def call(name: str) -> DeliveryNode:
@@ -506,7 +506,7 @@ def compile_delivery(
             pending, plan = state["pending_dispatch"], state["dispatch_plan"]
             assert pending is not None
             models, methods = plan["models"], plan["methods"]
-            scope = TypeAdapter(ReviewScope).validate_json(plan["scope"], strict=True) if plan["scope"] is not None else None
+            scope = TypeAdapter(ReviewScope).validate_python(plan["scope"]) if plan["scope"] is not None else None
             attempts: list[AttemptRecord] = []
             def record_attempt(model: str | None, outcome: Outcome) -> None:
                 attempts.append(Attempt(
@@ -524,13 +524,13 @@ def compile_delivery(
                 for key in ("review_findings", "settled_rulings", *(("findings", "detail", "implementation") if history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])}).rounds else ())):
                     worker_state.pop(key, None)
             outcome, model = dispatcher.run(
-                name, ModelSpec.parse(pending["model"]) if pending["model"] else None, worker_state, plan["instruction"], on_attempt=record_attempt,
+                name, ModelSpec.parse(models[pending["index"]]) if models else None, worker_state, plan["instruction"], on_attempt=record_attempt,
             )
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
             index = pending["index"] + 1
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):
                 return {"attempts": attempts, "pending_dispatch": PendingDispatch(
-                    stage=name, index=index, model=models[index],
+                    stage=name, index=index,
                     quota_model=model if outcome.kind == "quota" else pending["quota_model"],
                 ).record()}
             if outcome.kind == "cli_missing" and pending["quota_model"]:
@@ -622,7 +622,7 @@ def compile_delivery(
             except QuotaExhausted as exc:
                 return {**halted("implement_quota", f"Implement quota exhausted for {exc.model}; rerun to continue partial edits.", "implement"),
                         "partial_edits": run.workspace.fingerprint(), "pending_dispatch": None,
-                        "attempts": [Attempt(stage="implement", model=state["pending_dispatch"]["model"],
+                        "attempts": [Attempt(stage="implement", model=exc.model,
                                              commit=config.pstack.commit, methods=state["dispatch_plan"]["methods"],
                                              outcome="quota", usage=None).record()]}
             if update.get("pending_dispatch"):

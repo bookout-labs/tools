@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, Po
 from pydantic.config import JsonDict
 
 from foreman.adapters import OutcomeKind
+from foreman.github import PullRequest, PullRequestRecord
+from foreman.workspace import ReviewScopeRecord
 from foreman.dispatch import InvalidOutput
 
 PULL_REQUEST_LINES = 400
@@ -172,8 +174,7 @@ class Attempt(RecordContract[AttemptRecord]):
 @with_config(ConfigDict(extra="forbid"))
 class PendingDispatchRecord(TypedDict):
     stage: str
-    index: int
-    model: str | None
+    index: NonNegativeInt
     quota_model: str | None
 
 
@@ -184,8 +185,7 @@ class PendingDispatch(RecordContract[PendingDispatchRecord]):
         return TypeAdapter(PendingDispatchRecord)
 
     stage: str
-    index: int
-    model: str | None
+    index: NonNegativeInt
     quota_model: str | None
 
 
@@ -194,8 +194,8 @@ class DispatchPlanRecord(TypedDict):
     models: list[str]
     instruction: str
     methods: list[str]
-    target: dict[str, object] | None
-    scope: str | None
+    target: PullRequestRecord | None
+    scope: ReviewScopeRecord | None
 
 
 class DispatchPlan(RecordContract[DispatchPlanRecord]):
@@ -207,8 +207,8 @@ class DispatchPlan(RecordContract[DispatchPlanRecord]):
     models: list[str]
     instruction: str
     methods: list[str]
-    target: dict[str, object] | None
-    scope: str | None
+    target: PullRequest | None
+    scope: ReviewScopeRecord | None
 
 
 class SliceProperty(RecordContract[SlicePropertyRecord]):

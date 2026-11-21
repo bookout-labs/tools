@@ -14,8 +14,8 @@ class StageRecordTests(unittest.TestCase):
     def test_validated_records_round_trip(self):
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
         cases = (
-            (PendingDispatch, PendingDispatchRecord, {"stage": "triage", "index": 0, "model": None, "quota_model": None}),
-            (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": None, "scope": None}),
+            (PendingDispatch, PendingDispatchRecord, {"stage": "triage", "index": 0, "quota_model": None}),
+            (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)], "eligible": []}}),
             (AttemptUsage, AttemptUsageRecord, usage),
             (Attempt, AttemptRecord, {"stage": "triage", "model": None, "commit": "pin", "methods": [], "outcome": "ran", "usage": usage}),
             (ConstraintResult, ConstraintResultRecord, {"constraint": "positive", "rejected": True}),
@@ -43,6 +43,13 @@ class StageRecordTests(unittest.TestCase):
                     model.model_validate({**raw, "extra": True})
                 with self.assertRaises(ValidationError):
                     TypeAdapter(record).validate_python({**raw, "extra": True}, strict=True)
+        raw = {"models": [], "instruction": "review", "methods": [], "target": None, "scope": None}
+        for field, invalid in (("target", {}), ("scope", "{}"), ("scope", {"command": "diff", "inline": ["bad"], "eligible": None})):
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                DispatchPlan.model_validate({**raw, field: invalid})
+        for extra in ({"index": -1}, {"model": "worker"}):
+            with self.subTest(extra=extra), self.assertRaises(ValidationError):
+                PendingDispatch.model_validate({"stage": "review", "index": 0, "quota_model": None, **extra})
 
     def test_attempt_usage_rejects_negative_counts(self):
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
