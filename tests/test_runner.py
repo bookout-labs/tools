@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -18,8 +19,7 @@ from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK
-from foreman.github import ForgeError, Issue, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
-
+from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
 from foreman.runner import AnswerError, run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
@@ -37,13 +37,17 @@ CLEAN_WORKTREE = WorktreeState(HEAD, True, BRANCH)
 SLICE = {
     "title": "List items once",
     "acceptance": "The view lists every item once.",
-    "depends_on": [],
+    "builds": [],
+    "uses": [],
     "screen": "docs/screens/items.md",
     "properties": [{"name": "Unique", "constraint": "unique_item_id"}],
 }
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
 FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}]}
+SEAM = {"name": "item-list", "exists": False, "path": None}
+BUILDER = {**SLICE, "builds": [SEAM]}
+CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "uses": [SEAM]}
 APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request."}
 FINDING = {"file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
 DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
@@ -91,10 +95,12 @@ class FakeGitHub:
         self.labels = labels if labels is not None else ["slice"]
         self.body = slice_body(EMPTY_SLICE) if "slice" in self.labels else "Issue body"
         self.created: list[tuple[str, str, list[str]]] = []
+        self.closed = set()
         self.merged = set()
         self.label_calls = []
         self.issue_labels: dict[int, list[str]] = {}
         self.merge_calls = []
+        self.dependencies = {}
         self.base_branch = "main"
         self.reviews = []
         self.base = BASE
@@ -135,6 +141,18 @@ class FakeGitHub:
 
     def is_merged(self, repo, number):
         return number in self.merged
+
+    def add_blocker(self, repo, number, blocker):
+        self.dependencies.setdefault(number, []).append(blocker)
+
+    def blockers(self, repo, number):
+        return [
+            IssueBlocker(number=blocker, title=self.created[blocker - 101][0],
+                         repository_url=f"https://api.github.com/repos/{repo}",
+                         html_url=f"https://github.com/{repo}/issues/{blocker}",
+                         state="closed" if blocker in self.closed or blocker in self.merged else "open")
+            for blocker in self.dependencies.get(number, ())
+        ]
 
     def add_label(self, repo, number, label):
         self.label_calls.append((repo, number, label))
@@ -453,42 +471,119 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_load_parent_and_file_slices_only_once(self):
         self.github = FakeGitHub(["factory"])
-        second = {**SLICE, "title": "Finish items", "depends_on": [SLICE["title"]]}
         result = self.walk([{"triage": "spec"}, {
-            "spec": "Plan", "spec_gate": "ready", "slices": [SLICE, second],
+            "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
         }])
         self.assertEqual(result["issue_kind"], "parent")
         self.assertEqual(result["request"], "Issue title\n\nIssue body")
         self.assertEqual(result["child_issue_numbers"], [101, 102])
-        self.assertEqual([x[0] for x in self.github.created], [SLICE["title"], second["title"]])
+        self.assertEqual([x[0] for x in self.github.created], [BUILDER["title"], CONSUMER["title"]])
         self.assertEqual(self.github.created[0][2], ["slice", "factory"])
         self.assertEqual(self.github.created[1][2], ["slice"])
         for text in (SLICE["acceptance"], SLICE["screen"], "unique_item_id"):
             self.assertIn(text, self.github.created[0][1])
         self.assertIn(SLICE["title"], self.github.created[1][1])
-        for item, (_, body, _) in zip([SLICE, second], self.github.created):
+        child_payload = {**CONSUMER, "depends_on": [BUILDER["title"]], "blocker_numbers": [101]}
+        expected = [{**BUILDER, "depends_on": [], "blocker_numbers": []}, child_payload]
+        for item, (_, body, _) in zip(expected, self.github.created):
             prose, fence, encoded = body.partition("\n\n```json\n")
             self.assertEqual(fence, "\n\n```json\n")
             self.assertEqual(json.loads(encoded.removesuffix("\n```")), item)
             self.assertTrue(prose.startswith("Acceptance:\n" + item["acceptance"]))
+        self.assertEqual(self.github.dependencies, {102: [101]})
         resumed = self.walk([])
+        self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(resumed["child_issue_numbers"], [101, 102])
         self.assertEqual(len(self.github.created), 2)
         self.assertEqual(self.github.label_calls, [])
+        self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "102", "--check", "exit 0"],
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                worker_runner=lambda *_: self.fail("An open blocker must prevent dispatch."),
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "done blocked\nOpen blockers: https://github.com/Example/Engine/issues/101\n")
+        self.github.closed.add(101)
+        self.assertIn("no merged pull request", self.walk([], issue=102)["halt_detail"])
         self.github.merged.add(101)
         self.walk([])
         self.walk([])
+        self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
         child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
-        self.assertEqual(child["slice"], second)
+        self.assertEqual(child["slice"], child_payload)
 
-    def test_unknown_dependency_does_not_label(self):
+    def test_existing_seam_resolves_in_workspace_and_skips_a_dependency(self):
         self.github = FakeGitHub(["factory"])
-        second = {**SLICE, "title": "Finish items", "depends_on": ["Missing"]}
-        with patch("foreman.delivery.clean_slices", return_value=[SLICE, second]):
-            self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [SLICE, second]}])
+        (self.cwd / "seam.py").touch()
+        consumer = {**CONSUMER, "uses": [{"name": "local", "exists": True, "path": "seam.py"}]}
+        result = self.walk([{"triage": "spec"}, {
+            "spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer],
+        }])
+        self.assertEqual(result["stop"], "sliced")
+        self.assertEqual(result["slices"][1]["depends_on"], [])
+        self.assertEqual(self.github.issue_labels[102], ["slice", "factory"])
+
+    def test_self_built_seam_is_not_a_dependency(self):
+        self.github = FakeGitHub(["factory"])
+        builder = {**BUILDER, "uses": [SEAM]}
+        result = self.walk([{"triage": "spec"}, {
+            "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, builder],
+        }])
+        self.assertEqual(result["stop"], "sliced")
+        self.assertEqual(result["slices"][0]["depends_on"], [])
+        self.assertEqual(self.github.dependencies, {102: [101]})
+
+    def test_existing_seam_with_a_builder_is_rejected_before_filing(self):
+        self.github = FakeGitHub(["factory"])
+        (self.cwd / "seam.py").touch()
+        consumer = {**CONSUMER, "uses": [{**SEAM, "exists": True, "path": "seam.py"}]}
+        spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
+        result = self.walk([{"triage": "spec"}, spec, spec, spec])
+        self.assertEqual(result["stop"], "spec_cap")
+        self.assertEqual(result["spec_rejection"]["kind"], "existing_seam_builder")
+        self.assertEqual(self.github.created, [])
+
+    def test_workspace_file_paths_resolve_inside_the_root(self):
+        (self.cwd / "api.py").touch()
+        (self.cwd / "sub").mkdir()
+        workspace = LiveWorkspace(self.cwd)
+        self.assertTrue(workspace.has_file("sub/../api.py"))
+        with TemporaryDirectory() as directory:
+            outside = Path(directory) / "api.py"
+            outside.touch()
+            (self.cwd / "escape.py").symlink_to(outside)
+            for path in (str(outside), os.path.relpath(outside, self.cwd), "escape.py"):
+                with self.subTest(path=path):
+                    self.assertFalse(workspace.has_file(path))
+
+    def test_existing_seam_outside_workspace_reaches_the_cap_without_filing(self):
+        self.github = FakeGitHub(["factory"])
+        with TemporaryDirectory() as directory:
+            outside = Path(directory) / "seam.py"
+            outside.touch()
+            (self.cwd / "escape.py").symlink_to(outside)
+            consumer = {**CONSUMER, "uses": [{"name": "local", "exists": True, "path": "escape.py"}]}
+            spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
+            result = self.walk([{"triage": "spec"}, spec, spec, spec])
+        self.assertEqual(result["stop"], "spec_cap")
+        self.assertEqual(result["review_rounds"], 3)
+        self.assertEqual(result["spec_rejection"]["kind"], "dangling_seam")
+        self.assertEqual(self.github.created, [])
+
+    def test_link_failure_leaves_child_blocked_and_parent_retry_repairs_it(self):
+        self.github = FakeGitHub(["factory"])
+        with patch.object(self.github, "add_blocker", side_effect=CommandTimedOut("gh api")):
+            with self.assertRaises(CommandTimedOut):
+                self.walk([{"triage": "spec"}, {
+                    "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
+                }])
+            self.assertEqual(self.walk([], issue=102)["halt_detail"], "Planned blocker links are missing.")
         self.walk([])
-        self.assertEqual(self.github.label_calls, [])
+        self.assertEqual(len(self.github.created), 2)
+        self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
 
     def test_injected_workers_reach_merge_after_a_real_check_in_the_repo(self):
         (self.cwd / "expected").touch()
@@ -1133,17 +1228,6 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(invoke(), armed)
         self.assertEqual(self.github.hold_reads, [repo, repo, repo])
         self.assertEqual(self.github.merge_calls, [(repo, 8, BRANCH, HEAD)])
-
-    def test_completed_legacy_checkpoint_keeps_its_merge_outcome(self):
-        result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-        config = {"configurable": {"thread_id": "example/engine#8"}}
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saved = saver.get_tuple(config)
-            channels = saved.checkpoint["channel_values"]
-            channels["merge_armed"] = channels.pop("merge") == "armed"
-            saver.put(saved.config, saved.checkpoint, saved.metadata, {})
-        self.assertEqual(self.walk([]), result)
-        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
 
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
         script = """

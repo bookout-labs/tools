@@ -47,6 +47,7 @@ graph TD;
 	triage -.-> needs_human;
 	triage -.-> research;
 	triage -.-> spec;
+	spec -.-> spec;
 	verify -.-> done;
 	verify -.-> implement;
 	verify -.-> proof;
@@ -74,7 +75,7 @@ Restore the environment and rerun the same command to resume from the saved chec
 
 When the check passes, the graph evaluates the browser and formal evidence required by the slice. Missing evidence stops the run. A failed proof consumes a round and sends the slice back to implement while rounds remain.
 
-The cap is three failures across verify, proof, and review. It is config. A node cannot raise it.
+The cap is three failures across slice planning, verify, proof, and review. It is config. A node cannot raise it.
 
 After approval, Foreman looks up the pull request for the checked-out branch and arms it with `gh pr merge <pull-request> --repo <repo> --squash --auto --match-head-commit <sha>`. The worktree and pull request must still be at the verified SHA, the worktree must be clean, and the open pull request must target `main` from a branch starting with the issue number and a hyphen.
 
@@ -88,7 +89,9 @@ Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the
 
 A parent or slice goes straight to implement when the behavior is decided and the change fits in one pull request. A parent on this route is its own slice. It carries the same proof obligations as any slice and files no child issues. Changes that need more than one pull request or leave a product choice open go to spec. An informational request goes to spec on a parent and to research on a slice. An open product choice pauses a live run for a person's answer.
 
-A ready parent spec records its slices and stops as `sliced`. Each child issue includes a fenced JSON object with its title, acceptance, dependency titles, screen path or empty string, and any named PostgreSQL constraints. Live runs load that object as the slice for the run. A `slice`-labelled issue with a missing or invalid object stops at `missing_slice`.
+A ready parent spec lists the seams each slice builds and uses. Foreman checks existing seam paths in the workspace and orders the slices so builders come first. A cycle, dangling seam, duplicate builder, or seam marked existing that a slice also builds sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children. Single-slice parents skip ordering.
+
+Foreman records the ordered plan and stops the parent as `sliced`. Each child issue carries a fenced JSON record of its slice and native GitHub blocked-by links for its dependencies. A live slice run stops as `missing_slice` if the record is missing or invalid. It reports `blocked` before triage while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request. Run the same slice again after its blockers clear. Rerunning the parent restores missing links and adds the `factory` label when a dependent slice is ready.
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 
