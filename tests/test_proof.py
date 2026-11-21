@@ -29,7 +29,6 @@ class ProofTest(unittest.TestCase):
         self.assertFalse(formal_required({"properties": []}))
 
 
-
 class ProofLabelTest(unittest.TestCase):
     def test_browser_evidence_boundary(self):
         screen = "docs/screens/deals.md"
@@ -76,6 +75,7 @@ class ProofLabelTest(unittest.TestCase):
 
         two_properties = {"properties": [*slice["properties"], {"name": "Owner is required", "constraint": "owner_required"}]}
         self.assertEqual(formal_proof_label(two_properties, rejected_amount), "insufficient_evidence")
+
 
 if __name__ == "__main__":
     unittest.main()
