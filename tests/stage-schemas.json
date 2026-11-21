@@ -636,6 +636,32 @@
         "title": "FindingResolution",
         "type": "object"
       },
+      "GraphCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "head": {
+            "pattern": "\\S",
+            "title": "Head",
+            "type": "string"
+          },
+          "command": {
+            "pattern": "\\S",
+            "title": "Command",
+            "type": "string"
+          },
+          "exit_code": {
+            "title": "Exit Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "head",
+          "command",
+          "exit_code"
+        ],
+        "title": "GraphCheck",
+        "type": "object"
+      },
       "MergeRisk": {
         "additionalProperties": false,
         "properties": {
@@ -694,6 +720,18 @@
             "title": "Claim",
             "type": "string"
           },
+          "graph_check": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GraphCheck"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Only for an exact graph check restatement. Copy its claim verbatim and its structured evidence; otherwise null."
+          },
           "fixture": {
             "anyOf": [
               {
@@ -704,12 +742,13 @@
                 "type": "null"
               }
             ],
-            "description": "Give the exact entry ID in tests/fixtures/manifest.toml. Use null when the claim has no recorded evidence.",
+            "description": "Give the exact entry ID in the run state fact_record. Use null when the claim has no recorded evidence.",
             "title": "Fixture"
           }
         },
         "required": [
           "claim",
+          "graph_check",
           "fixture"
         ],
         "title": "ToolFact",

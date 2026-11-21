@@ -22,7 +22,8 @@ class StageRecordTests(unittest.TestCase):
             (MergeRisk, MergeRiskRecord, dict.fromkeys(("alignment", "impact", "verification", "rollback", "error_detection"), "Evidence") | {"level": "low"}),
             (Seam, SeamRecord, {"name": "db", "exists": True, "path": "db.py"}),
             (SliceProperty, SlicePropertyRecord, {"name": "Positive", "constraint": "positive"}),
-            (ToolFact, ToolFactRecord, {"claim": "Tool accepts JSON.", "fixture": None}),
+            (ToolFact, ToolFactRecord, {"claim": "Tool accepts JSON.", "fixture": None, "graph_check": None}),
+            (ToolFact, ToolFactRecord, {"claim": "Checked.", "fixture": None, "graph_check": {"head": "a" * 40, "command": "exit 0", "exit_code": 0}}),
             (Slice, SliceRecord, {"title": "Ship", "stateful": False, "acceptance": "Pass", "builds": [], "uses": [], "screen": "", "properties": []}),
         )
         for model, record, raw in cases:
