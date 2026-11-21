@@ -2,6 +2,8 @@ import contextlib
 from decimal import Decimal
 import io
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -58,6 +60,77 @@ class DollarAdmissionTests(unittest.TestCase):
 
 
 class DollarAllowanceTests(unittest.TestCase):
+    def test_fresh_process_cli_resume_preserves_allowance_before_dispatch(self):
+        script = r'''
+from dataclasses import replace
+from pathlib import Path
+import sys
+from unittest.mock import patch
+from foreman.cli import main
+from foreman.config import PstackPin, load_config
+from foreman.delivery import LiveRun
+from test_runner import FakeGitHub, FakeWorkspace, fixture_process, worker_reply
+
+checkpoint, raw_pin, phase = sys.argv[1:4]
+def worker(args, cwd, env):
+    with Path("workers.log").open("a") as log:
+        log.write(args[0] + "\n")
+    if phase == "needs_human":
+        return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
+    return fixture_process(args, "quota", 1)
+
+pin = PstackPin.model_validate_json(raw_pin)
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
+    sys.exit(main(sys.argv[4:], worker_runner=worker, checkpoint=Path(checkpoint),
+                  live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd()))))
+'''
+        bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
+                     f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
+        for pause in ("needs_human", "quota_exhausted"):
+            for stored in ("1.5", None):
+                with self.subTest(pause=pause, stored=stored), skill_fixture() as (config, _), TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    checkpoint = root / "allowance.sqlite"
+                    log = root / "workers.log"
+
+                    def invoke(phase, *flags, expected):
+                        process = subprocess.run(
+                            [sys.executable, "-c", bootstrap + script, str(checkpoint), config.pstack.model_dump_json(),
+                             phase, "run", "delivery", "--repo", "a/b", "--issue", "8", "--check", "exit 0", *flags],
+                            cwd=root, text=True, capture_output=True, timeout=30,
+                        )
+                        self.assertEqual(process.returncode, expected, process.stdout + process.stderr)
+                        return process
+
+                    def saved():
+                        with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                            return saver.get(THREAD)["channel_values"]
+
+                    initial_flags = ("--max-budget-usd", "1.50") if stored else ()
+                    first = invoke(pause, *initial_flags, expected=3 if pause == "needs_human" else 75)
+                    self.assertIn("paused " + pause, first.stdout)
+                    self.assertEqual(saved()["max_budget_usd"], stored)
+                    before = log.read_text()
+                    snapshot = saved()
+                    answer = ("--answer", "Only open items.") if pause == "needs_human" else ()
+                    rejected = invoke("quota", *answer, "--max-budget-usd", "2", expected=1)
+                    self.assertIn("--max-budget-usd differs from the stored dollar allowance", rejected.stderr)
+                    self.assertEqual(log.read_text(), before)
+                    self.assertEqual(saved(), snapshot)
+                    for flags in ((), ("--max-budget-usd", "1.500")) if stored else ((),):
+                        resumed = invoke("quota", *answer, *flags, expected=75)
+                        answer = ()
+                        self.assertIn("restored ", resumed.stdout)
+                        self.assertIn("paused quota_exhausted", resumed.stdout)
+                        self.assertGreater(len(log.read_text()), len(before))
+                        before = log.read_text()
+                        self.assertEqual(saved()["max_budget_usd"], stored)
+                        if stored:
+                            self.assertIn("claude spend", resumed.stdout)
+                            self.assertIn("of $1.5", resumed.stdout)
+                        else:
+                            self.assertNotIn("claude spend", resumed.stdout)
+
     def test_cli_accepts_only_finite_positive_amounts(self):
         for raw in ("0", "-1", "abc", "NaN", "Infinity", "-Infinity"):
             with self.subTest(raw=raw), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
