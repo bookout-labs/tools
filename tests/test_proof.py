@@ -54,7 +54,17 @@ class ProofLabelTest(unittest.TestCase):
             self.assertEqual(formal_proof_label(slice, artifact), "insufficient_evidence")
         self.assertEqual(formal_proof_label(slice, {"typecheck": "passed"}), "block")
         self.assertEqual(formal_proof_label(slice, {"constraints": [{"constraint": "positive_amount", "rejected": False}]}), "block")
-        self.assertIsNone(formal_proof_label(slice, {"constraints": [{"constraint": "positive_amount", "rejected": True}]}))
+        rejected_amount = {"constraints": [{"constraint": "positive_amount", "rejected": True}]}
+        self.assertIsNone(formal_proof_label(slice, rejected_amount))
+
+        two_properties = {"properties": [*slice["properties"], {"name": "Owner is required", "constraint": "owner_required"}]}
+        self.assertEqual(formal_proof_label(two_properties, rejected_amount), "insufficient_evidence")
+        wrong_constraint = {"constraints": [{"constraint": "owner_required", "rejected": True}]}
+        self.assertEqual(formal_proof_label(slice, wrong_constraint), "insufficient_evidence")
+        for rejected in ("true", 1):
+            with self.subTest(rejected=rejected):
+                artifact = {"constraints": [{"constraint": "positive_amount", "rejected": rejected}]}
+                self.assertEqual(formal_proof_label(slice, artifact), "insufficient_evidence")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,4 @@ Read the request and set `triage` to one of these values.
 - question, when the request asks for information and not a change
 - needs_human, when you cannot tell which of those it is
 
-When `triage` is `needs_human`, put the question for the person in `human_question`.
-
 The model list is config outside this node. Do not edit it.

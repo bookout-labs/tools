@@ -32,7 +32,7 @@ class SliceProperty(Contract):
 
 
 class Slice(Contract):
-    """One pull request's outcome and its proof obligations."""
+    """One pull request's outcome, about 400 changed lines or fewer, and its proof obligations."""
 
     title: TrimmedText = Field(description="Name the outcome.")
     acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
@@ -59,7 +59,10 @@ class Slice(Contract):
 
 
 class HumanQuestionOutput(Contract):
-    human_question: str | None = None  # CLIs without schema enforcement may omit this.
+    human_question: str | None = Field(
+        default=None,
+        description="When this stage returns needs_human, put the question for the person here. Use null otherwise.",
+    )
 
 
 class TriageOutput(HumanQuestionOutput):
@@ -79,7 +82,7 @@ class SpecOutput(HumanQuestionOutput):
     spec_gate: Literal["ready", "needs_human"]
     slices: list[Slice] | None = Field(
         default=None,
-        description="For a ready parent spec, return one entry per pull request, each about 400 changed lines or fewer. Use null otherwise.",
+        description="For a ready parent spec, return one entry per pull request. Use null otherwise.",
     )
 
 
