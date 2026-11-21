@@ -8,10 +8,13 @@ from dataclasses import dataclass
 
 from typing_extensions import NotRequired, TypedDict, override
 
-from pydantic import BaseModel, ConfigDict, JsonValue, Field, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator
 
 from pydantic.config import JsonDict
 
+from foreman.adapters import OutcomeKind
+from foreman.github import PullRequest, PullRequestRecord
+from foreman.workspace import ReviewScopeRecord
 from foreman.dispatch import InvalidOutput
 
 PULL_REQUEST_LINES = 400
@@ -20,6 +23,8 @@ Text = Annotated[str, StringConstraints(pattern=r"\S")]
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Output = TypeVar("Output", bound=BaseModel)
 WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
+Severity = Literal["blocking", "nit"]
+ResolutionStatus = Literal["resolved", "unresolved"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -100,7 +105,7 @@ class FindingRecord(TypedDict):
     ruling_id: str | None
     file: str
     line: int
-    severity: Literal["blocking", "nit"]
+    severity: Severity
     summary: str
 
 
@@ -120,6 +125,92 @@ class RecordContract(Contract, Generic[Record]):
     def record(self) -> Record:
         excluded = {key for key in ("depends_on", "blocker_numbers") if key not in self.model_fields_set}
         return self.record_adapter().validate_python(self.model_dump(exclude=excluded), strict=True)
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AttemptUsageRecord(TypedDict):
+    input: NonNegativeInt
+    output: NonNegativeInt
+    cache_read: NonNegativeInt
+    cache_creation: NonNegativeInt
+    cost_usd: float | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AttemptRecord(TypedDict):
+    stage: str
+    model: str | None
+    commit: str
+    methods: list[str]
+    outcome: OutcomeKind | Literal["interrupted"]
+    usage: AttemptUsageRecord | None
+
+
+class AttemptUsage(RecordContract[AttemptUsageRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[AttemptUsageRecord]:
+        return TypeAdapter(AttemptUsageRecord)
+
+    input: NonNegativeInt
+    output: NonNegativeInt
+    cache_read: NonNegativeInt
+    cache_creation: NonNegativeInt
+    cost_usd: float | None
+
+
+class Attempt(RecordContract[AttemptRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[AttemptRecord]:
+        return TypeAdapter(AttemptRecord)
+
+    stage: str
+    model: str | None
+    commit: str
+    methods: list[str]
+    outcome: OutcomeKind | Literal["interrupted"]
+    usage: AttemptUsage | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class PendingDispatchRecord(TypedDict):
+    stage: str
+    index: NonNegativeInt
+    quota_model: str | None
+
+
+class PendingDispatch(RecordContract[PendingDispatchRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[PendingDispatchRecord]:
+        return TypeAdapter(PendingDispatchRecord)
+
+    stage: str
+    index: NonNegativeInt
+    quota_model: str | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class DispatchPlanRecord(TypedDict):
+    models: list[str]
+    instruction: str
+    methods: list[str]
+    target: PullRequestRecord | None
+    scope: ReviewScopeRecord | None
+
+
+class DispatchPlan(RecordContract[DispatchPlanRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[DispatchPlanRecord]:
+        return TypeAdapter(DispatchPlanRecord)
+
+    models: list[str]
+    instruction: str
+    methods: list[str]
+    target: PullRequest | None
+    scope: ReviewScopeRecord | None
 
 
 class SliceProperty(RecordContract[SlicePropertyRecord]):
@@ -409,13 +500,13 @@ class Finding(RecordContract[FindingRecord]):
     ruling_id: str | None = Field(description="If this contradicts a settled ruling, give its ID so it becomes a coordinator note. Otherwise null.")
     file: Text = Field(description="Give the path relative to the repository root.")
     line: int = Field(description="Give the line number in the reviewed commit.")
-    severity: Literal["blocking", "nit"]
+    severity: Severity
     summary: Text = Field(max_length=200)
 
 
 class FindingResolution(Contract):
     id: TrimmedText
-    status: Literal["resolved", "unresolved"]
+    status: ResolutionStatus
 
 
 class SettledRuling(Contract):

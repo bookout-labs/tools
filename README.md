@@ -248,6 +248,17 @@ uv sync
 uv run python -m unittest discover -s tests
 ```
 
+### Token admission
+
+`foreman run delivery --max-tokens N` stores a positive token cap, defaulting to
+20,000,000. Resume keeps the stored cap and rejects a differing flag.
+Each dispatch checks the sum of all attempt input, output, cache read and cache
+creation tokens. The attempt already in flight can overshoot the cap. Once the
+cap is reached, no subsequent model runs and that attempt's output is not
+applied. `budget_exceeded` and `usage_unknown` exit 1 and cannot resume.
+Interrupted calls with no committed usage halt as unknown rather than being
+retried. Checkpoints from before usage accounting require a new run.
+
 Settled rulings exist only within a run. Resolved findings become rulings for later reviews.
 
 A repeated blocking kind pauses as `design_rethink` without consuming a failure round.

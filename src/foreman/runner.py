@@ -1,5 +1,6 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
@@ -13,12 +14,12 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
+from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import Forge
-from foreman.stage_output import StoredSlice, parse_output
+from foreman.stage_output import Attempt, StoredSlice, parse_output
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
@@ -31,16 +32,26 @@ class RunPresentation:
     restored: DeliveryResult | None = None
     updates: list[DeliveryUpdate] = field(default_factory=list[DeliveryUpdate])
 
-    def restore(self, snapshot: StateSnapshot) -> None:
-        values = checkpoint_state(snapshot.values)
-        assert values is not None
-        result = read_delivery_state({**values, "stop": values.get("stop", "")})
-        if snapshot.interrupts:
-            if values.get("halt") == "quota_exhausted":
-                result["stop"] = "quota_exhausted"
-            else:
-                result.update(stop="needs_human", halt_detail=parse_output(HumanPrompt, snapshot.interrupts[0].value).question)
-        self.restored = result
+    def restore(self, snapshot: StateSnapshot, saver: SqliteSaver) -> None:
+        self.restored = snapshot_result(snapshot, saver)
+
+
+def snapshot_result(snapshot: StateSnapshot, saver: SqliteSaver) -> DeliveryResult:
+    values = snapshot.values
+    if snapshot.interrupts:
+        if values.get("halt") == "quota_exhausted":
+            parse_output(QuotaPause, snapshot.interrupts[0].value)
+            return read_delivery_state({**values, "stop": "quota_exhausted"})
+        question = parse_output(HumanPrompt, snapshot.interrupts[0].value).question
+        return read_delivery_state({**values, "stop": "needs_human", "halt_detail": question})
+    result = read_delivery_state({**values, "stop": values.get("stop", "")})
+    if "merge" in result["path"] and "merge" not in result:
+        legacy = saver.get(snapshot.config)
+        if legacy is not None:
+            armed = legacy["channel_values"].get("merge_armed")
+            if isinstance(armed, bool):
+                result["merge"] = "armed" if armed else "not_armed"
+    return result
 
 
 def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
@@ -89,10 +100,16 @@ def _checkpoint_before_halt(
     if not path:
         raise ValueError("Cannot resume a run without a halted node.")
     node = path[-1]
-    before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (node,)), None)
+    entry = entry_node(node)
+    before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (entry,)), None)
     if before is None:
         raise ValueError(f"Cannot resume a run without a checkpoint before {node}.")
     return before
+
+
+def require_token_cap(values: Mapping[str, object], checkpoint: Path) -> None:
+    if "token_cap" not in values:
+        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run with a new checkpoint path.")
 
 
 def run_live_delivery(
@@ -106,6 +123,7 @@ def run_live_delivery(
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
     answer: str | None = None,
+    max_tokens: int | None = None,
     fact_record: str | None = None,
     presentation: RunPresentation | None = None,
 ) -> DeliveryResult:
@@ -122,6 +140,10 @@ def run_live_delivery(
         delivery_config = load_config()
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
+        if prior and "token_cap" in channels and max_tokens is not None and channels["token_cap"] != max_tokens:
+            raise ValueError("--max-tokens differs from the stored token cap")
+        if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
+            require_token_cap(channels, checkpoint)
         saved_pin = channels.get("pstack_pin")
         if prior and not channels.get("stop") and saved_pin is None:
             raise ValueError("Cannot resume a delivery checkpoint without a pstack pin.")
@@ -135,7 +157,8 @@ def run_live_delivery(
             return read_delivery_state({**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                         "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
                                         "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
-                                        "repo": repo, "check": check})
+                                        "repo": repo, "check": check,
+                                        "token_cap": channels["token_cap"] if prior else (max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)})
         def invoke(
             graph_input: DeliveryState | Command[str] | None,
             state: DeliveryState,
@@ -152,14 +175,32 @@ def run_live_delivery(
                             presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
         saved = graph.get_state(config)
+        if saved.values:
+            if not saved.next and not saved.interrupts and saved.values.get("halt") not in RESUMABLE_HALTS:
+                if "token_cap" not in saved.values:
+                    if presentation is not None:
+                        presentation.restore(saved, saver)
+                    return snapshot_result(saved, saver)
+            require_token_cap(saved.values, checkpoint)
         saved_values = checkpoint_state(saved.values)
         if presentation is not None and saved_values is not None:
-            presentation.restore(saved)
+            presentation.restore(saved, saver)
         if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
             raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
+        if saved_values is not None and (pending := saved_values.get("pending_dispatch")):
+            assert "dispatch_plan" in saved_values
+            stage = pending["stage"]
+            models = saved_values["dispatch_plan"]["models"]
+            model = models[pending["index"]] if models else None
+            graph.update_state(config, {**halted("usage_unknown", unknown_usage(stage, model), stage),
+                                       "attempts": [Attempt(stage=stage, model=model, commit=pin.commit,
+                                                            methods=saved_values["dispatch_plan"]["methods"], outcome="interrupted", usage=None).record()],
+                                       "pending_dispatch": None}, as_node=stage + "_call")
+            invoke(None, saved_values)
+            return snapshot_result(graph.get_state(config), saver)
         waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == "quota_exhausted"
         if answer is not None:
             if waiting_for_quota:
@@ -185,6 +226,7 @@ def run_live_delivery(
             initial: DeliveryState = {
                 "fact_record": fact_record or MANIFEST_PATH,
                 "repo": repo,
+                "token_cap": max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
                 "issue": issue,
                 "workspace": workspace,
                 "request": text,
@@ -211,8 +253,9 @@ def run_live_delivery(
             invoke(Command(resume=True), saved_values)
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
+            require_token_cap(before.values, checkpoint)
             if presentation is not None:
-                presentation.restore(before)
+                presentation.restore(before, saver)
             replay = before.config
             if partial := saved_values.get("partial_edits"):
                 replay = graph.update_state(replay, {"partial_edits": partial})
@@ -255,17 +298,4 @@ def run_live_delivery(
             saved = graph.get_state(config)
             saved_values = checkpoint_state(saved.values)
         assert saved_values is not None
-        if saved.interrupts:
-            if saved_values.get("halt") == "quota_exhausted":
-                parse_output(QuotaPause, saved.interrupts[0].value)
-                return read_delivery_state({**saved_values, "stop": "quota_exhausted"})
-            question = parse_output(HumanPrompt, saved.interrupts[0].value).question
-            return read_delivery_state({**saved_values, "stop": "needs_human", "halt_detail": question})
-        result = read_delivery_state(saved_values)
-        if "merge" in result["path"] and "merge" not in result:
-            legacy = saver.get(saved.config)
-            if legacy is not None:
-                armed = legacy["channel_values"].get("merge_armed")
-                if isinstance(armed, bool):
-                    result["merge"] = "armed" if armed else "not_armed"
-        return result
+        return snapshot_result(saved, saver)

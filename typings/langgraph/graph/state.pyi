@@ -1,8 +1,9 @@
 """Typed delivery-facing subset of the pinned LangGraph 1.2.24 API."""
 from collections.abc import Callable, Iterator, Mapping
-from typing import Generic, Literal, Protocol, TypeVar, overload
+from typing import Generic, Literal, Protocol, Self, TypeVar, overload
 
 from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.graph import Graph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 from langgraph.types import Command, StateSnapshot, UpdatesStreamPart
@@ -21,9 +22,6 @@ class RuntimeNode(Protocol[NodeState, NodeContext]):
 class GraphOutput(Generic[Output]):
     value: Output
 
-class DrawableGraph(Protocol):
-    def draw_mermaid(self) -> str: ...
-
 class CompiledStateGraph(Generic[State, Context, Input, Output]):
     @overload
     def invoke(self, input: Input | Command[str] | None, config: RunnableConfig | None = None, *, context: Context | None = None, durability: Literal["sync", "async", "exit"] | None = None, version: Literal["v2"]) -> GraphOutput[Output]: ...
@@ -33,7 +31,8 @@ class CompiledStateGraph(Generic[State, Context, Input, Output]):
     def get_state(self, config: RunnableConfig) -> StateSnapshot: ...
     def get_state_history(self, config: RunnableConfig) -> Iterator[StateSnapshot]: ...
     def update_state(self, config: RunnableConfig, values: Mapping[str, object], as_node: str | None = None) -> RunnableConfig: ...
-    def get_graph(self) -> DrawableGraph: ...
+    def get_graph(self) -> Graph: ...
+    def with_config(self, config: RunnableConfig | None = None) -> Self: ...
 
 class StateGraph(Generic[State, Context, Input, Output]):
     def __init__(self, state_schema: type[State], *, input_schema: type[Input], output_schema: type[Output], context_schema: type[Context]) -> None: ...

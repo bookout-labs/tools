@@ -12,3 +12,6 @@ Declarations are in typings/langgraph/graph. Real-library graph tests exercise t
 https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/graph/state.py
 https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py
 https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/types.py
+CompiledStateGraph.with_config(config: RunnableConfig | None) returns Self.
+get_graph returns langchain_core.runnables.graph.Graph with typed nodes and Edge values.
+The installed 1.2.24 with_config copies the graph with merged config; diagram tests exercise node/edge collapse.

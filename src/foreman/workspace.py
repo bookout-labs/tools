@@ -8,8 +8,9 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
-from typing import NewType, Protocol
+from typing import Annotated, NewType, Protocol
 from typing_extensions import TypedDict
+from pydantic import BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
@@ -62,11 +63,25 @@ class ReviewDiff:
     patch: str
 
 
+ReviewLine = Annotated[tuple[str, int], BeforeValidator(TypeAdapter(tuple[object, ...]).validate_python)]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class ReviewScopeRecord(TypedDict):
+    command: str
+    inline: list[ReviewLine]
+    eligible: list[ReviewLine] | None
+
+
 @dataclass(frozen=True)
 class ReviewScope:
     command: str
     inline: frozenset[tuple[str, int]]
     eligible: frozenset[tuple[str, int]] | None = None
+
+    def record(self) -> ReviewScopeRecord:
+        return {"command": self.command, "inline": sorted(self.inline),
+                "eligible": sorted(self.eligible) if self.eligible is not None else None}
 
 
 def added_lines(patch: str) -> frozenset[tuple[str, int]]:

@@ -5,7 +5,7 @@ from typing import ClassVar, Literal
 from pydantic import Field
 from typing_extensions import override
 
-from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
+from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, build_outcome
 
 
 QUOTA_ERRORS = {"usage_limit_reached", "model_requires_usage_credits"}
@@ -21,9 +21,6 @@ class ClaudeEnvelope(NativeEnvelope):
     errors: list[str] = Field(default_factory=list)
     structured_output: dict[str, object] | None = None
     session_id: str | None = None
-    model_usage: dict[str, object] | None = Field(default=None, alias="modelUsage")
-    usage: Usage | None = None
-    total_cost_usd: float | None = None
 
     @override
     def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
@@ -45,7 +42,7 @@ class ClaudeEnvelope(NativeEnvelope):
             kind = "failed"
             detail = detail or "missing structured output"
         return build_outcome(
-            kind, output=self.structured_output, usage=self.usage, total_cost_usd=self.total_cost_usd,
+            kind, output=self.structured_output, usage=self.read_usage(),
             session_id=self.session_id, detail=detail,
         )
 
