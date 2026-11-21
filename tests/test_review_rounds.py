@@ -25,11 +25,6 @@ class ReviewRoundsTest(unittest.TestCase):
             outer = self
 
             class Workspace(FakeWorkspace):
-                current_head = HEAD
-
-                def inspect(self):
-                    return type(super().inspect())(self.current_head, True, "feature")
-
                 def files_at(self, head, prefix):
                     outer.gate_reads.append(head)
                     return {"tests/fixtures/manifest.toml", "tests/fixtures/result.txt"} if head in (gate_heads or ()) else set()
@@ -59,9 +54,8 @@ class ReviewRoundsTest(unittest.TestCase):
                 if node == "triage":
                     return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None})
                 implementations += 1
-                if gate_heads is not None and HEAD not in gate_heads:
-                    workspace.current_head = str(implementations) * 40
-                return Outcome("ran", {"implementation": "Fixed.", "head_sha": HEAD,
+                workspace.current = type(workspace.current)(workspace.current.head, False, workspace.current.branch)
+                return Outcome("ran", {"implementation": "Fixed.",
                                        "browser_proof": None, "formal_proof": None})
 
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint")) as saver:
