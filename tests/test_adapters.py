@@ -5,6 +5,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 import unittest
 
+from foreman.adapters import Call
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
@@ -35,7 +36,7 @@ class NativeAdaptersTest(unittest.TestCase):
                             {"errors": []}):
                 with self.subTest(code=code, changes=changes):
                     process = CompletedProcess(recorded.args, code, json.dumps({**original, **changes}), "")
-                    outcome = adapter.read(process)
+                    outcome = adapter.read(process, Call("", "{}", False, Path(".")))
                     self.assertEqual(outcome.kind, "budget_exhausted")
                     self.assertEqual(outcome.session_id, "4d8f5dbc-5b69-4be1-a541-402e6f92cafe")
                     self.assertTrue(outcome.detail)
@@ -47,7 +48,7 @@ class NativeAdaptersTest(unittest.TestCase):
         for name, exit_code, kind, expected in cases:
             has_usage = expected is not None
             with self.subTest(cli=cli, fixture=name):
-                outcome = adapter.read(fixture_process([cli], name, exit_code))
+                outcome = adapter.read(fixture_process([cli], name, exit_code), Call("", "{}", False, Path(".")))
                 self.assertEqual(outcome.kind, kind)
                 if not has_usage:
                     self.assertIsNone(outcome.usage)
@@ -97,11 +98,11 @@ class NativeAdaptersTest(unittest.TestCase):
             with self.subTest(status=status, api_error=api_error):
                 envelope.update(api_error_status=status, api_error=api_error)
                 process = CompletedProcess(recorded.args, 1, json.dumps(envelope), "")
-                self.assertEqual(adapter.read(process).kind, "quota")
+                self.assertEqual(adapter.read(process, Call("", "{}", False, Path("."))).kind, "quota")
 
     def test_claude_model_substitution_is_a_failure(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
-        outcome = adapter.read(fixture_process(["claude"], "model_substitution_disabled", 1))
+        outcome = adapter.read(fixture_process(["claude"], "model_substitution_disabled", 1), Call("", "{}", False, Path(".")))
         self.assertEqual(outcome.kind, "failed")
         self.assertIn("forbids model substitution", outcome.detail)
 
@@ -119,7 +120,7 @@ class NativeAdaptersTest(unittest.TestCase):
                 envelope.pop("modelUsage", None)
                 for fields in ({}, {"modelUsage": {}}):
                     process = CompletedProcess(recorded.args, 0, json.dumps({**envelope, **fields}), "")
-                    outcome = adapter.read(process)
+                    outcome = adapter.read(process, Call("", "{}", False, Path(".")))
                     self.assertEqual((outcome.kind, outcome.detail), ("failed", detail))
                 success = fixture_process([cli], "success", 0)
                 envelope["modelUsage"] = json.loads(success.stdout)["modelUsage"]
@@ -127,7 +128,7 @@ class NativeAdaptersTest(unittest.TestCase):
                     for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"):
                         row[key] = 0
                 process = CompletedProcess(recorded.args, 0, json.dumps(envelope), "")
-                outcome = adapter.read(process)
+                outcome = adapter.read(process, Call("", "{}", False, Path(".")))
                 self.assertEqual(outcome.kind, "ran")
                 self.assertIsNone(outcome.usage)
 
@@ -141,13 +142,13 @@ class NativeAdaptersTest(unittest.TestCase):
         ):
             with self.subTest(message=message):
                 process = CompletedProcess(["grok"], 1, json.dumps({"type": "error", "message": message}), "")
-                self.assertEqual(adapter.read(process).kind, "quota")
+                self.assertEqual(adapter.read(process, Call("", "{}", False, Path("."))).kind, "quota")
 
     def test_grok_does_not_classify_a_partial_quota_message(self):
         adapter = GrokAdapter(ModelSpec.parse("grok-4.7-high"))
         message = "You’ve hit the rate limit for your plan."
         process = CompletedProcess(["grok"], 1, json.dumps({"type": "error", "message": message}), "")
-        outcome = adapter.read(process)
+        outcome = adapter.read(process, Call("", "{}", False, Path(".")))
         self.assertEqual((outcome.kind, outcome.detail), ("failed", message))
 
     def test_grok_requires_a_successful_stop_reason(self):
@@ -157,7 +158,7 @@ class NativeAdaptersTest(unittest.TestCase):
         for stop_reason in ("max_tokens", "unknown", None):
             with self.subTest(stop_reason=stop_reason):
                 process = CompletedProcess(reply.args, 0, json.dumps({**envelope, "stopReason": stop_reason}), "")
-                outcome = adapter.read(process)
+                outcome = adapter.read(process, Call("", "{}", False, Path(".")))
                 self.assertEqual((outcome.kind, outcome.detail),
                                  ("failed", f"Grok stopReason: {stop_reason or 'missing'}"))
 
@@ -165,7 +166,7 @@ class NativeAdaptersTest(unittest.TestCase):
         adapter = GrokAdapter(ModelSpec.parse("grok-4.7-high"))
         recorded = fixture_process(["grok"], "catalog_alias", 0)
         self.assertEqual(list(json.loads(recorded.stdout)["modelUsage"]), ["grok-4.7-build"])
-        outcome = adapter.read(recorded)
+        outcome = adapter.read(recorded, Call("", "{}", False, Path(".")))
         self.assertEqual((outcome.kind, outcome.output), ("ran", {"answer": "ok"}))
 
 
@@ -181,7 +182,7 @@ class CodexAdapterTest(unittest.TestCase):
     adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"))
 
     def test_recorded_success(self):
-        outcome = self.adapter.read(fixture_process(["codex"], "success", 0))
+        outcome = self.adapter.read(fixture_process(["codex"], "success", 0), Call("", "{}", False, Path(".")))
         self.assertEqual(outcome.kind, "ran")
         self.assertEqual(outcome.output, {"triage": "needs_human", "slice": None, "human_question": "Which items?"})
         self.assertEqual(outcome.session_id, "00000000-0000-4000-8000-000000000001")
@@ -192,24 +193,24 @@ class CodexAdapterTest(unittest.TestCase):
         self.assertIsNone(outcome.usage.total_cost_usd)
 
     def test_recorded_quota(self):
-        outcome = self.adapter.read(fixture_process(["codex"], "quota", 1))
+        outcome = self.adapter.read(fixture_process(["codex"], "quota", 1), Call("", "{}", False, Path(".")))
         self.assertEqual(outcome.kind, "quota")
         self.assertIn("Quota exceeded.", outcome.detail)
 
     def test_stderr_rate_limit_is_a_failure(self):
         process = codex_process([], exit_code=1, stderr='Prompt: Explain "rate limit" and HTTP 429.')
-        outcome = self.adapter.read(process)
+        outcome = self.adapter.read(process, Call("", "{}", False, Path(".")))
         self.assertEqual((outcome.kind, outcome.detail), ("failed", "Codex exited 1"))
 
     def test_invalid_model_is_a_failure(self):
-        outcome = self.adapter.read(fixture_process(["codex"], "invalid-model", 1))
+        outcome = self.adapter.read(fixture_process(["codex"], "invalid-model", 1), Call("", "{}", False, Path(".")))
         self.assertEqual(outcome.kind, "failed")
         self.assertIn("is not supported", outcome.detail)
 
     def test_schema_validation_is_left_to_delivery(self):
         events = codex_events()
         events[-2]["item"]["text"] = '{"triage":"needs_human","human_question":"Which items?"}'
-        outcome = self.adapter.read(codex_process(events))
+        outcome = self.adapter.read(codex_process(events), Call("", "{}", False, Path(".")))
         self.assertEqual(outcome.kind, "ran")
         self.assertEqual(outcome.output, {"triage": "needs_human", "human_question": "Which items?"})
         self.assertIsNotNone(outcome.usage)
@@ -219,7 +220,7 @@ class CodexAdapterTest(unittest.TestCase):
             with self.subTest(report=report):
                 events = codex_events()
                 events[-1] = {"type": "turn.completed", **report}
-                outcome = self.adapter.read(codex_process(events))
+                outcome = self.adapter.read(codex_process(events), Call("", "{}", False, Path(".")))
                 self.assertEqual(outcome.kind, "ran")
                 self.assertIsNone(outcome.usage)
 
@@ -227,7 +228,7 @@ class CodexAdapterTest(unittest.TestCase):
         events = codex_events()
         message = "model rerouted: gpt-6.1-sol -> gpt-other (SyntheticReason)"
         events.insert(2, {"type": "item.completed", "item": {"id": "item_1", "type": "error", "message": message}})
-        outcome = self.adapter.read(codex_process(events))
+        outcome = self.adapter.read(codex_process(events), Call("", "{}", False, Path(".")))
         self.assertEqual((outcome.kind, outcome.detail), ("failed", message))
 
     def test_recovers_from_a_retry_and_reads_the_last_completed_message(self):
@@ -240,7 +241,7 @@ class CodexAdapterTest(unittest.TestCase):
         events[-2]["item"]["text"] = json.dumps({
             "triage": "needs_human", "slice": None, "human_question": question,
         }, ensure_ascii=False)
-        outcome = self.adapter.read(codex_process(events))
+        outcome = self.adapter.read(codex_process(events), Call("", "{}", False, Path(".")))
         self.assertEqual(outcome.kind, "ran")
         self.assertEqual(outcome.output["human_question"], question)
 
@@ -250,11 +251,11 @@ class CodexAdapterTest(unittest.TestCase):
         failed = {"type": "turn.failed", "error": {"message": "Turn interrupted by synthetic test."}}
         for terminal, detail in ((events[-1], "Codex exited 1"), (failed, "Turn interrupted by synthetic test.")):
             with self.subTest(terminal=terminal):
-                outcome = self.adapter.read(codex_process([*events[:-1], terminal], exit_code=1))
+                outcome = self.adapter.read(codex_process([*events[:-1], terminal], exit_code=1), Call("", "{}", False, Path(".")))
                 self.assertEqual((outcome.kind, outcome.detail), ("failed", detail))
 
     def test_agent_message_alone_does_not_complete_the_turn(self):
-        outcome = self.adapter.read(codex_process(codex_events()[:-1]))
+        outcome = self.adapter.read(codex_process(codex_events()[:-1]), Call("", "{}", False, Path(".")))
         self.assertEqual((outcome.kind, outcome.detail), ("failed", "Codex did not complete the turn"))
 
     def test_quota_formatters_as_terminal_failures(self):
@@ -263,7 +264,7 @@ class CodexAdapterTest(unittest.TestCase):
             with self.subTest(formatter=case["formatter"]):
                 message = case["message"]
                 process = codex_process([{"type": "turn.failed", "error": {"message": message}}], exit_code=1)
-                outcome = self.adapter.read(process)
+                outcome = self.adapter.read(process, Call("", "{}", False, Path(".")))
                 self.assertEqual((outcome.kind, outcome.detail), ("quota", message))
 
     def test_quota_near_misses_are_failures(self):
@@ -281,11 +282,11 @@ class CodexAdapterTest(unittest.TestCase):
         for message in messages:
             with self.subTest(message=message):
                 process = codex_process([{"type": "turn.failed", "error": {"message": message}}], exit_code=1)
-                outcome = self.adapter.read(process)
+                outcome = self.adapter.read(process, Call("", "{}", False, Path(".")))
                 self.assertEqual((outcome.kind, outcome.detail), ("failed", message))
 
     def test_recorded_cached_usage_counts_input_once(self):
-        outcome = self.adapter.read(fixture_process(["codex"], "cached_success", 0))
+        outcome = self.adapter.read(fixture_process(["codex"], "cached_success", 0), Call("", "{}", False, Path(".")))
         self.assertEqual(outcome.kind, "ran")
         assert outcome.usage is not None
         self.assertEqual(outcome.usage.input_tokens, 40)
@@ -296,7 +297,7 @@ class CodexAdapterTest(unittest.TestCase):
         for input_tokens, cached in ((10, 20), (10, -5)):
             events = codex_events()
             events[-1]["usage"].update(input_tokens=input_tokens, cached_input_tokens=cached)
-            self.assertIsNone(self.adapter.read(codex_process(events)).usage)
+            self.assertIsNone(self.adapter.read(codex_process(events), Call("", "{}", False, Path("."))).usage)
         events = codex_events()
         del events[-1]["usage"]["cached_input_tokens"]
-        self.assertIsNone(self.adapter.read(codex_process(events)).usage)
+        self.assertIsNone(self.adapter.read(codex_process(events), Call("", "{}", False, Path("."))).usage)

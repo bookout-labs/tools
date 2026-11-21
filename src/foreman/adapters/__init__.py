@@ -52,7 +52,7 @@ class CliAdapter(Protocol):
     env: ClassVar[Mapping[str, str]]
 
     def command(self, call: Call) -> list[str]: ...
-    def read(self, process: CompletedProcess[str]) -> Outcome: ...
+    def read(self, process: CompletedProcess[str], call: Call) -> Outcome: ...
 
 
 class ModelUsage(BaseModel):
@@ -94,7 +94,7 @@ class NativeEnvelope(BaseModel, ABC):
         )
 
     @abstractmethod
-    def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome: ...
+    def outcome(self, process: CompletedProcess[str], model_id: str, call: Call) -> Outcome: ...
 
 
 @dataclass(frozen=True)
@@ -103,13 +103,13 @@ class NativeAdapter:
     envelope: ClassVar[type[NativeEnvelope]]
     env: ClassVar[Mapping[str, str]] = {}
 
-    def read(self, process: CompletedProcess[str]) -> Outcome:
+    def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
         try:
             envelope = self.envelope.model_validate_json(process.stdout)
         except ValidationError as exc:
             detail = process.stderr.strip() or process.stdout.strip() or exc.errors(include_input=False)[0]["msg"]
             return Outcome("failed", detail=detail)
-        return envelope.outcome(process, self.model.model_id)
+        return envelope.outcome(process, self.model.model_id, call)
 
 
 def build_outcome(

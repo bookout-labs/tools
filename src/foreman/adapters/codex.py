@@ -95,7 +95,7 @@ class CodexAdapter:
             "--json", "--output-schema", str(schema_path), "--color", "never", "-s", sandbox, call.prompt,
         ]
 
-    def read(self, process: CompletedProcess[str]) -> Outcome:
+    def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
         turn = CodexTurn()
         try:
             for line in process.stdout.split("\n"):

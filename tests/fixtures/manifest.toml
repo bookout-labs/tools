@@ -1204,3 +1204,11 @@ kind = "quoted_source"
 sources = ["https://code.claude.com/docs/en/permissions", "https://code.claude.com/docs/en/cli-reference"]
 claim_ids = ["TF-C1", "TF-C2", "TF-C3", "claude-exact-bash", "claude-absolute-edit-deny", "claude-add-dir", "claude-restricted-settings", "claude-permission-denials"]
 notes = "Vendor permission semantics and local help summary, corroborated by help.txt and the permission captures. Edit rules cover Write; Write path rules do not match. Exact and wildcard Bash matching are native CLI semantics. Captures establish dontAsk, settings under restricted, absolute root denies, scratch access and permission_denials."
+
+[fixtures."claude/t1_implement.json"]
+tool = "Claude Code"
+version = "2.1.329"
+kind = "captured_run"
+argv = ["env", "FOREMAN_LIVE_WORKER=claude", "python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_claude_check.py", "-k", "live_t1"]
+returncode = 0
+notes = "Captured by CliWorker against a temporary repository. Claude stores sessions in ~/.claude/projects/<absolute-cwd with non-alphanumeric characters replaced by hyphens>/<session_id>.jsonl. Assistant message.content has Bash tool_use id/name/input.command; user message.content has tool_result tool_use_id/content/is_error. No is_error and unittest OK corroborate exit 0, as does the marker. The prior attempt exited 127 because python was absent from PATH; the test now prepends its interpreter directory. The captured bash -lc wrapper is denied, so the attempt fails even though a later exact check succeeds. This prevents a successful retry from erasing the denial."

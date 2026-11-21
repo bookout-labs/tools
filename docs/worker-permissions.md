@@ -25,3 +25,13 @@ filesystem observations. Transcript tool calls and results corroborate method re
 and denied operations. The inherited probe adds permissive project settings.
 The clean edit capture proves source edits, scratch writes, and edits to pyproject.toml
 and .github/workflows/ci.yml. Restricted mode can therefore remain enabled.
+
+Claude denial results are read with the original `Call.check`. A denied check
+produces `failed` and the existing `invalid_output` halt. Usage, quota, and
+budget results retain their classifications. Independent denials such as
+`git commit` do not claim the check failed. Claude supplies command text, not
+an attribution to an allow rule. Missing commands and shell syntax that could
+hide a wrapper fail closed; literal check text also catches plain wrappers.
+Opaque scripts cannot prove which command they would execute. `verify` remains
+the authority. The T1 fixture joins Bash tool IDs to successful tool results
+and a test-written marker; worker prose is not execution evidence.
