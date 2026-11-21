@@ -87,9 +87,7 @@ A parent or slice goes straight to implement when the behavior is decided and th
 
 A ready parent spec lists the seams each slice builds and uses. Foreman checks existing seam paths in the workspace and orders the slices so builders come first. A cycle, dangling seam, duplicate builder, or seam marked existing that a slice also builds sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children. Single-slice parents skip ordering.
 
-Foreman records the ordered plan and stops the parent as `sliced`. Each child issue carries a fenced JSON record of its slice and native GitHub blocked-by links for its dependencies. A live slice run stops as `missing_slice` if the record is missing or invalid. It reports `blocked` before triage while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request. Run the same slice again after its blockers clear. Rerunning the parent restores missing links and adds the `factory` label when a dependent slice is ready.
-
-A ready parent spec records its slices and stops as `sliced`. Each child issue carries the slice and the parent's work classification in fenced JSON.
+Foreman records the ordered plan and stops the parent as `sliced`. Each child issue carries a fenced JSON record of its slice and the parent's work classification, with native GitHub blocked-by links for its dependencies. A live slice run stops as `missing_slice` if the record is missing or invalid. It reports `blocked` before triage while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request. Run the same slice again after its blockers clear. Rerunning the parent restores missing links and adds the `factory` label when a dependent slice is ready.
 
 ```json
 {
@@ -106,6 +104,8 @@ A ready parent spec records its slices and stops as `sliced`. Each child issue c
 `stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`.
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
+
+`foreman run` exits 0 for successful stops (`done verified`, `done sliced`, or `done answered`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a resumable halt (`merge_held` or `merge_not_armed`), and 1 for every other halt.
 
 ## What enters the graph
 

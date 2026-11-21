@@ -14,7 +14,7 @@ from foreman.delivery import DeliveryState, run_delivery  # noqa: E402
 from foreman.dispatch import FailoverDispatcher, Handler  # noqa: E402
 from foreman.dry_run import ScriptHandler  # noqa: E402
 from foreman.measure import grade, propose, selected  # noqa: E402
-from tests.fixtures.skill_fixture import skill_fixture  # noqa: E402
+from tests.skill_fixture import skill_fixture  # noqa: E402
 
 
 FIELD_SLICE: dict[str, object] = {

@@ -13,14 +13,13 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DeliveryState, LiveRun, MergeHalt, PullRequestSizeDecision, compile_delivery, load_slice
+from foreman.delivery import DeliveryState, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge
 from foreman.stage_output import StoredSlice, parse_output
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
-RESUMABLE_HALTS: frozenset[MergeHalt] = frozenset({"merge_held", "merge_not_armed"})
 
 
 def _load_slice(body: str) -> StoredSlice:
@@ -84,8 +83,8 @@ def run_live_delivery(
                 scratch=None if channels.get("stop") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
             )
         except SkillMissing as exc:
-            return {"path": ["done"], "halt": exc.halt, "stop": exc.halt,
-                    "halt_detail": str(exc), "skill_reason": exc.reason, "pstack_pin": pin.model_dump()}
+            return {**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
+                    "skill_reason": exc.reason, "pstack_pin": pin.model_dump()}
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")
         if saved_workspace and saved_workspace != workspace:
@@ -118,7 +117,7 @@ def run_live_delivery(
                 try:
                     item = _load_slice(loaded["body"])
                 except (InvalidOutput, json.JSONDecodeError) as exc:
-                    initial.update(halt="missing_slice", halt_detail=str(exc))
+                    initial.update(halted("missing_slice", str(exc), None))
                 else:
                     if detail := _blocker_detail(client, repo, issue, item):
                         return {**initial, "path": ["done"], "stop": "blocked", "halt_detail": detail}

@@ -1,0 +1,4 @@
+gh pr view JSON fields include baseRefOid and headRefOid.
+gh api --input - reads the request body from stdin.
+POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews accepts commit_id, event, body, and comments.
+Each inline comment supplies path, line, side, and body. RIGHT identifies the new file.

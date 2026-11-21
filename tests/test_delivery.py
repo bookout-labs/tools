@@ -9,7 +9,7 @@ from foreman.config import ModelSpec, NodeConfig, load_config
 from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
-from fixtures.skill_fixture import skill_fixture
+from skill_fixture import skill_fixture
 
 
 BOARD = {"name": "deals-board", "exists": False, "path": None}

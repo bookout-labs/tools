@@ -5,18 +5,21 @@ from dataclasses import dataclass
 from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from typing import Annotated, Literal, TypedDict
+from tomllib import TOMLDecodeError
+from typing import Annotated, Literal, TypedDict, cast, get_args
 import operator
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from pydantic import ValidationError
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome, OutcomeKind
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.fixture_manifest import MANIFEST_PATH, recorded_fixtures
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command,
 )
@@ -24,8 +27,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind,
-    parse_output,
+    Contract, Finding, HumanQuestionOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.workspace import CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
@@ -34,6 +36,12 @@ PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
 MergeHalt = Literal["merge_held", "merge_not_armed"]
+HaltReason = Literal[
+    MergeHalt, "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
+    "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
+    "skill_missing", "quota_exhausted", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+]
+RESUMABLE_HALTS: frozenset[HaltReason] = frozenset((*get_args(MergeHalt), "quota_exhausted"))
 
 
 @dataclass(frozen=True)
@@ -119,6 +127,7 @@ class DeliveryState(TypedDict, total=False):
     pr_size_override: PullRequestSize
     pr_split: PullRequestSplit
     review: str
+    tool_facts: list[dict[str, str | None]]
     findings: list[dict[str, object]]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
@@ -127,10 +136,16 @@ class DeliveryState(TypedDict, total=False):
     review_rounds: int
     models_used: dict[str, str]
     implement_models: list[str]
-    halt: str
+    halt: HaltReason | None
     halt_detail: str
     stop: str
     path: Annotated[list[str], operator.add]
+
+
+def halted(reason: HaltReason, detail: str, path: str | None) -> DeliveryState:
+    if not detail.strip():
+        raise ValueError(f"{reason} requires a nonempty halt detail")
+    return {"halt": reason, "halt_detail": detail, "path": [path] if path else []}
 
 
 def stage_text(name: str) -> str:
@@ -182,10 +197,33 @@ def load_slice(raw: object) -> DeliveryState:
     return state
 
 
+def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | None) -> ReviewOutput:
+    recorded: set[str] = set()
+    notes = [output.detail]
+    if isinstance(run, LiveRun) and head and any(fact.fixture is not None for fact in output.tool_facts):
+        try:
+            recorded = recorded_fixtures(run.workspace, head)
+        except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
+            notes.append(f"Could not check {MANIFEST_PATH} at {head}. {exc}")
+    unrecorded = [fact for fact in output.tool_facts if fact.fixture not in recorded]
+    if not unrecorded:
+        return output
+    for fact in unrecorded:
+        citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
+        notes.append(f"Unrecorded outside-tool fact{citation}: {fact.claim}")
+    return output.model_copy(update={
+        "review": "changes", "detail": "\n".join(notes),
+        "findings": [*output.findings, Finding(
+            file=MANIFEST_PATH, line=1, severity="blocking",
+            summary="Record the outside-tool facts listed in the review detail.",
+        )],
+    })
+
+
 def stage_update(
     name: str, output: Contract, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None,
-) -> dict[str, object]:
-    update: dict[str, object] = output.model_dump(exclude={"slice", "slices"})
+) -> DeliveryState:
+    update = cast(DeliveryState, output.model_dump(exclude={"slice", "slices"}))
     if isinstance(output, HumanQuestionOutput):
         update["human_question"] = output.human_question or ""
     if isinstance(output, TriageOutput) and state.get("issue_kind") == "slice" and "work_kind" in state:
@@ -200,7 +238,7 @@ def stage_update(
             split: PullRequestSplit = {
                 "plan": output.spec, "gate": output.spec_gate, "question": output.human_question, "slices": slices,
             }
-            update = {"pr_split": split, "spec_rejection": None}
+            update = cast(DeliveryState, {"pr_split": split, "spec_rejection": None})
         elif state.get("issue_kind") == "parent" and output.spec_gate == "ready":
             update["slices"] = slices
     update["path"] = [name]
@@ -295,13 +333,13 @@ def compile_delivery(
     plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
     def bind(name: str):
-        def node(state: DeliveryState) -> dict[str, object]:
+        def node(state: DeliveryState) -> DeliveryState:
             if dispatcher is None:
-                return {"path": [name], "halt": "no_dispatcher"}
+                return halted("no_dispatcher", "No dispatcher is configured.", name)
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
-                return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
+                return halted("no_reviewer", str(exc), name)
             instruction = prompts[name]
             if isinstance(run, LiveRun) and methods_root is None:
                 raise RuntimeError("Delivery execution requires a compiled skill export.")
@@ -329,7 +367,7 @@ def compile_delivery(
                     target = run.forge.review_target(repo, issue, worktree.branch, head)
                     diff = run.workspace.review_diff(target.baseRefOid, head)
                 except (ForgeError, WorktreeInspectionFailed) as exc:
-                    return {"path": [name], "halt": "review_unavailable", "halt_detail": str(exc)}
+                    return halted("review_unavailable", str(exc), name)
                 review_context = (run.forge, target, diff)
                 instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
             attempts: list[SkillAttempt] = []
@@ -342,28 +380,30 @@ def compile_delivery(
             outcome, model = dispatcher.run(
                 name, models, state, instruction, on_attempt=record_attempt if methods_root and name != "verify" else None,
             )
-            stopped: dict[str, object] = {"path": [name], "skill_attempts": attempts}
+            stopped: DeliveryState = {"path": [name], "skill_attempts": attempts}
             if outcome.kind == "failed":
-                return {**stopped, "halt": "invalid_output", "halt_detail": f"{model}: {outcome.detail}"}
+                return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
-                return {**stopped, "halt": "cli_missing", "halt_detail": outcome.detail}
+                return {**stopped, **halted("cli_missing", outcome.detail, name)}
             if outcome.kind == "quota":
                 if name != "review" and isinstance(run, DryRun):
                     raise QuotaExhausted(model)
-                halt = "no_reviewer" if isinstance(run, DryRun) else "quota_exhausted"
-                return {**stopped, "halt": halt, "halt_detail": f"{name} quota exhausted: {model}"}
+                reason: HaltReason = "no_reviewer" if isinstance(run, DryRun) else "quota_exhausted"
+                return {**stopped, **halted(reason, f"{name} quota exhausted: {model}", name)}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                if isinstance(output, ReviewOutput):
+                    output = _check_tool_facts(output, run, state.get("verified_head"))
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
                 update["skill_attempts"] = attempts
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
-                update: dict[str, object] = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
+                update: DeliveryState = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
                 if rounds >= config.max_review_rounds:
-                    update.update(halt="spec_cap", halt_detail=str(exc))
+                    update.update(halted("spec_cap", str(exc), name))
                 return update
             except InvalidOutput as exc:
-                return {**stopped, "halt": "invalid_output", "halt_detail": str(exc)}
+                return {**stopped, **halted("invalid_output", str(exc), name)}
 
             if review_context is not None and isinstance(output, ReviewOutput):
                 forge, target, diff = review_context
@@ -371,14 +411,14 @@ def compile_delivery(
                 try:
                     forge.post_review(repo, target, body, comments)
                 except ForgeError as exc:
-                    return {**update, "halt": "review_not_posted", "halt_detail": str(exc)}
+                    return {**update, **halted("review_not_posted", str(exc), name)}
             return update
 
         return node
 
     scripted_verify = bind("verify")
 
-    def verify(state: DeliveryState) -> dict[str, object]:
+    def verify(state: DeliveryState) -> DeliveryState:
         match run:
             case DryRun():
                 return scripted_verify(state)
@@ -386,12 +426,12 @@ def compile_delivery(
                 try:
                     worktree = workspace.inspect()
                 except WorktreeInspectionFailed as exc:
-                    return {"path": ["verify"], "halt": "dirty_worktree", "halt_detail": str(exc)}
+                    return halted("dirty_worktree", str(exc), "verify")
                 if not worktree.clean:
-                    return {"path": ["verify"], "halt": "dirty_worktree"}
+                    return halted("dirty_worktree", "The worktree has changes.", "verify")
                 exit_code = workspace.run(state["check"], log=check_log)
                 verdict = "pass" if exit_code == 0 else "fail"
-                checked = {"verified_head": worktree.head} if exit_code == 0 else {}
+                checked: DeliveryState = {"verified_head": worktree.head} if exit_code == 0 else {}
                 return {
                     **stage_update("verify", VerifyOutput(verify=verdict), state),
                     "check_exit_code": exit_code,
@@ -407,11 +447,12 @@ def compile_delivery(
         }
         update: DeliveryState = {"path": ["proof"], "proof_labels": {key: label for key, label in labels.items() if label}}
         if "insufficient_evidence" in labels.values():
-            update["halt"] = "insufficient_evidence"
+            update.update(halted("insufficient_evidence", "Required proof is missing.", "proof"))
         elif "block" in labels.values():
             update["review_rounds"] = state.get("review_rounds", 0) + 1
             if update["review_rounds"] >= config.max_review_rounds:
-                update["halt"] = "review_cap"
+                detail = f"Proof failed after {update['review_rounds']} rounds: {update['proof_labels']}."
+                update.update(halted("review_cap", detail, "proof"))
         return update
 
     def needs_human(state: DeliveryState) -> DeliveryState:
@@ -423,7 +464,7 @@ def compile_delivery(
 
     def quota_wait(state: DeliveryState) -> DeliveryState:
         interrupt({"reason": "quota_exhausted", "detail": state.get("halt_detail")})
-        return {"halt": "", "halt_detail": ""}
+        return {"halt": None, "halt_detail": ""}
 
     def decide_pr_size(state: DeliveryState) -> DeliveryState:
         size = oversized_pr(state)
@@ -452,13 +493,10 @@ def compile_delivery(
             "Then rerun the same command. New commits need a new run."
         )
 
-    def moved_before_review(actual: str, verified: str) -> dict[str, object]:
-        return {
-            "merge": "not_armed", "halt": "merge_not_armed", "path": ["review"],
-            "halt_detail": moved_head_detail(actual, verified),
-        }
+    def moved_before_review(actual: str, verified: str) -> DeliveryState:
+        return {**halted("merge_not_armed", moved_head_detail(actual, verified), "review"), "merge": "not_armed"}
 
-    def review(state: DeliveryState) -> dict[str, object]:
+    def review(state: DeliveryState) -> DeliveryState:
         if isinstance(run, DryRun):
             return dispatch_review(state)
         try:
@@ -480,7 +518,7 @@ def compile_delivery(
             if not checked.clean or checked.branch != worktree.branch:
                 raise WorktreeInspectionFailed("The worktree changed after verification.")
         except (ForgeError, WorktreeInspectionFailed) as exc:
-            return {"halt": "pr_size_unavailable", "halt_detail": str(exc)}
+            return halted("pr_size_unavailable", str(exc), "review")
         measured: DeliveryState = {**state, "pr_size": size}
         if oversized_pr(measured):
             return {"pr_size": size}
@@ -551,9 +589,9 @@ def compile_delivery(
         repo = state["repo"]
         head = state.get("verified_head")
 
-        def halted(halt: MergeHalt, detail: str) -> DeliveryState:
+        def merge_halted(halt: MergeHalt, detail: str) -> DeliveryState:
             return {
-                "merge": "not_armed", "halt": halt, "halt_detail": detail, "path": ["merge"],
+                **halted(halt, detail, "merge"), "merge": "not_armed",
                 "merge_command": merge_command(repo, "<number>", head or "<sha>"),
             }
 
@@ -565,39 +603,50 @@ def compile_delivery(
                 }
             case LiveRun(forge=forge, workspace=workspace):
                 if head is None:
-                    return halted("merge_not_armed", "The run did not record a verified HEAD.")
+                    return merge_halted("merge_not_armed", "The run did not record a verified HEAD.")
                 try:
                     worktree = workspace.inspect()
                 except WorktreeInspectionFailed as exc:
-                    return halted("merge_not_armed", str(exc))
+                    return merge_halted("merge_not_armed", str(exc))
                 if not worktree.clean:
-                    return halted("merge_not_armed", "The worktree has changes or Git could not inspect it.")
+                    return merge_halted("merge_not_armed", "The worktree has changes or Git could not inspect it.")
                 if worktree.head != head:
                     return {
-                        **halted("merge_not_armed", head_mismatch_detail(worktree.head, head)),
+                        **merge_halted("merge_not_armed", head_mismatch_detail(worktree.head, head)),
                         "merge_observed_head": worktree.head,
                     }
                 if worktree.branch is None:
-                    return halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")
+                    return merge_halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")
                 try:
                     hold = forge.merge_hold(repo)
                 except MergeHoldUnreadable as exc:
-                    return halted("merge_held", f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
+                    return merge_halted("merge_held", f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
                 if hold:
-                    return halted("merge_held", hold)
+                    return merge_halted("merge_held", f"{MERGE_HOLD_VARIABLE} is set" + (f": {hold}" if hold.strip() else "."))
                 try:
                     forge.arm_auto_merge(repo, state["issue"], worktree.branch, head)
                 except MergeNotArmed as exc:
-                    return halted("merge_not_armed", str(exc))
+                    return merge_halted("merge_not_armed", str(exc))
                 return {"merge": "armed", "path": ["merge"]}
 
     def finish(state: DeliveryState) -> DeliveryState:
-        stop = stop_reason(state)
-        update: DeliveryState = {"stop": stop, "path": ["done"]}
+        reason = stop_reason(state)
+        if not state.get("halt"):
+            rounds = state.get("review_rounds", 0)
+            if reason == "verify_cap":
+                detail = f"Verification failed after {rounds} rounds. Check {state.get('check') or '(none)'} failed."
+                return {**halted("verify_cap", detail, "done"), "stop": reason}
+            if reason == "review_cap":
+                detail = f"Review requested changes after {rounds} rounds. Last review: {state.get('detail', '')}"
+                return {**halted("review_cap", detail, "done"), "stop": reason}
+            if reason == "needs_human":
+                return {"stop": reason, "path": ["done"], "halt_detail":
+                        state.get("human_question") or "What should Foreman know to continue?"}
+        update: DeliveryState = {"stop": reason, "path": ["done"]}
         split = state.get("pr_split")
-        if stop == "sliced" and split:
+        if reason == "sliced" and split:
             update["slices"] = split["slices"]
-        if stop == "pr_split_required":
+        if reason == "pr_split_required":
             update["halt_detail"] = split["plan"] if split else state.get("spec", "")
         return update
 
@@ -689,8 +738,8 @@ def run_delivery(
     try:
         graph = compile_delivery(dispatcher, config, run=DryRun(), scratch=scratch)
     except SkillMissing as exc:
-        return {**state, "path": ["done"], "halt": exc.halt, "stop": exc.halt,
-                "halt_detail": str(exc), "skill_reason": exc.reason}
+        return {**state, **halted("skill_missing", str(exc), "done"), "stop": exc.halt,
+                "skill_reason": exc.reason}
     return graph.invoke(state)
 
 

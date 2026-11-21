@@ -80,7 +80,7 @@ class ScriptHandler:
                 if verdict == "changes" else []
             )
             return Outcome("ran", {
-                "review": verdict, "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.",
+                "review": verdict, "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.", "tool_facts": [],
             })
         if node == "verify":
             return Outcome("ran", {"verify": self.verify})

@@ -633,6 +633,36 @@
         ],
         "title": "MergeRisk",
         "type": "object"
+      },
+      "ToolFact": {
+        "additionalProperties": false,
+        "properties": {
+          "claim": {
+            "description": "State the outside-tool behavior the diff relies on.",
+            "pattern": "\\S",
+            "title": "Claim",
+            "type": "string"
+          },
+          "fixture": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Give the exact entry ID in tests/fixtures/manifest.toml. Use null when the claim has no recorded evidence.",
+            "title": "Fixture"
+          }
+        },
+        "required": [
+          "claim",
+          "fixture"
+        ],
+        "title": "ToolFact",
+        "type": "object"
       }
     },
     "additionalProperties": false,
@@ -656,6 +686,14 @@
         "title": "Findings",
         "type": "array"
       },
+      "tool_facts": {
+        "description": "List every outside-tool fact the diff relies on, including unrecorded facts. Use an empty list if there are none.",
+        "items": {
+          "$ref": "#/$defs/ToolFact"
+        },
+        "title": "Tool Facts",
+        "type": "array"
+      },
       "detail": {
         "description": "Write the pull request review body, including any longer explanation.",
         "pattern": "\\S",
@@ -667,6 +705,7 @@
       "review",
       "risk",
       "findings",
+      "tool_facts",
       "detail"
     ],
     "title": "ReviewOutput",
