@@ -44,6 +44,8 @@ class Call:
     edit: bool
     temp_dir: Path
     budget_usd: BudgetUsd | None = None
+    check: str | None = None
+    read_roots: tuple[Path, ...] = ()
 
 
 class CliAdapter(Protocol):
@@ -100,10 +102,6 @@ class NativeAdapter:
     model: ModelSpec
     envelope: ClassVar[type[NativeEnvelope]]
     env: ClassVar[Mapping[str, str]] = {}
-
-    @staticmethod
-    def permission_mode(call: Call) -> str:
-        return "acceptEdits" if call.edit else "plan"
 
     def read(self, process: CompletedProcess[str]) -> Outcome:
         try:

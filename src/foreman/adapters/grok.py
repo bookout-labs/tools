@@ -57,5 +57,5 @@ class GrokAdapter(NativeAdapter):
 
     def command(self, call: Call) -> list[str]:
         effort = ["--reasoning-effort", self.model.effort] if self.model.effort else []
-        return ["grok", "-m", self.model.model_id, *effort, "--permission-mode", self.permission_mode(call),
+        return ["grok", "-m", self.model.model_id, *effort, "--permission-mode", ("acceptEdits" if call.edit else "plan"),
                 "--no-subagents", "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]

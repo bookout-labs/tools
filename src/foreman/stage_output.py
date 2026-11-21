@@ -253,6 +253,7 @@ class DispatchPlanRecord(TypedDict):
     models: list[str]
     instruction: str
     methods: list[str]
+    read_roots: NotRequired[list[str]]
     target: PullRequestRecord | None
     scope: ReviewScopeRecord | None
 
@@ -267,6 +268,7 @@ class DispatchPlan(RecordContract[DispatchPlanRecord]):
     models: list[str]
     instruction: str
     methods: list[str]
+    read_roots: list[str] = Field(default_factory=list)
     target: PullRequest | None
     scope: ReviewScopeRecord | None
 

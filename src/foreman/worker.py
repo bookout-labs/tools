@@ -52,7 +52,10 @@ class CliWorker:
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
         plan = state.get("dispatch_plan")
-        budget = DispatchPlan.model_validate(plan).budget_usd if plan else None
+        plan = DispatchPlan.model_validate(plan) if plan else None
+        budget = plan.budget_usd if plan else None
+        edit = node == "implement"
+        check = state.get("check") if edit else plan.scope["command"] if plan and plan.scope else None
         adapter = ADAPTERS[model.family](model)
         checkout = self.cwd.resolve()
         temp_root = Path(tempfile.gettempdir()).resolve()
@@ -61,7 +64,9 @@ class CliWorker:
         with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
             scratch = Path(directory) / "scratch"
             scratch.mkdir()
-            args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None))
+            args = adapter.command(Call(prompt, schema, edit=edit, check=check if isinstance(check, str) else None,
+                                        read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
+                                        temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None))
             try:
                 process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch)})
             except FileNotFoundError:
