@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import tomllib
 
+from foreman._raw import is_dict, sorted_keys
+
 DEFAULT_PATH = Path(__file__).with_name("measure.toml")
 LABELS = ("approve", "block", "insufficient_evidence")
 PROPOSALS = {
@@ -36,8 +38,8 @@ class Grade:
     passed: bool
 
 
-def parse_measure(data: dict) -> MeasureConfig:
-    if not isinstance(data, dict):
+def parse_measure(data: object) -> MeasureConfig:
+    if not is_dict(data):
         raise MeasureError("measure config must be a table")
     rate = data.get("sampling_rate")
     bar = data.get("passing_score")
@@ -46,7 +48,7 @@ def parse_measure(data: dict) -> MeasureConfig:
         raise MeasureError("sampling_rate must be an integer of at least 1")
     if not isinstance(bar, (int, float)) or isinstance(bar, bool) or not 0 <= float(bar) <= 1:
         raise MeasureError("passing_score must be a number from 0 to 1")
-    if not isinstance(labels, dict):
+    if not is_dict(labels):
         raise MeasureError("labels must be a table")
     parsed: dict[str, float] = {}
     for name in LABELS:
@@ -56,7 +58,7 @@ def parse_measure(data: dict) -> MeasureConfig:
         parsed[name] = float(score)
     extra = set(labels) - set(LABELS)
     if extra:
-        raise MeasureError(f"unknown label {sorted(extra)[0]}")
+        raise MeasureError(f"unknown label {sorted_keys(extra)[0]}")
     return MeasureConfig(sampling_rate=rate, passing_score=float(bar), labels=parsed)
 
 
@@ -75,7 +77,7 @@ def grade(label: str, config: MeasureConfig | None = None) -> Grade:
     return Grade(label=label, score=score, passed=passed)
 
 
-def selected(run_index: int, config: MeasureConfig | None = None) -> bool:
+def selected(run_index: object, config: MeasureConfig | None = None) -> bool:
     config = config or load_measure()
     if not isinstance(run_index, int) or isinstance(run_index, bool) or run_index < 0:
         raise MeasureError("run index must be zero or greater")

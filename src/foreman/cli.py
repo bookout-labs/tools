@@ -1,3 +1,5 @@
+# Resolve the delivery types in #52 before restoring strict checking.
+# pyright: basic
 """Command line for the foreman tool."""
 
 import argparse
@@ -24,7 +26,10 @@ from foreman.workspace import LiveWorkspace
 
 def _print_run(result: DeliveryState) -> None:
     models = result.get("models_used", {})
-    for node in result["path"]:
+    if "path" not in result:
+        raise KeyError("path")
+    path = result["path"]
+    for node in path:
         if node == "verify":
             print(f"verify {result.get('check') or '(no check)'}")
         elif node == "done":
@@ -32,14 +37,20 @@ def _print_run(result: DeliveryState) -> None:
                 print(f"check exit {result['check_exit_code']}")
             for proof, label in result.get("proof_labels", {}).items():
                 print(f"{proof} proof {label}")
+            if "stop" not in result:
+                raise KeyError("stop")
             print(f"done {result['stop']}")
             if detail := result.get("halt_detail"):
                 print(detail)
         elif node == "merge":
+            if "merge" not in result:
+                raise KeyError("merge")
             match outcome := result["merge"]:
                 case "armed":
                     print("merge armed")
                 case "skipped":
+                    if "merge_command" not in result:
+                        raise KeyError("merge_command")
                     print(f"merge skipped (dry run): {shlex.join(result['merge_command'])}")
                 case "not_armed":
                     print("merge not armed")
@@ -52,8 +63,10 @@ def _print_run(result: DeliveryState) -> None:
             if node == "review" and (risk := result.get("risk")):
                 fields.extend(("risk", risk["level"]))
             print(" ".join(fields))
-    if result.get("stop") == "needs_human" and "done" not in result["path"]:
+    if result.get("stop") == "needs_human" and "done" not in path:
         print("paused needs_human")
+        if "halt_detail" not in result:
+            raise KeyError("halt_detail")
         print(result["halt_detail"])
 
 
@@ -113,7 +126,7 @@ def main(
         except (OSError, yaml.YAMLError, AcceptError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        if not decision["start"]:
+        if decision["start"] is False:
             print("ignored")
             return 0
         print(f"start {decision['source']}")

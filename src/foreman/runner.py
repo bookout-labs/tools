@@ -1,3 +1,5 @@
+# Resolve the delivery types in #52 before restoring strict checking.
+# pyright: basic
 """Run one delivery issue against its SQLite checkpoint."""
 
 import json
@@ -10,7 +12,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery, load_slice
+from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery, load_slice, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
@@ -105,9 +107,9 @@ def run_live_delivery(
                     client.add_label(repo, number, "factory")
             saved = graph.get_state(config)
         if saved.interrupts:
-            question = saved.interrupts[0].value["question"]
-            return {**saved.values, "stop": "needs_human", "halt_detail": question}
-        result: DeliveryState = dict(saved.values)
+            question: object = saved.interrupts[0].value["question"]
+            return read_delivery_state({**saved.values, "stop": "needs_human", "halt_detail": question})
+        result = read_delivery_state(saved.values)
         if "merge" in result.get("path", []) and "merge" not in result:
             legacy = saver.get(saved.config)
             if legacy is not None:

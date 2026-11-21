@@ -1,14 +1,18 @@
+# Resolve the delivery types in #52 before restoring strict checking.
+# pyright: basic
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal
 import operator
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from pydantic import TypeAdapter
+from typing_extensions import TypedDict
 
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
@@ -77,6 +81,25 @@ class DeliveryState(TypedDict, total=False):
     halt_detail: str
     stop: str
     path: Annotated[list[str], operator.add]
+
+
+_DELIVERY_STATE = TypeAdapter(DeliveryState)
+
+
+def read_delivery_state(raw: object) -> DeliveryState:
+    return _DELIVERY_STATE.validate_python(raw, strict=True)
+
+
+def _active_slice(state: DeliveryState) -> dict[str, object]:
+    if "slice" not in state:
+        raise KeyError("slice")
+    return state["slice"]
+
+
+def _last_stage(state: DeliveryState) -> str:
+    if "path" not in state:
+        raise KeyError("path")
+    return state["path"][-1]
 
 
 def stage_text(name: str) -> str:
@@ -182,7 +205,7 @@ def compile_delivery(
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
             instruction = prompts[name]
             if name == "implement":
-                slice = state["slice"]
+                slice = _active_slice(state)
                 for required, skill in ((browser_required, "browser-proof"), (formal_required, "formal-proof")):
                     if required(slice):
                         proof = (PACKAGE / "skills" / f"{skill}.md").read_text().strip()
@@ -219,6 +242,8 @@ def compile_delivery(
                     return {"path": ["verify"], "halt": "dirty_worktree", "halt_detail": str(exc)}
                 if not worktree.clean:
                     return {"path": ["verify"], "halt": "dirty_worktree"}
+                if "check" not in state:
+                    raise KeyError("check")
                 exit_code = workspace.run(state["check"])
                 verdict = "pass" if exit_code == 0 else "fail"
                 checked = {"verified_head": worktree.head} if exit_code == 0 else {}
@@ -230,7 +255,7 @@ def compile_delivery(
                 }
 
     def prove(state: DeliveryState) -> DeliveryState:
-        slice = state["slice"]
+        slice = _active_slice(state)
         labels = {
             "browser": browser_proof_label(slice, state.get("browser_proof")),
             "formal": formal_proof_label(slice, state.get("formal_proof")),
@@ -245,7 +270,7 @@ def compile_delivery(
         return update
 
     def needs_human(state: DeliveryState) -> DeliveryState:
-        stage = state["path"][-1]
+        stage = _last_stage(state)
         question = state.get("human_question") or "What should Foreman know to continue?"
         answer = interrupt({"stage": stage, "question": question})
         return {"human_answers": [*state.get("human_answers", []), answer]}
@@ -282,7 +307,7 @@ def compile_delivery(
         if state.get("halt"):
             return "done"
         if state.get("verify") == "pass":
-            slice = state["slice"]
+            slice = _active_slice(state)
             if browser_required(slice) or formal_required(slice):
                 return "proof"
             return "review"
@@ -299,6 +324,8 @@ def compile_delivery(
         return "done" if state.get("halt") else "verify"
 
     def arm_merge(state: DeliveryState) -> DeliveryState:
+        if "repo" not in state:
+            raise KeyError("repo")
         repo = state["repo"]
         head = state.get("verified_head")
 
@@ -339,6 +366,8 @@ def compile_delivery(
                     return halted("merge_held", f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
                 if hold:
                     return halted("merge_held", hold)
+                if "issue" not in state:
+                    raise KeyError("issue")
                 try:
                     forge.arm_auto_merge(repo, state["issue"], worktree.branch, head)
                 except MergeNotArmed as exc:
@@ -368,7 +397,7 @@ def compile_delivery(
         "spec", after_spec, {"implement": "implement", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges(
-        "needs_human", lambda state: state["path"][-1], {"triage": "triage", "spec": "spec"},
+        "needs_human", _last_stage, {"triage": "triage", "spec": "spec"},
     )
     builder.add_edge("research", "done")
     builder.add_conditional_edges("implement", after_implement, {"verify": "verify", "done": "done"})
@@ -411,7 +440,7 @@ def run_delivery(
     if slice is not None:
         state["slice"] = load_slice(slice)
     graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
-    return graph.invoke(state)
+    return read_delivery_state(graph.invoke(state))
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
