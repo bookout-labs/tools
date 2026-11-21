@@ -27,7 +27,7 @@ from unidiff.patch import PatchSet
 from foreman.adapters import Outcome, OutcomeKind
 from foreman.config import Config, ConfigError, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_fixtures
+from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command, pull_request_command,
 )
@@ -35,7 +35,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, Finding, GraphCheck, ToolFact, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
+    Contract, Finding, GraphCheck, StoredToolFact, ToolFact, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
@@ -52,6 +52,8 @@ HaltReason = Literal[
     "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
+
+TOOL_FACTS_SUMMARY = "[tool-facts] Record the outside-tool facts listed in the review detail."
 
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 
@@ -272,37 +274,40 @@ def graph_check(state: DeliveryState) -> GraphCheck | None:
 
 
 def _check_tool_facts(
-    output: ReviewOutput, run: LiveRun | DryRun, head: str | None,
-    state: DeliveryState | None = None,
+    output: ReviewOutput, run: LiveRun | DryRun, state: DeliveryState,
 ) -> ReviewOutput:
-    if state is None:
-        state = {"repo": "", "check": "", "path": []}
+    head = state.get("verified_head")
     manifest_path = state.get("fact_record", MANIFEST_PATH)
-    facts = {fact.claim: fact for fact in (ToolFact.model_validate(raw) for raw in state.get("tool_facts", []))}
-    facts.update({fact.claim: fact for fact in output.tool_facts})
+    facts = {fact.claim: fact for fact in (
+        StoredToolFact.model_validate(raw) if "claim_id" in raw else StoredToolFact.from_fact(ToolFact.model_validate(raw))
+        for raw in state.get("tool_facts", [])
+    )}
+    for fact in output.tool_facts:
+        facts.setdefault(fact.claim, StoredToolFact.from_fact(fact))
     proven = graph_check(state)
     outside = [fact for fact in facts.values() if not (
         proven is not None and fact.graph_check == proven and fact.claim == proven.claim
     )]
     output = output.model_copy(update={"tool_facts": outside})
-    recorded: set[str] = set()
+    recorded: dict[str, list[str]] = {}
     notes = [output.detail]
-    if isinstance(run, LiveRun) and head and any(fact.fixture is not None for fact in outside):
+    if isinstance(run, LiveRun) and head and outside:
         try:
-            recorded = recorded_fixtures(run.workspace, head, manifest_path)
-        except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed, ValueError) as exc:
+            recorded = recorded_evidence(run.workspace, head, manifest_path)
+        except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
             notes.append(f"Could not check {manifest_path} at {head}. {exc}")
-    unrecorded = [fact for fact in outside if fact.fixture not in recorded]
+    claim_ids = {claim_id for ids in recorded.values() for claim_id in ids}
+    unrecorded = [fact for fact in outside if fact.fixture not in recorded and fact.claim_id not in claim_ids]
     if not unrecorded:
         return output
     for fact in unrecorded:
         citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
-        notes.append(f"Unrecorded outside-tool fact{citation}: {fact.claim}")
+        notes.append(f"Unrecorded outside-tool fact {fact.claim_id}{citation}: {fact.claim}")
     return output.model_copy(update={
         "review": "changes", "detail": "\n".join(notes),
         "findings": [*output.findings, Finding(
             file=manifest_path, line=1, severity="blocking",
-            summary="[tool-facts] Record the outside-tool facts listed in the review detail.",
+            summary=TOOL_FACTS_SUMMARY,
         )],
     })
 
@@ -468,13 +473,14 @@ def compile_delivery(
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
             if name in {"implement", "review"}:
                 instruction += f"\n\nFact record in this checkout: {state.get('fact_record', MANIFEST_PATH)}"
-            if name == "implement" and state.get("tool_facts"):
+            if name == "implement" and any(f.get("summary") == TOOL_FACTS_SUMMARY for f in state.get("findings", [])):
                 instruction += (
                     "\nResolve the tool-facts finding by recording evidence and creating the record and parent directories if absent."
                     " Fixture IDs are paths relative to the record directory. Commit regular evidence files."
                     " Use TOML [fixtures.\"<evidence-file>\"] with tool and version, plus either"
                     " kind = \"captured_run\" and argv = [\"tool\", \"arg\"] for captured output, or"
                     " kind = \"quoted_source\" and sources = [\"https://source\"] for quoted source evidence."
+                    ' Add claim_ids = ["<claim_id>"] to the evidence entry for each carried claim.'
                     " Support each claim in tool_facts; the graph rechecks the published verified head."
                 )
             if name == "review" and (proven := graph_check(state)) is not None:
@@ -526,7 +532,7 @@ def compile_delivery(
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
                 if isinstance(output, ReviewOutput):
-                    output = _check_tool_facts(output, run, state.get("verified_head"), state)
+                    output = _check_tool_facts(output, run, state)
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
                 update["skill_attempts"] = attempts
             except InvalidSlicePlan as exc:
@@ -594,8 +600,8 @@ def compile_delivery(
             if after.head != before.head or after.branch != before.branch:
                 return {**halted("failed", "The worker changed HEAD or switched branches.", "implement"), "head_sha": after.head}
             if not update.get("halt") and after.clean:
-                identifiers = ["tool-facts" if str(f.get("summary", "")).startswith("[tool-facts]")
-                               else str(f.get("id") or f"{f.get('file')}:{f.get('line')}") for f in state.get("findings", [])]
+                identifiers = ["tool-facts" if f.get("summary") == TOOL_FACTS_SUMMARY
+                               else f"{f.get('file')}:{f.get('line')}" for f in state.get("findings", [])]
                 detail = "no changes" + ("; unresolved findings: " + ", ".join(identifiers) if identifiers else "")
                 return halted("failed", detail, "implement")
             fingerprint = run.workspace.fingerprint()

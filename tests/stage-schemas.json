@@ -684,8 +684,8 @@
         },
         "required": [
           "claim",
-          "fixture",
-          "graph_check"
+          "graph_check",
+          "fixture"
         ],
         "title": "ToolFact",
         "type": "object"

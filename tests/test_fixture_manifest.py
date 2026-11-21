@@ -62,7 +62,9 @@ class RecordedEvidenceTest(unittest.TestCase):
             "review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": "result.txt"}],
         })
-        return _check_tool_facts(output, LiveRun(Mock(), self.workspace), head)
+        return _check_tool_facts(output, LiveRun(Mock(), self.workspace), {
+            "repo": "example/repo", "check": "", "path": [], **({"verified_head": head} if head else {}),
+        })
 
     def test_unreadable_manifest_blocks_approval(self):
         cases = {"bad TOML": b"[", "schema failure": b"[fixtures.result]\nkind = 'unknown'",
@@ -96,6 +98,28 @@ class RecordedEvidenceTest(unittest.TestCase):
         self.assertEqual(recorded_fixtures(self.workspace, head, "evidence/facts.toml"), set())
         self.assertEqual(recorded_fixtures(self.workspace, self.commit(), "evidence/facts.toml"), {"result.txt"})
 
+    def test_carried_claim_requires_committed_evidence_for_its_id(self):
+        from foreman.delivery import LiveRun, _check_tool_facts
+        from foreman.dry_run import DEFAULT_RISK
+        from foreman.stage_output import ReviewOutput, StoredToolFact, ToolFact
+
+        fact = StoredToolFact.from_fact(ToolFact(claim="CLI accepts --debug", fixture=None))
+        state = {"repo": "example/repo", "check": "", "path": [],
+                 "tool_facts": [fact.model_dump()], "verified_head": self.commit()}
+        output = ReviewOutput(review="approve", risk=DEFAULT_RISK, findings=[], detail="Reviewed.", tool_facts=[])
+        run = LiveRun(Mock(), self.workspace)
+        self.manifest.write_text(self.manifest.read_text() + f'claim_ids = ["{fact.claim_id}"]\n')
+        self.assertEqual(_check_tool_facts(output, run, state).review, "changes")
+        state["verified_head"] = self.commit()
+        self.assertEqual(_check_tool_facts(output, run, state).review, "approve")
+        repeated = output.model_copy(update={"tool_facts": [ToolFact(claim=fact.claim, fixture="result.txt")]})
+        self.assertEqual(_check_tool_facts(repeated, run, state).tool_facts[0].model_dump()["claim_id"], fact.claim_id)
+        unrelated = output.model_copy(update={"tool_facts": [ToolFact(claim="Other behavior", fixture=None)]})
+        self.assertEqual(_check_tool_facts(unrelated, run, state).review, "changes")
+        (self.fixtures / "result.txt").unlink()
+        state["verified_head"] = self.commit()
+        self.assertEqual(_check_tool_facts(output, run, state).review, "changes")
+
     def test_only_regular_tracked_files_are_recorded(self):
         from foreman.fixture_manifest import recorded_fixtures
 
@@ -123,7 +147,7 @@ class GraphFactGateTest(unittest.TestCase):
             "review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
             "tool_facts": facts,
         })
-        return _check_tool_facts(output, DryRun(), state.get("verified_head"), state)
+        return _check_tool_facts(output, DryRun(), state)
 
     def test_only_exact_graph_check_restatement_is_exempt(self):
         from foreman.stage_output import GraphCheck

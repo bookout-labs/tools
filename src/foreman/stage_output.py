@@ -2,6 +2,7 @@
 # pyright: basic
 """Worker output contracts shared by the CLI prompts and delivery graph."""
 
+from hashlib import sha256
 from typing import Annotated, Literal, Self, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, StringConstraints, ValidationError, field_validator, model_validator
@@ -157,14 +158,28 @@ class GraphCheck(Contract):
         return f"Check {self.command!r} exited {self.exit_code} at {self.head}."
 
 
+def _require_properties(schema: JsonDict) -> None:
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    schema["required"] = list(properties)
+
+
 class ToolFact(Contract):
-    model_config = ConfigDict(json_schema_extra={"required": ["claim", "fixture", "graph_check"]})
+    model_config = ConfigDict(json_schema_extra=_require_properties)
 
     claim: TrimmedText = Field(description="State the outside-tool behavior the diff relies on.")
     graph_check: GraphCheck | None = Field(default=None, description="Only for an exact graph check restatement. Copy its claim verbatim and its structured evidence; otherwise null.")
     fixture: TrimmedText | None = Field(
         description="Give the exact entry ID in the run state fact_record. Use null when the claim has no recorded evidence.",
     )
+
+
+class StoredToolFact(ToolFact):
+    claim_id: Text
+
+    @classmethod
+    def from_fact(cls, fact: ToolFact) -> "StoredToolFact":
+        return cls(**fact.model_dump(), claim_id="tool-fact-" + sha256(fact.claim.encode()).hexdigest())
 
 
 class Finding(Contract):

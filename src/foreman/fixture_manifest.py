@@ -1,4 +1,4 @@
-"""Provenance for outside-tool evidence under tests/fixtures."""
+"""Provenance and claim references for repository-tracked outside-tool evidence."""
 
 import tomllib
 from pathlib import PurePosixPath
@@ -17,6 +17,7 @@ class FixtureSource(Contract):
     tool: Text
     version: Text
     notes: Text | None = None
+    claim_ids: list[Text] = Field(default_factory=list)
 
 
 class CapturedRun(FixtureSource):
@@ -58,12 +59,17 @@ def fact_record_path(path: str) -> str:
     return path
 
 
-def recorded_fixtures(workspace: Workspace, head: str, manifest_path: str = MANIFEST_PATH) -> set[str]:
+def recorded_evidence(workspace: Workspace, head: str, manifest_path: str = MANIFEST_PATH) -> dict[str, list[str]]:
     manifest_path = fact_record_path(manifest_path)
     directory = PurePosixPath(manifest_path).parent.as_posix()
     files = workspace.files_at(head, directory)
     if manifest_path not in files:
-        return set()
+        return {}
     manifest = FixtureManifest.from_toml(workspace.read_file_at(head, manifest_path))
     files.remove(manifest_path)
-    return manifest.fixtures.keys() & {path.removeprefix(f"{directory}/") if directory != "." else path for path in files}
+    tracked = {path.removeprefix(f"{directory}/") if directory != "." else path for path in files}
+    return {path: fixture.claim_ids for path, fixture in manifest.fixtures.items() if path in tracked}
+
+
+def recorded_fixtures(workspace: Workspace, head: str, manifest_path: str = MANIFEST_PATH) -> set[str]:
+    return set(recorded_evidence(workspace, head, manifest_path))

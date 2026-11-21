@@ -344,6 +344,11 @@ class CliWorkerTest(unittest.TestCase):
 
 
 class StageOutputTest(unittest.TestCase):
+    def test_cli_rejects_invalid_fact_record_before_running(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            main(["run", "delivery", "--repo", "Example/Engine", "--fact-record", "../facts.toml"])
+        self.assertEqual(raised.exception.code, 2)
+
     def test_schema_snapshot(self):
         snapshot = Path(__file__).with_name("stage-schemas.json").read_text()
         schemas = {name: model.model_json_schema() for name, model in STAGE_OUTPUTS.items()}
@@ -599,6 +604,14 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn("paused quota_exhausted", stdout.getvalue())
         self.assertIn("triage quota exhausted", stdout.getvalue())
 
+    def test_resume_rejects_a_different_fact_record(self):
+        self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        with self.assertRaisesRegex(ValueError, "--fact-record differs"):
+            run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
+                              fact_record="evidence/other.toml", checkpoint=self.checkpoint,
+                              run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+        self.assertEqual(self.walk([])["stop"], "verified")
+
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
         def exhaust(node, model, state, instruction):
             if node == "triage":
@@ -755,7 +768,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
 
-    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml"):
+    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml", paraphrase: bool = False):
         root = self.cwd / "checkout"
         root.mkdir()
         subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=root, check=True)
@@ -805,10 +818,14 @@ class LiveRunnerTest(unittest.TestCase):
                         self.assertIn("captured_run", args[-1])
                         self.assertIn("quoted_source", args[-1])
                         self.assertIn("The CLI accepts --debug.", args[-1])
-                        manifest_path.write_text(manifest("result.txt"))
+                        claims = json.loads(args[-1].split("Delivery state:\n", 1)[1])["tool_facts"]
+                        self.assertIn("claim_ids", args[-1])
+                        manifest_path.write_text(manifest("result.txt") + f'claim_ids = {json.dumps([f["claim_id"] for f in claims])}\n')
                     return worker_reply(args, reply)
                 file = root / "items.txt"
                 file.write_text((file.read_text() if file.exists() else "") + "synthetic edit\n")
+            if paraphrase and implementations > 1 and "review" in reply:
+                reply = {**reply, "tool_facts": [{"claim": "The debug flag is accepted.", "fixture": "result.txt"}]}
             if record_during_review and "review" in reply:
                 manifest_path.write_text(manifest("result.txt"))
             return worker_reply(args, reply)
@@ -824,6 +841,12 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(result.get("merge"), "armed")
         self.assertEqual(result.get("fact_record"), "tests/fixtures/manifest.toml")
+
+    def test_null_claim_resolves_by_id_when_reviewer_paraphrases(self):
+        result = self.review_tool_fact(None, recover=True, paraphrase=True)
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("merge"), "armed")
+        self.assertEqual(result["path"].count("review"), 2)
 
     def test_custom_fact_record_reaches_approval(self):
         result = self.review_tool_fact("result.txt", recover=True, record_path="evidence/facts.toml")

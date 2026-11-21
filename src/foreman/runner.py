@@ -102,7 +102,7 @@ def run_live_delivery(
             return read_delivery_state({**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                         "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
                                         "fact_record": fact_record,
-                "repo": repo, "check": check})
+                                        "repo": repo, "check": check})
         def invoke(
             graph_input: DeliveryState | Command | None,
             state: DeliveryState,
@@ -113,6 +113,8 @@ def run_live_delivery(
 
         saved = graph.get_state(config)
         saved_values = _CHECKPOINT_STATE.validate_python(saved.values, strict=True) if saved.values else None
+        if saved_values is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
+            raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
