@@ -66,8 +66,9 @@ wrong behavior fails that same answer, and an independent acceptance receipt is
 pinned. A fresh independent acceptance review of the answer's coverage remains
 necessary before promoting newly curated answers. Isolation is a separate receipt.
 
-The commitments cover a feature case, a provisional bug case, and a provisional
-parent fixture case. Their private bundles are local curation staging only.
+The commitments cover a feature case, a provisional bug case, a provisional
+parent fixture case, and a provisional real parent plan. Their private bundles
+are local curation staging only.
 They must be transferred into an evaluator-only private store outside all
 worker mounts, credentials, and network access before use. Each curation PR
 identifies its staging location and unmet obligations. The bug case has
