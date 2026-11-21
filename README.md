@@ -60,7 +60,7 @@ graph TD;
 
 Generate the diagram with `foreman diagram delivery`. The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. A node does not edit the list, and it does not decide the next node.
 
-Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the builder model is missing or every eligible reviewer is out of quota, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
+Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the graph cannot select a reviewer from a different model family, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
 
 Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs use a scripted verdict. When the check passes, the graph evaluates the browser and formal evidence required by the slice. Missing evidence stops the run. A failed proof consumes a round and sends the slice back to implement while rounds remain.
 
@@ -72,11 +72,27 @@ Foreman looks up the local branch by name. If the pull request uses a differentl
 
 If the merge command times out, Foreman checks the same pull request at the verified SHA. An open pull request with a squash auto-merge request or a merged pull request confirms the result. A failed merge check or unconfirmed command finishes the run as `merge_not_armed` and records the reason. If HEAD moved, the reason includes the current and verified SHAs. A dry run prints `merge skipped (dry run)` with the command template and reports the scripted verification result.
 
-Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
+Stage prompts live in `src/foreman/stages/`. The graph selects worker methods from the rule table and validated delivery state. The code-quality skill supplies the scorer rubric.
+
+Before live dispatch, Foreman exports the pstack skills from the repository and commit pinned in `src/foreman/config.py`. It records that pin in the checkpoint and reuses it on resume. A failed fetch or export stops with `skill_missing` and reports `pin unavailable` with the commit. A missing method in a successful export reports `method missing at pin` with the path and commit. Dry runs print `pstack pin not checked (dry run)`.
 
 A parent or slice goes straight to implement when the behavior is decided and the change fits in one pull request. A parent on this route is its own slice. It carries the same proof obligations as any slice and files no child issues. Changes that need more than one pull request or leave a product choice open go to spec. An informational request goes to spec on a parent and to research on a slice. An open product choice pauses a live run for a person's answer.
 
-A ready parent spec records its slices and stops as `sliced`. Each child issue includes a fenced JSON object with its title, acceptance, dependency titles, screen path or empty string, and any named PostgreSQL constraints. Live runs load that object as the slice for the run. A `slice`-labelled issue with a missing or invalid object stops at `missing_slice`.
+A ready parent spec records its slices and stops as `sliced`. Each child issue carries the slice and the parent's work classification in fenced JSON.
+
+```json
+{
+  "title": "Keep the selected item on refresh",
+  "acceptance": "The selected item remains selected after refresh.",
+  "depends_on": [],
+  "screen": "",
+  "properties": [],
+  "stateful": true,
+  "work_kind": "bug_fix"
+}
+```
+
+`stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`.
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 
@@ -156,6 +172,8 @@ foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm r
 ```
 
 The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request and check command.
+
+If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota returns. Foreman retries the same stage and retains its earlier attempt records.
 
 ## Tests
 

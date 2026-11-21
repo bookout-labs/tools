@@ -3,9 +3,9 @@
 from pathlib import Path
 import subprocess
 import tarfile
-from typing import Literal, TYPE_CHECKING
+from typing import Annotated, Literal, TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from foreman.config import PstackPin
 from foreman.proof import browser_required, formal_required
@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 AgentStage = Literal["triage", "research", "spec", "implement", "review"]
 LocalSkill = Literal["browser-proof", "code-quality", "formal-proof", "merge-risk", "review-quality"]
 Condition = WorkKind | Literal["stateful", "browser", "formal"]
+SkillFailureReason = Literal["pin_unavailable", "method_missing"]
+LineNumber = Annotated[int, Field(ge=1)]
 PACKAGE_SKILLS = Path(__file__).resolve().with_name("skills")
 
 
@@ -25,7 +27,14 @@ class PstackMethod(BaseModel):
 
     path: str
     kind: Literal["principle", "skill", "leaf_prompt"]
-    lines: tuple[int, int] | None = None
+    lines: tuple[LineNumber, LineNumber] | None = None
+
+    @field_validator("lines")
+    @classmethod
+    def ordered_lines(cls, lines: tuple[int, int] | None) -> tuple[int, int] | None:
+        if lines is not None and lines[1] < lines[0]:
+            raise ValueError("end must be at least start")
+        return lines
 
 
 class SkillRule(BaseModel):
@@ -54,7 +63,7 @@ def principle(stage: AgentStage, name: str) -> SkillRule:
 
 
 SKILL_RULES = (
-    SkillRule(stage="triage", skill=PstackMethod(path="poteto-mode/SKILL.md", kind="leaf_prompt", lines=(110, 110))),
+    SkillRule(stage="triage", skill=PstackMethod(path="poteto-mode/SKILL.md", kind="skill", lines=(110, 110))),
     SkillRule(stage="research", skill=PstackMethod(path="how/SKILL.md", kind="leaf_prompt", lines=(17, 17))),
     SkillRule(stage="research", skill=PstackMethod(path="why/SKILL.md", kind="skill"), when="bug_fix"),
     principle("spec", "redesign-from-first-principles"),
@@ -63,10 +72,6 @@ SKILL_RULES = (
     principle("spec", "boundary-discipline"),
     principle("spec", "type-system-discipline"),
     SkillRule(stage="spec", skill=PstackMethod(path="statechart/SKILL.md", kind="skill"), when="stateful"),
-    SkillRule(
-        stage="implement", skill=PstackMethod(path="poteto-mode/playbooks/feature.md", kind="leaf_prompt", lines=(12, 13)),
-        when="feature",
-    ),
     principle("implement", "laziness-protocol"),
     principle("implement", "test-behavior-not-implementation"),
     principle("implement", "prove-it-works"),
@@ -86,8 +91,10 @@ SKILL_RULES = (
 class SkillMissing(ValueError):
     halt: Literal["skill_missing"] = "skill_missing"
 
-    def __init__(self, method: str, pin: PstackPin):
-        super().__init__(f"Required method {method} is unavailable at pstack commit {pin.commit}.")
+    def __init__(self, pin: PstackPin, method: str | None = None):
+        self.reason: SkillFailureReason = "pin_unavailable" if method is None else "method_missing"
+        detail = "pin unavailable" if method is None else f"method missing at pin ({method})"
+        super().__init__(f"pstack {detail}, commit {pin.commit}")
 
 
 def git(root: Path, *args: str) -> str:
@@ -109,17 +116,15 @@ def export_skills(pin: PstackPin, scratch: Path) -> Path:
         with tarfile.open(archive) as bundle:
             bundle.extractall(root, filter="data")
     except (OSError, subprocess.CalledProcessError, tarfile.TarError) as exc:
-        raise SkillMissing("poteto-mode/SKILL.md", pin) from exc
+        raise SkillMissing(pin) from exc
 
     for rule in SKILL_RULES:
         method = rule.skill
         path = root / method.path if isinstance(method, PstackMethod) else PACKAGE_SKILLS / f"{method}.md"
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
-            raise SkillMissing(method.path if isinstance(method, PstackMethod) else path.name, pin) from exc
-        if not lines or isinstance(method, PstackMethod) and method.lines and len(lines) < method.lines[1]:
-            raise SkillMissing(method.path if isinstance(method, PstackMethod) else path.name, pin)
+            raise SkillMissing(pin, method.path if isinstance(method, PstackMethod) else path.name) from exc
 
     for path in sorted(root.rglob("*"), key=lambda entry: -len(entry.parts)):
         if not path.is_symlink():

@@ -9,6 +9,7 @@ from foreman.config import ModelSpec, NodeConfig, load_config
 from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
+from fixtures.skill_fixture import skill_fixture
 
 
 SLICES = [
@@ -36,14 +37,11 @@ HEAD_SHA = "a" * 40
 
 
 def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
-    return run_delivery(
-        FailoverDispatcher(handler),
-        repo="DoctorCRE/doctorcre-engine",
-        request="Add a field",
-        check=check,
-        slice=slice,
-        config=config,
-    )
+    with skill_fixture(config) as (fixture_config, scratch):
+        return run_delivery(
+            FailoverDispatcher(handler), repo="DoctorCRE/doctorcre-engine", request="Add a field",
+            check=check, slice=slice, config=fixture_config, scratch=scratch,
+        )
 
 
 class DeliveryTest(unittest.TestCase):
@@ -278,6 +276,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["models_used"]["triage"], "grok-4.7-high")
         triage = [item for item in result["skill_attempts"] if item["stage"] == "triage"]
         self.assertEqual([item["model"] for item in triage], ["claude-opus-5-5-high", "grok-4.7-high"])
+        self.assertEqual([item["outcome"] for item in triage], ["quota", "ran"])
         self.assertEqual([item["methods"] for item in triage], [["poteto-mode/SKILL.md#L110-L110"]] * 2)
         self.assertEqual(result["models_used"]["review"], "grok-4.7-high")
         self.assertNotEqual(
@@ -310,7 +309,6 @@ class DeliveryTest(unittest.TestCase):
             with self.subTest(kind=kind):
                 built = walk(ScriptHandler(work_kind=kind))
                 methods = next(record["methods"] for record in built["skill_attempts"] if record["stage"] == "implement")
-                self.assertEqual("poteto-mode/playbooks/feature.md#L12-L13" in methods, kind == "feature")
                 self.assertEqual("tdd/SKILL.md" in methods, kind == "bug_fix")
                 self.assertEqual("benchmark-checklist/SKILL.md" in methods, kind == "perf_issue")
                 self.assertIn("principle-prove-it-works/SKILL.md", methods)

@@ -1,11 +1,9 @@
 """A handler that walks the graph without calling a model."""
 
 from collections.abc import Mapping
-from pathlib import Path
 
 from foreman.adapters import Outcome
-from foreman.config import ModelSpec, PstackPin
-from foreman.skill_rules import PstackMethod, SKILL_RULES, git
+from foreman.config import ModelSpec
 from foreman.stage_output import WorkKind
 
 DEFAULT_RISK = {
@@ -80,20 +78,3 @@ class ScriptHandler:
         if node == "verify":
             return Outcome("ran", {"verify": self.verify})
         raise ValueError(f"no script for {node}")
-
-
-def fixture_pin(root: Path) -> PstackPin:
-    root.mkdir()
-    git(root, "init", "--quiet")
-    for rule in SKILL_RULES:
-        method = rule.skill
-        if isinstance(method, PstackMethod):
-            path = root / "pstack" / "skills" / method.path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("Synthetic method.\n" * (method.lines[1] if method.lines else 1), encoding="utf-8")
-    git(root, "add", "--", "pstack")
-    git(
-        root, "-c", "user.name=Foreman", "-c", "user.email=foreman@example.invalid",
-        "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "Synthetic skill fixture",
-    )
-    return PstackPin(repository=str(root.resolve()), commit=git(root, "rev-parse", "HEAD"))

@@ -52,8 +52,9 @@ def _print_run(result: DeliveryState) -> None:
             if node == "review" and (risk := result.get("risk")):
                 fields.extend(("risk", risk["level"]))
             print(" ".join(fields))
-    if result.get("stop") == "needs_human" and "done" not in result["path"]:
-        print("paused needs_human")
+    stop = result.get("stop")
+    if stop in {"needs_human", "quota_exhausted"} and "done" not in result["path"]:
+        print(f"paused {stop}")
         print(result["halt_detail"])
 
 
@@ -140,6 +141,7 @@ def main(
             request=args.request or f"Issue #{args.issue}",
             check=args.check,
         )
+        print("pstack pin not checked (dry run)")
     else:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
             run.error("--repo must be OWNER/NAME")

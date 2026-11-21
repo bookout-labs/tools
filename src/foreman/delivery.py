@@ -1,9 +1,9 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Annotated, Literal, TypedDict
 import operator
 
@@ -14,12 +14,12 @@ from langgraph.types import interrupt
 from foreman.adapters import Outcome, OutcomeKind
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.dry_run import fixture_pin
 from foreman.github import Forge, MergeNotArmed, merge_command
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
-from foreman.skill_rules import SkillMissing, export_skills, stage_methods
+from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, WorkKind, parse_output,
+    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind,
+    parse_output,
 )
 from foreman.workspace import Workspace, WorktreeInspectionFailed
 
@@ -64,6 +64,7 @@ class DeliveryState(TypedDict, total=False):
     issue_kind: str
     work_kind: WorkKind
     pstack_pin: dict[str, str]
+    skill_reason: SkillFailureReason
     skill_attempts: Annotated[list[SkillAttempt], operator.add]
     research: str
     implementation: str
@@ -120,8 +121,12 @@ def clean_slices(
     return [item.model_dump() for item in raw]
 
 
-def load_slice(raw: object) -> dict[str, object]:
-    return clean_slices([parse_output(Slice, raw)], "slice", allow_external_dependencies=True)[0]
+def load_slice(raw: object) -> DeliveryState:
+    stored = parse_output(StoredSlice, raw)
+    state: DeliveryState = {"slice": clean_slices([stored], "slice", allow_external_dependencies=True)[0]}
+    if stored.work_kind is not None:
+        state["work_kind"] = stored.work_kind
+    return state
 
 
 def stage_update(name: str, output: Contract, state: DeliveryState, model: str | None = None) -> dict[str, object]:
@@ -190,9 +195,9 @@ def compile_delivery(
             except ConfigError as exc:
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
             instruction = prompts[name]
-            if methods_root is None:
+            if isinstance(run, LiveRun) and methods_root is None:
                 raise RuntimeError("Delivery execution requires a compiled skill export.")
-            methods_text, methods = stage_methods(name, state, methods_root)
+            methods_text, methods = stage_methods(name, state, methods_root) if methods_root is not None else ("", [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
             if name == "verify":
@@ -206,7 +211,7 @@ def compile_delivery(
                 })
 
             outcome, model = dispatcher.run(
-                name, models, state, instruction, on_attempt=record_attempt if name != "verify" else None,
+                name, models, state, instruction, on_attempt=record_attempt if methods_root and name != "verify" else None,
             )
             stopped: dict[str, object] = {"path": [name], "skill_attempts": attempts}
             if outcome.kind == "failed":
@@ -216,7 +221,7 @@ def compile_delivery(
             if outcome.kind == "quota":
                 if name != "review" and isinstance(run, DryRun):
                     raise QuotaExhausted(model)
-                halt = "no_reviewer" if name == "review" else "quota_exhausted"
+                halt = "no_reviewer" if isinstance(run, DryRun) else "quota_exhausted"
                 return {**stopped, "halt": halt, "halt_detail": f"{name} quota exhausted: {model}"}
             try:
                 update = stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model)
@@ -270,6 +275,10 @@ def compile_delivery(
         answer = interrupt({"stage": stage, "question": question})
         return {"human_answers": [*state.get("human_answers", []), answer]}
 
+    def quota_wait(state: DeliveryState) -> DeliveryState:
+        interrupt({"reason": "quota_exhausted", "detail": state.get("halt_detail")})
+        return {"halt": "", "halt_detail": ""}
+
     def after_triage(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
@@ -319,6 +328,8 @@ def compile_delivery(
         return "done" if state.get("halt") else "verify"
 
     def arm_merge(state: DeliveryState) -> DeliveryState:
+        repo = state["repo"]
+
         def halted(detail: str) -> DeliveryState:
             return {"merge": "not_armed", "halt": "merge_not_armed", "halt_detail": detail, "path": ["merge"]}
 
@@ -326,7 +337,7 @@ def compile_delivery(
             case DryRun():
                 return {
                     "merge": "skipped", "path": ["merge"],
-                    "merge_command": merge_command(state["repo"], "<number>", state.get("head_sha") or "<sha>"),
+                    "merge_command": merge_command(repo, "<number>", state.get("head_sha") or "<sha>"),
                 }
             case LiveRun(forge=forge, workspace=workspace):
                 head = state.get("verified_head")
@@ -346,7 +357,7 @@ def compile_delivery(
                 if worktree.branch is None:
                     return halted("HEAD is detached. Merge requires a checked-out branch.")
                 try:
-                    forge.arm_auto_merge(state["repo"], state["issue"], worktree.branch, head)
+                    forge.arm_auto_merge(repo, state["issue"], worktree.branch, head)
                 except MergeNotArmed as exc:
                     return halted(str(exc))
                 return {"merge": "armed", "path": ["merge"]}
@@ -355,30 +366,41 @@ def compile_delivery(
         return {"stop": stop_reason(state), "path": ["done"]}
 
     builder = StateGraph(DeliveryState)
+
+    def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str]) -> None:
+        def next_stage(state: DeliveryState) -> str:
+            return "quota_wait" if state.get("halt") == "quota_exhausted" else route(state)
+
+        builder.add_conditional_edges(stage, next_stage, {**targets, "quota_wait": "quota_wait"})
+
     for name in REQUIRED_NODES:
         builder.add_node(name, verify if name == "verify" else bind(name))
     builder.add_node("proof", prove)
     builder.add_node("needs_human", needs_human)
+    builder.add_node("quota_wait", quota_wait)
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_conditional_edges(
         START, lambda state: "done" if state.get("halt") else "triage", {"done": "done", "triage": "triage"},
     )
-    builder.add_conditional_edges(
+    add_agent_edges(
         "triage",
         after_triage,
         {"implement": "implement", "spec": "spec", "research": "research",
          "needs_human": "needs_human", "done": "done"},
     )
-    builder.add_conditional_edges(
+    add_agent_edges(
         "spec", after_spec, {"implement": "implement", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges(
         "needs_human", lambda state: state["path"][-1], {"triage": "triage", "spec": "spec"},
     )
-    builder.add_edge("research", "done")
-    builder.add_conditional_edges("implement", after_implement, {"verify": "verify", "done": "done"})
     builder.add_conditional_edges(
+        "quota_wait", lambda state: state["path"][-1], {name: name for name in REQUIRED_NODES if name != "verify"},
+    )
+    add_agent_edges("research", lambda _: "done", {"done": "done"})
+    add_agent_edges("implement", after_implement, {"verify": "verify", "done": "done"})
+    add_agent_edges(
         "review",
         after_review,
         {"merge": "merge", "implement": "implement", "done": "done"},
@@ -404,6 +426,7 @@ def run_delivery(
     check: str = "",
     config: Config | None = None,
     slice: dict[str, object] | None = None,
+    scratch: Path | None = None,
 ) -> DeliveryState:
     state: DeliveryState = {
         "repo": repo,
@@ -415,17 +438,16 @@ def run_delivery(
         "path": [],
     }
     if slice is not None:
-        state["slice"] = load_slice(slice)
-    with TemporaryDirectory(prefix="foreman-skills-") as directory:
-        scratch = Path(directory)
-        pin = fixture_pin(scratch / "fixture")
-        config = replace(config if config is not None else load_config(), pstack=pin)
-        state["pstack_pin"] = pin.model_dump()
-        try:
-            graph = compile_delivery(dispatcher, config, run=DryRun(), scratch=scratch)
-        except SkillMissing as exc:
-            return {**state, "path": ["done"], "halt": exc.halt, "stop": exc.halt, "halt_detail": str(exc)}
-        return graph.invoke(state)
+        state.update(load_slice(slice))
+    config = config if config is not None else load_config()
+    if scratch is not None:
+        state["pstack_pin"] = config.pstack.model_dump()
+    try:
+        graph = compile_delivery(dispatcher, config, run=DryRun(), scratch=scratch)
+    except SkillMissing as exc:
+        return {**state, "path": ["done"], "halt": exc.halt, "stop": exc.halt,
+                "halt_detail": str(exc), "skill_reason": exc.reason}
+    return graph.invoke(state)
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:

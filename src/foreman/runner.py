@@ -5,26 +5,25 @@ import json
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
+from typing import cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DeliveryState, LiveRun, clean_slices, compile_delivery
+from foreman.delivery import DeliveryState, LiveRun, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
-from foreman.stage_output import StoredSlice, WorkKind, parse_output
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 
 
-def _load_slice(body: str) -> tuple[dict[str, object], WorkKind | None]:
+def _load_slice(body: str) -> DeliveryState:
     blocks = SLICE_FENCE.findall(body)
     if not blocks:
         raise InvalidOutput("slice issue needs a fenced JSON object")
-    stored = parse_output(StoredSlice, json.loads(blocks[-1]))
-    return clean_slices([stored], "slice", allow_external_dependencies=True)[0], stored.work_kind
+    return load_slice(json.loads(blocks[-1]))
 
 
 def run_live_delivery(
@@ -57,13 +56,14 @@ def run_live_delivery(
             )
         except SkillMissing as exc:
             return {"path": ["done"], "halt": exc.halt, "stop": exc.halt,
-                    "halt_detail": str(exc), "pstack_pin": pin.model_dump()}
+                    "halt_detail": str(exc), "skill_reason": exc.reason, "pstack_pin": pin.model_dump()}
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
+        waiting_for_quota = bool(saved.interrupts) and saved.values.get("halt") == "quota_exhausted"
         if answer is not None:
-            if not saved.interrupts:
+            if not saved.interrupts or waiting_for_quota:
                 raise ValueError("This issue has no pending question.")
             if not answer.strip():
                 raise ValueError("The answer must contain text.")
@@ -82,13 +82,12 @@ def run_live_delivery(
             }
             if initial["issue_kind"] == "slice":
                 try:
-                    item, inherited_kind = _load_slice(loaded["body"])
-                    initial["slice"] = item
-                    if inherited_kind is not None:
-                        initial["work_kind"] = inherited_kind
+                    initial.update(_load_slice(loaded["body"]))
                 except (InvalidOutput, json.JSONDecodeError) as exc:
                     initial.update(halt="missing_slice", halt_detail=str(exc))
             graph.invoke(initial, config, durability="sync")
+        elif waiting_for_quota:
+            graph.invoke(Command(resume=True), config, durability="sync")
         elif saved.next and not saved.interrupts:
             graph.invoke(None, config, durability="sync")
 
@@ -113,10 +112,14 @@ def run_live_delivery(
                         and "factory" not in client.load_issue(repo, number)["labels"]):
                     client.add_label(repo, number, "factory")
             saved = graph.get_state(config)
+        result = cast(DeliveryState, dict(saved.values))
         if saved.interrupts:
-            question = saved.interrupts[0].value["question"]
-            return {**saved.values, "stop": "needs_human", "halt_detail": question}
-        result: DeliveryState = dict(saved.values)
+            if result.get("halt") == "quota_exhausted":
+                result["stop"] = "quota_exhausted"
+            else:
+                result["stop"] = "needs_human"
+                result["halt_detail"] = saved.interrupts[0].value["question"]
+            return result
         if "merge" in result.get("path", []) and "merge" not in result:
             legacy = saver.get(saved.config)
             if legacy is not None:
