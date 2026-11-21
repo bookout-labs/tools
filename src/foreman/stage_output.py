@@ -1,12 +1,17 @@
 """Worker output contracts shared by the CLI prompts and delivery graph."""
 
-from typing import Annotated, Literal, Self, TypeVar
+from abc import ABC, abstractmethod
+from typing import Annotated, Literal, Self, TYPE_CHECKING, TypeVar
 
 from typing_extensions import NotRequired, TypedDict, override
 
 from pydantic import BaseModel, ConfigDict, JsonValue, Field, PositiveInt, StringConstraints, ValidationError, field_validator, model_validator
 
 from foreman.dispatch import InvalidOutput
+
+if TYPE_CHECKING:
+    from foreman.delivery import DeliveryState, DeliveryUpdate
+    from foreman.workspace import Workspace
 
 PULL_REQUEST_LINES = 400
 
@@ -160,7 +165,18 @@ class StoredSlice(Slice):
         return record
 
 
-class HumanQuestionOutput(Contract):
+class HumanPrompt(Contract):
+    stage: str
+    question: str
+
+
+class StageOutput(Contract, ABC):
+    @abstractmethod
+    def update(self, state: "DeliveryState", workspace: "Workspace | None") -> "DeliveryUpdate":
+        raise NotImplementedError
+
+
+class HumanQuestionOutput(StageOutput):
     human_question: str | None = Field(
         description="When this stage returns needs_human, put the question for the person here. Use null otherwise.",
     )
@@ -180,9 +196,26 @@ class TriageOutput(HumanQuestionOutput):
         description="For a parent issue that triages as implement, return its single slice. Use null otherwise, including for slice issues.",
     )
 
+    @override
+    def update(self, state: "DeliveryState", workspace: "Workspace | None" = None) -> "DeliveryUpdate":
+        update: DeliveryUpdate = {
+            "triage": self.triage, "work_kind": self.work_kind, "human_question": self.human_question or "",
+        }
+        if state.get("issue_kind") == "slice" and "work_kind" in state:
+            update["work_kind"] = state["work_kind"]
+        if state.get("issue_kind") == "parent" and self.triage == "implement":
+            if self.slice is None:
+                raise InvalidOutput("slice: required when a parent triages as implement")
+            update["slice"] = self.slice.record()
+        return update
 
-class ResearchOutput(Contract):
+
+class ResearchOutput(StageOutput):
     research: Text
+
+    @override
+    def update(self, state: "DeliveryState", workspace: "Workspace | None" = None) -> "DeliveryUpdate":
+        return {"research": self.research}
 
 
 class SpecOutput(HumanQuestionOutput):
@@ -191,6 +224,27 @@ class SpecOutput(HumanQuestionOutput):
     slices: list[Slice] | None = Field(
         description="For a ready parent spec, return one entry per pull request. Use null otherwise.",
     )
+
+    @override
+    def update(self, state: "DeliveryState", workspace: "Workspace | None" = None) -> "DeliveryUpdate":
+        from foreman.delivery import clean_slices, oversized_pr
+
+        slices = (
+            clean_slices(self.slices, workspace)
+            if state.get("issue_kind") == "parent" and self.spec_gate == "ready" else []
+        )
+        if oversized_pr(state):
+            return {
+                "pr_split": {"plan": self.spec, "gate": self.spec_gate, "question": self.human_question, "slices": slices},
+                "spec_rejection": None,
+            }
+        update: DeliveryUpdate = {
+            "spec": self.spec, "spec_gate": self.spec_gate,
+            "human_question": self.human_question or "", "spec_rejection": None,
+        }
+        if state.get("issue_kind") == "parent" and self.spec_gate == "ready":
+            update["slices"] = slices
+        return update
 
 
 class BrowserProof(Contract):
@@ -223,10 +277,18 @@ class FormalProof(Contract):
         return {"ran": self.ran, "constraints": [item.record() for item in self.constraints] if self.constraints is not None else None, "typecheck": self.typecheck}
 
 
-class ImplementOutput(Contract):
+class ImplementOutput(StageOutput):
     implementation: Text
     browser_proof: BrowserProof | None
     formal_proof: FormalProof | None
+
+    @override
+    def update(self, state: "DeliveryState", workspace: "Workspace | None" = None) -> "DeliveryUpdate":
+        return {
+            "implementation": self.implementation,
+            "browser_proof": self.browser_proof.record() if self.browser_proof else None,
+            "formal_proof": self.formal_proof.record() if self.formal_proof else None,
+        }
 
 
 class MergeRisk(Contract):
@@ -261,7 +323,7 @@ class Finding(Contract):
         return {"file": self.file, "line": self.line, "severity": self.severity, "summary": self.summary}
 
 
-class ReviewOutput(Contract):
+class ReviewOutput(StageOutput):
     review: Literal["approve", "changes"]
     risk: MergeRisk
     findings: list[Finding] = Field(
@@ -278,12 +340,27 @@ class ReviewOutput(Contract):
             raise ValueError("changes requires at least one finding and approve requires an empty findings list")
         return self
 
+    @override
+    def update(self, state: "DeliveryState", workspace: "Workspace | None" = None) -> "DeliveryUpdate":
+        change_kind = None
+        if self.review == "changes":
+            change_kind = "nits" if all(finding.severity == "nit" for finding in self.findings) else "blocking"
+        return {
+            "review": self.review, "risk": self.risk.record(), "detail": self.detail,
+            "findings": [finding.record() for finding in self.findings],
+            "tool_facts": [fact.record() for fact in self.tool_facts], "review_change_kind": change_kind,
+        }
 
-class VerifyOutput(Contract):
+
+class VerifyOutput(StageOutput):
     verify: Literal["pass", "fail"]
 
+    @override
+    def update(self, state: "DeliveryState", workspace: "Workspace | None" = None) -> "DeliveryUpdate":
+        return {"verify": self.verify}
 
-STAGE_OUTPUTS: dict[str, type[Contract]] = {
+
+STAGE_OUTPUTS: dict[str, type[StageOutput]] = {
     "triage": TriageOutput,
     "research": ResearchOutput,
     "spec": SpecOutput,

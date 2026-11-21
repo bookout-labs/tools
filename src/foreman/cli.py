@@ -1,5 +1,3 @@
-# Resolve the delivery types in #52 before restoring strict checking.
-# pyright: basic
 """Command line for the foreman tool."""
 
 import argparse

@@ -1,5 +1,3 @@
-# Resolve the delivery types in #52 before restoring strict checking.
-# pyright: basic
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from collections.abc import Callable
@@ -9,7 +7,7 @@ from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from tomllib import TOMLDecodeError
-from typing import Annotated, Literal, NotRequired, get_args
+from typing import Annotated, Literal, NotRequired, Protocol, get_args
 import operator
 import re
 import textwrap
@@ -35,7 +33,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    BrowserProofRecord, FormalProofRecord, SliceRecord, Contract, Finding, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
+    BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, ToolFactRecord, StageOutput, Finding, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
@@ -156,11 +154,11 @@ class DeliveryFields(TypedDict, total=False):
     pr_size_override: PullRequestSize
     pr_split: PullRequestSplit
     review: str
-    tool_facts: list[dict[str, str | None]]
-    findings: list[dict[str, object]]
+    tool_facts: list[ToolFactRecord]
+    findings: list[FindingRecord]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
-    risk: dict[str, str]
+    risk: MergeRiskRecord
     verify: str
     review_rounds: int
     models_used: dict[str, str]
@@ -287,56 +285,10 @@ def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | N
 
 
 def stage_update(
-    name: str, output: Contract, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None,
+    name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None,
 ) -> DeliveryUpdate:
-    update: DeliveryUpdate = {}
-    if isinstance(output, TriageOutput):
-        update.update(triage=output.triage, work_kind=output.work_kind)
-    elif isinstance(output, ResearchOutput):
-        update["research"] = output.research
-    elif isinstance(output, SpecOutput):
-        update.update(spec=output.spec, spec_gate=output.spec_gate)
-    elif isinstance(output, ImplementOutput):
-        update.update(
-            implementation=output.implementation,
-            browser_proof=output.browser_proof.record() if output.browser_proof else None,
-            formal_proof=output.formal_proof.record() if output.formal_proof else None,
-        )
-    elif isinstance(output, ReviewOutput):
-        update.update(
-            review=output.review, risk=output.risk.model_dump(), detail=output.detail,
-            findings=[finding.model_dump() for finding in output.findings],
-            tool_facts=[fact.model_dump() for fact in output.tool_facts],
-        )
-    elif isinstance(output, VerifyOutput):
-        update["verify"] = output.verify
-    if isinstance(output, HumanQuestionOutput):
-        update["human_question"] = output.human_question or ""
-    if isinstance(output, TriageOutput) and state.get("issue_kind") == "slice" and "work_kind" in state:
-        update["work_kind"] = state["work_kind"]
-    if isinstance(output, SpecOutput):
-        update["spec_rejection"] = None
-        slices = (
-            clean_slices(output.slices, workspace)
-            if state.get("issue_kind") == "parent" and output.spec_gate == "ready" else []
-        )
-        if oversized_pr(state):
-            split: PullRequestSplit = {
-                "plan": output.spec, "gate": output.spec_gate, "question": output.human_question, "slices": slices,
-            }
-            update = {"pr_split": split, "spec_rejection": None}
-        elif state.get("issue_kind") == "parent" and output.spec_gate == "ready":
-            update["slices"] = slices
+    update = output.update(state, workspace)
     update["path"] = [name]
-    if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
-        if output.slice is None:
-            raise InvalidOutput("slice: required when a parent triages as implement")
-        update["slice"] = output.slice.record()
-    if isinstance(output, ReviewOutput):
-        update["review_change_kind"] = None
-        if output.review == "changes":
-            only_nits = all(finding.severity == "nit" for finding in output.findings)
-            update["review_change_kind"] = "nits" if only_nits else "blocking"
     if update.get("review") == "changes" or update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -409,14 +361,18 @@ def oversized_pr(state: DeliveryState) -> PullRequestSize | None:
     return None
 
 
+class DeliveryNode(Protocol):
+    def __call__(self, state: DeliveryState, runtime: Runtime[LiveRun | DryRun]) -> DeliveryUpdate: ...
+
+
 def compile_delivery(
     dispatcher: FailoverDispatcher | None,
     config: Config,
     *,
     run: LiveRun | DryRun,
     scratch: Path | None = None,
-    checkpointer: BaseCheckpointSaver | None = None,
-) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
+    checkpointer: BaseCheckpointSaver[str] | None = None,
+) -> CompiledStateGraph[DeliveryState, LiveRun | DryRun, DeliveryState, DeliveryResult]:
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
@@ -424,8 +380,8 @@ def compile_delivery(
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
     plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
-    def bind(name: str):
-        def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+    def bind(name: str) -> DeliveryNode:
+        def node(state: DeliveryState, runtime: Runtime[LiveRun | DryRun]) -> DeliveryUpdate:
             if dispatcher is None:
                 return halted("no_dispatcher", "No dispatcher is configured.", name)
             current_run = runtime.context or run
@@ -539,7 +495,7 @@ def compile_delivery(
 
     dispatch_implement = bind("implement")
 
-    def implement(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+    def implement(state: DeliveryState, runtime: Runtime[LiveRun | DryRun]) -> DeliveryUpdate:
         assert "delivery_branch" in state and "attempt_head" in state or isinstance(run, DryRun)
         if isinstance(run, DryRun):
             return dispatch_implement(state, runtime)
@@ -615,7 +571,7 @@ def compile_delivery(
             return halted("publish_failed", str(exc), "publish")
         return {"path": ["publish"]}
 
-    def verify(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+    def verify(state: DeliveryState, runtime: Runtime[LiveRun | DryRun]) -> DeliveryUpdate:
         match runtime.context or run:
             case DryRun():
                 return scripted_verify(state, runtime)
@@ -701,7 +657,7 @@ def compile_delivery(
     def moved_before_review(actual: str, verified: str) -> DeliveryUpdate:
         return {**halted("merge_not_armed", moved_head_detail(actual, verified), "review"), "merge": "not_armed"}
 
-    def review(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+    def review(state: DeliveryState, runtime: Runtime[LiveRun | DryRun]) -> DeliveryUpdate:
         if isinstance(run, DryRun):
             return dispatch_review(state, runtime)
         try:
@@ -855,7 +811,17 @@ def compile_delivery(
             update["halt_detail"] = split["plan"] if split else state.get("spec", "")
         return update
 
-    builder = StateGraph(DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun)
+    builder = StateGraph[DeliveryState, LiveRun | DryRun, DeliveryState, DeliveryResult](
+        DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun,
+    )
+
+    def after_halt(target: str) -> Callable[[DeliveryState], str]:
+        def route(state: DeliveryState) -> str:
+            return "done" if state.get("halt") else target
+        return route
+
+    def after_size(state: DeliveryState) -> str:
+        return "done" if oversized_pr(state) else "verify"
 
     def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str]) -> None:
         def next_stage(state: DeliveryState) -> str:
@@ -863,7 +829,7 @@ def compile_delivery(
 
         builder.add_conditional_edges(stage, next_stage, {**targets, "quota_wait": "quota_wait"})
 
-    graph_nodes = {"implement": implement, "verify": verify, "review": review}
+    graph_nodes: dict[str, DeliveryNode] = {"implement": implement, "verify": verify, "review": review}
     for name in REQUIRED_NODES:
         builder.add_node(name, graph_nodes[name] if name in graph_nodes else bind(name))
     builder.add_node("prepare", prepare)
@@ -877,7 +843,7 @@ def compile_delivery(
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_conditional_edges(
-        START, lambda state: "done" if state.get("halt") else "triage", {"done": "done", "triage": "triage"},
+        START, after_halt("triage"), {"done": "done", "triage": "triage"},
     )
     add_agent_edges(
         "triage",
@@ -890,16 +856,16 @@ def compile_delivery(
         {"spec": "spec", "prepare": "prepare", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
     )
     builder.add_conditional_edges(
-        "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify"},
+        "decide_pr_size", after_size, {"done": "done", "verify": "verify"},
     )
     builder.add_conditional_edges(
         "needs_human", _last_stage, {"triage": "triage", "spec": "spec"},
     )
-    builder.add_conditional_edges("prepare", lambda state: "done" if state.get("halt") else "implement", {"done": "done", "implement": "implement"})
-    builder.add_conditional_edges("commit", lambda state: "done" if state.get("halt") else "publish", {"done": "done", "publish": "publish"})
-    builder.add_conditional_edges("publish", lambda state: "done" if state.get("halt") else "verify", {"done": "done", "verify": "verify"})
+    builder.add_conditional_edges("prepare", after_halt("implement"), {"done": "done", "implement": "implement"})
+    builder.add_conditional_edges("commit", after_halt("publish"), {"done": "done", "publish": "publish"})
+    builder.add_conditional_edges("publish", after_halt("verify"), {"done": "done", "verify": "verify"})
     builder.add_conditional_edges(
-        "quota_wait", lambda state: state["path"][-1], {name: name for name in REQUIRED_NODES if name != "verify"},
+        "quota_wait", _last_stage, {name: name for name in REQUIRED_NODES if name != "verify"},
     )
     add_agent_edges("research", lambda _: "done", {"done": "done"})
     add_agent_edges("implement", lambda state: "done" if state.get("halt") else "commit", {"commit": "commit", "done": "done"})
@@ -950,7 +916,7 @@ def run_delivery(
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                     "skill_reason": exc.reason})
-    return graph.invoke(state, version="v2").value
+    return read_delivery_state(graph.invoke(state, version="v2").value)
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:

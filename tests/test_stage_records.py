@@ -45,3 +45,38 @@ class StageRecordTests(unittest.TestCase):
         self.assertEqual(record["depends_on"], ["Database"])
         self.assertEqual(record["blocker_numbers"], [17])
         self.assertNotIn("work_kind", record)
+
+
+class StageOwnershipTests(unittest.TestCase):
+    def test_new_stage_requires_update(self):
+        from foreman.stage_output import StageOutput
+
+        class NewStage(StageOutput):
+            answer: str
+
+        with self.assertRaises(TypeError):
+            NewStage(answer="Done")
+
+    def test_every_registered_stage_owns_its_update(self):
+        from foreman.delivery import stage_update
+        from foreman.dry_run import ScriptHandler
+        from foreman.stage_output import STAGE_OUTPUTS, parse_output
+
+        state = {"repo": "org/repo", "check": "", "path": [], "issue_kind": "slice", "review_rounds": 2}
+        handler = ScriptHandler(reviews=["changes"], verify="fail")
+        for stage, contract in STAGE_OUTPUTS.items():
+            with self.subTest(stage=stage):
+                output = parse_output(contract, handler(stage, None, state, "").output)
+                update = stage_update(stage, output, state, "model")
+                key = "implementation" if stage == "implement" else stage
+                self.assertIn(key, update)
+                self.assertEqual(update["path"], [stage])
+                self.assertEqual(update["models_used"][stage], "model")
+                if stage in ("review", "verify"):
+                    self.assertEqual(update["review_rounds"], 3)
+
+    def test_checkpoint_rejects_incomplete_nested_record(self):
+        from foreman.delivery import read_delivery_state
+
+        with self.assertRaises(ValidationError):
+            read_delivery_state({"repo": "org/repo", "check": "", "path": [], "stop": "sliced", "slice": {"title": "Incomplete"}})

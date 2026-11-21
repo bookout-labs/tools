@@ -1,0 +1,39 @@
+"""Typed delivery-facing subset of the pinned LangGraph 1.2.24 API."""
+from collections.abc import Callable, Iterator, Mapping
+from typing import Generic, Literal, Protocol, TypeVar
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.runtime import Runtime
+from langgraph.types import Command, StateSnapshot
+from _typeshed import DataclassInstance
+
+State = TypeVar("State")
+Context = TypeVar("Context", bound=DataclassInstance | None)
+Input = TypeVar("Input")
+Output = TypeVar("Output")
+NodeState = TypeVar("NodeState", contravariant=True)
+NodeContext = TypeVar("NodeContext", bound=DataclassInstance | None)
+
+class RuntimeNode(Protocol[NodeState, NodeContext]):
+    def __call__(self, state: NodeState, runtime: Runtime[NodeContext]) -> Mapping[str, object]: ...
+
+class GraphOutput(Generic[Output]):
+    value: Output
+
+class DrawableGraph(Protocol):
+    def draw_mermaid(self) -> str: ...
+
+class CompiledStateGraph(Generic[State, Context, Input, Output]):
+    def invoke(self, input: Input | Command[str] | None, config: RunnableConfig | None = None, *, context: Context | None = None, durability: Literal["sync", "async", "exit"] | None = None, version: Literal["v2"]) -> GraphOutput[Output]: ...
+    def get_state(self, config: RunnableConfig) -> StateSnapshot: ...
+    def get_state_history(self, config: RunnableConfig) -> Iterator[StateSnapshot]: ...
+    def update_state(self, config: RunnableConfig, values: Mapping[str, object]) -> RunnableConfig: ...
+    def get_graph(self) -> DrawableGraph: ...
+
+class StateGraph(Generic[State, Context, Input, Output]):
+    def __init__(self, state_schema: type[State], *, input_schema: type[Input], output_schema: type[Output], context_schema: type[Context]) -> None: ...
+    def add_node(self, node: str, action: Callable[[State], Mapping[str, object]] | RuntimeNode[State, Context]) -> StateGraph[State, Context, Input, Output]: ...
+    def add_conditional_edges(self, source: str, path: Callable[[State], str], path_map: dict[str, str]) -> StateGraph[State, Context, Input, Output]: ...
+    def add_edge(self, start_key: str, end_key: str) -> StateGraph[State, Context, Input, Output]: ...
+    def compile(self, checkpointer: BaseCheckpointSaver[str] | None = None) -> CompiledStateGraph[State, Context, Input, Output]: ...

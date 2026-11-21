@@ -1,5 +1,3 @@
-# Resolve the delivery types in #52 before restoring strict checking.
-# pyright: basic
 """Run one delivery issue against its SQLite checkpoint."""
 
 from dataclasses import replace
@@ -15,11 +13,11 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
+from foreman.delivery import DryRun, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge
-from foreman.stage_output import StoredSlice, parse_output
+from foreman.stage_output import HumanPrompt, StoredSlice, parse_output
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 
@@ -51,7 +49,7 @@ def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice) -> s
 
 
 def _checkpoint_before_halt(
-    graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult],
+    graph: CompiledStateGraph[DeliveryState, LiveRun | DryRun, DeliveryState, DeliveryResult],
     config: RunnableConfig,
     path: list[str],
 ) -> StateSnapshot:
@@ -100,19 +98,19 @@ def run_live_delivery(
                                         "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
                                         "repo": repo, "check": check})
         def invoke(
-            graph_input: DeliveryState | Command | None,
+            graph_input: DeliveryState | Command[str] | None,
             state: DeliveryState,
             invocation_config: RunnableConfig = config,
         ) -> None:
             environment = EnvironmentProbe(run.workspace, state.get("preflight", ""), run.check_log)
-            graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync")
+            graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync", version="v2")
 
         saved = graph.get_state(config)
         saved_values = _CHECKPOINT_STATE.validate_python(saved.values, strict=True) if saved.values else None
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
-        waiting_for_quota = bool(saved.interrupts) and saved.values.get("halt") == "quota_exhausted"
+        waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == "quota_exhausted"
         if answer is not None:
             if waiting_for_quota:
                 raise AnswerError("This issue has no pending question.")
@@ -125,7 +123,7 @@ def run_live_delivery(
                 if answer != answers[-1]:
                     raise AnswerError("This question was already answered differently. Resume with the recorded answer.")
         if answer is not None and saved.interrupts and saved_values is not None:
-            if saved.interrupts[0].value["stage"] == "pr_size":
+            if parse_output(HumanPrompt, saved.interrupts[0].value).stage == "pr_size":
                 try:
                     answer = PullRequestSizeDecision(answer).value
                 except ValueError as exc:
@@ -170,10 +168,13 @@ def run_live_delivery(
             invoke(None, saved_values)
 
         saved = graph.get_state(config)
-        if saved.values.get("stop") == "sliced":
-            numbers = list(saved.values.get("child_issue_numbers", []))
-            work_kind = saved.values.get("work_kind")
-            plan = [parse_output(StoredSlice, {**raw, "work_kind": work_kind}) for raw in saved.values["slices"]]
+        saved_values = _CHECKPOINT_STATE.validate_python(saved.values, strict=True)
+        if saved_values.get("stop") == "sliced":
+            if "slices" not in saved_values:
+                raise ValueError("Sliced checkpoint has no slice plan.")
+            numbers = list(saved_values.get("child_issue_numbers", []))
+            work_kind = saved_values.get("work_kind")
+            plan = [parse_output(StoredSlice, {**raw, "work_kind": work_kind}) for raw in saved_values["slices"]]
             siblings = {item.title: number for item, number in zip(plan, numbers)}
             for item in plan[len(numbers):]:
                 child = item.model_copy(update={"blocker_numbers": [siblings[title] for title in item.depends_on]})
@@ -196,12 +197,13 @@ def run_live_delivery(
                         and "factory" not in client.load_issue(repo, number)["labels"]):
                     client.add_label(repo, number, "factory")
             saved = graph.get_state(config)
+            saved_values = _CHECKPOINT_STATE.validate_python(saved.values, strict=True)
         if saved.interrupts:
-            if saved.values.get("halt") == "quota_exhausted":
-                return read_delivery_state({**saved.values, "stop": "quota_exhausted"})
-            question: object = saved.interrupts[0].value["question"]
-            return read_delivery_state({**saved.values, "stop": "needs_human", "halt_detail": question})
-        result = read_delivery_state(saved.values)
+            if saved_values.get("halt") == "quota_exhausted":
+                return read_delivery_state({**saved_values, "stop": "quota_exhausted"})
+            question = parse_output(HumanPrompt, saved.interrupts[0].value).question
+            return read_delivery_state({**saved_values, "stop": "needs_human", "halt_detail": question})
+        result = read_delivery_state(saved_values)
         if "merge" in result["path"] and "merge" not in result:
             legacy = saver.get(saved.config)
             if legacy is not None:
