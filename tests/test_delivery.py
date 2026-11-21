@@ -120,8 +120,8 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "sliced")
                 self.assertEqual(result["slices"], [
-                    {**SLICES[0], "depends_on": []},
-                    {**SLICES[1], "depends_on": [SLICES[0]["title"]]},
+                    {**SLICES[0], "depends_on": [], "blocker_numbers": [], "provenance": {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]}},
+                    {**SLICES[1], "depends_on": [SLICES[0]["title"]], "blocker_numbers": [], "provenance": {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]}},
                 ])
 
     def test_single_slice_parents_skip_seam_ordering(self):
@@ -129,7 +129,7 @@ class DeliveryTest(unittest.TestCase):
         triaged = walk(ScriptHandler(slice=consumer), slice=None)
         self.assertEqual(triaged["stop"], "verified")
         specified = walk(ScriptHandler(triage="spec", slices=[consumer]), slice=None)
-        self.assertEqual(specified["slices"], [{**consumer, "depends_on": []}])
+        self.assertEqual(specified["slices"], [{**consumer, "depends_on": [], "blocker_numbers": [], "provenance": {"author": specified["spec_candidate"]["author"], "revision": specified["spec_candidate"]["revision"]}}])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES

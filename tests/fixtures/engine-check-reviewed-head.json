@@ -1,0 +1,38 @@
+{
+  "source": "https://api.github.com/repos/bookout-labs/tools/actions/runs/44875487083/jobs",
+  "excerpt": {
+    "id": 136759149477,
+    "run_id": 44875487083,
+    "run_attempt": 1,
+    "head_sha": "17c84143acc975fd2fae0f652bd90b6f146b7838",
+    "html_url": "https://github.com/bookout-labs/tools/actions/runs/44875487083/job/136759149477",
+    "status": "completed",
+    "conclusion": "success",
+    "steps": [
+      {
+        "name": "Run python -m unittest discover -s tests",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7,
+        "started_at": "2026-11-21T06:25:57Z",
+        "completed_at": "2026-11-21T06:26:53Z"
+      },
+      {
+        "name": "Run pyright",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8,
+        "started_at": "2026-11-21T06:26:53Z",
+        "completed_at": "2026-11-21T06:26:58Z"
+      },
+      {
+        "name": "Run sh evals/eval.sh",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9,
+        "started_at": "2026-11-21T06:26:58Z",
+        "completed_at": "2026-11-21T06:27:35Z"
+      }
+    ]
+  }
+}

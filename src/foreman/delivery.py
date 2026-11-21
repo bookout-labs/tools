@@ -33,7 +33,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
+    CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -138,6 +138,7 @@ class DeliveryFields(TypedDict, total=False):
     triage: str
     spec: str
     spec_gate: str
+    spec_candidate: SpecCandidateRecord
     spec_rejection: SpecRejection | None
     slices: list[SliceRecord]
     child_issue_numbers: list[int]
@@ -351,10 +352,10 @@ def failure_count(state: DeliveryState, key: Literal["verify_failures", "proof_f
 
 
 def stage_update(
-    name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None,
+    name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None,
 ) -> DeliveryUpdate:
     slices = clean_slices(output.slices, workspace) if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready" else []
-    context = UpdateContext(state.get("issue_kind"), state.get("work_kind"), bool(oversized_pr(state)), slices)
+    context = UpdateContext(state.get("issue_kind"), state.get("work_kind"), bool(oversized_pr(state)), slices, accepted_model)
     update: DeliveryUpdate = {**output.update(context)}
     update["path"] = [name]
     if update.get("verify") == "fail":
@@ -556,9 +557,10 @@ def compile_delivery(
             if name == "review":
                 for key in ("review_findings", "settled_rulings", *(("findings", "detail", "implementation") if history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])}).rounds else ())):
                     worker_state.pop(key, None)
-            outcome, model = dispatcher.run(
+            outcome, accepted_model = dispatcher.run(
                 name, ModelSpec.parse(models[pending["index"]]) if models else None, worker_state, plan["instruction"], on_attempt=record_attempt,
             )
+            model = accepted_model.name if accepted_model else None
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
             attempt_history = state.get("attempts", []) + attempts
             if outcome.kind == "ran" and outcome.usage is None:
@@ -589,7 +591,7 @@ def compile_delivery(
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
                     head = state.get("verified_head") or state.get("head_sha") or ""
                     accepted = accept(past, output, head, _check_tool_facts(output, run, state))
-                update = stage_update(name, output, state, model, workspace=plan_workspace)
+                update = stage_update(name, output, state, model, workspace=plan_workspace, accepted_model=accepted_model)
                 update.update(attempts=attempts, pending_dispatch=None)
                 if accepted is not None:
                     update.update(review=accepted.review, detail=accepted.detail,
@@ -977,7 +979,17 @@ def compile_delivery(
         update: DeliveryUpdate = {"stop": reason, "path": ["done"]}
         split = state.get("pr_split")
         if reason == "sliced" and split:
-            update["slices"] = split["slices"]
+            if "spec_candidate" in state:
+                previous = SpecCandidate.from_record(state["spec_candidate"])
+                model = state.get("models_used", {})["spec"]
+                candidate = SpecCandidate(
+                    slices=[CandidateSlice.model_validate(item) for item in split["slices"]],
+                    spec=previous.spec, work_kind=previous.work_kind,
+                    author=SpecAuthor(stage="spec", model=model, family=family(model)),
+                )
+                update = {**update, **candidate.update(single="slice" in state)}
+            else:
+                update["slices"] = split["slices"]
         if reason == "pr_split_required":
             update["halt_detail"] = split["plan"] if split else state.get("spec", "")
         return update

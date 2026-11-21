@@ -9,13 +9,14 @@ from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.cli import main
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery
 from foreman.config import load_config
-from foreman.stage_output import PULL_REQUEST_LINES
+from foreman.stage_output import PULL_REQUEST_LINES, SpecCandidate
 from foreman.workspace import LiveWorkspace
 from test_runner import APPROVE, BRANCH, EMPTY_SLICE, FakeGitHub, worker_reply
 
@@ -87,8 +88,8 @@ class PullRequestSizeTest(unittest.TestCase):
                 replies[stage]["slices"] = [EMPTY_SLICE, {**EMPTY_SLICE, "title": "Sort items"}]
         return worker_reply(args, replies[stage])
 
-    def invoke(self, *flags, expected_code=0):
-        if not self.checkpoint.exists():
+    def invoke(self, *flags, expected_code=0, from_triage=False):
+        if not self.checkpoint.exists() and not from_triage:
             with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
                 graph = compile_delivery(None, self.config, run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
@@ -103,7 +104,7 @@ class PullRequestSizeTest(unittest.TestCase):
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0", *flags],
                 worker_runner=self.worker, checkpoint=self.checkpoint, live_run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills),
             )
-        self.assertEqual(code, expected_code, stderr.getvalue())
+        self.assertEqual(code, expected_code, stderr.getvalue() + stdout.getvalue())
         return stdout.getvalue(), stderr.getvalue()
 
     def checkpoint_values(self):
@@ -159,12 +160,20 @@ class PullRequestSizeTest(unittest.TestCase):
         stdout, _ = self.invoke(expected_code=3)
         self.assertIn("paused needs_human", stdout)
         self.assertIn("split or override", self.invoke("--answer", "yes", expected_code=1)[1])
-        self.assertEqual(self.invoke(expected_code=3)[0], stdout)
+        waiting, _ = self.invoke(expected_code=3)
+        self.assertIn("restored paused needs_human", waiting)
+        self.assertIn("restored Use --answer split to accept the split or --answer override to review this diff.", waiting)
+        self.assertTrue(waiting.endswith("this invocation: no nodes executed\n"))
+        self.assertEqual(self.stages, ["SpecOutput"])
+        self.assertEqual(self.forge.merge_calls, [])
         stdout, _ = self.invoke("--answer", "override")
         self.assertIn("done verified", stdout)
         self.assertEqual(self.forge.merge_calls, [("Example/Engine", 8, BRANCH, head)])
         self.assertEqual(self.forge.created, [])
-        self.assertEqual(self.invoke()[0], stdout)
+        terminal, _ = self.invoke()
+        self.assertIn("restored done verified", terminal)
+        self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
+        self.assertEqual(self.forge.merge_calls, [("Example/Engine", 8, BRANCH, head)])
         self.assertEqual(self.checkpoint_values()["pr_size_override"], {
             "head": head, "merge_base": self.base, "lines": PULL_REQUEST_LINES + 1,
         })
@@ -179,6 +188,39 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertIn("done sliced", self.invoke("--answer", "split")[0])
         self.assertEqual([issue[0] for issue in self.forge.created], [EMPTY_SLICE["title"], "Sort items"])
         self.assertNotIn("ReviewOutput", self.stages)
+
+    def test_parent_split_from_triage_survives_post_run_checkpoint(self):
+        self.git("switch", "main")
+        self.git("branch", "-d", BRANCH)
+        self.enterContext(patch.object(LiveWorkspace, "push"))
+        self.forge = FakeGitHub(["factory"])
+        self.forge.base = self.base
+        worker = self.worker
+
+        def implement_oversized(args, cwd, env):
+            schema = Path(args[args.index("--output-schema") + 1]).read_text() if args[0] == "codex" else args[args.index("--json-schema") + 1]
+            if json.loads(schema)["title"] == "ImplementOutput":
+                self.write("tests/test_items.py", "handwritten\n" * (PULL_REQUEST_LINES + 1))
+            return worker(args, cwd, env)
+
+        self.worker = implement_oversized
+        self.assertIn("paused needs_human", self.invoke(expected_code=3, from_triage=True)[0])
+        before = SpecCandidate.from_record(self.checkpoint_values()["spec_candidate"])
+        self.assertEqual(before.author.stage, "triage")
+        self.assertTrue(before.author.model)
+        self.assertEqual(self.forge.created, [])
+        self.assertIn("done sliced", self.invoke("--answer", "split")[0])
+        self.assertEqual([issue[0] for issue in self.forge.created], [EMPTY_SLICE["title"], "Sort items"])
+        values = self.checkpoint_values()
+        candidate = SpecCandidate.from_record(values["spec_candidate"])
+        self.assertNotEqual(candidate.revision, before.revision)
+        self.assertEqual(candidate.author.stage, "spec")
+        self.assertEqual(candidate.author.model, values["models_used"]["spec"])
+        self.assertEqual((candidate.spec, candidate.work_kind), (before.spec, before.work_kind))
+        self.assertEqual(values["child_issue_numbers"], [101, 102])
+        self.assertEqual(self.stages, ["TriageOutput", "ImplementOutput", "SpecOutput"])
+        self.assertIn("done sliced", self.invoke()[0])
+        self.assertEqual(len(self.forge.created), 2)
 
     def test_override_cannot_approve_a_different_head_with_the_same_count(self):
         self.write("src/items.py", "changed\n" * PULL_REQUEST_LINES)
