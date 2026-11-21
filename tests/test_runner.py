@@ -1,3 +1,5 @@
+import tests
+
 import contextlib
 from dataclasses import replace
 import io
@@ -23,11 +25,11 @@ from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
 
 from foreman.runner import AnswerError, run_live_delivery
-from foreman.skill_rules import git
+from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
-from skill_fixture import fixture_pin, fixture_skills, skill_fixture
+from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
 from test_adapters import codex_events, fixture_process
 
 
@@ -431,7 +433,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.github = FakeGitHub()
         self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin)))
 
-    def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None):
+    def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None, skills=export_skills):
         outputs = iter(replies)
         active = workspace if workspace is not None else FakeWorkspace(self.cwd, snapshots)
 
@@ -445,7 +447,7 @@ class LiveRunnerTest(unittest.TestCase):
         return run_live_delivery(
             repo="Example/Engine", issue=issue, check=check, preflight=preflight, answer=answer,
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
-            run=LiveRun(self.github, active),
+            run=LiveRun(self.github, active, skills=skills),
         )
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
@@ -598,6 +600,17 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(code, 75)
         self.assertIn("paused quota_exhausted", stdout.getvalue())
         self.assertIn("triage quota exhausted", stdout.getvalue())
+
+    def test_resume_passes_checkpoint_pin_to_the_run_skill_source(self):
+        source = FixtureSkills()
+        paused = self.walk([{"triage": "needs_human", "human_question": "Which items?"}], skills=source)
+        self.assertEqual(paused["stop"], "needs_human")
+        changed = self.pin.model_copy(update={"commit": "f" * 40})
+        with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=changed)):
+            resumed = self.walk([{"triage": "question"}, {"research": "Only open items."}],
+                                answer="Only open items", skills=source)
+        self.assertEqual(resumed["stop"], "answered")
+        self.assertEqual(source.pins, [self.pin, self.pin])
 
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
         def exhaust(node, model, state, instruction):
@@ -1545,7 +1558,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     ))
 """
         def invoke(*flags, pin=None, expected=0):
-            bootstrap = f"import sys; sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n"
+            bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
+                         f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
             process = subprocess.run(
                 [sys.executable, "-c", bootstrap + script, str(self.checkpoint), (pin or self.pin).model_dump_json(), "run", "delivery",
                  "--repo", "Example/Engine", "--issue", "8", "--check", "echo checked >> check.log", *flags],

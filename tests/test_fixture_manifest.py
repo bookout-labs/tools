@@ -1,3 +1,5 @@
+import tests
+
 from pathlib import Path
 import unittest
 import subprocess

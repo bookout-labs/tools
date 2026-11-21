@@ -78,6 +78,8 @@ class LiveRun:
 
 @dataclass(frozen=True)
 class DryRun:
+    skills: SkillSource = export_skills
+
     def record_merge(self, repo: str, head: str | None) -> list[str]:
         revision = (commit_sha(head) or redact(head)) if head else "<sha>"
         return merge_command(redact(repo), "<number>", revision)
@@ -416,14 +418,12 @@ def compile_delivery(
     *,
     run: LiveRun | DryRun,
     scratch: Path | None = None,
-    skills: SkillSource | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
-    source = skills if skills is not None else run.skills if isinstance(run, LiveRun) else export_skills
-    methods_root = source(config.pstack, scratch) if scratch is not None else None
+    methods_root = run.skills(config.pstack, scratch) if scratch is not None else None
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
     plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
@@ -950,7 +950,7 @@ def run_delivery(
     if scratch is not None:
         state["pstack_pin"] = config.pstack.model_dump()
     try:
-        graph = compile_delivery(dispatcher, config, run=DryRun(), scratch=scratch, skills=skills)
+        graph = compile_delivery(dispatcher, config, run=DryRun(skills=skills), scratch=scratch)
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                     "skill_reason": exc.reason})

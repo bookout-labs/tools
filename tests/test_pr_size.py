@@ -1,3 +1,5 @@
+import tests
+
 from dataclasses import replace
 from skill_fixture import fixture_pin, fixture_skills
 import contextlib

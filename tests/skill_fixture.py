@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -34,6 +34,13 @@ def skill_fixture(config: Config | None = None) -> Iterator[tuple[Config, Path]]
         yield replace(config if config is not None else load_config(), pstack=fixture_pin(scratch / "fixture")), scratch
 
 
-def fixture_skills(pin: PstackPin, scratch: Path) -> Path:
-    """Supply synthetic methods independently of the live configured pin."""
-    return export_skills(fixture_pin(scratch / "fixture"), scratch)
+@dataclass
+class FixtureSkills:
+    pins: list[PstackPin] = field(default_factory=list)
+
+    def __call__(self, pin: PstackPin, scratch: Path) -> Path:
+        self.pins.append(pin)
+        return export_skills(fixture_pin(scratch / "fixture"), scratch)
+
+
+fixture_skills = FixtureSkills()

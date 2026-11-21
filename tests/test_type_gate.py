@@ -1,5 +1,7 @@
 """Keep the source type gate strict while PR B removes its six exceptions."""
 
+import tests
+
 from pathlib import Path
 import re
 import tomllib

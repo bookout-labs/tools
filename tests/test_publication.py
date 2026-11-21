@@ -1,3 +1,5 @@
+import tests
+
 from contextlib import ExitStack
 from dataclasses import replace
 import json
@@ -343,7 +345,8 @@ class PublicationTest(unittest.TestCase):
         )
         pid, master = pty.fork()
         if pid == 0:
-            os.execv(sys.executable, [sys.executable, "-c", code])
+            # This authentication probe only talks to the loopback server above.
+            os.execve(sys.executable, [sys.executable, "-c", code], {**os.environ, "GIT_ALLOW_PROTOCOL": "http"})
         output = bytearray()
         exited = False
         try:
