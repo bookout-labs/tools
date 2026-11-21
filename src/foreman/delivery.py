@@ -46,7 +46,7 @@ REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 MergeHalt = Literal["merge_held", "merge_not_armed"]
-ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implementation_rejected", "implement_quota", "quota_exhausted", "review_not_posted"]
+ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implementation_rejected", "implement_quota", "quota_exhausted", "review_not_posted", "reviewer_unavailable"]
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
@@ -586,13 +586,14 @@ def compile_delivery(
                 outcome, model = Outcome("quota"), pending["quota_model"]
             if outcome.kind == "failed":
                 return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
+            if name == "review" and outcome.kind in {"quota", "cli_missing"}:
+                return {**stopped, **halted("reviewer_unavailable", f"{name} {model}: {outcome.kind}. {outcome.detail}".strip(), name)}
             if outcome.kind == "cli_missing":
                 return {**stopped, **halted("cli_missing", outcome.detail, name)}
             if outcome.kind == "quota":
-                if name != "review" and isinstance(run, DryRun):
+                if isinstance(run, DryRun):
                     raise QuotaExhausted(model)
-                reason: HaltReason = "no_reviewer" if isinstance(run, DryRun) else "quota_exhausted"
-                return {**stopped, **halted(reason, f"{name} quota exhausted: {model}", name)}
+                return {**stopped, **halted("quota_exhausted", f"{name} quota exhausted: {model}", name)}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
                 accepted: AcceptedReview | None = None

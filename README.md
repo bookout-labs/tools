@@ -97,7 +97,7 @@ graph TD;
 
 ```
 
-Generate the diagram with `foreman diagram delivery`. The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. A node does not edit the list, and it does not decide the next node.
+Generate the diagram with `foreman diagram delivery`. The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. Review uses only Opus and Sol, filtered by implementation family. Grok remains in the other model orders. A node does not edit the list, and it does not decide the next node.
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high.
 
@@ -107,7 +107,7 @@ explicit resolutions. Resolved findings become settled rulings. Disagreements wi
 rulings become coordinator notes. The graph owns tool-fact checks separately from
 reviewer findings. Rulings exist only within a run. The failure cap stays unchanged.
 
-An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the graph cannot select a reviewer from a different model family, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
+An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every eligible reviewer is out of quota or its CLI is missing, review pauses with `reviewer_unavailable` (exit 75). Rerun the same command without `--answer` to select from the current review order again. Other stages retain `cli_missing` for missing CLIs. If the graph cannot select a reviewer from a different model family, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
 
 Foreman creates an `<issue>-<slug>` branch from the repository default branch before the first edit and commits each successful implementation. An attempt with no file changes stops with `failed`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
