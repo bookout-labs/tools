@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
+from tomllib import TOMLDecodeError
 from typing import Annotated, Literal, TypedDict
 import operator
 import re
@@ -12,19 +13,21 @@ import textwrap
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from pydantic import ValidationError
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.fixture_manifest import MANIFEST_PATH, recorded_fixtures
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command, pull_request_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+    Contract, Finding, HumanQuestionOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, parse_output,
 )
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
@@ -52,6 +55,20 @@ class DryRun:
         return merge_command(redact(repo), "<number>", revision)
 
 
+SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle", "existing_seam_builder"]
+
+
+class SpecRejection(TypedDict):
+    kind: SpecRejectionKind
+    detail: str
+
+
+class InvalidSlicePlan(InvalidOutput):
+    def __init__(self, kind: SpecRejectionKind, detail: str):
+        super().__init__(detail)
+        self.reason: SpecRejection = {"kind": kind, "detail": detail}
+
+
 class PullRequestSizeDecision(StrEnum):
     SPLIT = "split"
     OVERRIDE = "override"
@@ -74,6 +91,7 @@ class DeliveryState(TypedDict, total=False):
     triage: str
     spec: str
     spec_gate: str
+    spec_rejection: SpecRejection | None
     slices: list[dict[str, object]]
     child_issue_numbers: list[int]
     slice: dict[str, object]
@@ -100,6 +118,7 @@ class DeliveryState(TypedDict, total=False):
     pr_size_override: PullRequestSize
     pr_split: PullRequestSplit
     review: str
+    tool_facts: list[dict[str, str | None]]
     findings: list[dict[str, object]]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
@@ -125,56 +144,92 @@ def stage_text(name: str) -> str:
 
 def clean_slices(
     raw: list[Slice] | None,
-    field: Literal["slice", "slices"],
-    *,
-    allow_external_dependencies: bool = False,
+    workspace: Workspace | None,
 ) -> list[dict[str, object]]:
     if not raw:
-        raise InvalidOutput(f"{field}: ready parent spec needs at least one slice")
-    paths = [f"{field}.{index}" if field == "slices" else field for index in range(len(raw))]
-    graph: dict[str, list[str]] = {}
-    for path, item in zip(paths, raw):
-        if item.title in graph:
-            raise InvalidOutput(f"{path}.title: must be unique")
-        graph[item.title] = item.depends_on
-    for path, item in zip(paths, raw):
-        for index, dep in enumerate(item.depends_on):
-            if dep not in graph and not allow_external_dependencies:
-                raise InvalidOutput(f"{path}.depends_on.{index}: unknown dependency {dep}")
+        raise InvalidOutput("slices: ready parent spec needs at least one slice")
+    if len(raw) == 1:
+        return [{**raw[0].model_dump(), "depends_on": []}]
+    slices = {item.title: item for item in raw}
+    if len(slices) != len(raw):
+        raise InvalidSlicePlan("duplicate_title", "Slice titles must be unique.")
+    builders: dict[str, str] = {}
+    for item in raw:
+        for seam in item.builds:
+            if seam.name in builders and builders[seam.name] != item.title:
+                raise InvalidSlicePlan("duplicate_builder", f"{seam.name}: built by {builders[seam.name]} and {item.title}.")
+            builders[seam.name] = item.title
+    graph: dict[str, dict[str, None]] = {}
+    for item in raw:
+        dependencies = graph[item.title] = {}
+        for seam in item.uses:
+            if seam.path is not None and (workspace is None or not workspace.has_file(seam.path)):
+                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, but {seam.path} is not a workspace file.")
+            if builder := builders.get(seam.name):
+                if seam.exists:
+                    raise InvalidSlicePlan("existing_seam_builder", f"{seam.name}: marked existing but built by {builder}.")
+                if builder != item.title:
+                    dependencies[builder] = None
+            elif seam.path is None:
+                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, which has no builder or existing file.")
     try:
-        TopologicalSorter(graph).prepare()
+        ordered = list(TopologicalSorter(graph).static_order())
     except CycleError as exc:
-        dep, title = exc.args[1][:2]
-        path = next(path for path, item in zip(paths, raw) if item.title == title)
-        raise InvalidOutput(f"{path}.depends_on.{graph[title].index(dep)}: dependency cycle") from exc
-    return [item.model_dump() for item in raw]
+        raise InvalidSlicePlan("dependency_cycle", "Dependency cycle: " + " -> ".join(exc.args[1])) from exc
+    return [{**slices[title].model_dump(), "depends_on": list(graph[title])} for title in ordered]
 
 
 def load_slice(raw: object) -> dict[str, object]:
-    return clean_slices([parse_output(Slice, raw)], "slice", allow_external_dependencies=True)[0]
+    return parse_output(StoredSlice, raw).model_dump(exclude_unset=True)
 
 
-def stage_update(name: str, output: Contract, state: DeliveryState, model: str | None = None) -> dict[str, object]:
+def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | None) -> ReviewOutput:
+    recorded: set[str] = set()
+    notes = [output.detail]
+    if isinstance(run, LiveRun) and head and any(fact.fixture is not None for fact in output.tool_facts):
+        try:
+            recorded = recorded_fixtures(run.workspace, head)
+        except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
+            notes.append(f"Could not check {MANIFEST_PATH} at {head}. {exc}")
+    unrecorded = [fact for fact in output.tool_facts if fact.fixture not in recorded]
+    if not unrecorded:
+        return output
+    for fact in unrecorded:
+        citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
+        notes.append(f"Unrecorded outside-tool fact{citation}: {fact.claim}")
+    return output.model_copy(update={
+        "review": "changes", "detail": "\n".join(notes),
+        "findings": [*output.findings, Finding(
+            file=MANIFEST_PATH, line=1, severity="blocking",
+            summary="Record the outside-tool facts listed in the review detail.",
+        )],
+    })
+
+
+def stage_update(
+    name: str, output: Contract, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None,
+) -> dict[str, object]:
     update: dict[str, object] = output.model_dump(exclude={"slice", "slices"})
     if isinstance(output, HumanQuestionOutput):
         update["human_question"] = output.human_question or ""
     if isinstance(output, SpecOutput):
+        update["spec_rejection"] = None
         slices = (
-            clean_slices(output.slices, "slices")
+            clean_slices(output.slices, workspace)
             if state.get("issue_kind") == "parent" and output.spec_gate == "ready" else []
         )
         if oversized_pr(state):
             split: PullRequestSplit = {
                 "plan": output.spec, "gate": output.spec_gate, "question": output.human_question, "slices": slices,
             }
-            update = {"pr_split": split}
-        elif slices:
+            update = {"pr_split": split, "spec_rejection": None}
+        elif state.get("issue_kind") == "parent" and output.spec_gate == "ready":
             update["slices"] = slices
     update["path"] = [name]
     if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
         if output.slice is None:
             raise InvalidOutput("slice: required when a parent triages as implement")
-        update["slice"] = clean_slices([output.slice], "slice")[0]
+        update["slice"] = output.slice.model_dump()
     if isinstance(output, ReviewOutput):
         update["review_change_kind"] = None
         if output.review == "changes":
@@ -257,6 +312,7 @@ def compile_delivery(
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
+    plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
     def bind(name: str):
         def node(state: DeliveryState) -> dict[str, object]:
@@ -308,7 +364,15 @@ def compile_delivery(
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
-                update = stage_update(name, output, state, model)
+                if isinstance(output, ReviewOutput):
+                    output = _check_tool_facts(output, run, state.get("verified_head"))
+                update = stage_update(name, output, state, model, workspace=plan_workspace)
+            except InvalidSlicePlan as exc:
+                rounds = state.get("review_rounds", 0) + 1
+                update: dict[str, object] = {"path": [name], "spec_rejection": exc.reason, "review_rounds": rounds}
+                if rounds >= config.max_review_rounds:
+                    update.update(halt="spec_cap", halt_detail=str(exc))
+                return update
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
 
@@ -537,6 +601,8 @@ def compile_delivery(
     def after_spec(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
+        if state.get("spec_rejection"):
+            return "spec"
         if oversized_pr(state):
             if checkpointer is None:
                 return "done"
@@ -657,7 +723,7 @@ def compile_delivery(
     )
     builder.add_conditional_edges(
         "spec", after_spec,
-        {"prepare": "prepare", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
+        {"spec": "spec", "prepare": "prepare", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
     )
     builder.add_conditional_edges(
         "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify"},

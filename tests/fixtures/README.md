@@ -65,6 +65,21 @@ codex exec -m gpt-6.1-sol -c model_reasoning_effort=high --color never \
   -s read-only "$codex_prompt_with_schema"
 ```
 
+## GitHub issue dependency contract
+
+Foreman calls the GitHub REST API through `gh api`.
+
+- `GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` returns issue objects. Foreman reads `number`, `title`, `repository_url`, `html_url`, and `state` from each page. [GitHub REST API 2026-03-10](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#list-dependencies-an-issue-is-blocked-by)
+- `POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` takes the blocker's numeric `issue_id`. Foreman gets that ID from `GET /repos/{owner}/{repo}/issues/{issue_number}`. [Add a dependency](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#add-a-dependency-an-issue-is-blocked-by), [Get an issue](https://docs.github.com/en/rest/issues/issues?apiVersion=2026-03-10#get-an-issue)
+- `gh api --paginate --slurp` returns an array of pages. `-F issue_id=<id>` sends the ID as a JSON integer. [GitHub CLI 2.102.0](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go)
+
+Read-only reachability check with `gh 2.102.0`:
+
+```sh
+gh api --method GET 'repos/bookout-labs/tools/issues/43/dependencies/blocked_by' --paginate --slurp
+# [[]]
+```
+
 ## Pull request size
 
 Git 2.56.0 reported a binary numstat row for a synthetic 500-line file with one NUL byte per line. The corresponding text patch reported a 500-line hunk. The review gate reads the text hunk ranges when numstat supplies dashes.
@@ -147,6 +162,24 @@ sends `commit_id`, `event: COMMENT`, `body`, and a `comments` array
 with `path`, `line`, `side`, and `body` per inline comment. The
 [`RIGHT` side identifies the new file](https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request).
 
+## Closing pull request contract
+
+Checked against GitHub GraphQL documentation on 2026-11-20 and GitHub CLI
+v2.102.0 [query builder](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L78-L95).
+The CLI requests closing references without a base-branch filter. The
+[Issue field](https://docs.github.com/en/graphql/reference/issues#issue)
+also admits manually linked PRs by default. A closed issue and a merged
+referenced PR therefore do not establish that the work reached the default branch.
+Foreman checks the closing repository's default branch, including for cross-repository references.
+
+CLI v2.102.0 exposes `state` and `baseRefName` in `gh pr view --json`
+and `defaultBranchRef { name }` in `gh repo view --json`.
+[PR fields](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L353-L357),
+[repository field](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L603-L604).
+The tests feed those documented shapes through the production Pydantic parsers.
+A merged PR targeting `release` with default branch `main` must return false;
+a merged PR targeting default branch `trunk` must return true.
+
 
 ## Ordered check output
 
@@ -183,3 +216,26 @@ $ gh pr list --repo bookout-labs/tools --head 43-slice-seams --state open --json
 ```
 
 GitHub CLI 2.102.0 documents that `gh pr create --repo OWNER/REPO --base main --head BRANCH --title TITLE --body BODY` selects the repo and both refs, supplies the title and body without prompting, and skips pushing or forking. Success prints the PR URL. Foreman leaves that output unparsed and uses the open PR list to resolve retries. The body uses the documented `Closes #N` syntax. [GitHub CLI 2.102.0 create command](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/pr/create/create.go)
+
+## Publication recovery probes, 2026-11-20
+
+Git 2.56.0 and gh 2.102.0 were used. Read-only capture commands and outputs:
+
+```text
+git remote get-url origin
+https://github.com/bookout-labs/tools.git
+gh repo view bookout-labs/tools --json defaultBranchRef
+{"defaultBranchRef":{"name":"main"}}
+gh pr view 60 --repo bookout-labs/tools --json number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest
+{"autoMergeRequest":null,"baseRefName":"main","baseRefOid":"84c08237e585eef84306d6d42ec1f2451b8a058e","headRefName":"55-graph-git-ops","headRefOid":"6e3de512844fff969c17976adc4f1df790ffff8b","isCrossRepository":false,"number":60,"state":"OPEN"}
+```
+
+The checkout's origin is used without rewriting its URL. `git remote get-url origin` is checked against the selected repository before publication. Its HTTPS transport uses the operator's configured credential helper. The gh 2.102.0 `auth setup-git` documentation says, "This command configures git to use GitHub CLI as a credential helper." [Versioned source](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/auth/setupgit/setup_git.go), [manual](https://cli.github.com/manual/gh_auth_setup-git). The operator configures that helper once; the graph does not mutate authentication configuration.
+
+Git's `GIT_TERMINAL_PROMPT=0` prevents terminal authentication prompts. Fetch, push, ls-remote and commit are bounded to 30 seconds, including credential helpers, hooks and signing. Other git calls are bounded to 10 seconds. [Git 2.56.0 environment documentation](https://github.com/git/git/blob/v2.56.0/Documentation/git.adoc).
+
+Recovery uses `git for-each-ref --format=%(refname) refs/heads/<branch>` to find an existing branch, `git merge-base --is-ancestor refs/heads/<base> refs/heads/<branch>` to validate its base, and `git show -s --format=%P%n%B HEAD` to compare the complete parent/message of an observed commit. [Git 2.56.0 for-each-ref](https://github.com/git/git/blob/v2.56.0/Documentation/git-for-each-ref.adoc), [merge-base](https://github.com/git/git/blob/v2.56.0/Documentation/git-merge-base.adoc), [pretty formats](https://github.com/git/git/blob/v2.56.0/Documentation/pretty-formats.adoc). The publication tests execute these production commands against local repositories. `git diff HEAD --binary --no-ext-diff --no-textconv` and `git ls-files --others --exclude-standard -z` fingerprint owned partial edits. [Git 2.56.0 diff](https://github.com/git/git/blob/v2.56.0/Documentation/git-diff.adoc), [ls-files](https://github.com/git/git/blob/v2.56.0/Documentation/git-ls-files.adoc).
+
+The publication integration fixture substitutes only the recorded `remote get-url` identity and gh responses. Push and ls-remote still execute against its local bare origin. The auth repro uses a local HTTP 401 server under a pseudo-terminal; no GitHub graph write runs in verification.
+
+`git remote get-url --push --all origin` also validates every configured push URL, so a separate push URL cannot redirect publication to another repository. Git 2.56.0 documents that `--push` queries push URLs and `--all` returns every URL. [Versioned remote documentation](https://github.com/git/git/blob/v2.56.0/Documentation/git-remote.adoc). `test_wrong_push_remote_is_rejected_before_network` covers a mismatched push URL.

@@ -69,6 +69,9 @@ class Workspace(Protocol):
     def committed(self, parent: str, message: str) -> bool: ...
     def fingerprint(self) -> str: ...
     def push(self, branch: str, repo: str) -> None: ...
+    def files_at(self, head: str, directory: str) -> set[str]: ...
+    def read_file_at(self, head: str, path: str) -> str: ...
+    def has_file(self, path: str) -> bool: ...
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str) -> ReviewDiff: ...
 
@@ -101,6 +104,14 @@ class LiveWorkspace:
                     log(line)
             return process.wait()
 
+    def has_file(self, path: str) -> bool:
+        root = self.root.resolve()
+        try:
+            file = (root / path).resolve()
+            return file.is_relative_to(root) and file.is_file()
+        except (OSError, RuntimeError, ValueError):
+            return False
+
     def inspect(self) -> WorktreeState:
         head = os.fsdecode(self._git("rev-parse", "HEAD")).strip()
         if commit_sha(head) is None:
@@ -112,7 +123,7 @@ class LiveWorkspace:
     def create_branch(self, branch: str, base: str) -> None:
         branch = redact(branch)
         refs = self._git("for-each-ref", "--format=%(refname)", f"refs/heads/{branch}")
-        if refs:
+        if f"refs/heads/{branch}" in os.fsdecode(refs).splitlines():
             self._git("merge-base", "--is-ancestor", f"refs/heads/{base}", f"refs/heads/{branch}")
             self._git("switch", branch)
         else:
@@ -139,7 +150,8 @@ class LiveWorkspace:
         remote = os.fsdecode(self._git("remote", "get-url", "origin")).strip()
         expected = repo.lower()
         urls = (f"https://github.com/{expected}", f"git@github.com:{expected}", f"ssh://git@github.com/{expected}")
-        if remote.lower().removesuffix(".git").rstrip("/") not in urls:
+        push_urls = os.fsdecode(self._git("remote", "get-url", "--push", "--all", "origin")).splitlines()
+        if not push_urls or any(url.lower().removesuffix(".git").rstrip("/") not in urls for url in [remote, *push_urls]):
             raise WorkspaceError("origin does not point at the selected GitHub repository.")
         ref = f"refs/heads/{redact(branch)}"
         observed = self._git("ls-remote", "origin", ref).split()
@@ -147,6 +159,20 @@ class LiveWorkspace:
         if not observed or observed[0] != head:
             self._git(*push_command("origin", branch)[1:])
 
+    def files_at(self, head: str, directory: str) -> set[str]:
+        tree = os.fsdecode(self._git("--no-replace-objects", "ls-tree", "-rz", "--full-tree", head, "--", directory))
+        files: set[str] = set()
+        for entry in tree.split("\0"):
+            metadata, _, path = entry.partition("\t")
+            if metadata.startswith(("100644 blob ", "100755 blob ")):
+                files.add(path)
+        return files
+
+    def read_file_at(self, head: str, path: str) -> str:
+        try:
+            return self._git("--no-replace-objects", "show", f"{head}:{path}").decode("utf-8")
+        except UnicodeError as exc:
+            raise WorktreeInspectionFailed(f"Could not decode {path}: {exc}") from exc
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         attributes = Path(os.fsdecode(self._git(
             "rev-parse", "--path-format=absolute", "--git-path", "info/attributes",

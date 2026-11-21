@@ -1,0 +1,14 @@
+git ls-tree default format:
+%(objectmode) %(objecttype) %(objectname)%x09%(path)
+
+git ls-tree -r: "Recurse into sub-trees."
+git ls-tree -z: "\0 line termination on output and do not quote filenames."
+git ls-tree --full-tree: "Do not limit the listing to the current working directory."
+
+git fast-import modes:
+100644: "A normal (not-executable) file."
+100755: "A normal, but executable, file."
+
+git show: "For plain blobs, it shows the plain contents."
+gitrevisions: "<rev>:<path>, e.g. HEAD:README, master:./README"
+git --no-replace-objects: "Do not use replacement refs to replace Git objects."
