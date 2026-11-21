@@ -17,7 +17,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.adapters import Outcome, Usage
 from foreman.cli import _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
-from foreman.delivery import LiveRun, halted, run_delivery
+from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
@@ -344,6 +344,11 @@ class CliWorkerTest(unittest.TestCase):
 
 
 class StageOutputTest(unittest.TestCase):
+    def test_cli_rejects_invalid_fact_record_before_running(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            main(["run", "delivery", "--repo", "Example/Engine", "--fact-record", "../facts.toml"])
+        self.assertEqual(raised.exception.code, 2)
+
     def test_schema_snapshot(self):
         snapshot = Path(__file__).with_name("stage-schemas.json").read_text()
         schemas = {name: model.model_json_schema() for name, model in STAGE_OUTPUTS.items()}
@@ -591,6 +596,28 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn("paused quota_exhausted", stdout.getvalue())
         self.assertIn("triage quota exhausted", stdout.getvalue())
 
+    def test_resume_uses_saved_custom_fact_record_when_omitted(self):
+        run = LiveRun(self.github, FakeWorkspace(self.cwd))
+        first = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", fact_record="evidence/facts.toml",
+            checkpoint=self.checkpoint, run=run,
+            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+        )
+        self.assertEqual(first["fact_record"], "evidence/facts.toml")
+        resumed = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, run=run,
+            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+        )
+        self.assertEqual(resumed["fact_record"], "evidence/facts.toml")
+
+    def test_resume_rejects_a_different_fact_record(self):
+        self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        with self.assertRaisesRegex(ValueError, "--fact-record differs"):
+            run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
+                              fact_record="evidence/other.toml", checkpoint=self.checkpoint,
+                              run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+        self.assertEqual(self.walk([])["stop"], "verified")
+
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
         def exhaust(node, model, state, instruction):
             if node == "triage":
@@ -747,11 +774,11 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
 
-    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False):
+    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml", paraphrase: bool = False):
         root = self.cwd / "checkout"
         root.mkdir()
         subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=root, check=True)
-        fixtures = root / "tests/fixtures"
+        fixtures = (root / record_path).parent
         fixtures.mkdir(parents=True)
         (fixtures / "result.txt").write_text("debug output\n")
 
@@ -764,8 +791,9 @@ class LiveRunnerTest(unittest.TestCase):
                 'argv = ["example", "--debug"]\n'
             )
 
-        manifest_path = fixtures / "manifest.toml"
-        manifest_path.write_text(manifest(entry) if entry is not None else "[fixtures]\n")
+        manifest_path = root / record_path
+        if not (recover or no_changes):
+            manifest_path.write_text(manifest(entry) if entry is not None else "[fixtures]\n")
         subprocess.run(["git", "add", "."], cwd=root, check=True)
         subprocess.run(
             ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgSign=false",
@@ -784,20 +812,60 @@ class LiveRunnerTest(unittest.TestCase):
         }
         replies = iter([{"triage": "implement"}] + [built, review] * 3)
 
+        implementations = 0
+
         def worker(args, cwd, env):
+            nonlocal implementations
             reply = next(replies)
             if "implementation" in reply:
+                implementations += 1
+                if implementations > 1 and (recover or no_changes):
+                    if recover:
+                        self.assertIn("captured_run", args[-1])
+                        self.assertIn("quoted_source", args[-1])
+                        self.assertIn("The CLI accepts --debug.", args[-1])
+                        worker_state = json.loads(args[-1].split("Delivery state:\n", 1)[1])
+                        self.assertNotIn("tool_facts", worker_state)
+                        claims = carried_tool_facts(worker_state)
+                        self.assertIn("Carried tool facts:\n" + json.dumps([fact.model_dump() for fact in claims]), args[-1])
+                        self.assertIn("claim_ids", args[-1])
+                        manifest_path.write_text(manifest("result.txt") + f'claim_ids = {json.dumps([f.claim_id for f in claims])}\n')
+                    return worker_reply(args, reply)
                 file = root / "items.txt"
                 file.write_text((file.read_text() if file.exists() else "") + "synthetic edit\n")
+            if paraphrase and implementations > 1 and "tool_facts" in reply:
+                reply = {**reply, "tool_facts": [{"claim": "The debug flag is accepted.", "fixture": "result.txt"}]}
             if record_during_review and "tool_facts" in reply:
                 manifest_path.write_text(manifest("result.txt"))
             return worker_reply(args, reply)
 
         return run_live_delivery(
-            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, fact_record=record_path,
             dispatcher=FailoverDispatcher(CliWorker(root, worker)),
             run=LiveRun(self.github, FixtureWorkspace(root)),
         )
+
+    def test_missing_manifest_can_be_recorded_by_implement(self):
+        result = self.review_tool_fact("result.txt", recover=True)
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("merge"), "armed")
+        self.assertEqual(result.get("fact_record"), "tests/fixtures/manifest.toml")
+        self.assertNotIn("tool_facts", result)
+
+    def test_null_claim_resolves_by_id_when_reviewer_paraphrases(self):
+        result = self.review_tool_fact(None, recover=True, paraphrase=True)
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("merge"), "armed")
+        self.assertEqual(result["path"].count("review"), 2)
+
+    def test_custom_fact_record_reaches_approval(self):
+        result = self.review_tool_fact("result.txt", recover=True, record_path="evidence/facts.toml")
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("fact_record"), "evidence/facts.toml")
+
+    def test_no_changes_names_unresolved_fact_gate(self):
+        result = self.review_tool_fact(None, no_changes=True)
+        self.assertIn("tool-facts", result.get("halt_detail", ""))
 
     def test_approve_with_unrecorded_tool_fact_becomes_changes(self):
         result = self.review_tool_fact("result.txt", record_during_review=True)

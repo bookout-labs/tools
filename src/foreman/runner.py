@@ -19,6 +19,7 @@ from foreman.config import PstackPin, load_config
 from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
+from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import Forge
 from foreman.stage_output import Attempt, StoredSlice, parse_output
 
@@ -95,7 +96,10 @@ def run_live_delivery(
     request: str | None = None,
     answer: str | None = None,
     max_tokens: int | None = None,
+    fact_record: str | None = None,
 ) -> DeliveryResult:
+    if fact_record is not None:
+        fact_record = fact_record_path(fact_record)
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(run.workspace.root.resolve())
@@ -120,6 +124,7 @@ def run_live_delivery(
         except SkillMissing as exc:
             return read_delivery_state({**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                         "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
+                                        "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
                                         "repo": repo, "check": check,
                                         "token_cap": channels["token_cap"] if prior else (max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)})
         def invoke(
@@ -137,6 +142,8 @@ def run_live_delivery(
                     return read_delivery_state(saved.values)
             require_token_cap(saved.values, checkpoint)
         saved_values = checkpoint_state(saved.values)
+        if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
+            raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
@@ -172,6 +179,7 @@ def run_live_delivery(
             loaded = client.load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
+                "fact_record": fact_record or MANIFEST_PATH,
                 "repo": repo,
                 "token_cap": max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
                 "issue": issue,

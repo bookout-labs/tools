@@ -6,6 +6,15 @@ Shared tools for the engine repositories. This repo lives in the bookout-labs or
 
 ## Delivery graph
 
+Outside-tool facts cited by review need recorded evidence at the verified head.
+`foreman run delivery --fact-record evidence/facts.toml` selects a repository-relative
+TOML record. The default is `tests/fixtures/manifest.toml`. On resume, omit the flag to use the saved path. An explicit path that differs from the saved path is an error. Fixture IDs name regular tracked files relative to the record.
+When evidence is missing, implement receives the claims and recording schema and
+can create the record. Unresolved claims carry stable IDs across reviews. Add each claim ID to the evidence
+entry's `claim_ids` list to resolve it independently of later reviewer wording.
+A typed exact restatement of the graph's verified check result needs no fixture.
+
+
 ```mermaid
 ---
 config:
@@ -230,6 +239,7 @@ The runner uses the pinned model slugs from `models.toml` with the installed Cod
 If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota returns. Foreman retries the same stage and retains its earlier attempt records.
 
 Before review, Foreman fetches the pull request's base branch from `origin` and counts changes in `src/` and `tests/` against the merge base. Use Git 2.43 or later. Files marked `linguist-generated` in the merge base do not count. If Foreman presents a split plan, use `--answer split` to accept it or `--answer override` to continue with that measured diff.
+
 
 ## Tests
 

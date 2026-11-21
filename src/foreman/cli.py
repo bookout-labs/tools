@@ -17,6 +17,7 @@ from foreman.accept import AcceptError, accept_event
 from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
+from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import ForgeError, LiveForge
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
@@ -121,6 +122,7 @@ def main(
     run.add_argument("--request")
     run.add_argument("--check", default="")
     run.add_argument("--preflight", default="")
+    run.add_argument("--fact-record", type=fact_record_path, default=None)
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
     run.add_argument("--max-tokens", type=positive_tokens)
@@ -183,6 +185,7 @@ def main(
             request=args.request or f"Issue #{args.issue}",
             check=args.check,
             max_tokens=args.max_tokens if args.max_tokens is not None else DEFAULT_TOKEN_CAP,
+            fact_record=args.fact_record or MANIFEST_PATH,
         )
         print("pstack pin not checked (dry run)")
     else:
@@ -203,6 +206,7 @@ def main(
                 issue=args.issue,
                 check=args.check,
                 preflight=args.preflight,
+                fact_record=args.fact_record,
                 checkpoint=checkpoint,
                 dispatcher=dispatcher,
                 request=args.request,
