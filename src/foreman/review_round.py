@@ -7,7 +7,7 @@ from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
 from foreman.dispatch import InvalidOutput
-from foreman.stage_output import Contract, Finding, ReviewOutput, SettledRuling, parse_output
+from foreman.stage_output import Contract, Finding, ReviewOutput, SettledRuling, ToolFact, FindingResolution, parse_output
 
 
 class ReviewRound(Contract):
@@ -15,6 +15,8 @@ class ReviewRound(Contract):
     reviewed_head: str
     findings: list[Finding]
     resolutions: dict[str, Literal["resolved", "unresolved"]]
+    tool_fact_gate: str | None = None
+    tool_facts: list[ToolFact] = Field(default_factory=list)
     coordinator_notes: list[Finding] = Field(default_factory=list)
 
 
@@ -30,16 +32,18 @@ class ReviewHistory(Contract):
                     findings.pop(id, None)
         return list(findings.values())
 
-    def accept(self, output: ReviewOutput, head: str, patch: str | None) -> tuple[list[Finding], str]:
-        earlier = {f.id: f for f in self.unresolved()}
+    def accept(self, output: ReviewOutput, head: str, patch: str | None, *, tool_fact_gate: Finding | None = None) -> tuple[list[Finding], str]:
+        gate_ids = {r.tool_fact_gate for r in self.rounds if r.tool_fact_gate}
+        earlier_gates = {f.id: f for f in self.unresolved() if f.id in gate_ids}
+        earlier = {f.id: f for f in self.unresolved() if f.id not in gate_ids}
         resolutions: dict[str, Literal["resolved", "unresolved"]] = {r.id: r.status for r in output.resolutions}
         if len(resolutions) != len(output.resolutions) or resolutions.keys() != earlier.keys():
             raise InvalidOutput("resolutions: mark every earlier unresolved finding exactly once")
         previous = {f.id: f for r in self.rounds for f in r.findings}
         ids = [f.id for f in output.findings]
-        if len(set(ids)) != len(ids) or previous.keys() & set(ids):
+        if len(set(ids)) != len(ids) or previous.keys() & set(ids) or any(id.startswith("tool-fact-gate:") for id in ids):
             raise InvalidOutput("findings: IDs must be unique across rounds; use resolutions for earlier findings")
-        settled = {r.id for r in self.settled} | {f"finding:{id}" for id in previous.keys() - earlier.keys()}
+        settled = {r.id for r in self.settled} | {f"finding:{id}" for id in previous.keys() - earlier.keys() - gate_ids}
         try:
             changed = changed_lines(patch) if patch is not None else None
         except UnidiffParseError as exc:
@@ -56,16 +60,25 @@ class ReviewHistory(Contract):
             else:
                 accepted.append(finding)
         recurrence = next(((old, new) for old in previous.values() for new in accepted
-                           if old.severity == new.severity == "blocking" and old.kind == new.kind), None)
+                           if old.id not in gate_ids and old.severity == new.severity == "blocking" and old.kind == new.kind), None)
+        active_gate = next(iter(earlier_gates), None)
+        if active_gate:
+            introduced = next(r for r in self.rounds if any(f.id == active_gate for f in r.findings))
+            resolutions[active_gate] = "resolved" if tool_fact_gate is None and head != introduced.reviewed_head else "unresolved"
+        elif tool_fact_gate is not None:
+            active_gate = f"tool-fact-gate:{len(self.rounds) + 1}"
+            accepted.append(tool_fact_gate.model_copy(update={"id": active_gate}))
+        output.resolutions = [FindingResolution(id=id, status=status) for id, status in resolutions.items()]
         self.rounds.append(ReviewRound(round=len(self.rounds) + 1, reviewed_head=head,
-                                      findings=accepted, resolutions=resolutions, coordinator_notes=excluded))
+                                      findings=accepted, resolutions=resolutions, coordinator_notes=excluded,
+                                      tool_fact_gate=active_gate, tool_facts=output.tool_facts))
         output.findings = accepted
         output.detail = "\n\n".join([output.detail, *notes])
         detail = "" if recurrence is None else "Design-level fix required:\n" + "\n".join(f.model_dump_json() for f in recurrence)
         return self.unresolved(), detail
 
     def rulings(self) -> list[SettledRuling]:
-        unresolved = {f.id for f in self.unresolved()}
+        unresolved = {f.id for f in self.unresolved()} | {r.tool_fact_gate for r in self.rounds}
         return [*self.settled, *(SettledRuling(id=f"finding:{f.id}", text=f.summary)
                                for r in self.rounds for f in r.findings if f.id not in unresolved)]
 

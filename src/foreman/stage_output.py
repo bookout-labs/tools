@@ -139,6 +139,13 @@ class MergeRisk(Contract):
     level: Literal["low", "medium", "high"]
 
 
+class ToolFact(Contract):
+    claim: TrimmedText = Field(description="State the outside-tool behavior the diff relies on.")
+    fixture: TrimmedText | None = Field(
+        description="Give the exact entry ID in tests/fixtures/manifest.toml. Use null when the claim has no recorded evidence.",
+    )
+
+
 class Finding(Contract):
     id: TrimmedText = Field(description="Unique finding ID. Never reuse an earlier finding ID.")
     kind: Literal["correctness", "contract-unenforced", "duplicate-owner", "hand-built-parsing", "untested-path", "docs"]
@@ -161,10 +168,13 @@ class SettledRuling(Contract):
 
 
 class ReviewOutput(Contract):
-    resolutions: list[FindingResolution] = Field(description="Mark every earlier unresolved finding once. Return an empty list in round 1.")
+    resolutions: list[FindingResolution] = Field(description="Mark every earlier unresolved reviewer finding once. The graph resolves tool-fact gate findings. Return an empty list in round 1.")
     risk: MergeRisk
     findings: list[Finding] = Field(
         description="List each requested fix, including nits. Return one or more findings for changes and an empty list for approve.",
+    )
+    tool_facts: list[ToolFact] = Field(
+        description="List every outside-tool fact the diff relies on, including unrecorded facts. Use an empty list if there are none.",
     )
     detail: Text = Field(description="Write the pull request review body, including any longer explanation.")
 

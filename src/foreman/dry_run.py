@@ -76,7 +76,7 @@ class ScriptHandler:
                 if verdict == "changes" and not state.get("review") else []
             )
             return Outcome("ran", {
-                "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if state.get("review") else [], "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.",
+                "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if state.get("review") else [], "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.", "tool_facts": [],
             })
         if node == "verify":
             return Outcome("ran", {"verify": self.verify})

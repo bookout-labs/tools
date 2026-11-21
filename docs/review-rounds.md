@@ -32,6 +32,17 @@ head. The failure cap remains the existing shared verify, proof and review cap.
   The answer resumes implementation and becomes a settled ruling. Without a
   checkpointer the graph stops with that halt.
 
+## Tool-fact gate
+
+The graph recomputes the tool-fact gate at every verified head, including facts
+from earlier rounds. A later citation for the same claim replaces its earlier
+citation. The gate runs independently of the reviewer interdiff.
+`ReviewRound.tool_fact_gate` records graph ownership. Its reserved ID cannot be
+submitted or resolved by the reviewer. The blocker stays unresolved until the
+gate passes at a later head. Gate findings never become settled rulings and are
+excluded from both sides of recurrence comparisons. A blocking gate still uses
+the unchanged review cap.
+
 ## Design choice
 
 A flat list of mutable finding statuses would scatter round reconstruction across
@@ -65,6 +76,11 @@ a tested statechart, not a claim of formal verification.
 | Design answer to fixing | `test_design_answer_resumes_implementation` |
 | Invalid resolution or diff stops | `test_missing_duplicate_unknown_resolutions_and_reused_ids_fail_closed`, `test_malformed_diff_and_unknown_ruling_fail_closed` |
 | Resume saved round | `test_resume_saved_round_preserves_findings_and_reviewed_head` |
+| Every round checks verified head outside interdiff | `test_tool_fact_gate_runs_outside_interdiff_and_resolves_at_later_head` |
+| Gate carries without recurrence to unchanged cap | `test_tool_fact_gate_carries_without_recurrence_until_unchanged_cap` |
+| Later passing head resolves gate | `test_tool_fact_gate_runs_outside_interdiff_and_resolves_at_later_head` |
+| Same head keeps gate unresolved | `test_tool_fact_gate_does_not_resolve_at_same_head` |
+| Reviewer cannot resolve or impersonate gate | `test_reviewer_cannot_resolve_or_impersonate_tool_fact_gate` |
 | Merge armed to done | `test_nits_converge_and_outside_interdiff_becomes_note` |
 
 The chart abstracts model failover, proof gates, Forge retries and git transport.

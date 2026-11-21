@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
+from tomllib import TOMLDecodeError
 from typing import Annotated, Literal, TypedDict
 import operator
 import json
@@ -11,18 +12,20 @@ import json
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from pydantic import ValidationError
 from unidiff.errors import UnidiffParseError
 
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.fixture_manifest import MANIFEST_PATH, recorded_fixtures
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, parse_output,
+    Contract, Finding, HumanQuestionOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, parse_output,
 )
 from foreman.review_round import changed_lines, history
 from foreman.workspace import CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -111,6 +114,7 @@ class DeliveryState(TypedDict, total=False):
     review_findings: list[dict[str, object]]
     reviewed_head: str
     settled_rulings: list[dict[str, object]]
+    tool_facts: list[dict[str, str | None]]
     findings: list[dict[str, object]]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
@@ -173,6 +177,29 @@ def clean_slices(
 
 def load_slice(raw: object) -> dict[str, object]:
     return parse_output(StoredSlice, raw).model_dump(exclude_unset=True)
+
+
+def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | None) -> Finding | None:
+    recorded: set[str] = set()
+    notes = [output.detail]
+    if isinstance(run, LiveRun) and head and any(fact.fixture is not None for fact in output.tool_facts):
+        try:
+            recorded = recorded_fixtures(run.workspace, head)
+        except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
+            notes.append(f"Could not check {MANIFEST_PATH} at {head}. {exc}")
+    unrecorded = [fact for fact in output.tool_facts if fact.fixture not in recorded]
+    if not unrecorded:
+        return None
+    for fact in unrecorded:
+        citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
+        notes.append(f"Unrecorded outside-tool fact{citation}: {fact.claim}")
+    output.detail = "\n".join(notes)
+    return Finding(
+        id="tool-fact-gate", kind="untested-path", ruling_id=None,
+        fix="Record the outside-tool facts listed in the review detail.",
+        file=MANIFEST_PATH, line=1, severity="blocking",
+        summary="Record the outside-tool facts listed in the review detail.",
+    )
 
 
 def stage_update(
@@ -327,6 +354,7 @@ def compile_delivery(
                 scope = "Full PR review." if not past.rounds else "Check only unresolved findings and the interdiff."
                 instruction += "\n\n" + scope
                 instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
+                instruction += "\nThe graph resolves tool-fact gate findings. Do not include them in resolutions."
                 instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
                 for key in ("review_findings", "settled_rulings", "findings", "detail", "implementation"):
                     worker_state.pop(key, None)
@@ -344,8 +372,11 @@ def compile_delivery(
                 rethink = ""
                 unresolved = []
                 if isinstance(output, ReviewOutput):
+                    output.tool_facts = list(({f.claim: f for r in past.rounds for f in r.tool_facts}
+                                              | {f.claim: f for f in output.tool_facts}).values())
+                    gate = _check_tool_facts(output, run, state.get("verified_head"))
                     patch = review_context[2].patch if review_context else None
-                    unresolved, rethink = past.accept(output, state.get("verified_head") or state.get("head_sha") or "", patch)
+                    unresolved, rethink = past.accept(output, state.get("verified_head") or state.get("head_sha") or "", patch, tool_fact_gate=gate)
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
                 if isinstance(output, ReviewOutput):
                     update.update(review_findings=[r.model_dump() for r in past.rounds],
