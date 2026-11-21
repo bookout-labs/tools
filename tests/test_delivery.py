@@ -1,15 +1,18 @@
+import tests
+
 import unittest
 
 from dataclasses import replace
 from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 
 from foreman.adapters import Outcome
-from foreman.config import ModelSpec, NodeConfig, load_config
+from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
 from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
-from skill_fixture import skill_fixture
+from skill_fixture import FixtureSkills, skill_fixture
 
 
 BOARD = {"name": "deals-board", "exists": False, "path": None}
@@ -46,6 +49,18 @@ def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
 
 
 class DeliveryTest(unittest.TestCase):
+    def test_graph_receives_the_skill_source_as_an_input(self):
+        source = FixtureSkills()
+
+        with TemporaryDirectory() as directory:
+            result = run_delivery(
+                FailoverDispatcher(ScriptHandler()), repo="Example/Engine",
+                request="List items", scratch=Path(directory), skills=source,
+            )
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(source.pins, [PSTACK_PIN])
+        self.assertTrue(result["skill_attempts"])
+
     def test_passing_a_slice_starts_a_slice_run(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[1])
         self.assertEqual(result["issue_kind"], "slice")

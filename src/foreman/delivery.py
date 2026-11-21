@@ -1,5 +1,3 @@
-# Resolve the delivery types in #52 before restoring strict checking.
-# pyright: basic
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 import json
@@ -11,7 +9,7 @@ from functools import cached_property
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from tomllib import TOMLDecodeError
-from typing import Annotated, Literal, NotRequired, get_args
+from typing import Annotated, Literal, NotRequired, Protocol, get_args
 import re
 import textwrap
 
@@ -23,7 +21,7 @@ from langgraph.types import interrupt
 from pydantic import TypeAdapter, ValidationError
 from typing_extensions import TypedDict
 
-from foreman.adapters import Outcome, OutcomeKind
+from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
@@ -31,10 +29,10 @@ from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command, pull_request_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
-from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
+from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Attempt, AttemptRecord, AttemptUsage, BrowserProofRecord, FormalProofRecord, SliceRecord, Finding, Contract, StoredToolFact, GraphCheck as GraphEvidence, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
+    Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -56,6 +54,16 @@ RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 
 
+class HumanPrompt(Contract):
+    stage: Literal["triage", "spec", "pr_size", "review"]
+    question: str
+
+
+class QuotaPause(Contract):
+    reason: Literal["quota_exhausted"] = "quota_exhausted"
+    detail: str | None
+
+
 @dataclass(frozen=True)
 class EnvironmentProbe:
     workspace: Workspace
@@ -73,10 +81,13 @@ class LiveRun:
     workspace: Workspace
     check_log: CheckLog | None = None
     environment: EnvironmentProbe | None = None
+    skills: SkillSource = export_skills
 
 
 @dataclass(frozen=True)
 class DryRun:
+    skills: SkillSource = export_skills
+
     def record_merge(self, repo: str, head: str | None) -> list[str]:
         revision = (commit_sha(head) or redact(head)) if head else "<sha>"
         return merge_command(redact(repo), "<number>", revision)
@@ -104,13 +115,6 @@ class InvalidSlicePlan(InvalidOutput):
 class PullRequestSizeDecision(StrEnum):
     SPLIT = "split"
     OVERRIDE = "override"
-
-
-class PullRequestSplit(TypedDict):
-    plan: str
-    gate: Literal["ready", "needs_human"]
-    question: str | None
-    slices: list[SliceRecord]
 
 
 class DeliveryFields(TypedDict, total=False):
@@ -157,10 +161,10 @@ class DeliveryFields(TypedDict, total=False):
     reviewed_head: str
     settled_rulings: list[dict[str, object]]
     fact_record: str
-    findings: list[dict[str, object]]
+    findings: list[FindingRecord]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
-    risk: dict[str, str]
+    risk: MergeRiskRecord
     verify: str
     review_rounds: int
     models_used: dict[str, str]
@@ -306,50 +310,12 @@ def _check_tool_facts(
 
 
 def stage_update(
-    name: str, output: Contract, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None,
+    name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None,
 ) -> DeliveryUpdate:
-    update: DeliveryUpdate = {}
-    if isinstance(output, TriageOutput):
-        update.update(triage=output.triage, work_kind=output.work_kind)
-    elif isinstance(output, ResearchOutput):
-        update["research"] = output.research
-    elif isinstance(output, SpecOutput):
-        update.update(spec=output.spec, spec_gate=output.spec_gate)
-    elif isinstance(output, ImplementOutput):
-        update.update(
-            implementation=output.implementation,
-            browser_proof=output.browser_proof.record() if output.browser_proof else None,
-            formal_proof=output.formal_proof.record() if output.formal_proof else None,
-        )
-    elif isinstance(output, ReviewOutput):
-        update.update(
-            risk=output.risk.model_dump(), detail=output.detail,
-            findings=[finding.model_dump() for finding in output.findings],
-        )
-    elif isinstance(output, VerifyOutput):
-        update["verify"] = output.verify
-    if isinstance(output, HumanQuestionOutput):
-        update["human_question"] = output.human_question or ""
-    if isinstance(output, TriageOutput) and state.get("issue_kind") == "slice" and "work_kind" in state:
-        update["work_kind"] = state["work_kind"]
-    if isinstance(output, SpecOutput):
-        update["spec_rejection"] = None
-        slices = (
-            clean_slices(output.slices, workspace)
-            if state.get("issue_kind") == "parent" and output.spec_gate == "ready" else []
-        )
-        if oversized_pr(state):
-            split: PullRequestSplit = {
-                "plan": output.spec, "gate": output.spec_gate, "question": output.human_question, "slices": slices,
-            }
-            update = {"pr_split": split, "spec_rejection": None}
-        elif state.get("issue_kind") == "parent" and output.spec_gate == "ready":
-            update["slices"] = slices
+    slices = clean_slices(output.slices, workspace) if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready" else []
+    context = UpdateContext(state.get("issue_kind"), state.get("work_kind"), bool(oversized_pr(state)), slices)
+    update: DeliveryUpdate = {**output.update(context)}
     update["path"] = [name]
-    if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
-        if output.slice is None:
-            raise InvalidOutput("slice: required when a parent triages as implement")
-        update["slice"] = output.slice.record()
     if update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -413,26 +379,30 @@ def oversized_pr(state: DeliveryState) -> PullRequestSize | None:
     return None
 
 
+class DeliveryNode(Protocol):
+    def __call__(self, state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate: ...
+
+
 def compile_delivery(
     dispatcher: FailoverDispatcher | None,
     config: Config,
     *,
     run: LiveRun | DryRun,
     scratch: Path | None = None,
-    checkpointer: BaseCheckpointSaver | None = None,
+    checkpointer: BaseCheckpointSaver[str] | None = None,
 ) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
-    methods_root = export_skills(config.pstack, scratch) if scratch is not None else None
+    methods_root = run.skills(config.pstack, scratch) if scratch is not None else None
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
     plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
-    def bind(name: str):
+    def bind(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
             if dispatcher is None:
                 return halted("no_dispatcher", "No dispatcher is configured.", name)
-            current_run = runtime.context or run
+            current_run = run if isinstance(run, DryRun) else runtime.context or run
             if name == "implement" and isinstance(current_run, LiveRun):
                 probe = current_run.environment or EnvironmentProbe(
                     current_run.workspace, state.get("preflight", ""), current_run.check_log,
@@ -537,7 +507,7 @@ def compile_delivery(
                     update.update(review=accepted.review, detail=accepted.detail,
                                   review_findings=[r.model_dump(mode="json") for r in accepted.history.rounds],
                                   reviewed_head=accepted.history.rounds[-1].reviewed_head,
-                                  findings=[f.model_dump() for f in accepted.findings],
+                                  findings=[f.record() for f in accepted.findings],
                                   review_change_kind=accepted.change_kind,
                                   review_rounds=state.get("review_rounds", 0) + (accepted.review == "changes"))
                     if accepted.rethink:
@@ -575,7 +545,6 @@ def compile_delivery(
             base = state.get("delivery_base", "<default-branch>")
             commands = [] if "delivery_branch" in state else [branch_command(branch, base)]
             return {"delivery_branch": branch, "delivery_base": base, "commands": commands}
-        update: DeliveryUpdate = {}
         try:
             before = run.workspace.inspect()
             if not before.clean:
@@ -671,7 +640,7 @@ def compile_delivery(
         return {"path": ["publish"]}
 
     def verify(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-        match runtime.context or run:
+        match run if isinstance(run, DryRun) else runtime.context or run:
             case DryRun():
                 return scripted_verify(state, runtime)
             case LiveRun(workspace=workspace, check_log=check_log):
@@ -719,7 +688,7 @@ def compile_delivery(
         stage = state["path"][-1]
         split = state.get("pr_split") if stage == "spec" and oversized_pr(state) else None
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
-        answer = interrupt({"stage": stage, "question": question})
+        answer = interrupt(HumanPrompt.model_validate({"stage": stage, "question": question}).model_dump())
         update: DeliveryUpdate = {"human_answers": [*state.get("human_answers", []), answer]}
         if stage == "review":
             past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
@@ -729,7 +698,7 @@ def compile_delivery(
         return update
 
     def quota_wait(state: DeliveryState) -> DeliveryUpdate:
-        interrupt({"reason": "quota_exhausted", "detail": state.get("halt_detail")})
+        interrupt(QuotaPause(detail=state.get("halt_detail")).model_dump())
         return {"halt": None, "halt_detail": ""}
 
     def decide_pr_size(state: DeliveryState) -> DeliveryUpdate:
@@ -737,14 +706,14 @@ def compile_delivery(
         assert size is not None
         split = state.get("pr_split")
         plan = split["plan"] if split else state.get("spec", "")
-        answer = PullRequestSizeDecision(interrupt({
-            "stage": "pr_size",
-            "question": (
+        answer = PullRequestSizeDecision(interrupt(HumanPrompt(
+            stage="pr_size",
+            question=(
                 f"The pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}.\n"
                 f"{plan}\n"
                 "Use --answer split to accept the split or --answer override to review this diff."
             ),
-        }))
+        ).model_dump()))
         if answer == PullRequestSizeDecision.OVERRIDE:
             return {"pr_size_override": size}
         return {}
@@ -918,7 +887,17 @@ def compile_delivery(
             update["halt_detail"] = split["plan"] if split else state.get("spec", "")
         return update
 
-    builder = StateGraph(DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun)
+    builder = StateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult](
+        DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun,
+    )
+
+    def after_halt(target: str) -> Callable[[DeliveryState], str]:
+        def route(state: DeliveryState) -> str:
+            return "done" if state.get("halt") else target
+        return route
+
+    def after_size(state: DeliveryState) -> str:
+        return "done" if oversized_pr(state) else "verify"
 
     def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str]) -> None:
         def next_stage(state: DeliveryState) -> str:
@@ -926,7 +905,7 @@ def compile_delivery(
 
         builder.add_conditional_edges(stage, next_stage, {**targets, "quota_wait": "quota_wait"})
 
-    graph_nodes = {"implement": implement, "verify": verify, "review": review}
+    graph_nodes: dict[str, DeliveryNode] = {"implement": implement, "verify": verify, "review": review}
     for name in REQUIRED_NODES:
         builder.add_node(name, graph_nodes[name] if name in graph_nodes else bind(name))
     builder.add_node("prepare", prepare)
@@ -940,7 +919,7 @@ def compile_delivery(
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_conditional_edges(
-        START, lambda state: "done" if state.get("halt") else "triage", {"done": "done", "triage": "triage"},
+        START, after_halt("triage"), {"done": "done", "triage": "triage"},
     )
     add_agent_edges(
         "triage",
@@ -953,20 +932,20 @@ def compile_delivery(
         {"spec": "spec", "prepare": "prepare", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
     )
     builder.add_conditional_edges(
-        "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify"},
+        "decide_pr_size", after_size, {"done": "done", "verify": "verify"},
     )
     builder.add_conditional_edges(
         "needs_human", lambda state: "done" if state.get("halt") else "implement" if _last_stage(state) == "review" else _last_stage(state),
         {"triage": "triage", "spec": "spec", "implement": "implement", "done": "done"},
     )
-    builder.add_conditional_edges("prepare", lambda state: "done" if state.get("halt") else "implement", {"done": "done", "implement": "implement"})
-    builder.add_conditional_edges("commit", lambda state: "done" if state.get("halt") else "publish", {"done": "done", "publish": "publish"})
-    builder.add_conditional_edges("publish", lambda state: "done" if state.get("halt") else "verify", {"done": "done", "verify": "verify"})
+    builder.add_conditional_edges("prepare", after_halt("implement"), {"done": "done", "implement": "implement"})
+    builder.add_conditional_edges("commit", after_halt("publish"), {"done": "done", "publish": "publish"})
+    builder.add_conditional_edges("publish", after_halt("verify"), {"done": "done", "verify": "verify"})
     builder.add_conditional_edges(
-        "quota_wait", lambda state: state["path"][-1], {name: name for name in REQUIRED_NODES if name != "verify"},
+        "quota_wait", _last_stage, {name: name for name in REQUIRED_NODES if name != "verify"},
     )
     add_agent_edges("research", lambda _: "done", {"done": "done"})
-    add_agent_edges("implement", lambda state: "done" if state.get("halt") else "commit", {"commit": "commit", "done": "done"})
+    add_agent_edges("implement", after_halt("commit"), {"commit": "commit", "done": "done"})
     add_agent_edges(
         "review",
         after_review,
@@ -994,6 +973,7 @@ def run_delivery(
     config: Config | None = None,
     slice: object = None,
     scratch: Path | None = None,
+    skills: SkillSource = export_skills,
     fact_record: str = MANIFEST_PATH,
 ) -> DeliveryResult:
     state: DeliveryState = {
@@ -1012,11 +992,11 @@ def run_delivery(
     if scratch is not None:
         state["pstack_pin"] = config.pstack.model_dump()
     try:
-        graph = compile_delivery(dispatcher, config, run=DryRun(), scratch=scratch)
+        graph = compile_delivery(dispatcher, config, run=DryRun(skills=skills), scratch=scratch)
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                     "skill_reason": exc.reason})
-    return graph.invoke(state, version="v2").value
+    return read_delivery_state(graph.invoke(state, version="v2").value)
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
