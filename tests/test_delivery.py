@@ -270,7 +270,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(drop_risk)
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertTrue(result["halt_detail"].startswith("risk:"))
+        self.assertIn("review claude-opus-5-5-high: risk:", result["halt_detail"])
         self.assertEqual(result["path"].count("review"), 1)
         self.assertNotIn("merge", result["path"])
 
@@ -279,7 +279,7 @@ class DeliveryTest(unittest.TestCase):
         handler.risk["level"] = ["low"]
         result = walk(handler)
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertTrue(result["halt_detail"].startswith("risk.level:"))
+        self.assertIn("review claude-opus-5-5-high: risk.level:", result["halt_detail"])
 
     def test_review_quota_never_falls_back_to_the_builder_family(self):
         handler = ScriptHandler()

@@ -584,17 +584,24 @@ def compile_delivery(
             if run_tokens(attempt_history) >= state["token_cap"]:
                 return {**stopped, **budget_halt(state, attempt_history, name)}
             index = pending["index"] + 1
+            unavailable = ""
+            if name == "review" and outcome.kind in {"quota", "cli_missing"}:
+                prior = state.get("halt_detail", "") + "; " if pending["index"] else ""
+                unavailable = f"{prior}review {model}: {outcome.kind}. {outcome.detail}".strip()
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):
-                return {"attempts": attempts, "pending_dispatch": PendingDispatch(
+                retry: DeliveryUpdate = {"attempts": attempts, "pending_dispatch": PendingDispatch(
                     stage=name, index=index,
                     quota_model=model if outcome.kind == "quota" else pending["quota_model"],
                 ).record()}
+                if unavailable:
+                    retry["halt_detail"] = unavailable
+                return retry
+            if unavailable:
+                return {**stopped, **halted("reviewer_unavailable", unavailable, name)}
             if outcome.kind == "cli_missing" and pending["quota_model"]:
                 outcome, model = Outcome("quota"), pending["quota_model"]
             if outcome.kind == "failed":
-                return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
-            if name == "review" and outcome.kind in {"quota", "cli_missing"}:
-                return {**stopped, **halted("reviewer_unavailable", f"{name} {model}: {outcome.kind}. {outcome.detail}".strip(), name)}
+                return {**stopped, **halted("invalid_output", f"{name} {model}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
                 return {**stopped, **halted("cli_missing", outcome.detail, name)}
             if outcome.kind == "quota":
@@ -611,7 +618,7 @@ def compile_delivery(
                 update = stage_update(name, output, state, model, workspace=plan_workspace, accepted_model=accepted_model)
                 update.update(attempts=attempts, pending_dispatch=None)
                 if accepted is not None:
-                    update.update(review=accepted.review, detail=accepted.detail,
+                    update.update(review=accepted.review, detail=accepted.detail, halt_detail="",
                                   review_findings=[r.model_dump(mode="json") for r in accepted.history.rounds],
                                   reviewed_head=accepted.history.rounds[-1].reviewed_head,
                                   findings=[f.record() for f in accepted.findings],
@@ -626,7 +633,7 @@ def compile_delivery(
                     rejected.update(halted("spec_cap", str(exc), name))
                 return rejected
             except InvalidOutput as exc:
-                return {**stopped, **halted("invalid_output", str(exc), name)}
+                return {**stopped, **halted("invalid_output", f"{name} {model}: {exc}" if name == "review" else str(exc), name)}
 
             return update
 
