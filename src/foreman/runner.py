@@ -9,14 +9,16 @@ from typing import cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DeliveryState, LiveRun, compile_delivery, load_slice
+from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
+RESUMABLE_HALTS: frozenset[MergeHalt] = frozenset({"merge_held", "merge_not_armed"})
 
 
 def _load_slice(body: str) -> DeliveryState:
@@ -24,6 +26,18 @@ def _load_slice(body: str) -> DeliveryState:
     if not blocks:
         raise InvalidOutput("slice issue needs a fenced JSON object")
     return load_slice(json.loads(blocks[-1]))
+
+
+def _replay_halted_node(graph: CompiledStateGraph, config: RunnableConfig, path: list[str]) -> None:
+    if path and path[-1] == "done":
+        path = path[:-1]
+    if not path:
+        raise ValueError("Cannot resume a run without a halted node.")
+    node = path[-1]
+    before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (node,)), None)
+    if before is None:
+        raise ValueError(f"Cannot resume a run without a checkpoint before {node}.")
+    graph.invoke(None, before.config, durability="sync")
 
 
 def run_live_delivery(
@@ -88,6 +102,8 @@ def run_live_delivery(
             graph.invoke(initial, config, durability="sync")
         elif waiting_for_quota:
             graph.invoke(Command(resume=True), config, durability="sync")
+        elif saved.values.get("halt") in RESUMABLE_HALTS:
+            _replay_halted_node(graph, config, saved.values.get("path", []))
         elif saved.next and not saved.interrupts:
             graph.invoke(None, config, durability="sync")
 
