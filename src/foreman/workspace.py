@@ -15,6 +15,7 @@ from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
 from foreman.redaction import redact
+from foreman.review_context import ReviewContext, ReviewSide
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 ATTRIBUTE_CONFIG = ("-c", "core.attributesFile=/dev/null")
@@ -106,6 +107,32 @@ def added_lines(patch: str) -> frozenset[tuple[str, int]]:
                      for hunk in file for line in hunk if line.is_added and line.target_line_no is not None)
 
 
+def changed_paths(raw: bytes) -> tuple[frozenset[str], frozenset[str]]:
+    """Read --name-status -z output as changed paths on base and head."""
+    base: set[str] = set()
+    head: set[str] = set()
+    if not raw:
+        return frozenset(), frozenset()
+    if not raw.endswith(b"\0"):
+        raise WorktreeInspectionFailed("Unterminated name-status record.")
+    fields = iter(raw[:-1].split(b"\0"))
+    try:
+        for status in fields:
+            if re.fullmatch(rb"(?:[ADMT]|M[0-9]+|[RC][0-9]+)", status) is None:
+                raise WorktreeInspectionFailed(f"Unknown name-status status: {status!r}.")
+            path = next(fields)
+            target = next(fields) if status.startswith((b"R", b"C")) else path
+            if not path or not target:
+                raise WorktreeInspectionFailed("Empty name-status path.")
+            if status[:1] in (b"D", b"M", b"T", b"R"):
+                base.add(os.fsdecode(path))
+            if status[:1] in (b"A", b"M", b"T", b"R", b"C"):
+                head.add(os.fsdecode(target))
+    except StopIteration as exc:
+        raise WorktreeInspectionFailed("Incomplete name-status record.") from exc
+    return frozenset(base), frozenset(head)
+
+
 class Workspace(Protocol):
     root: Path
 
@@ -126,6 +153,7 @@ class Workspace(Protocol):
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff: ...
     def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope: ...
+    def review_context(self, base: str, head: str) -> ReviewContext: ...
 
 
 def branch_command(branch: str, base: str) -> list[str]:
@@ -362,6 +390,41 @@ class LiveWorkspace:
             return ReviewScope(pr.command, inline)
         diff = self.review_diff(previous, head, interdiff=True)
         return ReviewScope(diff.command, inline)
+
+    def review_context(self, base: str, head: str) -> ReviewContext:
+        if not (FULL_SHA.fullmatch(base) and FULL_SHA.fullmatch(head)):
+            raise WorktreeInspectionFailed("Review requires full base and head SHAs.")
+        self._git("fetch", "--no-tags", "origin", base, head, timeout=30)
+        base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base, head)).strip()
+        if not FULL_SHA.fullmatch(base):
+            raise WorktreeInspectionFailed("Git did not report a full merge-base SHA.")
+        before, after = changed_paths(self._inspection_git(
+            base, "diff", "--name-status", "-z", "--find-renames",
+            "--no-ext-diff", "--no-textconv", "--no-relative", base, head, "--",
+        ))
+        return ReviewContext(self._review_side(base, before, base), self._review_side(head, after, base))
+
+    def _review_side(self, sha: str, changed: frozenset[str], attribute_source: str) -> ReviewSide:
+        files = frozenset(os.fsdecode(path) for path in self._inspection_git(
+            attribute_source, "ls-tree", "-rz", "--name-only", "--full-tree", sha, "--",
+        ).split(b"\0") if path)
+        raw = self._inspection_git(
+            attribute_source, "grep", "-c", "-I", "-z", "--no-textconv", "-e", "^", sha, "--",
+            allowed_returncodes=(0, 1),
+        )
+        lines: dict[str, int] = {}
+        prefix = os.fsencode(sha) + b":"
+        records = iter(raw.split(b"\0"))
+        path = next(records)
+        for record in records:
+            count, newline, next_path = record.partition(b"\n")
+            if not newline or not path.startswith(prefix) or not count.isdigit():
+                raise WorktreeInspectionFailed("Malformed git grep line-count record.")
+            lines[os.fsdecode(path[len(prefix):])] = int(count)
+            path = next_path
+        if path:
+            raise WorktreeInspectionFailed("Unterminated git grep line-count record.")
+        return ReviewSide(sha, files, lines, changed)
 
     def _inspection_git(self, attribute_source: str, *args: str, input_paths: bytes | None = None,
                         allowed_returncodes: tuple[int, ...] = (0,)) -> bytes:
