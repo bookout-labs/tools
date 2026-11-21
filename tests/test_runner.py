@@ -511,7 +511,7 @@ class LiveRunnerTest(unittest.TestCase):
         verified_head = git("rev-parse", "HEAD")
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
-        def run_worker(args, cwd):
+        def run_worker(args, cwd, env=None):
             reply = next(replies)
             if reply is APPROVE:
                 git("commit", "--allow-empty", "-m", "Commit after verification")
@@ -606,7 +606,7 @@ class LiveRunnerTest(unittest.TestCase):
             with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
                 code = main(
                     ["run", "delivery", "--repo", repo, "--issue", "8", "--check", "exit 0"],
-                    worker_runner=lambda args, cwd: worker_reply(args, next(replies)),
+                    worker_runner=lambda args, cwd, env=None: worker_reply(args, next(replies)),
                     checkpoint=self.checkpoint, live_run=live_run,
                 )
             self.assertEqual(code, 0)
