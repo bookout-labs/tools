@@ -108,15 +108,10 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
         update["slices"] = clean_slices(output.slices, "slices")
     if isinstance(output, SlicePlanningOutput):
         update["human_question"] = output.human_question or ""
-        if "slice" not in state:
-            triage_implement = isinstance(output, TriageOutput) and output.triage == "implement"
-            if triage_implement and output.slice is None:
-                raise InvalidOutput("slice: required for implement when no slice is loaded")
-            ready_slice_spec = (
-                isinstance(output, SpecOutput) and output.spec_gate == "ready" and state.get("issue_kind") == "slice"
-            )
-            if (triage_implement or ready_slice_spec) and output.slice is not None:
-                update["slice"] = clean_slices([output.slice], "slice")[0]
+    if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
+        if output.slice is None:
+            raise InvalidOutput("slice: required when a parent triages as implement")
+        update["slice"] = clean_slices([output.slice], "slice")[0]
     if update.get("review") == "changes" or update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -264,8 +259,8 @@ def compile_delivery(
         if state.get("halt"):
             return "done"
         if state.get("verify") == "pass":
-            slice = state.get("slice")
-            if slice and (slice["screen"] or slice["properties"]):
+            slice = state["slice"]
+            if slice["screen"] or slice["properties"]:
                 return "proof"
             return "review"
         if state.get("review_rounds", 0) < config.max_review_rounds:
@@ -344,22 +339,28 @@ def run_delivery(
     request: str,
     check: str = "",
     config: Config | None = None,
-    issue_kind: str = "slice",
+    issue_kind: str = "parent",
+    slice: dict[str, object] | None = None,
 ) -> DeliveryState:
     if issue_kind not in {"parent", "slice"}:
         raise ValueError(f"unknown issue kind {issue_kind}")
+    state: DeliveryState = {
+        "repo": repo,
+        "request": request,
+        "check": check,
+        "issue_kind": issue_kind,
+        "review_rounds": 0,
+        "models_used": {},
+        "path": [],
+    }
+    if issue_kind == "slice":
+        if slice is None:
+            raise ValueError("slice is required for a slice run")
+        state["slice"] = clean_slices([parse_output(Slice, slice)], "slice", allow_external_dependencies=True)[0]
+    elif slice is not None:
+        raise ValueError("slice input requires issue_kind='slice'")
     graph = compile_delivery(dispatcher, config)
-    return graph.invoke(
-        {
-            "repo": repo,
-            "request": request,
-            "check": check,
-            "issue_kind": issue_kind,
-            "review_rounds": 0,
-            "models_used": {},
-            "path": [],
-        }
-    )
+    return graph.invoke(state)
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:

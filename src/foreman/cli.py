@@ -156,11 +156,14 @@ def main(
             run.error("--answer requires a live run")
         if args.request is None and args.issue is None:
             run.error("a dry run requires --request or --issue")
+        handler = ScriptHandler()
         result = run_delivery(
-            FailoverDispatcher(ScriptHandler()),
+            FailoverDispatcher(handler),
             repo=args.repo,
             request=args.request or f"Issue #{args.issue}",
             check=args.check,
+            issue_kind="slice",
+            slice=handler.slice,
         )
     else:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):

@@ -32,15 +32,18 @@ class SliceProperty(Contract):
 
 
 class Slice(Contract):
-    """Preserve the proof obligations. Implementers should report only evidence they collect."""
+    """One pull request's outcome and its proof obligations."""
 
     title: TrimmedText = Field(description="Name the outcome.")
     acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
     depends_on: list[TrimmedText] = Field(
-        description="List the titles of other slices in this spec that must land first. Use an empty list if none must land first or if this is a single slice.",
+        description="List the titles of other slices from the same parent that must land first. Use an empty list if none must land first.",
     )
     screen: str = Field(
-        description="For browser proof, use a Markdown file directly under docs/screens/ without '..'. Use an empty string for work without a screen.",
+        description=(
+            "When the change alters a screen described under docs/screens/, name that Markdown file directly under "
+            "docs/screens/ without '..'. Use an empty string when no documented screen changes."
+        ),
         pattern=r"^(docs/screens/[^/\\]+\.md)?$",
     )
     properties: list[SliceProperty] = Field(
@@ -56,12 +59,12 @@ class Slice(Contract):
 
 
 class SlicePlanningOutput(Contract):
-    slice: Slice | None = None  # CLIs without schema enforcement may omit this.
     human_question: str | None = None  # CLIs without schema enforcement may omit this.
 
 
 class TriageOutput(SlicePlanningOutput):
     triage: Literal["implement", "spec", "question", "needs_human"]
+    slice: Slice | None = None  # CLIs without schema enforcement may omit this.
 
 
 class ResearchOutput(Contract):

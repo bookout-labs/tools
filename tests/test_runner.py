@@ -299,7 +299,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.github.body = slice_body(SLICE)
         result = self.walk([
             {"triage": "spec"},
-            {"spec_gate": "ready", "spec": "Make IDs unique", "slice": EMPTY_SLICE},
+            {"spec_gate": "ready", "spec": "Make IDs unique"},
             {"implementation": "built", "head_sha": HEAD, "browser_proof": BROWSER, "formal_proof": FORMAL},
             APPROVE,
         ])

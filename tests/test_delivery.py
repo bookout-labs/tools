@@ -25,23 +25,33 @@ SLICES = [
         "properties": [],
     },
 ]
+EMPTY_SLICE = {**SLICES[1], "depends_on": []}
 
 
 HEAD_SHA = "a" * 40
 
 
-def walk(handler, check="npm run check", issue_kind="slice", config=None):
+def walk(handler, check="npm run check", issue_kind="slice", config=None, *, slice=None):
+    if issue_kind == "slice" and slice is None:
+        slice = EMPTY_SLICE
     return run_delivery(
         FailoverDispatcher(handler),
         repo="DoctorCRE/doctorcre-engine",
         request="Add a field",
         check=check,
         issue_kind=issue_kind,
+        slice=slice,
         config=config,
     )
 
 
 class DeliveryTest(unittest.TestCase):
+    def test_slice_run_requires_a_loaded_slice(self):
+        handler = ScriptHandler(triage="spec")
+        with self.assertRaisesRegex(ValueError, "slice is required"):
+            run_delivery(FailoverDispatcher(handler), repo="Example/Engine", request="Add a field", issue_kind="slice")
+        self.assertEqual(handler.calls, [])
+
     def test_clear_change_skips_spec(self):
         handler = ScriptHandler(head_sha=HEAD_SHA)
 
@@ -72,8 +82,16 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
 
+    def test_ready_spec_keeps_the_loaded_slice_proof_obligations(self):
+        result = walk(ScriptHandler(triage="spec"), slice=SLICES[0])
+        self.assertEqual(result["path"], ["triage", "spec", "implement", "verify", "proof", "done"])
+        self.assertEqual(result["stop"], "insufficient_evidence")
+
     def test_triage_slice_rejects_a_dependency(self):
-        result = walk(lambda *_: {"triage": "implement", "slice": {**SLICES[0], "depends_on": ["Other"]}})
+        result = walk(
+            lambda *_: {"triage": "implement", "slice": {**SLICES[0], "depends_on": ["Other"]}},
+            issue_kind="parent",
+        )
         self.assertEqual(result["path"], ["triage", "done"])
         self.assertEqual(result["stop"], "invalid_output")
         self.assertEqual(result["halt_detail"], "slice.depends_on.0: unknown dependency Other")
