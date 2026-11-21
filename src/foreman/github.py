@@ -1,13 +1,17 @@
 """GitHub operations for delivery runs."""
 
+import json
 import subprocess
 from typing import Literal, Protocol, TypedDict, TypeVar
 
 from pydantic import BaseModel, PositiveInt, RootModel, ValidationError
 
+from foreman.redaction import redact
+from foreman.stage_output import Slice
+from foreman.workspace import commit_sha
+
 SQUASH_MERGE_FLAG = "--squash"
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
-MERGE_BASE = "main"
 PullRequestState = Literal["OPEN", "CLOSED", "MERGED"]
 Model = TypeVar("Model", bound=BaseModel)
 
@@ -47,17 +51,17 @@ class PullRequest(PullRequestStatus):
     headRefOid: str
     headRefName: str
     baseRefName: str
+    isCrossRepository: bool = False
+    baseRefOid: str
     autoMergeRequest: AutoMergeRequest | None
 
 
-class OpenPullRequest(BaseModel, strict=True):
-    headRefName: str
-    baseRefName: str
-    isCrossRepository: bool
+class DefaultBranch(BaseModel, strict=True):
+    name: str
 
 
-class OpenPullRequests(RootModel[list[OpenPullRequest]]):
-    pass
+class RepositoryView(BaseModel, strict=True):
+    defaultBranchRef: DefaultBranch
 
 
 class IssueLabel(BaseModel, strict=True):
@@ -114,40 +118,111 @@ class Issue(TypedDict):
     labels: list[str]
 
 
+class ReviewComment(TypedDict):
+    path: str
+    line: int
+    side: Literal["RIGHT"]
+    body: str
+
+
 class Forge(Protocol):
+    def default_branch(self, repo: str) -> str: ...
+    def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
     def load_issue(self, repo: str, number: int) -> Issue: ...
-    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int: ...
+    def create_issue(
+        self, repo: str, title: str, body: str, labels: list[str], *, child: Slice | None = None,
+    ) -> int: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
+    def pull_request_base(self, repo: str, branch: str) -> str: ...
+    def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
+    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None: ...
     def merge_hold(self, repo: str) -> str | None: ...
-    def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
 
 
-def repository_url(repo: str) -> str:
-    return f"https://github.com/{repo}.git"
-
-
 def pull_request_command(repo: str, head: str, base: str, title: str, body: str) -> list[str]:
-    return ["gh", "pr", "create", "--repo", repo, "--base", base, "--head", head, "--title", title, "--body", body]
+    return ["gh", "pr", "create", "--repo", redact(repo), "--base", redact(base), "--head", redact(head),
+            "--title", redact(" ".join(title.split())), "--body", redact(body)]
 
 
 def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
     return ["gh", "pr", "merge", pull_request, "--repo", repo, SQUASH_MERGE_FLAG, "--auto", "--match-head-commit", sha]
 
 
+def render_slice_body(prose: str, child: Slice) -> str:
+    dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
+    constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
+    return (
+        (f"{prose}\n\n" if prose else "")
+        + f"Acceptance:\n{child.acceptance}\n\nDependencies:\n{dependencies}"
+        + f"\n\nScreen:\n{child.screen or 'None'}\n\nConstraints:\n{constraints}"
+        + f"\n\n```json\n{json.dumps(child.model_dump(), indent=2)}\n```"
+    )
+
+
 class LiveForge:
+    def __init__(self):
+        self._defaults: dict[str, str] = {}
+
+    def default_branch(self, repo: str) -> str:
+        if repo not in self._defaults:
+            self._defaults[repo] = self._read(
+                RepositoryView, ["gh", "repo", "view", repo, "--json", "defaultBranchRef"],
+            ).defaultBranchRef.name
+        return self._defaults[repo]
+
+    def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None:
+        def exists() -> bool:
+            try:
+                pr = self._view_pr(repo, head)
+            except CommandFailed as exc:
+                if "no pull requests found for branch" in str(exc):
+                    return False
+                raise
+            if pr.state != "OPEN" or pr.headRefName != head or pr.baseRefName != base or pr.isCrossRepository:
+                raise ForgeError("The branch pull request must be open on the selected base in this repository.")
+            return True
+
+        if exists():
+            return
+        try:
+            self._run_command(pull_request_command(repo, head, base, title, body))
+        except ForgeError:
+            if not exists():
+                raise
+
     def load_issue(self, repo: str, number: int) -> Issue:
         issue = self._read(
             IssueView, ["gh", "issue", "view", str(number), "--repo", repo, "--json", "title,body,labels"],
         )
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
-    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int:
+    def create_issue(
+        self, repo: str, title: str, body: str, labels: list[str], *, child: Slice | None = None,
+    ) -> int:
+        repo, title, body, *labels = (redact(value) for value in (repo, title, body, *labels))
+        if child is not None:
+            child = self._redact_slice(child)
+            body = render_slice_body(body, child)
         args = ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={body}"]
         for label in labels:
             args.extend(["-f", f"labels[]={label}"])
         return self._read(CreatedIssue, args, timeout=None).number
+
+    @staticmethod
+    def _redact_slice(child: Slice) -> Slice:
+        screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
+        return child.model_copy(update={
+            "title": redact(child.title),
+            "acceptance": redact(child.acceptance),
+            "depends_on": [redact(title) for title in child.depends_on],
+            "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
+            "properties": [
+                prop.model_copy(update={"name": redact(prop.name), "constraint": redact(prop.constraint)})
+                for prop in child.properties
+            ],
+        })
 
     def is_merged(self, repo: str, number: int) -> bool:
         issue = self._read(
@@ -166,7 +241,26 @@ class LiveForge:
         return False
 
     def add_label(self, repo: str, number: int, label: str) -> None:
+        repo, label = (redact(value) for value in (repo, label))
         self._run_command(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
+
+    def pull_request_base(self, repo: str, branch: str) -> str:
+        return self._view_pr(repo, branch).baseRefName
+
+    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None:
+        current = self._view_pr(repo, str(target.number))
+        if current.state != "OPEN" or current.baseRefName != target.baseRefName:
+            raise ForgeError("The pull request changed during review.")
+        payload = {
+            "commit_id": target.headRefOid, "event": "COMMENT", "body": redact(body),
+            "comments": [{**comment, "body": redact(comment["body"]), "path": redact(comment["path"])} for comment in comments],
+        }
+        repo = redact(repo)
+        self._run_command(
+            ["gh", "api", f"repos/{repo}/pulls/{target.number}/reviews", "--method", "POST",
+             "-H", "X-GitHub-Api-Version: 2022-11-28", "--input", "-"],
+            body=json.dumps(payload),
+        )
 
     def merge_hold(self, repo: str) -> str | None:
         try:
@@ -174,27 +268,6 @@ class LiveForge:
         except ForgeError as exc:
             raise MergeHoldUnreadable(str(exc)) from exc
         return next((variable.value for variable in variables.root if variable.name == MERGE_HOLD_VARIABLE), None)
-
-    def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None:
-        if self._has_open_pull_request(repo, head, base):
-            return
-        try:
-            self._run_command(pull_request_command(repo, head, base, title, body))
-        except (CommandFailed, CommandTimedOut):
-            if not self._has_open_pull_request(repo, head, base):
-                raise
-
-    def _has_open_pull_request(self, repo: str, head: str, base: str) -> bool:
-        prs = self._read(OpenPullRequests, [
-            "gh", "pr", "list", "--repo", repo, "--head", head, "--state", "open",
-            "--json", "headRefName,baseRefName,isCrossRepository",
-        ])
-        matches = [pr for pr in prs.root if not pr.isCrossRepository and pr.headRefName == head]
-        if any(pr.baseRefName == base for pr in matches):
-            return True
-        if matches:
-            raise ForgeError(f"The open pull request for {head} must target {base}.")
-        return False
 
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
         try:
@@ -204,17 +277,24 @@ class LiveForge:
         except ForgeError as exc:
             raise MergeNotArmed(str(exc)) from exc
 
-    def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
+    def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest:
         pr = self._view_pr(repo, branch)
         if pr.state != "OPEN":
-            raise MergeNotArmed("The pull request is not open.")
+            raise ForgeError("The pull request is not open.")
         if pr.headRefOid.lower() != sha.lower():
-            raise MergeNotArmed("The pull request head differs from the verified SHA.")
+            raise ForgeError("The pull request head differs from the verified SHA.")
         if not pr.headRefName.startswith(f"{issue}-"):
-            raise MergeNotArmed(f"The pull request head branch must start with {issue}-.")
-        if pr.baseRefName != MERGE_BASE:
-            raise MergeNotArmed(f"The pull request must target {MERGE_BASE}.")
-        command = merge_command(repo, str(pr.number), sha)
+            raise ForgeError(f"The pull request head branch must start with {issue}-.")
+        if pr.baseRefName != self.default_branch(repo) or pr.isCrossRepository:
+            raise ForgeError("The pull request must target the repository default branch.")
+        return pr
+
+    def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
+        head = commit_sha(sha)
+        if head is None:
+            raise MergeNotArmed("Merge arming requires a full 40-hex commit SHA.")
+        pr = self.review_target(repo, issue, branch, head)
+        command = merge_command(redact(repo), str(pr.number), head)
         try:
             self._run_command(command)
         except CommandTimedOut as exc:
@@ -224,22 +304,23 @@ class LiveForge:
                 and confirmed.autoMergeRequest is not None
                 and confirmed.autoMergeRequest.mergeMethod == "SQUASH"
             )
-            same_head = confirmed.number == pr.number and confirmed.headRefOid.lower() == sha.lower()
+            same_head = confirmed.number == pr.number and confirmed.headRefOid.lower() == head.lower()
             if not (same_head and (confirmed.state == "MERGED" or open_squash_request)):
                 raise MergeNotArmed("Merge arming timed out and was not confirmed.") from exc
 
     def _view_pr(self, repo: str, selector: str) -> PullRequest:
         command = [
             "gh", "pr", "view", "--repo", repo,
-            "--json", "number,state,headRefOid,headRefName,baseRefName,autoMergeRequest", "--", selector,
+            "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest", "--", selector,
         ]
         return self._read(PullRequest, command)
 
-    def _run_command(self, command: list[str], *, timeout: float | None = 30) -> str:
+    def _run_command(self, command: list[str], *, timeout: float | None = 30, body: str | None = None) -> str:
         operation = " ".join(command[:2] if command[1] == "api" else command[:3])
         try:
             result = subprocess.run(
-                command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+                command, stdin=subprocess.DEVNULL if body is None else None, input=body,
+                capture_output=True, text=True, timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
             raise CommandTimedOut(operation) from exc

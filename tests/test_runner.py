@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import shlex
 import sys
 from tempfile import TemporaryDirectory
 import unittest
@@ -11,20 +12,25 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.cli import main
+from foreman.cli import _write_check_log, main
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK
-from foreman.github import MergeHoldUnreadable, MergeNotArmed
+from foreman.github import ForgeError, Issue, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
+
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
-from foreman.workspace import LiveWorkspace, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from test_adapters import fixture_process
 
 
 HEAD = "a" * 40
+SYNTHETIC_QUESTION_TOKEN = "ghp_" + "a" * 36
+
+BASE = "b" * 40
+
 BRANCH = "8-list-items-once"
 CLEAN_WORKTREE = WorktreeState(HEAD, True, BRANCH)
 SLICE = {
@@ -37,7 +43,9 @@ SLICE = {
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
 FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}]}
-APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "review_note": None}
+APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request."}
+FINDING = {"file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
+DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
 
 def slice_body(item):
@@ -48,7 +56,7 @@ class FakeWorkspace(LiveWorkspace):
     def __init__(self, cwd, snapshots=()):
         super().__init__(cwd)
         self.snapshots = iter(snapshots)
-        self.current = WorktreeState("0" * 40, True, "main")
+        self.current = CLEAN_WORKTREE
         self.published = False
 
     def inspect(self):
@@ -57,14 +65,17 @@ class FakeWorkspace(LiveWorkspace):
             raise snapshot
         return snapshot
 
+    def fingerprint(self):
+        return "synthetic-edits"
+
     def create_branch(self, branch, base):
         self.current = WorktreeState(self.current.head, True, branch)
 
     def commit(self, message):
-        head = HEAD if self.current.head == "0" * 40 else f"{int(self.current.head, 16) + 1:040x}"
+        head = HEAD
         self.current = WorktreeState(head, True, self.current.branch)
 
-    def push(self, branch):
+    def push(self, branch, repo):
         self.published = True
 
     def reply(self, args, reply):
@@ -72,6 +83,12 @@ class FakeWorkspace(LiveWorkspace):
             self.published = False
             self.current = WorktreeState(self.current.head, False, self.current.branch)
         return worker_reply(args, reply)
+
+    def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
+        return {"head": head, "merge_base": "b" * 40, "lines": 1}
+
+    def review_diff(self, base, head):
+        return ReviewDiff(f"git diff {base}...{head}", DIFF)
 
 
 def worker_reply(args, reply):
@@ -83,8 +100,6 @@ def worker_reply(args, reply):
         reply = {"slice": None, "human_question": None, **reply}
     if "spec" in reply:
         reply = {"slices": None, "human_question": None, **reply}
-    if "review" in reply:
-        reply = {"review_note": None, **reply}
     envelope = json.loads(recorded.stdout)
     field = "structured_output" if args[0] == "claude" else "structuredOutput"
     envelope[field] = reply
@@ -94,17 +109,34 @@ class FakeGitHub:
     def __init__(self, labels=None):
         self.labels = labels if labels is not None else ["slice"]
         self.body = slice_body(EMPTY_SLICE) if "slice" in self.labels else "Issue body"
-        self.created = []
+        self.created: list[tuple[str, str, list[str]]] = []
         self.merged = set()
         self.label_calls = []
-        self.issue_labels = {}
+        self.issue_labels: dict[int, list[str]] = {}
         self.merge_calls = []
+        self.base_branch = "main"
+        self.reviews = []
+        self.base = BASE
         self.hold = None
         self.hold_reads = []
 
-    def open_pull_request(self, repo, head, base, title, body):
+    def default_branch(self, repo):
+        return "main"
+
+    def open_pull_request(self, *args):
         pass
 
+    def pull_request_base(self, repo: str, branch: str) -> str:
+        return self.base_branch
+
+    def review_target(self, repo, issue, branch, sha):
+        return PullRequest.model_validate({
+            "number": 12, "state": "OPEN", "headRefOid": sha, "headRefName": branch,
+            "baseRefName": "main", "baseRefOid": self.base, "autoMergeRequest": None,
+        })
+
+    def post_review(self, repo, target, body, comments):
+        self.reviews.append((repo, target.number, target.headRefOid, body, comments))
     def merge_hold(self, repo):
         self.hold_reads.append(repo)
         return self.hold
@@ -112,13 +144,15 @@ class FakeGitHub:
     def arm_auto_merge(self, repo, issue, branch, sha):
         self.merge_calls.append((repo, issue, branch, sha))
 
-    def load_issue(self, repo, number):
+    def load_issue(self, repo, number) -> Issue:
         if number in self.issue_labels:
             title, body, _ = self.created[number - 101]
             return {"title": title, "body": body, "labels": self.issue_labels[number]}
         return {"title": "Issue title", "body": self.body, "labels": self.labels}
 
-    def create_issue(self, repo, title, body, labels):
+    def create_issue(self, repo, title, body, labels, *, child=None):
+        if child is not None:
+            body = render_slice_body(body, child)
         self.created.append((title, body, labels))
         number = 100 + len(self.created)
         self.issue_labels[number] = list(labels)
@@ -296,19 +330,33 @@ class StageOutputTest(unittest.TestCase):
                 with self.assertRaisesRegex(InvalidOutput, r"^formal_proof\.constraints\.0\.rejected:"):
                     parse_output(ImplementOutput, raw)
 
-    def test_implementation_rejects_a_worker_supplied_head(self):
-        implementation = {"implementation": "Done", "browser_proof": None, "formal_proof": None}
+    def test_implementation_rejects_worker_head(self):
         with self.assertRaisesRegex(InvalidOutput, r"^head_sha:"):
-            parse_output(ImplementOutput, {**implementation, "head_sha": HEAD})
+            parse_output(ImplementOutput, {"implementation": "Done", "head_sha": HEAD, "browser_proof": None, "formal_proof": None})
 
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
             parse_output(ReviewOutput, {**APPROVE, "review": "approve, but please fix X first"})
 
-    def test_review_verdicts_require_lowercase(self):
-        for verdict in ("Approve.", "Changes. Add a check."):
+    def test_review_requires_an_exact_verdict(self):
+        for verdict in ("Approve.", "approve.", "changes.", "changes. Add a check."):
             with self.subTest(verdict=verdict), self.assertRaisesRegex(InvalidOutput, "^review:"):
                 parse_output(ReviewOutput, {**APPROVE, "review": verdict})
+
+    def test_review_summary_is_limited_to_200_characters(self):
+        self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["Finding"]["properties"]["summary"]["maxLength"], 200)
+        raw = {**APPROVE, "review": "changes", "findings": [{**FINDING, "summary": "a" * 201}]}
+        with self.assertRaisesRegex(InvalidOutput, r"^findings\.0\.summary:"):
+            parse_output(ReviewOutput, raw)
+
+    def test_review_verdict_requires_matching_findings(self):
+        for raw in (
+            {**APPROVE, "review": "changes"},
+            {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
+        ):
+            with self.subTest(raw=raw), self.assertRaisesRegex(InvalidOutput, "changes requires at least one finding"):
+                parse_output(ReviewOutput, raw)
+
 
 class LiveRunnerTest(unittest.TestCase):
     def setUp(self):
@@ -319,31 +367,79 @@ class LiveRunnerTest(unittest.TestCase):
         self.prompts = []
         self.github = FakeGitHub()
 
-    def walk(self, replies, *, issue=8, check="exit 0", snapshots=()):
+    def walk(self, replies, *, issue=8, check="exit 0", snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None):
         outputs = iter(replies)
-        workspace = FakeWorkspace(self.cwd, snapshots)
-        if not replies:
-            workspace.current = CLEAN_WORKTREE
+        active = workspace if workspace is not None else FakeWorkspace(self.cwd, snapshots)
 
         def run(args, cwd, env):
             self.assertEqual(cwd, self.cwd)
             self.calls.append(args[0])
             self.prompts.append(args[-1])
-            return workspace.reply(args, next(outputs))
+            reply = next(outputs)
+            return active.reply(args, reply) if isinstance(active, FakeWorkspace) else worker_reply(args, reply)
 
         return run_live_delivery(
             repo="Example/Engine", issue=issue, check=check,
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
-            run=LiveRun(self.github, workspace),
+            run=LiveRun(self.github, active),
         )
 
-    def test_review_note_reaches_the_next_implement_prompt(self):
+    def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes", "review_note": "Add a check."}
+        changes = {**APPROVE, "review": "changes", "detail": "Check the bounds."}
+        for severity, kind in (("nit", "nits"), ("blocking", "blocking")):
+            with self.subTest(severity=severity):
+                self.checkpoint = self.cwd / f"{severity}.sqlite3"
+                finding = {**FINDING, "severity": severity}
+                self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, APPROVE])
+                state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
+                self.assertEqual(state["findings"], [finding])
+                self.assertEqual(state["detail"], changes["detail"])
+                self.assertEqual(state["review_change_kind"], kind)
+
+    def test_review_posts_only_changed_lines_inline(self):
+        findings = [
+            FINDING,
+            {**FINDING, "line": 1, "summary": "Untouched context."},
+            {**FINDING, "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
+        ]
+        built = {"implementation": "Built."}
+        changes = {**APPROVE, "review": "changes", "findings": findings, "detail": "Check the bounds."}
         self.walk([{"triage": "implement"}, built, changes, built, APPROVE])
-        prompt = self.prompts[3]
-        self.assertIn('"title": "ImplementOutput"', prompt)
-        self.assertEqual(json.loads(prompt.split("Delivery state:\n")[1])["review_note"], "Add a check.")
+        self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
+        self.assertEqual(self.github.reviews, [(
+            "Example/Engine", 12, HEAD,
+            "Check the bounds.\n\nitems.txt:1 [blocking] Untouched context.\n\ndeleted.txt:1 [blocking] Deleted file.",
+            [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[blocking] Add a check."}],
+        ), ("Example/Engine", 12, HEAD, APPROVE["detail"], [])])
+
+    def test_review_failures_halt_without_merging(self):
+        changes = {**APPROVE, "review": "changes", "findings": [FINDING]}
+        for method, stop, replies in (
+            ("review_target", "review_unavailable", []),
+            ("post_review", "review_not_posted", [changes]),
+        ):
+            with self.subTest(method=method), patch.object(self.github, method, side_effect=ForgeError("Unavailable")):
+                self.checkpoint = self.cwd / f"{method}.sqlite3"
+                result = self.walk([{"triage": "implement"}, {"implementation": "Built."}, *replies])
+                self.assertEqual(result.get("stop"), stop)
+                self.assertEqual(result.get("halt_detail"), "Unavailable")
+                if replies:
+                    self.assertEqual(result.get("findings"), [FINDING])
+                self.assertEqual(self.github.merge_calls, [])
+
+    def test_review_halts_when_git_fetch_times_out(self):
+        def fetch(*args, **kwargs):
+            raise subprocess.TimeoutExpired(args, 30)
+
+        workspace = FakeWorkspace(self.cwd)
+        workspace.review_diff = lambda base, head: LiveWorkspace(self.cwd).review_diff(base, head)
+        with patch("foreman.workspace.subprocess.run", side_effect=fetch):
+            result = self.walk([{"triage": "implement"}, {"implementation": "Built."}], workspace=workspace)
+        self.assertEqual(result.get("stop"), "review_unavailable")
+        self.assertRegex(result.get("halt_detail", ""), r"^git fetch timed out after 30 seconds")
+        self.assertEqual(self.github.reviews, [])
+        self.assertEqual(self.github.merge_calls, [])
 
     def test_load_slice_issue(self):
         result = self.walk([{"triage": "question"}, {"research": "answer"}])
@@ -414,16 +510,68 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
 
+    def test_cli_redacts_the_check_subprocess_stdout_and_stderr(self):
+        check = self.cwd / "verify.sh"
+        check.write_text(
+            f"echo 'Check stdout {SYNTHETIC_QUESTION_TOKEN}'\n"
+            f"echo 'Check stderr {SYNTHETIC_QUESTION_TOKEN}' >&2\n"
+        )
+        fake = FakeWorkspace(self.cwd)
+        replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        with (
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "sh verify.sh"],
+                worker_runner=lambda args, cwd, env: fake.reply(args, next(replies)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("done verified\n", stdout.getvalue())
+        self.assertIn("Check stdout [redacted:GitHub Token]\n", stdout.getvalue())
+        self.assertIn("Check stderr [redacted:GitHub Token]\n", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, stdout.getvalue() + stderr.getvalue())
+
+    def test_check_streams_in_write_order_before_the_command_exits(self):
+        check = self.cwd / "stream.py"
+        acknowledgement = self.cwd / "logged"
+        check.write_text(
+            "import os, pathlib, time\n"
+            f"os.write(1, b'First synthetic {SYNTHETIC_QUESTION_TOKEN}\\n')\n"
+            f"ack = pathlib.Path({str(acknowledgement)!r})\n"
+            "deadline = time.monotonic() + 5\n"
+            "while not ack.exists() and time.monotonic() < deadline: time.sleep(0.01)\n"
+            "if not ack.exists(): raise SystemExit(9)\n"
+            f"os.write(2, b'Second synthetic {SYNTHETIC_QUESTION_TOKEN}\\n')\n"
+            "os.write(1, b'Third\\n')\n"
+            "os.write(2, b'Fourth')\n"
+            "raise SystemExit(7)\n"
+        )
+
+        def log(line):
+            _write_check_log(line)
+            acknowledgement.touch()
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = LiveWorkspace(self.cwd).run(shlex.join([sys.executable, str(check)]), log=log)
+        self.assertEqual(code, 7)
+        self.assertEqual(stdout.getvalue(), (
+            "First synthetic [redacted:GitHub Token]\n"
+            "Second synthetic [redacted:GitHub Token]\nThird\nFourth"
+        ))
+
     def test_cli_uses_one_workspace_root_for_the_worker_check_and_checkpoint(self):
         root = self.cwd / "checkout"
         root.mkdir()
-        workspace = FakeWorkspace(root)
-        live_run = LiveRun(self.github, workspace)
+        live_run = LiveRun(self.github, FakeWorkspace(root))
+        fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
         def worker(args, cwd, env):
             self.assertEqual(cwd, root)
-            return workspace.reply(args, next(replies))
+            return live_run.workspace.reply(args, next(replies))
 
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
             code = main(
@@ -502,7 +650,7 @@ class LiveRunnerTest(unittest.TestCase):
         ])
         self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(result["merge"], "armed")
-        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, result.get("head_sha"))])
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
 
     def test_formal_block_consumes_the_review_cap(self):
         self.github.body = slice_body(SLICE)
@@ -517,10 +665,11 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertNotIn("review", result["path"])
 
     def test_unconfigured_worker_stops_without_running_the_check(self):
+        fake = FakeWorkspace(self.cwd)
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "touch ran"],
-                worker_runner=None, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                worker_runner=None, checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 0)
         self.assertIn("done no_dispatcher", stdout.getvalue())
@@ -553,13 +702,29 @@ class LiveRunnerTest(unittest.TestCase):
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk(
                     [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-                    snapshots=(CLEAN_WORKTREE, snapshot),
+                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
                 )
                 self.assertEqual(result["check_exit_code"], 0)
                 self.assertEqual(result["merge"], "not_armed")
                 self.assertEqual(result["stop"], "merge_not_armed")
                 self.assertIn(detail, result["halt_detail"])
                 self.assertEqual(self.github.merge_calls, [])
+
+    def test_head_moved_before_review_uses_the_existing_merge_stop(self):
+        moved = WorktreeState("b" * 40, True, BRANCH)
+        for snapshots in ((CLEAN_WORKTREE, moved), (CLEAN_WORKTREE, CLEAN_WORKTREE, moved)):
+            with self.subTest(snapshots=snapshots), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "run.sqlite3"
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}], snapshots=snapshots)
+                self.assertEqual(result.get("stop"), "merge_not_armed")
+                self.assertEqual(result.get("merge"), "not_armed")
+                self.assertIn(f"HEAD is {moved.head}, verification checked {HEAD}.", result.get("halt_detail", ""))
+                self.assertNotIn("review", result.get("models_used", {}))
+                self.assertEqual(self.github.merge_calls, [])
+                resumed = self.walk([APPROVE])
+                self.assertIn("review", resumed.get("models_used", {}))
+                self.assertEqual(resumed.get("merge"), "armed")
+                self.github.merge_calls.clear()
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
@@ -583,7 +748,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_retry_after_worktree_is_cleaned_arms_once(self):
         halted = self.walk(
             [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-            snapshots=(CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
+            snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
         )
         self.assertEqual(halted["stop"], "merge_not_armed")
         self.assertEqual(halted["merge"], "not_armed")
@@ -608,19 +773,18 @@ class LiveRunnerTest(unittest.TestCase):
             ).stdout.strip()
 
         git("init", "-b", BRANCH)
-        git("config", "user.name", "Foreman Test")
-        git("config", "user.email", "foreman@example.com")
-        git("config", "commit.gpgsign", "false")
         git("commit", "--allow-empty", "-m", "Verified commit")
-        remote = self.cwd / "remote.git"
-        git("init", "--bare", str(remote))
-        git("remote", "add", "origin", str(remote))
+        git("branch", "main")
+        git("remote", "add", "origin", ".")
+        verified_head = git("rev-parse", "HEAD")
+        self.github.base = verified_head
+        fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
         def run_worker(args, cwd, env=None):
             reply = next(replies)
             if "implementation" in reply:
-                (repo / "built.txt").write_text("built")
+                (repo / "items.txt").write_text("synthetic edits")
             if reply is APPROVE:
                 git("commit", "--allow-empty", "-m", "Commit after verification")
             return worker_reply(args, reply)
@@ -632,8 +796,9 @@ class LiveRunnerTest(unittest.TestCase):
                 run=LiveRun(self.github, LiveWorkspace(repo)),
             )
 
-        halted = run_delivery()
-        verified_head = halted.get("verified_head")
+        with patch.object(LiveWorkspace, "push"):
+            halted = run_delivery()
+        verified_head = halted["verified_head"]
         self.assertEqual(halted["stop"], "merge_not_armed")
         self.assertEqual(self.github.merge_calls, [])
         reset = re.search(rf"^  git reset --keep {verified_head}$", halted["halt_detail"], re.MULTILINE)
@@ -648,31 +813,63 @@ class LiveRunnerTest(unittest.TestCase):
     def test_live_workspace_reports_head_status_and_branch(self):
         for status, branch in (("", BRANCH + "\n"), ("?? untracked\n", ""), ("", "")):
             with self.subTest(status=status, branch=branch), patch("foreman.workspace.subprocess.run", side_effect=[
-                subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, HEAD + "\n"),
-                subprocess.CompletedProcess(["git", "status", "--porcelain", "--untracked-files=all"], 0, status),
-                subprocess.CompletedProcess(["git", "branch", "--show-current"], 0, branch),
+                subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, (HEAD + "\n").encode()),
+                subprocess.CompletedProcess(["git", "status", "--porcelain"], 0, status.encode()),
+                subprocess.CompletedProcess(["git", "branch", "--show-current"], 0, branch.encode()),
             ]) as run:
                 self.assertEqual(LiveWorkspace(self.cwd).inspect(), WorktreeState(HEAD, not status, branch.strip() or None))
                 self.assertEqual([call.args[0] for call in run.call_args_list], [
-                    ["git", "rev-parse", "HEAD"], ["git", "status", "--porcelain", "--untracked-files=all"], ["git", "branch", "--show-current"],
+                    ["git", "rev-parse", "HEAD"], ["git", "status", "--porcelain"], ["git", "branch", "--show-current"],
                 ])
                 self.assertTrue(all(call.kwargs["cwd"] == self.cwd for call in run.call_args_list))
+
+    def test_review_diff_fetches_an_unrelated_new_base_commit(self):
+        upstream = self.cwd / "upstream"
+        checkout = self.cwd / "checkout"
+
+        def git(root: Path, *args: str) -> str:
+            return subprocess.check_output(
+                ["git", "-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", *args],
+                cwd=root, text=True, stderr=subprocess.PIPE,
+            ).strip()
+
+        git(self.cwd, "init", "-b", "main", str(upstream))
+        (upstream / "items.txt").write_text("old\n")
+        git(upstream, "add", "items.txt")
+        git(upstream, "commit", "-m", "Base")
+        git(self.cwd, "clone", "--no-local", str(upstream), str(checkout))
+        git(checkout, "switch", "-c", BRANCH)
+        (checkout / "items.txt").write_text("new\n")
+        git(checkout, "commit", "-am", "Review head")
+        git(checkout, "push", "origin", BRANCH)
+        head = git(checkout, "rev-parse", "HEAD")
+        (upstream / "main.txt").write_text("Unrelated change\n")
+        git(upstream, "add", "main.txt")
+        git(upstream, "commit", "-m", "Advance main")
+        base = git(upstream, "rev-parse", "HEAD")
+        with self.assertRaises(subprocess.CalledProcessError):
+            git(checkout, "cat-file", "-e", base)
+
+        reviewed = LiveWorkspace(checkout).review_diff(base, head)
+        self.assertEqual(git(checkout, "cat-file", "-t", base), "commit")
+        self.assertIn(f"{base}...{head}", reviewed.command)
+        self.assertIn("-old\n+new\n", reviewed.patch)
+        self.assertNotIn("main.txt", reviewed.patch)
 
     def test_live_workspace_rejects_invalid_head_before_the_remaining_inspection(self):
         for head in ("", "abc123", "z" * 40):
             with self.subTest(head=head), patch(
                 "foreman.workspace.subprocess.run",
-                return_value=subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, head + "\n", ""),
+                return_value=subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, (head + "\n").encode(), b""),
             ) as run:
                 with self.assertRaisesRegex(WorktreeInspectionFailed, "full 40-hex HEAD SHA"):
                     LiveWorkspace(self.cwd).inspect()
                 run.assert_called_once()
 
     def test_main_displays_the_forge_failure(self):
+        fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
         detail = "GraphQL: Auto-merge is disabled"
-        workspace = FakeWorkspace(self.cwd)
-        live_run = LiveRun(self.github, workspace)
         with (
             contextlib.chdir(self.cwd),
             contextlib.redirect_stdout(io.StringIO()) as stdout,
@@ -680,8 +877,8 @@ class LiveRunnerTest(unittest.TestCase):
         ):
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
-                worker_runner=lambda args, cwd, env: workspace.reply(args, next(replies)),
-                checkpoint=self.checkpoint, live_run=live_run,
+                worker_runner=lambda args, cwd, env: fake.reply(args, next(replies)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 0)
         arm.assert_called_once_with("Example/Target", 8, BRANCH, HEAD)
@@ -696,18 +893,10 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(self.github.created, [])
 
-    def test_main_dry_run_records_git_and_forge_commands(self):
+    def test_main_dry_run_reports_a_skipped_merge(self):
         with contextlib.redirect_stdout(io.StringIO()) as stdout, patch("foreman.github.subprocess.run") as run:
             code = main(["run", "delivery", "--repo", "Example/Target", "--request", "List items", "--dry-run"])
         self.assertEqual(code, 0)
-        for command in (
-            "git switch -c '<issue>-implement-the-requested-change' refs/heads/main",
-            "git add --all",
-            "git commit -m '<issue>: Implement the requested change'",
-            "git push --no-follow-tags https://github.com/Example/Target.git",
-            "gh pr create --repo Example/Target --base main --head '<issue>-implement-the-requested-change'",
-        ):
-            self.assertIn(f"dry run: {command}", stdout.getvalue())
         self.assertIn(
             "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --squash --auto --match-head-commit '<sha>'\n"
             "done verified",
@@ -718,15 +907,15 @@ class LiveRunnerTest(unittest.TestCase):
     def test_main_rerun_arms_once_after_the_repository_hold_is_cleared(self):
         self.github.hold = "  Maintenance window "
         repo = "Example/Target"
+        fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-        workspace = FakeWorkspace(self.cwd)
-        live_run = LiveRun(self.github, workspace)
+        live_run = LiveRun(self.github, FakeWorkspace(self.cwd))
 
         def invoke():
             with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
                 code = main(
                     ["run", "delivery", "--repo", repo, "--issue", "8", "--check", "exit 0"],
-                    worker_runner=lambda args, cwd, env=None: workspace.reply(args, next(replies)),
+                    worker_runner=lambda args, cwd, env=None: live_run.workspace.reply(args, next(replies)),
                     checkpoint=self.checkpoint, live_run=live_run,
                 )
             self.assertEqual(code, 0)
@@ -759,11 +948,9 @@ class LiveRunnerTest(unittest.TestCase):
 import json
 from pathlib import Path
 import sys
-from foreman.cli import main
+from foreman.cli import _write_check_log, main
 from foreman.delivery import LiveRun
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, worker_reply
-
-workspace = FakeWorkspace(Path.cwd())
+from test_runner import APPROVE, HEAD, SYNTHETIC_QUESTION_TOKEN, FakeGitHub, FakeWorkspace, worker_reply
 
 def run(args, cwd, env):
     prompt = args[-1]
@@ -779,15 +966,18 @@ def run(args, cwd, env):
     if schema["title"] == "SpecOutput":
         if not state.get("human_answers"):
             return worker_reply(args, {
-                "spec": "A decision is open", "spec_gate": "needs_human", "human_question": "Which items?"
+                "spec": "A decision is open", "spec_gate": "needs_human",
+                "human_question": f"Which items? {SYNTHETIC_QUESTION_TOKEN}",
             })
         assert state["human_answers"] == ["Only open items"]
         assert state["request"] == "List items"
+        assert state["human_question"] == f"Which items? {SYNTHETIC_QUESTION_TOKEN}"
         return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
     if schema["title"] == "ImplementOutput":
         return workspace.reply(args, {"implementation": "built"})
     return worker_reply(args, APPROVE)
 
+workspace = FakeWorkspace(Path.cwd())
 sys.exit(main(
     sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]),
     live_run=LiveRun(FakeGitHub(), workspace),
@@ -802,7 +992,8 @@ sys.exit(main(
             ).stdout
 
         first = invoke("--request", "List items")
-        self.assertIn("paused needs_human\nWhich items?", first)
+        self.assertIn("paused needs_human\nWhich items? [redacted:GitHub Token]", first)
+        self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, first)
         self.assertEqual(invoke(), first)
         self.assertFalse((self.cwd / "check.log").exists())
         completed = invoke("--answer", "Only open items")

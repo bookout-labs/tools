@@ -63,7 +63,11 @@ graph TD;
 
 Generate the diagram with `foreman diagram delivery`. The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. A node does not edit the list, and it does not decide the next node.
 
-Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the builder model is missing or every eligible reviewer is out of quota, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
+Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high.
+
+Foreman fetches the pull request's base and verified head from `origin` and reviews their three-dot diff. Each finding names a file, line, severity (`blocking` or `nit`), and a summary of up to 200 characters. Findings on changed lines in the reviewed commit post inline. Other findings appear with their locations in the GitHub review body alongside `detail`. A changes verdict requires findings and sends them with the detail to the next implementation round. The checkpoint marks a changes verdict with only nit findings as `review_change_kind: nits`.
+
+An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the builder model is missing or every eligible reviewer is out of quota, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
 
 Foreman creates an `<issue>-<slug>` branch from local `main` before the first edit and commits each successful implementation. An attempt with no file changes or an unexpected HEAD or branch change stops with `failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against `main`. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
@@ -163,6 +167,8 @@ foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm r
 ```
 
 The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request and check command.
+
+Before review, Foreman fetches the pull request's base branch from `origin` and counts changes in `src/` and `tests/` against the merge base. Use Git 2.43 or later. Files marked `linguist-generated` in the merge base do not count. If Foreman presents a split plan, use `--answer split` to accept it or `--answer override` to continue with that measured diff.
 
 ## Tests
 
