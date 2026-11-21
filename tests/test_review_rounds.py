@@ -1,10 +1,11 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.types import Command
 
+from foreman.review_round import GraphCheck, ReviewHistory, accept
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.config import load_config
 from foreman.dispatch import FailoverDispatcher
@@ -14,7 +15,7 @@ from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, F
 
 
 class ReviewRoundsTest(unittest.TestCase):
-    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, gate_heads=None):
+    def run_rounds(self, reviews, *, initial=None, crash=False, bad_diff=False, gate_heads=None):
         self.prompts = []
         self.diffs = []
         self.gate_reads = []
@@ -37,7 +38,7 @@ class ReviewRoundsTest(unittest.TestCase):
 
                 def review_diff(self, base, head, *, interdiff=False):
                     outer.diffs.append((base, head, interdiff))
-                    diff = super().review_diff(base, head, interdiff=interdiff)
+                    diff = super().review_diff(base, head)
                     if bad_diff:
                         return type(diff)(diff.command, "--- a/x\n+++ b/x\n@@ -1 +1 @@\ninvalid\n")
                     return diff
@@ -78,57 +79,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     result = graph.invoke(None, config)
                 else:
                     result = graph.invoke(state, config)
-                if answer:
-                    self.assertEqual(result["halt"], "design_rethink")
-                    self.assertEqual(result["review_rounds"], 1)
-                    result = graph.invoke(Command(resume="Redesign the ownership."), config)
                 return result
-
-    def test_nits_converge_and_outside_interdiff_becomes_note(self):
-        first = {**FINDING, "severity": "nit"}
-        result = self.run_rounds([
-            {**APPROVE, "findings": [first]},
-            {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
-             "findings": [{**first, "id": "new", "line": 1}]},
-        ])
-        self.assertEqual(result["merge"], "armed")
-        self.assertEqual(result["findings"], [])
-        self.assertEqual(result["reviewed_head"], HEAD)
-        self.assertEqual(len(result["review_findings"]), 2)
-        self.assertEqual(self.diffs, [(BASE, HEAD, False), (HEAD, HEAD, True)])
-        self.assertIn("Coordinator note new", self.forge.reviews[-1][3])
-        implement = [s for n, s, _ in self.prompts if n == "implement"][-1]
-        self.assertEqual(implement["findings"], [first])
-        later = [p for p in self.prompts if p[0] == "review"][-1]
-        self.assertNotIn("review_findings", later[1])
-        self.assertIn("Settled, don't reopen", later[2])
-        self.assertIn('"id": "f1"', later[2])
-
-    def test_recurrence_pauses_without_consuming_round_or_patching(self):
-        result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
-                                 {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
-                                  "findings": [{**FINDING, "id": "again"}]}])
-        self.assertEqual(result["halt"], "design_rethink")
-        self.assertEqual(result["review_rounds"], 1)
-        self.assertEqual(result["path"].count("implement"), 2)
-        self.assertIn('"id":"f1"', result["halt_detail"])
-        self.assertIn('"id":"again"', result["halt_detail"])
-        self.assertFalse(self.forge.merge_calls)
-
-    def test_design_answer_resumes_implementation(self):
-        result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
-                                 {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
-                                  "findings": [{**FINDING, "id": "again"}]},
-                                 {**APPROVE, "resolutions": [{"id": "again", "status": "resolved"}]}], answer=True)
-        self.assertEqual(result["merge"], "armed")
-        self.assertEqual(result["settled_rulings"][0]["text"], "Redesign the ownership.")
-
-    def test_resume_saved_round_preserves_findings_and_reviewed_head(self):
-        result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
-                                 {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}], crash=True)
-        self.assertEqual(result["merge"], "armed")
-        self.assertEqual(len(result["review_findings"]), 2)
-        self.assertEqual(self.diffs[-1], (HEAD, HEAD, True))
 
     def test_missing_duplicate_unknown_resolutions_and_reused_ids_fail_closed(self):
         resolved = {"id": "f1", "status": "resolved"}
@@ -156,93 +107,33 @@ class ReviewRoundsTest(unittest.TestCase):
              "findings": [{**nit, "id": "f3", "ruling_id": "finding:f1"}]},
         ])
         self.assertEqual(result["merge"], "armed")
-        self.assertIn('"id": "finding:f1"', self.prompts[-1][2])
+        self.assertEqual(json.loads(self.prompts[-1][2].split("Settled, don't reopen:\n")[1])[0]["id"], "finding:f1")
         self.assertEqual(result["review_findings"][-1]["coordinator_notes"][0]["id"], "f3")
 
-    def test_unresolved_blocking_finding_stays_blocking_until_cap(self):
-        unresolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "unresolved"}]}
-        result = self.run_rounds([{**APPROVE, "findings": [FINDING]}, unresolved, unresolved])
-        self.assertEqual(result["stop"], "review_cap")
-        self.assertEqual(result["review_rounds"], 3)
-        self.assertEqual(result["review_change_kind"], "blocking")
-        self.assertEqual(result["findings"], [FINDING])
-
-    def test_malformed_diff_and_unknown_ruling_fail_closed(self):
-        for bad_diff, finding in ((True, FINDING), (False, {**FINDING, "ruling_id": "unknown"})):
-            with self.subTest(bad_diff=bad_diff):
-                result = self.run_rounds([{**APPROVE, "findings": [finding]}], bad_diff=bad_diff)
-                self.assertEqual(result["halt"], "invalid_output")
-                self.assertFalse(self.forge.merge_calls)
-
-    def test_tool_fact_gate_runs_outside_interdiff_and_resolves_at_later_head(self):
-        fact = {"claim": "The CLI accepts example.", "fixture": "result.txt"}
-        result = self.run_rounds([
-            {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
-            {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}], "tool_facts": [fact]},
-            APPROVE,
-        ], gate_heads={"3" * 40})
+    def test_full_diff_rounds_resume_and_keep_worker_output(self):
+        result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
+                                 {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}], crash=True)
         self.assertEqual(result["merge"], "armed")
-        self.assertEqual(self.gate_reads, ["2" * 40, "3" * 40])
-        second, third = result["review_findings"][1:]
-        gate_id = second["tool_fact_gate"]
-        self.assertEqual(second["findings"][0]["file"], "tests/fixtures/manifest.toml")
-        self.assertEqual(second["coordinator_notes"], [])
-        self.assertEqual(third["resolutions"], {gate_id: "resolved"})
-        self.assertIn(gate_id, self.prompts[-1][2])
-        self.assertEqual(result["review_rounds"], 2)
+        self.assertEqual(self.diffs, [(BASE, HEAD, False)] * 2)
+        raw = parse_output(ReviewOutput, {**APPROVE, "findings": [FINDING]})
+        before = raw.model_dump()
+        past = ReviewHistory()
+        accepted = accept(past, raw, HEAD, None)
+        self.assertEqual(raw.model_dump(), before)
+        self.assertEqual(past.rounds, [])
+        self.assertEqual(accepted.change_kind, "blocking")
 
-    def test_tool_fact_gate_carries_without_recurrence_until_unchanged_cap(self):
-        fact = {"claim": "The CLI accepts example.", "fixture": "result.txt"}
-        result = self.run_rounds([{**APPROVE, "tool_facts": [fact]}, APPROVE, APPROVE], gate_heads=set(), crash=True)
-        self.assertEqual(result["stop"], "review_cap")
-        self.assertEqual(result["review_rounds"], 3)
-        self.assertEqual(result["review_change_kind"], "blocking")
-        self.assertEqual(result["findings"][0]["id"], "tool-fact-gate:1")
-        self.assertEqual(result["review_findings"][-1]["resolutions"], {"tool-fact-gate:1": "unresolved"})
-        self.assertFalse(self.forge.merge_calls)
+    def test_gate_rejects_every_previously_failing_head(self):
+        past = ReviewHistory()
+        output = parse_output(ReviewOutput, APPROVE)
+        for head, fails, expected in [("a", True, "changes"), ("b", True, "changes"),
+                                      ("b", False, "changes"), ("c", False, "approve")]:
+            accepted = accept(past, output, head, GraphCheck(failing_heads=[head], detail="Missing fixture") if fails else None)
+            self.assertEqual(accepted.review, expected)
+            past = accepted.history
+        self.assertEqual(past.rulings(), [])
 
-    def test_reviewer_cannot_resolve_or_impersonate_tool_fact_gate(self):
-        fact = {"claim": "The CLI accepts example.", "fixture": None}
-        for second in (
-            {**APPROVE, "resolutions": [{"id": "tool-fact-gate:1", "status": "resolved"}]},
-            {**APPROVE, "findings": [{**FINDING, "id": "tool-fact-gate:2"}]},
-        ):
-            with self.subTest(second=second):
-                result = self.run_rounds([{**APPROVE, "tool_facts": [fact]}, second])
-                self.assertEqual(result["halt"], "invalid_output")
-                self.assertFalse(self.forge.merge_calls)
-
-    def test_tool_fact_gate_does_not_resolve_at_same_head(self):
-        fact = {"claim": "The CLI accepts example.", "fixture": None}
-        corrected = {**fact, "fixture": "result.txt"}
-        result = self.run_rounds([{**APPROVE, "tool_facts": [fact]},
-                                  {**APPROVE, "tool_facts": [corrected]}, APPROVE], gate_heads={HEAD})
-        self.assertEqual(result["stop"], "review_cap")
-        self.assertEqual(result["findings"][0]["id"], "tool-fact-gate:1")
-
-    def test_tool_fact_gate_is_excluded_from_both_sides_of_recurrence(self):
-        fact = {"claim": "The CLI accepts example.", "fixture": None}
-        reviewer = {**FINDING, "kind": "untested-path"}
-        for reviews in (
-            [{**APPROVE, "findings": [reviewer]},
-             {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}], "tool_facts": [fact]}, APPROVE],
-            [{**APPROVE, "tool_facts": [fact]}, {**APPROVE, "findings": [reviewer]},
-             {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}],
-        ):
-            with self.subTest(reviews=reviews):
-                result = self.run_rounds(reviews)
-                self.assertEqual(result["stop"], "review_cap")
-                self.assertEqual(result["review_rounds"], 3)
-                self.assertEqual(result.get("halt"), "review_cap")
-
-    def test_later_gate_failure_gets_fresh_id_without_recurrence(self):
-        first = {"claim": "The CLI accepts example.", "fixture": "result.txt"}
-        second = {"claim": "Another tool fact.", "fixture": None}
-        result = self.run_rounds([{**APPROVE, "tool_facts": [first]},
-                                  {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
-                                  {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
-                                   "tool_facts": [second]}], gate_heads={"2" * 40, "3" * 40})
-        self.assertEqual(result["stop"], "review_cap")
-        self.assertEqual(result["review_rounds"], 3)
-        self.assertEqual(result["findings"][0]["id"], "tool-fact-gate:3")
-        self.assertEqual(result["review_findings"][1]["resolutions"], {"tool-fact-gate:1": "resolved"})
+    def test_malformed_history_halts_only_in_review(self):
+        result = self.run_rounds([APPROVE], initial={"review_findings": [{"broken": True}]})
+        self.assertEqual(result["halt"], "invalid_output")
+        self.assertIn("implement", result["path"])

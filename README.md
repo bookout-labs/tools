@@ -22,11 +22,14 @@ graph TD;
 	review(review)
 	proof(proof)
 	needs_human(needs_human)
+	decide_pr_size(decide_pr_size)
 	merge(merge)
 	done(done)
 	__end__([<p>__end__</p>]):::last
 	__start__ -.-> done;
 	__start__ -.-> triage;
+	decide_pr_size -.-> done;
+	decide_pr_size -.-> verify;
 	implement -.-> done;
 	implement -.-> verify;
 	merge --> done;
@@ -36,9 +39,13 @@ graph TD;
 	proof -.-> implement;
 	proof -.-> review;
 	research --> done;
+	review -.-> decide_pr_size;
 	review -.-> done;
 	review -.-> implement;
 	review -.-> merge;
+	review -.-> needs_human;
+	review -.-> spec;
+	spec -.-> decide_pr_size;
 	spec -.-> done;
 	spec -.-> implement;
 	spec -.-> needs_human;
@@ -47,12 +54,12 @@ graph TD;
 	triage -.-> needs_human;
 	triage -.-> research;
 	triage -.-> spec;
-	spec -.-> spec;
 	verify -.-> done;
 	verify -.-> implement;
 	verify -.-> proof;
 	verify -.-> review;
 	done --> __end__;
+	spec -.-> spec;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
@@ -184,3 +191,5 @@ Before review, Foreman fetches the pull request's base branch from `origin` and 
 uv sync
 uv run python -m unittest discover -s tests
 ```
+
+Settled rulings exist only within a run. Resolved findings become rulings for later reviews.

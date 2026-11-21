@@ -63,8 +63,6 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
     case = (context.get("vars") or {}).get("case") or prompt
     if case == "clear":
         output = _stop(ScriptHandler(triage="implement"), slice=FIELD_SLICE)
-    elif case == "review-converges":
-        output = _stop(ScriptHandler(reviews=["changes", "approve"]), slice=FIELD_SLICE)
     elif case == "spec-ready":
         output = _stop(ScriptHandler(triage="spec", spec_gate="ready"), slice=FIELD_SLICE)
     elif case == "spec-gate":

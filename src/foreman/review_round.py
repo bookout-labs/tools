@@ -1,13 +1,17 @@
-"""Review history, resolution accounting and convergence rules."""
+"""Review history and pure resolution accounting."""
 
 from typing import Literal
 
 from pydantic import Field
-from unidiff.errors import UnidiffParseError
-from unidiff.patch import PatchSet
 
 from foreman.dispatch import InvalidOutput
-from foreman.stage_output import Contract, Finding, ReviewOutput, SettledRuling, ToolFact, FindingResolution, parse_output
+from foreman.stage_output import Contract, Finding, ReviewOutput, SettledRuling, ToolFact, parse_output
+
+
+class GraphCheck(Contract):
+    failing_heads: list[str] = Field(default_factory=list[str])
+    detail: str
+    passed: bool = False
 
 
 class ReviewRound(Contract):
@@ -15,77 +19,74 @@ class ReviewRound(Contract):
     reviewed_head: str
     findings: list[Finding]
     resolutions: dict[str, Literal["resolved", "unresolved"]]
-    tool_fact_gate: str | None = None
-    tool_facts: list[ToolFact] = Field(default_factory=list)
-    coordinator_notes: list[Finding] = Field(default_factory=list)
+    graph_check: GraphCheck | None = None
+    tool_facts: list[ToolFact] = Field(default_factory=list[ToolFact])
+    coordinator_notes: list[Finding] = Field(default_factory=list[Finding])
 
 
 class ReviewHistory(Contract):
-    rounds: list[ReviewRound] = Field(default_factory=list)
-    settled: list[SettledRuling] = Field(default_factory=list)
+    rounds: list[ReviewRound] = Field(default_factory=list[ReviewRound])
+    settled: list[SettledRuling] = Field(default_factory=list[SettledRuling])
 
     def unresolved(self) -> list[Finding]:
         findings = {f.id: f for r in self.rounds for f in r.findings}
-        for round in self.rounds:
-            for id, status in round.resolutions.items():
+        for entry in self.rounds:
+            for finding_id, status in entry.resolutions.items():
                 if status == "resolved":
-                    findings.pop(id, None)
+                    findings.pop(finding_id, None)
         return list(findings.values())
 
-    def accept(self, output: ReviewOutput, head: str, patch: str | None, *, tool_fact_gate: Finding | None = None) -> tuple[list[Finding], str]:
-        gate_ids = {r.tool_fact_gate for r in self.rounds if r.tool_fact_gate}
-        earlier_gates = {f.id: f for f in self.unresolved() if f.id in gate_ids}
-        earlier = {f.id: f for f in self.unresolved() if f.id not in gate_ids}
-        resolutions: dict[str, Literal["resolved", "unresolved"]] = {r.id: r.status for r in output.resolutions}
-        if len(resolutions) != len(output.resolutions) or resolutions.keys() != earlier.keys():
-            raise InvalidOutput("resolutions: mark every earlier unresolved finding exactly once")
-        previous = {f.id: f for r in self.rounds for f in r.findings}
-        ids = [f.id for f in output.findings]
-        if len(set(ids)) != len(ids) or previous.keys() & set(ids) or any(id.startswith("tool-fact-gate:") for id in ids):
-            raise InvalidOutput("findings: IDs must be unique across rounds; use resolutions for earlier findings")
-        settled = {r.id for r in self.settled} | {f"finding:{id}" for id in previous.keys() - earlier.keys() - gate_ids}
-        try:
-            changed = changed_lines(patch) if patch is not None else None
-        except UnidiffParseError as exc:
-            raise InvalidOutput("review interdiff could not be parsed") from exc
-        accepted = []
-        notes = []
-        excluded = []
-        for finding in output.findings:
-            if finding.ruling_id is not None and finding.ruling_id not in settled:
-                raise InvalidOutput("findings.ruling_id: unknown settled ruling")
-            if finding.ruling_id or (self.rounds and changed is not None and (finding.file, finding.line) not in changed):
-                excluded.append(finding)
-                notes.append(f"Coordinator note {finding.id}: {finding.file}:{finding.line} {finding.summary}")
-            else:
-                accepted.append(finding)
-        recurrence = next(((old, new) for old in previous.values() for new in accepted
-                           if old.id not in gate_ids and old.severity == new.severity == "blocking" and old.kind == new.kind), None)
-        active_gate = next(iter(earlier_gates), None)
-        if active_gate:
-            introduced = next(r for r in self.rounds if any(f.id == active_gate for f in r.findings))
-            resolutions[active_gate] = "resolved" if tool_fact_gate is None and head != introduced.reviewed_head else "unresolved"
-        elif tool_fact_gate is not None:
-            active_gate = f"tool-fact-gate:{len(self.rounds) + 1}"
-            accepted.append(tool_fact_gate.model_copy(update={"id": active_gate}))
-        output.resolutions = [FindingResolution(id=id, status=status) for id, status in resolutions.items()]
-        self.rounds.append(ReviewRound(round=len(self.rounds) + 1, reviewed_head=head,
-                                      findings=accepted, resolutions=resolutions, coordinator_notes=excluded,
-                                      tool_fact_gate=active_gate, tool_facts=output.tool_facts))
-        output.findings = accepted
-        output.detail = "\n\n".join([output.detail, *notes])
-        detail = "" if recurrence is None else "Design-level fix required:\n" + "\n".join(f.model_dump_json() for f in recurrence)
-        return self.unresolved(), detail
-
     def rulings(self) -> list[SettledRuling]:
-        unresolved = {f.id for f in self.unresolved()} | {r.tool_fact_gate for r in self.rounds}
+        unresolved = {f.id for f in self.unresolved()}
         return [*self.settled, *(SettledRuling(id=f"finding:{f.id}", text=f.summary)
                                for r in self.rounds for f in r.findings if f.id not in unresolved)]
 
 
-def changed_lines(patch: str) -> set[tuple[str, int | None]]:
-    return {(file.path, line.target_line_no) for file in PatchSet(patch) if not file.is_removed_file
-            for hunk in file for line in hunk if line.is_added}
+class AcceptedReview(Contract):
+    history: ReviewHistory
+    findings: list[Finding]
+    detail: str
+
+    @property
+    def change_kind(self) -> Literal["blocking", "nits"] | None:
+        gate = self.history.rounds[-1].graph_check
+        if (gate and not gate.passed) or any(f.severity == "blocking" for f in self.findings):
+            return "blocking"
+        return "nits" if self.findings else None
+
+    @property
+    def review(self) -> Literal["approve", "changes"]:
+        return "changes" if self.change_kind else "approve"
+
+
+def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphCheck | None) -> AcceptedReview:
+    earlier = {f.id for f in past.unresolved()}
+    resolutions: dict[str, Literal["resolved", "unresolved"]] = {r.id: r.status for r in output.resolutions}
+    if len(resolutions) != len(output.resolutions) or resolutions.keys() != earlier:
+        raise InvalidOutput("resolutions: mark every earlier unresolved finding exactly once")
+    previous = {f.id for r in past.rounds for f in r.findings}
+    ids = [f.id for f in output.findings]
+    if len(set(ids)) != len(ids) or previous.intersection(ids):
+        raise InvalidOutput("findings: IDs must be unique across rounds; use resolutions for earlier findings")
+    settled = {r.id for r in past.rulings()}
+    findings: list[Finding] = []
+    notes: list[Finding] = []
+    for finding in output.findings:
+        if finding.ruling_id is not None and finding.ruling_id not in settled:
+            raise InvalidOutput("findings.ruling_id: unknown settled ruling")
+        (notes if finding.ruling_id else findings).append(finding)
+    old_gate = past.rounds[-1].graph_check if past.rounds else None
+    if old_gate and not old_gate.passed:
+        heads = sorted(set(old_gate.failing_heads).union(gate.failing_heads if gate else []))
+        gate = GraphCheck(failing_heads=heads, detail=gate.detail if gate else old_gate.detail,
+                          passed=gate is None and head not in heads)
+    entry = ReviewRound(round=len(past.rounds) + 1, reviewed_head=head, findings=findings,
+                        resolutions=resolutions, coordinator_notes=notes, graph_check=gate, tool_facts=output.tool_facts)
+    history = ReviewHistory(rounds=[*past.rounds, entry], settled=past.settled)
+    detail = [output.detail, *(f"Coordinator note {f.id}: {f.file}:{f.line} {f.summary}" for f in notes)]
+    if gate and not gate.passed:
+        detail.append(gate.detail)
+    return AcceptedReview(history=history, findings=history.unresolved(), detail="\n\n".join(detail))
 
 
 def history(raw: object) -> ReviewHistory:

@@ -173,7 +173,7 @@ class ReviewOutput(Contract):
     resolutions: list[FindingResolution] = Field(description="Mark every earlier unresolved reviewer finding once. The graph resolves tool-fact gate findings. Return an empty list in round 1.")
     risk: MergeRisk
     findings: list[Finding] = Field(
-        description="List each requested fix, including nits. Return one or more findings for changes and an empty list for approve.",
+        description="List each new requested fix, including nits. Return an empty list when there are none.",
     )
     tool_facts: list[ToolFact] = Field(
         description="List every outside-tool fact the diff relies on, including unrecorded facts. Use an empty list if there are none.",

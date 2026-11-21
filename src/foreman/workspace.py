@@ -62,7 +62,7 @@ class Workspace(Protocol):
     def read_file_at(self, head: str, path: str) -> str: ...
     def has_file(self, path: str) -> bool: ...
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
-    def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff: ...
+    def review_diff(self, base: str, head: str) -> ReviewDiff: ...
 
 
 class LiveWorkspace:
@@ -176,13 +176,13 @@ class LiveWorkspace:
                 lines += added_lines
         return {"head": head, "merge_base": merge_base, "lines": lines}
 
-    def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff:
+    def review_diff(self, base: str, head: str) -> ReviewDiff:
         if not (FULL_SHA.fullmatch(base) and FULL_SHA.fullmatch(head)):
             raise WorktreeInspectionFailed("Review requires full base and head SHAs.")
         self._git("fetch", "--no-tags", "origin", base, head, timeout=30)
         args = (
             "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
-            "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}..{head}" if interdiff else f"{base}...{head}", "--",
+            "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}...{head}", "--",
         )
         return ReviewDiff(shlex.join(("git", *args)), os.fsdecode(self._git(*args)))
 
