@@ -537,6 +537,42 @@
       "Finding": {
         "additionalProperties": false,
         "properties": {
+          "id": {
+            "description": "Unique finding ID. Never reuse an earlier finding ID.",
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "correctness",
+              "contract-unenforced",
+              "duplicate-owner",
+              "hand-built-parsing",
+              "untested-path",
+              "docs"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "fix": {
+            "description": "State the requested fix.",
+            "pattern": "\\S",
+            "title": "Fix",
+            "type": "string"
+          },
+          "ruling_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "If this contradicts a settled ruling, give its ID so it becomes a coordinator note. Otherwise null.",
+            "title": "Ruling Id"
+          },
           "file": {
             "description": "Give the path relative to the repository root.",
             "pattern": "\\S",
@@ -564,12 +600,40 @@
           }
         },
         "required": [
+          "id",
+          "kind",
+          "fix",
+          "ruling_id",
           "file",
           "line",
           "severity",
           "summary"
         ],
         "title": "Finding",
+        "type": "object"
+      },
+      "FindingResolution": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "resolved",
+              "unresolved"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "FindingResolution",
         "type": "object"
       },
       "MergeRisk": {
@@ -654,19 +718,19 @@
     },
     "additionalProperties": false,
     "properties": {
-      "review": {
-        "enum": [
-          "approve",
-          "changes"
-        ],
-        "title": "Review",
-        "type": "string"
+      "resolutions": {
+        "description": "Mark every earlier unresolved reviewer finding once. The graph resolves tool-fact gate findings. Return an empty list in round 1.",
+        "items": {
+          "$ref": "#/$defs/FindingResolution"
+        },
+        "title": "Resolutions",
+        "type": "array"
       },
       "risk": {
         "$ref": "#/$defs/MergeRisk"
       },
       "findings": {
-        "description": "List each requested fix, including nits. Return one or more findings for changes and an empty list for approve.",
+        "description": "List each new requested fix, including nits. Return an empty list when there are none.",
         "items": {
           "$ref": "#/$defs/Finding"
         },
@@ -689,7 +753,7 @@
       }
     },
     "required": [
-      "review",
+      "resolutions",
       "risk",
       "findings",
       "tool_facts",
