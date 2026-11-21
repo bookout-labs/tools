@@ -110,7 +110,7 @@ class DiagramTests(unittest.TestCase):
         blueprint = edges((GRAPH / "target.mmd").read_text())
         steps = {node for source, target, _ in blueprint for node in (source, target)}
         steps = (steps - {"__start__", "__end__"}) | {"dispatch_cell"}
-        self.assertLessEqual(targets, steps, "orphan stage target")
+        self.assertEqual(targets, steps, "missing or orphan stage target")
         gaps = tomllib.loads((GRAPH / "gaps.toml").read_text()).get("stages", {})
         self.assertLessEqual(set(gaps), targets, "orphan stage gap")
         for owners in gaps.values():
