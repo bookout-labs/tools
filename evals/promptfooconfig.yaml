@@ -59,3 +59,9 @@ tests:
         value: verified skipped
       - type: contains
         value: Coordinator note repeat
+  - description: Review falls back to the configured builder model after quota
+    vars:
+      case: review-fallback
+    assert:
+      - type: equals
+        value: verified claude-opus-5-5-high,gpt-6.1-sol-high rounds=1 same_family=True reason=preceding_candidates_unavailable

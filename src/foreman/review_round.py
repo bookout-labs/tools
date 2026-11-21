@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from foreman.resolution import ResolutionLedger
-from foreman.stage_output import Contract, Finding, ReviewOutput, ResolutionStatus, SettledRuling, StoredToolFact, parse_output
+from foreman.stage_output import Contract, Finding, ReviewOutput, ReviewSelection, ResolutionStatus, SettledRuling, StoredToolFact, parse_output
 
 
 class GraphCheck(Contract):
@@ -18,6 +18,7 @@ class GraphCheck(Contract):
 class ReviewRound(Contract):
     round: int
     reviewed_head: str
+    provenance: ReviewSelection | None = None
     findings: list[Finding]
     resolutions: dict[str, ResolutionStatus]
     graph_check: GraphCheck | None = None
