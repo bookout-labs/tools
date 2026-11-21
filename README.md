@@ -20,42 +20,66 @@ graph TD;
 	implement(implement)
 	verify(verify)
 	review(review)
+	prepare(prepare)
+	commit(commit)
 	publish(publish)
 	proof(proof)
 	needs_human(needs_human)
+	quota_wait(quota_wait)
+	decide_pr_size(decide_pr_size)
 	merge(merge)
 	done(done)
 	__end__([<p>__end__</p>]):::last
 	__start__ -.-> done;
 	__start__ -.-> triage;
+	commit -.-> done;
+	commit -.-> publish;
+	decide_pr_size -.-> done;
+	decide_pr_size -.-> verify;
+	implement -.-> commit;
 	implement -.-> done;
-	implement -.-> publish;
+	implement -.-> quota_wait;
 	merge --> done;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
+	prepare -.-> done;
+	prepare -.-> implement;
 	proof -.-> done;
-	proof -.-> implement;
+	proof -.-> prepare;
 	proof -.-> review;
 	publish -.-> done;
 	publish -.-> verify;
-	research --> done;
+	quota_wait -.-> implement;
+	quota_wait -.-> research;
+	quota_wait -.-> review;
+	quota_wait -.-> spec;
+	quota_wait -.-> triage;
+	research -.-> done;
+	research -.-> quota_wait;
+	review -.-> decide_pr_size;
 	review -.-> done;
-	review -.-> implement;
 	review -.-> merge;
+	review -.-> needs_human;
+	review -.-> prepare;
+	review -.-> quota_wait;
+	review -.-> spec;
+	spec -.-> decide_pr_size;
 	spec -.-> done;
-	spec -.-> implement;
 	spec -.-> needs_human;
+	spec -.-> prepare;
+	spec -.-> quota_wait;
 	triage -.-> done;
-	triage -.-> implement;
 	triage -.-> needs_human;
+	triage -.-> prepare;
+	triage -.-> quota_wait;
 	triage -.-> research;
 	triage -.-> spec;
-	spec -.-> spec;
 	verify -.-> done;
-	verify -.-> implement;
+	verify -.-> prepare;
 	verify -.-> proof;
 	verify -.-> review;
 	done --> __end__;
+	spec -.-> spec;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
@@ -66,7 +90,10 @@ Generate the diagram with `foreman diagram delivery`. The model list is `src/for
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high.
 
-Foreman fetches the pull request's base and verified head from `origin` and reviews their three-dot diff. Each finding names a file, line, severity (`blocking` or `nit`), and a summary of up to 200 characters. Findings on changed lines in the reviewed commit post inline. Other findings appear with their locations in the GitHub review body alongside `detail`. A changes verdict requires findings and sends them with the detail to the next implementation round. The checkpoint marks a changes verdict with only nit findings as `review_change_kind: nits`.
+Every round reviews the full PR diff. Typed findings have stable IDs, kinds, fixes and
+explicit resolutions. Resolved findings become settled rulings. Disagreements with
+rulings become coordinator notes. The graph owns tool-fact checks separately from
+reviewer findings. Rulings exist only within a run. The failure cap stays unchanged.
 
 An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the graph cannot select a reviewer from a different model family, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
 
@@ -218,3 +245,5 @@ cap is reached, no subsequent model runs and that attempt's output is not
 applied. `budget_exceeded` and `usage_unknown` exit 1 and cannot resume.
 Interrupted calls with no committed usage halt as unknown rather than being
 retried. Checkpoints from before usage accounting require a new run.
+
+Settled rulings exist only within a run. Resolved findings become rulings for later reviews.

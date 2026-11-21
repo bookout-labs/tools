@@ -436,13 +436,13 @@ class PublicationTest(unittest.TestCase):
                 commands = [c.args[0] for c in call.call_args_list if c.args[0][:3] == ["gh", "repo", "view"]]
                 self.assertEqual(commands, [["gh", "repo", "view", REPO, "--json", "defaultBranchRef"]])
 
-    def test_crash_during_worker_continues_partial_edits(self):
+    def test_crash_during_worker_stops_with_unknown_usage(self):
         def crash():
             (self.checkout / "items.txt").write_text("partial\n")
             raise SystemExit("synthetic crash during worker")
         with self.assertRaises(SystemExit):
             self.walk(crash)
-        def finish():
-            self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
-            (self.checkout / "items.txt").write_text("finished\n")
-        self.assertEqual(self.walk(finish).get("stop"), "usage_unknown")
+        self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
+        def unexpected():
+            self.fail("Recovery dispatched a worker with unknown usage")
+        self.assertEqual(self.walk(unexpected).get("stop"), "usage_unknown")

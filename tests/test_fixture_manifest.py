@@ -59,10 +59,13 @@ class RecordedEvidenceTest(unittest.TestCase):
         from foreman.stage_output import ReviewOutput
 
         output = ReviewOutput.model_validate({
-            "review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
+            "resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": "result.txt"}],
         })
-        return _check_tool_facts(output, LiveRun(Mock(), self.workspace), head)
+        from foreman.review_round import ReviewHistory, accept
+
+        gate = _check_tool_facts(output, LiveRun(Mock(), self.workspace), head)
+        return accept(ReviewHistory(), output, head or "", gate)
 
     def test_unreadable_manifest_blocks_approval(self):
         cases = {"bad TOML": b"[", "schema failure": b"[fixtures.result]\nkind = 'unknown'",
@@ -76,7 +79,7 @@ class RecordedEvidenceTest(unittest.TestCase):
                 result = self.check_approval(self.commit())
                 self.assertEqual(result.review, "changes")
                 self.assertIn("The CLI accepts --debug.", result.detail)
-                self.assertTrue(any(f.severity == "blocking" for f in result.findings))
+                self.assertEqual(result.change_kind, "blocking")
 
     def test_unavailable_head_blocks_approval(self):
         self.commit()

@@ -104,7 +104,7 @@ class NativeAdapter:
 
 def build_outcome(
     kind: OutcomeKind, *, output: dict[str, object] | None, usage: Usage | None,
-    total_cost_usd: float | None, session_id: str | None, detail: str,
+    session_id: str | None, detail: str,
 ) -> Outcome:
     if usage is not None:
         if not any((usage.input_tokens, usage.output_tokens,

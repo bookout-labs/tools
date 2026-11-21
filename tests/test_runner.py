@@ -53,8 +53,8 @@ FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejecte
 SEAM = {"name": "item-list", "exists": False, "path": None}
 BUILDER = {**SLICE, "builds": [SEAM]}
 CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "uses": [SEAM]}
-APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request.", "tool_facts": []}
-FINDING = {"file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
+APPROVE = {"resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request.", "tool_facts": []}
+FINDING = {"id": "f1", "kind": "correctness", "fix": "Add a check.", "ruling_id": None, "file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
 DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
 
@@ -403,17 +403,9 @@ class StageOutputTest(unittest.TestCase):
 
     def test_review_summary_is_limited_to_200_characters(self):
         self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["Finding"]["properties"]["summary"]["maxLength"], 200)
-        raw = {**APPROVE, "review": "changes", "findings": [{**FINDING, "summary": "a" * 201}]}
+        raw = {**APPROVE, "findings": [{**FINDING, "summary": "a" * 201}]}
         with self.assertRaisesRegex(InvalidOutput, r"^findings\.0\.summary:"):
             parse_output(ReviewOutput, raw)
-
-    def test_review_verdict_requires_matching_findings(self):
-        for raw in (
-            {**APPROVE, "review": "changes"},
-            {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
-        ):
-            with self.subTest(raw=raw), self.assertRaisesRegex(InvalidOutput, "changes requires at least one finding"):
-                parse_output(ReviewOutput, raw)
 
 
 class LiveRunnerTest(unittest.TestCase):
@@ -450,12 +442,12 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes", "detail": "Check the bounds."}
+        changes = {**APPROVE, "detail": "Check the bounds."}
         for severity, kind in (("nit", "nits"), ("blocking", "blocking")):
             with self.subTest(severity=severity):
                 self.checkpoint = self.cwd / f"{severity}.sqlite3"
                 finding = {**FINDING, "severity": severity}
-                self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, APPROVE])
+                self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, {**APPROVE, "resolutions": [{"id": finding["id"], "status": "resolved"}]}])
                 state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
                 self.assertEqual(state["findings"], [finding])
                 self.assertEqual(state["detail"], changes["detail"])
@@ -464,12 +456,12 @@ class LiveRunnerTest(unittest.TestCase):
     def test_review_posts_only_changed_lines_inline(self):
         findings = [
             FINDING,
-            {**FINDING, "line": 1, "summary": "Untouched context."},
-            {**FINDING, "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
+            {**FINDING, "id": "f2", "line": 1, "summary": "Untouched context."},
+            {**FINDING, "id": "f3", "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
         ]
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes", "findings": findings, "detail": "Check the bounds."}
-        self.walk([{"triage": "implement"}, built, changes, built, APPROVE])
+        changes = {**APPROVE, "findings": findings, "detail": "Check the bounds."}
+        self.walk([{"triage": "implement"}, built, changes, built, {**APPROVE, "resolutions": [{"id": f["id"], "status": "resolved"} for f in findings]}])
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
         self.assertEqual(self.github.reviews, [(
             "Example/Engine", 12, HEAD,
@@ -478,7 +470,7 @@ class LiveRunnerTest(unittest.TestCase):
         ), ("Example/Engine", 12, HEAD, APPROVE["detail"], [])])
 
     def test_review_failures_halt_without_merging(self):
-        changes = {**APPROVE, "review": "changes", "findings": [FINDING]}
+        changes = {**APPROVE, "findings": [FINDING]}
         for method, stop, replies in (
             ("review_target", "review_unavailable", []),
             ("post_review", "review_not_posted", [changes]),
@@ -797,7 +789,7 @@ class LiveRunnerTest(unittest.TestCase):
             if "implementation" in reply:
                 file = root / "items.txt"
                 file.write_text((file.read_text() if file.exists() else "") + "synthetic edit\n")
-            if record_during_review and "review" in reply:
+            if record_during_review and "tool_facts" in reply:
                 manifest_path.write_text(manifest("result.txt"))
             return worker_reply(args, reply)
 
@@ -1637,9 +1629,11 @@ class HaltExitCodeTest(unittest.TestCase):
         ), "verify_cap", "Verification failed after 3 rounds. Check exit 7 failed.")
 
     def test_review_cap(self):
-        changes = {**APPROVE, "review": "changes", "findings": [FINDING], "detail": "Add a boundary check."}
+        changes = {**APPROVE, "findings": [FINDING], "detail": "Add a boundary check."}
+        unresolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "unresolved"}], "detail": "Add a boundary check."}
         self.assert_halt(self.live(
-            [{"triage": "implement"}] + [{"implementation": "built"}, changes] * 3,
+            [{"triage": "implement"}] + [{"implementation": "built"}, changes]
+            + [{"implementation": "built"}, unresolved] * 2,
         ), "review_cap", "Review requested changes after 3 rounds. Last review: Add a boundary check.")
 
     def test_missing_slice_has_no_fake_stage(self):
