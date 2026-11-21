@@ -1027,14 +1027,14 @@ def compile_delivery(
             rounds = failure_count(state, "verify_failures") if reason == Halt.verify_cap else review_count(state)
             if reason == Halt.verify_cap:
                 detail = f"Verification failed after {rounds} rounds. Check {state.get('check') or '(none)'} failed."
-                return {**halted(Halt.verify_cap, detail, "done"), "stop": reason}
+                return {**halted(Halt.verify_cap, detail, "done"), "stop": str(reason)}
             if reason == Halt.review_cap:
                 detail = f"Review requested changes after {rounds} rounds. Last review: {state.get('detail', '')}"
-                return {**halted(Halt.review_cap, detail, "done"), "stop": reason}
+                return {**halted(Halt.review_cap, detail, "done"), "stop": str(reason)}
             if reason == "needs_human":
                 return {"stop": reason, "path": ["done"], "halt_detail":
                         state.get("human_question") or "What should Foreman know to continue?"}
-        update: DeliveryUpdate = {"stop": reason, "path": ["done"]}
+        update: DeliveryUpdate = {"stop": str(reason), "path": ["done"]}
         split = state.get("pr_split")
         if reason == "sliced" and split:
             if "spec_candidate" in state:

@@ -44,7 +44,7 @@ def snapshot_result(snapshot: StateSnapshot, saver: SqliteSaver) -> DeliveryResu
     if snapshot.interrupts:
         if values.get("halt") == Halt.quota_exhausted:
             parse_output(QuotaPause, snapshot.interrupts[0].value)
-            return read_delivery_state({**values, "stop": Halt.quota_exhausted})
+            return read_delivery_state({**values, "stop": Halt.quota_exhausted.value})
         question = parse_output(HumanPrompt, snapshot.interrupts[0].value).question
         return read_delivery_state({**values, "stop": "needs_human", "halt_detail": question})
     result = read_delivery_state({**values, "stop": values.get("stop", "")})
