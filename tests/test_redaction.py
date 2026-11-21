@@ -1,19 +1,23 @@
 import ast
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
+from importlib.metadata import version
 from io import StringIO
-import json
 from pathlib import Path
+from re import Pattern
 import subprocess
 import unittest
 from unittest.mock import patch
 
+from detect_secrets.core.scan import scan_line
 from detect_secrets.settings import default_settings, get_plugins
 
 from foreman.cli import main
 from foreman.delivery import DryRun
 from foreman.github import LiveForge
+from foreman.redaction import redact
 from foreman.runner import _load_slice
+from foreman.stage_output import Slice
 
 
 # Synthetic credential shapes assembled at runtime. None have been issued.
@@ -57,19 +61,37 @@ SYNTHETIC_CASES = {
 
 
 class RedactionTest(unittest.TestCase):
-    @patch("foreman.github.subprocess.run")
-    def test_issue_write_redacts_one_synthetic_value_of_every_plugin_kind(self, gh):
+    def test_pinned_plugins_expose_the_pattern_data_foreman_uses(self):
+        self.assertEqual(version("detect-secrets"), "1.5.0")
+        without_denylist = {"Base64 High Entropy String", "Hex High Entropy String", "Secret Keyword"}
         with default_settings():
             self.assertEqual({plugin.secret_type for plugin in get_plugins()}, SYNTHETIC_CASES.keys())
+            for plugin in get_plugins():
+                if plugin.secret_type in without_denylist:
+                    continue
+                with self.subTest(kind=plugin.secret_type):
+                    patterns = getattr(plugin, "denylist", ())
+                    self.assertTrue(patterns, "The pinned detector no longer exposes its denylist.")
+                    self.assertTrue(all(isinstance(pattern, Pattern) for pattern in patterns))
+
+    @patch("foreman.github.subprocess.run")
+    def test_issue_write_redacts_every_plugin_kind_inside_a_slice_field(self, gh):
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
         for kind, (secret, surrounding) in SYNTHETIC_CASES.items():
             with self.subTest(kind=kind):
-                body = f"Before\n{surrounding.format(secret)}\nAfter"
+                child = Slice(
+                    title="Child issue", acceptance=f'Before \\ "{surrounding.format(secret)}"\nAfter',
+                    depends_on=[], screen="", properties=[],
+                )
                 title = f"Synthetic case {SYNTHETIC_GITHUB}"
-                self.assertEqual(LiveForge().create_issue("Example/Target", title, body, ["slice"]), 42)
+                self.assertEqual(LiveForge().create_issue("Example/Target", title, "", ["slice"], child=child), 42)
                 argv = gh.call_args.args[0]
                 self.assertIn("title=Synthetic case [redacted:GitHub Token]", argv)
-                self.assertIn(f"body=Before\n{surrounding.format(f'[redacted:{kind}]')}\nAfter", argv)
+                body = next(arg.removeprefix("body=") for arg in argv if arg.startswith("body="))
+                acceptance = _load_slice(body)["acceptance"]
+                assert isinstance(acceptance, str)
+                self.assertIn(f"[redacted:{kind}]", acceptance)
+                self.assertNotIn(secret, acceptance)
                 self.assertNotIn(secret, "\n".join(argv))
 
     @patch("foreman.github.subprocess.run")
@@ -97,26 +119,45 @@ class RedactionTest(unittest.TestCase):
     def test_redaction_preserves_the_slice_json_delimiters(self, gh):
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
         token = "npm_" + "a" * 36
-        fields = {
-            "title": "Explain BEGIN PRIVATE KEY in the docs",
+        child = Slice.model_validate({
+            "title": f"Explain BEGIN PRIVATE KEY in the docs {SYNTHETIC_GITHUB}",
             "acceptance": f"//example.invalid/:_authToken={token}",
-            "screen": "",
-            "depends_on": [],
+            "screen": f"docs/screens/{SYNTHETIC_GITHUB}.md",
+            "depends_on": [f"Setup {SYNTHETIC_GITHUB}"],
             "properties": [{
-                "name": "-----BEGIN " + "PRIVATE KEY-----\nsynthetic key material",
-                "constraint": "row_check",
+                "name": "-----BEGIN " + 'PRIVATE KEY-----\nsynthetic "key" material',
+                "constraint": f"row_check {SYNTHETIC_GITHUB}",
             }],
-        }
-        body = f"Excerpt\n\n```json\n{json.dumps(fields, indent=2)}\n```"
-        LiveForge().create_issue("Example/Target", "Synthetic fixture", body, ["slice"])
-        written = next(arg for arg in gh.call_args.args[0] if arg.startswith("body="))
-        self.assertEqual(_load_slice(written.removeprefix("body=")), {
-            "title": "Explain [redacted:Private Key] in the docs",
-            "acceptance": "//example.invalid/:_authToken=[redacted:NPM tokens]",
-            "screen": "",
-            "depends_on": [],
-            "properties": [{"name": "[redacted:Private Key]", "constraint": "row_check"}],
         })
+        LiveForge().create_issue("Example/Target", child.title, f"Excerpt {SYNTHETIC_GITHUB}", ["slice"], child=child)
+        written = next(arg for arg in gh.call_args.args[0] if arg.startswith("body="))
+        self.assertIn("body=Excerpt [redacted:GitHub Token]\n", written)
+        self.assertEqual(_load_slice(written.removeprefix("body=")), {
+            "title": "Explain [redacted:Private Key] in the docs [redacted:GitHub Token]",
+            "acceptance": "[redacted:NPM tokens]",
+            "screen": "docs/screens/[redacted:GitHub Token].md",
+            "depends_on": ["Setup [redacted:GitHub Token]"],
+            "properties": [{"name": "[redacted:Private Key]", "constraint": "row_check [redacted:GitHub Token]"}],
+        })
+
+    def test_upstream_jwt_plugin_omits_the_synthetic_signature(self):
+        with default_settings():
+            values = {hit.secret_value for hit in scan_line(SYNTHETIC_JWT) if hit.type == "JSON Web Token"}
+        self.assertTrue(values)
+        self.assertNotIn(SYNTHETIC_JWT, values, "Delete the JWT extension now that detect-secrets reports the signature.")
+        self.assertEqual(redact(SYNTHETIC_JWT), "[redacted:JSON Web Token]")
+
+    def test_upstream_private_key_plugin_omits_the_synthetic_block(self):
+        block, _ = SYNTHETIC_CASES["Private Key"]
+        with default_settings():
+            values = {hit.secret_value for hit in scan_line(block) if hit.type == "Private Key"}
+        self.assertTrue(values)
+        self.assertNotIn(block, values, "Delete the private-key extension now that detect-secrets reports the block.")
+        self.assertEqual(redact(block), "[redacted:Private Key]")
+
+    def test_unterminated_private_key_stops_at_the_first_blank_line(self):
+        block = "-----BEGIN " + "PRIVATE KEY-----\nx\n\nDependencies:\nNone"
+        self.assertEqual(redact(block), "[redacted:Private Key]\n\nDependencies:\nNone")
 
     @patch("foreman.github.subprocess.run")
     def test_commit_sha_is_preserved_in_live_and_dry_merge_arguments(self, gh):
@@ -183,6 +224,7 @@ class RedactionTest(unittest.TestCase):
             ("cli.py", "_write_run_log"): 1,
             ("delivery.py", "DryRun.record_merge"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,
+            ("github.py", "LiveForge._redact_slice"): 6,
             ("github.py", "LiveForge.add_label"): 1,
             ("github.py", "LiveForge.create_issue"): 1,
         })

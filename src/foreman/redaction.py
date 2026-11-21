@@ -5,20 +5,15 @@ from dataclasses import dataclass
 from string import ascii_letters, digits
 from threading import Lock
 
-from detect_secrets.plugins.artifactory import ArtifactoryDetector
-from detect_secrets.plugins.base import BasePlugin
-from detect_secrets.plugins.github_token import GitHubTokenDetector
-from detect_secrets.plugins.gitlab_token import GitLabTokenDetector
+from detect_secrets.plugins.base import BasePlugin, RegexBasedDetector
 from detect_secrets.plugins.high_entropy_strings import HighEntropyStringsPlugin
 from detect_secrets.plugins.jwt import JwtTokenDetector
-from detect_secrets.plugins.keyword import KeywordDetector, QUOTES_REQUIRED_DENYLIST_REGEX_TO_GROUP
-from detect_secrets.plugins.npm import NpmDetector
+from detect_secrets.plugins.keyword import KeywordDetector
 from detect_secrets.plugins.private_key import PrivateKeyDetector
 from detect_secrets.settings import default_settings, get_plugins
 
 
 _SETTINGS_LOCK = Lock()
-_VERIFY_FILTER = "detect_secrets.filters.common.is_ignored_due_to_verification_policies"
 _JWT_SIGNATURE_CHARS = frozenset(ascii_letters + digits + "-_+/=")
 
 
@@ -30,28 +25,33 @@ class _Match:
     priority: int
 
 
-def _values(plugin: BasePlugin, line: str) -> Iterator[str]:
-    if isinstance(plugin, HighEntropyStringsPlugin):
-        with plugin.non_quoted_string_regex(is_exact_match=False):
-            for candidate in plugin.analyze_line("outgoing-text", line):
-                if candidate.secret_value:
-                    yield candidate.secret_value
-    elif isinstance(plugin, (GitHubTokenDetector, GitLabTokenDetector)):
+def _keyword_spans(plugin: KeywordDetector, line: str) -> Iterator[tuple[int, int]]:
+    while values := {value for value in plugin.analyze_string(line) if value.strip()}:
+        masked = line
+        for value in values:
+            start = line.find(value)
+            while start != -1:
+                end = start + len(value)
+                yield start, end
+                start = line.find(value, end)
+            masked = masked.replace(value, " " * len(value))
+        line = masked
+
+
+def _spans(plugin: BasePlugin, line: str) -> Iterator[tuple[int, int]]:
+    if isinstance(plugin, RegexBasedDetector):
         for pattern in plugin.denylist:
             for match in pattern.finditer(line):
-                yield match.group()
-    elif isinstance(plugin, ArtifactoryDetector):
-        for secret in plugin.analyze_string(line):
-            yield secret.strip().strip('=:"').rstrip()
+                yield match.span()
+    elif isinstance(plugin, HighEntropyStringsPlugin):
+        with plugin.non_quoted_string_regex(is_exact_match=False):
+            for match in plugin.regex.finditer(line):
+                if plugin.calculate_shannon_entropy(match.group()) > plugin.entropy_limit:
+                    yield match.span()
     elif isinstance(plugin, KeywordDetector):
-        for pattern, group in QUOTES_REQUIRED_DENYLIST_REGEX_TO_GROUP.items():
-            for match in pattern.finditer(line):
-                yield match.group(group)
-    elif isinstance(plugin, NpmDetector):
-        for secret in plugin.analyze_string(line):
-            yield secret.split(maxsplit=1)[0].partition('"')[0].partition("'")[0].rstrip("`")
+        yield from _keyword_spans(plugin, line)
     else:
-        yield from plugin.analyze_string(line)
+        raise TypeError(f"No redaction matcher for {type(plugin).__name__}")
 
 
 def _private_key_span(text: str, start: int, header: str) -> tuple[int, int]:
@@ -67,41 +67,40 @@ def _private_key_span(text: str, start: int, header: str) -> tuple[int, int]:
             return start, end
     elif not (header == "PuTTY-User-Key-File-2" and text.startswith(":", end)):
         return start, end
-    # Without a footer, stop at the end of the quoted value or Markdown block.
-    boundaries = (text.find(delimiter, end) for delimiter in ('"', "'", "\n```"))
-    return start, min((position for position in boundaries if position != -1), default=len(text))
+    for line in text[end:].splitlines(keepends=True):
+        if not line.strip():
+            return start, len(text[:end].rstrip("\r\n"))
+        end += len(line)
+    return start, end
 
 
 def _matches(text: str, plugins: list[BasePlugin]) -> Iterator[_Match]:
     offset = 0
-    for line in text.splitlines(keepends=True):
+    for raw_line in text.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
         for plugin in plugins:
             priority = 0
             if isinstance(plugin, KeywordDetector):
                 priority = 1
             elif isinstance(plugin, HighEntropyStringsPlugin):
                 priority = 2
-            for value in set(_values(plugin, line)) - {""}:
-                start = line.find(value)
-                while start != -1:
-                    first, end = offset + start, offset + start + len(value)
-                    if isinstance(plugin, PrivateKeyDetector):
-                        first, end = _private_key_span(text, first, value)
-                    elif isinstance(plugin, JwtTokenDetector):
-                        if text.startswith(".", end):
+            for start, stop in _spans(plugin, line):
+                first, end = offset + start, offset + stop
+                if isinstance(plugin, PrivateKeyDetector):
+                    first, end = _private_key_span(text, first, line[start:stop])
+                elif isinstance(plugin, JwtTokenDetector):
+                    if text.startswith(".", end):
+                        end += 1
+                    if text[end - 1] == ".":
+                        while end < len(text) and text[end] in _JWT_SIGNATURE_CHARS:
                             end += 1
-                        if text[end - 1] == ".":
-                            while end < len(text) and text[end] in _JWT_SIGNATURE_CHARS:
-                                end += 1
-                    yield _Match(first, end, plugin.secret_type, priority)
-                    start = line.find(value, start + len(value))
-        offset += len(line)
+                yield _Match(first, end, plugin.secret_type, priority)
+        offset += len(raw_line)
 
 
 def redact(text: str) -> str:
     """Replace overlapping detections with one marker, preferring provider-specific kinds."""
-    with _SETTINGS_LOCK, default_settings() as settings:
-        settings.disable_filters(_VERIFY_FILTER)
+    with _SETTINGS_LOCK, default_settings():
         matches = sorted(_matches(text, get_plugins()), key=lambda match: (match.start, match.end, match.kind))
     parts: list[str] = []
     cursor = 0

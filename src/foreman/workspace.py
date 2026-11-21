@@ -1,5 +1,6 @@
 """Local checkout operations used by delivery runs."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -8,6 +9,7 @@ from typing import NewType, Protocol
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 CommitSHA = NewType("CommitSHA", str)
+CheckLog = Callable[[str, str], None]
 
 
 def commit_sha(value: str) -> CommitSHA | None:
@@ -35,7 +37,7 @@ class WorktreeState:
 class Workspace(Protocol):
     root: Path
 
-    def run(self, command: str) -> int: ...
+    def run(self, command: str, *, log: CheckLog | None = None) -> int: ...
     def inspect(self) -> WorktreeState: ...
 
 
@@ -43,8 +45,14 @@ class LiveWorkspace:
     def __init__(self, root: Path):
         self.root = root
 
-    def run(self, command: str) -> int:
-        return subprocess.run(command, shell=True, cwd=self.root, stdin=subprocess.DEVNULL).returncode
+    def run(self, command: str, *, log: CheckLog | None = None) -> int:
+        result = subprocess.run(
+            command, shell=True, cwd=self.root, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, errors="replace",
+        )
+        if log is not None:
+            log(result.stdout, result.stderr)
+        return result.returncode
 
     def inspect(self) -> WorktreeState:
         head = self._git("rev-parse", "HEAD").strip()

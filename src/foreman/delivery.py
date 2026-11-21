@@ -19,7 +19,7 @@ from foreman.redaction import redact
 from foreman.stage_output import (
     Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
 )
-from foreman.workspace import Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
+from foreman.workspace import CheckLog, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -32,6 +32,7 @@ SKILLS_FOR = {
 class LiveRun:
     forge: Forge
     workspace: Workspace
+    check_log: CheckLog | None = None
 
 
 @dataclass(frozen=True)
@@ -213,14 +214,14 @@ def compile_delivery(
         match run:
             case DryRun():
                 return scripted_verify(state)
-            case LiveRun(workspace=workspace):
+            case LiveRun(workspace=workspace, check_log=check_log):
                 try:
                     worktree = workspace.inspect()
                 except WorktreeInspectionFailed as exc:
                     return {"path": ["verify"], "halt": "dirty_worktree", "halt_detail": str(exc)}
                 if not worktree.clean:
                     return {"path": ["verify"], "halt": "dirty_worktree"}
-                exit_code = workspace.run(state["check"])
+                exit_code = workspace.run(state["check"], log=check_log)
                 verdict = "pass" if exit_code == 0 else "fail"
                 checked = {"verified_head": worktree.head} if exit_code == 0 else {}
                 return {

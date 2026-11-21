@@ -67,35 +67,40 @@ codex exec -m gpt-6.1-sol -c model_reasoning_effort=high --color never \
 
 ## Redaction detector
 
-Foreman pins detect-secrets v1.5.0. The in-memory scan uses the plugins
-returned by [`default_settings()` and `get_plugins()`][settings]. The
-[`BasePlugin` API][base] exposes the kind and the raw matches. Foreman uses
-the detector output locally and does not request credential verification.
+Foreman pins detect-secrets v1.5.0 and loads its plugins using
+[`default_settings()` and `get_plugins()`][settings]. It uses the full spans of
+each [regex plugin's compiled `denylist`][base]. This runs locally without the
+plugins' network verification. The dependency test checks the expected plugins
+and pattern attributes against the pin.
 
-- The [entropy plugins][entropy] expose an unquoted search mode. Using it
-  with `analyze_line()` keeps the upstream thresholds, which the debug
-  [`scan_line()`][scan] fallback skips.
-- The [GitHub][github] and [GitLab][gitlab] patterns capture a prefix or
-  partition ID in some alternatives. Foreman takes the complete match from
-  those published patterns. The [Artifactory][artifactory] patterns also
-  match delimiters, which Foreman leaves in the message.
-- The [JWT plugin][jwt] verifies the header and payload. Foreman includes
-  the signature segment in the replacement. The [private key plugin][key]
-  matches armor headers. Foreman includes the corresponding block.
-- The [keyword plugin][keyword] uses one search per pattern. Foreman uses
-  those same patterns and capture groups to find repeated matches on a line.
-- The [npm plugin][npm] matches to the end of a line for new-style tokens.
-  Foreman preserves surrounding quote delimiters, including in slice JSON.
-- Credential-shaped test values are synthetic.
+A local v1.5.0 probe scanned the quoted synthetic leaves `"ghp_" + "z" * 36`
+and `"glpat-" + "z" * 20` in surrounding prose. Both
+[`scan_line()`][scan] and the [README's `SecretsCollection` API][readme]
+returned only `ghp` and `glpat`, respectively. Substituting those returned
+values left the entire synthetic suffix. The [GitHub][github] and
+[GitLab][gitlab] patterns contain captures that the base class returns in
+place of the full match.
+
+The [entropy plugins][entropy] expose their compiled pattern and threshold
+through the plugin instance. Foreman uses their unquoted mode and applies
+their original thresholds. The [keyword plugin][keyword] has no `denylist`
+attribute. Its `analyze_string()` method recognizes quoted assignments in the
+original slice leaves. Foreman masks its reported values and scans again for
+later assignments on the same line.
+
+The [JWT plugin][jwt] reports the header and payload, and the
+[private key plugin][key] reports armor headers. Regression tests record both
+gaps. Foreman includes the signature or key block in the corresponding
+replacement. Without a key footer, the replacement stops at the first blank
+line.
 
 [settings]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/settings.py
 [base]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/base.py
-[entropy]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/high_entropy_strings.py
+[readme]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/README.md#usage-in-other-python-scripts
 [scan]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/core/scan.py#L109-L137
 [github]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/github_token.py
 [gitlab]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/gitlab_token.py
-[artifactory]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/artifactory.py
+[entropy]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/high_entropy_strings.py
+[keyword]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/keyword.py
 [jwt]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/jwt.py
 [key]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/private_key.py
-[keyword]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/keyword.py
-[npm]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/npm.py

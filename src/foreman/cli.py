@@ -1,6 +1,7 @@
 """Command line for the foreman tool."""
 
 import argparse
+from dataclasses import replace
 import os
 from pathlib import Path
 import re
@@ -23,8 +24,15 @@ from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
 
 
-def _write_run_log(text: str, *, file: TextIO | None = None) -> None:
-    print(redact(text), file=file)
+def _write_run_log(text: str, *, file: TextIO | None = None, end: str = "\n") -> None:
+    print(redact(text), file=file, end=end)
+
+
+def _write_check_log(stdout: str, stderr: str) -> None:
+    if stdout:
+        _write_run_log(stdout, end="")
+    if stderr:
+        _write_run_log(stderr, file=sys.stderr, end="")
 
 
 def _print_run(result: DeliveryState) -> None:
@@ -159,6 +167,7 @@ def main(
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
         if live_run is None:
             live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd()))
+        live_run = replace(live_run, check_log=_write_check_log)
         dispatcher = FailoverDispatcher(CliWorker(live_run.workspace.root, worker_runner)) if worker_runner else None
         try:
             result = run_live_delivery(

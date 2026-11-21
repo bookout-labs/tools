@@ -1,11 +1,13 @@
 """GitHub operations for delivery runs."""
 
+import json
 import subprocess
 from typing import Literal, Protocol, TypedDict, TypeVar
 
 from pydantic import BaseModel, PositiveInt, ValidationError
 
 from foreman.redaction import redact
+from foreman.stage_output import Slice
 from foreman.workspace import commit_sha
 
 SQUASH_MERGE_FLAG = "--squash"
@@ -90,7 +92,9 @@ class Issue(TypedDict):
 
 class Forge(Protocol):
     def load_issue(self, repo: str, number: int) -> Issue: ...
-    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int: ...
+    def create_issue(
+        self, repo: str, title: str, body: str, labels: list[str], *, child: Slice | None = None,
+    ) -> int: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
@@ -100,6 +104,17 @@ def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
     return ["gh", "pr", "merge", pull_request, "--repo", repo, SQUASH_MERGE_FLAG, "--auto", "--match-head-commit", sha]
 
 
+def render_slice_body(prose: str, child: Slice) -> str:
+    dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
+    constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
+    return (
+        (f"{prose}\n\n" if prose else "")
+        + f"Acceptance:\n{child.acceptance}\n\nDependencies:\n{dependencies}"
+        + f"\n\nScreen:\n{child.screen or 'None'}\n\nConstraints:\n{constraints}"
+        + f"\n\n```json\n{json.dumps(child.model_dump(), indent=2)}\n```"
+    )
+
+
 class LiveForge:
     def load_issue(self, repo: str, number: int) -> Issue:
         issue = self._read(
@@ -107,12 +122,31 @@ class LiveForge:
         )
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
-    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int:
+    def create_issue(
+        self, repo: str, title: str, body: str, labels: list[str], *, child: Slice | None = None,
+    ) -> int:
         repo, title, body, *labels = (redact(value) for value in (repo, title, body, *labels))
+        if child is not None:
+            child = self._redact_slice(child)
+            body = render_slice_body(body, child)
         args = ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={body}"]
         for label in labels:
             args.extend(["-f", f"labels[]={label}"])
         return self._read(CreatedIssue, args, timeout=None).number
+
+    @staticmethod
+    def _redact_slice(child: Slice) -> Slice:
+        screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
+        return child.model_copy(update={
+            "title": redact(child.title),
+            "acceptance": redact(child.acceptance),
+            "depends_on": [redact(title) for title in child.depends_on],
+            "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
+            "properties": [
+                prop.model_copy(update={"name": redact(prop.name), "constraint": redact(prop.constraint)})
+                for prop in child.properties
+            ],
+        })
 
     def is_merged(self, repo: str, number: int) -> bool:
         issue = self._read(
