@@ -2,8 +2,11 @@ import tests
 
 import json
 import unittest
+from typing import get_args
 from unittest.mock import patch
 
+from foreman.delivery import READINESS_HALTS
+from foreman.readiness import Outcome
 from foreman.github import ForgeError, LiveForge, PullRequest
 from test_github import PR, HEAD, BASE, BRANCH, REPO
 
@@ -14,6 +17,9 @@ RULES = [dict(type="required_status_checks", parameters=dict(required_status_che
 
 
 class ReadinessTest(unittest.TestCase):
+    def test_every_outcome_has_an_explicit_halt_policy(self):
+        self.assertEqual(set(READINESS_HALTS), set(get_args(Outcome)))
+
     def observe(self, *, pr=None, runs=None, rules=None, statuses=None, parents=None, after=None, legacy=None, tip=BASE):
         pr = pr or READINESS
         def reply(command, **kwargs):
