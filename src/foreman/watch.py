@@ -38,6 +38,7 @@ WATCH: dict[HaltReason, Watch | None] = {
     "env_unavailable": None,
     "quota_exhausted": None,
     "publish_failed": None,
+    "child_filing_failed": None,
     "implementation_rejected": None,
     "implement_quota": None,
     "failed": None,

@@ -53,7 +53,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     current["stop"] = result["stop"]
     current["max_budget_usd"] = result.get("max_budget_usd")
     current["attempts"] = result.get("attempts", [])
-    if result["stop"] in {"needs_human", "quota_exhausted"}:
+    if result.get("halt_detail"):
         current["halt_detail"] = result.get("halt_detail", "")
     _write_run_log("this invocation:")
     _print_run_rows(current, rows=rows)

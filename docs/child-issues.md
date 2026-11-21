@@ -1,5 +1,66 @@
 # Child issues through Forge
 
+## Reconcile pass
+
+After the graph stops a parent as `sliced`, the runner persists `child_plan`
+before the first create. Each ordered entry holds a stable marker and a child
+number (initially absent). `child_issue_numbers` remains available to older
+readers. The runner searches all issue states for the marker before creating an
+uncheckpointed child, so a committed create with a lost response, including a
+child since closed, is recovered rather than duplicated. Multiple matches
+require manual repair.
+
+Each new body starts with:
+
+```text
+Parent: https://github.com/<repo>/issues/<parent>
+<!-- foreman-child:<repo>#<parent>:<ordinal> -->
+```
+
+The header has no closing keyword. Slice JSON, provenance, work classification,
+and ordered blocked-by numbers follow it. For a legacy checkpoint containing
+only `child_issue_numbers`, the pass adopts those numbers and prepends the
+header, preserving every byte of the remaining body, including closed children.
+
+Before creating anything, the runner lists the parent's sub-issues and refuses
+a plan that would exceed 100 direct children. Existing planned relationships
+count once. Listed relationships confirm ownership; otherwise the runner reads
+the child's parent, refuses a different parent, adds a missing relationship, and
+reads the parent again. A failed add may have committed, so the read is also
+required after an error. It never blindly repeats an uncertain add.
+
+Only after confirmation does the pass restore ordered blocked-by links and add
+`factory` to independent children or children whose blockers are all closed and
+whose planned blockers have merged pull requests. An unchanged rerun makes no
+create, add-sub-issue, or parent-issue calls and leaves checkpoint state unchanged.
+It still lists sub-issues, checks bodies, and refreshes dependency readiness.
+
+## Refusals
+
+All failures below return `stop: child_filing_failed`, exit 1, and print an
+actionable `halt_detail` on stdout. Known child numbers remain checkpointed;
+unconfirmed children receive no `factory` label, and the parent stays open.
+Rerun the same command and checkpoint after repairing the cause. This retries
+the reconcile pass without dispatching spec or creating checkpointed children.
+
+| Refusal | Repair |
+| --- | --- |
+| 403 denial | Grant repository access and Issues: write permission, then rerun. |
+| 422 validation refusal | Check hierarchy depth, ownership and capacity, repair the rejected relationship, then rerun. |
+| Timeout or unconfirmed add | Read ownership before retrying. A confirmed committed link needs no second add; an absent link is added on rerun. |
+| `parent_conflict` | Move the child from the reported different parent by hand; Foreman never replaces it. |
+| `child_limit` | Reduce the plan or repair the hierarchy so the entire plan fits before any new create. |
+| `child_identity_conflict` | Remove duplicate markers after identifying the intended child. |
+| Body, dependency, create, or relationship-read failure | Resolve the reported GitHub error and rerun; markers recover uncertain creates. |
+
+The runner never closes a sliced parent. The coordinator closes it by hand only
+when every planned child is a confirmed sub-issue, every child is closed by a
+pull request merged into the repository default branch, and parent acceptance
+is satisfied. The coordinator must repair #84-#86 under #66 by hand as described
+in [the coordinator role](../src/foreman/roles/coordinator.md).
+
+## Forge contract
+
 Forge uses the REST API through `gh api`:
 
 | Method | Request | Result |

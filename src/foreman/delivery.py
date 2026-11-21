@@ -50,6 +50,7 @@ ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_fai
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
+    "child_filing_failed",
     "budget_exceeded", "usage_unknown", "design_rethink", "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
@@ -133,6 +134,11 @@ class PullRequestSizeDecision(StrEnum):
     OVERRIDE = "override"
 
 
+class ChildPlanEntry(TypedDict):
+    marker: str
+    number: int | None
+
+
 class DeliveryFields(TypedDict, total=False):
     max_budget_usd: str | None
     pending_dispatch: PendingDispatchRecord | None
@@ -149,6 +155,7 @@ class DeliveryFields(TypedDict, total=False):
     spec_rejection: SpecRejection | None
     slices: list[SliceRecord]
     child_issue_numbers: list[int]
+    child_plan: list[ChildPlanEntry]
     slice: SliceRecord
     issue_kind: str
     work_kind: WorkKind

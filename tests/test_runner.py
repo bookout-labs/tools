@@ -22,7 +22,7 @@ from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
-from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, PullRequest, render_slice_body
+from foreman.github import CommandFailed, CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, PullRequest, render_slice_body
 
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.skill_rules import export_skills, git
@@ -146,6 +146,8 @@ class FakeGitHub:
         self.issue_repos: dict[int, str] = {}
         self.bodies: dict[tuple[str, int], str] = {}
         self.parents: dict[tuple[str, int], int] = {}
+        self.child_calls = []
+        self.confirmed_children = set()
         self.failures: dict[tuple[str, bool], list[BaseException]] = {}
         self.merge_calls = []
         self.dependencies = {}
@@ -203,11 +205,16 @@ class FakeGitHub:
                            state="closed" if number in self.closed or number in self.merged else "open")
 
     def sub_issues(self, repo, number) -> list[LinkedIssue]:
-        return [self._linked_issue(repo, child) for (issue_repo, child), parent in self.parents.items()
-                if issue_repo == repo and parent == number]
+        children = [self._linked_issue(repo, child) for (issue_repo, child), parent in self.parents.items()
+                    if issue_repo == repo and parent == number]
+        self.confirmed_children.update((repo, child.number) for child in children)
+        return children
 
     def parent_issue(self, repo, number) -> LinkedIssue | None:
+        self.child_calls.append(("parent_issue", repo, number))
         parent = self.parents.get((repo, number))
+        if parent is not None:
+            self.confirmed_children.add((repo, number))
         return self._linked_issue(repo, parent) if parent is not None else None
 
     def preset_sub_issues(self, repo, number, count):
@@ -216,6 +223,7 @@ class FakeGitHub:
             self.parents[repo, child] = number
 
     def add_sub_issue(self, repo, number, child):
+        self.child_calls.append(("add_sub_issue", repo, number, child))
         self._fail("add_sub_issue", after_write=False)
         if (repo, child) in self.parents or len(self.sub_issues(repo, number)) >= 100:
             raise ForgeError("Child already has a parent or parent is full.")
@@ -243,6 +251,7 @@ class FakeGitHub:
         self.comments.setdefault((repo, number), []).append(body)
 
     def create_issue(self, repo, title, body, labels, *, child=None):
+        self.child_calls.append(("create_issue", repo, title))
         self._fail("create_issue", after_write=False)
         if child is not None:
             body = render_slice_body(body, child)
@@ -270,6 +279,8 @@ class FakeGitHub:
         ]
 
     def add_label(self, repo, number, label):
+        if label == "factory" and any(call[0] == "create_issue" for call in self.child_calls):
+            assert (repo, number) in self.confirmed_children, "factory requires a relationship read"
         self.label_calls.append((repo, number, label))
         self.issue_labels[number].append(label)
 
@@ -743,26 +754,35 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["request"], "Issue title\n\nIssue body")
         self.assertEqual(result["child_issue_numbers"], [101, 102])
         self.assertEqual([x[0] for x in self.github.created], [BUILDER["title"], CONSUMER["title"]])
-        self.assertEqual(self.github.created[0][2], ["slice", "factory"])
+        self.assertEqual(self.github.created[0][2], ["slice"])
+        self.assertEqual(self.github.issue_labels[101], ["slice", "factory"])
         self.assertEqual(self.github.created[1][2], ["slice"])
         for text in (SLICE["acceptance"], SLICE["screen"], "unique_item_id"):
             self.assertIn(text, self.github.created[0][1])
         self.assertIn(SLICE["title"], self.github.created[1][1])
         child_payload = {**CONSUMER, "depends_on": [BUILDER["title"]], "blocker_numbers": [101]}
         expected = [{**BUILDER, "depends_on": [], "blocker_numbers": []}, child_payload]
-        for item, (_, body, _) in zip(expected, self.github.created):
+        for index, (item, (_, body, _)) in enumerate(zip(expected, self.github.created)):
             prose, fence, encoded = body.partition("\n\n```json\n")
             self.assertEqual(fence, "\n\n```json\n")
             stored = json.loads(encoded.removesuffix("\n```"))
             self.assertEqual(stored.pop("provenance"), {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]})
             self.assertEqual(stored, {**item, "work_kind": "bug_fix"})
-            self.assertTrue(prose.startswith("Acceptance:\n" + item["acceptance"]))
+            header, remainder = prose.split("\n\n", 1)
+            self.assertEqual(header, f"Parent: https://github.com/Example/Engine/issues/8\n{result['child_plan'][index]['marker']}")
+            self.assertIn("<!-- foreman-child:", header)
+            self.assertNotRegex(header.lower(), r"\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b")
+            self.assertTrue(remainder.startswith("Acceptance:\n" + item["acceptance"]))
         self.assertEqual(self.github.dependencies, {102: [101]})
+        self.assertEqual(self.github.parents, {("Example/Engine", 101): 8, ("Example/Engine", 102): 8})
+        calls = list(self.github.child_calls)
         resumed = self.walk([])
+        self.assertEqual(resumed, result)
+        self.assertEqual(self.github.child_calls, calls)
         self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(resumed["child_issue_numbers"], [101, 102])
         self.assertEqual(len(self.github.created), 2)
-        self.assertEqual(self.github.label_calls, [])
+        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "factory")])
         self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
@@ -778,11 +798,193 @@ class LiveRunnerTest(unittest.TestCase):
         self.walk([])
         self.walk([])
         self.assertEqual(self.github.dependencies, {102: [101]})
-        self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
+        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "factory"), ("Example/Engine", 102, "factory")])
         child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
         self.assertEqual(child["slice"], {**child_payload, "provenance": {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]}})
         self.assertEqual(child["work_kind"], "bug_fix")
         self.assertIn("why/SKILL.md", self.prompts[-1])
+
+    def test_child_plan_survives_interruption_and_recovers_a_closed_created_child(self):
+        self.github = FakeGitHub(["factory"])
+        create = self.github.create_issue
+
+        def create_after_checkpoint(*args, **kwargs):
+            with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+                saved = saver.get({"configurable": {"thread_id": "example/engine#8"}})["channel_values"]
+            self.assertEqual(len(saved["child_plan"]), 2)
+            self.assertEqual(saved["child_issue_numbers"], [])
+            self.assertTrue(all(entry["number"] is None for entry in saved["child_plan"]))
+            return create(*args, **kwargs)
+
+        self.github.fail_next("create_issue", after_write=True, error=RuntimeError("process interrupted"))
+        with patch.object(self.github, "create_issue", side_effect=create_after_checkpoint):
+            with self.assertRaises(RuntimeError):
+                self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}])
+        self.github.closed.add(101)
+        result = self.walk([])
+        self.assertEqual(result["stop"], "sliced")
+        self.assertEqual(result["child_issue_numbers"], [101, 102])
+        self.assertEqual(len(self.github.created), 2)
+        self.assertEqual(self.github.parents, {("Example/Engine", 101): 8, ("Example/Engine", 102): 8})
+
+    def test_committed_child_writes_with_lost_responses_are_recovered(self):
+        for operation in ("create_issue", "add_sub_issue"):
+            with self.subTest(operation=operation):
+                self.checkpoint = self.cwd / f"{operation}.sqlite3"
+                self.github = FakeGitHub(["factory"])
+                self.github.fail_next(operation, after_write=True, error=CommandTimedOut("gh api"))
+                result = self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}])
+                self.assertEqual(result["stop"], "sliced")
+                self.assertEqual(len(self.github.created), 1)
+                self.assertEqual(self.github.parents, {("Example/Engine", 101): 8})
+                self.assertIn("factory", self.github.issue_labels[101])
+                adds = [call for call in self.github.child_calls if call[0] == "add_sub_issue"]
+                self.assertEqual(adds, [("add_sub_issue", "Example/Engine", 8, 101)])
+                calls = list(self.github.child_calls)
+                self.assertEqual(self.walk([]), result)
+                self.assertEqual(self.github.child_calls, calls)
+
+    def test_child_link_refusals_halt_on_stdout_and_retry_only_the_missing_link(self):
+        for index, error in enumerate((CommandFailed("gh: Forbidden (HTTP 403)"),
+                                       CommandFailed("gh: Validation Failed (HTTP 422)"), CommandTimedOut("gh api"))):
+            with self.subTest(error=str(error)):
+                self.checkpoint = self.cwd / f"refusal-{index}.sqlite3"
+                self.github = FakeGitHub(["factory"])
+                self.github.fail_next("add_sub_issue", error=error)
+                result = self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}])
+                self.assertEqual(result["stop"], "child_filing_failed")
+                self.assertEqual(result["child_issue_numbers"], [101])
+                self.assertEqual(result["child_plan"][0]["number"], 101)
+                self.assertEqual(run_exit_code(result), 1)
+                self.assertEqual(self.github.issue_labels[101], ["slice"])
+                self.assertEqual(self.github.closed, set())
+                self.assertEqual(self.github.merge_calls, [])
+                self.github.fail_next("add_sub_issue", error=error)
+                with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+                self.assertEqual(code, 1)
+                self.assertIn("done child_filing_failed", stdout.getvalue())
+                self.assertIn(str(error), stdout.getvalue())
+                self.assertIn("Check Issues: write access", stdout.getvalue())
+                self.github.child_calls.clear()
+                repaired = self.walk([])
+                self.assertEqual(repaired["stop"], "sliced")
+                self.assertEqual(repaired["child_issue_numbers"], [101])
+                self.assertNotIn("create_issue", [call[0] for call in self.github.child_calls])
+                self.assertEqual([call for call in self.github.child_calls if call[0] == "add_sub_issue"],
+                                 [("add_sub_issue", "Example/Engine", 8, 101)])
+                self.assertEqual(self.github.issue_labels[101], ["slice", "factory"])
+
+    def test_child_link_success_requires_a_confirming_read(self):
+        self.github = FakeGitHub(["factory"])
+        with patch.object(self.github, "add_sub_issue"):
+            result = self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}])
+        self.assertEqual(result["stop"], "child_filing_failed")
+        self.assertEqual(self.github.issue_labels[101], ["slice"])
+        self.assertEqual(self.walk([])["stop"], "sliced")
+        self.assertEqual(self.github.issue_labels[101], ["slice", "factory"])
+
+    def test_resumed_spec_prints_child_filing_failure_detail(self):
+        self.github = FakeGitHub(["factory"])
+        self.assertEqual(self.walk([{"triage": "spec"}, {
+            "spec": "Choose scope", "spec_gate": "needs_human", "human_question": "Which items?",
+        }])["stop"], "needs_human")
+        self.github.fail_next("add_sub_issue", error=CommandFailed("gh: Forbidden (HTTP 403)"))
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0", "--answer", "All items"],
+                        checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                        worker_runner=lambda args, *_: worker_reply(args, {
+                            "spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE],
+                        }))
+        self.assertEqual(code, 1)
+        self.assertIn("done child_filing_failed\nChild filing for #8 failed: Cannot link child #101 under #8:", stdout.getvalue())
+        self.assertIn("Check Issues: write access", stdout.getvalue())
+        self.assertIn("HTTP 403", stdout.getvalue())
+
+    def test_unavailable_confirmation_is_recovered_from_the_parent_list(self):
+        self.github = FakeGitHub(["factory"])
+        with patch.object(self.github, "parent_issue", side_effect=[None, CommandTimedOut("parent read")]):
+            result = self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}])
+        self.assertEqual(result["stop"], "child_filing_failed")
+        self.assertEqual(self.github.issue_labels[101], ["slice"])
+        self.github.child_calls.clear()
+        self.assertEqual(self.walk([])["stop"], "sliced")
+        self.assertEqual(self.github.child_calls, [])
+        self.assertEqual(self.github.issue_labels[101], ["slice", "factory"])
+
+    def test_multiple_blockers_keep_the_spec_dependency_order(self):
+        self.github = FakeGitHub(["factory"])
+        storage = {"name": "storage", "exists": False, "path": None}
+        builder = {**EMPTY_SLICE, "title": "Build storage", "builds": [storage]}
+        consumer = {**CONSUMER, "uses": [storage, SEAM]}
+        result = self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [consumer, BUILDER, builder]}])
+        self.assertEqual(result["stop"], "sliced")
+        self.assertEqual([item[0] for item in self.github.created], ["Build storage", BUILDER["title"], CONSUMER["title"]])
+        self.assertEqual(self.github.dependencies, {103: [101, 102]})
+        self.assertEqual(json.loads(self.github.created[2][1].split("```json\n")[1].removesuffix("\n```"))["blocker_numbers"], [101, 102])
+        self.github.merged.update((101, 102))
+        self.walk([])
+        self.assertEqual(self.github.issue_labels[103], ["slice", "factory"])
+        self.assertEqual(self.github.dependencies, {103: [101, 102]})
+
+    def test_a_child_with_another_parent_is_not_reparented(self):
+        self.github = FakeGitHub(["factory"])
+        self.github.parents["Example/Engine", 101] = 66
+        result = self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}])
+        self.assertEqual(result["stop"], "child_filing_failed")
+        self.assertIn("parent_conflict", result["halt_detail"])
+        self.assertIn("https://github.com/Example/Engine/issues/66", result["halt_detail"])
+        self.assertNotIn("add_sub_issue", [call[0] for call in self.github.child_calls])
+        self.assertEqual(self.github.issue_labels[101], ["slice"])
+        self.assertEqual(self.github.parents["Example/Engine", 101], 66)
+
+    def test_child_capacity_is_checked_for_the_whole_plan_before_creating(self):
+        self.github = FakeGitHub(["factory"])
+        self.github.preset_sub_issues("Example/Engine", 8, 99)
+        result = self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}])
+        self.assertEqual(result["stop"], "child_filing_failed")
+        self.assertIn("child_limit", result["halt_detail"])
+        self.assertEqual(self.github.created, [])
+        self.assertEqual(result["child_issue_numbers"], [])
+
+    def test_capacity_counts_existing_planned_children_once(self):
+        self.github = FakeGitHub(["factory"])
+        result = self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}])
+        self.github.preset_sub_issues("Example/Engine", 8, 98)
+        self.github.child_calls.clear()
+        self.assertEqual(self.walk([]), result)
+        self.assertEqual(self.github.child_calls, [])
+
+    def test_legacy_children_keep_their_original_bodies_when_linked(self):
+        self.github = FakeGitHub(["factory"])
+        self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}])
+        originals = {}
+        for number in (101, 102):
+            body = self.github.bodies["Example/Engine", number].split("\n\n", 1)[1]
+            originals[number] = "Legacy prose: café\r\n\r\n" + body + "\n\nTrailing whitespace \t\n"
+            self.github.bodies["Example/Engine", number] = originals[number]
+            self.github.issue_labels[number] = ["slice"]
+        self.github.closed.add(101)
+        self.github.parents.clear()
+        self.github.confirmed_children.clear()
+        self.github.child_calls.clear()
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            stored = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
+            stored.checkpoint["channel_values"].pop("child_plan")
+            saver.put(stored.config, stored.checkpoint, stored.metadata, {})
+        result = self.walk([])
+        self.assertEqual(result["stop"], "sliced")
+        self.assertEqual(result["child_issue_numbers"], [101, 102])
+        for index, number in enumerate((101, 102)):
+            header = f"Parent: https://github.com/Example/Engine/issues/8\n{result['child_plan'][index]['marker']}\n\n"
+            self.assertEqual(self.github.bodies["Example/Engine", number].encode(), (header + originals[number]).encode())
+        self.assertEqual([call for call in self.github.child_calls if call[0] == "add_sub_issue"],
+                         [("add_sub_issue", "Example/Engine", 8, 101), ("add_sub_issue", "Example/Engine", 8, 102)])
+        self.assertNotIn("create_issue", [call[0] for call in self.github.child_calls])
+        bodies = dict(self.github.bodies)
+        self.assertEqual(self.walk([]), result)
+        self.assertEqual(self.github.bodies, bodies)
 
     def test_existing_seam_resolves_in_workspace_and_skips_a_dependency(self):
         self.github = FakeGitHub(["factory"])
@@ -846,10 +1048,10 @@ class LiveRunnerTest(unittest.TestCase):
     def test_link_failure_leaves_child_blocked_and_parent_retry_repairs_it(self):
         self.github = FakeGitHub(["factory"])
         with patch.object(self.github, "add_blocker", side_effect=CommandTimedOut("gh api")):
-            with self.assertRaises(CommandTimedOut):
-                self.walk([{"triage": "spec"}, {
-                    "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
-                }])
+            result = self.walk([{"triage": "spec"}, {
+                "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
+            }])
+            self.assertEqual(result["stop"], "child_filing_failed")
             self.assertEqual(self.walk([], issue=102)["halt_detail"], "Planned blocker links are missing.")
         self.walk([])
         self.assertEqual(len(self.github.created), 2)

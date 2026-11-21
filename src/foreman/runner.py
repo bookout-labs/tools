@@ -1,6 +1,6 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 import json
@@ -15,11 +15,11 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
+from foreman.delivery import DEFAULT_TOKEN_CAP, ChildPlanEntry, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
-from foreman.github import Forge
+from foreman.github import Forge, ForgeError
 from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
 from foreman.usd import BudgetUsd, usd_text
 
@@ -97,6 +97,92 @@ def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice) -> s
     if unmerged := [number for number in planned if not forge.is_merged(repo, number)]:
         return "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged)
     return ""
+
+
+def _reconcile_children(
+    forge: Forge, repo: str, parent: int, state: DeliveryState,
+    save: Callable[[DeliveryUpdate], None],
+) -> None:
+    if "slices" not in state:
+        raise ValueError("Sliced checkpoint has no slice plan.")
+    slices = [parse_output(StoredSlice, {**raw, "work_kind": state.get("work_kind")}) for raw in state["slices"]]
+    numbers = state.get("child_issue_numbers", [])
+    plan = [entry.copy() for entry in state.get("child_plan", [])]
+
+    def checkpoint_plan() -> None:
+        save({"child_plan": plan, "child_issue_numbers": [entry["number"] for entry in plan if entry["number"] is not None]})
+
+    if "child_plan" not in state:
+        plan = [ChildPlanEntry(marker=f"<!-- foreman-child:{repo.lower()}#{parent}:{index + 1} -->",
+                               number=numbers[index] if index < len(numbers) else None)
+                for index in range(len(slices))]
+        checkpoint_plan()
+
+    def recover(entry: ChildPlanEntry) -> bool:
+        matches = forge.marked_issues(repo, entry["marker"])
+        if len(matches) > 1:
+            raise ForgeError(f"child_identity_conflict: multiple issues contain {entry['marker']}; remove the duplicate marker before rerunning.")
+        if matches:
+            entry["number"] = matches[0]
+            checkpoint_plan()
+        return bool(matches)
+
+    for entry in plan:
+        if entry["number"] is None:
+            recover(entry)
+    existing = forge.sub_issues(repo, parent)
+    linked = {child.number for child in existing if child.in_repo(repo)}
+    missing = sum(entry["number"] not in linked for entry in plan)
+    if len(existing) + missing > 100:
+        raise ForgeError(f"child_limit: #{parent} has {len(existing)} sub-issues and needs {missing} more; reduce the plan or repair the hierarchy before rerunning (limit 100).")
+
+    siblings: dict[str, int] = {}
+    for item, entry in zip(slices, plan):
+        header = f"Parent: https://github.com/{repo}/issues/{parent}\n{entry['marker']}\n\n"
+        if entry["number"] is None:
+            child = item.model_copy(update={"blocker_numbers": [siblings[title] for title in item.depends_on]})
+            try:
+                entry["number"] = forge.create_issue(repo, item.title, header.rstrip("\n"), ["slice"], child=child)
+            except ForgeError:
+                if not recover(entry):
+                    raise
+            else:
+                checkpoint_plan()
+        number = entry["number"]
+        assert number is not None
+        siblings[item.title] = number
+        body = forge.load_issue(repo, number)["body"]
+        if not body.startswith(header):
+            forge.update_issue_body(repo, number, header + body)
+        if number in linked:
+            continue
+        owner = forge.parent_issue(repo, number)
+        if owner is None:
+            failure = "GitHub did not confirm the relationship"
+            try:
+                forge.add_sub_issue(repo, parent, number)
+            except ForgeError as exc:
+                failure = str(exc)
+            owner = forge.parent_issue(repo, number)
+            if owner is None:
+                raise ForgeError(f"Cannot link child #{number} under #{parent}: {failure}. Check Issues: write access and hierarchy validation, then rerun the parent to add only the missing link.")
+        if not owner.in_repo(repo) or owner.number != parent:
+            raise ForgeError(f"parent_conflict: child #{number} already belongs to {owner.html_url}; repair its parent by hand before rerunning #{parent}.")
+        linked.add(number)
+
+    for item, entry in zip(slices, plan):
+        number = entry["number"]
+        assert number is not None
+        blockers = forge.blockers(repo, number) if item.depends_on else []
+        linked_blockers = {blocker.number for blocker in blockers if blocker.in_repo(repo)}
+        planned = [siblings[title] for title in item.depends_on]
+        for blocker in planned:
+            if blocker not in linked_blockers:
+                forge.add_blocker(repo, number, blocker)
+        if (all(blocker.state == "closed" for blocker in blockers)
+                and all(forge.is_merged(repo, blocker) for blocker in planned)
+                and "factory" not in forge.load_issue(repo, number)["labels"]):
+            forge.add_label(repo, number, "factory")
 
 
 def _checkpoint_before_halt(
@@ -305,33 +391,18 @@ def run_live_delivery(
         saved = graph.get_state(config)
         saved_values = checkpoint_state(saved.values)
         assert saved_values is not None
-        if saved_values.get("stop") == "sliced":
-            if "slices" not in saved_values:
-                raise ValueError("Sliced checkpoint has no slice plan.")
-            numbers = list(saved_values.get("child_issue_numbers", []))
-            work_kind = saved_values.get("work_kind")
-            plan = [parse_output(StoredSlice, {**raw, "work_kind": work_kind}) for raw in saved_values["slices"]]
-            siblings = {item.title: number for item, number in zip(plan, numbers)}
-            for item in plan[len(numbers):]:
-                child = item.model_copy(update={"blocker_numbers": [siblings[title] for title in item.depends_on]})
-                labels = ["slice"] + ([] if item.depends_on else ["factory"])
-                number = client.create_issue(repo, item.title, "", labels, child=child)
-                numbers.append(number)
-                siblings[item.title] = number
-                graph.update_state(config, {"child_issue_numbers": numbers})
-            for item, number in zip(plan, numbers):
-                if not item.depends_on:
-                    continue
-                blockers = client.blockers(repo, number)
-                linked = {blocker.number for blocker in blockers if blocker.in_repo(repo)}
-                planned = [siblings[title] for title in item.depends_on]
-                for blocker in planned:
-                    if blocker not in linked:
-                        client.add_blocker(repo, number, blocker)
-                if (all(blocker.state == "closed" for blocker in blockers)
-                        and all(client.is_merged(repo, blocker) for blocker in planned)
-                        and "factory" not in client.load_issue(repo, number)["labels"]):
-                    client.add_label(repo, number, "factory")
+        if saved_values.get("stop") in {"sliced", "child_filing_failed"}:
+            def save_children(update: DeliveryUpdate) -> None:
+                graph.update_state(config, update)
+
+            try:
+                _reconcile_children(client, repo, issue, saved_values, save_children)
+            except ForgeError as exc:
+                save_children({"stop": "child_filing_failed", "halt": "child_filing_failed",
+                               "halt_detail": f"Child filing for #{issue} failed: {exc} Rerun the same parent after repair; checkpointed child numbers are retained."})
+            else:
+                if saved_values.get("stop") == "child_filing_failed":
+                    save_children({"stop": "sliced", "halt": None, "halt_detail": ""})
             saved = graph.get_state(config)
             saved_values = checkpoint_state(saved.values)
         assert saved_values is not None
