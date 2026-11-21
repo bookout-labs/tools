@@ -63,7 +63,7 @@ class MergeReceiptTest(unittest.TestCase):
     def test_normal_success_requires_observed_receipt_and_policy_method(self):
         receipt = self.arm()
         self.assertEqual((receipt.pr, receipt.source_head, receipt.method, receipt.identity), (NUMBER, HEAD, POLICY.merge_method, QUEUED["mergeQueueEntry"]["id"]))
-        self.assertEqual(self.writes(), [["gh", "pr", "merge", str(NUMBER), "--repo", REPO, "--auto", "--match-head-commit", HEAD]])
+        self.assertEqual(self.writes(), [["gh", "pr", "merge", str(NUMBER), "--repo", REPO, "--auto", "--squash", "--match-head-commit", HEAD]])
         self.assertEqual(interpret(AUTO).status, "AUTO_MERGE_ENABLED")
         with self.assertRaisesRegex(MergeNotArmed, "not confirmed"):
             self.arm(after=SNAPSHOT)
