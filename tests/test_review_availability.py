@@ -351,7 +351,8 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                         self.assertNotEqual(attempt["model"], result["models_used"]["review"])
                 else:
                     self.assertNotIn("review", result["models_used"])
-                    self.assertNotIn("review_receipt", before)
+                    for field in fields:
+                        self.assertNotIn(field, result)
                 resumed = self.invoke(root, "grok", [], 1, "reject_resume")
                 self.assertEqual(resumed["result"], result)
                 self.assertEqual((resumed["calls"], resumed["posted"], resumed["posts"], resumed["merges"]),

@@ -36,7 +36,7 @@ class RejectedStageOutputTest(unittest.TestCase):
                                 calls.append(model.name if model else None)
                                 if fallback and len(calls) == 1:
                                     return Outcome(fallback)
-                                return Outcome(kind, {}, usage=usage, detail=diagnostic)
+                                return Outcome(kind, {}, usage=usage, detail="" if kind == "ran" else diagnostic)
                             return script(node, model, state, instruction)
 
                         result = walk(worker, config=config)
