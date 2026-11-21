@@ -105,6 +105,20 @@ class RecordedEvidenceTest(unittest.TestCase):
 
 
 class DerivedCaptureTest(unittest.TestCase):
+    def test_derived_from_rejects_self_reference(self):
+        capture = {"kind": "captured_run", "tool": "example", "version": "1", "argv": ["example"]}
+        with self.assertRaisesRegex(ValidationError, "original capture"):
+            FixtureManifest.model_validate({"fixtures": {"a": {**capture, "derived_from": "a"}}})
+
+    def test_derived_from_rejects_chain(self):
+        capture = {"kind": "captured_run", "tool": "example", "version": "1", "argv": ["example"]}
+        with self.assertRaisesRegex(ValidationError, "original capture"):
+            FixtureManifest.model_validate({"fixtures": {
+                "original": capture,
+                "derived": {**capture, "derived_from": "original"},
+                "chain": {**capture, "derived_from": "derived"},
+            }})
+
     def test_derived_from_requires_existing_capture(self):
 
         capture = {"kind": "captured_run", "tool": "example", "version": "1", "argv": ["example"]}

@@ -39,6 +39,8 @@ class FixtureManifest(Contract):
                 original = self.fixtures.get(fixture.derived_from)
                 if not isinstance(original, CapturedRun):
                     raise ValueError(f"{path}: derived_from must name an existing captured run")
+                if fixture.derived_from == path or original.derived_from is not None:
+                    raise ValueError(f"{path}: derived_from must name an original capture")
                 if fixture.argv != original.argv:
                     raise ValueError(f"{path}: argv must match derived_from {fixture.derived_from}")
         return self
