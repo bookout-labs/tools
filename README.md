@@ -20,6 +20,9 @@ graph TD;
 	implement(implement)
 	verify(verify)
 	review(review)
+	prepare(prepare)
+	commit(commit)
+	publish(publish)
 	proof(proof)
 	needs_human(needs_human)
 	quota_wait(quota_wait)
@@ -29,18 +32,25 @@ graph TD;
 	__end__([<p>__end__</p>]):::last
 	__start__ -.-> done;
 	__start__ -.-> triage;
+	commit -.-> done;
+	commit -.-> publish;
 	decide_pr_size -.-> done;
 	decide_pr_size -.-> verify;
+	implement -.-> commit;
 	implement -.-> done;
 	implement -.-> quota_wait;
-	implement -.-> verify;
 	merge --> done;
+	needs_human -.-> done;
 	needs_human -.-> implement;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
+	prepare -.-> done;
+	prepare -.-> implement;
 	proof -.-> done;
-	proof -.-> implement;
+	proof -.-> prepare;
 	proof -.-> review;
+	publish -.-> done;
+	publish -.-> verify;
 	quota_wait -.-> implement;
 	quota_wait -.-> research;
 	quota_wait -.-> review;
@@ -50,24 +60,24 @@ graph TD;
 	research -.-> quota_wait;
 	review -.-> decide_pr_size;
 	review -.-> done;
-	review -.-> implement;
 	review -.-> merge;
 	review -.-> needs_human;
+	review -.-> prepare;
 	review -.-> quota_wait;
 	review -.-> spec;
 	spec -.-> decide_pr_size;
 	spec -.-> done;
-	spec -.-> implement;
 	spec -.-> needs_human;
+	spec -.-> prepare;
 	spec -.-> quota_wait;
 	triage -.-> done;
-	triage -.-> implement;
 	triage -.-> needs_human;
+	triage -.-> prepare;
 	triage -.-> quota_wait;
 	triage -.-> research;
 	triage -.-> spec;
 	verify -.-> done;
-	verify -.-> implement;
+	verify -.-> prepare;
 	verify -.-> proof;
 	verify -.-> review;
 	done --> __end__;
@@ -89,6 +99,8 @@ rulings become coordinator notes. The graph owns tool-fact checks separately fro
 reviewer findings. Rulings exist only within a run. The failure cap stays unchanged.
 
 An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the graph cannot select a reviewer from a different model family, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
+
+Foreman creates an `<issue>-<slug>` branch from the repository default branch before the first edit and commits each successful implementation. An attempt with no file changes or an unexpected HEAD or branch change stops with `failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
 Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs skip preflight and use a scripted verdict.
 
@@ -210,6 +222,8 @@ Start a live run from the root of the engine checkout. Use `--request` to supply
 ```sh
 foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm run check" --request "Add a field"
 ```
+
+Foreman creates the slice branch from the repository default branch, checkpoints worker edits, commits them, pushes to the checkout's `origin`, and opens or reuses the branch's pull request. Both origin fetch and push URLs must identify `--repo`. For HTTPS, configure GitHub CLI authentication with `gh auth setup-git` before running. Git calls cannot prompt for credentials. Run the same issue again to resume after a quota stop, temporary Git failure or publication failure. Keep the run's partial edits in place.
 
 The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request, check command, and any preflight command.
 

@@ -19,7 +19,7 @@ Round 1 retains those fields. Rulings exist only within a run.
 A repeated blocking kind among accepted reviewer findings pauses as design_rethink
 without consuming a failure round. Recurrence compares against every earlier round,
 including resolved findings. Graph checks never enter this comparison. A human answer
-resumes implementation and becomes a design:N ruling in the next review prompt.
+prepares the next implementation attempt and becomes a design:N ruling in the next review prompt.
 Without a checkpointer the run stops for the design fix.
 
 Workspace parses the PR diff and interdiff once. Round 1 falls back to body comments

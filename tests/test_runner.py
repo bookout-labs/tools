@@ -36,7 +36,7 @@ SYNTHETIC_QUESTION_TOKEN = "ghp_" + "a" * 36
 
 BASE = "b" * 40
 
-BRANCH = "8-list-items"
+BRANCH = "8-list-items-once"
 CLEAN_WORKTREE = WorktreeState(HEAD, True, BRANCH)
 SLICE = {
     "title": "List items once",
@@ -63,16 +63,36 @@ def slice_body(item):
 
 
 class FakeWorkspace(LiveWorkspace):
-    def __init__(self, cwd, snapshots=(CLEAN_WORKTREE,)):
+    def __init__(self, cwd, snapshots=()):
         super().__init__(cwd)
         self.snapshots = iter(snapshots)
-        self.last = CLEAN_WORKTREE
+        self.current = CLEAN_WORKTREE
+        self.published = False
 
     def inspect(self):
-        self.last = next(self.snapshots, self.last)
-        if isinstance(self.last, WorktreeInspectionFailed):
-            raise self.last
-        return self.last
+        snapshot = next(self.snapshots, self.current) if self.published else self.current
+        if isinstance(snapshot, WorktreeInspectionFailed):
+            raise snapshot
+        return snapshot
+
+    def fingerprint(self):
+        return "synthetic-edits"
+
+    def create_branch(self, branch, base):
+        self.current = WorktreeState(self.current.head, True, branch)
+
+    def commit(self, message):
+        head = HEAD
+        self.current = WorktreeState(head, True, self.current.branch)
+
+    def push(self, branch, repo):
+        self.published = True
+
+    def reply(self, args, reply):
+        if "implementation" in reply:
+            self.published = False
+            self.current = WorktreeState(self.current.head, False, self.current.branch)
+        return worker_reply(args, reply)
 
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": "b" * 40, "lines": 1}
@@ -88,7 +108,7 @@ def worker_reply(args, reply):
         if "spec" in reply:
             reply = {"slices": None, "human_question": None, **reply}
         if "implementation" in reply and args[0] == "codex":
-            reply = {"head_sha": None, "browser_proof": None, "formal_proof": None, **reply}
+            reply = {"browser_proof": None, "formal_proof": None, **reply}
     if args[0] == "codex":
         events = codex_events()
         events[-2]["item"]["text"] = json.dumps(reply) if isinstance(reply, dict) else reply
@@ -101,6 +121,9 @@ def worker_reply(args, reply):
 
 
 class FixtureWorkspace(LiveWorkspace):
+    def push(self, branch, repo):
+        pass
+
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": BASE, "lines": 1}
 
@@ -124,6 +147,12 @@ class FakeGitHub:
         self.base = BASE
         self.hold: str | None = None
         self.hold_reads = []
+
+    def default_branch(self, repo):
+        return "main"
+
+    def open_pull_request(self, *args):
+        pass
 
     def pull_request_base(self, repo: str, branch: str) -> str:
         return self.base_branch
@@ -336,7 +365,7 @@ class StageOutputTest(unittest.TestCase):
 
     def test_extra_field_reports_its_nested_path(self):
         raw = {
-            "implementation": "Done", "head_sha": None, "formal_proof": None,
+            "implementation": "Done", "formal_proof": None,
             "browser_proof": {"screen": None, "trace": None, "passed": None, "extra": True},
         }
         with self.assertRaisesRegex(InvalidOutput, r"^browser_proof\.extra:"):
@@ -352,21 +381,16 @@ class StageOutputTest(unittest.TestCase):
             with self.subTest(fields=fields):
                 raw = {
                     "implementation": "Done",
-                    "head_sha": None, "browser_proof": None,
+                    "browser_proof": None,
                     "formal_proof": {"ran": None, "typecheck": None,
                                      "constraints": [{"constraint": "unique_item_id", **fields}]},
                 }
                 with self.assertRaisesRegex(InvalidOutput, r"^formal_proof\.constraints\.0\.rejected:"):
                     parse_output(ImplementOutput, raw)
 
-    def test_head_sha_requires_a_full_hex_commit_or_null(self):
-        implementation = {"implementation": "Done", "browser_proof": None, "formal_proof": None}
-        for sha in ("", "a" * 39, "z" * 40, " " + HEAD, HEAD + "\n"):
-            with self.subTest(sha=sha), self.assertRaisesRegex(InvalidOutput, r"^head_sha:"):
-                parse_output(ImplementOutput, {**implementation, "head_sha": sha})
-        for sha in (None, HEAD, HEAD.upper()):
-            with self.subTest(sha=sha):
-                self.assertEqual(parse_output(ImplementOutput, {**implementation, "head_sha": sha}).head_sha, sha)
+    def test_implementation_rejects_worker_head(self):
+        with self.assertRaisesRegex(InvalidOutput, r"^head_sha:"):
+            parse_output(ImplementOutput, {"implementation": "Done", "head_sha": HEAD, "browser_proof": None, "formal_proof": None})
 
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
@@ -401,17 +425,19 @@ class LiveRunnerTest(unittest.TestCase):
 
     def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None):
         outputs = iter(replies)
+        active = workspace if workspace is not None else FakeWorkspace(self.cwd, snapshots)
 
         def run(args, cwd, env):
             self.assertEqual(cwd, self.cwd)
             self.calls.append(args[0])
             self.prompts.append(args[-1])
-            return worker_reply(args, next(outputs))
+            reply = next(outputs)
+            return active.reply(args, reply) if isinstance(active, FakeWorkspace) else worker_reply(args, reply)
 
         return run_live_delivery(
             repo="Example/Engine", issue=issue, check=check, preflight=preflight, answer=answer,
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
-            run=LiveRun(self.github, workspace if workspace is not None else FakeWorkspace(self.cwd, snapshots)),
+            run=LiveRun(self.github, active),
         )
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
@@ -460,33 +486,17 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_review_halts_when_git_fetch_times_out(self):
         real_run = subprocess.run
-        outputs = {
-            ("git", "rev-parse", "HEAD"): HEAD + "\n",
-            ("git", "status", "--porcelain"): "",
-            ("git", "branch", "--show-current"): BRANCH + "\n",
-            ("exit 0",): "",
-        }
-
-        def run(
-            command: str | list[str], *, timeout: float | None = None, **kwargs: object,
-        ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-            if isinstance(command, list) and command[:2] == ["git", "-C"]:
-                return real_run(command, check=True, capture_output=True, text=True)
-            if command == ["git", "fetch", "--no-tags", "origin", BASE, HEAD]:
-                self.assertEqual(timeout, 30)
+        def fetch(command, **kwargs):
+            if command[:2] == ["git", "fetch"]:
                 raise subprocess.TimeoutExpired(command, 30)
-            self.assertIsNone(timeout)
-            key = (command,) if isinstance(command, str) else tuple(command)
-            return subprocess.CompletedProcess(command, 0, outputs[key].encode())
+            return real_run(command, **kwargs)
 
-        with patch.object(LiveWorkspace, "pull_request_size", return_value={"head": HEAD, "merge_base": BASE, "lines": 1}), patch("foreman.workspace.subprocess.run", side_effect=run):
-            result = self.walk(
-                [{"triage": "implement"}, {"implementation": "Built."}],
-                workspace=LiveWorkspace(self.cwd),
-            )
-
+        workspace = FakeWorkspace(self.cwd)
+        workspace.review_diff = lambda base, head: LiveWorkspace(self.cwd).review_diff(base, head)
+        with patch("foreman.workspace.subprocess.run", side_effect=fetch):
+            result = self.walk([{"triage": "implement"}, {"implementation": "Built."}], workspace=workspace)
         self.assertEqual(result.get("stop"), "review_unavailable")
-        self.assertRegex(result.get("halt_detail", ""), r"^git fetch .*timed out after 30 seconds")
+        self.assertRegex(result.get("halt_detail", ""), r"^git fetch timed out after 30 seconds")
         self.assertEqual(self.github.reviews, [])
         self.assertEqual(self.github.merge_calls, [])
 
@@ -726,14 +736,14 @@ class LiveRunnerTest(unittest.TestCase):
     def test_injected_workers_reach_merge_after_a_real_check_in_the_repo(self):
         (self.cwd / "expected").touch()
         result = self.walk(
-            [{"triage": "implement"}, {"implementation": "built", "head_sha": "b" * 40}, APPROVE],
+            [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
             check="test -f expected",
         )
         self.assertEqual(self.calls, ["claude", "codex", "claude"])
-        self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "merge", "done"])
         self.assertEqual(result["check_exit_code"], 0)
         self.assertEqual(result["verified_head"], HEAD)
-        self.assertEqual(result["head_sha"], "b" * 40)
+        self.assertEqual(result["head_sha"], HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
 
@@ -762,7 +772,12 @@ class LiveRunnerTest(unittest.TestCase):
              "commit", "-qm", "Add fixture"],
             cwd=root, check=True,
         )
-        built = {"implementation": "Built.", "head_sha": HEAD}
+        subprocess.run(["git", "branch", "main"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.name", "Synthetic Test"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.email", "synthetic@example.invalid"], cwd=root, check=True)
+        subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=root, check=True)
+        self.github.base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        built = {"implementation": "Built."}
         review = {
             **APPROVE,
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": fixture}],
@@ -771,6 +786,9 @@ class LiveRunnerTest(unittest.TestCase):
 
         def worker(args, cwd, env):
             reply = next(replies)
+            if "implementation" in reply:
+                file = root / "items.txt"
+                file.write_text((file.read_text() if file.exists() else "") + "synthetic edit\n")
             if record_during_review and "tool_facts" in reply:
                 manifest_path.write_text(manifest("result.txt"))
             return worker_reply(args, reply)
@@ -792,7 +810,7 @@ class LiveRunnerTest(unittest.TestCase):
         result = self.review_tool_fact("result.txt", entry="result.txt")
         self.assertEqual(result.get("review"), "approve")
         self.assertEqual(result.get("findings"), [])
-        self.assertEqual(result.get("head_sha"), HEAD)
+        self.assertEqual(result.get("head_sha"), result.get("verified_head"))
         self.assertNotEqual(result.get("verified_head"), HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, result.get("verified_head"))])
 
@@ -814,6 +832,7 @@ class LiveRunnerTest(unittest.TestCase):
             f"echo 'Check stdout {SYNTHETIC_QUESTION_TOKEN}'\n"
             f"echo 'Check stderr {SYNTHETIC_QUESTION_TOKEN}' >&2\n"
         )
+        fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
         with (
             contextlib.redirect_stdout(io.StringIO()) as stdout,
@@ -821,8 +840,8 @@ class LiveRunnerTest(unittest.TestCase):
         ):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "sh verify.sh"],
-                worker_runner=lambda args, cwd, env: worker_reply(args, next(replies)),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                worker_runner=lambda args, cwd, env: fake.reply(args, next(replies)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 0)
         self.assertIn("done verified\n", stdout.getvalue())
@@ -863,11 +882,12 @@ class LiveRunnerTest(unittest.TestCase):
         root = self.cwd / "checkout"
         root.mkdir()
         live_run = LiveRun(self.github, FakeWorkspace(root))
+        fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
         def worker(args, cwd, env):
             self.assertEqual(cwd, root)
-            return worker_reply(args, next(replies))
+            return live_run.workspace.reply(args, next(replies))
 
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
             code = main(
@@ -894,7 +914,7 @@ class LiveRunnerTest(unittest.TestCase):
         result = self.walk([
             {"triage": "spec"},
             {"spec_gate": "ready", "spec": "Make IDs unique"},
-            {"implementation": "built", "head_sha": HEAD, "browser_proof": BROWSER, "formal_proof": FORMAL},
+            {"implementation": "built", "browser_proof": BROWSER, "formal_proof": FORMAL},
             APPROVE,
         ])
         self.assertEqual(result["path"][-5:], ["verify", "proof", "review", "merge", "done"])
@@ -918,7 +938,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_parent_stops_before_review_when_its_proof_is_missing(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "implement", "verify", "proof", "done"])
+        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "proof", "done"])
         self.assertEqual(result["stop"], "insufficient_evidence")
         self.assertEqual(result["proof_labels"], {"browser": "insufficient_evidence", "formal": "insufficient_evidence"})
 
@@ -942,7 +962,7 @@ class LiveRunnerTest(unittest.TestCase):
         fixed = {**blocked, "browser_proof": BROWSER}
         result = self.walk([{"triage": "implement"}, blocked, fixed, APPROVE])
         self.assertEqual(result["path"], [
-            "triage", "implement", "verify", "proof", "implement", "verify", "proof", "review", "merge", "done",
+            "triage", "implement", "publish", "verify", "proof", "implement", "publish", "verify", "proof", "review", "merge", "done",
         ])
         self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(result["merge"], "armed")
@@ -961,10 +981,11 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertNotIn("review", result["path"])
 
     def test_unconfigured_worker_stops_without_running_the_check(self):
+        fake = FakeWorkspace(self.cwd)
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "touch ran"],
-                worker_runner=None, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                worker_runner=None, checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 1)
         self.assertIn("done no_dispatcher", stdout.getvalue())
@@ -1033,7 +1054,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(result.get("review_rounds"), 0)
         self.assertNotIn("halt_detail", result)
-        self.assertEqual(result.get("path"), ["triage", "implement", "verify", "review", "merge", "done"])
+        self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "review", "merge", "done"])
 
     def test_answer_resume_is_idempotent_after_environment_halt(self):
         preflight = "test -f ready"
@@ -1125,7 +1146,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result.get("check_exit_code"), 1)
         self.assertIn("test -f ready", result.get("halt_detail", ""))
         self.assertIn("exited with 1", result.get("halt_detail", ""))
-        self.assertEqual(result.get("path"), ["triage", "implement", "verify", "done"])
+        self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "done"])
 
         (self.cwd / "ready").touch()
         resumed = self.walk([APPROVE])
@@ -1193,11 +1214,11 @@ class LiveRunnerTest(unittest.TestCase):
             with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd) as directory:
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk(
-                    [{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}],
+                    [{"triage": "implement"}, {"implementation": "built"}],
                     check="touch ran", snapshots=(snapshot,),
                 )
                 self.assertEqual(result["stop"], "dirty_worktree")
-                self.assertEqual(result["path"], ["triage", "implement", "verify", "done"])
+                self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "done"])
                 self.assertFalse((self.cwd / "ran").exists())
                 self.assertNotIn("check_exit_code", result)
                 self.assertEqual(self.github.merge_calls, [])
@@ -1286,15 +1307,21 @@ class LiveRunnerTest(unittest.TestCase):
             ).stdout.strip()
 
         git("init", "-b", BRANCH)
+        git("config", "user.name", "Synthetic Test")
+        git("config", "user.email", "synthetic@example.invalid")
+        git("config", "commit.gpgsign", "false")
         git("commit", "--allow-empty", "-m", "Verified commit")
         git("branch", "main")
         git("remote", "add", "origin", ".")
         verified_head = git("rev-parse", "HEAD")
         self.github.base = verified_head
+        fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
         def run_worker(args, cwd, env=None):
             reply = next(replies)
+            if "implementation" in reply:
+                (repo / "items.txt").write_text("synthetic edits")
             if reply is APPROVE:
                 git("commit", "--allow-empty", "-m", "Commit after verification")
             return worker_reply(args, reply)
@@ -1306,8 +1333,10 @@ class LiveRunnerTest(unittest.TestCase):
                 run=LiveRun(self.github, LiveWorkspace(repo)),
             )
 
-        halted = run_delivery()
-        self.assertEqual(halted["stop"], "merge_not_armed")
+        with patch.object(LiveWorkspace, "push"):
+            halted = run_delivery()
+        self.assertEqual(halted["stop"], "merge_not_armed", halted)
+        verified_head = halted["verified_head"]
         self.assertEqual(self.github.merge_calls, [])
         reset = re.search(rf"^  git reset --keep {verified_head}$", halted["halt_detail"], re.MULTILINE)
         self.assertIsNotNone(reset, halted["halt_detail"])
@@ -1379,6 +1408,7 @@ class LiveRunnerTest(unittest.TestCase):
                 run.assert_called_once()
 
     def test_main_displays_the_forge_failure(self):
+        fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
         detail = "GraphQL: Auto-merge is disabled"
         with (
@@ -1388,8 +1418,8 @@ class LiveRunnerTest(unittest.TestCase):
         ):
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
-                worker_runner=lambda args, cwd, env: worker_reply(args, next(replies)),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                worker_runner=lambda args, cwd, env: fake.reply(args, next(replies)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 75)
         arm.assert_called_once_with("Example/Target", 8, BRANCH, HEAD)
@@ -1398,7 +1428,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "merge", "done"])
         self.assertEqual(result["merge"], "armed")
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
@@ -1427,6 +1457,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_main_rerun_arms_once_after_the_repository_hold_is_cleared(self):
         self.github.hold = "  Maintenance window "
         repo = "Example/Target"
+        fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
         live_run = LiveRun(self.github, FakeWorkspace(self.cwd))
 
@@ -1434,7 +1465,7 @@ class LiveRunnerTest(unittest.TestCase):
             with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
                 code = main(
                     ["run", "delivery", "--repo", repo, "--issue", "8", "--check", "exit 0"],
-                    worker_runner=lambda args, cwd, env=None: worker_reply(args, next(replies)),
+                    worker_runner=lambda args, cwd, env=None: live_run.workspace.reply(args, next(replies)),
                     checkpoint=self.checkpoint, live_run=live_run,
                 )
             self.assertEqual(code, 75 if self.github.hold else 0)
@@ -1453,12 +1484,13 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_whitespace_merge_hold_reports_done(self):
         self.github.hold = " "
+        workspace = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
-                worker_runner=lambda args, cwd, env=None: worker_reply(args, next(replies)),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                worker_runner=lambda args, cwd, env=None: workspace.reply(args, next(replies)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace),
             )
         self.assertEqual(code, 75)
         self.assertIn("done merge_held\nFOREMAN_MERGE_HOLD is set.\n", stdout.getvalue())
@@ -1497,14 +1529,15 @@ def run(args, cwd, env):
         assert state["human_question"] == f"Which items? {SYNTHETIC_QUESTION_TOKEN}"
         return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
     if schema["title"] == "ImplementOutput":
-        return worker_reply(args, {"implementation": "built", "head_sha": HEAD})
+        return workspace.reply(args, {"implementation": "built"})
     return worker_reply(args, APPROVE)
 
+workspace = FakeWorkspace(Path.cwd())
 pin = PstackPin.model_validate_json(sys.argv[2])
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
     sys.exit(main(
         sys.argv[3:], worker_runner=run, checkpoint=Path(sys.argv[1]),
-        live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())),
+        live_run=LiveRun(FakeGitHub(), workspace),
     ))
 """
         def invoke(*flags, pin=None, expected=0):
@@ -1539,11 +1572,12 @@ class HaltExitCodeTest(unittest.TestCase):
         if body is not None:
             forge.body = body
         outputs = iter(replies)
+        workspace = FakeWorkspace(root, snapshots)
         with contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", check, "--preflight", preflight],
-                checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, FakeWorkspace(root, snapshots)),
-                worker_runner=(lambda args, cwd, env: worker_reply(args, next(outputs))) if dispatcher else None,
+                checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace),
+                worker_runner=(lambda args, cwd, env: workspace.reply(args, next(outputs))) if dispatcher else None,
             )
         return code, output.getvalue()
 
@@ -1617,14 +1651,13 @@ class HaltExitCodeTest(unittest.TestCase):
                 self.assert_halt(result, "env_unavailable", f"Check {command!r} exited with {code} ({reason})", 75)
 
     def test_invalid_merge_sha_halts_with_detail_and_resumable_exit(self):
-        invalid = WorktreeState("invalid", True, BRANCH)
-        with patch.object(FakeGitHub, "arm_auto_merge", LiveForge.arm_auto_merge), \
-             patch.object(FakeGitHub, "_arm_auto_merge", LiveForge._arm_auto_merge, create=True):
-            result = self.live(
-                [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-                snapshots=(invalid, invalid, invalid),
-            )
-        self.assert_halt(result, "merge_not_armed", "Merge arming requires a full 40-hex commit SHA.", 75)
+        detail = "Merge arming requires a full 40-hex commit SHA."
+        with self.assertRaisesRegex(MergeNotArmed, detail):
+            LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid")
+        result = {**halted("merge_not_armed", detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
+        with patch("foreman.cli.run_live_delivery", return_value=result), contextlib.redirect_stdout(io.StringIO()) as output:
+            code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
+        self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
 
     def test_answered_is_success(self):
         code, output = self.live([{"triage": "question"}, {"research": "The answer."}])

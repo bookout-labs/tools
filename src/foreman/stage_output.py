@@ -134,7 +134,6 @@ class FormalProof(Contract):
 
 class ImplementOutput(Contract):
     implementation: Text
-    head_sha: Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{40}$")] | None
     browser_proof: BrowserProof | None
     formal_proof: FormalProof | None
 

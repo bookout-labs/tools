@@ -1,8 +1,11 @@
 flowchart TD
     review -->|recurrence|needs_human
-    needs_human -->|design ruling|implement
-    review -->|changes below cap|implement
-    implement --> verify
+    needs_human -->|prepare attempt with design ruling|implement
+    review -->|changes below cap|prepare
+    prepare --> implement
+    implement --> commit
+    commit --> publish
+    publish --> verify
     verify --> review
     review -->|approve|merge
     review -->|cap reached|done
