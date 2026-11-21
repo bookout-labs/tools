@@ -28,9 +28,9 @@ FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 
 
-@dataclass
+@dataclass(frozen=True)
 class DeliveryContext:
-    preflight_passed: bool = False
+    environment_error: str | None = None
 
 
 class DeliveryState(TypedDict, total=False):
@@ -148,13 +148,18 @@ def stop_reason(state: DeliveryState) -> str:
     return "stopped"
 
 
+def failed_preflight(command: str, run_command: Callable[[str], int]) -> str | None:
+    if command and (exit_code := run_command(command)):
+        return f"Preflight {command!r} exited with {exit_code}"
+    return None
+
+
 def compile_delivery(
     dispatcher: FailoverDispatcher | None,
     config: Config | None = None,
     *,
     checkpointer: BaseCheckpointSaver | None = None,
     run_check: Callable[[str], int] | None = None,
-    run_preflight: Callable[[str], int] | None = None,
     run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
 ):
@@ -164,24 +169,16 @@ def compile_delivery(
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
 
-    def failed_preflight(state: DeliveryState, runtime: Runtime[DeliveryContext]) -> str | None:
-        command = state.get("preflight")
-        if run_preflight is None or not command:
-            return None
-        exit_code = run_preflight(command)
-        if exit_code:
-            return f"Preflight {command!r} exited with {exit_code}"
-        if runtime.context is not None:
-            runtime.context.preflight_passed = True
-        return None
-
     def bind(name: str):
         def node(state: DeliveryState, runtime: Runtime[DeliveryContext]) -> dict[str, object]:
             if dispatcher is None:
                 return {"path": [name], "halt": "no_dispatcher"}
-            if runtime.context is None or not runtime.context.preflight_passed:
-                if detail := failed_preflight(state, runtime):
-                    return {"path": ["preflight"], "halt": "env_unavailable", "halt_detail": detail}
+            context = runtime.context
+            detail = context.environment_error if context else None
+            if name == "implement" and state.get("issue_kind") == "parent" and run_check is not None:
+                detail = failed_preflight(state.get("preflight", ""), run_check)
+            if detail:
+                return {"path": [name], "halt": "env_unavailable", "halt_detail": detail}
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
@@ -212,6 +209,8 @@ def compile_delivery(
 
     def verify(state: DeliveryState, runtime: Runtime[DeliveryContext]) -> dict[str, object]:
         assert run_check is not None
+        if (context := runtime.context) and (detail := context.environment_error):
+            return {"path": ["verify"], "halt": "env_unavailable", "halt_detail": detail}
         checked = {}
         if inspect_worktree is not None:
             head, clean = inspect_worktree()
@@ -222,8 +221,10 @@ def compile_delivery(
         exit_code = run_check(command)
         if reason := CHECK_START_FAILURES.get(exit_code):
             detail = f"Check {command!r} exited with {exit_code} ({reason})"
+        elif exit_code:
+            detail = failed_preflight(state.get("preflight", ""), run_check)
         else:
-            detail = failed_preflight(state, runtime) if exit_code else None
+            detail = None
         if detail:
             return {
                 "path": ["verify"], "check_exit_code": exit_code,

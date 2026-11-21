@@ -41,9 +41,9 @@ The edges are code. The model list is `src/foreman/models.toml`. Quota exhaustio
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If the builder model is missing or every eligible reviewer is unavailable, the run stops with `no_reviewer`. The record includes `halt_detail` for both stops.
 
-Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes.
+Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs skip preflight and use a scripted verdict.
 
-Use `--preflight <command>` to check environment readiness in the engine checkout before the first model call of a new or resumed live run. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (cannot execute) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code. Dry runs use a scripted verdict.
+Use `--preflight <command>` to check environment readiness in the engine checkout. A new or resumed slice checks readiness before dispatching a model. A parent checks readiness when it reaches implement. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
 
 When the check passes, the graph evaluates the browser and formal evidence required by the slice. Missing evidence stops the run. A failed proof consumes a round and sends the slice back to implement while rounds remain.
 

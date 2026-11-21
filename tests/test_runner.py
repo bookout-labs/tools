@@ -364,10 +364,20 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("done env_unavailable", stdout.getvalue())
         self.assertIn(preflight, result["halt_detail"])
-        self.assertIn("9", result["halt_detail"])
+        self.assertIn("exited with 9", result["halt_detail"])
         self.assertEqual(result["review_rounds"], 0)
+        self.assertEqual(result["path"], ["triage", "done"])
         self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\n")
         self.assertFalse((self.cwd / "checked").exists())
+
+    def test_parent_stops_sliced_without_running_preflight(self):
+        self.github = FakeGitHub(["factory"])
+        result = self.walk(
+            [{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}],
+            preflight="touch probed; exit 9",
+        )
+        self.assertEqual(result["stop"], "sliced")
+        self.assertFalse((self.cwd / "probed").exists())
 
     def test_dry_run_does_not_run_preflight(self):
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
@@ -389,6 +399,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["review_rounds"], 0)
         self.assertEqual(result["check_exit_code"], 1)
         self.assertIn("test -f ready", result["halt_detail"])
+        self.assertIn("exited with 1", result["halt_detail"])
         self.assertEqual(result["path"], ["triage", "implement", "verify", "done"])
 
     def test_failed_check_consumes_round_with_healthy_or_unspecified_environment(self):
