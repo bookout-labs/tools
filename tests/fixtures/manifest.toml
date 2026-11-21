@@ -9,6 +9,54 @@
 # A derived fixture records the argv of its original capture.
 # Source quotes link to published evidence without a capture command.
 
+[fixtures."github/linked-issue.json"]
+tool = "GitHub REST API"
+version = "2026-03-10"
+kind = "quoted_source"
+claim_ids = ["tool-fact-a57c981238d488e12a76226a2f974c0923afe9f1e28ba36219de1bdf8d65aef9"]
+sources = ["https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue", "https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue", "https://docs.github.com/en/rest/issues/issues#get-an-issue"]
+notes = "Selected fields from the published issue response example. The global id (1) differs from the repository issue number (1347). Used for parent, identity GET, POST receipt and PATCH receipt."
+
+[fixtures."github/sub-issues.json"]
+tool = "gh and GitHub REST API"
+version = "gh 2.102.0; GitHub REST API 2026-03-10"
+kind = "quoted_source"
+claim_ids = ["tool-fact-d810e24b7980bffd2fa900daf24077057fb1de243e68295f189561fb901b6dfd"]
+sources = ["https://docs.github.com/en/rest/issues/sub-issues#list-sub-issues", "https://cli.github.com/manual/gh_api"]
+notes = "Reduced published response example, with a synthetic second page (id 2, number 1349, closed) in gh --paginate --slurp format. Tests consume both pages and distinguish id from number."
+
+[fixtures."github/no-parent.json"]
+tool = "GitHub connector fetch"
+version = "GitHub REST API; captured 2026-11-21"
+kind = "captured_run"
+claim_ids = ["tool-fact-7e6aa77feee0e8037222175897642e2896bc4b02a2c319e3042779a177ca96cf"]
+argv = ["mcp__codex_apps__github_fetch", '{"url":"https://api.github.com/repos/octocat/Hello-World/issues/1347/parent"}']
+notes = "Unmodified JSON error_data from the connector's HTTP 404 response. gh cannot reach api.github.com from this sandbox; this is a connector capture, not a gh run. Tests render the diagnostic using the versioned CLI formatter recorded in github/gh-api-fields-and-errors.txt."
+
+[fixtures."github/parent-errors.json"]
+tool = "gh and GitHub REST API"
+version = "gh 2.102.0; GitHub REST API 2026-03-10"
+kind = "quoted_source"
+claim_ids = ["tool-fact-c7bf1a80f3c39a9e80ef9e966139d04b90ea5bdcc4172bce16a477161ccee978"]
+sources = ["https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go", "https://github.com/cli/cli/blob/v2.102.0/internal/ghcmd/cmd.go", "https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue"]
+notes = "Synthetic error cases using gh's published HTTP error formatter and exit code 1, not live permission/validation probes. Includes generic 404 and a no-parent message with the wrong status to prevent broad exception suppression."
+
+[fixtures."github/marked-issues.json"]
+tool = "gh and GitHub REST API"
+version = "gh 2.102.0; GitHub REST API 2026-03-10"
+kind = "quoted_source"
+claim_ids = ["tool-fact-40728bfb14309980599b7c49fe28c5fdc2ffa7ea8bc13f5b67ea0e4ef78f5d9a"]
+sources = ["https://docs.github.com/en/rest/issues/issues#list-repository-issues", "https://cli.github.com/manual/gh_api"]
+notes = "Reduced issue response schema with synthetic two-page bodies, exact markers, states and PR entries (including pull_request:null). state=all includes closed issues; the pull_request key distinguishes PRs; --slurp wraps pages."
+
+[fixtures."github/sub-issue-contract.txt"]
+tool = "GitHub REST API and GitHub Issues"
+version = "REST API 2026-03-10; documentation retrieved 2026-11-21"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue", "https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue", "https://docs.github.com/en/rest/issues/sub-issues#list-sub-issues", "https://docs.github.com/en/rest/issues/issues#update-an-issue", "https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/adding-sub-issues"]
+claim_ids = ["tool-fact-173ba0e7208604c1d3c163fe565d00e6c97970de7e7e13b0c6b6daa8d8b2524f", "tool-fact-297e2634ebaa29cab98824048a22e80a756129eb2fda4a8ed01b1c7dc7e3f2da", "tool-fact-b52299208e96e6f4ad971a58f6ca72ce969a721a0d78a441285b079905365cb5"]
+notes = "Short source excerpts and attributed summaries of the add parameters, ownership requirement, hierarchy limits, and fine-grained token permissions. No live mutations."
+
 [fixtures."claude/help.txt"]
 tool = "claude"
 version = "2.1.329"
@@ -449,7 +497,7 @@ tool = "gh"
 version = "2.102.0"
 kind = "quoted_source"
 sources = ["https://cli.github.com/manual/gh_api", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/fields.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/http.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go", "https://github.com/cli/cli/blob/v2.102.0/internal/ghcmd/cmd.go", "https://github.com/cli/cli/blob/v2.102.0/cmd/gh/main.go"]
-claim_ids = ["tool-fact-1f6c68c0b5ab3ea842ac165c30a9b77d54827b9257640cf085ea4ce551f9349c", "tool-fact-5744e144781330a0494b5a688e342db8c6f5e3cfc41da8d5072c7dceebda21d7"]
+claim_ids = ["tool-fact-1f6c68c0b5ab3ea842ac165c30a9b77d54827b9257640cf085ea4ce551f9349c", "tool-fact-5744e144781330a0494b5a688e342db8c6f5e3cfc41da8d5072c7dceebda21d7", "tool-fact-1a950fe2feda6107b2e0efa96fca69b9a2322eb18925ed90cbc72473d5a511d7", "tool-fact-3669380487e9bfd326457b94682fd4c0c35cb57534293b8be9a73fe371bd2176"]
 notes = "Versioned source excerpts show literal raw fields, JSON POST bodies, and HTTP failures written to stderr with a nonzero process exit."
 
 # ## Pull request size
@@ -868,3 +916,10 @@ version = "2.14.4"
 kind = "captured_run"
 argv = ["python", "-c", "from foreman.stage_output import SpecCheckOutput; print(SpecCheckOutput(findings=[dict(id='f1',kind='contract',slice='Save',section='slice',summary='Keep IDs unique.',ruling_id=None)],notes=[],resolutions=[]).model_dump_json(indent=2))"]
 notes = "Synthetic spec-check contract example serialized by Pydantic. No model or external service was called. test_spec_check.py parses it through the native contract and checks rejection of supplied verdicts."
+
+[fixtures."github/readiness-evidence.json"]
+tool = "GitHub REST API"
+version = "2022-11-28"
+kind = "captured_run"
+argv = ["gh", "api", "repos/bookout-labs/tools/pulls/97"]
+notes = "API excerpts captured 2026-11-21. Contract source: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request (pull_request GITHUB_SHA identifies the synthetic merge). The JSON records all exact queried URLs. PR base.sha can differ from the current base tip; the synthetic merge parents are validated against branches/{base}.commit.sha. A head-attached check run and its check_suite id identify source-head evidence, not the synthetic tested commit. Capture uses additional gh api GETs for the branch, merge commit and source check runs named in sources in the JSON."
