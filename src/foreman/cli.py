@@ -126,6 +126,8 @@ def _print_run_rows(
             write(" ".join(fields))
     stop = result.get("stop")
     if stop in {"needs_human", Halt.quota_exhausted} and "done" not in result["path"]:
+        if "token_cap" in result:
+            write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {result['token_cap']}")
         label = "done" if stop == "needs_human" and dry_run else "paused"
         write_literal(f"{label} {stop}")
         if detail := result.get("halt_detail"):
