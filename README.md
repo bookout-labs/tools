@@ -275,7 +275,7 @@ A coordinator session reads `src/foreman/roles/coordinator.md` from the tools re
 
 `foreman accept` reads one event and either ignores it or prints the request. It does not call a model.
 
-A GitHub event starts when it is `issue_labeled` and the labels include `factory`. The command ignores alerts and other GitHub events. It rejects unknown sources.
+A GitHub event starts when it is `issue_labeled` and the labels include `factory`. The command ignores other GitHub events. It rejects unknown sources.
 
 ```yaml
 source: github
@@ -287,20 +287,6 @@ body: The comment thread crashes.
 
 ```sh
 foreman accept event.yaml
-```
-
-## Scoring
-
-`src/foreman/measure.toml` holds the sampling rate, the passing bar, and the label scores. One implementation run in every ten is sampled for scoring. Merge arming uses verification and review independently of scoring.
-
-- `approve` scores 1 and passes.
-- `block` scores 0.2 and fails. A produced artifact that fails its proof or screen check is `block`.
-- `insufficient_evidence` scores 0.5 and always remains a distinct non-pass. A missing required proof or browser trace leaves the work unjudged.
-
-`foreman improve` proposes a change for a known scoring failure. For redundant tests, it targets the builder instructions in `src/foreman/stages/implement.md`. The proposal does not change `models.toml` or the review cap. A person opens the pull request.
-
-```sh
-foreman improve redundant-tests
 ```
 
 Promptfoo runs the same contract without a model:

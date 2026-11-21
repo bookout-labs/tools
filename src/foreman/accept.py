@@ -45,6 +45,4 @@ def accept_event(event: object) -> IgnoreEvent | StartEvent:
         if not labels or not is_list(labels) or FACTORY_LABEL not in labels:
             return {"start": False}
         return {"start": True, "source": "github", "request": _request(event.get("title"), event.get("body"))}
-    if source == "alert":
-        return {"start": False}
     raise AcceptError(f"unknown event source {source}")

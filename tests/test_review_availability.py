@@ -24,7 +24,6 @@ from foreman.adapters import Outcome
 from foreman.cli import run_exit_code
 from foreman.config import ModelSpec, PstackPin, load_config
 from foreman.delivery import LiveRun, compile_delivery, halted
-from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from foreman.runner import run_live_delivery
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -71,11 +70,11 @@ run = LiveRun(forge, workspace)
 with patch("foreman.runner.load_config", return_value=config), patch("foreman.delivery.halted", legacy_halt if legacy == "pause" else halted):
     try:
         result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
-            checkpoint=root / "run.sqlite3", run=run, dispatcher=FailoverDispatcher(worker))
+            checkpoint=root / "run.sqlite3", run=run, dispatcher=worker)
     except RuntimeError:
         assert legacy == "pending"
         with SqliteSaver.from_conn_string(str(root / "run.sqlite3")) as saver:
-            graph = compile_delivery(FailoverDispatcher(worker), config, run=run, checkpointer=saver)
+            graph = compile_delivery(worker, config, run=run, checkpointer=saver)
             snapshot = graph.get_state({"configurable": {"thread_id": "example/engine#8"}})
             assert snapshot.next == ("review_call",), snapshot.next
             assert not snapshot.values.get("halt")

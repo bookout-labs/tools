@@ -11,7 +11,6 @@ from foreman.adapters.codex import CodexAdapter
 from foreman.stage_output import AttemptUsage, AttemptUsageRecord, STAGE_OUTPUTS
 from foreman.config import ModelSpec
 from foreman.delivery import run_tokens, run_delivery
-from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from tests.test_adapters import fixture_process
 
@@ -100,7 +99,7 @@ class UsageTests(unittest.TestCase):
                     self.assertEqual(result.kind, "ran")
 
     def test_all_attempts_and_required_cache(self):
-        result = run_delivery(FailoverDispatcher(ScriptHandler()), repo="a/b", request="x")
+        result = run_delivery(ScriptHandler(), repo="a/b", request="x")
         self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement", "verify", "review"])
         self.assertEqual(run_tokens(result["attempts"]), 8)
         attempt = {"stage": "triage", "model": None, "commit": "x", "methods": [], "outcome": "quota",

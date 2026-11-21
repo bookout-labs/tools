@@ -25,7 +25,7 @@ from typing_extensions import TypedDict
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, ModelSpec, family, load_config, order_for
 from foreman.dry_run import ScriptHandler
-from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.dispatch import Handler, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
@@ -45,14 +45,13 @@ GRAPH_NAME = "delivery"
 DEFAULT_TOKEN_CAP = 20_000_000
 PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
-STAGE_ORDER = REQUIRED_NODES + ("merge",)
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 MergeHalt = Literal["merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red", "readiness_unavailable", "queue_rejected"]
-ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implementation_rejected", "implement_quota", "quota_exhausted", "review_not_posted", "reviewer_unavailable"]
+ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implementation_rejected", "quota_exhausted", "review_not_posted", "reviewer_unavailable"]
 HaltReason = Literal[
-    ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
+    ResumableHalt, "failed", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "budget_exceeded", "usage_unknown", "design_rethink", "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+    "budget_exceeded", "usage_unknown", "design_rethink", "skill_missing", "missing_slice", "review_unavailable", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 READINESS_HALTS: dict[ReadinessOutcome, MergeHalt] = {
@@ -105,10 +104,6 @@ class DryRun:
     def record_merge(self, repo: str, head: str | None) -> list[str]:
         revision = (commit_sha(head) or redact(head)) if head else "<sha>"
         return merge_command(redact(repo), "<number>", revision)
-
-
-def entry_node(name: str) -> str:
-    return name
 
 
 def unknown_usage(stage: str, model: str | None) -> str:
@@ -442,7 +437,7 @@ class DeliveryNode(Protocol):
 
 
 def compile_delivery(
-    dispatcher: FailoverDispatcher | None,
+    dispatcher: Handler,
     config: Config,
     *,
     run: LiveRun | DryRun,
@@ -460,8 +455,6 @@ def compile_delivery(
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
             if run_tokens(state.get("attempts", [])) >= state["token_cap"]:
                 return budget_halt(state, state.get("attempts", []), name)
-            if dispatcher is None:
-                return halted("no_dispatcher", "No dispatcher is configured.", name)
             current_run = run if isinstance(run, DryRun) else runtime.context or run
             if name == "implement" and isinstance(current_run, LiveRun):
                 probe = current_run.environment or EnvironmentProbe(
@@ -552,31 +545,26 @@ def compile_delivery(
 
     def call(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-            assert dispatcher is not None
             assert "pending_dispatch" in state and "dispatch_plan" in state
             pending, plan = state["pending_dispatch"], state["dispatch_plan"]
             assert pending is not None
             models, methods = plan["models"], plan["methods"]
-            attempts: list[AttemptRecord] = []
-            def record_attempt(model: str | None, outcome: Outcome) -> None:
-                attempts.append(Attempt(
-                    stage=name, model=model, commit=config.pstack.commit, methods=methods, outcome=outcome.kind,
-                    usage=None if outcome.usage is None else AttemptUsage(
-                        input=outcome.usage.input_tokens, output=outcome.usage.output_tokens,
-                        cache_read=outcome.usage.cache_read_input_tokens or 0,
-                        cache_creation=outcome.usage.cache_creation_input_tokens or 0,
-                        cost_usd=outcome.usage.total_cost_usd,
-                    ),
-                ).record())
-
             worker_state: DeliveryState = state.copy()
             if name == "review":
                 for key in ("review_findings", "settled_rulings", *(("findings", "detail", "implementation") if history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])}).rounds else ())):
                     worker_state.pop(key, None)
-            outcome, accepted_model = dispatcher.run(
-                name, ModelSpec.parse(models[pending["index"]]) if models else None, worker_state, plan["instruction"], on_attempt=record_attempt,
-            )
+            accepted_model = ModelSpec.parse(models[pending["index"]]) if models else None
+            outcome = dispatcher(name, accepted_model, worker_state, plan["instruction"])
             model = accepted_model.name if accepted_model else None
+            attempts = [Attempt(
+                stage=name, model=model, commit=config.pstack.commit, methods=methods, outcome=outcome.kind,
+                usage=None if outcome.usage is None else AttemptUsage(
+                    input=outcome.usage.input_tokens, output=outcome.usage.output_tokens,
+                    cache_read=outcome.usage.cache_read_input_tokens or 0,
+                    cache_creation=outcome.usage.cache_creation_input_tokens or 0,
+                    cost_usd=outcome.usage.total_cost_usd,
+                ),
+            ).record()]
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
             if outcome.kind == "budget_exhausted":
                 return {**stopped, **halted("budget_exceeded", f"{name} {model} exhausted its dollar budget. {outcome.detail}".strip(), name)}
@@ -693,14 +681,7 @@ def compile_delivery(
         assert "pending_dispatch" in state and state["pending_dispatch"] is not None and "dispatch_plan" in state
         update: DeliveryUpdate = {}
         try:
-            try:
-                update = dispatch_implement(state, runtime)
-            except QuotaExhausted as exc:
-                return {**halted("implement_quota", f"Implement quota exhausted for {exc.model}; rerun to continue partial edits.", "implement"),
-                        "partial_edits": run.workspace.fingerprint(), "pending_dispatch": None,
-                        "attempts": [Attempt(stage="implement", model=exc.model,
-                                             commit=config.pstack.commit, methods=state["dispatch_plan"]["methods"],
-                                             outcome="quota", usage=None).record()]}
+            update = dispatch_implement(state, runtime)
             if update.get("pending_dispatch"):
                 return update
             return {**update, "partial_edits": run.workspace.fingerprint() if update.get("halt") == "quota_exhausted" else ""}
@@ -1168,7 +1149,7 @@ def compile_delivery(
 
 
 def run_delivery(
-    dispatcher: FailoverDispatcher,
+    dispatcher: Handler,
     *,
     repo: str,
     request: str,
@@ -1207,5 +1188,5 @@ def run_delivery(
 
 
 def diagram() -> str:
-    graph = compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), run=DryRun())
+    graph = compile_delivery(ScriptHandler(), load_config(), run=DryRun())
     return graph.get_graph().draw_mermaid()

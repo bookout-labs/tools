@@ -16,8 +16,8 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DEFAULT_TOKEN_CAP, MergeHalt, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
-from foreman.dispatch import FailoverDispatcher, InvalidOutput
+from foreman.delivery import DEFAULT_TOKEN_CAP, MergeHalt, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, unknown_usage, read_delivery_state
+from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import Forge, ForgeError
@@ -111,8 +111,7 @@ def _checkpoint_before_halt(
     if not path:
         raise ValueError("Cannot resume a run without a halted node.")
     node = node or path[-1]
-    entry = entry_node(node)
-    before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (entry,)), None)
+    before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (node,)), None)
     if before is None:
         raise ValueError(f"Cannot resume a run without a checkpoint before {node}.")
     return before
@@ -143,7 +142,7 @@ def run_live_delivery(
     checkpoint: Path,
     run: LiveRun,
     preflight: str = "",
-    dispatcher: FailoverDispatcher | None = None,
+    dispatcher: Handler,
     request: str | None = None,
     answer: str | None = None,
     max_tokens: int | None = None,

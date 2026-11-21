@@ -28,7 +28,6 @@ WATCH: dict[HaltReason, Watch | None] = {
     "pr_size_unavailable": Watch("Pull request size is measurable before review", "The pull request size could not be measured.", "src/foreman/workspace.py"),
     "git_failed": Watch("Git operations complete before publication", "A workspace git operation failed.", "src/foreman/workspace.py"),
     "usage_unknown": Watch("{adapter} attempts report usage", "The {adapter} attempt did not report usage.", "src/foreman/adapters/{adapter}.py"),
-    "no_dispatcher": Watch("A live run always has a dispatcher", "The live run had no dispatcher.", "src/foreman/cli.py"),
     "skill_missing": Watch("Pinned skills are available before dispatch", "A required skill was unavailable at the pinned commit.", "src/foreman/skill_rules.py"),
     "no_reviewer": None,
     "reviewer_unavailable": None,
@@ -45,7 +44,6 @@ WATCH: dict[HaltReason, Watch | None] = {
     "quota_exhausted": None,
     "publish_failed": None,
     "implementation_rejected": None,
-    "implement_quota": None,
     "failed": None,
     "design_rethink": None,
 }

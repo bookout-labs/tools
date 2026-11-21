@@ -20,7 +20,7 @@ from foreman.adapters import Outcome, Usage
 from foreman.cli import _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
-from foreman.dispatch import FailoverDispatcher, InvalidOutput
+from foreman.dispatch import InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, render_slice_body
 
@@ -354,7 +354,7 @@ class CliWorkerTest(unittest.TestCase):
         config = load_config()
         config.nodes["triage"] = NodeConfig("coordinator", tuple(ModelSpec.parse(model) for model in models))
         with skill_fixture(config) as (fixture_config, scratch):
-            return run_delivery(FailoverDispatcher(CliWorker(Path("."), run)), repo="Example/Engine",
+            return run_delivery(CliWorker(Path("."), run), repo="Example/Engine",
                                 request="List items", check="exit 0", config=fixture_config, slice=EMPTY_SLICE, scratch=scratch)
 
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
@@ -521,7 +521,7 @@ class LiveRunnerTest(unittest.TestCase):
 
         return run_live_delivery(
             repo="Example/Engine", issue=issue, check=check, preflight=preflight, answer=answer,
-            checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)), presentation=presentation,
+            checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, run), presentation=presentation,
             run=LiveRun(self.github, active, skills=skills),
         )
 
@@ -897,12 +897,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         first = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", fact_record="evidence/facts.toml",
             checkpoint=self.checkpoint, run=run,
-            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+            dispatcher=lambda *args: Outcome("quota"),
         )
         self.assertEqual(first["fact_record"], "evidence/facts.toml")
         resumed = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, run=run,
-            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+            dispatcher=lambda *args: Outcome("quota"),
         )
         self.assertEqual(resumed["fact_record"], "evidence/facts.toml")
 
@@ -910,7 +910,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
         with self.assertRaisesRegex(ValueError, "--fact-record differs"):
             run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
-                              fact_record="evidence/other.toml", checkpoint=self.checkpoint,
+                              fact_record="evidence/other.toml", checkpoint=self.checkpoint, dispatcher=ScriptHandler(),
                               run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(self.walk([])["stop"], "verified")
 
@@ -922,7 +922,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
         paused = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-            dispatcher=FailoverDispatcher(exhaust), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            dispatcher=exhaust, run=LiveRun(self.github, FakeWorkspace(self.cwd)),
         )
         self.assertEqual(paused["stop"], "quota_exhausted")
         self.assertEqual(run_exit_code(paused), 75)
@@ -1148,7 +1148,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         return run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
             **({"fact_record": record_path} if record_path != "tests/fixtures/manifest.toml" else {}),
-            dispatcher=FailoverDispatcher(CliWorker(root, worker)),
+            dispatcher=CliWorker(root, worker),
             run=LiveRun(self.github, FixtureWorkspace(root)),
         )
 
@@ -1298,7 +1298,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(code, 0)
         self.assertTrue((root / "checked").exists())
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
-        rerun = {"repo": "Example/Engine", "issue": 8, "check": "exit 0", "checkpoint": self.checkpoint}
+        rerun = {"repo": "Example/Engine", "issue": 8, "check": "exit 0", "checkpoint": self.checkpoint, "dispatcher": ScriptHandler()}
         self.assertEqual(run_live_delivery(**rerun, run=live_run)["workspace"], str(root.resolve()))
         with self.assertRaisesRegex(ValueError, "Run this issue from"):
             run_live_delivery(**rerun, run=LiveRun(self.github, FakeWorkspace(self.cwd)))
@@ -1381,17 +1381,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["review_rounds"], 0)
         self.assertEqual(result["proof_failures"], 3)
         self.assertNotIn("review", result["path"])
-
-    def test_unconfigured_worker_stops_without_running_the_check(self):
-        fake = FakeWorkspace(self.cwd)
-        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
-            code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "touch ran"],
-                worker_runner=None, checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
-            )
-        self.assertEqual(code, 1)
-        self.assertIn("done no_dispatcher", stdout.getvalue())
-        self.assertFalse((self.cwd / "ran").exists())
 
     def test_cli_preflight_stops_before_dispatch_and_uses_engine_checkout(self):
         root = self.cwd / "checkout"
@@ -1619,7 +1608,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             run_live_delivery(
                 repo="Example/Engine", issue=8, check="exit 0", preflight="test -f ready",
                 checkpoint=self.checkpoint, run=LiveRun(self.github, FakeWorkspace(self.cwd)),
-                dispatcher=FailoverDispatcher(interrupted_run),
+                dispatcher=interrupted_run,
             )
         ready.unlink()
         result = self.walk([])
@@ -1747,7 +1736,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         def run_delivery():
             return run_live_delivery(
                 repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-                dispatcher=FailoverDispatcher(CliWorker(repo, run_worker)),
+                dispatcher=CliWorker(repo, run_worker),
                 run=LiveRun(self.github, LiveWorkspace(repo)),
             )
 
@@ -2050,22 +2039,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         worker.assert_not_called()
         self.assertEqual(self.github.merge_calls, [])
 
-    def test_answer_rerun_without_a_dispatcher_does_not_claim_the_saved_model(self):
-        self.walk([{"triage": "spec"}, {"spec": "Needs input", "spec_gate": "needs_human", "human_question": "Which items?"}])
-        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as output:
-            code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0",
-                 "--answer", "Only open items"],
-                worker_runner=None, checkpoint=self.checkpoint,
-                live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
-            )
-        self.assertEqual(code, 1)
-        restored, current = output.getvalue().split("this invocation:\n")
-        self.assertIn("restored spec claude-opus-5-5-high", restored)
-        self.assertEqual(current, "spec\ndone no_dispatcher\nNo dispatcher is configured.\n")
-        self.assertEqual(len(self.calls), 2)
-        self.assertEqual(self.github.merge_calls, [])
-
     def test_fresh_process_retries_quota_and_an_older_merge_checkpoint(self):
         script = r'''
 import json
@@ -2190,7 +2163,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual((root / "check.log").read_text(), "checked\n")
 
 class HaltExitCodeTest(unittest.TestCase):
-    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", preflight="", dispatcher=True, hold=None):
+    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", preflight="", hold=None):
         directory = self.enterContext(TemporaryDirectory())
         root = Path(directory)
         forge = FakeGitHub()
@@ -2203,16 +2176,13 @@ class HaltExitCodeTest(unittest.TestCase):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", check, "--preflight", preflight],
                 checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace, skills=fixture_skills),
-                worker_runner=(lambda args, cwd, env: workspace.reply(args, next(outputs))) if dispatcher else None,
+                worker_runner=(lambda args, cwd, env: workspace.reply(args, next(outputs))),
             )
         return code, output.getvalue()
 
     def assert_halt(self, result, reason, detail, code=1):
         self.assertEqual(result[0], code, result[1])
         self.assertIn(f"done {reason}\n{detail}\n", result[1])
-
-    def test_no_dispatcher(self):
-        self.assert_halt(self.live(dispatcher=False), "no_dispatcher", "No dispatcher is configured.")
 
     def test_dirty_worktree_changes(self):
         self.assert_halt(self.live(
@@ -2293,7 +2263,7 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_empty_details_are_rejected(self):
         for detail in ("", " ", "\n"):
             with self.subTest(detail=detail), self.assertRaisesRegex(ValueError, "requires a nonempty halt detail"):
-                halted("no_dispatcher", detail, "triage")
+                halted("failed", detail, "triage")
 
     def test_dry_run_success_and_human_stops(self):
         for handler, stop, expected in (
