@@ -67,12 +67,13 @@ pinned. A fresh independent acceptance review of the answer's coverage remains
 necessary before promoting newly curated answers. Isolation is a separate receipt.
 
 The commitments cover a feature case, a provisional bug case, and a provisional
-parent fixture case. Their private bundles are local curation staging only. They must be transferred into an
-evaluator-only private store outside all worker mounts, credentials, and network
-access before use. Each curation PR identifies its staging location and unmet
-obligations. The bug case has positive and negative grader evidence, but its
-independent acceptance receipt is not yet pinned. It remains incomplete under
-164-D1. Both answers still need independent coverage review and #165 isolation.
+parent fixture case. Their private bundles are local curation staging only.
+They must be transferred into an evaluator-only private store outside all
+worker mounts, credentials, and network access before use. Each curation PR
+identifies its staging location and unmet obligations. The bug case has
+positive and negative grader evidence, but its independent acceptance receipt
+is not yet pinned. It remains incomplete under 164-D1. These answers still need
+independent coverage review and #165 isolation.
 
 A parent answer must compare semantic children and dependencies after normalizing
 IDs and titles. It checks acceptance criteria, seams, parent links, coverage,
@@ -86,9 +87,11 @@ The parent fixture staging bundle uses the same v1 contract without extensions.
 Its answer compares children by acceptance criteria and seams, checks exact
 coverage and the parent checkpoint's child association, and rejects missing or
 reversed dependency edges and weakened acceptance with unchanged titles.
-The shipped result and two equivalent call/formatting variants pass. Renamed
+The shipped result and two equivalent internal refactor variants pass. Renamed
 child titles and nonsequential generated IDs are also exercised. Dispatch waits
 for foundation merge, and resume repeats neither create nor link effects.
+The answer drives `LiveForge` through stubbed `gh` commands. It checks dispatch
+labels, missing-link blocking and repair, and invalid seam plans before filing.
 
 This historical fixture predates native parent links, contract revisions, and
 work kinds. Those D3 obligations remain incomplete; checkpoint association and
