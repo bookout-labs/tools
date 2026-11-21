@@ -4,9 +4,21 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import subprocess
-from typing import Protocol
+from typing import NewType, Protocol
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+CommitSHA = NewType("CommitSHA", str)
+
+
+def commit_sha(value: str) -> CommitSHA | None:
+    return CommitSHA(value) if FULL_SHA.fullmatch(value) else None
+
+
+def head_mismatch_detail(observed: str, verified: str) -> str:
+    return (
+        f"HEAD is {observed}, verification checked {verified}. "
+        "This run is finished and the merge was not armed."
+    )
 
 
 class WorktreeInspectionFailed(RuntimeError):
@@ -36,7 +48,7 @@ class LiveWorkspace:
 
     def inspect(self) -> WorktreeState:
         head = self._git("rev-parse", "HEAD").strip()
-        if not FULL_SHA.fullmatch(head):
+        if commit_sha(head) is None:
             raise WorktreeInspectionFailed("Git did not report a full 40-hex HEAD SHA.")
         status = self._git("status", "--porcelain")
         branch = self._git("branch", "--show-current").strip()

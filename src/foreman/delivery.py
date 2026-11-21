@@ -14,10 +14,11 @@ from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.github import Forge, MergeNotArmed, merge_command
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
+from foreman.redaction import redact
 from foreman.stage_output import (
     Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
 )
-from foreman.workspace import Workspace, WorktreeInspectionFailed
+from foreman.workspace import Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -34,7 +35,9 @@ class LiveRun:
 
 @dataclass(frozen=True)
 class DryRun:
-    pass
+    def record_merge(self, repo: str, head: str | None) -> list[str]:
+        revision = (commit_sha(head) or redact(head)) if head else "<sha>"
+        return merge_command(redact(repo), "<number>", revision)
 
 
 class DeliveryState(TypedDict, total=False):
@@ -55,6 +58,7 @@ class DeliveryState(TypedDict, total=False):
     implementation: str
     head_sha: str | None
     verified_head: str
+    merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
     browser_proof: dict[str, object] | None
@@ -298,7 +302,7 @@ def compile_delivery(
             case DryRun():
                 return {
                     "merge": "skipped", "path": ["merge"],
-                    "merge_command": merge_command(state["repo"], "<number>", state.get("head_sha") or "<sha>"),
+                    "merge_command": run.record_merge(state["repo"], state.get("head_sha")),
                 }
             case LiveRun(forge=forge, workspace=workspace):
                 head = state.get("verified_head")
@@ -311,10 +315,10 @@ def compile_delivery(
                 if not worktree.clean:
                     return halted("The worktree has changes or Git could not inspect it.")
                 if worktree.head != head:
-                    return halted(
-                        f"HEAD is {worktree.head}, verification checked {head}. "
-                        "This run is finished and the merge was not armed."
-                    )
+                    return {
+                        **halted(head_mismatch_detail(worktree.head, head)),
+                        "merge_observed_head": worktree.head,
+                    }
                 if worktree.branch is None:
                     return halted("HEAD is detached. Merge requires a checked-out branch.")
                 try:

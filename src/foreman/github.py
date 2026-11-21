@@ -5,6 +5,9 @@ from typing import Literal, Protocol, TypedDict, TypeVar
 
 from pydantic import BaseModel, PositiveInt, ValidationError
 
+from foreman.redaction import redact
+from foreman.workspace import commit_sha
+
 SQUASH_MERGE_FLAG = "--squash"
 PullRequestState = Literal["OPEN", "CLOSED", "MERGED"]
 Model = TypeVar("Model", bound=BaseModel)
@@ -105,6 +108,7 @@ class LiveForge:
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
     def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int:
+        repo, title, body, *labels = (redact(value) for value in (repo, title, body, *labels))
         args = ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={body}"]
         for label in labels:
             args.extend(["-f", f"labels[]={label}"])
@@ -127,6 +131,7 @@ class LiveForge:
         return False
 
     def add_label(self, repo: str, number: int, label: str) -> None:
+        repo, label = (redact(value) for value in (repo, label))
         self._run_command(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
 
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
@@ -138,16 +143,19 @@ class LiveForge:
             raise MergeNotArmed(str(exc)) from exc
 
     def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
+        head = commit_sha(sha)
+        if head is None:
+            raise MergeNotArmed("Merge arming requires a full 40-hex commit SHA.")
         pr = self._view_pr(repo, branch)
         if pr.state != "OPEN":
             raise MergeNotArmed("The pull request is not open.")
-        if pr.headRefOid.lower() != sha.lower():
+        if pr.headRefOid.lower() != head.lower():
             raise MergeNotArmed("The pull request head differs from the verified SHA.")
         if not pr.headRefName.startswith(f"{issue}-"):
             raise MergeNotArmed(f"The pull request head branch must start with {issue}-.")
         if pr.baseRefName != "main":
             raise MergeNotArmed("The pull request must target main.")
-        command = merge_command(repo, str(pr.number), sha)
+        command = merge_command(redact(repo), str(pr.number), head)
         try:
             self._run_command(command)
         except CommandTimedOut as exc:
@@ -157,7 +165,7 @@ class LiveForge:
                 and confirmed.autoMergeRequest is not None
                 and confirmed.autoMergeRequest.mergeMethod == "SQUASH"
             )
-            same_head = confirmed.number == pr.number and confirmed.headRefOid.lower() == sha.lower()
+            same_head = confirmed.number == pr.number and confirmed.headRefOid.lower() == head.lower()
             if not (same_head and (confirmed.state == "MERGED" or open_squash_request)):
                 raise MergeNotArmed("Merge arming timed out and was not confirmed.") from exc
 

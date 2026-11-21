@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import shlex
 import sys
-from typing import assert_never
+from typing import TextIO, assert_never
 
 import yaml
 
@@ -17,24 +17,33 @@ from foreman.dry_run import ScriptHandler
 from foreman.github import ForgeError, LiveForge
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
+from foreman.redaction import redact
 from foreman.runner import run_live_delivery
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
-from foreman.workspace import LiveWorkspace
+from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
+
+
+def _write_run_log(text: str, *, file: TextIO | None = None) -> None:
+    print(redact(text), file=file)
 
 
 def _print_run(result: DeliveryState) -> None:
     models = result.get("models_used", {})
     for node in result["path"]:
         if node == "verify":
-            print(f"verify {result.get('check') or '(no check)'}")
+            _write_run_log(f"verify {result.get('check') or '(no check)'}")
         elif node == "done":
             if "check_exit_code" in result:
                 print(f"check exit {result['check_exit_code']}")
             for proof, label in result.get("proof_labels", {}).items():
-                print(f"{proof} proof {label}")
-            print(f"done {result['stop']}")
-            if detail := result.get("halt_detail"):
-                print(detail)
+                _write_run_log(f"{proof} proof {label}")
+            _write_run_log(f"done {result['stop']}")
+            observed = commit_sha(result.get("merge_observed_head", ""))
+            verified = commit_sha(result.get("verified_head", ""))
+            if observed and verified:
+                print(head_mismatch_detail(observed, verified))
+            elif detail := result.get("halt_detail"):
+                _write_run_log(detail)
         elif node == "merge":
             match outcome := result["merge"]:
                 case "armed":
@@ -51,10 +60,10 @@ def _print_run(result: DeliveryState) -> None:
                 fields.append(model)
             if node == "review" and (risk := result.get("risk")):
                 fields.extend(("risk", risk["level"]))
-            print(" ".join(fields))
+            _write_run_log(" ".join(fields))
     if result.get("stop") == "needs_human" and "done" not in result["path"]:
         print("paused needs_human")
-        print(result["halt_detail"])
+        _write_run_log(result["halt_detail"])
 
 
 def main(
@@ -163,7 +172,7 @@ def main(
                 answer=args.answer,
             )
         except (ForgeError, OSError, QuotaExhausted, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
+            _write_run_log(str(exc), file=sys.stderr)
             return 1
     _print_run(result)
     return 0
