@@ -1,6 +1,5 @@
 from dataclasses import replace
-from unittest.mock import patch
-from skill_fixture import fixture_pin
+from skill_fixture import fixture_pin, fixture_skills
 import contextlib
 import io
 import json
@@ -26,7 +25,6 @@ class PullRequestSizeTest(unittest.TestCase):
         cls.config = replace(load_config(), pstack=fixture_pin(root / "fixture"))
 
     def setUp(self):
-        self.enterContext(patch("foreman.runner.load_config", return_value=self.config))
         directory = Path(self.enterContext(TemporaryDirectory()))
         self.root = directory / "checkout"
         self.root.mkdir()
@@ -90,7 +88,7 @@ class PullRequestSizeTest(unittest.TestCase):
     def invoke(self, *flags, expected_code=0):
         if not self.checkpoint.exists():
             with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-                graph = compile_delivery(None, self.config, run=LiveRun(self.forge, LiveWorkspace(self.root)), checkpointer=saver)
+                graph = compile_delivery(None, self.config, run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
                     "pstack_pin": self.config.pstack.model_dump(),
                     "repo": "Example/Engine", "issue": 8, "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
@@ -101,7 +99,7 @@ class PullRequestSizeTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0", *flags],
-                worker_runner=self.worker, checkpoint=self.checkpoint, live_run=LiveRun(self.forge, LiveWorkspace(self.root)),
+                worker_runner=self.worker, checkpoint=self.checkpoint, live_run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills),
             )
         self.assertEqual(code, expected_code, stderr.getvalue())
         return stdout.getvalue(), stderr.getvalue()

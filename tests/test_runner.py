@@ -27,7 +27,7 @@ from foreman.skill_rules import git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
-from skill_fixture import fixture_pin, skill_fixture
+from skill_fixture import fixture_pin, fixture_skills, skill_fixture
 from test_adapters import codex_events, fixture_process
 
 
@@ -1580,7 +1580,7 @@ class HaltExitCodeTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", check, "--preflight", preflight],
-                checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace),
+                checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace, skills=fixture_skills),
                 worker_runner=(lambda args, cwd, env: workspace.reply(args, next(outputs))) if dispatcher else None,
             )
         return code, output.getvalue()

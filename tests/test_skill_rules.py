@@ -7,12 +7,32 @@ import unittest
 from pydantic import ValidationError
 
 from foreman.config import PSTACK_PIN
+from foreman.delivery import run_delivery
+from foreman.dispatch import FailoverDispatcher
+from foreman.dry_run import ScriptHandler
+from skill_fixture import fixture_skills
 from foreman.skill_rules import PACKAGE_SKILLS, PstackMethod, SKILL_RULES, export_skills
 
 SPAWN_INSTRUCTIONS = re.compile(r"\b(?:subagents?|spawn\w*|delegat\w*|arena|task\s+tool)\b", re.IGNORECASE)
 
 
 class SkillRulesTest(unittest.TestCase):
+    def test_graph_receives_the_skill_source_as_an_input(self):
+        pins = []
+
+        def source(pin, scratch):
+            pins.append(pin)
+            return fixture_skills(pin, scratch)
+
+        with TemporaryDirectory() as directory:
+            result = run_delivery(
+                FailoverDispatcher(ScriptHandler()), repo="Example/Engine",
+                request="List items", scratch=Path(directory), skills=source,
+            )
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(pins, [PSTACK_PIN])
+        self.assertTrue(result["skill_attempts"])
+
     def test_line_ranges_are_positive_and_ordered(self):
         for lines in ((0, 1), (2, 1)):
             with self.subTest(lines=lines), self.assertRaises(ValidationError):
