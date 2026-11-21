@@ -3,17 +3,14 @@
 import json
 from pathlib import Path
 import re
-import subprocess
-from typing import Callable
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from foreman.delivery import DeliveryState, compile_delivery, load_slice
+from foreman.config import load_config
+from foreman.delivery import DeliveryState, LiveRun, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
-from foreman.github import GhClient, GitHub
 
-WorktreeInspector = Callable[[Path], tuple[str, bool]]
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 
 
@@ -24,38 +21,23 @@ def _load_slice(body: str) -> dict[str, object]:
     return load_slice(json.loads(blocks[-1]))
 
 
-def _inspect_worktree(cwd: Path) -> tuple[str, bool]:
-    head = subprocess.run(["git", "rev-parse", "HEAD"], shell=False, cwd=cwd, capture_output=True, text=True)
-    status = subprocess.run(["git", "status", "--porcelain"], shell=False, cwd=cwd, capture_output=True, text=True)
-    return head.stdout.strip(), head.returncode == status.returncode == 0 and not status.stdout
-
-
 def run_live_delivery(
     *,
     repo: str,
     issue: int,
     check: str,
-    cwd: Path,
     checkpoint: Path,
+    run: LiveRun,
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
-    github: GitHub | None = None,
     answer: str | None = None,
-    run_gh: Callable[[list[str]], int] | None = None,
-    inspect_worktree: WorktreeInspector | None = None,
-) -> dict:
-    def run_check(command: str) -> int:
-        return subprocess.run(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL).returncode
-
+) -> DeliveryState:
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     config = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
-    workspace = str(cwd.resolve())
-    inspect = inspect_worktree or _inspect_worktree
+    workspace = str(run.workspace.root.resolve())
+    client = run.forge
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-        graph = compile_delivery(
-            dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
-            inspect_worktree=lambda: inspect(cwd),
-        )
+        graph = compile_delivery(dispatcher, load_config(), run=run, checkpointer=saver)
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")
         if saved_workspace and saved_workspace != workspace:
@@ -67,7 +49,7 @@ def run_live_delivery(
                 raise ValueError("The answer must contain text.")
             graph.invoke(Command(resume=answer), config, durability="sync")
         elif not saved.values:
-            loaded = (github or GhClient()).load_issue(repo, issue)
+            loaded = client.load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
                 "repo": repo,
@@ -88,7 +70,6 @@ def run_live_delivery(
 
         saved = graph.get_state(config)
         if saved.values.get("stop") == "sliced":
-            client = github or GhClient()
             numbers = list(saved.values.get("child_issue_numbers", []))
             for item in saved.values["slices"][len(numbers):]:
                 dependencies = "\n".join(f"- {title}" for title in item["depends_on"]) or "None"
@@ -109,4 +90,11 @@ def run_live_delivery(
         if saved.interrupts:
             question = saved.interrupts[0].value["question"]
             return {**saved.values, "stop": "needs_human", "halt_detail": question}
-        return dict(saved.values)
+        result: DeliveryState = dict(saved.values)
+        if "merge" in result.get("path", []) and "merge" not in result:
+            legacy = saver.get(saved.config)
+            if legacy is not None:
+                armed = legacy["channel_values"].get("merge_armed")
+                if isinstance(armed, bool):
+                    result["merge"] = "armed" if armed else "not_armed"
+        return result

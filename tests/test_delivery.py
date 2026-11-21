@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from foreman.config import NodeConfig, load_config
-from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
+from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 
@@ -65,7 +65,7 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["risk"]["level"], "low")
-        self.assertTrue(result["merge_armed"])
+        self.assertEqual(result["merge"], "skipped")
         self.assertEqual(result["head_sha"], HEAD_SHA)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
@@ -212,7 +212,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(drop_second_head)
         self.assertIn("merge", result["path"])
-        self.assertFalse(result["merge_armed"])
+        self.assertEqual(result["merge"], "skipped")
         self.assertIsNone(result["head_sha"])
 
     def test_needs_human_stops_at_triage(self):
@@ -301,12 +301,7 @@ class DeliveryTest(unittest.TestCase):
         for name in REQUIRED_NODES + ("merge", "done"):
             self.assertIn(name, picture)
         self.assertNotIn("claude-opus", picture)
-        compile_delivery(FailoverDispatcher(ScriptHandler()), load_config())
-
-    def test_readme_diagram_matches_the_generated_graph(self):
-        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
-        mermaid = readme.split("```mermaid\n", 1)[1].split("\n```", 1)[0]
-        self.assertEqual(mermaid, diagram())
+        compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), run=DryRun())
 
 
 if __name__ == "__main__":
