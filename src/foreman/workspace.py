@@ -262,18 +262,21 @@ class LiveWorkspace:
     def tree(self, head: str) -> str:
         return os.fsdecode(self._git("--no-replace-objects", "rev-parse", f"{head}^{{tree}}")).strip()
 
+    def _base_merge_base(self, base_branch: str, head: str) -> str:
+        base_ref = f"refs/remotes/origin/{base_branch}"
+        self._git(
+            "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
+            f"+refs/heads/{base_branch}:{base_ref}",
+        )
+        return os.fsdecode(self._git("--no-replace-objects", "merge-base", base_ref, head)).strip()
+
     def reconcile(self, parent: str, branch: str, base_branch: str,
                   fact_record: str) -> ImplementationCandidate | None:
         observed = self.inspect()
         recovery = f" Checkout preserved. Restore branch {branch} at {parent}, keep the intended edits, then rerun."
         if observed.branch != branch:
             raise ImplementationRejected(f"HEAD {observed.head} is not attached to delivery branch {branch}." + recovery)
-        base_ref = f"refs/remotes/origin/{base_branch}"
-        self._git(
-            "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
-            f"+refs/heads/{base_branch}:{base_ref}",
-        )
-        merge_base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base_ref, parent)).strip()
+        merge_base = self._base_merge_base(base_branch, parent)
         paths = set(self._inspection_git(
             merge_base, "diff", "--name-only", "--no-renames", "--diff-filter=d", "-z", parent, "--",
         ).split(b"\0"))
@@ -392,12 +395,7 @@ class LiveWorkspace:
         except UnicodeError as exc:
             raise WorktreeInspectionFailed(f"Could not decode {path}: {exc}") from exc
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
-        base_ref = f"refs/remotes/origin/{base_branch}"
-        self._git(
-            "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
-            f"+refs/heads/{base_branch}:{base_ref}",
-        )
-        merge_base = os.fsdecode(self._git("merge-base", base_ref, head)).strip()
+        merge_base = self._base_merge_base(base_branch, head)
         diff_options = (
             "--find-renames", "--text",
             "--no-ext-diff", "--no-textconv",
@@ -496,6 +494,7 @@ class LiveWorkspace:
                 allowed_returncodes=(0, 1),
             )
         return {path.removeprefix(b"./") for path in ignored.split(b"\0") if path}
+
     def review_context(self, base: str, head: str) -> ReviewContext:
         self._fetch_review(base, head)
         merge_base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base, head)).strip()
