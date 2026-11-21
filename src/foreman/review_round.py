@@ -1,11 +1,11 @@
-"""Review history and pure resolution accounting."""
+"""Review history, PR scope and graph-check adapter over ResolutionLedger."""
 
 from typing import Literal
 
 from pydantic import Field
 
 from foreman.resolution import ResolutionLedger
-from foreman.stage_output import Contract, Finding, ReviewOutput, SettledRuling, StoredToolFact, parse_output
+from foreman.stage_output import Contract, Finding, ReviewOutput, ResolutionStatus, SettledRuling, StoredToolFact, parse_output
 from foreman.workspace import ReviewScope
 
 
@@ -20,7 +20,7 @@ class ReviewRound(Contract):
     round: int
     reviewed_head: str
     findings: list[Finding]
-    resolutions: dict[str, Literal["resolved", "unresolved"]]
+    resolutions: dict[str, ResolutionStatus]
     graph_check: GraphCheck | None = None
     coordinator_notes: list[Finding] = Field(default_factory=list[Finding])
 
@@ -34,7 +34,7 @@ class ReviewHistory(Contract):
         return self.rounds[-1].graph_check if self.rounds else None
 
     def accounting(self) -> ResolutionLedger[Finding]:
-        return ResolutionLedger([(r.findings, r.resolutions) for r in self.rounds], self.settled)
+        return ResolutionLedger(self.rounds, self.settled)
 
     def unresolved(self) -> list[Finding]:
         return self.accounting().unresolved()
@@ -67,7 +67,6 @@ def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphChec
     findings: list[Finding] = []
     notes: list[Finding] = []
     for finding in output.findings:
-        accounting.check_ruling(finding)
         outside = scope is not None and scope.eligible is not None and (finding.file, finding.line) not in scope.eligible
         (notes if finding.ruling_id or outside else findings).append(finding)
     old_gate = past.gate

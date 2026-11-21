@@ -2,10 +2,10 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Generic, Literal, Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar
 
 from foreman.dispatch import InvalidOutput
-from foreman.stage_output import FindingResolution, SettledRuling
+from foreman.stage_output import FindingResolution, ResolutionStatus, SettledRuling, Severity
 
 
 class AccountedFinding(Protocol):
@@ -16,24 +16,31 @@ class AccountedFinding(Protocol):
     @property
     def ruling_id(self) -> str | None: ...
     @property
-    def severity(self) -> str: ...
+    def severity(self) -> Severity: ...
     @property
     def kind(self) -> str: ...
 
 
 F = TypeVar("F", bound=AccountedFinding)
-Status = Literal["resolved", "unresolved"]
+F_co = TypeVar("F_co", bound=AccountedFinding, covariant=True)
+
+
+class AccountedRound(Protocol[F_co]):
+    @property
+    def findings(self) -> Sequence[F_co]: ...
+    @property
+    def resolutions(self) -> Mapping[str, ResolutionStatus]: ...
 
 
 @dataclass(frozen=True)
 class ResolutionLedger(Generic[F]):
-    rounds: Sequence[tuple[Sequence[F], Mapping[str, Status]]]
+    rounds: Sequence[AccountedRound[F]]
     settled: Sequence[SettledRuling]
 
     def unresolved(self) -> list[F]:
-        findings = {f.id: f for findings, _ in self.rounds for f in findings}
-        for _, resolutions in self.rounds:
-            for finding_id, status in resolutions.items():
+        findings = {f.id: f for round in self.rounds for f in round.findings}
+        for round in self.rounds:
+            for finding_id, status in round.resolutions.items():
                 if status == "resolved":
                     findings.pop(finding_id, None)
         return list(findings.values())
@@ -41,23 +48,23 @@ class ResolutionLedger(Generic[F]):
     def rulings(self) -> list[SettledRuling]:
         unresolved = {f.id for f in self.unresolved()}
         return [*self.settled, *(SettledRuling(id=f"finding:{f.id}", text=f.summary)
-                               for findings, _ in self.rounds for f in findings if f.id not in unresolved)]
+                               for round in self.rounds for f in round.findings if f.id not in unresolved)]
 
-    def account(self, findings: Sequence[F], entries: Sequence[FindingResolution]) -> dict[str, Status]:
+    def account(self, findings: Sequence[F], entries: Sequence[FindingResolution]) -> dict[str, ResolutionStatus]:
         earlier = {f.id for f in self.unresolved()}
-        resolutions: dict[str, Status] = {r.id: r.status for r in entries}
+        resolutions: dict[str, ResolutionStatus] = {r.id: r.status for r in entries}
         if len(resolutions) != len(entries) or resolutions.keys() != earlier:
             raise InvalidOutput("resolutions: mark every earlier unresolved finding exactly once")
-        previous = {f.id for findings, _ in self.rounds for f in findings}
+        previous = {f.id for round in self.rounds for f in round.findings}
         ids = [f.id for f in findings]
         if len(set(ids)) != len(ids) or previous.intersection(ids):
             raise InvalidOutput("findings: IDs must be unique across rounds; use resolutions for earlier findings")
+        rulings = {r.id for r in self.rulings()}
+        for finding in findings:
+            if finding.ruling_id is not None and finding.ruling_id not in rulings:
+                raise InvalidOutput("findings.ruling_id: unknown settled ruling")
         return resolutions
 
-    def check_ruling(self, finding: F) -> None:
-        if finding.ruling_id is not None and finding.ruling_id not in {r.id for r in self.rulings()}:
-            raise InvalidOutput("findings.ruling_id: unknown settled ruling")
-
     def recurrence(self, findings: Sequence[F]) -> tuple[F, F] | None:
-        return next(((old, new) for earlier, _ in self.rounds for old in earlier for new in findings
+        return next(((old, new) for round in self.rounds for old in round.findings for new in findings
                      if old.severity == new.severity == "blocking" and old.kind == new.kind), None)
