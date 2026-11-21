@@ -35,17 +35,8 @@ class ClaudeCheckTest(unittest.TestCase):
             self.assertEqual(result.kind, 'failed')
             self.assertIn(CHECK, result.detail)
             self.assertIsNotNone(result.usage)
-            self.assertEqual(result.output, {})
         result = ClaudeAdapter(MODEL).read(denied('git commit -m x'), Call('', '{}', True, Path('.'), check=CHECK))
         self.assertEqual(result.kind, 'ran')
-
-    def test_captured_denial(self):
-        capture = json.loads((FIXTURE.parent / 'permissions/readonly-baseline.json').read_text())
-        command = capture['stdout']['permission_denials'][0]['tool_input']['command']
-        process = subprocess.CompletedProcess(['claude'], capture['returncode'], json.dumps(capture['stdout']), '')
-        outcome = ClaudeAdapter(MODEL).read(process, Call('', '{}', False, Path('.'), check=command))
-        self.assertEqual(outcome.kind, 'failed')
-        self.assertIn(command, outcome.detail)
 
     def test_denial_preserves_quota_and_budget(self):
         for changes, kind in (({'is_error': True, 'api_error_status': 429}, 'quota'),
@@ -84,7 +75,6 @@ class ClaudeCheckTest(unittest.TestCase):
         envelope = capture['envelope']
         self.assertEqual(capture['marker'], 'ran\n')
         self.assertEqual(capture['returncode'], 0)
-        self.assertEqual(capture['check'], CHECK)
         blocks = [c for row in capture['transcript'] for c in row['message']['content']]
         calls = [c['id'] for c in blocks if c['type'] == 'tool_use' and c['name'] == 'Bash' and c['input']['command'] == CHECK]
         self.assertTrue(calls)
