@@ -23,10 +23,10 @@ class ScriptHandler:
         reviews: list[str] | None = None,
         verify: str = "pass",
         spec: str = "Behavior, decisions, and technical design.",
-        slices: list[dict[str, object]] | None = None,
+        slices: list | None = None,
         implementation: str = "diff",
         research: str = "answer",
-        risk: Mapping[str, object] | None = None,
+        risk: dict | None = None,
         head_sha: str | None = None,
     ):
         self.triage = triage

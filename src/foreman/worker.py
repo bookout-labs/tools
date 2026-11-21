@@ -10,13 +10,15 @@ from foreman.adapters import Call, CliAdapter, Outcome
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
-from foreman.config import ModelSpec
+from foreman.config import ConfigError, ModelSpec
 from foreman.stage_output import STAGE_OUTPUTS, Contract
 
 CommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
 
 ADAPTERS: dict[str, Callable[[ModelSpec, type[Contract]], CliAdapter]] = {
-    "claude": ClaudeAdapter, "gpt": CodexAdapter, "grok": GrokAdapter,
+    "claude": lambda model, _: ClaudeAdapter(model),
+    "gpt": CodexAdapter,
+    "grok": lambda model, _: GrokAdapter(model),
 }
 
 
@@ -31,7 +33,7 @@ class CliWorker:
 
     def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
         if model is None:
-            return Outcome("quota")
+            raise ConfigError(f"{node} has no model configured")
         prompt = (
             f"{instruction}\n\nReturn exactly one JSON object that matches the output schema. "
             "Use null for inapplicable nullable fields. Do not arm a merge."

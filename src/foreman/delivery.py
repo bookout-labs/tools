@@ -10,9 +10,9 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.dry_run import ScriptHandler
 from foreman.proof import browser_proof_label, formal_proof_label
 from foreman.stage_output import Contract, STAGE_OUTPUTS, Slice, SlicePlanningOutput, SpecOutput, VerifyOutput, parse_output
 
@@ -178,10 +178,9 @@ def compile_delivery(
             if outcome.kind == "cli_missing":
                 return {"path": [name], "halt": "cli_missing", "halt_detail": outcome.detail}
             if outcome.kind == "quota":
-                exc = QuotaExhausted(model)
                 if name != "review":
-                    raise exc
-                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {exc}"}
+                    raise QuotaExhausted(model)
+                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
                 update = stage_update(name, output, state, model)
@@ -365,6 +364,10 @@ def run_delivery(
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
     if dispatcher is None:
-        dispatcher = FailoverDispatcher(ScriptHandler())
+        dispatcher = FailoverDispatcher(
+            lambda node, model, state, instruction: Outcome(
+                "ran", {"triage": "implement", "slice": None, "human_question": None},
+            ),
+        )
     graph = compile_delivery(dispatcher, config)
     return graph.get_graph().draw_mermaid()

@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, Usage, build_outcome
+from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
 
 
 class ClaudeEnvelope(NativeEnvelope):
@@ -20,18 +20,23 @@ class ClaudeEnvelope(NativeEnvelope):
     total_cost_usd: float | None = None
 
     def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
-        quota = self.is_error and self.api_error_status == 429
-        failed = process.returncode != 0 or self.is_error or self.subtype != "success"
+        kind: OutcomeKind = "ran"
         detail = "\n".join(self.errors) or self.result or process.stderr.strip()
-        if failed and not detail:
-            detail = (
-                f"Claude API status {self.api_error_status}" if self.api_error_status is not None
-                else f"Claude {self.subtype} (exit {process.returncode})"
-            )
+        if self.is_error and self.api_error_status == 429:
+            kind = "quota"
+            detail = detail or "Claude API status 429"
+        elif process.returncode or self.is_error or self.subtype != "success":
+            kind = "failed"
+            detail = detail or f"Claude {self.subtype} (exit {process.returncode})"
+        elif self.model_usage and model_id not in self.model_usage:
+            kind = "failed"
+            detail = f"requested {model_id}, modelUsage reported {', '.join(self.model_usage)}"
+        elif self.structured_output is None:
+            kind = "failed"
+            detail = detail or "missing structured output"
         return build_outcome(
-            model_id, output=self.structured_output, model_usage=self.model_usage,
-            usage=self.usage, total_cost_usd=self.total_cost_usd, session_id=self.session_id,
-            detail=detail, failed=failed, quota=quota,
+            kind, output=self.structured_output, usage=self.usage, total_cost_usd=self.total_cost_usd,
+            session_id=self.session_id, detail=detail,
         )
 
 
@@ -40,5 +45,5 @@ class ClaudeAdapter(NativeAdapter):
 
     def command(self, call: Call) -> list[str]:
         effort = ["--effort", self.model.effort] if self.model.effort else []
-        return ["claude", "--model", self.model.model_id, *effort, "--permission-mode", call.permission_mode,
+        return ["claude", "--model", self.model.model_id, *effort, "--permission-mode", self.permission_mode(call),
                 "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]

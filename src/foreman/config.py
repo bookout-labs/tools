@@ -7,8 +7,15 @@ from typing import cast
 
 DEFAULT_PATH = Path(__file__).with_name("models.toml")
 ROLES = {"coordinator", "builder", "verifier", "check"}
-CLAUDE_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
-EFFORTS: dict[str, set[str]] = {"claude": CLAUDE_EFFORTS, "grok": CLAUDE_EFFORTS | {"none", "minimal"}, "gpt": set()}
+FAMILIES = {"claude", "gpt", "grok"}
+EFFORTS = {
+    # Claude Code 2.1.329 --help, --effort.
+    "claude": {"low", "medium", "high", "xhigh", "max"},
+    # Grok Build 1.0.89 binary, "invalid reasoning effort" diagnostic.
+    "grok": {"none", "minimal", "low", "medium", "high", "xhigh", "max"},
+    # Codex 0.171.0, protocol/src/openai_models.rs, ReasoningEffort.
+    "gpt": {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent"},
+}
 
 
 class ConfigError(ValueError):
@@ -23,12 +30,12 @@ class ModelSpec:
     effort: str | None
 
     @classmethod
-    def parse(cls, name: str) -> "ModelSpec":
-        provider = family(name)
-        base, _, suffix = name.rpartition("-")
+    def parse(cls, model: str) -> "ModelSpec":
+        provider = family(model)
+        base, _, suffix = model.rpartition("-")
         if suffix in EFFORTS[provider]:
-            return cls(name, provider, base, suffix)
-        return cls(name, provider, name, None)
+            return cls(model, provider, base, suffix)
+        return cls(model, provider, model, None)
 
 
 @dataclass(frozen=True)
@@ -46,32 +53,30 @@ class Config:
 
 def family(model: str) -> str:
     prefix = model.split("-", 1)[0]
-    if prefix not in EFFORTS:
+    if prefix not in FAMILIES:
         raise ConfigError(f"unknown model family: {model}")
     return prefix
 
 
-def parse_config(data: object) -> Config:
+def parse_config(data: dict) -> Config:
     if not isinstance(data, dict):
         raise ConfigError("config must be a table")
-    table = cast(dict[object, object], data)
-    rounds = table.get("max_review_rounds")
+    rounds = data.get("max_review_rounds")
     if not isinstance(rounds, int) or rounds < 1:
         raise ConfigError("max_review_rounds must be an integer of at least 1")
-    raw_nodes = table.get("nodes")
+    raw_nodes = data.get("nodes")
     if not isinstance(raw_nodes, dict) or not raw_nodes:
         raise ConfigError("nodes must be a non-empty table")
     nodes: dict[str, NodeConfig] = {}
-    for name, raw in cast(dict[object, object], raw_nodes).items():
+    for name, raw in raw_nodes.items():
         if not isinstance(name, str) or not isinstance(raw, dict):
             raise ConfigError(f"bad node entry: {name}")
-        entry = cast(dict[object, object], raw)
-        role = entry.get("role")
-        models = entry.get("models")
-        other = entry.get("other_family_from")
-        if not isinstance(role, str) or role not in ROLES:
+        role = raw.get("role")
+        models = raw.get("models")
+        other = raw.get("other_family_from")
+        if role not in ROLES:
             raise ConfigError(f"{name} has an unknown role")
-        if not isinstance(models, list) or not all(isinstance(item, str) and item for item in cast(list[object], models)):
+        if not isinstance(models, list) or not all(isinstance(item, str) and item for item in models):
             raise ConfigError(f"{name} models must be a list of names")
         if role == "check" and models:
             raise ConfigError(f"{name} is a check and takes no model")
@@ -79,7 +84,9 @@ def parse_config(data: object) -> Config:
             raise ConfigError(f"{name} needs at least one model")
         if other is not None and not isinstance(other, str):
             raise ConfigError(f"{name} other_family_from must be a node name")
-        nodes[name] = NodeConfig(role, tuple(ModelSpec.parse(model) for model in cast(list[str], models)), other)
+        nodes[name] = NodeConfig(
+            role=role, models=tuple(ModelSpec.parse(model) for model in cast(list[str], models)), other_family_from=other,
+        )
     for name, node in nodes.items():
         if node.other_family_from and node.other_family_from not in nodes:
             raise ConfigError(f"{name} refers to a missing node {node.other_family_from}")

@@ -3,15 +3,11 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from subprocess import CompletedProcess
-from typing import TYPE_CHECKING, ClassVar, Literal, Protocol
+from typing import ClassVar, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from foreman.config import ModelSpec
-
-if TYPE_CHECKING:
-    from foreman.stage_output import Contract
-
 
 class Usage(BaseModel):
     model_config = ConfigDict(strict=True, frozen=True)
@@ -22,9 +18,12 @@ class Usage(BaseModel):
     total_cost_usd: float | None = None
 
 
+OutcomeKind = Literal["ran", "quota", "cli_missing", "failed"]
+
+
 @dataclass(frozen=True)
 class Outcome:
-    kind: Literal["ran", "quota", "cli_missing", "failed"]
+    kind: OutcomeKind
     output: dict[str, object] = field(default_factory=dict[str, object])
     usage: Usage | None = None
     session_id: str | None = None
@@ -37,20 +36,10 @@ class Call:
     schema: str
     edit: bool
 
-    @property
-    def permission_mode(self) -> str:
-        return "acceptEdits" if self.edit else "plan"
-
 
 class CliAdapter(Protocol):
     def command(self, call: Call) -> list[str]: ...
     def read(self, process: CompletedProcess[str]) -> Outcome: ...
-
-
-@dataclass(frozen=True)
-class ModelAdapter:
-    model: ModelSpec
-    contract: "type[Contract]"
 
 
 class NativeEnvelope(BaseModel, ABC):
@@ -60,8 +49,14 @@ class NativeEnvelope(BaseModel, ABC):
     def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome: ...
 
 
-class NativeAdapter(ModelAdapter):
+@dataclass(frozen=True)
+class NativeAdapter:
+    model: ModelSpec
     envelope: ClassVar[type[NativeEnvelope]]
+
+    @staticmethod
+    def permission_mode(call: Call) -> str:
+        return "acceptEdits" if call.edit else "plan"
 
     def read(self, process: CompletedProcess[str]) -> Outcome:
         try:
@@ -73,21 +68,13 @@ class NativeAdapter(ModelAdapter):
 
 
 def build_outcome(
-    model_id: str, *, output: dict[str, object] | None, model_usage: dict[str, object] | None,
-    usage: Usage | None, total_cost_usd: float | None, session_id: str | None, detail: str,
-    failed: bool, quota: bool,
+    kind: OutcomeKind, *, output: dict[str, object] | None, usage: Usage | None,
+    total_cost_usd: float | None, session_id: str | None, detail: str,
 ) -> Outcome:
     if usage is not None:
         usage = usage.model_copy(update={"total_cost_usd": total_cost_usd})
         if not any(usage.model_dump().values()):
             usage = None
-    if quota:
-        return Outcome("quota", usage=usage, session_id=session_id, detail=detail)
-    if failed:
-        return Outcome("failed", usage=usage, session_id=session_id, detail=detail)
-    if model_usage and model_usage.keys() != {model_id}:
-        detail = f"requested {model_id}, modelUsage reported {', '.join(model_usage)}"
-        return Outcome("failed", usage=usage, session_id=session_id, detail=detail)
-    if output is None:
-        return Outcome("failed", usage=usage, session_id=session_id, detail=detail or "missing structured output")
-    return Outcome("ran", output, usage, session_id)
+    if kind == "ran" and output is not None:
+        return Outcome(kind, output, usage, session_id)
+    return Outcome(kind, usage=usage, session_id=session_id, detail=detail)

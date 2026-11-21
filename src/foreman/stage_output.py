@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal, TypeVar
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from foreman.dispatch import InvalidOutput
 
@@ -77,7 +77,7 @@ class FormalProof(Contract):
 
 class ImplementOutput(Contract):
     implementation: Text
-    head_sha: Annotated[str | None, AfterValidator(lambda sha: (sha or "").strip() or None)]
+    head_sha: Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{40}$")] | None
     browser_proof: BrowserProof | None
     formal_proof: FormalProof | None
 

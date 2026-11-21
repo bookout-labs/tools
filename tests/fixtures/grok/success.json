@@ -1,29 +1,30 @@
 {
-  "text": "",
+  "text": "{\"triage\":\"needs_human\",\"slice\":null,\"human_question\":\"Which items?\"}",
   "stopReason": "end_turn",
   "sessionId": "4d8f5dbc-5b69-4be1-a541-402e6f92cafe",
   "requestId": "5a1c019d-ecd2-4522-8523-e52a32e7666d",
   "cwd": "/repo",
-  "num_turns": 1,
+  "thought": "[redacted]",
   "usage": {
-    "input_tokens": 4,
-    "output_tokens": 2,
+    "input_tokens": 18007,
+    "cache_read_input_tokens": 9344,
     "cache_creation_input_tokens": 0,
-    "cache_read_input_tokens": 8,
-    "reasoning_tokens": 1,
-    "total_tokens": 14
+    "output_tokens": 318,
+    "reasoning_tokens": 297,
+    "total_tokens": 27669
   },
+  "num_turns": 1,
+  "total_cost_usd": 0.01448196,
+  "total_cost_usd_ticks": 144819600,
   "modelUsage": {
-    "grok-4.7": {
-      "inputTokens": 4,
-      "outputTokens": 2,
-      "cacheReadInputTokens": 8,
+    "grok-4.7-build": {
+      "inputTokens": 18007,
+      "outputTokens": 318,
+      "cacheReadInputTokens": 9344,
       "cacheCreationInputTokens": 0,
-      "costUSD": 0.0001,
-      "modelCalls": 1
+      "modelCalls": 1,
+      "costUSD": 0.01448196
     }
   },
-  "total_cost_usd": 0.0001,
-  "total_cost_usd_ticks": 1000000,
   "structuredOutput": {"triage": "needs_human", "slice": null, "human_question": "Which items?"}
 }

@@ -1,3 +1,6 @@
+"""Legacy Codex command and result parsing, to be replaced in S3."""
+
+from dataclasses import dataclass
 import json
 import re
 from subprocess import CompletedProcess
@@ -5,16 +8,14 @@ from typing import cast, get_args
 
 from pydantic import TypeAdapter, ValidationError
 
-from foreman.adapters import Call, ModelAdapter, Outcome
+from foreman.adapters import Call, Outcome
+from foreman.config import ModelSpec
 from foreman.stage_output import Contract, TrimmedText
 
 SECTIONS = TypeAdapter(dict[TrimmedText, TrimmedText])
 QUOTA = re.compile(
-    r"^(?:error: )?(?:api error:? (?:\(status )?429\b|http 429\b|"
-    r"rate[ _-]limit(?:ed|_error| exceeded| reached)\b|too many requests\b|"
-    r"(?:insufficient_quota|quota exceeded|resource_exhausted)\b|"
-    r"you['’]ve hit (?:your |the )?(?:rate )?limit\b)",
-    re.IGNORECASE | re.MULTILINE,
+    r"quota|rate.limit|usage limit|hit your limit|resource_exhausted|too many requests|\b429\b",
+    re.IGNORECASE,
 )
 
 
@@ -46,10 +47,15 @@ def normalize_output(contract: type[Contract], output: dict[str, object]) -> Non
             output.update(review="changes", review_note=match[1] or note)
 
 
-class CodexAdapter(ModelAdapter):
+@dataclass(frozen=True)
+class CodexAdapter:
+    model: ModelSpec
+    contract: type[Contract]
+
     def command(self, call: Call) -> list[str]:
         sandbox = "workspace-write" if call.edit else "read-only"
-        return ["codex", "exec", "-m", self.model.name, "--color", "never", "-s", sandbox, call.prompt]
+        effort = ["-c", f"model_reasoning_effort={self.model.effort}"] if self.model.effort else []
+        return ["codex", "exec", "-m", self.model.model_id, *effort, "--color", "never", "-s", sandbox, call.prompt]
 
     def read(self, process: CompletedProcess[str]) -> Outcome:
         if process.returncode:
@@ -59,7 +65,7 @@ class CodexAdapter(ModelAdapter):
 
         reported = re.findall(r"^model:[ \t]*(\S+)[ \t]*$", process.stderr, re.MULTILINE)
         # Keep treating legacy Codex reroutes as quota until S3 replaces this path.
-        if reported != [self.model.name] or re.search(r"^model rerouted:", process.stderr, re.MULTILINE):
+        if reported != [self.model.model_id] or re.search(r"^model rerouted:", process.stderr, re.MULTILINE):
             return Outcome("quota", detail="Codex did not confirm the requested model")
         try:
             value: object = json.loads(process.stdout)

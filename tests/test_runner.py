@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from foreman.cli import main
-from foreman.config import ModelSpec, NodeConfig, load_config
+from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK
@@ -46,25 +46,21 @@ def clean_worktree(cwd):
     return HEAD, True
 
 
-def worker_reply(args, reply, model=None):
-    tool = args[0]
-    flag = "--model" if tool == "claude" else "-m"
-    model = model or args[args.index(flag) + 1]
-    body = json.dumps(reply) if isinstance(reply, dict) else reply
-    if tool == "codex":
-        return subprocess.CompletedProcess(args, 0, body, f"model: {model}\n")
+def worker_reply(args, reply):
+    recorded = fixture_process(args, "success", 0)
+    if args[0] == "codex":
+        stdout = json.dumps(reply) if isinstance(reply, dict) else reply
+        return subprocess.CompletedProcess(args, recorded.returncode, stdout, recorded.stderr)
     if "triage" in reply or "spec" in reply:
         reply = {"slice": None, "human_question": None, **reply}
     if "spec" in reply:
         reply = {"slices": None, **reply}
     if "review" in reply:
         reply = {"review_note": None, **reply}
-    field = "structured_output" if tool == "claude" else "structuredOutput"
-    envelope = {field: reply, "modelUsage": {model: {}}}
-    if tool == "claude":
-        envelope.update(type="result", subtype="success", is_error=False)
-    return subprocess.CompletedProcess(args, 0, json.dumps(envelope), "")
-
+    envelope = json.loads(recorded.stdout)
+    field = "structured_output" if args[0] == "claude" else "structuredOutput"
+    envelope[field] = reply
+    return subprocess.CompletedProcess(args, recorded.returncode, json.dumps(envelope), recorded.stderr)
 
 class FakeGitHub:
     def __init__(self, labels=None):
@@ -98,7 +94,7 @@ class FakeGitHub:
 class CliWorkerTest(unittest.TestCase):
     def test_commands_use_the_configured_models_and_parse_the_final_result(self):
         models = {
-            "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol-high"],
+            "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"],
             "claude-opus-5-5-high": ["claude", "--model", "claude-opus-5-5", "--effort", "high"],
             "grok-4.7-high": ["grok", "-m", "grok-4.7", "--reasoning-effort", "high"],
         }
@@ -119,6 +115,11 @@ class CliWorkerTest(unittest.TestCase):
                 self.assertEqual(result.kind, "ran")
                 self.assertEqual(result.output["triage"], "implement")
 
+    def test_worker_without_a_model_raises_a_config_error(self):
+        worker = CliWorker(Path("."), lambda *_: self.fail("CLI must not run"))
+        with self.assertRaisesRegex(ConfigError, "triage has no model configured"):
+            worker("triage", None, {}, "")
+
     def test_non_object_replies_are_invalid(self):
         replies = ('Here is the result: {"triage": "implement"}', '["implement"]')
         for reply in replies:
@@ -135,7 +136,7 @@ class CliWorkerTest(unittest.TestCase):
                             request="List items", check="exit 0", config=config)
 
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
-        for cli in ("claude", "grok"):
+        for cli, model in (("claude", "claude-opus-5-5-high"), ("grok", "grok-4.7-high")):
             for case, stop in (("quota", "needs_human"), ("cli_missing", "needs_human"),
                                ("is_error", "invalid_output"), ("wrong_model", "invalid_output")):
                 with self.subTest(cli=cli, case=case):
@@ -150,21 +151,22 @@ class CliWorkerTest(unittest.TestCase):
                         exit_code = 0 if case == "wrong_model" else 1
                         return fixture_process(args, case, exit_code)
 
-                    result = self.walk_triage((f"{cli}-test", "gpt-test"), run)
+                    result = self.walk_triage((model, "gpt-6.1-sol-high"), run)
                     self.assertEqual(result["stop"], stop)
                     self.assertEqual(calls, [cli, "codex"] if stop == "needs_human" else [cli])
                     if case == "is_error":
-                        message = "Could not start the session." if cli == "claude" else "Unknown model: quota-example"
+                        message = "turn_handoff:" if cli == "claude" else "unknown model id"
                         self.assertIn(message, result["halt_detail"])
 
     def test_delivery_stops_for_an_incomplete_native_stage_reply(self):
         def run(args, cwd):
             self.assertEqual(args[0], "claude")
-            stdout = json.dumps({"type": "result", "subtype": "success", "is_error": False,
-                                 "structured_output": {"triage": "question"}})
-            return subprocess.CompletedProcess(args, 0, stdout, "")
+            recorded = fixture_process(args, "success", 0)
+            envelope = json.loads(recorded.stdout)
+            envelope["structured_output"] = {"triage": "question"}
+            return subprocess.CompletedProcess(args, 0, json.dumps(envelope), recorded.stderr)
 
-        result = self.walk_triage(("claude-test", "gpt-test"), run)
+        result = self.walk_triage(("claude-opus-5-5-high", "gpt-6.1-sol-high"), run)
         self.assertEqual(result["stop"], "invalid_output")
         self.assertIn("Field required", result["halt_detail"])
 
@@ -218,6 +220,15 @@ class StageOutputTest(unittest.TestCase):
         for screen in ("docs/screens/na\x01me.md", "docs/screens/a/b.md"):
             with self.subTest(screen=screen), self.assertRaisesRegex(InvalidOutput, r"^screen:"):
                 parse_output(Slice, {**SLICE, "screen": screen})
+
+    def test_head_sha_requires_a_full_hex_commit_or_null(self):
+        implementation = {"implementation": "Done", "browser_proof": None, "formal_proof": None}
+        for sha in ("", "a" * 39, "z" * 40, " " + HEAD, HEAD + "\n"):
+            with self.subTest(sha=sha), self.assertRaisesRegex(InvalidOutput, r"^head_sha:"):
+                parse_output(ImplementOutput, {**implementation, "head_sha": sha})
+        for sha in (None, HEAD, HEAD.upper()):
+            with self.subTest(sha=sha):
+                self.assertEqual(parse_output(ImplementOutput, {**implementation, "head_sha": sha}).head_sha, sha)
 
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):

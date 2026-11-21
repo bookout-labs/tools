@@ -1,17 +1,18 @@
 {
-  "text": "",
+  "text": "{\"triage\":\"needs_human\",\"slice\":null,\"human_question\":\"Which items?\"}",
   "stopReason": "end_turn",
   "sessionId": "4d8f5dbc-5b69-4be1-a541-402e6f92cafe",
   "requestId": "5a1c019d-ecd2-4522-8523-e52a32e7666d",
   "cwd": "/repo",
-  "num_turns": 1,
+  "thought": "[redacted]",
   "usage": {
     "input_tokens": 0,
     "output_tokens": 0,
-    "cache_creation_input_tokens": 0,
     "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
     "reasoning_tokens": 0,
     "total_tokens": 0
   },
+  "num_turns": 1,
   "structuredOutput": {"triage": "needs_human", "slice": null, "human_question": "Which items?"}
 }
