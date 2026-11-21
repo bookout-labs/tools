@@ -47,11 +47,13 @@
     "argv": [
       "git",
       "--no-replace-objects",
+      "--literal-pathspecs",
       "-c",
       "core.attributesFile=/dev/null",
       "--attr-source=HEAD",
       "grep",
       "-G",
+      "--no-color",
       "-c",
       "-I",
       "-z",

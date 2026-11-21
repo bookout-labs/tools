@@ -920,7 +920,7 @@ notes = "API excerpts captured 2026-11-21. Contract source: https://docs.github.
 tool = "git"
 version = "2.56.0"
 kind = "captured_run"
-argv = ["git", "--no-replace-objects", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+argv = ["git", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
 returncode = 0
 claim_ids = ["tool-fact-416aca2b5c431d219d6f7d2c411efca75f9d0cad87cf19bf73c1e85b47be7581", "tool-fact-9b32cb6284cc3690a5cde64203421d5cc230e6a29ceba9ee69297ed040fb621c"]
 notes = "Raw stdout: revision:path NUL count LF records, including a path with spaces and a colon. items.txt has a final line without a newline (count 3). Binary and empty files are omitted. Recapture with python tests/capture-review-context.py."
@@ -929,7 +929,7 @@ notes = "Raw stdout: revision:path NUL count LF records, including a path with s
 tool = "git"
 version = "2.56.0"
 kind = "captured_run"
-argv = ["git", "--no-replace-objects", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+argv = ["git", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
 returncode = 1
 claim_ids = ["tool-fact-eef0eb712a1a44e916168a9537ce67cfb3d7698c15f7b6257e8f3f5bbf4a246e"]
 notes = "Raw stdout is empty. The committed tree contains only an empty file and a NUL-containing binary file. Exit 1 means no matching text lines, not a Git error. Recapture with python tests/capture-review-context.py."
@@ -938,7 +938,7 @@ notes = "Raw stdout is empty. The committed tree contains only an empty file and
 tool = "git"
 version = "2.56.0"
 kind = "captured_run"
-argv = ["git", "-c", "grep.patternType=fixed", "-c", "grep.extendedRegexp=true", "--no-replace-objects", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+argv = ["git", "-c", "grep.patternType=fixed", "-c", "grep.extendedRegexp=true", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
 returncode = 0
 claim_ids = ["tool-fact-252363c0742309ea3cf1d14f902c2427be74d71c9da813e24017cf797eb5a9f4"]
 notes = "Captured argv, exit statuses, stdout and stderr: fixed patterns without -G match nothing; -G restores exact counts despite grep.patternType=fixed and grep.extendedRegexp=true. An extendedRegexp-only probe gives the same counts; escaped-group probes distinguish basic from extended syntax and confirm -G overrides extendedRegexp. Recapture with python tests/capture-review-context.py."
@@ -947,7 +947,7 @@ notes = "Captured argv, exit statuses, stdout and stderr: fixed patterns without
 tool = "git"
 version = "2.56.0"
 kind = "captured_run"
-argv = ["git", "--no-replace-objects", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+argv = ["git", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
 returncode = 0
 claim_ids = ["tool-fact-7eabb45fa52b6b4baab29981370d2c119a0b91f2bc44ac54fde8c0f449f1342d"]
 notes = "Captured inputs, argv, exit statuses, stdout and stderr. Local worktree/index .gitattributes and a user attributes file hide three text paths. --attr-source=HEAD restores the first two; core.attributesFile=/dev/null restores the third. Recapture with python tests/capture-review-context.py."

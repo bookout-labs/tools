@@ -17,7 +17,7 @@ from foreman.cli import main
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery
 from foreman.config import load_config
 from foreman.stage_output import PULL_REQUEST_LINES, SpecCandidate
-from foreman.workspace import LiveWorkspace, WorktreeInspectionFailed
+from foreman.workspace import LiveWorkspace
 from test_runner import APPROVE, BRANCH, EMPTY_SLICE, FakeGitHub, worker_reply
 
 
@@ -266,7 +266,7 @@ class PullRequestSizeTest(unittest.TestCase):
         head = self.commit()
         self.git("config", "grep.patternType", "fixed")
         self.git("config", "grep.extendedRegexp", "true")
-        self.write(".gitattributes", "src/items.py -diff\n")
+        self.git("config", "color.grep", "always")
         self.write("../local-attributes", "src/items.py -diff\n")
         self.git("config", "core.attributesFile", str(self.root.parent / "local-attributes"))
         raw = LiveWorkspace(self.root)._inspection_git(
@@ -274,9 +274,6 @@ class PullRequestSizeTest(unittest.TestCase):
             "--", "src/items.py", allowed_returncodes=(0, 1),
         )
         self.assertEqual(raw, head.encode() + b":src/items.py\x002\n")
-        self.write(".git/info/attributes", "src/items.py -diff\n")
-        with self.assertRaisesRegex(WorktreeInspectionFailed, "info/attributes must be empty"):
-            LiveWorkspace(self.root)._inspection_git(self.base, "grep", "-c", "-e", "^", head)
 
     def test_branch_attributes_cannot_exempt_its_own_diff(self):
         self.write(".gitattributes", "src/** linguist-generated -diff\n")

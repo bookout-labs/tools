@@ -8,7 +8,6 @@ from tempfile import TemporaryDirectory
 
 
 fixtures = Path(__file__).with_name("fixtures") / "git"
-fixtures.mkdir(parents=True, exist_ok=True)
 os.environ.update({
     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_ATTR_NOSYSTEM": "1",
     "GIT_AUTHOR_DATE": "2026-01-01T00:00:00+00:00", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00+00:00",
@@ -42,8 +41,8 @@ with TemporaryDirectory() as directory:
         (root / name).write_bytes(data)
     commit()
     base = git("rev-parse", "HEAD").decode().strip()
-    grep = ("--no-replace-objects", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD",
-            "grep", "-G", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--")
+    grep = ("--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD",
+            "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--")
     capture("grep-lines.z", *grep)
 
     def probe(*args, cwd=root):
