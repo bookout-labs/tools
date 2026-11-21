@@ -89,7 +89,7 @@ class CitationGraphTests(unittest.TestCase):
     def test_placeholder_rejected_before_post_or_merge(self):
         result = self.run_rounds([payload('placeholder-99')])
         self.assertEqual(result['halt'], Halt.invalid_output)
-        self.assertIn('review claude-opus-5-5-high:', result['halt_detail'])
+        self.assertIn('review output from claude-opus-5-5-high:', result['halt_detail'])
         self.assertFalse(result.get('review_findings'))
         self.assertFalse(result.get('review_receipt'))
         self.assertEqual((self.forge.reviews, self.forge.merge_calls), ([], []))

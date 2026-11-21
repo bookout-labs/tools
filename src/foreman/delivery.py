@@ -604,7 +604,7 @@ def compile_delivery(
             if outcome.kind == "cli_missing" and pending["quota_model"]:
                 outcome, model = Outcome("quota"), pending["quota_model"]
             if outcome.kind == "failed":
-                return {**stopped, **halted(Halt.invalid_output, f"{name} {model}: {outcome.detail}", name)}
+                return {**stopped, **halted(Halt.invalid_output, f"{name} output from {model or 'no model'}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
                 return {**stopped, **halted(Halt.cli_missing, outcome.detail, name)}
             if outcome.kind == "quota":
@@ -649,7 +649,7 @@ def compile_delivery(
                     rejected.update(halted(Halt.spec_cap, str(exc), name))
                 return rejected
             except InvalidOutput as exc:
-                return {**stopped, **halted(Halt.invalid_output, f"{name} {model}: {exc}" if name == "review" else str(exc), name)}
+                return {**stopped, **halted(Halt.invalid_output, f"{name} output from {model or 'no model'}: {exc}", name)}
 
             return update
 

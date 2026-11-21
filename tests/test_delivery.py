@@ -111,7 +111,7 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["path"], ["triage", "done"])
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertTrue(result["halt_detail"].startswith("slice.depends_on:"))
+        self.assertTrue(result["halt_detail"].startswith("triage output from claude-opus-5-5-high: slice.depends_on:"))
 
     def test_a_parent_routes_spec_and_question_to_spec(self):
         for triage in ("spec", "question"):
@@ -273,7 +273,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(drop_risk)
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertIn("review claude-opus-5-5-high: risk:", result["halt_detail"])
+        self.assertIn("review output from claude-opus-5-5-high: risk:", result["halt_detail"])
         self.assertEqual(result["path"].count("review"), 1)
         self.assertNotIn("merge", result["path"])
 
@@ -282,7 +282,7 @@ class DeliveryTest(unittest.TestCase):
         handler.risk["level"] = ["low"]
         result = walk(handler)
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertIn("review claude-opus-5-5-high: risk.level:", result["halt_detail"])
+        self.assertIn("review output from claude-opus-5-5-high: risk.level:", result["halt_detail"])
 
     def test_review_exhausts_the_whole_configured_list(self):
         handler = ScriptHandler()
