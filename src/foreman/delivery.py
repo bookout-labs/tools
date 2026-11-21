@@ -1,6 +1,5 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
-from collections.abc import Mapping
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, Callable, Literal, TypedDict
@@ -103,8 +102,7 @@ def clean_slices(
 
 
 def load_slice(raw: object) -> dict[str, object]:
-    payload = dict(raw) if isinstance(raw, Mapping) else raw
-    return clean_slices([parse_output(Slice, payload)], "slice", allow_external_dependencies=True)[0]
+    return clean_slices([parse_output(Slice, raw)], "slice", allow_external_dependencies=True)[0]
 
 
 def stage_update(name: str, output: Contract, state: DeliveryState, model: str | None = None) -> dict[str, object]:
@@ -346,7 +344,7 @@ def run_delivery(
     request: str,
     check: str = "",
     config: Config | None = None,
-    slice: Mapping[str, object] | None = None,
+    slice: dict[str, object] | None = None,
 ) -> DeliveryState:
     state: DeliveryState = {
         "repo": repo,

@@ -2,7 +2,6 @@ import unittest
 
 from dataclasses import replace
 from pathlib import Path
-from types import MappingProxyType
 
 from foreman.config import NodeConfig, load_config
 from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
@@ -45,7 +44,7 @@ def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
 
 class DeliveryTest(unittest.TestCase):
     def test_passing_a_slice_starts_a_slice_run(self):
-        result = walk(ScriptHandler(triage="spec"), slice=MappingProxyType(SLICES[1]))
+        result = walk(ScriptHandler(triage="spec"), slice=SLICES[1])
         self.assertEqual(result["issue_kind"], "slice")
         self.assertEqual(result["slice"], SLICES[1])
         self.assertEqual(result["stop"], "verified")
