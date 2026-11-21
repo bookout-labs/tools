@@ -1,6 +1,9 @@
 """Try the configured models in order. Quota exhaustion is not a rule change."""
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from foreman.delivery import DeliveryState
 
 
 class QuotaExhausted(Exception):
@@ -14,7 +17,7 @@ class InvalidOutput(ValueError):
 
 
 class Handler(Protocol):
-    def __call__(self, node: str, model: str | None, state: dict, instruction: str) -> dict:
+    def __call__(self, node: str, model: str | None, state: "DeliveryState", instruction: str) -> dict[str, object]:
         pass
 
 
@@ -22,7 +25,9 @@ class FailoverDispatcher:
     def __init__(self, handler: Handler):
         self.handler = handler
 
-    def run(self, node: str, models: list[str], state: dict, instruction: str) -> tuple[dict, str | None]:
+    def run(
+        self, node: str, models: list[str], state: "DeliveryState", instruction: str,
+    ) -> tuple[dict[str, object], str | None]:
         candidates: list[str | None] = list(models) or [None]
         last: QuotaExhausted | None = None
         for model in candidates:

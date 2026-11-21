@@ -71,6 +71,12 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
 
+    def test_triage_slice_rejects_a_dependency(self):
+        result = walk(lambda *_: {"triage": "implement", "slice": {**SLICES[0], "depends_on": ["Other"]}})
+        self.assertEqual(result["path"], ["triage", "done"])
+        self.assertEqual(result["stop"], "invalid_output")
+        self.assertEqual(result["halt_detail"], "slice.depends_on.0: unknown dependency Other")
+
     def test_a_parent_routes_to_spec_even_when_triage_says_implement(self):
         for triage in ("implement", "spec"):
             with self.subTest(triage=triage):
@@ -89,6 +95,7 @@ class DeliveryTest(unittest.TestCase):
             "extra key": [{**first, "branch": "extra"}],
             "outside screens": [{**first, "screen": "docs/system.md"}],
             "traversal": [{**first, "screen": "docs/screens/../system.md"}],
+            "double dot": [{**first, "screen": "docs/screens/deals..draft.md"}],
             "backslash": [{**first, "screen": r"docs/screens/other\deals.md"}],
             "nested screen": [{**first, "screen": "docs/screens/sub/deals.md"}],
             "blank constraint": [{**first, "properties": [{"name": "Visibility", "constraint": " "}]}],

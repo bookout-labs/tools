@@ -167,6 +167,15 @@ class StageOutputTest(unittest.TestCase):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
             parse_output(ReviewOutput, {**APPROVE, "review": "approve, but please fix X first"})
 
+    def test_review_verdicts_require_lowercase(self):
+        for verdict in ("Approve.", "Changes. Add a check."):
+            with self.subTest(verdict=verdict), self.assertRaisesRegex(InvalidOutput, "^review:"):
+                parse_output(ReviewOutput, {**APPROVE, "review": verdict})
+
+    def test_review_rejects_two_change_notes(self):
+        with self.assertRaisesRegex(InvalidOutput, "inline change note conflicts with review_note"):
+            parse_output(ReviewOutput, {**APPROVE, "review": "changes. Add a check.", "review_note": "Update the docs."})
+
 
 class LiveRunnerTest(unittest.TestCase):
     def setUp(self):

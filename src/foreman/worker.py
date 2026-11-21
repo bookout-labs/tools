@@ -1,5 +1,6 @@
 """Run a pinned worker and read its final stage result."""
 
+from collections.abc import Mapping
 import json
 from pathlib import Path
 import re
@@ -24,10 +25,12 @@ def run_worker_command(args: list[str], cwd: Path) -> subprocess.CompletedProces
     return subprocess.run(args, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
 
 
-def json_object(text: str) -> dict:
+def json_object(text: object) -> dict[str, object]:
+    if not isinstance(text, (str, bytes, bytearray)):
+        raise InvalidOutput("worker did not return a JSON object")
     try:
-        result = json.loads(text)
-    except (TypeError, ValueError) as exc:
+        result: object = json.loads(text)
+    except ValueError as exc:
         raise InvalidOutput("worker did not return a JSON object") from exc
     if not isinstance(result, dict):
         raise InvalidOutput("worker did not return a JSON object")
@@ -39,7 +42,7 @@ class CliWorker:
         self.cwd = cwd
         self.run = run
 
-    def __call__(self, node: str, model: str | None, state: dict, instruction: str) -> dict:
+    def __call__(self, node: str, model: str | None, state: Mapping[str, object], instruction: str) -> dict[str, object]:
         if model is None:
             raise QuotaExhausted(model)
         prompt = (
@@ -47,7 +50,7 @@ class CliWorker:
             "Use null for inapplicable nullable fields. Do not arm a merge."
         )
         if node in {"triage", "spec"} and state.get("issue_kind") == "slice" and "slice" not in state:
-            prompt += " For a ready slice, include slice and preserve its proof obligations. For needs_human, include human_question."
+            prompt += " For a ready slice, include slice. For needs_human, include human_question."
         prompt += f"\n\nOutput schema:\n{json.dumps(STAGE_OUTPUTS[node].model_json_schema())}"
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 

@@ -22,7 +22,7 @@ def _load_slice(body: str) -> dict[str, object]:
     blocks = SLICE_FENCE.findall(body)
     if not blocks:
         raise InvalidOutput("slice issue needs a fenced JSON object")
-    return clean_slices([parse_output(Slice, json.loads(blocks[-1]))], allow_external_dependencies=True)[0]
+    return clean_slices([parse_output(Slice, json.loads(blocks[-1]))], "slice", allow_external_dependencies=True)[0]
 
 
 def _inspect_worktree(cwd: Path) -> tuple[str, bool]:

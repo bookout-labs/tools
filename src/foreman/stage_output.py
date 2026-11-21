@@ -1,9 +1,10 @@
 """Worker output contracts shared by the CLI prompts and delivery graph."""
 
 import re
-from typing import Annotated, Literal, TypeVar
+from typing import Annotated, Literal, TypeVar, cast
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints, TypeAdapter, ValidationError, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, field_validator, model_validator
+from pydantic.config import JsonDict
 
 from foreman.dispatch import InvalidOutput
 
@@ -14,8 +15,8 @@ Output = TypeVar("Output", bound=BaseModel)
 
 
 # CLIs without schema enforcement may omit nullable fields until S2/S3.
-def _require_all_fields(schema: dict) -> None:
-    properties = schema["properties"]
+def _require_all_fields(schema: JsonDict) -> None:
+    properties = cast(dict[str, JsonDict], schema["properties"])
     schema["required"] = list(properties)
     for field in properties.values():
         field.pop("default", None)
@@ -35,14 +36,19 @@ class Slice(Contract):
 
     title: TrimmedText
     acceptance: TrimmedText
-    depends_on: list[TrimmedText]
-    screen: str
+    depends_on: list[TrimmedText] = Field(
+        description="Titles of other slices in this spec that must land first; empty for a single slice.",
+    )
+    screen: str = Field(
+        description="Use docs/screens/<file>.md without '..', or an empty string.",
+        pattern=r"^(docs/screens/[^/\\]+\.md)?$",
+    )
     properties: list[SliceProperty]
 
     @field_validator("screen")
     @classmethod
     def screen_path(cls, value: str) -> str:
-        if value and (".." in value or not re.fullmatch(r"docs/screens/[^/\\\x00-\x1f]+\.md", value)):
+        if ".." in value or re.search(r"[\x00-\x1f]", value):
             raise ValueError("must be empty or a docs/screens/<file>.md path without '..'")
         return value
 
@@ -116,7 +122,10 @@ class MergeRisk(Contract):
 class ReviewOutput(Contract):
     review: Literal["approve", "changes"]
     risk: MergeRisk
-    review_note: str | None = None  # CLIs without schema enforcement may omit this.
+    review_note: str | None = Field(
+        default=None,
+        description="Put the reviewer's requested changes here and keep the verdict in review. Use null when there is no note.",
+    )
 
     # CLIs without schema enforcement can punctuate verdicts until S2/S3.
     @model_validator(mode="before")
@@ -126,10 +135,12 @@ class ReviewOutput(Contract):
             verdict = verdict.strip()
             if verdict in {"approve", "approve."}:
                 return {**value, "review": "approve"}
-            match = re.fullmatch(r"changes(?:[.,:;]\s*(.*))?", verdict, re.I | re.S)
+            match = re.fullmatch(r"changes(?:[.,:;]\s*(.*))?", verdict, re.S)
             if match:
                 note = value.get("review_note")
-                return {**value, "review": "changes", "review_note": (match[1] or None) if note is None else note}
+                if match[1] and note is not None:
+                    raise ValueError("inline change note conflicts with review_note")
+                return {**value, "review": "changes", "review_note": match[1] or note}
         return value
 
 
