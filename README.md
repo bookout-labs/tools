@@ -58,11 +58,11 @@ Any step can pause (quota wait, human question, waiting on GitHub) and resumes a
 ```mermaid
 flowchart TD
   __start__([Dispatch]) --> plan
-  plan["plan<br/>pick the next eligible model, check the budget, save the attempt"] --> call["call<br/>run one model"]
-  call -->|quota or CLI missing: next model| plan
-  call -->|no eligible model now| wait["wait<br/>pause until a model is available"]
+  plan["plan<br/>pick the next eligible model, check the budget, save the attempt"] --> run["call<br/>run one model"]
+  run -->|quota or CLI missing: next model| plan
+  run -->|no eligible model now| wait["wait<br/>pause until a model is available"]
   wait -->|resume| plan
-  call -->|result| __end__([back to the assembly line])
+  run -->|result| __end__([back to the assembly line])
 ```
 
 ### Today's code
