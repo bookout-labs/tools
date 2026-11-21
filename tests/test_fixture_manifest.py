@@ -231,7 +231,7 @@ class GraphFactGateTest(unittest.TestCase):
                         {"graph_check": {**check.model_dump(), "exit_code": 1}}):
             with self.subTest(altered=altered):
                 self.assertEqual(self.gate([{**fact, **altered}], state).review, "changes")
-        self.assertEqual(self.gate([fact], {**state, "verify": "fail"}).review, "changes")
+        self.assertEqual(self.gate([fact], {**state, "checks": state["checks"].model_copy(update={"verify": "fail"})}).review, "changes")
 
     def test_omission_cannot_resolve_an_unrecorded_fact(self):
         fact = {"claim": "CLI accepts --debug", "fixture": None}
