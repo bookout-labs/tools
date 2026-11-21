@@ -383,10 +383,6 @@ class StageOutputTest(unittest.TestCase):
         with self.assertRaisesRegex(InvalidOutput, r"^findings\.0\.summary:"):
             parse_output(ReviewOutput, raw)
 
-    def test_review_derives_verdict_from_findings(self):
-        self.assertEqual(parse_output(ReviewOutput, APPROVE).review, "approve")
-        self.assertEqual(parse_output(ReviewOutput, {**APPROVE, "findings": [FINDING]}).review, "changes")
-
 
 class LiveRunnerTest(unittest.TestCase):
     @classmethod

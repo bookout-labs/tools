@@ -2,10 +2,9 @@
 # pyright: basic
 """The delivery graph. Edges live here. Models live in models.toml."""
 
-from collections.abc import Callable
 import json
 import operator
-
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
