@@ -18,7 +18,8 @@ from foreman.measure import grade, propose, selected  # noqa: E402
 FIELD_SLICE: dict[str, object] = {
     "title": "Add a field",
     "acceptance": "The response includes the new field.",
-    "depends_on": [],
+    "builds": [],
+    "uses": [],
     "screen": "",
     "properties": [],
 }
@@ -77,14 +78,16 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                     {
                         "title": "Board lists the deals",
                         "acceptance": "The board shows the deals.",
-                        "depends_on": [],
+                        "builds": [{"name": "deals-board", "exists": False, "path": None}],
+                        "uses": [],
                         "screen": "docs/screens/deals.md",
                         "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
                     },
                     {
                         "title": "Board saves a move",
                         "acceptance": "A move is stored.",
-                        "depends_on": ["Board lists the deals"],
+                        "builds": [],
+                        "uses": [{"name": "deals-board", "exists": False, "path": None}],
                         "screen": "",
                         "properties": [],
                     },

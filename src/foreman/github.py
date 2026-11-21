@@ -97,6 +97,25 @@ class ActionsVariables(RootModel[list[ActionsVariable]], strict=True):
     pass
 
 
+class IssueIdentity(BaseModel, strict=True):
+    id: PositiveInt
+
+
+class IssueBlocker(BaseModel, strict=True):
+    number: PositiveInt
+    title: str
+    repository_url: str
+    html_url: str
+    state: Literal["open", "closed"]
+
+    def in_repo(self, repo: str) -> bool:
+        return self.repository_url.lower() == f"https://api.github.com/repos/{repo.lower()}"
+
+
+class BlockerPages(RootModel[list[list[IssueBlocker]]]):
+    pass
+
+
 class Issue(TypedDict):
     title: str
     body: str
@@ -106,6 +125,8 @@ class Issue(TypedDict):
 class Forge(Protocol):
     def load_issue(self, repo: str, number: int) -> Issue: ...
     def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int: ...
+    def add_blocker(self, repo: str, number: int, blocker: int) -> None: ...
+    def blockers(self, repo: str, number: int) -> list[IssueBlocker]: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
     def merge_hold(self, repo: str) -> str | None: ...
@@ -128,6 +149,19 @@ class LiveForge:
         for label in labels:
             args.extend(["-f", f"labels[]={label}"])
         return self._read(CreatedIssue, args, timeout=None).number
+
+    def add_blocker(self, repo: str, number: int, blocker: int) -> None:
+        identity = self._read(IssueIdentity, ["gh", "api", f"repos/{repo}/issues/{blocker}"])
+        self._run_command([
+            "gh", "api", f"repos/{repo}/issues/{number}/dependencies/blocked_by",
+            "--method", "POST", "-F", f"issue_id={identity.id}",
+        ])
+
+    def blockers(self, repo: str, number: int) -> list[IssueBlocker]:
+        pages = self._read(BlockerPages, [
+            "gh", "api", f"repos/{repo}/issues/{number}/dependencies/blocked_by", "--paginate", "--slurp",
+        ])
+        return [blocker for page in pages.root for blocker in page]
 
     def is_merged(self, repo: str, number: int) -> bool:
         issue = self._read(

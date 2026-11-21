@@ -63,4 +63,18 @@ claude --model claude-opus-5-5 --effort high --permission-mode plan \
   --output-format json --json-schema "$triage_schema" -p "$claude_prompt"
 codex exec -m gpt-6.1-sol -c model_reasoning_effort=high --color never \
   -s read-only "$codex_prompt_with_schema"
+
+## GitHub issue dependency contract
+
+Foreman calls the GitHub REST API through `gh api`.
+
+- `GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` returns issue objects. Foreman reads `number`, `title`, `repository_url`, `html_url`, and `state` from each page. [GitHub REST API 2026-03-10](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#list-dependencies-an-issue-is-blocked-by)
+- `POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` takes the blocker's numeric `issue_id`. Foreman gets that ID from `GET /repos/{owner}/{repo}/issues/{issue_number}`. [Add a dependency](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#add-a-dependency-an-issue-is-blocked-by), [Get an issue](https://docs.github.com/en/rest/issues/issues?apiVersion=2026-03-10#get-an-issue)
+- `gh api --paginate --slurp` returns an array of pages. `-F issue_id=<id>` sends the ID as a JSON integer. [GitHub CLI 2.102.0](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go)
+
+Read-only reachability check with `gh 2.102.0`:
+
+```sh
+gh api --method GET 'repos/bookout-labs/tools/issues/43/dependencies/blocked_by' --paginate --slurp
+# [[]]
 ```

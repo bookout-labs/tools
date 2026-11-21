@@ -16,7 +16,7 @@ from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.github import MERGE_HOLD_VARIABLE, Forge, MergeHoldUnreadable, MergeNotArmed, merge_command
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, parse_output,
 )
 from foreman.workspace import Workspace, WorktreeInspectionFailed
 
@@ -41,6 +41,20 @@ class DryRun:
     pass
 
 
+SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle"]
+
+
+class SpecRejection(TypedDict):
+    kind: SpecRejectionKind
+    detail: str
+
+
+class InvalidSlicePlan(InvalidOutput):
+    def __init__(self, kind: SpecRejectionKind, detail: str):
+        super().__init__(detail)
+        self.reason: SpecRejection = {"kind": kind, "detail": detail}
+
+
 class DeliveryState(TypedDict, total=False):
     request: str
     repo: str
@@ -51,6 +65,7 @@ class DeliveryState(TypedDict, total=False):
     triage: str
     spec: str
     spec_gate: str
+    spec_rejection: SpecRejection | None
     slices: list[dict[str, object]]
     child_issue_numbers: list[int]
     slice: dict[str, object]
@@ -90,46 +105,57 @@ def stage_text(name: str) -> str:
 
 def clean_slices(
     raw: list[Slice] | None,
-    field: Literal["slice", "slices"],
-    *,
-    allow_external_dependencies: bool = False,
+    workspace: Workspace | None,
 ) -> list[dict[str, object]]:
     if not raw:
-        raise InvalidOutput(f"{field}: ready parent spec needs at least one slice")
-    paths = [f"{field}.{index}" if field == "slices" else field for index in range(len(raw))]
-    graph: dict[str, list[str]] = {}
-    for path, item in zip(paths, raw):
-        if item.title in graph:
-            raise InvalidOutput(f"{path}.title: must be unique")
-        graph[item.title] = item.depends_on
-    for path, item in zip(paths, raw):
-        for index, dep in enumerate(item.depends_on):
-            if dep not in graph and not allow_external_dependencies:
-                raise InvalidOutput(f"{path}.depends_on.{index}: unknown dependency {dep}")
+        raise InvalidOutput("slices: ready parent spec needs at least one slice")
+    if len(raw) == 1:
+        return [{**raw[0].model_dump(), "depends_on": []}]
+    slices = {item.title: item for item in raw}
+    if len(slices) != len(raw):
+        raise InvalidSlicePlan("duplicate_title", "Slice titles must be unique.")
+    builders: dict[str, str] = {}
+    for item in raw:
+        for seam in item.builds:
+            if seam.name in builders and builders[seam.name] != item.title:
+                raise InvalidSlicePlan("duplicate_builder", f"{seam.name}: built by {builders[seam.name]} and {item.title}.")
+            builders[seam.name] = item.title
+    graph: dict[str, dict[str, None]] = {}
+    for item in raw:
+        dependencies = graph[item.title] = {}
+        for seam in item.uses:
+            if seam.path is not None and (workspace is None or not workspace.has_file(seam.path)):
+                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, but {seam.path} is not a workspace file.")
+            if builder := builders.get(seam.name):
+                dependencies[builder] = None
+            elif seam.path is None:
+                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, which has no builder or existing file.")
     try:
-        TopologicalSorter(graph).prepare()
+        ordered = list(TopologicalSorter(graph).static_order())
     except CycleError as exc:
-        dep, title = exc.args[1][:2]
-        path = next(path for path, item in zip(paths, raw) if item.title == title)
-        raise InvalidOutput(f"{path}.depends_on.{graph[title].index(dep)}: dependency cycle") from exc
-    return [item.model_dump() for item in raw]
+        raise InvalidSlicePlan("dependency_cycle", "Dependency cycle: " + " -> ".join(exc.args[1])) from exc
+    return [{**slices[title].model_dump(), "depends_on": list(graph[title])} for title in ordered]
 
 
 def load_slice(raw: object) -> dict[str, object]:
-    return clean_slices([parse_output(Slice, raw)], "slice", allow_external_dependencies=True)[0]
+    return parse_output(StoredSlice, raw).model_dump(exclude_unset=True)
 
 
-def stage_update(name: str, output: Contract, state: DeliveryState, model: str | None = None) -> dict[str, object]:
+def stage_update(
+    name: str, output: Contract, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None,
+) -> dict[str, object]:
     update: dict[str, object] = output.model_dump(exclude={"slice", "slices"})
     update["path"] = [name]
-    if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready":
-        update["slices"] = clean_slices(output.slices, "slices")
+    if isinstance(output, SpecOutput):
+        update["spec_rejection"] = None
+        if state.get("issue_kind") == "parent" and output.spec_gate == "ready":
+            update["slices"] = clean_slices(output.slices, workspace)
     if isinstance(output, HumanQuestionOutput):
         update["human_question"] = output.human_question or ""
     if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
         if output.slice is None:
             raise InvalidOutput("slice: required when a parent triages as implement")
-        update["slice"] = clean_slices([output.slice], "slice")[0]
+        update["slice"] = output.slice.model_dump()
     if update.get("review") == "changes" or update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -171,6 +197,7 @@ def compile_delivery(
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
+    plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
     def bind(name: str):
         def node(state: DeliveryState) -> dict[str, object]:
@@ -200,7 +227,13 @@ def compile_delivery(
                     raise QuotaExhausted(model)
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
-                return stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model)
+                return stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model, workspace=plan_workspace)
+            except InvalidSlicePlan as exc:
+                rounds = state.get("review_rounds", 0) + 1
+                update: dict[str, object] = {"path": [name], "spec_rejection": exc.reason, "review_rounds": rounds}
+                if rounds >= config.max_review_rounds:
+                    update.update(halt="spec_cap", halt_detail=str(exc))
+                return update
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
 
@@ -263,6 +296,8 @@ def compile_delivery(
     def after_spec(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
+        if state.get("spec_rejection"):
+            return "spec"
         if state.get("spec_gate") == "needs_human" and checkpointer is not None:
             return "needs_human"
         if state.get("issue_kind") == "parent":
@@ -365,7 +400,7 @@ def compile_delivery(
          "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges(
-        "spec", after_spec, {"implement": "implement", "needs_human": "needs_human", "done": "done"},
+        "spec", after_spec, {"spec": "spec", "implement": "implement", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges(
         "needs_human", lambda state: state["path"][-1], {"triage": "triage", "spec": "spec"},

@@ -148,6 +148,26 @@ class LiveForgeTest(unittest.TestCase):
         self.assertNotIsInstance(error.exception, MergeNotArmed)
 
     @patch("foreman.github.subprocess.run")
+    def test_native_blockers_use_github_issue_ids_and_read_every_page(self, run):
+        blocker = {"id": 643, "number": 9, "title": "Build items",
+                   "repository_url": f"https://api.github.com/repos/{REPO}",
+                   "html_url": f"https://github.com/{REPO}/issues/9", "state": "open"}
+        run.side_effect = [gh_result(json.dumps(blocker)), gh_result(json.dumps(blocker)),
+                           gh_result(json.dumps([[blocker], [{**blocker, "id": 644, "number": 10, "state": "closed"}]])),
+                           gh_result(json.dumps([[{**blocker, "state": "unknown"}]]))]
+        forge = LiveForge()
+        forge.add_blocker(REPO, 8, 9)
+        self.assertEqual([(item.number, item.state) for item in forge.blockers(REPO, 8)], [(9, "open"), (10, "closed")])
+        endpoint = f"repos/{REPO}/issues/8/dependencies/blocked_by"
+        self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [
+            ["gh", "api", f"repos/{REPO}/issues/9"],
+            ["gh", "api", endpoint, "--method", "POST", "-F", "issue_id=643"],
+            ["gh", "api", endpoint, "--paginate", "--slurp"],
+        ])
+        with self.assertRaises(ForgeError):
+            forge.blockers(REPO, 8)
+
+    @patch("foreman.github.subprocess.run")
     def test_arms_the_checked_pull_request_in_the_requested_repository(self, run):
         run.side_effect = [
             pr_result(),

@@ -25,6 +25,7 @@ class Workspace(Protocol):
 
     def run(self, command: str) -> int: ...
     def inspect(self) -> WorktreeState: ...
+    def has_file(self, path: str) -> bool: ...
 
 
 class LiveWorkspace:
@@ -33,6 +34,17 @@ class LiveWorkspace:
 
     def run(self, command: str) -> int:
         return subprocess.run(command, shell=True, cwd=self.root, stdin=subprocess.DEVNULL).returncode
+
+    def has_file(self, path: str) -> bool:
+        relative = Path(path)
+        if relative.is_absolute() or ".." in relative.parts:
+            return False
+        root = self.root.resolve()
+        try:
+            file = (root / relative).resolve()
+            return file.is_relative_to(root) and file.is_file()
+        except (OSError, RuntimeError, ValueError):
+            return False
 
     def inspect(self) -> WorktreeState:
         head = self._git("rev-parse", "HEAD").strip()

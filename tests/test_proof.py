@@ -16,7 +16,8 @@ class ProofTest(unittest.TestCase):
         self.slice = {
             "title": "Show active deals",
             "acceptance": "Active deals appear and edits save.",
-            "depends_on": [],
+            "builds": [],
+            "uses": [],
             "screen": "docs/screens/deals.md",
             "properties": [
                 {"name": "Amount is positive", "constraint": "deals_amount_positive"},

@@ -10,18 +10,37 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery, load_slice
+from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
+from foreman.github import Forge
+from foreman.stage_output import StoredSlice, parse_output
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 RESUMABLE_HALTS: frozenset[MergeHalt] = frozenset({"merge_held", "merge_not_armed"})
 
 
-def _load_slice(body: str) -> dict[str, object]:
+def _load_slice(body: str) -> StoredSlice:
     blocks = SLICE_FENCE.findall(body)
     if not blocks:
         raise InvalidOutput("slice issue needs a fenced JSON object")
-    return load_slice(json.loads(blocks[-1]))
+    return parse_output(StoredSlice, json.loads(blocks[-1]))
+
+
+def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice) -> str:
+    blockers = forge.blockers(repo, issue)
+    if open_urls := [blocker.html_url for blocker in blockers if blocker.state == "open"]:
+        return "Open blockers: " + ", ".join(open_urls)
+    local = {blocker.number: blocker for blocker in blockers if blocker.in_repo(repo)}
+    planned = item.blocker_numbers
+    if planned is None:
+        # Older child issues identify their siblings by title.
+        by_title = {blocker.title: blocker.number for blocker in local.values()}
+        planned = [by_title[title] for title in item.depends_on if title in by_title]
+    if len(planned) != len(item.depends_on) or not set(planned) <= local.keys():
+        return "Planned blocker links are missing."
+    if unmerged := [number for number in planned if not forge.is_merged(repo, number)]:
+        return "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged)
+    return ""
 
 
 def _replay_halted_node(graph: CompiledStateGraph, config: RunnableConfig, path: list[str]) -> None:
@@ -76,9 +95,13 @@ def run_live_delivery(
             }
             if initial["issue_kind"] == "slice":
                 try:
-                    initial["slice"] = _load_slice(loaded["body"])
+                    item = _load_slice(loaded["body"])
                 except (InvalidOutput, json.JSONDecodeError) as exc:
                     initial.update(halt="missing_slice", halt_detail=str(exc))
+                else:
+                    if detail := _blocker_detail(client, repo, issue, item):
+                        return {**initial, "path": ["done"], "stop": "blocked", "halt_detail": detail}
+                    initial["slice"] = item.model_dump(exclude_unset=True)
             graph.invoke(initial, config, durability="sync")
         elif saved.values.get("halt") in RESUMABLE_HALTS:
             _replay_halted_node(graph, config, saved.values.get("path", []))
@@ -88,19 +111,34 @@ def run_live_delivery(
         saved = graph.get_state(config)
         if saved.values.get("stop") == "sliced":
             numbers = list(saved.values.get("child_issue_numbers", []))
-            for item in saved.values["slices"][len(numbers):]:
-                dependencies = "\n".join(f"- {title}" for title in item["depends_on"]) or "None"
-                constraints = "\n".join(f"- {prop['constraint']}" for prop in item["properties"]) or "None"
-                body = (f"Acceptance:\n{item['acceptance']}\n\nDependencies:\n{dependencies}"
-                        f"\n\nScreen:\n{item['screen'] or 'None'}\n\nConstraints:\n{constraints}"
-                        f"\n\n```json\n{json.dumps(item, indent=2)}\n```")
-                labels = ["slice"] + ([] if item["depends_on"] else ["factory"])
-                numbers.append(client.create_issue(repo, item["title"], body, labels))
+            plan = [parse_output(StoredSlice, raw) for raw in saved.values["slices"]]
+            siblings = {item.title: number for item, number in zip(plan, numbers)}
+            for item in plan[len(numbers):]:
+                payload = item.model_dump(exclude_unset=True)
+                # Plans saved by older versions can list consumers before builders.
+                if all(title in siblings for title in item.depends_on):
+                    payload["blocker_numbers"] = [siblings[title] for title in item.depends_on]
+                dependencies = "\n".join(f"- {title}" for title in item.depends_on) or "None"
+                constraints = "\n".join(f"- {prop.constraint}" for prop in item.properties) or "None"
+                body = (f"Acceptance:\n{item.acceptance}\n\nDependencies:\n{dependencies}"
+                        f"\n\nScreen:\n{item.screen or 'None'}\n\nConstraints:\n{constraints}"
+                        f"\n\n```json\n{json.dumps(payload, indent=2)}\n```")
+                labels = ["slice"] + ([] if item.depends_on else ["factory"])
+                number = client.create_issue(repo, item.title, body, labels)
+                numbers.append(number)
+                siblings[item.title] = number
                 graph.update_state(config, {"child_issue_numbers": numbers})
-            siblings = {item["title"]: number for item, number in zip(saved.values["slices"], numbers)}
-            for item, number in zip(saved.values["slices"], numbers):
-                deps = item["depends_on"]
-                if (deps and all(title in siblings and client.is_merged(repo, siblings[title]) for title in deps)
+            for item, number in zip(plan, numbers):
+                if not item.depends_on:
+                    continue
+                blockers = client.blockers(repo, number)
+                linked = {blocker.number for blocker in blockers if blocker.in_repo(repo)}
+                planned = [siblings[title] for title in item.depends_on]
+                for blocker in planned:
+                    if blocker not in linked:
+                        client.add_blocker(repo, number, blocker)
+                if (all(blocker.state == "closed" for blocker in blockers)
+                        and all(client.is_merged(repo, blocker) for blocker in planned)
                         and "factory" not in client.load_issue(repo, number)["labels"]):
                     client.add_label(repo, number, "factory")
             saved = graph.get_state(config)
