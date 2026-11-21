@@ -14,6 +14,7 @@ from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
 from foreman.stage_output import STAGE_OUTPUTS, Contract
+from foreman.usd import BudgetUsd
 
 CommandRunner = Callable[[list[str], Path, Mapping[str, str]], subprocess.CompletedProcess[str]]
 
@@ -35,7 +36,8 @@ class CliWorker:
         self.cwd = cwd
         self.run = run
 
-    def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
+    def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str,
+                 *, budget_usd: BudgetUsd | None = None) -> Outcome:
         if model is None:
             raise ConfigError(f"{node} has no model configured")
         prompt = (
@@ -48,7 +50,7 @@ class CliWorker:
 
         adapter = ADAPTERS[model.family](model, contract)
         with TemporaryDirectory(prefix="foreman-worker-") as directory:
-            args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory)))
+            args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory), budget_usd=budget_usd))
             try:
                 process = self.run(args, self.cwd, adapter.env)
             except FileNotFoundError:

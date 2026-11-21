@@ -794,12 +794,12 @@ class LiveRunnerTest(unittest.TestCase):
         first = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", fact_record="evidence/facts.toml",
             checkpoint=self.checkpoint, run=run,
-            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+            dispatcher=FailoverDispatcher(lambda *args, **kwargs: Outcome("quota")),
         )
         self.assertEqual(first["fact_record"], "evidence/facts.toml")
         resumed = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, run=run,
-            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+            dispatcher=FailoverDispatcher(lambda *args, **kwargs: Outcome("quota")),
         )
         self.assertEqual(resumed["fact_record"], "evidence/facts.toml")
 
@@ -812,7 +812,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.walk([])["stop"], "verified")
 
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
-        def exhaust(node, model, state, instruction):
+        def exhaust(node, model, state, instruction, *, budget_usd=None):
             if node == "triage":
                 return Outcome("ran", {"triage": "implement", "work_kind": "feature", "human_question": None, "slice": None}, usage=Usage(input_tokens=1, output_tokens=1))
             return Outcome("quota")
@@ -1504,7 +1504,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.walk([{"implementation": "built"}, APPROVE])["stop"], "verified")
 
     def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
-        def interrupted_run(node, model, state, instruction):
+        def interrupted_run(node, model, state, instruction, *, budget_usd=None):
             if node == "triage":
                 return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None}, usage=Usage(input_tokens=1, output_tokens=1))
             self.assertEqual(node, "implement")

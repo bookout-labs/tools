@@ -69,7 +69,7 @@ class CandidateTests(unittest.TestCase):
                 script = ScriptHandler(triage="implement" if stage == "triage" else "spec",
                                        slices=[{k: v for k, v in SLICE.items() if k not in {"depends_on", "blocker_numbers"}}])
 
-                def handler(node, model, state, instruction):
+                def handler(node, model, state, instruction, *, budget_usd=None):
                     if node == stage and model.name == "gpt-test":
                         return Outcome("quota")
                     return script(node, model, state, instruction)
@@ -115,7 +115,7 @@ class CandidateTests(unittest.TestCase):
 
     def test_failed_author_does_not_produce_a_candidate(self):
         with skill_fixture() as (config, scratch):
-            result = run_delivery(FailoverDispatcher(lambda *_: Outcome("failed", detail="Malformed output")),
+            result = run_delivery(FailoverDispatcher(lambda *_, **kwargs: Outcome("failed", detail="Malformed output")),
                                   repo="org/repo", request="Save", config=config, scratch=scratch)
         self.assertEqual(result["halt"], "invalid_output")
         self.assertNotIn("spec_candidate", result)

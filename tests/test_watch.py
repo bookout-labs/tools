@@ -33,6 +33,7 @@ FILING = {
     "pr_size_unavailable": ("Pull request size is measurable before review", "workspace.py"),
     "git_failed": ("Git operations complete before publication", "workspace.py"),
     "usage_unknown": ("codex attempts report usage", "adapters/codex.py"),
+    "cost_unknown": ("claude attempts report cost", "adapters/claude.py"),
     "no_dispatcher": ("A live run always has a dispatcher", "cli.py"),
     "skill_missing": ("Pinned skills are available before dispatch", "skill_rules.py"),
 }

@@ -28,7 +28,7 @@ class TokenCapTests(unittest.TestCase):
                 checkpoint = str(Path(folder) / "cap.sqlite")
                 invocation = {"configurable": {"thread_id": "cap"}}
                 calls, outcomes = [], iter(replies)
-                def handler(node, model, state, instruction):
+                def handler(node, model, state, instruction, *, budget_usd=None):
                     calls.append(model.name)
                     kind, tokens = next(outcomes)
                     return Outcome(kind, {"triage": "needs_human", "work_kind": "feature", "slice": None,
@@ -57,7 +57,7 @@ class TokenCapTests(unittest.TestCase):
     def test_reached_cap_never_calls_handler_and_unknown_never_applies_output(self):
         with skill_fixture() as (config, scratch):
             calls = []
-            def unknown(node, model, state, instruction):
+            def unknown(node, model, state, instruction, *, budget_usd=None):
                 calls.append(node)
                 return Outcome("ran", {"triage": "implement"})
             result = run_delivery(FailoverDispatcher(unknown), repo="a/b", request="x", config=config, scratch=scratch)
@@ -76,7 +76,7 @@ class TokenCapTests(unittest.TestCase):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
             checkpoint = Path(folder) / "resume.sqlite"
             calls = []
-            def quota(node, model, state, instruction):
+            def quota(node, model, state, instruction, *, budget_usd=None):
                 calls.append(node)
                 return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0))
             kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint,
@@ -101,7 +101,7 @@ class TokenCapTests(unittest.TestCase):
 
     def test_legacy_unfinished_checkpoint_with_missing_skill(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
-            def quota(*args):
+            def quota(*args, **kwargs):
                 return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0))
             kwargs = dict(repo="a/b", issue=8, check="exit 0",
                           run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))
