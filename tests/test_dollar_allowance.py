@@ -1,3 +1,4 @@
+from foreman.state import RunState
 from foreman.state import checkpoint_serializer, SCHEMA_VERSION
 from foreman.dry_run import DryRun
 import contextlib
@@ -121,7 +122,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     initial_flags = ("--max-budget-usd", "1.50") if stored else ()
                     first = invoke(pause, *initial_flags, expected=3 if pause == "needs_human" else 75)
                     self.assertIn("paused " + pause, first.stdout)
-                    self.assertEqual(saved()["max_budget_usd"], stored)
+                    self.assertEqual(saved()["run"].max_budget_usd, stored)
                     before = log.read_text()
                     snapshot = saved()
                     answer = ("--answer", "Only open items.") if pause == "needs_human" else ()
@@ -146,7 +147,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         self.assertTrue(all("--max-budget-usd" not in args for args in new_calls if args[0] != "claude"))
                         before = log.read_text()
                         snapshot = saved()
-                        self.assertEqual(saved()["max_budget_usd"], stored)
+                        self.assertEqual(saved()["run"].max_budget_usd, stored)
                         if stored:
                             self.assertIn("claude spend", resumed.stdout)
                             self.assertIn("of $1.5", resumed.stdout)
@@ -165,14 +166,14 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_run_delivery_stores_canonical_text_or_null(self):
         bounded = run_delivery(ScriptHandler(), repo="a/b", request="x", max_budget_usd=usd("1.50"))
-        self.assertEqual(bounded["max_budget_usd"], "1.5")
+        self.assertEqual(bounded["run"].max_budget_usd, "1.5")
         unbounded = run_delivery(ScriptHandler(), repo="a/b", request="x")
-        self.assertIn("max_budget_usd", unbounded)
-        self.assertIsNone(unbounded["max_budget_usd"])
+        self.assertIn("run", unbounded)
+        self.assertIsNone(unbounded["run"].max_budget_usd)
         self.assertNotIn("claude spend", printed(unbounded))
 
     def test_printed_spend_counts_only_claude_costs(self):
-        base = {"repo": "a/b", "check": "", "path": ["done"], "stop": "answered", "max_budget_usd": "1"}
+        base = {"run": RunState(repo="a/b", max_budget_usd="1"), "check": "", "path": ["done"], "stop": "answered"}
         counted = [attempt("claude-opus-5-5-high", 0.1), attempt("claude-opus-5-5-high", 0.2),
                    attempt("claude-opus-5-5-high", usage=False, outcome="cli_missing"),
                    attempt("gpt-6.1-sol-high", 5.0), attempt("grok-4.7-high", 5.0)]
@@ -180,7 +181,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         for missing in (attempt("claude-opus-5-5-high", None), attempt("claude-opus-5-5-high", usage=False, outcome="quota")):
             with self.subTest(missing=missing):
                 self.assertIn("claude spend unknown of $1", printed({**base, "attempts": [*counted, missing]}))
-        self.assertNotIn("claude spend", printed({**base, "max_budget_usd": None, "attempts": counted}))
+        self.assertNotIn("claude spend", printed({**base, "run": RunState(max_budget_usd=None), "attempts": counted}))
 
     def test_resume_keeps_the_stored_allowance_and_rejects_a_different_one(self):
         for pause in ("needs_human", "quota_exhausted"):
@@ -199,8 +200,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                                   run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))), dispatcher=handler)
                     state = run_live_delivery(**kwargs, max_budget_usd=usd("1.50") if stored else None)
                     self.assertEqual(state["stop"], pause)
-                    self.assertIn("max_budget_usd", state)
-                    self.assertEqual(state["max_budget_usd"], stored)
+                    self.assertIn("run", state)
+                    self.assertEqual(state["run"].max_budget_usd, stored)
                     for different in (("2",) if stored else ("1.5",)):
                         before = len(calls)
                         with self.assertRaisesRegex(ValueError, "--max-budget-usd"):
@@ -211,7 +212,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         answer = "Only open items." if state["stop"] == "needs_human" else None
                         state = run_live_delivery(**kwargs, answer=answer, max_budget_usd=usd(same) if same else None)
                         self.assertGreater(len(calls), before)
-                        self.assertEqual(state["max_budget_usd"], stored)
+                        self.assertEqual(state["run"].max_budget_usd, stored)
 
     def test_resumable_checkpoints_without_a_stored_allowance_need_a_new_run(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
@@ -235,8 +236,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     with SqliteSaver.from_conn_string(str(legacy)) as saver:
                         saver.serde = checkpoint_serializer()
                         graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
-                        graph.update_state(THREAD, {key: value for key, value in snapshot.items() if key != "max_budget_usd"})
-                    with self.assertRaisesRegex(ValueError, "unknown usage history for --max-budget-usd.*new run"):
+                        graph.update_state(THREAD, {**snapshot, "schema_version": 3})
+                    with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
                         run_live_delivery(**kwargs, checkpoint=legacy)
             self.assertEqual(len(calls), dispatched)
 
@@ -244,11 +245,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with SqliteSaver.from_conn_string(str(historical)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
-                graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"], "token_cap": 100,
+                graph.update_state(THREAD, {"schema_version": 3, "run": RunState(repo="a/b", request="x", token_cap=100), "check": "exit 0",  "path": ["triage"],
                     "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
-                graph.update_state(THREAD, {"max_budget_usd": None, "halt": "env_unavailable", "stop": "env_unavailable",
+                graph.update_state(THREAD, {"run": RunState(max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                             "path": ["implement", "done"]}, as_node="done")
-            with self.assertRaisesRegex(ValueError, "unknown usage history for --max-budget-usd.*new run"):
+            with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
                 run_live_delivery(**kwargs, checkpoint=historical)
             self.assertEqual(len(calls), dispatched)
 
@@ -256,8 +257,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with SqliteSaver.from_conn_string(str(finished)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
-                graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "repo": "a/b", "check": "", "path": ["done"], "stop": "answered",
-                                            "token_cap": 100, "max_budget_usd": None}, as_node="done")
+                graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", token_cap=100, max_budget_usd=None), "check": "", "path": ["done"], "stop": "answered",
+                                            }, as_node="done")
             output = printed(run_live_delivery(**kwargs, checkpoint=finished))
             self.assertIn("done answered", output)
             self.assertNotIn("claude spend", output)

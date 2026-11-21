@@ -1,3 +1,4 @@
+from foreman.state import RunState
 import tests
 
 from foreman.state import checkpoint_serializer, SCHEMA_VERSION
@@ -73,8 +74,8 @@ class DollarBudgetTests(unittest.TestCase):
                         invocation = {"configurable": {"thread_id": stage}}
                         graph = compile_delivery(handler, config, run=LiveRun(forge, workspace),
                                                  scratch=scratch, checkpointer=saver)
-                        graph.invoke({"schema_version": SCHEMA_VERSION, "repo": "a/b", "issue": 8, "check": "exit 0", "path": [],
-                                      "token_cap": 100, "request": "x", "issue_kind": "slice", "slice": EMPTY_SLICE},
+                        graph.invoke({"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", issue=8, token_cap=100, request="x"),  "check": "exit 0", "path": [],
+                                        "issue_kind": "slice", "slice": EMPTY_SLICE},
                                      invocation, durability="sync")
                         snapshot = graph.get_state(invocation)
                         state = checkpoint_state(snapshot.values)

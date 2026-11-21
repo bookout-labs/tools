@@ -14,7 +14,7 @@ from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import checkpoint_state
-from foreman.state import SCHEMA_VERSION, DeliveryState, checkpoint_serializer
+from foreman.state import RunState, SCHEMA_VERSION, DeliveryState, checkpoint_serializer
 
 
 FIXTURES = Path(__file__).with_name("fixtures") / "state"
@@ -38,6 +38,7 @@ class StateTests(unittest.TestCase):
                 original = {key: value for key, value in fixture.get(config)["channel_values"].items()
                             if key in DeliveryState.__annotations__}
             original["schema_version"] = SCHEMA_VERSION
+            original["run"] = RunState(repo="a/b", token_cap=100)
             with SqliteSaver.from_conn_string(str(path)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), load_config(),

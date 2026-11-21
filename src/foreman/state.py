@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-from pydantic import PlainValidator
+from pydantic import BaseModel, PlainValidator
 from typing_extensions import TypedDict
 
 from foreman.github import ReviewReceipt
@@ -21,11 +21,20 @@ from foreman.stage_output import (
 from foreman.workspace import PullRequestSize, WorkState
 
 
-SCHEMA_VERSION = 3
+class RunState(BaseModel, frozen=True, extra="forbid"):
+    repo: str = ""
+    issue: int | None = None
+    request: str = ""
+    workspace: str = ""
+    token_cap: int | None = None
+    max_budget_usd: str | None = None
+
+
+SCHEMA_VERSION = 4
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState])
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState])
 
 
 class CheckpointVersionError(ValueError):
@@ -61,12 +70,8 @@ class SpecRejection(TypedDict):
 
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
-    max_budget_usd: str | None
     pending_dispatch: PendingDispatchRecord | None
     dispatch_plan: DispatchPlanRecord
-    request: str
-    issue: int
-    workspace: str
     preflight: str
     check_exit_code: int
     triage: str
@@ -119,24 +124,21 @@ class DeliveryFields(TypedDict, total=False):
 
 
 class DeliveryUpdate(DeliveryFields, total=False):
-    token_cap: int
+    run: RunState
     stop: str
-    repo: str
     check: str
     path: Annotated[list[str], operator.add]
 
 
 class DeliveryState(DeliveryFields):
-    token_cap: int
+    run: RunState
     stop: NotRequired[str]
-    repo: str
     check: str
     path: Annotated[list[str], operator.add]
 
 
 class DeliveryResult(DeliveryFields):
-    token_cap: NotRequired[int]
-    repo: str
+    run: RunState
     check: str
     path: Annotated[list[str], operator.add]
     stop: str

@@ -1,3 +1,4 @@
+from foreman.state import RunState
 import tests
 from foreman.dry_run import DryRun
 
@@ -94,7 +95,7 @@ class RecordedEvidenceTest(unittest.TestCase):
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": "result.txt"}],
         }, context=SCRIPTED_REVIEW_CONTEXT)
         gate = _check_tool_facts(output, self.workspace, {
-            "repo": "example/repo", "check": "", "path": [], **({"verified_head": head} if head else {}),
+            "run": RunState(repo="example/repo"), "check": "", "path": [], **({"verified_head": head} if head else {}),
         })
         from foreman.review_round import ReviewHistory, accept
         return accept(ReviewHistory(), output, head or "", gate)
@@ -139,7 +140,7 @@ class RecordedEvidenceTest(unittest.TestCase):
         from foreman.review_round import GraphCheck, ReviewRound
 
         fact = StoredToolFact.from_fact(ToolFact(claim="CLI accepts --debug", fixture=None))
-        state = {"repo": "example/repo", "check": "", "path": [],
+        state = {"run": RunState(repo="example/repo"), "check": "", "path": [],
                  "review_findings": [ReviewRound(round=1, reviewed_head="a" * 40, findings=[], resolutions={},
                      graph_check=GraphCheck(detail="Unrecorded fact", tool_facts=[fact])).model_dump()],
                  "verified_head": self.commit()}
@@ -222,7 +223,7 @@ class GraphFactGateTest(unittest.TestCase):
     def test_only_exact_graph_check_restatement_is_exempt(self):
         from foreman.stage_output import GraphCheck
         check = GraphCheck(head="a" * 40, command="exit 0", exit_code=0)
-        state = {"repo": "example/repo", "check": check.command, "path": [],
+        state = {"run": RunState(repo="example/repo"), "check": check.command, "path": [],
                  "verified_head": check.head, "check_exit_code": 0, "verify": "pass"}
         fact = {"claim": check.claim, "fixture": None, "graph_check": check.model_dump()}
         self.assertEqual(self.gate([fact], state).review, "approve")
@@ -236,8 +237,8 @@ class GraphFactGateTest(unittest.TestCase):
 
     def test_omission_cannot_resolve_an_unrecorded_fact(self):
         fact = {"claim": "CLI accepts --debug", "fixture": None}
-        first = self.gate([fact], {"repo": "example/repo", "check": "exit 0", "path": []})
-        state = {"repo": "example/repo", "check": "exit 0", "path": [],
+        first = self.gate([fact], {"run": RunState(repo="example/repo"), "check": "exit 0", "path": []})
+        state = {"run": RunState(repo="example/repo"), "check": "exit 0", "path": [],
                  "review_findings": [entry.model_dump() for entry in first.history.rounds]}
         self.assertEqual(self.gate([], state).review, "changes")
 

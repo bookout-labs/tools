@@ -37,7 +37,7 @@ from foreman.redaction import redact
 from foreman.stage_output import (
     ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
 )
-from foreman.state import SCHEMA_VERSION, checkpoint_serializer, DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult, SpecRejection, SpecRejectionKind
+from foreman.state import RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult, SpecRejection, SpecRejectionKind
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
@@ -139,13 +139,13 @@ def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
 def dollar_detail(state: DeliveryState, attempts: list[AttemptRecord]) -> str:
     spend = claude_spend(attempts)
     detail = f"Run Claude spend: ${spend}." if spend is not None else "Run Claude spend: unknown."
-    if (limit := state.get("max_budget_usd")) is not None:
+    if (limit := state.get("run", RunState()).max_budget_usd) is not None:
         detail += f" Dollar allowance: ${limit}."
     return detail
 
 
 def dollar_admission_for(state: DeliveryState, attempts: list[AttemptRecord]) -> Remaining | Exhausted | CostUnknown | None:
-    limit = state.get("max_budget_usd")
+    limit = state.get("run", RunState()).max_budget_usd
     return dollar_admission(BudgetUsd(Decimal(limit)), attempts) if limit is not None else None
 
 
@@ -153,9 +153,11 @@ def admission_stop(
     state: DeliveryState, attempts: list[AttemptRecord], stage: str,
     admission: Remaining | Exhausted | CostUnknown | None,
 ) -> DeliveryUpdate | None:
-    if run_tokens(attempts) >= state["token_cap"]:
+    run_state = state["run"]
+    assert run_state.token_cap is not None
+    if run_tokens(attempts) >= run_state.token_cap:
         last = attempts[-1]
-        detail = (f"Run used {run_tokens(attempts)} tokens; cap is {state['token_cap']}. "
+        detail = (f"Run used {run_tokens(attempts)} tokens; cap is {run_state.token_cap}. "
                   f"Last attempt: {last['stage']} {last['model']} used {run_tokens([last])}. "
                   "An in-flight attempt can overshoot the cap.")
         return halted(Halt.budget_exceeded, detail, stage)
@@ -427,9 +429,10 @@ def compile_delivery(
                 except InvalidOutput as exc:
                     return halted(Halt.invalid_output, str(exc), name)
             review_context: tuple[Forge, PullRequest, ReviewScope] | None = None
-            repo = state.get("repo", "")
+            run_state = state["run"]
+            repo = run_state.repo
             if name == "review":
-                head, issue = state.get("verified_head"), state.get("issue")
+                head, issue = state.get("verified_head"), run_state.issue
                 try:
                     worktree = run.workspace.inspect()
                     if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
@@ -575,22 +578,23 @@ def compile_delivery(
         target = PullRequest.model_validate(plan["target"])
         marker = f"{state['review_run_id']}:{len(past.rounds)}:{target.headRefOid}"
         try:
-            receipt = run.forge.post_review(state["repo"], target, body, comments, marker=marker)
+            receipt = run.forge.post_review(state["run"].repo, target, body, comments, marker=marker)
         except ForgeError as exc:
             return halted(Halt.review_not_posted, str(exc), "review_post")
         return {"review_receipt": receipt}
 
     def prepare(state: DeliveryState) -> DeliveryUpdate:
-        assert "slice" in state and "repo" in state
+        assert "slice" in state and "run" in state
         title = redact(str(state["slice"]["title"]))
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
         work = state.get("work", WorkState())
-        branch = work.branch or f"{state.get('issue') or '<issue>'}-{slug}"
+        run_state = state["run"]
+        branch = work.branch or f"{run_state.issue or '<issue>'}-{slug}"
         try:
             before = run.workspace.inspect()
             if not before.clean:
                 return halted(Halt.dirty_worktree, "Unowned edits exist before this attempt; save them before rerunning.", "prepare")
-            base = work.base or run.forge.default_branch(state["repo"])
+            base = work.base or run.forge.default_branch(run_state.repo)
             run.workspace.create_branch(branch, base)
             if repair_head := work.repair_head:
                 run.workspace.refresh(branch, repair_head)
@@ -632,7 +636,7 @@ def compile_delivery(
 
     def commit(state: DeliveryState) -> DeliveryUpdate:
         assert "slice" in state
-        subject = f"{state.get('issue') or '<issue>'}: {' '.join(redact(str(state['slice']['title'])).split())}"
+        subject = f"{state['run'].issue or '<issue>'}: {' '.join(redact(str(state['slice']['title'])).split())}"
         subject = textwrap.shorten(subject, width=72, placeholder="")
         model = state.get("models_used", {}).get("implement")
         if not model:
@@ -669,10 +673,11 @@ def compile_delivery(
             return halted(Halt.git_failed, str(exc), "commit")
 
     def publish(state: DeliveryState) -> DeliveryUpdate:
-        assert "work" in state and state["work"].branch and state["work"].base and "repo" in state and "slice" in state
-        branch, base, repo = state["work"].branch, state["work"].base, state["repo"]
+        assert "work" in state and state["work"].branch and state["work"].base and "run" in state and "slice" in state
+        run_state = state["run"]
+        branch, base, repo = state["work"].branch, state["work"].base, run_state.repo
         title = " ".join(redact(str(state["slice"]["title"])).split())
-        body = f"Closes #{state.get('issue') or '<issue>'}"
+        body = f"Closes #{run_state.issue or '<issue>'}"
         try:
             observed = run.workspace.inspect()
             if not observed.clean or observed.branch != branch or observed.head != state["work"].head_sha:
@@ -783,7 +788,8 @@ def compile_delivery(
                 return moved_before_review(worktree.head, head)
             if worktree.branch is None:
                 raise WorktreeInspectionFailed("HEAD is detached. Pull request sizing requires a checked-out branch.")
-            repo = state.get("repo")
+            run_state = state["run"]
+            repo = run_state.repo
             assert repo is not None
             base = run.forge.pull_request_base(repo, worktree.branch)
             size = run.workspace.pull_request_size(head, base)
@@ -858,7 +864,8 @@ def compile_delivery(
         return "prepare" if state.get("proof_labels") else "review"
 
     def arm_merge(state: DeliveryState) -> DeliveryUpdate:
-        repo = state["repo"]
+        run_state = state["run"]
+        repo = run_state.repo
         head = state.get("verified_head")
         merge = MergeState(
             status="not_armed", receipt=state.get("merge", MergeState()).receipt,
@@ -891,7 +898,7 @@ def compile_delivery(
             return merge_halted(Halt.merge_held, f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
         if hold:
             return merge_halted(Halt.merge_held, f"{MERGE_HOLD_VARIABLE} is set" + (f": {hold}" if hold.strip() else "."))
-        issue = state.get("issue")
+        issue = run_state.issue
         if issue is None:
             return merge_halted(Halt.merge_not_armed, "Live merge requires an issue number.")
         receipt = state.get("review_receipt")
@@ -1083,12 +1090,9 @@ def run_delivery(
     dry = DryRun(commands=commands if commands is not None else [])
     state: DeliveryState = {
         "schema_version": SCHEMA_VERSION,
-        "issue": dry.issue_placeholder,
-        "repo": repo,
-        "token_cap": max_tokens,
-        "max_budget_usd": usd_text(max_budget_usd) if max_budget_usd is not None else None,
+        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens,
+                        max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
         "fact_record": fact_record_path(fact_record),
-        "request": request,
         "check": check,
         "issue_kind": "parent" if slice is None else "slice",
         "review_rounds": 0,

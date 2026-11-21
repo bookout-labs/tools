@@ -1,3 +1,4 @@
+from foreman.state import RunState
 import tests
 
 from foreman.state import SCHEMA_VERSION
@@ -59,7 +60,7 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(restored.work_kind, "bug_fix")
         with self.assertRaises(ValidationError):
             StoredSlice.model_validate({**SLICE, "provenance": {"author": candidate.author.record(), "revision": "bad"}})
-        state = checkpoint_state({"schema_version": SCHEMA_VERSION, "repo": "org/repo", "check": "", "path": [], "token_cap": DEFAULT_TOKEN_CAP, "slice": restored.record()})
+        state = checkpoint_state({"schema_version": SCHEMA_VERSION, "run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "check": "", "path": [],  "slice": restored.record()})
         self.assertEqual(state["slice"]["provenance"], provenance.record())
         self.assertNotIn("provenance", StoredSlice.model_validate({**SLICE, "provenance": None}).record())
 
@@ -97,7 +98,7 @@ class CandidateTests(unittest.TestCase):
 
     def test_checkpoint_rejects_divergent_candidate_copies(self):
         candidate = self.candidate()
-        state = {"schema_version": SCHEMA_VERSION, "repo": "org/repo", "check": "", "path": [], "token_cap": DEFAULT_TOKEN_CAP, **candidate.update(single=True)}
+        state = {"schema_version": SCHEMA_VERSION, "run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "check": "", "path": [],  **candidate.update(single=True)}
         self.assertIsNotNone(checkpoint_state(state))
         for field, value in (("acceptance", "Changed"), ("provenance", {"author": candidate.author.record(), "revision": "0" * 64}),
                              ("provenance", {"author": {"stage": "spec", "model": "other", "family": "gpt"}, "revision": candidate.revision})):
@@ -125,6 +126,6 @@ class CandidateTests(unittest.TestCase):
 
     def test_without_methods_records_dispatch_author_independently_of_attempts(self):
         result = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=DryRun(), workspace=DryRun())).invoke(
-            {"repo": "org/repo", "check": "", "path": [], "token_cap": DEFAULT_TOKEN_CAP, "issue_kind": "parent"})
+            {"run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "check": "", "path": [],  "issue_kind": "parent"})
         self.assertNotIn("skill_attempts", result)
         self.assertEqual(result["spec_candidate"]["author"]["model"], result["models_used"]["triage"])
