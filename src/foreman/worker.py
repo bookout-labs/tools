@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 from tempfile import TemporaryDirectory
 from typing import Callable
 
@@ -43,6 +44,8 @@ class CliWorker:
         prompt = (
             f"{instruction}\n\nReturn exactly one JSON object that matches the output schema. "
             "Use null for inapplicable nullable fields. Do not arm a merge."
+            " Write disposable scratch only under $TMPDIR, outside the checkout."
+            " Do not return the scratch path as evidence."
         )
         contract = STAGE_OUTPUTS[node]
         schema = json.dumps(contract.model_json_schema())
@@ -51,10 +54,16 @@ class CliWorker:
         plan = state.get("dispatch_plan")
         budget = DispatchPlan.model_validate(plan).budget_usd if plan else None
         adapter = ADAPTERS[model.family](model)
-        with TemporaryDirectory(prefix="foreman-worker-") as directory:
+        checkout = self.cwd.resolve()
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        if temp_root.is_relative_to(checkout):
+            temp_root = checkout.parent
+        with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
+            scratch = Path(directory) / "scratch"
+            scratch.mkdir()
             args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None))
             try:
-                process = self.run(args, self.cwd, adapter.env)
+                process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch)})
             except FileNotFoundError:
                 return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable")
             return adapter.read(process)
