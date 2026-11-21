@@ -12,6 +12,7 @@ from detect_secrets.plugins.gitlab_token import GitLabTokenDetector
 from detect_secrets.plugins.high_entropy_strings import HighEntropyStringsPlugin
 from detect_secrets.plugins.jwt import JwtTokenDetector
 from detect_secrets.plugins.keyword import KeywordDetector, QUOTES_REQUIRED_DENYLIST_REGEX_TO_GROUP
+from detect_secrets.plugins.npm import NpmDetector
 from detect_secrets.plugins.private_key import PrivateKeyDetector
 from detect_secrets.settings import default_settings, get_plugins
 
@@ -46,15 +47,17 @@ def _values(plugin: BasePlugin, line: str) -> Iterator[str]:
         for pattern, group in QUOTES_REQUIRED_DENYLIST_REGEX_TO_GROUP.items():
             for match in pattern.finditer(line):
                 yield match.group(group)
+    elif isinstance(plugin, NpmDetector):
+        for secret in plugin.analyze_string(line):
+            yield secret.split(maxsplit=1)[0].partition('"')[0].partition("'")[0].rstrip("`")
     else:
         yield from plugin.analyze_string(line)
 
 
 def _private_key_span(text: str, start: int, header: str) -> tuple[int, int]:
     end = start + len(header)
-    if text[max(0, start - 5):start] == "-----":
+    if text[max(0, start - 5):start] == "-----" and text.startswith("-----", end):
         start -= 5
-    if header.startswith("BEGIN "):
         footer = "END " + header.removeprefix("BEGIN ")
         close = text.find(footer, end)
         if close != -1:
@@ -62,7 +65,11 @@ def _private_key_span(text: str, start: int, header: str) -> tuple[int, int]:
             if text.startswith("-----", end):
                 end += 5
             return start, end
-    return start, len(text)
+    elif not (header == "PuTTY-User-Key-File-2" and text.startswith(":", end)):
+        return start, end
+    # Without a footer, stop at the end of the quoted value or Markdown block.
+    boundaries = (text.find(delimiter, end) for delimiter in ('"', "'", "\n```"))
+    return start, min((position for position in boundaries if position != -1), default=len(text))
 
 
 def _matches(text: str, plugins: list[BasePlugin]) -> Iterator[_Match]:

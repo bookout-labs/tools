@@ -17,6 +17,8 @@ the detector output locally and does not request credential verification.
   matches armor headers. Foreman includes the corresponding block.
 - The [keyword plugin][keyword] uses one search per pattern. Foreman uses
   those same patterns and capture groups to find repeated matches on a line.
+- The [npm plugin][npm] matches to the end of a line for new-style tokens.
+  Foreman preserves surrounding quote delimiters, including in slice JSON.
 - Credential-shaped test values are synthetic.
 
 [settings]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/settings.py
@@ -29,3 +31,4 @@ the detector output locally and does not request credential verification.
 [jwt]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/jwt.py
 [key]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/private_key.py
 [keyword]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/keyword.py
+[npm]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/npm.py

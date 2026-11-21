@@ -2,6 +2,7 @@ import ast
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+import json
 from pathlib import Path
 import subprocess
 import unittest
@@ -12,6 +13,7 @@ from detect_secrets.settings import default_settings, get_plugins
 from foreman.cli import main
 from foreman.delivery import DryRun
 from foreman.github import LiveForge
+from foreman.runner import _load_slice
 
 
 # Synthetic credential shapes assembled at runtime. None have been issued.
@@ -90,6 +92,31 @@ class RedactionTest(unittest.TestCase):
             'body=password="[redacted:Secret Keyword]" password="[redacted:Secret Keyword]"',
             gh.call_args.args[0],
         )
+
+    @patch("foreman.github.subprocess.run")
+    def test_redaction_preserves_the_slice_json_delimiters(self, gh):
+        gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
+        token = "npm_" + "a" * 36
+        fields = {
+            "title": "Explain BEGIN PRIVATE KEY in the docs",
+            "acceptance": f"//example.invalid/:_authToken={token}",
+            "screen": "",
+            "depends_on": [],
+            "properties": [{
+                "name": "-----BEGIN " + "PRIVATE KEY-----\nsynthetic key material",
+                "constraint": "row_check",
+            }],
+        }
+        body = f"Excerpt\n\n```json\n{json.dumps(fields, indent=2)}\n```"
+        LiveForge().create_issue("Example/Target", "Synthetic fixture", body, ["slice"])
+        written = next(arg for arg in gh.call_args.args[0] if arg.startswith("body="))
+        self.assertEqual(_load_slice(written.removeprefix("body=")), {
+            "title": "Explain [redacted:Private Key] in the docs",
+            "acceptance": "//example.invalid/:_authToken=[redacted:NPM tokens]",
+            "screen": "",
+            "depends_on": [],
+            "properties": [{"name": "[redacted:Private Key]", "constraint": "row_check"}],
+        })
 
     @patch("foreman.github.subprocess.run")
     def test_commit_sha_is_preserved_in_live_and_dry_merge_arguments(self, gh):
