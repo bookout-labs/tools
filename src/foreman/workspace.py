@@ -307,9 +307,7 @@ class LiveWorkspace:
             *ATTRIBUTE_CONFIG, f"--attr-source={merge_base}", "diff", "--find-renames", "--text",
             "--no-ext-diff", "--no-textconv",
         )
-        raw = self._git(
-            *diff_options, "--numstat", "-z", merge_base, head, "--",
-        )
+        raw = self._git(*diff_options, "--numstat", "-z", merge_base, head, "--")
         if not raw:
             return {"head": head, "merge_base": merge_base, "lines": 0}
         entries: list[tuple[bytes, bytes, bytes, bytes]] = []
@@ -336,14 +334,10 @@ class LiveWorkspace:
                 continue
             crosses_exclusion = (before in generated) != (after in generated)
             if added == b"-" or crosses_exclusion:
-                # Numstat can report binary even when Git emits a text patch.
-                patch_paths = (before, after)
-                if crosses_exclusion:
-                    patch_paths = (after,) if before in generated else (before,)
                 patch = self._git(
                     "--literal-pathspecs", *diff_options, "--patch", "--unified=0", "--inter-hunk-context=0",
-                    "--no-renames" if crosses_exclusion else "--find-renames",
-                    "--no-color", merge_base, head, "--", *map(os.fsdecode, patch_paths),
+                    *(("--no-renames",) if crosses_exclusion else ()),
+                    "--no-color", merge_base, head, "--", *map(os.fsdecode, (before, after)),
                 )
                 hunks = HUNK.findall(patch)
                 removed_lines = sum(int(old or b"1") for old, _ in hunks)

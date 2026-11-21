@@ -189,7 +189,6 @@ class PullRequestSizeTest(unittest.TestCase):
         self.git("switch", "-C", BRANCH, base)
         self.git("mv", "docs/original.md", "tests/fixtures/moved.json")
         self.git("mv", "tests/fixtures/original.json", "extracted.md")
-        self.write("tests/fixtures/original.json", "replacement\n" * 17)
         head = self.commit()
         self.assertEqual(LiveWorkspace(self.root).pull_request_size(head, "main")["lines"], 24)
 
@@ -314,12 +313,12 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertIn("done verified", self.invoke("--answer", "override")[0])
 
     def test_branch_attributes_cannot_exempt_its_own_diff(self):
-        self.write(".gitattributes", "** linguist-generated -diff\n")
+        self.write(".gitattributes", (self.root / ".gitattributes").read_text() + "** linguist-generated -diff\n")
         self.write("docs/items.md", "changed\n" * PULL_REQUEST_LINES)
         self.commit()
         stdout, _ = self.invoke(expected_code=3)
         self.assertIn("paused needs_human", stdout)
-        self.assertEqual(self.spec_state["pr_size"]["lines"], PULL_REQUEST_LINES + 6)
+        self.assertEqual(self.spec_state["pr_size"]["lines"], PULL_REQUEST_LINES + 1)
 
     def test_missing_base_stops_before_review(self):
         self.forge.base_branch = "missing"

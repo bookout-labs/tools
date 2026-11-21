@@ -1,5 +1,8 @@
+# Fixtures are test data rather than handwritten implementation.
 tests/fixtures/** linguist-generated
+# Stage schemas are generated from the output models.
 tests/stage-schemas.json linguist-generated
+# Dependency managers generate lockfiles.
 *.lock linguist-generated
 package-lock.json linguist-generated
 pnpm-lock.yaml linguist-generated
