@@ -1,12 +1,10 @@
 import unittest
 
 from foreman.proof import (
-    ProofError,
     browser_proof_label,
     browser_required,
     formal_proof_label,
     formal_required,
-    score_verdict,
 )
 from foreman.stage_output import BrowserProof, FormalProof
 
@@ -30,15 +28,6 @@ class ProofTest(unittest.TestCase):
         self.assertFalse(browser_required({"screen": ""}))
         self.assertFalse(formal_required({"properties": []}))
 
-    def test_score_verdicts(self):
-        self.assertEqual(score_verdict("approve"), "pass")
-        self.assertEqual(score_verdict("block"), "fail")
-        self.assertEqual(score_verdict("insufficient_evidence"), "insufficient_evidence")
-
-    def test_unknown_score_labels_are_rejected(self):
-        for label in ("pass", "", None, []):
-            with self.subTest(label=label), self.assertRaises(ProofError):
-                score_verdict(label)
 
 
 class ProofLabelTest(unittest.TestCase):

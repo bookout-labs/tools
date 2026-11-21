@@ -611,3 +611,10 @@ version = "2.102.0"
 kind = "captured_run"
 argv = ["gh", "pr", "view", "--repo", "bookout-labs/tools", "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest", "--", "60"]
 notes = "Recorded recovery probe for PR 60. Production uses the same argument order with a branch or PR number as the selector."
+
+[fixtures."pydantic-records.txt"]
+tool = "pydantic"
+version = "2"
+kind = "quoted_source"
+sources = ["https://docs.pydantic.dev/latest/api/standard_library_types/#typed-dictionaries", "https://docs.pydantic.dev/latest/api/config/#pydantic.config.with_config", "https://github.com/pydantic/pydantic/blob/v2.12.5/pydantic/_internal/_model_construction.py"]
+notes = "TypedDict requires typing_extensions below Python 3.12. Strict mode alone discards extra keys; with_config(extra=forbid) rejects them. ModelMetaclass inherits ABCMeta and enforces abstractmethod. Stage record tests exercise these behaviors."

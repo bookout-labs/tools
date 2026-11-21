@@ -1,0 +1,8 @@
+Pydantic 2 TypedDict documentation and implementation.
+Python <3.12 requires typing_extensions.TypedDict.
+Strict mode checks field types but default extra handling discards unknown keys.
+with_config(extra="forbid") rejects unknown keys, including nested records.
+BaseModel uses ModelMetaclass(ABCMeta), enforcing abstractmethod.
+https://docs.pydantic.dev/latest/api/standard_library_types/#typed-dictionaries
+https://docs.pydantic.dev/latest/api/config/#pydantic.config.with_config
+https://github.com/pydantic/pydantic/blob/v2.12.5/pydantic/_internal/_model_construction.py
