@@ -302,7 +302,6 @@ class CliWorkerTest(unittest.TestCase):
         models = {
             "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"],
             "claude-opus-5-5-high": ["claude", "--model", "claude-opus-5-5", "--effort", "high"],
-            "grok-4.7-high": ["grok", "-m", "grok-4.7", "--reasoning-effort", "high"],
         }
         for model, prefix in models.items():
             with self.subTest(model=model):
@@ -340,7 +339,7 @@ class CliWorkerTest(unittest.TestCase):
             checkout = Path(root) / "checkout"
             checkout.mkdir()
             paths = []
-            for model in ("gpt-6.1-sol-high", "claude-opus-5-5-high", "grok-4.7-high"):
+            for model in ("gpt-6.1-sol-high", "claude-opus-5-5-high"):
                 with self.subTest(model=model):
                     def run(args, cwd, env):
                         scratch = Path(env["TMPDIR"])
@@ -366,7 +365,7 @@ class CliWorkerTest(unittest.TestCase):
                     result = CliWorker(checkout, run)("triage", ModelSpec.parse(model), {}, "Read the issue.")
                     self.assertEqual(result.kind, "ran")
                     self.assertFalse(paths[-1].exists())
-            self.assertEqual(len(set(paths)), 3)
+            self.assertEqual(len(set(paths)), 2)
             self.assertEqual(list(checkout.iterdir()), [])
 
     def test_inherited_checkout_tmpdir_is_overridden_without_changing_environment(self):
@@ -438,33 +437,40 @@ assert dict(os.environ) == inherited
             return run_delivery(CliWorker(Path("."), run), repo="Example/Engine",
                                 request="List items", check="exit 0", config=fixture_config, slice=EMPTY_SLICE, scratch=scratch)
 
+    def test_grok_capability_failure_falls_through_without_launching_it(self):
+        calls = []
+        def run(args, cwd, env):
+            calls.append(args[0])
+            return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
+        result = self.walk_triage(("grok-4.7-high", "gpt-6.1-sol-high"), run)
+        self.assertEqual(result["stop"], "needs_human")
+        self.assertEqual(calls, ["codex"])
+        self.assertEqual([a["outcome"] for a in result["attempts"]], ["cli_missing", "ran"])
+
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
-        for cli, model in (("claude", "claude-opus-5-5-high"), ("grok", "grok-4.7-high")):
-            cases = [("quota", "needs_human"), ("cli_missing", "needs_human"),
-                     ("is_error", "invalid_output"), ("missing_model_usage", "invalid_output")]
-            if cli == "claude":
-                cases.append(("wrong_model", "invalid_output"))
-            for case, stop in cases:
-                with self.subTest(cli=cli, case=case):
-                    calls = []
+        cases = [("quota", "needs_human"), ("cli_missing", "needs_human"),
+                 ("is_error", "invalid_output"), ("missing_model_usage", "invalid_output")]
+        cases.append(("wrong_model", "invalid_output"))
+        for case, stop in cases:
+            with self.subTest(case=case):
+                calls = []
 
-                    def run(args, cwd, env):
-                        calls.append(args[0])
-                        if args[0] == "codex":
-                            return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
-                        if case == "cli_missing":
-                            raise FileNotFoundError(args[0])
-                        exit_code = 1 if case in {"quota", "is_error"} else 0
-                        return fixture_process(args, case, exit_code)
+                def run(args, cwd, env):
+                    calls.append(args[0])
+                    if args[0] == "codex":
+                        return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
+                    if case == "cli_missing":
+                        raise FileNotFoundError(args[0])
+                    exit_code = 1 if case in {"quota", "is_error"} else 0
+                    return fixture_process(args, case, exit_code)
 
-                    result = self.walk_triage((model, "gpt-6.1-sol-high"), run)
-                    self.assertEqual(result["stop"], stop)
-                    self.assertEqual(calls, [cli, "codex"] if stop == "needs_human" else [cli])
-                    expected = [case, "ran"] if stop == "needs_human" else ["failed"]
-                    self.assertEqual([item["outcome"] for item in result["attempts"]], expected)
-                    if case == "is_error":
-                        message = "turn_handoff:" if cli == "claude" else "unknown model id"
-                        self.assertIn(message, result["halt_detail"])
+                result = self.walk_triage(("claude-opus-5-5-high", "gpt-6.1-sol-high"), run)
+                self.assertEqual(result["stop"], stop)
+                self.assertEqual(calls, ["claude", "codex"] if stop == "needs_human" else ["claude"])
+                expected = [case, "ran"] if stop == "needs_human" else ["failed"]
+                self.assertEqual([item["outcome"] for item in result["attempts"]], expected)
+                if case == "is_error":
+                    self.assertIn("turn_handoff:", result["halt_detail"])
 
     def test_delivery_stops_for_an_incomplete_native_stage_reply(self):
         def run(args, cwd, env):
@@ -486,7 +492,7 @@ assert dict(os.environ) == inherited
             raise FileNotFoundError(args[0])
 
         result = self.walk_triage(("claude-test", "grok-test", "gpt-test"), run)
-        self.assertEqual(calls, ["claude", "grok", "codex"])
+        self.assertEqual(calls, ["claude", "codex"])
         self.assertEqual(result["stop"], "cli_missing")
         self.assertIn("codex executable is unavailable", result["halt_detail"])
 
@@ -2261,7 +2267,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 else:
                     self.assertIn("paused quota_exhausted", first)
                     self.assertFalse((root / "check.log").exists())
-                    attempts = len(load_config().nodes["implement"].models)
+                    attempts = sum(model.family != "grok" for model in load_config().nodes["implement"].models)
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
                                      ["TriageOutput"] + ["ImplementOutput"] * attempts)
 

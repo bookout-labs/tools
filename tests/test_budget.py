@@ -12,7 +12,6 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.adapters import Call, Outcome, Usage
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
-from foreman.adapters.grok import GrokAdapter
 from foreman.cli import run_exit_code
 from foreman.config import ModelSpec
 from foreman.delivery import LiveRun, compile_delivery
@@ -42,10 +41,8 @@ class DollarBudgetTests(unittest.TestCase):
         index = argv.index("--max-budget-usd")
         self.assertEqual(argv[index + 1], "0.1")
         self.assertEqual(argv[:index] + argv[index + 2:], claude.command(call))
-        for adapter in (CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high")),
-                        GrokAdapter(ModelSpec.parse("grok-4.7-high"))):
-            with self.subTest(adapter=type(adapter).__name__):
-                self.assertEqual(adapter.command(budgeted), adapter.command(call))
+        codex = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"))
+        self.assertEqual(codex.command(budgeted), codex.command(call))
 
     def test_budget_stop_halts_without_fallback_output_or_publication(self):
         for stage in ("triage", "implement"):

@@ -100,6 +100,9 @@ class DispatchBudgetTests(unittest.TestCase):
 
                 reply = CliWorker(Path.cwd(), other_runner)("triage", model,
                     {"dispatch_plan": {"models": [], "instruction": "x", "methods": [], "target": None, "scope": None, "budget_usd": "0.1"}}, "x")
+                if model == GROK:
+                    self.assertEqual((reply.kind, received), ("cli_missing", []))
+                    continue
                 self.assertEqual(reply.kind, "ran")
                 self.assertEqual(len(received), 1)
                 self.assertNotIn("--max-budget-usd", received[0])

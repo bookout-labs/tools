@@ -3,9 +3,14 @@ import tests
 import json
 from pathlib import Path
 import unittest
+import tomllib
+from tempfile import TemporaryDirectory
+from subprocess import CompletedProcess
 
-from foreman.adapters import Call, Outcome
+from foreman.adapters import Call, CapabilityUnavailable, Outcome
 from foreman.adapters.claude import ClaudeAdapter
+from foreman.adapters.codex import CodexAdapter
+from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec, NodeConfig, load_config
 from foreman.delivery import run_delivery
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
@@ -117,3 +122,82 @@ class PermissionsTest(unittest.TestCase):
             reads = [c for c in content if c.get("type") == "tool_use" and c.get("name") == "Read" and c["input"]["file_path"].endswith("methods/method.md")]
             self.assertTrue(reads)
             self.assertTrue(any(c.get("type") == "tool_result" and c.get("tool_use_id") == reads[0]["id"] and not c.get("is_error") for c in content))
+
+    def test_grok_fails_before_launch_for_editing_and_readonly(self):
+        from unittest.mock import Mock, patch
+        for system in ('Darwin', 'Linux', 'Windows'):
+            for stage in ('implement', 'review'):
+                runner = Mock()
+                with patch('foreman.adapters.grok.platform.system', return_value=system):
+                    with self.assertRaises(CapabilityUnavailable):
+                        GrokAdapter(ModelSpec.parse('grok-4.7-high')).command(Call('probe', '{}', stage == 'implement', Path.cwd()))
+                    outcome = CliWorker(Path.cwd(), runner)(stage, ModelSpec.parse('grok-4.7-high'), {}, 'probe')
+                self.assertEqual(outcome.kind, 'cli_missing')
+                self.assertIn(system, outcome.detail)
+                self.assertIn('editing requires an isolated worker launcher' if stage == 'implement' else 'temp writes', outcome.detail)
+                self.assertEqual('child network isolation is unavailable' in outcome.detail, system == 'Darwin' and stage == 'review')
+                runner.assert_not_called()
+
+    def test_codex_current_commands_enforce_the_policy(self):
+        adapter = CodexAdapter(ModelSpec.parse('gpt-6.1-sol-high'))
+        with TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            for stage in ('implement', 'review', 'triage'):
+                for roots in ((), (root / 'methods-🦊',)):
+                    def run(args, cwd, env):
+                        for flag in ('--ignore-user-config', '--ignore-rules'):
+                            self.assertIn(flag, args)
+                        overrides = [args[i + 1] for i, arg in enumerate(args) if arg == '-c']
+                        self.assertIn('approval_policy=never', overrides)
+                        self.assertIn('default_permissions=foreman', overrides)
+                        policy = tomllib.loads(next(v for v in overrides if v.startswith('permissions.foreman=')))['permissions']['foreman']
+                        self.assertEqual(policy['extends'], ':read-only')
+                        self.assertIs(policy['network']['enabled'], False)
+                        filesystem = {str(r): 'read' for r in roots}
+                        if stage == 'implement':
+                            filesystem.update({':workspace_roots': {'.': 'write', '.git': 'read', '.codex': 'read'}, env['TMPDIR']: 'write'})
+                        self.assertEqual(policy['filesystem'], filesystem)
+                        return fixture_process(args, 'success', 0)
+                    plan = {'models': [], 'instruction': '', 'methods': [], 'read_roots': [str(r) for r in roots], 'target': None, 'scope': None}
+                    self.assertEqual(CliWorker(root, run)(stage, adapter.model, {'dispatch_plan': plan}, 'probe').kind, 'ran')
+                    args = adapter.command(Call('probe', '{}', stage == 'implement', root, read_roots=roots))
+                    run(args, root, {'TMPDIR': str(root / 'scratch')})
+
+    def test_codex_kernel_captures_enforce_writes_and_network(self):
+        for mode in ('edit', 'readonly'):
+            capture = json.loads((Path(__file__).parent / f'fixtures/codex/permissions/{mode}.json').read_text())
+            self.assertEqual(capture['returncode'], 0)
+            adapter = CodexAdapter(ModelSpec.parse('gpt-6.1-sol-high'))
+            with TemporaryDirectory() as folder:
+                root = Path(folder).resolve()
+                roots = tuple(root / name for name in ('methods', 'scratch/methods', 'repo/methods'))
+                call = Call(capture['argv'][-1].replace('<probe>', str(root)), '{}', mode == 'edit', root, read_roots=roots)
+                self.assertEqual([arg.replace(str(root), '<probe>') for arg in adapter.command(call)], capture['argv'])
+            outcome = adapter.read(CompletedProcess(capture['argv'], capture['returncode'], capture['stdout'], capture['stderr']), call)
+            self.assertEqual((outcome.kind, outcome.output), ('ran', {'done': True}))
+            roots = ('methods', 'scratch/methods', 'repo/methods')
+            expected = {'sh check.sh', 'echo outside > <probe>/outside/escape', 'echo scratch > <probe>/scratch/shell.txt',
+                        'git -c user.name=Probe -c user.email=probe@example.test commit --allow-empty -m probe',
+                        'curl --noproxy "*" --connect-timeout 3 -k -I https://1.1.1.1', 'gh pr list'}
+            expected.update(f'{prefix} <probe>/{r}/method.md' for r in roots for prefix in ('cat', 'echo changed >'))
+            self.assertEqual({row['command'] for row in capture['kernel']}, expected)
+            self.assertEqual(set(capture['isolation_controls']), {'--ignore-user-config', '--ignore-rules'})
+            for flag, control in capture['isolation_controls'].items():
+                self.assertNotIn(flag, control['argv'])
+                self.assertNotEqual(control['returncode'], 0)
+                self.assertIn('invalid-inherited-provider' if flag == '--ignore-user-config' else 'rule', control['stderr'])
+            self.assertFalse(capture['commit_succeeded'])
+            for row in capture['kernel']:
+                command = row['command']
+                allowed = command.startswith('cat ') or (mode == 'edit' and (
+                    command == 'sh check.sh' or command.startswith('echo scratch ')))
+                self.assertEqual(row['returncode'] == 0, allowed, row)
+            for path in ('methods/method.md', 'scratch/methods/method.md', 'repo/methods/method.md'):
+                self.assertEqual(capture['files'][path], 'original\n')
+            self.assertNotIn('outside/escape', capture['files'])
+            self.assertEqual('repo/checked' in capture['files'], mode == 'edit')
+            self.assertEqual(capture['unavailable_policy']['argv'][:2], ['codex', 'exec'])
+            self.assertNotEqual(capture['unavailable_policy']['returncode'], 0)
+            self.assertEqual(capture['unavailable_policy']['stdout'], '')
+            self.assertNotEqual(capture['sandbox_unavailable']['returncode'], 0)
+            self.assertEqual(capture['sandbox_unavailable']['stdout'], '')

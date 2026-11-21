@@ -88,11 +88,18 @@ class CodexAdapter:
     def command(self, call: Call) -> list[str]:
         schema_path = call.temp_dir / "output-schema.json"
         schema_path.write_text(call.schema, encoding="utf-8")
-        sandbox = "workspace-write" if call.edit else "read-only"
+        filesystem = {str(root.resolve()): '"read"' for root in call.read_roots}
+        if call.edit:
+            filesystem[":workspace_roots"] = '{"."="write", ".git"="read", ".codex"="read"}'
+            filesystem[str((call.temp_dir / "scratch").resolve())] = '"write"'
+        entries = ",".join(f"{json.dumps(path, ensure_ascii=False)}={access}" for path, access in filesystem.items())
+        profile = '{extends=":read-only",network={enabled=false},filesystem={' + entries + '}}'
+        policy = ["--ignore-user-config", "--ignore-rules", "-c", "approval_policy=never",
+                  "-c", "default_permissions=foreman", "-c", "permissions.foreman=" + profile]
         effort = ["-c", f"model_reasoning_effort={self.model.effort}"] if self.model.effort else []
         return [
             "codex", "exec", "-m", self.model.model_id, *effort, "--ephemeral",
-            "--json", "--output-schema", str(schema_path), "--color", "never", "-s", sandbox, call.prompt,
+            "--json", "--output-schema", str(schema_path), "--color", "never", *policy, call.prompt,
         ]
 
     def read(self, process: CompletedProcess[str], call: Call) -> Outcome:

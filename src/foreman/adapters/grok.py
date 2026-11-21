@@ -1,10 +1,11 @@
+import platform
 from subprocess import CompletedProcess
 from typing import Literal
 
 from pydantic import Field
 from typing_extensions import override
 
-from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, build_outcome
+from foreman.adapters import Call, CapabilityUnavailable, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, build_outcome
 
 # Grok Build 1.0.89 emits these exact quota messages from sampling/error.rs.
 # Other server text has no rate-limit code in headless JSON and is treated as a failure.
@@ -56,6 +57,9 @@ class GrokAdapter(NativeAdapter):
     envelope = GrokEnvelope
 
     def command(self, call: Call) -> list[str]:
-        effort = ["--reasoning-effort", self.model.effort] if self.model.effort else []
-        return ["grok", "-m", self.model.model_id, *effort, "--permission-mode", ("acceptEdits" if call.edit else "plan"),
-                "--no-subagents", "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]
+        reason = "editing requires an isolated worker launcher" if call.edit else (
+            "read-only sandbox permits temp writes, including method exports"
+        )
+        if not call.edit and platform.system() == "Darwin":
+            reason += "; child network isolation is unavailable"
+        raise CapabilityUnavailable(f"Grok on {platform.system()}: {reason}")
