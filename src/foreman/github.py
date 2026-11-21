@@ -1,14 +1,17 @@
 """GitHub operations for delivery runs."""
 
+from __future__ import annotations
+
 import json
 import subprocess
-from typing import Literal, Protocol, TypeVar
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict
 
-from pydantic import BaseModel, PositiveInt, RootModel, ValidationError
+from pydantic import BaseModel, ConfigDict, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.redaction import redact
-from foreman.stage_output import StoredSlice
+if TYPE_CHECKING:
+    from foreman.stage_output import StoredSlice
 from foreman.workspace import commit_sha
 
 SQUASH_MERGE_FLAG = "--squash"
@@ -57,6 +60,23 @@ class RepositoryDefaultBranch(BaseModel, strict=True):
 
 class AutoMergeRequest(BaseModel, strict=True):
     mergeMethod: Literal["MERGE", "REBASE", "SQUASH"]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AutoMergeRequestRecord(TypedDict):
+    mergeMethod: Literal["MERGE", "REBASE", "SQUASH"]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class PullRequestRecord(TypedDict):
+    state: PullRequestState
+    number: PositiveInt
+    headRefOid: str
+    headRefName: str
+    baseRefName: str
+    isCrossRepository: bool
+    baseRefOid: str
+    autoMergeRequest: AutoMergeRequestRecord | None
 
 
 class PullRequest(PullRequestStatus):

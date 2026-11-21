@@ -14,7 +14,7 @@ from unittest.mock import patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.cli import main
-from foreman.delivery import LiveRun, compile_delivery
+from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery
 from foreman.config import load_config
 from foreman.stage_output import PULL_REQUEST_LINES, SpecCandidate
 from foreman.workspace import LiveWorkspace
@@ -93,7 +93,7 @@ class PullRequestSizeTest(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
                 graph = compile_delivery(None, self.config, run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
-                    "pstack_pin": self.config.pstack.model_dump(),
+                    "pstack_pin": self.config.pstack.model_dump(), "token_cap": DEFAULT_TOKEN_CAP,
                     "repo": "Example/Engine", "issue": 8, "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
                     **({"spec": self.original_spec} if self.original_spec else {}),
                     "workspace": str(self.root.resolve()), "check": "exit 0", "head_sha": self.git("rev-parse", "HEAD"),

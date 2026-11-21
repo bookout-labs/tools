@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
 
-from foreman.adapters import Outcome
+from foreman.adapters import Outcome, Usage
 from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
 from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
@@ -106,7 +106,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(
             lambda *_: Outcome("ran", {
                 "triage": "implement", "work_kind": "feature", "human_question": None, "slice": {**SLICES[0], "depends_on": ["Other"]},
-            }),
+            }, usage=Usage(input_tokens=1, output_tokens=1)),
             slice=None,
         )
         self.assertEqual(result["path"], ["triage", "done"])

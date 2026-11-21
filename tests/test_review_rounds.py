@@ -11,6 +11,7 @@ from foreman.delivery import LiveRun, compile_delivery
 from foreman.config import load_config
 from foreman.dispatch import FailoverDispatcher
 from foreman.adapters import Outcome
+from foreman.dry_run import SCRIPTED_USAGE
 from foreman.stage_output import ReviewOutput, parse_output
 from skill_fixture import skill_fixture
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
@@ -57,23 +58,23 @@ class ReviewRoundsTest(unittest.TestCase):
                 self.prompts.append((node, state, instruction))
                 if node == "review":
                     raw = next(replies)
-                    return Outcome("ran", parse_output(ReviewOutput, raw).model_dump())
+                    return Outcome("ran", parse_output(ReviewOutput, raw).model_dump(), usage=SCRIPTED_USAGE)
                 if crash and state.get("review_findings") and not crashed:
                     crashed = True
                     raise RuntimeError("process lost")
                 if node == "triage":
-                    return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None})
+                    return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None}, usage=SCRIPTED_USAGE)
                 implementations += 1
                 workspace.current = type(workspace.current)(workspace.current.head, False, workspace.current.branch)
                 return Outcome("ran", {"implementation": "Fixed.",
-                                       "browser_proof": None, "formal_proof": None})
+                                       "browser_proof": None, "formal_proof": None}, usage=SCRIPTED_USAGE)
 
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint")) as saver:
                 graph = compile_delivery(FailoverDispatcher(dispatch), settings, scratch=scratch,
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "rounds"}}
                 state = {"repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": EMPTY_SLICE,
-                         "check": "exit 0", **(initial or {})}
+                         "check": "exit 0", "token_cap": 20_000_000, **(initial or {})}
                 if crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
                         graph.invoke(state, config)

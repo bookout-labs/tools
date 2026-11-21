@@ -71,7 +71,7 @@ def _settled_review() -> str:
             if count == 3:
                 finding.update(id="repeat", ruling_id="finding:check")
             return Outcome("ran", {**reply.output, "findings": [finding],
-                                   "resolutions": [] if count == 1 else [{"id": "check" if count == 2 else "next", "status": "resolved"}]})
+                                   "resolutions": [] if count == 1 else [{"id": "check" if count == 2 else "next", "status": "resolved"}]}, usage=reply.usage)
         return reply
 
     result = _walk(review, slice=FIELD_SLICE)

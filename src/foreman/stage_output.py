@@ -15,6 +15,8 @@ from pydantic.config import JsonDict
 
 from foreman.config import ModelSpec
 from foreman.adapters import OutcomeKind
+from foreman.github import PullRequest, PullRequestRecord
+from foreman.workspace import ReviewScopeRecord
 from foreman.dispatch import InvalidOutput
 
 PULL_REQUEST_LINES = 400
@@ -159,7 +161,7 @@ class AttemptRecord(TypedDict):
     model: str | None
     commit: str
     methods: list[str]
-    outcome: OutcomeKind
+    outcome: OutcomeKind | Literal["interrupted"]
     usage: AttemptUsageRecord | None
 
 
@@ -186,8 +188,48 @@ class Attempt(RecordContract[AttemptRecord]):
     model: str | None
     commit: str
     methods: list[str]
-    outcome: OutcomeKind
+    outcome: OutcomeKind | Literal["interrupted"]
     usage: AttemptUsage | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class PendingDispatchRecord(TypedDict):
+    stage: str
+    index: NonNegativeInt
+    quota_model: str | None
+
+
+class PendingDispatch(RecordContract[PendingDispatchRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[PendingDispatchRecord]:
+        return TypeAdapter(PendingDispatchRecord)
+
+    stage: str
+    index: NonNegativeInt
+    quota_model: str | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class DispatchPlanRecord(TypedDict):
+    models: list[str]
+    instruction: str
+    methods: list[str]
+    target: PullRequestRecord | None
+    scope: ReviewScopeRecord | None
+
+
+class DispatchPlan(RecordContract[DispatchPlanRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[DispatchPlanRecord]:
+        return TypeAdapter(DispatchPlanRecord)
+
+    models: list[str]
+    instruction: str
+    methods: list[str]
+    target: PullRequest | None
+    scope: ReviewScopeRecord | None
 
 
 class SliceProperty(RecordContract[SlicePropertyRecord]):

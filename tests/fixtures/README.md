@@ -266,3 +266,7 @@ LangGraph 1.2.24 exposes typed graph output through `invoke(..., version="v2").v
 
 
 Pydantic strict integer validation rejects fractional numbers and booleans. ModelUsage ignores extra ledger keys. `tests/test_usage.py` exercises ledger rejection without changing the envelope outcome.
+
+### LangGraph dispatch durability
+
+LangGraph 1.2.24 `durability="sync"` commits the setup node before entering the call node. `tests/test_dispatch_recovery.py` kills fresh processes after a successful call, an uncommitted quota, and a committed quota followed by fallback. Recovery uses `update_state(as_node="<stage>_call")` to select that node's conditional route. The pinned package's `get_state_history` returns newest checkpoints first; `_checkpoint_before_halt` takes the first matching entry. LangGraph defaults to 10007 recursion steps (overridable by LANGGRAPH_DEFAULT_RECURSION_LIMIT); delivery overrides this with the sum of stage setup and candidate counts plus 12 orchestration steps per review round.

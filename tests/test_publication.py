@@ -159,6 +159,17 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(self.git("--git-dir", str(self.remote), "rev-parse", f"{self.ref}^"), first)
         self.assertEqual(self.git("--git-dir", str(self.remote), "show", f"{self.ref}:items.txt"), "two")
 
+    def test_pre_edit_quota_falls_over_before_checking_changes(self):
+        calls = []
+        def edit():
+            calls.append(1)
+            if len(calls) == 1:
+                return Outcome("quota")
+            self.edit()
+        result = self.walk(edit)
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual([a["outcome"] for a in result["attempts"] if a["stage"] == "implement"], ["quota", "ran"])
+
     def test_no_changes_fails_without_pushing(self):
         result = self.walk(lambda: None)
         self.assertEqual(result.get("stop"), "failed")
@@ -428,13 +439,13 @@ class PublicationTest(unittest.TestCase):
                 commands = [c.args[0] for c in call.call_args_list if c.args[0][:3] == ["gh", "repo", "view"]]
                 self.assertEqual(commands, [["gh", "repo", "view", REPO, "--json", "defaultBranchRef"]])
 
-    def test_crash_during_worker_continues_partial_edits(self):
+    def test_crash_during_worker_stops_with_unknown_usage(self):
         def crash():
             (self.checkout / "items.txt").write_text("partial\n")
             raise SystemExit("synthetic crash during worker")
         with self.assertRaises(SystemExit):
             self.walk(crash)
-        def finish():
-            self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
-            (self.checkout / "items.txt").write_text("finished\n")
-        self.assertEqual(self.walk(finish).get("stop"), "verified")
+        self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
+        def unexpected():
+            self.fail("Recovery dispatched a worker with unknown usage")
+        self.assertEqual(self.walk(unexpected).get("stop"), "usage_unknown")
