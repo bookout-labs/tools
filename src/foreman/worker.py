@@ -1,6 +1,7 @@
 """Run a pinned worker and read its final stage result."""
 
 from collections.abc import Mapping
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,8 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
-from foreman.stage_output import STAGE_OUTPUTS
+from foreman.stage_output import STAGE_OUTPUTS, DispatchPlan
+from foreman.usd import BudgetUsd
 
 CommandRunner = Callable[[list[str], Path, Mapping[str, str]], subprocess.CompletedProcess[str]]
 
@@ -49,6 +51,8 @@ class CliWorker:
         schema = json.dumps(contract.model_json_schema())
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
+        plan = state.get("dispatch_plan")
+        budget = DispatchPlan.model_validate(plan).budget_usd if plan else None
         adapter = ADAPTERS[model.family](model)
         checkout = self.cwd.resolve()
         temp_root = Path(tempfile.gettempdir()).resolve()
@@ -57,7 +61,7 @@ class CliWorker:
         with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
             scratch = Path(directory) / "scratch"
             scratch.mkdir()
-            args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory)))
+            args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None))
             try:
                 process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch)})
             except FileNotFoundError:
