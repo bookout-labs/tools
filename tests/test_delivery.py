@@ -1,11 +1,16 @@
 import unittest
 
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock
 
 from foreman.config import NodeConfig, load_config
 from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
+from foreman.github import GitHub
+from foreman.runner import run_live_delivery
 
 
 SLICES = [
@@ -14,7 +19,7 @@ SLICES = [
         "acceptance": "The board shows the deals.",
         "depends_on": [],
         "screen": "docs/screens/deals.md",
-        "properties": [{"name": "Visibility", "constraint": "Every open deal appears once."}],
+        "properties": [{"name": "deals_external_id_key", "constraint": "UNIQUE (external_id)"}],
     },
     {
         "title": "Board saves a move",
@@ -77,8 +82,28 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "invalid_output")
         self.assertEqual(result["halt_detail"], "slice.depends_on.0: unknown dependency Other")
 
-    def test_a_parent_routes_to_spec_even_when_triage_says_implement(self):
-        for triage in ("implement", "spec"):
+    def test_a_parent_goes_straight_to_implement_and_files_no_slices(self):
+        github = Mock(spec=GitHub)
+        github.load_issue.return_value = {"title": "Add a field", "body": "", "labels": ["factory"]}
+        github.create_issue.side_effect = [101, 102]
+        merge = Mock(return_value=0)
+        with TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            result = run_live_delivery(
+                repo="Example/Engine", issue=1, check="exit 0", cwd=cwd,
+                checkpoint=cwd / "runs.sqlite3",
+                dispatcher=FailoverDispatcher(ScriptHandler(triage="implement", slices=SLICES)),
+                github=github, run_gh=merge, inspect_worktree=lambda _: (HEAD_SHA, True),
+            )
+
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "merge", "done"])
+        self.assertEqual(result["stop"], "verified")
+        self.assertTrue(result["merge_armed"])
+        merge.assert_called_once_with(["gh", "pr", "merge", "--auto", "--match-head-commit", HEAD_SHA])
+        github.create_issue.assert_not_called()
+
+    def test_a_parent_routes_spec_and_question_to_spec(self):
+        for triage in ("spec", "question"):
             with self.subTest(triage=triage):
                 result = walk(ScriptHandler(triage=triage, slices=SLICES), issue_kind="parent")
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
@@ -103,7 +128,7 @@ class DeliveryTest(unittest.TestCase):
         }
         for case, slices in cases.items():
             with self.subTest(case=case):
-                result = walk(ScriptHandler(slices=slices), issue_kind="parent")
+                result = walk(ScriptHandler(triage="spec", slices=slices), issue_kind="parent")
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "invalid_output")
                 self.assertTrue(result["halt_detail"])

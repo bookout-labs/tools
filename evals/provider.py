@@ -53,9 +53,11 @@ def call_api(prompt, options, context):
     elif case == "spec-gate":
         output = _stop(ScriptHandler(triage="spec", spec_gate="needs_human"))
     elif case == "parent":
+        output = _stop(ScriptHandler(triage="implement"), issue_kind="parent")
+    elif case == "parent-spec":
         output = _stop(
             ScriptHandler(
-                triage="implement",
+                triage="spec",
                 spec_gate="ready",
                 slices=[
                     {
@@ -63,7 +65,7 @@ def call_api(prompt, options, context):
                         "acceptance": "The board shows the deals.",
                         "depends_on": [],
                         "screen": "docs/screens/deals.md",
-                        "properties": [{"name": "Visibility", "constraint": "Every open deal appears once."}],
+                        "properties": [{"name": "deals_external_id_key", "constraint": "UNIQUE (external_id)"}],
                     },
                     {
                         "title": "Board saves a move",

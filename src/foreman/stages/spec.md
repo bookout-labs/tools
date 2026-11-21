@@ -5,10 +5,10 @@ On a parent issue, return one slice per pull request. Keep each pull request to 
 Each slice has exactly these keys.
 
 - `title` names the outcome.
-- `acceptance` states how to check the outcome.
+- `acceptance` states how to check the outcome, including response checks and other behavior checks.
 - `depends_on` lists other slice titles that must land first. Use an empty list when independent.
 - `screen` gives the proof obligation as a path like `docs/screens/deals.md`. Use an empty string for work without a screen. Use a Markdown file directly under `docs/screens/` and omit any `..` from the path.
-- `properties` lists the properties that need formal proof. For each property, supply a non-empty `name` and `constraint`. Use an empty list when there are no properties to prove.
+- `properties` lists only named rules that PostgreSQL enforces: `CHECK`, `UNIQUE`, `FOREIGN KEY`, `EXCLUSION`, or `NOT NULL`. Set `name` to the constraint name and `constraint` to the database rule. Use an empty list when the slice adds no database rule.
 
 The graph records the slices and stops the parent run.
 

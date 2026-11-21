@@ -8,31 +8,35 @@ Shared tools for the engine repositories. This repo lives in the bookout-labs or
 
 ```mermaid
 flowchart TD
-  __start__([start]) --> triage
-  __start__ -->|missing or invalid live slice| done
-  triage -->|clear change| implement
-  triage -->|parent, larger change, or open choice| spec
-  triage -->|question| research
-  triage -->|needs a person| needs_human
-  needs_human -->|answer to triage| triage
-  needs_human -->|answer to spec| spec
-  spec -->|slice ready| implement
-  spec -->|needs a person| needs_human
-  spec -->|parent sliced| done
-  research --> done
-  implement --> verify
-  verify -->|pass with proof obligations| proof
-  verify -->|pass without proof obligations| review
-  proof -->|accepted| review
-  proof -->|blocked, under the cap| implement
-  proof -->|missing evidence or cap reached| done
-  verify -->|fail, under the cap| implement
-  verify -->|dirty worktree, invalid HEAD, or cap reached| done
-  review -->|approve| merge
-  review -->|changes, under the cap| implement
-  review -->|cap reached or no reviewer| done
+  __start__([start])
+  __end__([end])
+  __start__ -. missing or invalid live slice .-> done
+  __start__ -.-> triage
+  implement -. halted .-> done
+  implement -.-> verify
   merge --> done
-  done --> __end__([end])
+  needs_human -. answer to spec .-> spec
+  needs_human -. answer to triage .-> triage
+  proof -. missing evidence or cap reached .-> done
+  proof -. blocked, under the cap .-> implement
+  proof -. accepted .-> review
+  research --> done
+  review -. cap reached or no reviewer .-> done
+  review -. changes, under the cap .-> implement
+  review -. approve .-> merge
+  spec -. parent sliced or stopped .-> done
+  spec -. slice ready .-> implement
+  spec -. needs a person .-> needs_human
+  triage -. halted or dry run needs a person .-> done
+  triage -. decided, one pull request .-> implement
+  triage -. needs a person .-> needs_human
+  triage -. question on a slice .-> research
+  triage -. larger change, open choice, or question on a parent .-> spec
+  verify -. dirty worktree, invalid HEAD, or cap reached .-> done
+  verify -. fail, under the cap .-> implement
+  verify -. pass with proof obligations .-> proof
+  verify -. pass without proof obligations .-> review
+  done --> __end__
 ```
 
 The edges are code. The model list is `src/foreman/models.toml`. Quota exhaustion tries the next model in that list. A node does not edit the list, and it does not decide the next node.
@@ -47,7 +51,9 @@ After approval, the live merge node records `gh pr merge --auto --match-head-com
 
 Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 
-A clear change on a slice goes straight to implement. Parent issues and changes that need more than one pull request route to spec even when the decisions are settled. A ready parent spec records its slices and stops as `sliced`. Each child issue includes a fenced JSON object with its title, acceptance, dependency titles, screen path or empty string, and named property constraints. Live runs load that object as the slice for the run. A `slice`-labelled issue with a missing or invalid object stops at `missing_slice`. An open product choice pauses a live run for a person's answer. An informational request routes to research.
+A parent or slice goes straight to implement when the behavior is decided and the change fits in one pull request of about 400 changed lines or fewer. A parent on this route files no child issues. Changes that need more than one pull request or leave a product choice open go to spec. An informational request goes to spec on a parent and to research on a slice. An open product choice pauses a live run for a person's answer.
+
+A ready parent spec records its slices and stops as `sliced`. Each child issue includes a fenced JSON object with its title, acceptance, dependency titles, screen path or empty string, and any named PostgreSQL constraints. Live runs load that object as the slice for the run. A `slice`-labelled issue with a missing or invalid object stops at `missing_slice`.
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 

@@ -230,10 +230,8 @@ def compile_delivery(
         decision = state.get("triage")
         if decision == "needs_human":
             return "needs_human" if checkpointer is not None else "done"
-        if state.get("issue_kind") == "parent":
-            return "spec"
         if decision == "question":
-            return "research"
+            return "spec" if state.get("issue_kind") == "parent" else "research"
         return decision or "done"
 
     def after_spec(state: DeliveryState) -> str:
