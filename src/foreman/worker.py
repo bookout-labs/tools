@@ -8,31 +8,10 @@ from typing import Callable
 
 from foreman.config import family
 from foreman.dispatch import InvalidOutput, QuotaExhausted
+from foreman.stage_output import STAGE_OUTPUTS
 
 CommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
 
-REQUIRED = {
-    "triage": ("triage",),
-    "spec": ("spec", "spec_gate"),
-    "research": ("research",),
-    "implement": ("implementation",),
-    "review": ("review", "risk"),
-}
-OPTIONAL = {
-    "triage": ("slice", "human_question"),
-    "spec": ("slice", "slices", "human_question"),
-    "implement": ("head_sha", "browser_proof", "formal_proof"),
-}
-SLICE_PROMPT = (
-    "For a ready slice, include slice with title, acceptance, depends_on (empty list), "
-    "screen (docs/screens/<file>.md or empty), and properties (list of name and constraint). "
-    "Preserve the proof obligations in the request. For needs_human, include human_question."
-)
-PROOF_PROMPT = (
-    "For a required screen, report browser_proof with screen, trace, and passed. "
-    "For required properties, report formal_proof with ran and constraints, a list of "
-    "constraint and rejected results. Report evidence you actually collected."
-)
 QUOTA = re.compile(
     r"quota|rate.limit|usage limit|hit your limit|resource_exhausted|too many requests|\b429\b|"
     r"model[^\n]*(?:not (?:available|found|supported)|does not exist|unsupported)|"
@@ -63,18 +42,13 @@ class CliWorker:
     def __call__(self, node: str, model: str | None, state: dict, instruction: str) -> dict:
         if model is None:
             raise QuotaExhausted(model)
-        required = REQUIRED[node]
-        optional = OPTIONAL.get(node, ())
         prompt = (
-            f"{instruction}\n\nReturn exactly one JSON object without surrounding text. "
-            f"Required keys: {', '.join(required)}. Optional keys: {', '.join(optional) or 'none'}. "
-            "Write stage decisions as values of their corresponding keys. "
-            "Do not arm a merge."
+            f"{instruction}\n\nReturn exactly one JSON object that matches the output schema. "
+            "Use null for inapplicable nullable fields. Do not arm a merge."
         )
         if node in {"triage", "spec"} and state.get("issue_kind") == "slice" and "slice" not in state:
-            prompt += f" Use needs_human if you cannot determine the issue requirements. {SLICE_PROMPT}"
-        if node == "implement":
-            prompt += f" {PROOF_PROMPT}"
+            prompt += " For a ready slice, include slice and preserve its proof obligations. For needs_human, include human_question."
+        prompt += f"\n\nOutput schema:\n{json.dumps(STAGE_OUTPUTS[node].model_json_schema())}"
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
         provider = family(model)
@@ -115,7 +89,4 @@ class CliWorker:
                 raise QuotaExhausted(model)
             body = envelope.get("result" if provider == "claude" else "text")
 
-        result = json_object(body)
-        if not set(required) <= result.keys() <= set(required + optional):
-            raise InvalidOutput(f"{node} response keys do not match the stage")
-        return result
+        return json_object(body)

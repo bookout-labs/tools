@@ -12,6 +12,7 @@ from foreman.cli import main
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
 from foreman.runner import run_live_delivery
+from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, parse_output
 from foreman.worker import CliWorker
 
 
@@ -100,8 +101,8 @@ class CliWorkerTest(unittest.TestCase):
                 result = CliWorker(Path("engine"), run)("triage", model, {"issue": 12}, "Read the issue.")
                 self.assertEqual(result, {"triage": "implement"})
 
-    def test_prose_and_extra_keys_are_invalid(self):
-        replies = ('Here is the result: {"triage": "implement"}', {"triage": "implement", "next": "merge"})
+    def test_non_object_replies_are_invalid(self):
+        replies = ('Here is the result: {"triage": "implement"}', '["implement"]')
         for reply in replies:
             with self.subTest(reply=reply), self.assertRaises(InvalidOutput):
                 worker = CliWorker(Path("."), lambda args, cwd: worker_reply(args, reply))
@@ -119,9 +120,9 @@ class CliWorkerTest(unittest.TestCase):
             return worker_reply(args, {"triage": "implement"})
 
         dispatcher = FailoverDispatcher(CliWorker(Path("."), run))
-        result = dispatcher.run("triage", ["gpt-first", "claude-second", "grok-third"], {}, "")
+        result, model = dispatcher.run("triage", ["gpt-first", "claude-second", "grok-third"], {}, "")
         self.assertEqual(calls, ["codex", "claude", "grok"])
-        self.assertEqual(result, {"triage": "implement", "model": "grok-third"})
+        self.assertEqual((result, model), ({"triage": "implement"}, "grok-third"))
 
     def test_codex_reroute_is_rejected_even_with_the_requested_banner(self):
         def run(args, cwd):
@@ -131,6 +132,36 @@ class CliWorkerTest(unittest.TestCase):
 
         with self.assertRaises(QuotaExhausted):
             CliWorker(Path("."), run)("triage", "gpt-first", {}, "")
+
+
+class StageOutputTest(unittest.TestCase):
+    def test_schema_snapshot(self):
+        snapshot = Path(__file__).with_name("stage-schemas.jsonl").read_text()
+        schemas = {name: model.model_json_schema() for name, model in STAGE_OUTPUTS.items()}
+        self.assertEqual(schemas, dict(map(json.loads, snapshot.splitlines())))
+
+    def test_every_object_in_the_schema_is_strict(self):
+        def check(schema):
+            if schema.get("type") == "object":
+                self.assertCountEqual(schema["required"], schema["properties"])
+                self.assertIs(schema["additionalProperties"], False)
+            return schema
+
+        for model in STAGE_OUTPUTS.values():
+            json.loads(json.dumps(model.model_json_schema()), object_hook=check)
+
+    def test_extra_field_reports_its_nested_path(self):
+        raw = {"implementation": "Done", "browser_proof": {"extra": True}}
+        with self.assertRaisesRegex(InvalidOutput, r"^browser_proof\.extra:"):
+            parse_output(ImplementOutput, raw)
+
+    def test_sectioned_implementation_becomes_one_document(self):
+        result = parse_output(ImplementOutput, {"implementation": {"Changes": "Built.", "Tests": "Passed."}})
+        self.assertEqual(result.implementation, "Changes\nBuilt.\n\nTests\nPassed.")
+
+    def test_review_keeps_the_note_after_the_verdict(self):
+        result = parse_output(ReviewOutput, {"review": "changes. Add a check.", "risk": DEFAULT_RISK})
+        self.assertEqual((result.review, result.review_note), ("changes", "Add a check."))
 
 
 class LiveRunnerTest(unittest.TestCase):
@@ -443,11 +474,12 @@ from test_runner import APPROVE, HEAD, OPEN_PR, FakeGitHub, clean_worktree, work
 def run(args, cwd):
     prompt = args[-1]
     state = json.loads(prompt.split("Delivery state:\\n")[1])
-    if "Required keys: triage." in prompt:
+    schema = json.loads(prompt.split("Output schema:\\n")[1].split("\\n\\nDelivery state:")[0])
+    if schema["title"] == "TriageOutput":
         assert not state.get("human_answers")
         assert state["request"] == "List items"
         return worker_reply(args, {"triage": "spec"})
-    if "Required keys: spec, spec_gate." in prompt:
+    if schema["title"] == "SpecOutput":
         if not state.get("human_answers"):
             return worker_reply(args, {
                 "spec": "A decision is open", "spec_gate": "needs_human", "human_question": "Which items?"
@@ -455,7 +487,7 @@ def run(args, cwd):
         assert state["human_answers"] == ["Only open items"]
         assert state["request"] == "List items"
         return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
-    if "Required keys: implementation." in prompt:
+    if schema["title"] == "ImplementOutput":
         return worker_reply(args, {"implementation": "built", "head_sha": HEAD})
     return worker_reply(args, APPROVE)
 

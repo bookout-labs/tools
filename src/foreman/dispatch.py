@@ -22,7 +22,7 @@ class FailoverDispatcher:
     def __init__(self, handler: Handler):
         self.handler = handler
 
-    def run(self, node: str, models: list[str], state: dict, instruction: str) -> dict:
+    def run(self, node: str, models: list[str], state: dict, instruction: str) -> tuple[dict, str | None]:
         candidates: list[str | None] = list(models) or [None]
         last: QuotaExhausted | None = None
         for model in candidates:
@@ -33,7 +33,5 @@ class FailoverDispatcher:
                 continue
             if not isinstance(update, dict):
                 raise InvalidOutput(f"{node} returned {type(update).__name__}")
-            result = dict(update)
-            result["model"] = model
-            return result
+            return update, model
         raise last or QuotaExhausted(None)
