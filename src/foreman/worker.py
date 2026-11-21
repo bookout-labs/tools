@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from tempfile import TemporaryDirectory
 from typing import Callable
 
 from foreman.adapters import Call, CliAdapter, Outcome
@@ -43,14 +44,13 @@ class CliWorker:
         )
         contract = STAGE_OUTPUTS[node]
         schema = json.dumps(contract.model_json_schema())
-        if model.family == "gpt":
-            prompt += f"\n\nOutput schema:\n{schema}"
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
         adapter = ADAPTERS[model.family](model, contract)
-        args = adapter.command(Call(prompt, schema, edit=node == "implement"))
-        try:
-            process = self.run(args, self.cwd, adapter.env)
-        except FileNotFoundError:
-            return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable")
-        return adapter.read(process)
+        with TemporaryDirectory(prefix="foreman-worker-") as directory:
+            args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory)))
+            try:
+                process = self.run(args, self.cwd, adapter.env)
+            except FileNotFoundError:
+                return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable")
+            return adapter.read(process)

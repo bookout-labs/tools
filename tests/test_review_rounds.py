@@ -219,3 +219,28 @@ class ReviewRoundsTest(unittest.TestCase):
                                   {**APPROVE, "tool_facts": [corrected]}, APPROVE], gate_heads={HEAD})
         self.assertEqual(result["stop"], "review_cap")
         self.assertEqual(result["findings"][0]["id"], "tool-fact-gate:1")
+
+    def test_tool_fact_gate_is_excluded_from_both_sides_of_recurrence(self):
+        fact = {"claim": "The CLI accepts example.", "fixture": None}
+        reviewer = {**FINDING, "kind": "untested-path"}
+        for reviews in (
+            [{**APPROVE, "findings": [reviewer]},
+             {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}], "tool_facts": [fact]}, APPROVE],
+            [{**APPROVE, "tool_facts": [fact]}, {**APPROVE, "findings": [reviewer]},
+             {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}],
+        ):
+            with self.subTest(reviews=reviews):
+                result = self.run_rounds(reviews)
+                self.assertEqual(result["stop"], "review_cap")
+                self.assertEqual(result["review_rounds"], 3)
+                self.assertFalse(result.get("halt"))
+
+    def test_later_gate_failure_gets_fresh_id_without_recurrence(self):
+        first = {"claim": "The CLI accepts example.", "fixture": "result.txt"}
+        second = {"claim": "Another tool fact.", "fixture": None}
+        result = self.run_rounds([{**APPROVE, "tool_facts": [first]}, APPROVE,
+                                  {**APPROVE, "tool_facts": [second]}, APPROVE], gate_heads={"2" * 40, "3" * 40, "4" * 40})
+        self.assertEqual(result["stop"], "review_cap")
+        self.assertEqual(result["review_rounds"], 3)
+        self.assertEqual(result["findings"][0]["id"], "tool-fact-gate:3")
+        self.assertEqual(result["review_findings"][1]["resolutions"], {"tool-fact-gate:1": "resolved"})

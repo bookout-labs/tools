@@ -1,5 +1,0 @@
-OpenAI Codex v0.171.0
-model: gpt-6.1-sol
-provider: openai
-sandbox: read-only
-reasoning effort: high

@@ -19,7 +19,7 @@ from foreman.github import ForgeError, LiveForge
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
-from foreman.runner import run_live_delivery
+from foreman.runner import RESUMABLE_HALTS, run_live_delivery
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
 
@@ -183,4 +183,13 @@ def main(
             _write_run_log(str(exc), file=sys.stderr)
             return 1
     _print_run(result)
-    return 0
+    return run_exit_code(result)
+
+
+def run_exit_code(result: DeliveryState) -> int:
+    stop = result.get("stop")
+    if stop == "needs_human":
+        return 3
+    if stop in ("verified", "sliced", "answered") and result.get("path", [])[-1:] == ["done"]:
+        return 0
+    return 75 if result.get("halt") in RESUMABLE_HALTS else 1
