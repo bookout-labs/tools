@@ -1,1 +1,6 @@
 /docs/graph/ @jbookout
+/.github/CODEOWNERS @jbookout
+/.github/workflows/ @jbookout
+/pyproject.toml @jbookout
+/uv.lock @jbookout
+/evals/ @jbookout
