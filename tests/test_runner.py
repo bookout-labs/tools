@@ -1475,7 +1475,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 result = self.walk([triage, {"implementation": "built"}, APPROVE])
                 self.assertEqual(result["path"], ["triage", "done"])
                 self.assertEqual(result["stop"], "invalid_output")
-                self.assertTrue(result["halt_detail"].startswith("slice:"))
+                self.assertTrue(result["halt_detail"].startswith("triage output from claude-opus-5-5-high: slice:"))
                 self.assertEqual(len(self.calls), 1)
                 self.assertEqual(self.github.merge_calls, [])
                 self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
