@@ -813,3 +813,10 @@ kind = "quoted_source"
 sources = ["https://api.github.com/repos/bookout-labs/tools/actions/runs/44875487083/jobs", "https://github.com/bookout-labs/tools/actions/runs/44875487083/job/136759149477"]
 claim_ids = ["tool-fact-5d0a48a906349bd816d597fdf36235e2a3218550ad641948c40bed9821813f96"]
 notes = "Exact API excerpt for reviewed head 17c84143acc975fd2fae0f652bd90b6f146b7838. All three engine check steps completed successfully; this records the historical run, not a new local pass."
+
+[fixtures."spec-check.json"]
+tool = "pydantic"
+version = "2.14.4"
+kind = "captured_run"
+argv = ["python", "-c", "from foreman.stage_output import SpecCheckOutput; print(SpecCheckOutput(findings=[dict(id='f1',kind='contract',slice='Save',section='slice',summary='Keep IDs unique.',ruling_id=None)],notes=[],resolutions=[]).model_dump_json(indent=2))"]
+notes = "Synthetic spec-check contract example serialized by Pydantic. No model or external service was called. test_spec_check.py parses it through the native contract and checks rejection of supplied verdicts."

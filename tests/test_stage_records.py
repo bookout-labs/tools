@@ -143,6 +143,10 @@ class StageOwnershipTests(unittest.TestCase):
         handler = ScriptHandler(reviews=["changes"], verify="fail")
         for stage, contract in STAGE_OUTPUTS.items():
             with self.subTest(stage=stage):
+                if stage == "spec_check":
+                    with self.assertRaisesRegex(NotImplementedError, "candidate-bound"):
+                        stage_update(stage, parse_output(contract, {"findings": [], "notes": [], "resolutions": []}), state, "model")
+                    continue
                 output = parse_output(contract, handler(stage, None, state, "").output)
                 update = stage_update(stage, output, state, "model")
                 key = {"implement": "implementation", "review": "findings"}.get(stage, stage)
