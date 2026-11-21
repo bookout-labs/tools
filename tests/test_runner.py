@@ -16,15 +16,16 @@ from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK
-from foreman.github import Issue, MergeHoldUnreadable, MergeNotArmed
+from foreman.github import ForgeError, Issue, MergeHoldUnreadable, MergeNotArmed, PullRequest
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
-from foreman.workspace import LiveWorkspace, PullRequestSize, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from test_adapters import fixture_process
 
 
 HEAD = "a" * 40
+BASE = "b" * 40
 BRANCH = "8-list-items"
 CLEAN_WORKTREE = WorktreeState(HEAD, True, BRANCH)
 SLICE = {
@@ -37,7 +38,9 @@ SLICE = {
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
 FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}]}
-APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "review_note": None}
+APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request."}
+FINDING = {"file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
+DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
 
 def slice_body(item):
@@ -59,6 +62,9 @@ class FakeWorkspace(LiveWorkspace):
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": "b" * 40, "lines": 1}
 
+    def review_diff(self, base, head):
+        return ReviewDiff(f"git diff {base}...{head}", DIFF)
+
 
 def worker_reply(args, reply):
     recorded = fixture_process(args, "success", 0)
@@ -69,8 +75,6 @@ def worker_reply(args, reply):
         reply = {"slice": None, "human_question": None, **reply}
     if "spec" in reply:
         reply = {"slices": None, "human_question": None, **reply}
-    if "review" in reply:
-        reply = {"review_note": None, **reply}
     envelope = json.loads(recorded.stdout)
     field = "structured_output" if args[0] == "claude" else "structuredOutput"
     envelope[field] = reply
@@ -86,12 +90,22 @@ class FakeGitHub:
         self.issue_labels = {}
         self.merge_calls = []
         self.base_branch = "main"
+        self.reviews = []
+        self.base = BASE
         self.hold = None
         self.hold_reads = []
 
     def pull_request_base(self, repo: str, branch: str) -> str:
         return self.base_branch
 
+    def review_target(self, repo, issue, branch, sha):
+        return PullRequest.model_validate({
+            "number": 12, "state": "OPEN", "headRefOid": sha, "headRefName": branch,
+            "baseRefName": "main", "baseRefOid": self.base, "autoMergeRequest": None,
+        })
+
+    def post_review(self, repo, target, body, comments):
+        self.reviews.append((repo, target.number, target.headRefOid, body, comments))
     def merge_hold(self, repo):
         self.hold_reads.append(repo)
         return self.hold
@@ -296,10 +310,25 @@ class StageOutputTest(unittest.TestCase):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
             parse_output(ReviewOutput, {**APPROVE, "review": "approve, but please fix X first"})
 
-    def test_review_verdicts_require_lowercase(self):
-        for verdict in ("Approve.", "Changes. Add a check."):
+    def test_review_requires_an_exact_verdict(self):
+        for verdict in ("Approve.", "approve.", "changes.", "changes. Add a check."):
             with self.subTest(verdict=verdict), self.assertRaisesRegex(InvalidOutput, "^review:"):
                 parse_output(ReviewOutput, {**APPROVE, "review": verdict})
+
+    def test_review_summary_is_limited_to_200_characters(self):
+        self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["Finding"]["properties"]["summary"]["maxLength"], 200)
+        raw = {**APPROVE, "review": "changes", "findings": [{**FINDING, "summary": "a" * 201}]}
+        with self.assertRaisesRegex(InvalidOutput, r"^findings\.0\.summary:"):
+            parse_output(ReviewOutput, raw)
+
+    def test_review_verdict_requires_matching_findings(self):
+        for raw in (
+            {**APPROVE, "review": "changes"},
+            {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
+        ):
+            with self.subTest(raw=raw), self.assertRaisesRegex(InvalidOutput, "changes requires at least one finding"):
+                parse_output(ReviewOutput, raw)
+
 
 class LiveRunnerTest(unittest.TestCase):
     def setUp(self):
@@ -310,7 +339,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.prompts = []
         self.github = FakeGitHub()
 
-    def walk(self, replies, *, issue=8, check="exit 0", snapshots=(CLEAN_WORKTREE,)):
+    def walk(self, replies, *, issue=8, check="exit 0", snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None):
         outputs = iter(replies)
 
         def run(args, cwd, env):
@@ -322,16 +351,81 @@ class LiveRunnerTest(unittest.TestCase):
         return run_live_delivery(
             repo="Example/Engine", issue=issue, check=check,
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
-            run=LiveRun(self.github, FakeWorkspace(self.cwd, snapshots)),
+            run=LiveRun(self.github, workspace if workspace is not None else FakeWorkspace(self.cwd, snapshots)),
         )
 
-    def test_review_note_reaches_the_next_implement_prompt(self):
+    def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes", "review_note": "Add a check."}
+        changes = {**APPROVE, "review": "changes", "detail": "Check the bounds."}
+        for severity, kind in (("nit", "nits"), ("blocking", "blocking")):
+            with self.subTest(severity=severity):
+                self.checkpoint = self.cwd / f"{severity}.sqlite3"
+                finding = {**FINDING, "severity": severity}
+                self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, APPROVE])
+                state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
+                self.assertEqual(state["findings"], [finding])
+                self.assertEqual(state["detail"], changes["detail"])
+                self.assertEqual(state["review_change_kind"], kind)
+
+    def test_review_posts_only_changed_lines_inline(self):
+        findings = [
+            FINDING,
+            {**FINDING, "line": 1, "summary": "Untouched context."},
+            {**FINDING, "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
+        ]
+        built = {"implementation": "Built."}
+        changes = {**APPROVE, "review": "changes", "findings": findings, "detail": "Check the bounds."}
         self.walk([{"triage": "implement"}, built, changes, built, APPROVE])
-        prompt = self.prompts[3]
-        self.assertIn('"title": "ImplementOutput"', prompt)
-        self.assertEqual(json.loads(prompt.split("Delivery state:\n")[1])["review_note"], "Add a check.")
+        self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
+        self.assertEqual(self.github.reviews, [(
+            "Example/Engine", 12, HEAD,
+            "Check the bounds.\n\nitems.txt:1 [blocking] Untouched context.\n\ndeleted.txt:1 [blocking] Deleted file.",
+            [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[blocking] Add a check."}],
+        ), ("Example/Engine", 12, HEAD, APPROVE["detail"], [])])
+
+    def test_review_failures_halt_without_merging(self):
+        changes = {**APPROVE, "review": "changes", "findings": [FINDING]}
+        for method, stop, replies in (
+            ("review_target", "review_unavailable", []),
+            ("post_review", "review_not_posted", [changes]),
+        ):
+            with self.subTest(method=method), patch.object(self.github, method, side_effect=ForgeError("Unavailable")):
+                self.checkpoint = self.cwd / f"{method}.sqlite3"
+                result = self.walk([{"triage": "implement"}, {"implementation": "Built."}, *replies])
+                self.assertEqual(result.get("stop"), stop)
+                self.assertEqual(result.get("halt_detail"), "Unavailable")
+                if replies:
+                    self.assertEqual(result.get("findings"), [FINDING])
+                self.assertEqual(self.github.merge_calls, [])
+
+    def test_review_halts_when_git_fetch_times_out(self):
+        outputs = {
+            ("git", "rev-parse", "HEAD"): HEAD + "\n",
+            ("git", "status", "--porcelain"): "",
+            ("git", "branch", "--show-current"): BRANCH + "\n",
+            ("exit 0",): "",
+        }
+
+        def run(
+            command: str | list[str], *, timeout: float | None = None, **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            if command == ["git", "fetch", "--no-tags", "origin", BASE, HEAD]:
+                self.assertEqual(timeout, 30)
+                raise subprocess.TimeoutExpired(command, 30)
+            self.assertIsNone(timeout)
+            key = (command,) if isinstance(command, str) else tuple(command)
+            return subprocess.CompletedProcess(command, 0, outputs[key].encode())
+
+        with patch.object(LiveWorkspace, "pull_request_size", return_value={"head": HEAD, "merge_base": BASE, "lines": 1}), patch("foreman.workspace.subprocess.run", side_effect=run):
+            result = self.walk(
+                [{"triage": "implement"}, {"implementation": "Built."}],
+                workspace=LiveWorkspace(self.cwd),
+            )
+
+        self.assertEqual(result.get("stop"), "review_unavailable")
+        self.assertRegex(result.get("halt_detail", ""), r"^git fetch .*timed out after 30 seconds")
+        self.assertEqual(self.github.reviews, [])
+        self.assertEqual(self.github.merge_calls, [])
 
     def test_load_slice_issue(self):
         result = self.walk([{"triage": "question"}, {"research": "answer"}])
@@ -540,7 +634,7 @@ class LiveRunnerTest(unittest.TestCase):
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk(
                     [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
+                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
                 )
                 self.assertEqual(result["check_exit_code"], 0)
                 self.assertEqual(result["merge"], "not_armed")
@@ -586,7 +680,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_retry_after_worktree_is_cleaned_arms_once(self):
         halted = self.walk(
             [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-            snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
+            snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
         )
         self.assertEqual(halted["stop"], "merge_not_armed")
         self.assertEqual(halted["merge"], "not_armed")
@@ -615,6 +709,7 @@ class LiveRunnerTest(unittest.TestCase):
         git("branch", "main")
         git("remote", "add", "origin", ".")
         verified_head = git("rev-parse", "HEAD")
+        self.github.base = verified_head
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
         def run_worker(args, cwd, env=None):
@@ -654,6 +749,39 @@ class LiveRunnerTest(unittest.TestCase):
                     ["git", "rev-parse", "HEAD"], ["git", "status", "--porcelain"], ["git", "branch", "--show-current"],
                 ])
                 self.assertTrue(all(call.kwargs["cwd"] == self.cwd for call in run.call_args_list))
+
+    def test_review_diff_fetches_an_unrelated_new_base_commit(self):
+        upstream = self.cwd / "upstream"
+        checkout = self.cwd / "checkout"
+
+        def git(root: Path, *args: str) -> str:
+            return subprocess.check_output(
+                ["git", "-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", *args],
+                cwd=root, text=True, stderr=subprocess.PIPE,
+            ).strip()
+
+        git(self.cwd, "init", "-b", "main", str(upstream))
+        (upstream / "items.txt").write_text("old\n")
+        git(upstream, "add", "items.txt")
+        git(upstream, "commit", "-m", "Base")
+        git(self.cwd, "clone", "--no-local", str(upstream), str(checkout))
+        git(checkout, "switch", "-c", BRANCH)
+        (checkout / "items.txt").write_text("new\n")
+        git(checkout, "commit", "-am", "Review head")
+        git(checkout, "push", "origin", BRANCH)
+        head = git(checkout, "rev-parse", "HEAD")
+        (upstream / "main.txt").write_text("Unrelated change\n")
+        git(upstream, "add", "main.txt")
+        git(upstream, "commit", "-m", "Advance main")
+        base = git(upstream, "rev-parse", "HEAD")
+        with self.assertRaises(subprocess.CalledProcessError):
+            git(checkout, "cat-file", "-e", base)
+
+        reviewed = LiveWorkspace(checkout).review_diff(base, head)
+        self.assertEqual(git(checkout, "cat-file", "-t", base), "commit")
+        self.assertIn(f"{base}...{head}", reviewed.command)
+        self.assertIn("-old\n+new\n", reviewed.patch)
+        self.assertNotIn("main.txt", reviewed.patch)
 
     def test_live_workspace_rejects_invalid_head_before_the_remaining_inspection(self):
         for head in ("", "abc123", "z" * 40):

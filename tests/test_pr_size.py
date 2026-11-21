@@ -33,6 +33,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.write(".gitattributes", (Path(__file__).resolve().parents[1] / ".gitattributes").read_text())
         self.write("src/items.py", "old item\n")
         self.base = self.commit()
+        self.forge.base = self.base
         self.write("src/main-only.py", "main\n" * (PULL_REQUEST_LINES + 1))
         self.commit()
         self.git("push", "origin", "main")
@@ -132,6 +133,7 @@ class PullRequestSizeTest(unittest.TestCase):
 
     def test_only_a_typed_operator_choice_records_an_override(self):
         self.forge = FakeGitHub(["factory"])
+        self.forge.base = self.base
         self.write("src/items.py", "changed\n" * PULL_REQUEST_LINES)
         head = self.commit()
         stdout, _ = self.invoke()
@@ -149,6 +151,7 @@ class PullRequestSizeTest(unittest.TestCase):
 
     def test_accepting_the_parent_split_files_child_issues_without_review(self):
         self.forge = FakeGitHub(["factory"])
+        self.forge.base = self.base
         self.write("tests/test_items.py", "handwritten\n" * (PULL_REQUEST_LINES + 1))
         self.commit()
         self.assertIn("paused needs_human", self.invoke()[0])

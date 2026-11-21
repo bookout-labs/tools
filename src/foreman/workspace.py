@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 from typing import Protocol, TypedDict
 
@@ -28,6 +29,11 @@ class PullRequestSize(TypedDict):
     merge_base: str
     lines: int
 
+@dataclass(frozen=True)
+class ReviewDiff:
+    command: str
+    patch: str
+
 
 class Workspace(Protocol):
     root: Path
@@ -35,6 +41,8 @@ class Workspace(Protocol):
     def run(self, command: str) -> int: ...
     def inspect(self) -> WorktreeState: ...
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
+
+    def review_diff(self, base: str, head: str) -> ReviewDiff: ...
 
 
 class LiveWorkspace:
@@ -118,13 +126,23 @@ class LiveWorkspace:
                 lines += added_lines
         return {"head": head, "merge_base": merge_base, "lines": lines}
 
-    def _git(self, *args: str, input_paths: bytes | None = None) -> bytes:
+    def review_diff(self, base: str, head: str) -> ReviewDiff:
+        if not (FULL_SHA.fullmatch(base) and FULL_SHA.fullmatch(head)):
+            raise WorktreeInspectionFailed("Review requires full base and head SHAs.")
+        self._git("fetch", "--no-tags", "origin", base, head, timeout=30)
+        args = (
+            "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
+            "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}...{head}", "--",
+        )
+        return ReviewDiff(shlex.join(("git", *args)), os.fsdecode(self._git(*args)))
+
+    def _git(self, *args: str, input_paths: bytes | None = None, timeout: float | None = None) -> bytes:
         operation = " ".join(("git", *args))
         try:
             result = subprocess.run(
                 ["git", *args], cwd=self.root, capture_output=True, input=input_paths,
                 env={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
-                stdin=subprocess.DEVNULL if input_paths is None else None,
+                stdin=subprocess.DEVNULL if input_paths is None else None, timeout=timeout,
             )
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
             raise WorktreeInspectionFailed(f"{operation} failed ({exc}).") from exc
