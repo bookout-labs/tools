@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private known-answer case v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "id",
+    "kind",
+    "issue",
+    "start_commit",
+    "result_commit",
+    "checked_pr",
+    "checked_head",
+    "expected",
+    "answer_command",
+    "wrong_behavior",
+    "positive",
+    "negative",
+    "artifacts"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z]+-[0-9]{3}$"
+    },
+    "kind": {
+      "enum": [
+        "feature",
+        "bug",
+        "parent-fixture",
+        "parent"
+      ]
+    },
+    "issue": {
+      "type": "string",
+      "minLength": 1
+    },
+    "start_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "result_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "checked_pr": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checked_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "expected": {
+      "type": "string",
+      "minLength": 1
+    },
+    "answer_command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "wrong_behavior": {
+      "type": "string",
+      "minLength": 1
+    },
+    "positive": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/result"
+        },
+        {
+          "properties": {
+            "failures": {
+              "const": 0
+            },
+            "exit_code": {
+              "const": 0
+            }
+          }
+        }
+      ]
+    },
+    "negative": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/result"
+        },
+        {
+          "properties": {
+            "failures": {
+              "minimum": 1
+            },
+            "exit_code": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request",
+        "answer",
+        "review",
+        "wrong",
+        "positive",
+        "negative"
+      ],
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/artifact"
+        },
+        "answer": {
+          "$ref": "#/$defs/artifact"
+        },
+        "review": {
+          "$ref": "#/$defs/artifact"
+        },
+        "wrong": {
+          "$ref": "#/$defs/artifact"
+        },
+        "positive": {
+          "$ref": "#/$defs/artifact"
+        },
+        "negative": {
+          "$ref": "#/$defs/artifact"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tests",
+        "failures",
+        "exit_code"
+      ],
+      "properties": {
+        "tests": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exit_code": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
