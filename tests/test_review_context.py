@@ -8,7 +8,7 @@ import unittest
 
 from foreman.delivery import DryRun
 from foreman.review_context import ReviewContext, ReviewSide, SCRIPTED_REVIEW_CONTEXT
-from foreman.workspace import LiveWorkspace, WorktreeInspectionFailed, changed_paths
+from foreman.workspace import LiveWorkspace, WorktreeInspectionFailed, changed_paths, line_counts
 
 
 class ChangedPathsTest(unittest.TestCase):
@@ -27,10 +27,27 @@ class ChangedPathsTest(unittest.TestCase):
         ))
 
     def test_unknown_or_incomplete_records_fail_closed(self):
-        for raw in (b"U\0unmerged\0", b"X\0unknown\0", b"M\0path", b"M\0",
+        for raw in (b"M100\0path\0", b"U\0unmerged\0", b"X\0unknown\0", b"M\0path", b"M\0",
                     b"R100\0old\0", b"C100\0source\0", b"A\0\0", b"\0", b"Rbad\0old\0new\0"):
             with self.subTest(raw=raw), self.assertRaises(WorktreeInspectionFailed):
                 changed_paths(raw)
+
+
+class CapturedParsersTest(unittest.TestCase):
+    def test_captured_git_records(self):
+        fixtures = Path(__file__).with_name("fixtures") / "git"
+        self.assertEqual(line_counts((fixtures / "grep-lines.z").read_bytes(), "HEAD"), {
+            "items.txt": 3, "nested/file.txt": 1, "old name.txt": 1, "space : name.txt": 2,
+        })
+        self.assertEqual(line_counts((fixtures / "grep-no-text.z").read_bytes(), "HEAD"), {})
+        self.assertEqual(changed_paths((fixtures / "name-status-rename.z").read_bytes()), (
+            frozenset({"old name.txt"}), frozenset({"new : name.txt"}),
+        ))
+
+    def test_malformed_line_counts_fail_closed(self):
+        for raw in (b"OTHER:path\x001\n", b"HEAD:path\x00bad\n", b"HEAD:path\x001", b"HEAD:path"):
+            with self.subTest(raw=raw), self.assertRaises(WorktreeInspectionFailed):
+                line_counts(raw, "HEAD")
 
 
 class ReviewDataTest(unittest.TestCase):
@@ -178,7 +195,6 @@ class WorkspaceReviewContextTest(unittest.TestCase):
         context = self.workspace.review_context(base, head)
         self.assertEqual(context.base.lines, {"src/text.txt": 2})
         self.assertEqual(context.head.lines, {"src/text.txt": 2})
-        self.assertEqual(self.workspace.pull_request_size(head, "main")["lines"], 2)
 
     def test_inspection_uses_merge_base_attributes_despite_head_and_local_overrides(self):
         self.write("src/text.txt", b"first\nold")
@@ -201,9 +217,8 @@ class WorkspaceReviewContextTest(unittest.TestCase):
                 context = self.workspace.review_context(base, head)
                 self.assertEqual(context.base.lines, {"src/text.txt": 2})
                 self.assertEqual(context.head.lines, {".gitattributes": 1, "src/text.txt": 2})
-                self.assertEqual(self.workspace.pull_request_size(head, "main")["lines"], 2)
 
-    def test_nonempty_info_attributes_stop_both_inspections(self):
+    def test_nonempty_info_attributes_stop_review_context(self):
         self.write("src/text.txt", b"first\nold")
         base = self.commit()
         self.git("push", "origin", "main")
@@ -213,12 +228,24 @@ class WorkspaceReviewContextTest(unittest.TestCase):
         self.git("push", "origin", "pr")
         self.write(".git/info/attributes", b"")
         self.assertEqual(self.workspace.review_context(base, head).head.lines, {"src/text.txt": 2})
-        self.assertEqual(self.workspace.pull_request_size(head, "main")["lines"], 2)
         self.write(".git/info/attributes", b"src/text.txt -diff linguist-generated\n")
-        for inspect, args in ((self.workspace.review_context, (base, head)),
-                              (self.workspace.pull_request_size, (head, "main"))):
-            with self.subTest(inspect=inspect.__name__), self.assertRaises(WorktreeInspectionFailed):
-                inspect(*args)
+        with self.assertRaises(WorktreeInspectionFailed):
+            self.workspace.review_context(base, head)
+
+    def test_local_submodule_settings_cannot_change_review_context(self):
+        self.write("text.txt", b"text\n")
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("submodule", "add", "-b", "main", str(self.root.parent / "origin.git"), "sub")
+        head = self.commit()
+        self.git("push", "origin", "main")
+        self.git("config", "submodule.recurse", "true")
+        self.git("config", "diff.ignoreSubmodules", "all")
+        context = self.workspace.review_context(base, head)
+        self.assertEqual(context.base.changed, frozenset())
+        self.assertEqual(context.head.changed, frozenset({".gitmodules", "sub"}))
+        self.assertEqual(context.head.files, frozenset({".gitmodules", "sub", "text.txt"}))
+        self.assertEqual(context.head.lines, {".gitmodules": 4, "text.txt": 1})
 
     def test_dry_run_default_matches_the_review_diff_and_can_be_overridden(self):
         for path, content in {"README.md": b"unchanged\n", "items.txt": b"first\nold\nlast\n",
