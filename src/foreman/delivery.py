@@ -35,9 +35,9 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    ImplementOutput, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
+    SpecRejection, SpecRejectionKind, PlanState, ImplementOutput, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
 )
-from foreman.state import ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult, SpecRejection, SpecRejectionKind
+from foreman.state import ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
@@ -119,7 +119,7 @@ def read_delivery_state(raw: object) -> DeliveryResult:
 
 
 def _active_slice(state: DeliveryState) -> SliceRecord:
-    slice = state.get("slice")
+    slice = state["plan"].slice
     if slice is None:
         raise InvalidOutput("implementation requires an active slice")
     return slice
@@ -216,12 +216,9 @@ def clean_slices(
     return [{**slices[title].record(), "depends_on": list(graph[title])} for title in ordered]
 
 
-def load_slice(raw: object) -> DeliveryUpdate:
+def load_slice(raw: object, plan: PlanState) -> DeliveryUpdate:
     stored = parse_output(StoredSlice, raw)
-    state: DeliveryUpdate = {"slice": stored.record()}
-    if stored.work_kind is not None:
-        state["work_kind"] = stored.work_kind
-    return state
+    return {"plan": plan.model_copy(update={"slice": stored.record(), "work_kind": stored.work_kind})}
 
 
 def graph_check(state: DeliveryState) -> GraphEvidence | None:
@@ -275,11 +272,13 @@ def failure_count(state: DeliveryState, key: Literal["verify_failures", "proof_f
 def stage_update(
     name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None,
 ) -> DeliveryUpdate:
-    slices = clean_slices(output.slices, workspace) if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready" else []
-    context = UpdateContext(state.get("issue_kind"), state.get("work_kind"), bool(oversized_pr(state)), slices, accepted_model)
+    plan = state["plan"]
+    slices = clean_slices(output.slices, workspace) if isinstance(output, SpecOutput) and plan.issue_kind == "parent" and output.spec_gate == "ready" else []
+    context = UpdateContext(plan, bool(oversized_pr(state)), slices, accepted_model)
     checks = state["checks"]
+    update: DeliveryUpdate
     if isinstance(output, ImplementOutput):
-        update: DeliveryUpdate = {"implementation": output.implementation, "checks": checks.model_copy(update={
+        update = {"implementation": output.implementation, "checks": checks.model_copy(update={
             "browser_proof": output.browser_proof.record() if output.browser_proof else None,
             "formal_proof": output.formal_proof.record() if output.formal_proof else None,
         })}
@@ -319,22 +318,23 @@ def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, 
 def stop_reason(state: DeliveryState) -> Halt | Literal[
     "sliced", "pr_split_required", "needs_human", "answered", "verified", "stopped"
 ]:
+    planning = state["plan"]
     checks = state["checks"]
     if halt := state.get("halt"):
         return halt
     if oversized_pr(state):
-        split = state.get("pr_split")
-        gate = split["gate"] if split else state.get("spec_gate")
+        split = planning.pr_split
+        gate = split["gate"] if split else planning.spec_gate
         if gate == "ready":
-            return "sliced" if state.get("issue_kind") == "parent" else "pr_split_required"
+            return "sliced" if planning.issue_kind == "parent" else "pr_split_required"
         if gate == "needs_human":
             return "needs_human"
-    if state.get("triage") == "needs_human" or state.get("spec_gate") == "needs_human":
+    if planning.triage == "needs_human" or planning.spec_gate == "needs_human":
         return "needs_human"
-    if state.get("spec_gate") == "ready" and state.get("path", [])[-1:] == ["spec"]:
-        if state.get("issue_kind") == "parent":
+    if planning.spec_gate == "ready" and state.get("path", [])[-1:] == ["spec"]:
+        if planning.issue_kind == "parent":
             return "sliced"
-    if state.get("triage") == "question":
+    if planning.triage == "question":
         return "answered"
     if checks.verify == "fail":
         return Halt.verify_cap
@@ -569,7 +569,7 @@ def compile_delivery(
                         update["human_question"] = accepted.rethink
             except InvalidSlicePlan as exc:
                 rounds = failure_count(state, "spec_failures") + 1
-                rejected: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "spec_failures": rounds}
+                rejected: DeliveryUpdate = {**stopped, "plan": state["plan"].model_copy(update={"spec_rejection": exc.reason}), "spec_failures": rounds}
                 if rounds >= config.max_review_rounds:
                     rejected.update(halted(Halt.spec_cap, str(exc), name))
                 return rejected
@@ -596,8 +596,7 @@ def compile_delivery(
         return {"review_receipt": receipt}
 
     def prepare(state: DeliveryState) -> DeliveryUpdate:
-        assert "slice" in state and "run" in state
-        title = redact(str(state["slice"]["title"]))
+        title = redact(str(_active_slice(state)["title"]))
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
         work = state.get("work", WorkState())
         run_state = state["run"]
@@ -649,8 +648,7 @@ def compile_delivery(
             return halted(Halt.git_failed, str(exc), "reconcile")
 
     def commit(state: DeliveryState) -> DeliveryUpdate:
-        assert "slice" in state
-        subject = f"{state['run'].issue or '<issue>'}: {' '.join(redact(str(state['slice']['title'])).split())}"
+        subject = f"{state['run'].issue or '<issue>'}: {' '.join(redact(str(_active_slice(state)['title'])).split())}"
         subject = textwrap.shorten(subject, width=72, placeholder="")
         model = state.get("models_used", {}).get("implement")
         if not model:
@@ -687,10 +685,10 @@ def compile_delivery(
             return halted(Halt.git_failed, str(exc), "commit")
 
     def publish(state: DeliveryState) -> DeliveryUpdate:
-        assert "work" in state and state["work"].branch and state["work"].base and "run" in state and "slice" in state
+        assert "work" in state and state["work"].branch and state["work"].base
         run_state = state["run"]
         branch, base, repo = state["work"].branch, state["work"].base, run_state.repo
-        title = " ".join(redact(str(state["slice"]["title"])).split())
+        title = " ".join(redact(str(_active_slice(state)["title"])).split())
         body = f"Closes #{run_state.issue or '<issue>'}"
         try:
             observed = run.workspace.inspect()
@@ -747,7 +745,7 @@ def compile_delivery(
 
     def needs_human(state: DeliveryState) -> DeliveryUpdate:
         stage = state["path"][-1]
-        split = state.get("pr_split") if stage == "spec" and oversized_pr(state) else None
+        split = state["plan"].pr_split if stage == "spec" and oversized_pr(state) else None
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
         answer = interrupt(HumanPrompt.model_validate({"stage": stage, "question": question}).model_dump())
         update: DeliveryUpdate = {"human_answers": [*state.get("human_answers", []), answer]}
@@ -763,10 +761,11 @@ def compile_delivery(
         return {"halt": None, "halt_detail": ""}
 
     def decide_pr_size(state: DeliveryState) -> DeliveryUpdate:
+        planning = state["plan"]
         size = oversized_pr(state)
         assert size is not None
-        split = state.get("pr_split")
-        plan = split["plan"] if split else state.get("spec", "")
+        split = planning.pr_split
+        plan = split["plan"] if split else planning.spec
         answer = PullRequestSizeDecision(interrupt(HumanPrompt(
             stage="pr_size",
             question=(
@@ -818,30 +817,32 @@ def compile_delivery(
         return {**dispatch_review(measured, runtime), "pr_size": size}
 
     def after_triage(state: DeliveryState) -> str:
+        planning = state["plan"]
         if state.get("halt"):
             return "done"
-        decision = state.get("triage")
+        decision = planning.triage
         if decision == "needs_human":
             return "needs_human"
         if decision == "question":
-            return "spec" if state.get("issue_kind") == "parent" else "research"
+            return "spec" if planning.issue_kind == "parent" else "research"
         return "prepare" if decision == "implement" else decision or "done"
 
     def after_spec(state: DeliveryState) -> str:
+        planning = state["plan"]
         if state.get("halt"):
             return "done"
-        if state.get("spec_rejection"):
+        if planning.spec_rejection:
             return "spec"
         if oversized_pr(state):
-            split = state.get("pr_split")
+            split = planning.pr_split
             if split and split["gate"] == "needs_human":
                 return "needs_human"
             return "decide_pr_size"
-        if state.get("spec_gate") == "needs_human":
+        if planning.spec_gate == "needs_human":
             return "needs_human"
-        if state.get("issue_kind") == "parent":
+        if planning.issue_kind == "parent":
             return "done"
-        return "prepare" if state.get("spec_gate") == "ready" else "done"
+        return "prepare" if planning.spec_gate == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
         if state.get("halt") == Halt.design_rethink:
@@ -963,6 +964,7 @@ def compile_delivery(
         return update
 
     def finish(state: DeliveryState) -> DeliveryUpdate:
+        planning = state["plan"]
         reason = stop_reason(state)
         if not state.get("halt"):
             rounds = failure_count(state, "verify_failures") if reason == Halt.verify_cap else review_count(state)
@@ -976,21 +978,21 @@ def compile_delivery(
                 return {"stop": reason, "path": ["done"], "halt_detail":
                         state.get("human_question") or "What should Foreman know to continue?"}
         update: DeliveryUpdate = {"stop": str(reason), "path": ["done"]}
-        split = state.get("pr_split")
+        split = planning.pr_split
         if reason == "sliced" and split:
-            if "spec_candidate" in state:
-                previous = SpecCandidate.from_record(state["spec_candidate"])
+            if planning.spec_candidate is not None:
+                previous = SpecCandidate.from_record(planning.spec_candidate)
                 model = state.get("models_used", {})["spec"]
                 candidate = SpecCandidate(
                     slices=[CandidateSlice.model_validate(item) for item in split["slices"]],
                     spec=previous.spec, work_kind=previous.work_kind,
                     author=SpecAuthor(stage="spec", model=model, family=family(model)),
                 )
-                update = {**update, **candidate.update(single="slice" in state)}
+                update = {**update, "plan": candidate.update(planning, single=planning.slice is not None)}
             else:
-                update["slices"] = split["slices"]
+                update["plan"] = planning.model_copy(update={"slices": split["slices"]})
         if reason == "pr_split_required":
-            update["halt_detail"] = split["plan"] if split else state.get("spec", "")
+            update["halt_detail"] = split["plan"] if split else planning.spec
         return update
 
     builder = StateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult](
@@ -1106,13 +1108,13 @@ def run_delivery(
                         max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
         "fact_record": fact_record_path(fact_record),
         "checks": ChecksState(check=check),
-        "issue_kind": "parent" if slice is None else "slice",
+        "plan": PlanState(issue_kind="parent" if slice is None else "slice"),
         "review_rounds": 0,
         "models_used": {},
         "path": [],
     }
     if slice is not None:
-        state.update(load_slice(slice))
+        state.update(load_slice(slice, state["plan"]))
     config = config if config is not None else load_config()
     if scratch is not None:
         state["pstack_pin"] = config.pstack.model_dump()

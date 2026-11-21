@@ -63,8 +63,8 @@ class DeliveryTest(unittest.TestCase):
 
     def test_passing_a_slice_starts_a_slice_run(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[1])
-        self.assertEqual(result["issue_kind"], "slice")
-        self.assertEqual(result["slice"], SLICES[1])
+        self.assertEqual(result["plan"].issue_kind, "slice")
+        self.assertEqual(result["plan"].slice, SLICES[1])
         self.assertEqual(result["stop"], "verified")
 
     def test_clear_change_skips_spec(self):
@@ -119,9 +119,9 @@ class DeliveryTest(unittest.TestCase):
                 result = walk(ScriptHandler(triage=triage, slices=SLICES[::-1]), slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "sliced")
-                self.assertEqual(result["slices"], [
-                    {**SLICES[0], "depends_on": [], "blocker_numbers": [], "provenance": {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]}},
-                    {**SLICES[1], "depends_on": [SLICES[0]["title"]], "blocker_numbers": [], "provenance": {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]}},
+                self.assertEqual(result["plan"].slices, [
+                    {**SLICES[0], "depends_on": [], "blocker_numbers": [], "provenance": {"author": result["plan"].spec_candidate["author"], "revision": result["plan"].spec_candidate["revision"]}},
+                    {**SLICES[1], "depends_on": [SLICES[0]["title"]], "blocker_numbers": [], "provenance": {"author": result["plan"].spec_candidate["author"], "revision": result["plan"].spec_candidate["revision"]}},
                 ])
 
     def test_single_slice_parents_skip_seam_ordering(self):
@@ -129,7 +129,7 @@ class DeliveryTest(unittest.TestCase):
         triaged = walk(ScriptHandler(slice=consumer), slice=None)
         self.assertEqual(triaged["stop"], "verified")
         specified = walk(ScriptHandler(triage="spec", slices=[consumer]), slice=None)
-        self.assertEqual(specified["slices"], [{**consumer, "depends_on": [], "blocker_numbers": [], "provenance": {"author": specified["spec_candidate"]["author"], "revision": specified["spec_candidate"]["revision"]}}])
+        self.assertEqual(specified["plan"].slices, [{**consumer, "depends_on": [], "blocker_numbers": [], "provenance": {"author": specified["plan"].spec_candidate["author"], "revision": specified["plan"].spec_candidate["revision"]}}])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES
@@ -143,7 +143,7 @@ class DeliveryTest(unittest.TestCase):
                 handler = ScriptHandler(triage="spec", slices=invalid)
 
                 def repair(node, model, state, instruction):
-                    if rejection := state.get("spec_rejection"):
+                    if rejection := state["plan"].spec_rejection:
                         self.assertEqual(rejection["kind"], kind)
                         self.assertIn(BOARD["name"] if kind != "dependency_cycle" else first["title"], rejection["detail"])
                         handler.slices = SLICES
@@ -154,7 +154,7 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual(result["review_rounds"], 0)
                 self.assertEqual(result["spec_failures"], 1)
                 self.assertEqual(result["stop"], "sliced")
-                self.assertIsNone(result["spec_rejection"])
+                self.assertIsNone(result["plan"].spec_rejection)
 
     def test_a_parent_stops_on_malformed_slices(self):
         first = SLICES[0]

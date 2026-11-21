@@ -1,5 +1,5 @@
 import tests
-from foreman.state import ChecksState
+from foreman.state import PlanState, ChecksState
 
 from dataclasses import replace
 import json
@@ -106,7 +106,7 @@ class ClaudeCheckTest(unittest.TestCase):
                     process = subprocess.run(args, cwd=cwd, env={**live_env, **env}, capture_output=True, text=True, stdin=subprocess.DEVNULL)
                     captured.update(argv=args, envelope=json.loads(process.stdout), returncode=process.returncode)
                     return process
-                result = CliWorker(repo, run=run)('implement', MODEL, {"checks": ChecksState(check=check)}, f'Use Bash separately for each command exactly once, including denials: {json.dumps(commands)}. Then return implementation "done", browser_proof null, formal_proof null.')
+                result = CliWorker(repo, run=run)('implement', MODEL, {"checks": ChecksState(check=check), "plan": PlanState()}, f'Use Bash separately for each command exactly once, including denials: {json.dumps(commands)}. Then return implementation "done", browser_proof null, formal_proof null.')
                 self.assertEqual(result.kind, 'ran' if check == CHECK else 'failed', result.detail)
                 transcript = Path.home() / '.claude/projects' / re.sub(r'[^a-zA-Z0-9-]', '-', str(repo)) / f"{captured['envelope']['session_id']}.jsonl"
                 rows = [json.loads(line) for line in transcript.read_text().splitlines()]

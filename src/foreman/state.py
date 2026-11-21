@@ -15,8 +15,8 @@ from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
     AttemptRecord, BrowserProofRecord, DispatchPlanRecord, FindingRecord,
-    FormalProofRecord, MergeRiskRecord, PendingDispatchRecord, PullRequestSplit,
-    SliceRecord, SpecCandidateRecord, WorkKind,
+    FormalProofRecord, MergeRiskRecord, PendingDispatchRecord,
+    PlanState as PlanState,
 )
 from foreman.workspace import PullRequestSize, WorkState
 
@@ -41,11 +41,11 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     proof_labels: dict[str, str] = Field(default_factory=dict)
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState, ChecksState])
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState, ChecksState, PlanState])
 
 
 class CheckpointVersionError(ValueError):
@@ -71,28 +71,10 @@ class WatchRecord(TypedDict):
     action: Literal["filed", "commented"]
 
 
-SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle", "existing_seam_builder"]
-
-
-class SpecRejection(TypedDict):
-    kind: SpecRejectionKind
-    detail: str
-
-
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
     pending_dispatch: PendingDispatchRecord | None
     dispatch_plan: DispatchPlanRecord
-    triage: str
-    spec: str
-    spec_gate: str
-    spec_candidate: SpecCandidateRecord
-    spec_rejection: SpecRejection | None
-    slices: list[SliceRecord]
-    child_issue_numbers: list[int]
-    slice: SliceRecord
-    issue_kind: str
-    work_kind: WorkKind
     pstack_pin: dict[str, str]
     skill_reason: SkillFailureReason
     attempts: Annotated[list[AttemptRecord], operator.add]
@@ -104,7 +86,6 @@ class DeliveryFields(TypedDict, total=False):
     human_answers: list[str]
     pr_size: PullRequestSize
     pr_size_override: PullRequestSize
-    pr_split: PullRequestSplit
     review: str
     review_findings: list[dict[str, object]]
     reviewed_head: str
@@ -128,6 +109,7 @@ class DeliveryFields(TypedDict, total=False):
 
 
 class DeliveryUpdate(DeliveryFields, total=False):
+    plan: PlanState
     checks: ChecksState
     run: RunState
     stop: str
@@ -135,6 +117,7 @@ class DeliveryUpdate(DeliveryFields, total=False):
 
 
 class DeliveryState(DeliveryFields):
+    plan: PlanState
     checks: ChecksState
     run: RunState
     stop: NotRequired[str]
@@ -142,6 +125,7 @@ class DeliveryState(DeliveryFields):
 
 
 class DeliveryResult(DeliveryFields):
+    plan: PlanState
     checks: ChecksState
     run: RunState
     path: Annotated[list[str], operator.add]

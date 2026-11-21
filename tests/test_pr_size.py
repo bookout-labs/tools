@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.state import ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
+from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 from foreman.cli import main
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery
 from foreman.config import load_config
@@ -105,9 +105,9 @@ class PullRequestSizeTest(unittest.TestCase):
                 graph = compile_delivery(lambda *_: self.fail("unexpected dispatch"), self.config, run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
                     "schema_version": SCHEMA_VERSION, "pstack_pin": self.config.pstack.model_dump(), "run": RunState(token_cap=DEFAULT_TOKEN_CAP, max_budget_usd=None, repo="Example/Engine", issue=8, workspace=str(self.root.resolve())),
-                      "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
-                    **({"spec": self.original_spec} if self.original_spec else {}),
-                     "checks": ChecksState(check="exit 0"), "work": WorkState(head_sha=self.git("rev-parse", "HEAD")),
+                    "plan": PlanState(issue_kind="slice" if "slice" in self.forge.labels else "parent", slice=EMPTY_SLICE,
+                                      spec=self.original_spec or ""),
+                    "checks": ChecksState(check="exit 0"), "work": WorkState(head_sha=self.git("rev-parse", "HEAD")),
                     "models_used": {"implement": "gpt-6.1-sol-high"}, "path": ["triage", "implement", "publish"],
                 }, as_node="publish")
         with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
@@ -280,19 +280,19 @@ class PullRequestSizeTest(unittest.TestCase):
 
         self.worker = implement_oversized
         self.assertIn("paused needs_human", self.invoke(expected_code=3, from_triage=True)[0])
-        before = SpecCandidate.from_record(self.checkpoint_values()["spec_candidate"])
+        before = SpecCandidate.from_record(self.checkpoint_values()["plan"].spec_candidate)
         self.assertEqual(before.author.stage, "triage")
         self.assertTrue(before.author.model)
         self.assertEqual(self.forge.created, [])
         self.assertIn("done sliced", self.invoke("--answer", "split")[0])
         self.assertEqual([issue[0] for issue in self.forge.created], [EMPTY_SLICE["title"], "Sort items"])
         values = self.checkpoint_values()
-        candidate = SpecCandidate.from_record(values["spec_candidate"])
+        candidate = SpecCandidate.from_record(values["plan"].spec_candidate)
         self.assertNotEqual(candidate.revision, before.revision)
         self.assertEqual(candidate.author.stage, "spec")
         self.assertEqual(candidate.author.model, values["models_used"]["spec"])
         self.assertEqual((candidate.spec, candidate.work_kind), (before.spec, before.work_kind))
-        self.assertEqual(values["child_issue_numbers"], [101, 102])
+        self.assertEqual(values["plan"].child_issue_numbers, [101, 102])
         self.assertEqual(self.stages, ["TriageOutput", "ImplementOutput", "SpecOutput"])
         self.assertIn("done sliced", self.invoke()[0])
         self.assertEqual(len(self.forge.created), 2)
@@ -318,8 +318,8 @@ class PullRequestSizeTest(unittest.TestCase):
         self.git("push", "origin", BRANCH)
         self.assertIn("500 changed lines", self.invoke(expected_code=3)[0])
         values = self.checkpoint_values()
-        self.assertEqual(values["spec"], self.original_spec)
-        self.assertEqual(values["pr_split"]["plan"], "Ship the list first, then add sorting.")
+        self.assertEqual(values["plan"].spec, self.original_spec)
+        self.assertEqual(values["plan"].pr_split["plan"], "Ship the list first, then add sorting.")
 
         self.write("tests/test_items.py", "handwritten\n" * 501)
         new_head = self.commit()
@@ -328,7 +328,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertIn("501 changed lines", stdout)
         self.assertIn("paused needs_human", stdout)
         values = self.checkpoint_values()
-        self.assertEqual(values["spec"], self.original_spec)
+        self.assertEqual(values["plan"].spec, self.original_spec)
         self.assertEqual(values["pr_size_override"]["head"], old_head)
         self.assertEqual(values["pr_size"]["head"], new_head)
         self.assertEqual(self.stages, ["SpecOutput"])

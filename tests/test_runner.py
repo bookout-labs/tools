@@ -21,7 +21,7 @@ from foreman.adapters import Outcome, Usage
 from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
-from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
+from foreman.delivery import compile_delivery, LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
@@ -29,13 +29,14 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
-from foreman.state import ChecksState, RunState, checkpoint_serializer, CheckpointVersionError
+from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
 from test_adapters import codex_events, fixture_process
+from test_spec_candidate import CandidateTests
 
 
 HEAD = "a" * 40
@@ -313,15 +314,22 @@ class CliWorkerTest(unittest.TestCase):
         checks = ChecksState(check="true", preflight="env", check_exit_code=0, verify="pass", verified_head=HEAD,
             browser_proof=BROWSER, formal_proof=FORMAL, proof_labels={"browser": "block"})
 
+        plan = PlanState(triage="implement", issue_kind="slice", spec_gate="ready", child_issue_numbers=[9],
+            spec_rejection={"kind": "dangling_seam", "detail": "Missing"},
+            pr_split={"plan": "Split", "gate": "ready", "question": "Keep?", "slices": [EMPTY_SLICE]})
+
+        plan = CandidateTests().candidate().update(plan, single=True)
+
         def run(args, cwd, env):
             state = json.loads(args[-1].split("Delivery state:\n")[1])
+            self.assertEqual(state["plan"], plan.model_dump(mode="json"))
             self.assertEqual(state["checks"], checks.model_dump(mode="json"))
             self.assertEqual(state["run"], run_state.model_dump(mode="json"))
             self.assertEqual(state["work"], work.model_dump(mode="json"))
             self.assertEqual(state["merge"], merge.model_dump(mode="json"))
             return worker_reply(args, {"triage": "implement"})
 
-        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge, "work": work, "run": run_state, "checks": checks}, "Read.")
+        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge, "work": work, "run": run_state, "checks": checks, "plan": plan}, "Read.")
         self.assertEqual(result.kind, "ran")
 
     def test_commands_use_the_configured_models_and_parse_the_final_result(self):
@@ -353,7 +361,7 @@ class CliWorkerTest(unittest.TestCase):
                     return worker_reply(args, {"triage": "implement"})
 
                 result = CliWorker(Path("engine"), run)(
-                    "triage", ModelSpec.parse(model), {"run": RunState(issue=12)}, "Read the issue.",
+                    "triage", ModelSpec.parse(model), {"run": RunState(issue=12), "plan": PlanState()}, "Read the issue.",
                 )
                 self.assertEqual(result.kind, "ran")
                 self.assertEqual(result.output["triage"], "implement")
@@ -924,8 +932,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_load_slice_issue(self):
         result = self.walk([{"triage": "question"}, {"research": "answer"}])
         self.assertEqual(result["run"].request, "Issue title\n\n" + slice_body(EMPTY_SLICE))
-        self.assertEqual(result["issue_kind"], "slice")
-        self.assertEqual(result["slice"], EMPTY_SLICE)
+        self.assertEqual(result["plan"].issue_kind, "slice")
+        self.assertEqual(result["plan"].slice, EMPTY_SLICE)
 
     def test_missing_or_invalid_slice_stops_before_triage(self):
         for body in ("Issue body", "Issue body\n\n```json\n{\n```", slice_body({"screen": ""})):
@@ -1011,10 +1019,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["stop"], "ci_pending")
         result = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
         self.assertEqual(result["checks"], halted["checks"])
+        self.assertEqual(result["plan"], halted["plan"])
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(saved.checkpoint["channel_values"]["checks"], halted["checks"])
+        self.assertEqual(saved.checkpoint["channel_values"]["plan"], halted["plan"])
 
     def test_quota_pause_returns_the_resumable_cli_exit_code(self):
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
@@ -1129,9 +1139,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.walk([{"triage": "spec", "work_kind": "bug_fix"}, {
             "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
         }])
-        self.assertEqual(result["issue_kind"], "parent")
+        self.assertEqual(result["plan"].issue_kind, "parent")
         self.assertEqual(result["run"].request, "Issue title\n\nIssue body")
-        self.assertEqual(result["child_issue_numbers"], [101, 102])
+        self.assertEqual(result["plan"].child_issue_numbers, [101, 102])
         self.assertEqual([x[0] for x in self.github.created], [BUILDER["title"], CONSUMER["title"]])
         self.assertEqual(self.github.created[0][2], ["slice", "factory"])
         self.assertEqual(self.github.created[1][2], ["slice"])
@@ -1144,13 +1154,13 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             prose, fence, encoded = body.partition("\n\n```json\n")
             self.assertEqual(fence, "\n\n```json\n")
             stored = json.loads(encoded.removesuffix("\n```"))
-            self.assertEqual(stored.pop("provenance"), {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]})
+            self.assertEqual(stored.pop("provenance"), {"author": result["plan"].spec_candidate["author"], "revision": result["plan"].spec_candidate["revision"]})
             self.assertEqual(stored, {**item, "work_kind": "bug_fix"})
             self.assertTrue(prose.startswith("Acceptance:\n" + item["acceptance"]))
         self.assertEqual(self.github.dependencies, {102: [101]})
         resumed = self.walk([])
         self.assertEqual(self.github.dependencies, {102: [101]})
-        self.assertEqual(resumed["child_issue_numbers"], [101, 102])
+        self.assertEqual(resumed["plan"].child_issue_numbers, [101, 102])
         self.assertEqual(len(self.github.created), 2)
         self.assertEqual(self.github.label_calls, [])
         self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
@@ -1170,8 +1180,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
         child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
-        self.assertEqual(child["slice"], {**child_payload, "provenance": {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]}})
-        self.assertEqual(child["work_kind"], "bug_fix")
+        self.assertEqual(child["plan"].slice, {**child_payload, "provenance": {"author": result["plan"].spec_candidate["author"], "revision": result["plan"].spec_candidate["revision"]}})
+        self.assertEqual(child["plan"].work_kind, "bug_fix")
         self.assertIn("why/SKILL.md", self.prompts[-1])
 
     def test_existing_seam_resolves_in_workspace_and_skips_a_dependency(self):
@@ -1182,7 +1192,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             "spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer],
         }])
         self.assertEqual(result["stop"], "sliced")
-        self.assertEqual(result["slices"][1]["depends_on"], [])
+        self.assertEqual(result["plan"].slices[1]["depends_on"], [])
         self.assertEqual(self.github.issue_labels[102], ["slice", "factory"])
 
     def test_self_built_seam_is_not_a_dependency(self):
@@ -1192,7 +1202,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, builder],
         }])
         self.assertEqual(result["stop"], "sliced")
-        self.assertEqual(result["slices"][0]["depends_on"], [])
+        self.assertEqual(result["plan"].slices[0]["depends_on"], [])
         self.assertEqual(self.github.dependencies, {102: [101]})
 
     def test_existing_seam_with_a_builder_is_rejected_before_filing(self):
@@ -1202,7 +1212,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
         result = self.walk([{"triage": "spec"}, spec, spec, spec])
         self.assertEqual(result["stop"], "spec_cap")
-        self.assertEqual(result["spec_rejection"]["kind"], "existing_seam_builder")
+        self.assertEqual(result["plan"].spec_rejection["kind"], "existing_seam_builder")
         self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_workspace_file_paths_resolve_inside_the_root(self):
@@ -1230,7 +1240,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["stop"], "spec_cap")
         self.assertEqual(result["review_rounds"], 0)
         self.assertEqual(result["spec_failures"], 3)
-        self.assertEqual(result["spec_rejection"]["kind"], "dangling_seam")
+        self.assertEqual(result["plan"].spec_rejection["kind"], "dangling_seam")
         self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_link_failure_leaves_child_blocked_and_parent_retry_repairs_it(self):
@@ -1506,7 +1516,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             APPROVE,
         ])
         self.assertEqual(result["path"][-5:], ["verify", "proof", "review", "merge", "done"])
-        self.assertEqual(result["slice"], SLICE)
+        self.assertEqual(result["plan"].slice, SLICE)
         self.assertEqual(result["checks"].proof_labels, {})
         self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
@@ -1891,6 +1901,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "pr_conflict")
         self.assertEqual(halted["work"].head_sha, "2" * 40)
+        halted["plan"] = halted["plan"].model_copy(update={"pr_split": {
+            "plan": "Split", "gate": "ready", "question": None, "slices": [EMPTY_SLICE]}})
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(self.github, workspace), checkpointer=saver)
+            graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {"plan": halted["plan"]}, as_node="done")
         remote = ready.model_copy(deep=True)
         remote.outcome, remote.pr.head.sha = "head_changed", "3" * 40
         workspace.current = WorktreeState("2" * 40, False, BRANCH)
@@ -1901,12 +1917,15 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(resumed["work"], expected)
         self.assertEqual(resumed["checks"], ChecksState(check=halted["checks"].check, preflight=halted["checks"].preflight))
         self.assertEqual(resumed["run"], halted["run"])
+        self.assertIsNone(resumed["plan"].pr_split)
+        self.assertEqual(resumed["plan"], halted["plan"].model_copy(update={"pr_split": None}))
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(saved.checkpoint["channel_values"]["checks"], resumed["checks"])
         self.assertEqual(saved.checkpoint["channel_values"]["work"], expected)
         self.assertEqual(saved.checkpoint["channel_values"]["run"], halted["run"])
+        self.assertEqual(saved.checkpoint["channel_values"]["plan"], resumed["plan"])
 
     def test_multi_round_repair_halt_preserves_run_and_discards_previous_attempt(self):
         workspace = FakeWorkspace(self.cwd)
@@ -1934,11 +1953,13 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(resumed["run"], halted["run"])
         self.assertEqual(resumed["work"], WorkState(branch=BRANCH, base="main"))
         self.assertEqual(resumed["merge"], MergeState())
+        self.assertEqual(resumed["plan"], halted["plan"])
         self.assertEqual(halted["checks"].verified_head, HEAD)
         self.assertEqual(resumed["checks"], ChecksState(check=halted["checks"].check, preflight=halted["checks"].preflight))
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
+        self.assertEqual(saved.checkpoint["channel_values"]["plan"], halted["plan"])
         self.assertEqual(saved.checkpoint["channel_values"]["checks"], resumed["checks"])
 
     def test_retry_after_failed_hold_read_arms_once(self):
@@ -2535,7 +2556,7 @@ class HaltExitCodeTest(unittest.TestCase):
         detail = "Merge arming requires a full 40-hex commit SHA."
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
-        result = {"checks": ChecksState(), "run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed")}
+        result = {"checks": ChecksState(), "run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed"), "plan": PlanState()}
         with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)

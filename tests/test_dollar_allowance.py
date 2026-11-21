@@ -19,7 +19,7 @@ from foreman.cli import _print_run, main
 from foreman.delivery import LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import run_live_delivery
-from foreman.state import ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
+from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 from foreman.usd import BudgetUsd
 from foreman.workspace import WorkspaceError
 from tests.skill_fixture import skill_fixture
@@ -172,7 +172,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertNotIn("claude spend", printed(unbounded))
 
     def test_printed_spend_counts_only_claude_costs(self):
-        base = {"run": RunState(repo="a/b", max_budget_usd="1"), "checks": ChecksState(check=""), "path": ["done"], "stop": "answered"}
+        base = {"run": RunState(repo="a/b", max_budget_usd="1"), "checks": ChecksState(check=""), "path": ["done"], "stop": "answered", "plan": PlanState()}
         counted = [attempt("claude-opus-5-5-high", 0.1), attempt("claude-opus-5-5-high", 0.2),
                    attempt("claude-opus-5-5-high", usage=False, outcome="cli_missing"),
                    attempt("gpt-6.1-sol-high", 5.0), attempt("grok-4.7-high", 5.0)]
@@ -244,10 +244,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with SqliteSaver.from_conn_string(str(historical)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
-                graph.update_state(THREAD, {"schema_version": 3, "run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
-                    "triage": "implement", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
+                graph.update_state(THREAD, {"schema_version": 5, "run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
+                    "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
                 graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
-                                            "path": ["implement", "done"]}, as_node="done")
+                                            "path": ["implement", "done"], "plan": PlanState()}, as_node="done")
             with patch("foreman.runner.compile_delivery", wraps=compile_delivery) as compile_graph:
                 with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
                     run_live_delivery(**kwargs, checkpoint=historical)
@@ -258,8 +258,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with SqliteSaver.from_conn_string(str(finished)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
-                graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", token_cap=100, max_budget_usd=None), "checks": ChecksState(check=""), "path": ["done"], "stop": "answered",
-                                            }, as_node="done")
+                graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", token_cap=100, max_budget_usd=None), "checks": ChecksState(check=""), "path": ["done"], "stop": "answered", "plan": PlanState()}, as_node="done")
             output = printed(run_live_delivery(**kwargs, checkpoint=finished))
             self.assertIn("done answered", output)
             self.assertNotIn("claude spend", output)
