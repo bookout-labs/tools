@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal, Protocol
 
@@ -37,6 +38,7 @@ class Call:
     prompt: str
     schema: str
     edit: bool
+    temp_dir: Path
 
 
 class CliAdapter(Protocol):
