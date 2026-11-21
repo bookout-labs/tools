@@ -255,29 +255,38 @@ def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
 def dollar_detail(state: DeliveryState, attempts: list[AttemptRecord]) -> str:
     spend = claude_spend(attempts)
     detail = f"Run Claude spend: ${spend}." if spend is not None else "Run Claude spend: unknown."
-    return detail + f" Dollar allowance: ${state.get('max_budget_usd')}." if state.get("max_budget_usd") else detail
+    if (limit := state.get("max_budget_usd")) is not None:
+        detail += f" Dollar allowance: ${limit}."
+    return detail
 
 
-def admission_stop(state: DeliveryState, attempts: list[AttemptRecord], stage: str) -> DeliveryUpdate | None:
+def dollar_admission_for(state: DeliveryState, attempts: list[AttemptRecord]) -> Remaining | Exhausted | CostUnknown | None:
+    limit = state.get("max_budget_usd")
+    return dollar_admission(BudgetUsd(Decimal(limit)), attempts) if limit is not None else None
+
+
+def admission_stop(
+    state: DeliveryState, attempts: list[AttemptRecord], stage: str,
+    admission: Remaining | Exhausted | CostUnknown | None,
+) -> DeliveryUpdate | None:
     if run_tokens(attempts) >= state["token_cap"]:
         last = attempts[-1]
         detail = (f"Run used {run_tokens(attempts)} tokens; cap is {state['token_cap']}. "
                   f"Last attempt: {last['stage']} {last['model']} used {run_tokens([last])}. "
                   "An in-flight attempt can overshoot the cap.")
         return halted(Halt.budget_exceeded, detail, stage)
-    if (limit := state.get("max_budget_usd")) is not None:
-        admission = dollar_admission(BudgetUsd(Decimal(limit)), attempts)
-        if isinstance(admission, (CostUnknown, Exhausted)):
-            code = Halt.cost_unknown if isinstance(admission, CostUnknown) else Halt.budget_exceeded
-            return halted(code, dollar_detail(state, attempts), stage)
-    return None
+    match admission:
+        case CostUnknown():
+            detail = "A Claude attempt ran without a dollar cost. The allowance cannot be enforced."
+            return halted(Halt.usage_unknown, f"{detail} {dollar_detail(state, attempts)}", stage)
+        case Exhausted():
+            return halted(Halt.budget_exceeded, dollar_detail(state, attempts), stage)
+        case Remaining() | None:
+            return None
 
 
-def dispatch_budget(state: DeliveryState, attempts: list[AttemptRecord]) -> str | None:
-    if (limit := state.get("max_budget_usd")) is not None:
-        if isinstance(admission := dollar_admission(BudgetUsd(Decimal(limit)), attempts), Remaining):
-            return usd_text(BudgetUsd(admission.usd))
-    return None
+def dispatch_budget(admission: Remaining | Exhausted | CostUnknown | None) -> str | None:
+    return usd_text(BudgetUsd(admission.usd)) if isinstance(admission, Remaining) else None
 
 
 def stage_text(name: str) -> str:
@@ -473,7 +482,8 @@ def compile_delivery(
 
     def bind(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-            if stop := admission_stop(state, state.get("attempts", []), name):
+            admission = dollar_admission_for(state, state.get("attempts", []))
+            if stop := admission_stop(state, state.get("attempts", []), name, admission):
                 return stop
             current_run = run if isinstance(run, DryRun) else runtime.context or run
             if name == "implement" and isinstance(current_run, LiveRun):
@@ -560,7 +570,7 @@ def compile_delivery(
                     "proof_failures": failure_count(state, "proof_failures"), "spec_failures": failure_count(state, "spec_failures"),
                     "review_run_id": state.get("review_run_id") or uuid4().hex, "dispatch_plan": DispatchPlan(
                 models=[model.name for model in models], instruction=instruction, methods=methods,
-                budget_usd=dispatch_budget(state, state.get("attempts", [])),
+                budget_usd=dispatch_budget(admission),
                 target=review_context[1] if review_context else None,
                 scope=review_context[2].record() if review_context else None,
             ).record(), "pending_dispatch": PendingDispatch(stage=name, index=0, quota_model=None).record()}
@@ -571,8 +581,6 @@ def compile_delivery(
             assert "pending_dispatch" in state and "dispatch_plan" in state
             pending, plan = state["pending_dispatch"], state["dispatch_plan"]
             assert pending is not None
-            if stop := admission_stop(state, state.get("attempts", []), name):
-                return {"pending_dispatch": None, **stop}
             models, methods = plan["models"], plan["methods"]
             worker_state: DeliveryState = state.copy()
             if name == "review":
@@ -596,7 +604,8 @@ def compile_delivery(
                 return {**stopped, **halted(Halt.budget_exceeded, f"{name} {model} exhausted its dollar budget. {dollar_detail(state, attempt_history)} {outcome.detail}".strip(), name)}
             if outcome.kind == "ran" and outcome.usage is None:
                 return {**stopped, **halted(Halt.usage_unknown, unknown_usage(name, model), name)}
-            if stop := admission_stop(state, attempt_history, name):
+            admission = dollar_admission_for(state, attempt_history)
+            if stop := admission_stop(state, attempt_history, name, admission):
                 return {**stopped, **stop}
             index = pending["index"] + 1
             unavailable = ""
@@ -605,7 +614,7 @@ def compile_delivery(
                 unavailable = f"{prior}review {model}: {outcome.kind}. {outcome.detail}".strip()
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):
                 retry: DeliveryUpdate = {"attempts": attempts,
-                    "dispatch_plan": {**plan, "budget_usd": dispatch_budget(state, attempt_history)}, "pending_dispatch": PendingDispatch(
+                    "dispatch_plan": {**plan, "budget_usd": dispatch_budget(admission)}, "pending_dispatch": PendingDispatch(
                     stage=name, index=index,
                     quota_model=model if outcome.kind == "quota" else pending["quota_model"],
                 ).record()}

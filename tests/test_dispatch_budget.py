@@ -136,7 +136,7 @@ class DispatchBudgetTests(unittest.TestCase):
                         self.assertEqual(result["triage"], "needs_human")
 
     def test_spent_or_unknown_allowance_never_starts_a_candidate(self):
-        for prior, expected in ((1.0, "budget_exceeded"), (1.05, "budget_exceeded"), (None, "cost_unknown")):
+        for prior, expected in ((1.0, "budget_exceeded"), (1.05, "budget_exceeded"), (None, "usage_unknown")):
             with self.subTest(prior=prior):
                 def unexpected(*args, **kwargs):
                     self.fail("a candidate ran without a known positive allowance")
@@ -160,10 +160,12 @@ class DispatchBudgetTests(unittest.TestCase):
                                        usage=Usage(input_tokens=1, output_tokens=0) if has_usage else None)
 
                     result = walk(handler, limit=limit)
-                    expected = "cost_unknown" if limit else ("invalid_output" if kind == "failed" else "needs_human")
+                    expected = "usage_unknown" if limit else ("invalid_output" if kind == "failed" else "needs_human")
                     self.assertEqual(result["stop"], expected)
                     self.assertEqual(len(calls), 2 if limit is None and kind == "quota" else 1)
                     if limit:
+                        self.assertIn("without a dollar cost", result["halt_detail"])
+                        self.assertIn("Dollar allowance: $1.", result["halt_detail"])
                         self.assertEqual(run_exit_code(result), 1)
                         self.assertNotIn("triage", result)
 

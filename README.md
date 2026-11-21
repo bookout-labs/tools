@@ -391,7 +391,7 @@ dollar allowance require a new run; finished legacy runs remain readable.
 
 Claude dispatches receive the remaining allowance through `--max-budget-usd`.
 Reaching the allowance halts `budget_exceeded` before output or fallback.
-Unknown Claude costs halt bounded runs as `cost_unknown`. Missing CLIs fall through.
+Unknown Claude costs halt bounded runs as `usage_unknown`. Missing CLIs fall through.
 Both halts exit 1. Dry runs record zero dollar cost.
 
 `foreman run delivery --max-tokens N` stores a positive token cap, defaulting to

@@ -21,7 +21,6 @@ class Halt(StrEnum):
     pr_size_unavailable = auto()
     git_failed = auto()
     usage_unknown = auto()
-    cost_unknown = auto()
     skill_missing = auto()
     reviewer_unavailable = auto()
     cli_missing = auto()
@@ -93,11 +92,9 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.git_failed: Policy("A workspace git operation failed.", "retry",
         Watch("Git operations complete before publication",
               "A workspace git operation failed.", "src/foreman/workspace.py")),
-    Halt.usage_unknown: Policy("A model run did not report how many tokens it used.", "terminal",
+    Halt.usage_unknown: Policy("A model run did not report its token usage or dollar cost.", "terminal",
         Watch("{adapter} attempts report usage",
               "The {adapter} attempt did not report usage.", "src/foreman/adapters/{adapter}.py")),
-    Halt.cost_unknown: Policy("A Claude attempt did not report its dollar cost.", "terminal",
-        Watch("claude attempts report cost", "A Claude attempt did not report cost.", "src/foreman/adapters/claude.py")),
     Halt.skill_missing: Policy("A required instruction file is unavailable at the selected version.", "terminal",
         Watch("Pinned skills are available before dispatch",
               "A required skill was unavailable at the pinned commit.", "src/foreman/skill_rules.py")),
