@@ -1,0 +1,22 @@
+test_derived_argv_must_match_original (test_fixture_manifest.DerivedCaptureTest.test_derived_argv_must_match_original) ... ok
+test_derived_from_rejects_chain (test_fixture_manifest.DerivedCaptureTest.test_derived_from_rejects_chain) ... ok
+test_derived_from_rejects_self_reference (test_fixture_manifest.DerivedCaptureTest.test_derived_from_rejects_self_reference) ... ok
+test_derived_from_requires_existing_capture (test_fixture_manifest.DerivedCaptureTest.test_derived_from_requires_existing_capture) ... ok
+test_quoted_source_rejects_argv (test_fixture_manifest.DerivedCaptureTest.test_quoted_source_rejects_argv) ... ok
+test_captured_returncode_is_optional_and_strict (test_fixture_manifest.FixtureManifestTest.test_captured_returncode_is_optional_and_strict) ... ok
+test_claude_budget_evidence (test_fixture_manifest.FixtureManifestTest.test_claude_budget_evidence) ... ok
+test_manifest_matches_fixture_inventory (test_fixture_manifest.FixtureManifestTest.test_manifest_matches_fixture_inventory) ... ok
+test_omission_cannot_resolve_an_unrecorded_fact (test_fixture_manifest.GraphFactGateTest.test_omission_cannot_resolve_an_unrecorded_fact) ... ok
+test_only_exact_graph_check_restatement_is_exempt (test_fixture_manifest.GraphFactGateTest.test_only_exact_graph_check_restatement_is_exempt) ... ok
+test_record_paths_are_relative_and_normalized (test_fixture_manifest.GraphFactGateTest.test_record_paths_are_relative_and_normalized) ... ok
+test_carried_claim_requires_committed_evidence_for_its_id (test_fixture_manifest.RecordedEvidenceTest.test_carried_claim_requires_committed_evidence_for_its_id) ... ok
+test_committed_claude_evidence_carries_budget_claim_ids (test_fixture_manifest.RecordedEvidenceTest.test_committed_claude_evidence_carries_budget_claim_ids) ... ok
+test_custom_record_uses_its_own_directory_at_verified_head (test_fixture_manifest.RecordedEvidenceTest.test_custom_record_uses_its_own_directory_at_verified_head) ... ok
+test_only_regular_tracked_files_are_recorded (test_fixture_manifest.RecordedEvidenceTest.test_only_regular_tracked_files_are_recorded) ... ok
+test_unavailable_head_blocks_approval (test_fixture_manifest.RecordedEvidenceTest.test_unavailable_head_blocks_approval) ... ok
+test_unreadable_manifest_blocks_approval (test_fixture_manifest.RecordedEvidenceTest.test_unreadable_manifest_blocks_approval) ... ok
+
+----------------------------------------------------------------------
+Ran 17 tests in 1.918s
+
+OK

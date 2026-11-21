@@ -1,0 +1,150 @@
+....................................................................FFFF...................................................EF.......................E.....................................................................................................................FF.........................................F....................s.............................................
+======================================================================
+ERROR: test_guard_rejects_external_python_sockets (test_offline.OfflineSuiteTest.test_guard_rejects_external_python_sockets)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_offline.py", line 21, in test_guard_rejects_external_python_sockets
+    listener.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+======================================================================
+ERROR: test_auth_failure_under_pty_returns_without_prompting (test_publication.PublicationTest.test_auth_failure_under_pty_returns_without_prompting)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_publication.py", line 536, in test_auth_failure_under_pty_returns_without_prompting
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RejectAuth)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 457, in __init__
+    self.server_bind()
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/server.py", line 140, in server_bind
+    socketserver.TCPServer.server_bind(self)
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socketserver.py", line 478, in server_bind
+    self.socket.bind(self.server_address)
+PermissionError: [Errno 1] Operation not permitted
+
+======================================================================
+FAIL: test_fresh_process_crash_after_success_or_quota_never_replays (test_dispatch_recovery.DispatchRecoveryTests.test_fresh_process_crash_after_success_or_quota_never_replays) (mode='entry')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_dispatch_recovery.py", line 68, in test_fresh_process_crash_after_success_or_quota_never_replays
+    self.assertEqual(crashed.returncode, 19, crashed.stderr)
+AssertionError: 1 != 19 : Traceback (most recent call last):
+  File "<string>", line 13, in <module>
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+FAIL: test_fresh_process_crash_after_success_or_quota_never_replays (test_dispatch_recovery.DispatchRecoveryTests.test_fresh_process_crash_after_success_or_quota_never_replays) (mode='success')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_dispatch_recovery.py", line 68, in test_fresh_process_crash_after_success_or_quota_never_replays
+    self.assertEqual(crashed.returncode, 19, crashed.stderr)
+AssertionError: 1 != 19 : Traceback (most recent call last):
+  File "<string>", line 13, in <module>
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+FAIL: test_fresh_process_crash_after_success_or_quota_never_replays (test_dispatch_recovery.DispatchRecoveryTests.test_fresh_process_crash_after_success_or_quota_never_replays) (mode='quota')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_dispatch_recovery.py", line 68, in test_fresh_process_crash_after_success_or_quota_never_replays
+    self.assertEqual(crashed.returncode, 19, crashed.stderr)
+AssertionError: 1 != 19 : Traceback (most recent call last):
+  File "<string>", line 13, in <module>
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+FAIL: test_fresh_process_crash_after_success_or_quota_never_replays (test_dispatch_recovery.DispatchRecoveryTests.test_fresh_process_crash_after_success_or_quota_never_replays) (mode='quota-uncommitted')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_dispatch_recovery.py", line 68, in test_fresh_process_crash_after_success_or_quota_never_replays
+    self.assertEqual(crashed.returncode, 19, crashed.stderr)
+AssertionError: 1 != 19 : Traceback (most recent call last):
+  File "<string>", line 13, in <module>
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+FAIL: test_subprocess_transports_fail_fast_and_local_git_still_works (test_offline.OfflineSuiteTest.test_subprocess_transports_fail_fast_and_local_git_still_works) (command=['/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/.venv/bin/python', '-I', '-c', "import urllib.request; urllib.request.urlopen('https://example.invalid/repo')"])
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_offline.py", line 46, in test_subprocess_transports_fail_fast_and_local_git_still_works
+    self.assertIn(error, result.stderr)
+AssertionError: 'Connection refused' not found in 'Traceback (most recent call last):\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 1344, in do_open\n    h.request(req.get_method(), req.selector, req.data, headers,\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1386, in request\n    self._send_request(method, url, body, headers, encode_chunked)\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1432, in _send_request\n    self.endheaders(body, encode_chunked=encode_chunked)\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1381, in endheaders\n    self._send_output(message_body, encode_chunked=encode_chunked)\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1141, in _send_output\n    self.send(msg)\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1085, in send\n    self.connect()\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1520, in connect\n    super().connect()\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1051, in connect\n    self.sock = self._create_connection(\n                ^^^^^^^^^^^^^^^^^^^^^^^^\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socket.py", line 865, in create_connection\n    raise exceptions[0]\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socket.py", line 850, in create_connection\n    sock.connect(sa)\nPermissionError: [Errno 1] Operation not permitted\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File "<string>", line 1, in <module>\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 215, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 515, in open\n    response = self._open(req, data)\n               ^^^^^^^^^^^^^^^^^^^^^\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 532, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 492, in _call_chain\n    result = func(*args)\n             ^^^^^^^^^^^\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 1392, in https_open\n    return self.do_open(http.client.HTTPSConnection, req,\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 1347, in do_open\n    raise URLError(err)\nurllib.error.URLError: <urlopen error [Errno 1] Operation not permitted>\n'
+
+======================================================================
+FAIL: test_fresh_process_retries_quota_and_an_older_merge_checkpoint (test_runner.LiveRunnerTest.test_fresh_process_retries_quota_and_an_older_merge_checkpoint) (scenario='held')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1894, in test_fresh_process_retries_quota_and_an_older_merge_checkpoint
+    first = invoke(scenario, 75)
+            ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1886, in invoke
+    self.assertEqual(process.returncode, expected, process.stderr)
+AssertionError: 1 != 75 : Traceback (most recent call last):
+  File "<string>", line 11, in <module>
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+FAIL: test_fresh_process_retries_quota_and_an_older_merge_checkpoint (test_runner.LiveRunnerTest.test_fresh_process_retries_quota_and_an_older_merge_checkpoint) (scenario='quota')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1894, in test_fresh_process_retries_quota_and_an_older_merge_checkpoint
+    first = invoke(scenario, 75)
+            ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1886, in invoke
+    self.assertEqual(process.returncode, expected, process.stderr)
+AssertionError: 1 != 75 : Traceback (most recent call last):
+  File "<string>", line 11, in <module>
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+======================================================================
+FAIL: test_second_process_sees_the_saved_stop_and_answer_resumes_spec (test_runner.LiveRunnerTest.test_second_process_sees_the_saved_stop_and_answer_resumes_spec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1725, in test_second_process_sees_the_saved_stop_and_answer_resumes_spec
+    first = invoke("--request", "List items", expected=3)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1722, in invoke
+    self.assertEqual(process.returncode, expected, process.stderr)
+AssertionError: 1 != 3 : Traceback (most recent call last):
+  File "<string>", line 11, in <module>
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/test_runner.py", line 1, in <module>
+    import tests
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-1baf5413-affe111355a98549/.scratch.Dc8pgm/tests/__init__.py", line 10, in <module>
+    proxy.bind(("127.0.0.1", 0))
+PermissionError: [Errno 1] Operation not permitted
+
+
+----------------------------------------------------------------------
+Ran 372 tests in 139.880s
+
+FAILED (failures=8, errors=2, skipped=1)
