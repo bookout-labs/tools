@@ -9,7 +9,6 @@ from pydantic import ValidationError
 from foreman.adapters import Outcome
 from foreman.config import ModelSpec, NodeConfig, load_config
 from foreman.delivery import DEFAULT_TOKEN_CAP, DryRun, compile_delivery, run_delivery
-from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.github import render_slice_body
 from foreman.runner import _load_slice, checkpoint_state
@@ -69,12 +68,12 @@ class CandidateTests(unittest.TestCase):
                 script = ScriptHandler(triage="implement" if stage == "triage" else "spec",
                                        slices=[{k: v for k, v in SLICE.items() if k not in {"depends_on", "blocker_numbers"}}])
 
-                def handler(node, model, state, instruction, *, budget_usd=None):
+                def handler(node, model, state, instruction):
                     if node == stage and model.name == "gpt-test":
                         return Outcome("quota")
                     return script(node, model, state, instruction)
                 with skill_fixture(replace(config, nodes=nodes)) as (configured, scratch):
-                    result = run_delivery(FailoverDispatcher(handler), repo="org/repo", request="Save", config=configured, scratch=scratch)
+                    result = run_delivery(handler, repo="org/repo", request="Save", config=configured, scratch=scratch)
                 candidate = SpecCandidate.from_record(result["spec_candidate"])
                 self.assertEqual(candidate.author.record(), {"stage": stage, "model": "claude-test", "family": "claude"})
                 attempts = [a for a in result["attempts"] if a["stage"] == stage]
@@ -88,7 +87,7 @@ class CandidateTests(unittest.TestCase):
         provenance = {"author": candidate.author.record(), "revision": candidate.revision}
         for triage in ("implement", "spec"):
             with skill_fixture() as (config, scratch):
-                result = run_delivery(FailoverDispatcher(ScriptHandler(triage=triage)), repo="org/repo", request="Save",
+                result = run_delivery(ScriptHandler(triage=triage), repo="org/repo", request="Save",
                                       slice={**SLICE, "provenance": provenance}, config=config, scratch=scratch)
             self.assertEqual(result["slice"]["provenance"], provenance)
             self.assertNotIn("spec_candidate", result)
@@ -115,14 +114,14 @@ class CandidateTests(unittest.TestCase):
 
     def test_failed_author_does_not_produce_a_candidate(self):
         with skill_fixture() as (config, scratch):
-            result = run_delivery(FailoverDispatcher(lambda *_, **kwargs: Outcome("failed", detail="Malformed output")),
+            result = run_delivery(lambda *_: Outcome("failed", detail="Malformed output"),
                                   repo="org/repo", request="Save", config=config, scratch=scratch)
         self.assertEqual(result["halt"], "invalid_output")
         self.assertNotIn("spec_candidate", result)
 
 
     def test_without_methods_records_dispatch_author_independently_of_attempts(self):
-        result = compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), run=DryRun()).invoke(
+        result = compile_delivery(ScriptHandler(), load_config(), run=DryRun()).invoke(
             {"repo": "org/repo", "check": "", "path": [], "token_cap": DEFAULT_TOKEN_CAP, "issue_kind": "parent"})
         self.assertNotIn("skill_attempts", result)
         self.assertEqual(result["spec_candidate"]["author"]["model"], result["models_used"]["triage"])

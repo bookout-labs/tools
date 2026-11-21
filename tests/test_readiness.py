@@ -5,7 +5,7 @@ import unittest
 from typing import get_args
 from unittest.mock import patch
 
-from foreman.delivery import READINESS_HALTS
+from foreman.outcomes import READINESS_HALTS
 from foreman.readiness import Outcome
 from foreman.github import ForgeError, LiveForge, PullRequest
 from test_github import PR, HEAD, BASE, BRANCH, REPO
@@ -15,6 +15,8 @@ READINESS = dict(number=12, state="open", draft=False, head=dict(sha=HEAD, ref=B
                  base=dict(sha=BASE, ref="main"), mergeable=True, merge_commit_sha=MERGE, mergeable_state="behind")
 RULES = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test", integration_id=15368)]))]
 
+QUEUE_RULE = dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))
+RULES.append(QUEUE_RULE)
 
 class ReadinessTest(unittest.TestCase):
     def test_every_outcome_has_an_explicit_halt_policy(self):
@@ -22,7 +24,8 @@ class ReadinessTest(unittest.TestCase):
 
     def observe(self, *, pr=None, runs=None, rules=None, statuses=None, parents=None, after=None, legacy=None, tip=BASE):
         pr = pr or READINESS
-        def reply(command, **kwargs):
+        def reply(repo, command, **kwargs):
+            self.assertEqual(repo, REPO)
             url = command[2]
             value = (rules if rules is not None else RULES) if "/rules/" in url else (
                 [dict(check_runs=runs or [])] if "/check-runs" in url else (
@@ -85,7 +88,7 @@ class ReadinessTest(unittest.TestCase):
     def test_commit_status_requires_explicit_unbound_app_policy(self):
         status = dict(id=20, context="test", state="success")
         self.assertEqual(self.observe(statuses=[status]).outcome, "pending")
-        rules = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test")]))]
+        rules = [QUEUE_RULE, dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test")]))]
         self.assertEqual(self.observe(statuses=[status], rules=rules).outcome, "ready")
 
     def test_pr_state_changes_are_not_transport_errors(self):
@@ -101,10 +104,18 @@ class ReadinessTest(unittest.TestCase):
         self.assertEqual(self.observe(legacy=dict(checks=[], contexts=["test"])).outcome, "policy")
 
     def test_ambiguous_app_identity_fails_closed(self):
-        rules = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test")]))]
+        rules = [QUEUE_RULE, dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test")]))]
         self.assertEqual(self.observe(runs=[self.run_check(), {**self.run_check(), "app": dict(id=99)}], rules=rules).outcome, "policy")
 
     def test_superseded_status_success_cannot_hide_failure(self):
-        rules = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test")]))]
+        rules = [QUEUE_RULE, dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test")]))]
         self.assertEqual(self.observe(statuses=[dict(id=20, context="test", state="success"),
                                                dict(id=21, context="test", state="failure")], rules=rules).outcome, "red")
+
+    def test_queue_policy_is_observed_once_or_fails_closed(self):
+        self.assertEqual(self.observe(runs=[self.run_check()]).queue_policy.merge_method, "SQUASH")
+        for rules in [RULES[:1], RULES + [QUEUE_RULE]]:
+            self.assertEqual(self.observe(rules=rules).outcome, "policy")
+
+    def test_merged_head_can_reconcile_without_premerge_checks(self):
+        self.assertEqual(self.observe(pr={**READINESS, "state": "closed", "merged": True, "mergeable": False}).outcome, "ready")

@@ -9,8 +9,8 @@ from tempfile import TemporaryDirectory
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
-from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
-from foreman.dispatch import FailoverDispatcher, QuotaExhausted
+from foreman.delivery import run_delivery, stage_text
+from foreman.dispatch import QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from skill_fixture import FixtureSkills, skill_fixture
 
@@ -43,7 +43,7 @@ EMPTY_SLICE = {**SLICES[1], "builds": [], "uses": []}
 def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
     with skill_fixture(config) as (fixture_config, scratch):
         return run_delivery(
-            FailoverDispatcher(handler), repo="DoctorCRE/doctorcre-engine", request="Add a field",
+            handler, repo="DoctorCRE/doctorcre-engine", request="Add a field",
             check=check, slice=slice, config=fixture_config, scratch=scratch,
         )
 
@@ -54,7 +54,7 @@ class DeliveryTest(unittest.TestCase):
 
         with TemporaryDirectory() as directory:
             result = run_delivery(
-                FailoverDispatcher(ScriptHandler()), repo="Example/Engine",
+                ScriptHandler(), repo="Example/Engine",
                 request="List items", scratch=Path(directory), skills=source,
             )
         self.assertEqual(result["stop"], "verified")
@@ -70,7 +70,7 @@ class DeliveryTest(unittest.TestCase):
     def test_clear_change_skips_spec(self):
         handler = ScriptHandler()
 
-        def check_review_context(node, model, state, instruction, *, budget_usd=None):
+        def check_review_context(node, model, state, instruction):
             if node == "review":
                 self.assertEqual(state["verify"], "pass")
                 self.assertNotIn("head_sha", state)
@@ -104,7 +104,7 @@ class DeliveryTest(unittest.TestCase):
 
     def test_worker_cannot_declare_depends_on(self):
         result = walk(
-            lambda *_, **kwargs: Outcome("ran", {
+            lambda *_: Outcome("ran", {
                 "triage": "implement", "work_kind": "feature", "human_question": None, "slice": {**SLICES[0], "depends_on": ["Other"]},
             }, usage=Usage(input_tokens=1, output_tokens=1)),
             slice=None,
@@ -142,7 +142,7 @@ class DeliveryTest(unittest.TestCase):
             with self.subTest(kind=kind):
                 handler = ScriptHandler(triage="spec", slices=invalid)
 
-                def repair(node, model, state, instruction, *, budget_usd=None):
+                def repair(node, model, state, instruction):
                     if rejection := state.get("spec_rejection"):
                         self.assertEqual(rejection["kind"], kind)
                         self.assertIn(BOARD["name"] if kind != "dependency_cycle" else first["title"], rejection["detail"])
@@ -183,7 +183,7 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler()
         result = walk(handler, config=config)
         self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "done"])
-        self.assertEqual(result["stop"], "no_reviewer")
+        self.assertEqual(result["stop"], "model_family_exhausted")
         self.assertIn("gpt family", result["halt_detail"])
         self.assertNotIn("review", [call["node"] for call in handler.calls])
 
@@ -192,9 +192,15 @@ class DeliveryTest(unittest.TestCase):
         config.nodes["implement"] = NodeConfig(role="check", models=())
         handler = ScriptHandler()
         result = walk(handler, config=config)
-        self.assertEqual(result["stop"], "no_reviewer")
+        self.assertEqual(result["stop"], "publication_model_missing")
         self.assertIn("implement model", result["halt_detail"])
         self.assertNotIn("review", [call["node"] for call in handler.calls])
+
+    def test_model_selection_stops_when_its_dependency_is_missing(self):
+        config = load_config()
+        config.nodes["research"] = replace(config.nodes["research"], other_family_from="implement")
+        result = walk(ScriptHandler(triage="question"), config=config)
+        self.assertEqual(result["stop"], "model_dependency_missing")
 
     def test_open_spec_stops_for_a_person(self):
         result = walk(ScriptHandler(triage="spec", spec_gate="needs_human"))
@@ -223,7 +229,7 @@ class DeliveryTest(unittest.TestCase):
                 config.nodes["review"] = replace(config.nodes["review"], models=tuple(ModelSpec.parse(model) for model in review_models))
                 handler = ScriptHandler(reviews=["changes", "approve"])
 
-                def switch_builder(node, model, state, instruction, *, budget_usd=None):
+                def switch_builder(node, model, state, instruction):
                     if node == "implement" and state.get("review") == "changes" and model and model.family == "gpt":
                         return Outcome("quota")
                     return handler(node, model, state, instruction)
@@ -236,7 +242,7 @@ class DeliveryTest(unittest.TestCase):
                     self.assertEqual(result["stop"], "verified")
                 else:
                     self.assertEqual(reviewers, ["claude-opus-5-5-high"])
-                    self.assertEqual(result["stop"], "no_reviewer")
+                    self.assertEqual(result["stop"], "model_family_exhausted")
                     self.assertNotIn("merge", result["path"])
                 self.assertEqual(result["implement_models"], ["gpt-6.1-sol-high", "claude-opus-5-5-high"])
 
@@ -262,7 +268,7 @@ class DeliveryTest(unittest.TestCase):
     def test_review_without_risk_is_rejected(self):
         handler = ScriptHandler()
 
-        def drop_risk(node, model, state, instruction, *, budget_usd=None):
+        def drop_risk(node, model, state, instruction):
             raw = handler(node, model, state, instruction)
             if node == "review":
                 raw.output.pop("risk")
@@ -270,7 +276,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(drop_risk)
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertTrue(result["halt_detail"].startswith("risk:"))
+        self.assertIn("review claude-opus-5-5-high: risk:", result["halt_detail"])
         self.assertEqual(result["path"].count("review"), 1)
         self.assertNotIn("merge", result["path"])
 
@@ -279,13 +285,13 @@ class DeliveryTest(unittest.TestCase):
         handler.risk["level"] = ["low"]
         result = walk(handler)
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertTrue(result["halt_detail"].startswith("risk.level:"))
+        self.assertIn("review claude-opus-5-5-high: risk.level:", result["halt_detail"])
 
     def test_review_quota_never_falls_back_to_the_builder_family(self):
         handler = ScriptHandler()
         offered = []
 
-        def exhaust_review(node, model, state, instruction, *, budget_usd=None):
+        def exhaust_review(node, model, state, instruction):
             if node == "review":
                 offered.append(model.name)
                 return Outcome("quota")
@@ -294,16 +300,16 @@ class DeliveryTest(unittest.TestCase):
         config = load_config()
         config.nodes["review"] = replace(config.nodes["review"], other_family_from=None)
         result = walk(exhaust_review, config=config)
-        self.assertEqual(offered, ["claude-opus-5-5-high", "grok-4.7-high"])
-        self.assertEqual(result["stop"], "no_reviewer")
-        self.assertIn("quota exhausted", result["halt_detail"])
+        self.assertEqual(offered, ["claude-opus-5-5-high"])
+        self.assertEqual(result["stop"], "reviewer_unavailable")
+        self.assertIn("quota", result["halt_detail"])
         self.assertNotIn("merge", result["path"])
 
     def test_quota_uses_the_next_model(self):
         handler = ScriptHandler()
 
-        def exhaust_claude(node, model, state, instruction, *, budget_usd=None):
-            if model and model.name == "claude-opus-5-5-high":
+        def exhaust_claude(node, model, state, instruction):
+            if node == "triage" and model and model.name == "claude-opus-5-5-high":
                 return Outcome("quota")
             return handler(node, model, state, instruction)
 
@@ -313,14 +319,11 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual([item["model"] for item in triage], ["claude-opus-5-5-high", "grok-4.7-high"])
         self.assertEqual([item["outcome"] for item in triage], ["quota", "ran"])
         self.assertEqual([item["methods"] for item in triage], [["poteto-mode/SKILL.md#L110-L110"]] * 2)
-        self.assertEqual(result["models_used"]["review"], "grok-4.7-high")
-        self.assertNotEqual(
-            result["models_used"]["implement"].split("-", 1)[0],
-            result["models_used"]["review"].split("-", 1)[0],
-        )
+        self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
+        self.assertEqual(result["stop"], "verified")
 
     def test_every_model_exhausted_raises(self):
-        def exhaust(node, model, state, instruction, *, budget_usd=None):
+        def exhaust(node, model, state, instruction):
             return Outcome("quota")
 
         with self.assertRaises(QuotaExhausted):
@@ -372,7 +375,7 @@ class DeliveryTest(unittest.TestCase):
     def test_worker_gets_absolute_read_only_method_paths(self):
         script = ScriptHandler(triage="spec")
 
-        def read_methods(node, model, state, instruction, *, budget_usd=None):
+        def read_methods(node, model, state, instruction):
             paths = re.findall(r"^(?:Read |Use only lines \d+ through \d+ of )(/.*?\.md) ", instruction, re.M)
             if node != "verify":
                 self.assertTrue(paths)
@@ -387,13 +390,6 @@ class DeliveryTest(unittest.TestCase):
         result = walk(read_methods)
         self.assertEqual(result["stop"], "verified")
         self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec", "implement", "verify", "review"])
-
-    def test_diagram_names_the_nodes(self):
-        picture = diagram()
-        for name in REQUIRED_NODES + ("merge", "done"):
-            self.assertIn(name, picture)
-        self.assertNotIn("claude-opus", picture)
-        compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), run=DryRun())
 
 
 if __name__ == "__main__":

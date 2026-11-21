@@ -4,8 +4,7 @@ from collections.abc import Mapping
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
-from foreman.stage_output import MergeRiskRecord, SpecCheckOutput, WorkKind
-from foreman.usd import BudgetUsd
+from foreman.stage_output import DispatchPlan, MergeRiskRecord, SpecCheckOutput, WorkKind
 
 SCRIPTED_USAGE = Usage(input_tokens=1, output_tokens=1, total_cost_usd=0.0)
 CLEAR = SpecCheckOutput(findings=[], notes=[], resolutions=[])
@@ -54,12 +53,11 @@ class ScriptHandler:
         self.implementation = implementation
         self.research = research
         self.risk = dict(DEFAULT_RISK if risk is None else risk)
-        self.calls: list[dict[str, str | BudgetUsd | None]] = []
+        self.calls: list[dict[str, str | None]] = []
 
-    def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str,
-                 *, budget_usd: BudgetUsd | None = None) -> Outcome:
+    def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
         self.calls.append({"node": node, "model": model.name if model else None, "instruction": instruction,
-                           "budget_usd": budget_usd})
+                           "budget_usd": DispatchPlan.model_validate(state["dispatch_plan"]).budget_usd if state.get("dispatch_plan") else None})
         if node == "triage":
             return Outcome("ran", {
                 "triage": self.triage, "work_kind": self.work_kind, "human_question": None,

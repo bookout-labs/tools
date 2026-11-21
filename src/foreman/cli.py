@@ -15,14 +15,14 @@ import yaml
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend
 from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
-from foreman.dispatch import FailoverDispatcher, QuotaExhausted
+from foreman.diagrams import write_diagrams
 from foreman.dry_run import ScriptHandler
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import ForgeError, LiveForge
-from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
-from foreman.runner import AnswerError, RESUMABLE_HALTS, RunPresentation, run_live_delivery
+from foreman.outcomes import Halt, exit_code
+from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
@@ -53,7 +53,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     current["stop"] = result["stop"]
     current["max_budget_usd"] = result.get("max_budget_usd")
     current["attempts"] = result.get("attempts", [])
-    if result["stop"] in {"needs_human", "quota_exhausted"}:
+    if result["stop"] in {"needs_human", Halt.quota_exhausted}:
         current["halt_detail"] = result.get("halt_detail", "")
     _write_run_log("this invocation:")
     _print_run_rows(current, rows=rows)
@@ -90,7 +90,7 @@ def _print_run_rows(
             if "token_cap" in result:
                 write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {result['token_cap']}")
             write(f"done {result['stop']}")
-            if result.get("stop") == "skill_missing":
+            if result.get("stop") == Halt.skill_missing:
                 pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
                 if pin_commit:
                     write_literal(f"pstack commit {pin_commit}")
@@ -124,7 +124,7 @@ def _print_run_rows(
                 fields.extend(("risk", risk["level"]))
             write(" ".join(fields))
     stop = result.get("stop")
-    if stop in {"needs_human", "quota_exhausted"} and "done" not in result["path"]:
+    if stop in {"needs_human", Halt.quota_exhausted} and "done" not in result["path"]:
         write_literal(f"paused {stop}")
         if detail := result.get("halt_detail"):
             write(detail)
@@ -147,7 +147,7 @@ def positive_budget(raw: str) -> BudgetUsd:
 def main(
     argv: list[str] | None = None,
     *,
-    worker_runner: CommandRunner | None = run_worker_command,
+    worker_runner: CommandRunner = run_worker_command,
     checkpoint: Path | None = None,
     live_run: LiveRun | None = None,
 ) -> int:
@@ -155,7 +155,8 @@ def main(
     commands = parser.add_subparsers(dest="command", required=True)
 
     draw = commands.add_parser("diagram", help="print the graph")
-    draw.add_argument("graph")
+    draw.add_argument("graph", nargs="?", default=GRAPH_NAME)
+    draw.add_argument("--write", action="store_true", help="update docs/graph and README in the current checkout")
 
     check = commands.add_parser("check-pointer", help="check an engine pointer file")
     check.add_argument("path")
@@ -176,15 +177,19 @@ def main(
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")
     accept.add_argument("path")
 
-    improve = commands.add_parser("improve", help="propose a change from a failing score")
-    improve.add_argument("failure")
-
     args = parser.parse_args(argv)
     if args.command == "diagram":
         if args.graph != GRAPH_NAME:
             print(f"unknown graph {args.graph}", file=sys.stderr)
             return 2
-        print(diagram())
+        if args.write:
+            try:
+                write_diagrams(Path.cwd())
+            except (OSError, ValueError) as exc:
+                print(f"cannot write diagrams: {exc}", file=sys.stderr)
+                return 2
+        else:
+            print(diagram(), end="")
         return 0
     if args.command == "check-pointer":
         try:
@@ -210,13 +215,6 @@ def main(
         print(f"start {decision['source']}")
         print(decision["request"])
         return 0
-    if args.command == "improve":
-        try:
-            print(propose(args.failure), end="")
-        except MeasureError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        return 0
     if args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
         return 2
@@ -227,7 +225,7 @@ def main(
         if args.request is None and args.issue is None:
             run.error("a dry run requires --request or --issue")
         result = run_delivery(
-            FailoverDispatcher(ScriptHandler()),
+            ScriptHandler(),
             repo=args.repo,
             request=args.request or f"Issue #{args.issue}",
             check=args.check,
@@ -245,9 +243,9 @@ def main(
             state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
         if live_run is None:
-            live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd()))
+            live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd(), args.repo))
         live_run = replace(live_run, check_log=_write_check_log)
-        dispatcher = FailoverDispatcher(CliWorker(live_run.workspace.root, worker_runner)) if worker_runner else None
+        dispatcher = CliWorker(live_run.workspace.root, worker_runner)
         try:
             result = run_live_delivery(
                 repo=args.repo,
@@ -264,7 +262,7 @@ def main(
                 max_tokens=args.max_tokens,
                 max_budget_usd=args.max_budget_usd,
             )
-        except (AnswerError, ForgeError, OSError, QuotaExhausted, ValueError) as exc:
+        except (AnswerError, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
     _print_run(result, presentation)
@@ -277,4 +275,4 @@ def run_exit_code(result: DeliveryResult) -> int:
         return 3
     if stop in ("verified", "sliced", "answered") and result.get("path", [])[-1:] == ["done"]:
         return 0
-    return 75 if result.get("halt") in RESUMABLE_HALTS else 1
+    return exit_code(result.get("halt"))

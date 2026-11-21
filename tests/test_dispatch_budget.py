@@ -14,10 +14,9 @@ from foreman.budget import claude_spend
 from foreman.cli import run_exit_code
 from foreman.config import ModelSpec, load_config
 from foreman.delivery import DryRun, compile_delivery
-from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.worker import CliWorker
-from test_dollar_allowance import NEEDS_HUMAN, attempt, usd
+from test_dollar_allowance import NEEDS_HUMAN, attempt
 from test_runner import EMPTY_SLICE, fixture_process, worker_reply
 
 
@@ -37,7 +36,7 @@ def configured(stage="triage", models=(CLAUDE, NEXT_CLAUDE)):
 
 
 def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000):
-    graph = compile_delivery(FailoverDispatcher(handler), config or configured(), run=DryRun())
+    graph = compile_delivery(handler, config or configured(), run=DryRun())
     return graph.invoke({
         "repo": "a/b", "request": "x", "check": "exit 0", "path": [], "issue_kind": "slice", "slice": EMPTY_SLICE,
         "token_cap": token_cap, "max_budget_usd": limit,
@@ -52,18 +51,18 @@ class DispatchBudgetTests(unittest.TestCase):
                 script = ScriptHandler(triage="question" if stage == "research" else "spec")
                 calls = []
 
-                def handler(node, model, state, instruction, *, budget_usd=None):
+                def handler(node, model, state, instruction):
                     if node == stage:
-                        calls.append((model.name, budget_usd))
+                        calls.append((model.name, state["dispatch_plan"]["budget_usd"]))
                         if len(calls) == 1:
                             return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=0.1))
-                    reply = script(node, model, state, instruction, budget_usd=budget_usd)
+                    reply = script(node, model, state, instruction)
                     cost = 0.01 if model and model.family == "claude" else 5.0
                     return replace(reply, usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
                 result = walk(handler, config=configured(stage))
                 self.assertEqual(result["stop"], "answered" if stage == "research" else "verified")
-                self.assertEqual(calls, [(CLAUDE.name, usd("0.2")), (NEXT_CLAUDE.name, usd("0.1"))])
+                self.assertEqual(calls, [(CLAUDE.name, "0.2"), (NEXT_CLAUDE.name, "0.1")])
                 self.assertIn(stage if stage != "implement" else "implementation", result)
 
     def test_cli_worker_sends_one_exact_remainder_flag_only_to_claude(self):
@@ -94,7 +93,8 @@ class DispatchBudgetTests(unittest.TestCase):
                     received.append(args)
                     return worker_reply(args, NEEDS_HUMAN)
 
-                reply = CliWorker(Path.cwd(), other_runner)("triage", model, {}, "x", budget_usd=usd("0.1"))
+                reply = CliWorker(Path.cwd(), other_runner)("triage", model,
+                    {"dispatch_plan": {"models": [], "instruction": "x", "methods": [], "target": None, "scope": None, "budget_usd": "0.1"}}, "x")
                 self.assertEqual(reply.kind, "ran")
                 self.assertEqual(len(received), 1)
                 self.assertNotIn("--max-budget-usd", received[0])
@@ -103,7 +103,7 @@ class DispatchBudgetTests(unittest.TestCase):
         script = ScriptHandler()
         result = walk(script, config=load_config())
         self.assertEqual(result["stop"], "verified")
-        self.assertEqual([call["budget_usd"] for call in script.calls], [usd("0.2")] * 4)
+        self.assertEqual([call["budget_usd"] for call in script.calls], ["0.2"] * 4)
         self.assertEqual(claude_spend(result["attempts"]), Decimal("0.8"))
         self.assertTrue(all(a["usage"]["cost_usd"] == 0.0 for a in result["attempts"][1:]))
 
@@ -114,8 +114,8 @@ class DispatchBudgetTests(unittest.TestCase):
                 with self.subTest(kind=kind, cost=cost):
                     calls = []
 
-                    def handler(node, model, state, instruction, *, budget_usd=None):
-                        calls.append(budget_usd)
+                    def handler(node, model, state, instruction):
+                        calls.append(state["dispatch_plan"]["budget_usd"])
                         return Outcome(kind if len(calls) == 1 else "ran", NEEDS_HUMAN,
                                        usage=Usage(input_tokens=1, output_tokens=0,
                                                    total_cost_usd=cost if len(calls) == 1 else 0.0))
@@ -152,7 +152,7 @@ class DispatchBudgetTests(unittest.TestCase):
                 with self.subTest(kind=kind, has_usage=has_usage, limit=limit):
                     calls = []
 
-                    def handler(node, model, state, instruction, *, budget_usd=None):
+                    def handler(node, model, state, instruction):
                         calls.append(model.name)
                         if len(calls) > 1:
                             return Outcome("ran", NEEDS_HUMAN, usage=Usage(input_tokens=1, output_tokens=0))
@@ -172,15 +172,15 @@ class DispatchBudgetTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 calls = []
 
-                def handler(node, model, state, instruction, *, budget_usd=None):
-                    calls.append(budget_usd)
+                def handler(node, model, state, instruction):
+                    calls.append(state["dispatch_plan"]["budget_usd"])
                     usage = Usage(input_tokens=7, output_tokens=0, total_cost_usd=0.0)
                     return Outcome(kind if len(calls) == 1 else "ran", NEEDS_HUMAN,
                                    usage=None if kind == "cli_missing" and len(calls) == 1 else usage)
 
                 result = walk(handler)
                 self.assertEqual(result["stop"], "needs_human")
-                self.assertEqual(calls, [usd("0.2"), usd("0.2")])
+                self.assertEqual(calls, ["0.2", "0.2"])
                 self.assertEqual(claude_spend(result["attempts"]), Decimal("0.8"))
 
     def test_stop_precedence_and_budget_stop_detail(self):
@@ -198,11 +198,11 @@ class DispatchBudgetTests(unittest.TestCase):
                 received = []
 
                 def handler(*args, **kwargs):
-                    received.append(kwargs["budget_usd"])
+                    received.append(args[2]["dispatch_plan"]["budget_usd"])
                     return reply
 
                 result = walk(handler, token_cap=cap)
-                self.assertEqual(received, [usd("0.2")])
+                self.assertEqual(received, ["0.2"])
                 self.assertEqual(result["stop"], expected)
                 self.assertIn(detail, result["halt_detail"])
                 self.assertNotIn("triage", result)
@@ -212,17 +212,18 @@ class DispatchBudgetTests(unittest.TestCase):
         script = ScriptHandler()
         calls = []
 
-        def handler(node, model, state, instruction, *, budget_usd=None):
+        def handler(node, model, state, instruction):
+            budget_usd = state["dispatch_plan"]["budget_usd"]
             calls.append((node, model.name if model else None, budget_usd))
             if model in (GPT, GROK) and node == "triage":
                 return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=5.0))
-            reply = script(node, model, state, instruction, budget_usd=budget_usd)
+            reply = script(node, model, state, instruction)
             return replace(reply, usage=Usage(input_tokens=1, output_tokens=0,
                                               total_cost_usd=0.01 if model == CLAUDE else 5.0))
 
         result = walk(handler, config=configured(models=(GPT, GROK, CLAUDE)))
         self.assertEqual(result["stop"], "verified")
         self.assertEqual([model for _, model, _ in calls[:3]], [GPT.name, GROK.name, CLAUDE.name])
-        self.assertEqual([budget for _, _, budget in calls[:3]], [usd("0.2")] * 3)
-        self.assertEqual(calls[-1], ("review", CLAUDE.name, usd("0.19")))
+        self.assertEqual([budget for _, _, budget in calls[:3]], ["0.2"] * 3)
+        self.assertEqual(calls[-1], ("review", CLAUDE.name, "0.19"))
         self.assertEqual(claude_spend(result["attempts"]), Decimal("0.82"))

@@ -173,9 +173,6 @@ class RecordedEvidenceTest(unittest.TestCase):
             for fixture, claim in claims.items()
         }
         expected["claude/help.txt"].insert(0, "claude-max-budget-usd-flag")
-        expected["claude/help.txt"].append("tool-fact-6f2eaa1ba19448b55cb031e5b77fa470da2f35a802276f1ba8de044971fbdb12")
-        expected["claude/max_budget.json"].append("tool-fact-1ac7e0f5d278fb03cc6137ab68433226aeffa5f42a65e721126483f95f190e9e")
-        expected["claude/success.json"].append("tool-fact-9ee20fbbd3b05212e0d84cb708eeb5bc1fd46fbb47f3af8645a5d88a092bad9a")
         expected["claude/budget-and-quota-source.txt"] = [
             "tool-fact-dfcf5e01dec739b4551d7d79c786f8fffdc94b0ee347dc044dc34e6e2c1d13b1",
             "tool-fact-4aa91dac314f4b136a516da99e5246d6430b90254873b854ec5f99c19212ff2e",

@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
-description: Delivery graph and scorer contract. No model is called.
+description: Delivery graph contract. No model is called.
 
 prompts:
   - "{{case}}"
@@ -51,40 +51,6 @@ tests:
     assert:
       - type: equals
         value: verified
-  - description: An approve score passes
-    vars:
-      case: score-approve
-    assert:
-      - type: equals
-        value: pass
-  - description: A block score fails the bar
-    vars:
-      case: score-block
-    assert:
-      - type: equals
-        value: fail
-  - description: A thin transcript is reported separately and does not count as good work
-    vars:
-      case: score-thin
-    assert:
-      - type: equals
-        value: insufficient_evidence
-  - description: One run in ten is graded
-    vars:
-      case: sample
-    assert:
-      - type: equals
-        value: yes
-  - description: A redundant-test score proposes a builder instruction change
-    vars:
-      case: proposal
-    assert:
-      - type: contains
-        value: stages/implement.md
-      - type: contains
-        value: does not change models.toml or max_review_rounds
-      - type: contains
-        value: A person opens the pull request.
   - description: A settled ruling disagreement is a note and permits merge
     vars:
       case: review-converges

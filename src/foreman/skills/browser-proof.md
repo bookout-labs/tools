@@ -10,7 +10,5 @@ For example, return `{"screen": "docs/screens/deals.md", "trace": "artifacts/dea
 Missing evidence fails admission. A screenshot or a typecheck does not replace the trace.
 
 Use this evidence in the factory loop. The engine keeps `npm run check` as its one CI check.
-Keep numeric scores in `measure.toml`. `approve` passes, `block` fails, and `insufficient_evidence` is reported as such.
-Sampling does not decide merge.
 
-Report a missing trace as `insufficient_evidence`. Report a trace for the wrong screen or a failed screen as `block`. When the trace shows failure, include `"passed": false` in the artifact. A trace of the named screen that passes accepts the gate without assigning a score.
+Report a missing trace as `insufficient_evidence`. Report a trace for the wrong screen or a failed screen as `block`. When the trace shows failure, include `"passed": false` in the artifact. A trace of the named screen that passes accepts the gate.

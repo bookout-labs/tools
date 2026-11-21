@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,7 +10,6 @@ from langgraph.types import Command
 from foreman.review_round import GraphCheck, ReviewHistory, accept
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
 from foreman.config import load_config
-from foreman.dispatch import FailoverDispatcher
 from foreman.adapters import Outcome
 from foreman.dry_run import SCRIPTED_USAGE
 from foreman.stage_output import ReviewOutput, parse_output
@@ -34,6 +34,9 @@ class ReviewRoundsTest(unittest.TestCase):
             return receipts[marker]
         self.forge.post_review = post
         with TemporaryDirectory() as directory, skill_fixture() as (settings, scratch):
+            if review_quota:
+                builder = settings.nodes["implement"]
+                settings.nodes["implement"] = replace(builder, models=tuple(m for m in builder.models if m.family == "grok"))
             outer = self
 
             class Workspace(FakeWorkspace):
@@ -64,7 +67,7 @@ class ReviewRoundsTest(unittest.TestCase):
             workspace = Workspace(Path(directory))
             implementations = 0
 
-            def dispatch(node, model, state, instruction, *, budget_usd=None):
+            def dispatch(node, model, state, instruction):
                 nonlocal crashed, implementations, quota_returned
                 self.prompts.append((node, state, instruction))
                 if node == "review":
@@ -87,7 +90,7 @@ class ReviewRoundsTest(unittest.TestCase):
                                        "browser_proof": None, "formal_proof": None}, usage=SCRIPTED_USAGE)
 
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint")) as saver:
-                graph = compile_delivery(FailoverDispatcher(dispatch), settings, scratch=scratch,
+                graph = compile_delivery(dispatch, settings, scratch=scratch,
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "rounds"}}
                 state = {"repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": EMPTY_SLICE,
@@ -97,7 +100,7 @@ class ReviewRoundsTest(unittest.TestCase):
                         graph.invoke(state, config)
                     self.interrupted = read_delivery_state({"stop": "interrupted", **graph.get_state(config).values})
                     (scratch / "resume").mkdir()
-                    graph = compile_delivery(FailoverDispatcher(dispatch), settings, scratch=scratch / "resume",
+                    graph = compile_delivery(dispatch, settings, scratch=scratch / "resume",
                                              run=LiveRun(self.forge, workspace), checkpointer=saver)
                     result = graph.invoke(None, config)
                 else:

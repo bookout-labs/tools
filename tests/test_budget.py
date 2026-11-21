@@ -16,7 +16,6 @@ from foreman.adapters.grok import GrokAdapter
 from foreman.cli import run_exit_code
 from foreman.config import ModelSpec
 from foreman.delivery import LiveRun, compile_delivery
-from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.runner import checkpoint_state
 from foreman.stage_output import STAGE_OUTPUTS
@@ -62,7 +61,7 @@ class DollarBudgetTests(unittest.TestCase):
                 script = ScriptHandler()
                 usage = Usage(input_tokens=7, output_tokens=3, total_cost_usd=0.1)
 
-                def handler(node, model, state, instruction, *, budget_usd=None):
+                def handler(node, model, state, instruction):
                     calls.append((node, model.name))
                     if node != stage:
                         return script(node, model, state, instruction)
@@ -77,7 +76,7 @@ class DollarBudgetTests(unittest.TestCase):
                      patch.object(forge, "open_pull_request", wraps=forge.open_pull_request) as publish:
                     with SqliteSaver.from_conn_string(str(root / "budget.sqlite")) as saver:
                         invocation = {"configurable": {"thread_id": stage}}
-                        graph = compile_delivery(FailoverDispatcher(handler), config, run=LiveRun(forge, workspace),
+                        graph = compile_delivery(handler, config, run=LiveRun(forge, workspace),
                                                  scratch=scratch, checkpointer=saver)
                         graph.invoke({"repo": "a/b", "issue": 8, "check": "exit 0", "path": [],
                                       "token_cap": 100, "request": "x", "issue_kind": "slice", "slice": EMPTY_SLICE},
