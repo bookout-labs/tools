@@ -14,7 +14,7 @@ from pydantic import BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
-from foreman.credentials import CredentialFailure, GIT_AUTH, COMMAND_TIMEOUT, credentials, failure
+from foreman.credentials import CredentialFailure, COMMAND_TIMEOUT, credentials, failure, git_auth, validate_remote
 from foreman.redaction import redact
 from foreman.review_context import ReviewContext, ReviewSide
 
@@ -305,15 +305,12 @@ class LiveWorkspace:
         self._git("reset", "--soft", parent)
 
     def _validate_remote(self, repo: str) -> list[str]:
-        remote = os.fsdecode(self._git("remote", "get-url", "origin")).strip()
-        push_urls = os.fsdecode(self._git("remote", "get-url", "--push", "--all", "origin")).splitlines()
-        expected = repo.lower()
-        urls = (f"https://github.com/{expected}",)
-        if not credentials.configured:
-            urls += (f"git@github.com:{expected}", f"ssh://git@github.com/{expected}")
-        if not push_urls or any(url.lower().rstrip("/").removesuffix(".git") not in urls for url in [remote, *push_urls]):
-            raise WorktreeInspectionFailed("origin does not point at the selected GitHub repository using an allowed transport, or a push URL differs.")
-        return [remote, *push_urls]
+        try:
+            return validate_remote(repo, self.root, app=credentials.configured)
+        except CredentialFailure as exc:
+            raise WorktreeInspectionFailed(str(exc)) from None
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            raise WorktreeInspectionFailed("Cannot inspect origin transport. Repair the repository and resume.") from None
 
     def push(self, branch: str, repo: str) -> None:
         if credentials.configured:
@@ -478,8 +475,8 @@ class LiveWorkspace:
                 raise WorktreeInspectionFailed(str(exc)) from None
             if app_env is not None:
                 timeout = min(timeout, COMMAND_TIMEOUT)
-                auth = (*GIT_AUTH, *(part for url in set(self._urls) for part in ("-c", f"http.{url}.extraHeader=")))
-                env = {**app_env, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": "https"}
+                auth = git_auth(self._urls)
+                env = app_env
         try:
             result = subprocess.run(
                 ["git", *auth, *args], cwd=self.root, capture_output=True, input=input_paths,

@@ -9,4 +9,4 @@ Credential failures reuse stage-specific resumable halts. Only a 401 clears cach
 Resume reconciles existing PR, review and push receipts after ambiguous writes.
 
 [Documented tool contracts](../tests/fixtures/github/app-credentials.txt) and their sources are recorded in the fixture manifest.
-Real App smoke and worker launcher proofs belong to slices 129b and 129c.
+See [factory worker setup and command usage](worker-launcher.md).
