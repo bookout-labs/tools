@@ -21,7 +21,7 @@ def fixture_process(args, name, exit_code):
 
 
 class NativeAdaptersTest(unittest.TestCase):
-    def assert_envelopes(self, adapter, cli, cases, *, input_tokens, cached_tokens, cost):
+    def assert_envelopes(self, adapter, cli, cases):
         for name, exit_code, kind, expected in cases:
             has_usage = expected is not None
             with self.subTest(cli=cli, fixture=name):
@@ -51,7 +51,7 @@ class NativeAdaptersTest(unittest.TestCase):
             ("missing_model_usage", 0, "failed", None),
             ("wrong_model", 0, "failed", (1477, 0, 0.00016570000000000002)),
             ("zero_usage", 0, "failed", None),
-        ), input_tokens=1481, cached_tokens=3985, cost=0.037886699999999995)
+        ))
 
     def test_grok_envelopes(self):
         adapter = GrokAdapter(ModelSpec.parse("grok-4.7-high"))
@@ -62,7 +62,7 @@ class NativeAdaptersTest(unittest.TestCase):
             ("missing_model_usage", 0, "failed", None),
             ("zero_usage", 0, "failed", None),
             ("incomplete_usage", 0, "ran", None),
-        ), input_tokens=18007, cached_tokens=9344, cost=0.01448196)
+        ))
 
     def test_claude_quota_by_status_or_api_error(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))

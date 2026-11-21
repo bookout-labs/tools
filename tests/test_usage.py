@@ -38,7 +38,7 @@ class UsageTests(unittest.TestCase):
                     self.assertIsNone(result.usage)
                     self.assertEqual(result.kind, "ran")
 
-    def test_all_attempts_and_optional_cache(self):
+    def test_all_attempts_and_required_cache(self):
         result = run_delivery(FailoverDispatcher(ScriptHandler()), repo="a/b", request="x")
         self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement", "verify", "review"])
         self.assertEqual(run_tokens(result["attempts"]), 8)
