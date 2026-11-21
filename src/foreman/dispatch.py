@@ -1,10 +1,13 @@
 """Try the configured models in order. Quota exhaustion is not a rule change."""
 
 from collections.abc import Callable
+from dataclasses import replace
+import json
 from typing import TYPE_CHECKING, Protocol
 
 from foreman.adapters import Outcome
 from foreman.config import ModelSpec
+from foreman.redaction import redact
 
 if TYPE_CHECKING:
     from foreman.delivery import DeliveryState
@@ -33,6 +36,8 @@ class FailoverDispatcher:
         *, on_attempt: Callable[[str | None, Outcome], None] | None = None,
     ) -> tuple[Outcome, ModelSpec | None]:
         outcome = self.handler(node, model, state, instruction)
+        outcome = replace(outcome, output=json.loads(redact(json.dumps(outcome.output), credentials_only=True)),
+                          detail=redact(outcome.detail, credentials_only=True))
         name = model.name if model else None
         if on_attempt is not None:
             on_attempt(name, outcome)

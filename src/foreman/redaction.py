@@ -72,8 +72,12 @@ def _private_key_span(text: str, start: int, header: str) -> tuple[int, int]:
 
 
 def _matches(text: str, plugins: list[BasePlugin]) -> Iterator[_Match]:
-    for match in re.finditer(r"\bgh[pousr]_[A-Za-z0-9]+", text):
+    for match in re.finditer(r"\b(?:ghs_\d+_[A-Za-z0-9_.-]+|gh[pousr]_[A-Za-z0-9]+)", text):
         yield _Match(*match.span(), "GitHub Token", 0)
+    for pattern in (r"(?i)authorization\s*:\s*(?:bearer|basic)\s+[^\s\"']+",
+                    r"https://[^/\s]*@", r"eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"):
+        for match in re.finditer(pattern, text):
+            yield _Match(*match.span(), "Credential", 1)
     offset = 0
     for raw_line in text.splitlines(keepends=True):
         line = raw_line.rstrip("\r\n")
@@ -97,10 +101,14 @@ def _matches(text: str, plugins: list[BasePlugin]) -> Iterator[_Match]:
         offset += len(raw_line)
 
 
-def redact(text: str) -> str:
+def redact(text: str, *, credentials_only: bool = False) -> str:
     """Replace overlapping detections with one marker, preferring provider-specific kinds."""
     with _SETTINGS_LOCK, default_settings():
         matches = sorted(_matches(text, get_plugins()), key=lambda match: (match.start, match.end, match.kind))
+    if credentials_only:
+        matches = [match for match in matches if match.kind in {
+            "GitHub Token", "JSON Web Token", "Credential", "Private Key", "Basic Auth Credentials",
+        }]
     parts: list[str] = []
     cursor = 0
     index = 0

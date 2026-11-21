@@ -539,7 +539,7 @@ class LiveForgeTest(unittest.TestCase):
             subprocess.CompletedProcess(MERGE, 0, "", ""),
         ]
         self.assertIsNone(LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD))
-        options = {"stdin": subprocess.DEVNULL, "input": None, "capture_output": True, "text": True, "timeout": 30}
+        options = {"env": None, "stdin": subprocess.DEVNULL, "input": None, "capture_output": True, "text": True, "timeout": 30}
         self.assertEqual(run.call_args_list, [call(command, **options) for command in (VIEW, MERGE)])
 
     @patch("foreman.github.subprocess.run")
@@ -608,7 +608,7 @@ class LiveForgeTest(unittest.TestCase):
         with self.assertRaisesRegex(MergeNotArmed, "gh pr merge failed") as error:
             LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
         self.assertIsInstance(error.exception.__cause__, CommandFailed)
-        self.assertIs(error.exception.__cause__.__cause__, launch_error)
+        self.assertIsNone(error.exception.__cause__.__cause__)
         run.reset_mock()
         run.side_effect = subprocess.TimeoutExpired(VIEW, 30)
         with self.assertRaisesRegex(MergeNotArmed, "gh pr view timed out") as error:

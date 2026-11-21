@@ -14,6 +14,7 @@ from pydantic import BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
+from foreman.credentials import CredentialFailure, GIT_AUTH, credentials, failure, github_repo
 from foreman.redaction import redact
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
@@ -378,18 +379,39 @@ class LiveWorkspace:
         operation = f"git {args[0]}"
         if timeout is None:
             timeout = 30 if args[0] in {"fetch", "push", "ls-remote", "commit"} else 10
+        env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
+        auth: tuple[str, ...] = ()
+        if args[0] in {"fetch", "push", "ls-remote"} and (
+                os.environ.get("FOREMAN_APP_ID") or os.environ.get("FOREMAN_INSTALLATION_ID")):
+            try:
+                # Resolve origin (including pushurl and insteadOf) before supplying credentials.
+                remote = os.fsdecode(self._git("remote", "get-url", "origin")).strip()
+                app_env = credentials.environment(github_repo(remote))
+                if app_env is not None:
+                    urls = os.fsdecode(self._git("remote", "get-url", "--push", "--all", "origin")).splitlines()
+                    if not urls or any(github_repo(url).lower() != github_repo(remote).lower() for url in urls):
+                        raise CredentialFailure("App origin and push URLs must select the same repository.")
+                    auth = (*GIT_AUTH, *(part for url in {remote, *urls} for part in ("-c", f"http.{url}.extraHeader=")))
+                    env = {**app_env, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
+            except CredentialFailure as exc:
+                raise WorktreeInspectionFailed(str(exc)) from None
         try:
             result = subprocess.run(
-                ["git", *args], cwd=self.root, capture_output=True, input=input_paths,
-                env={**os.environ, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"},
+                ["git", *auth, *args], cwd=self.root, capture_output=True, input=input_paths,
+                env=env,
                 stdin=subprocess.DEVNULL if input_paths is None else None, timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
             raise WorktreeInspectionFailed(f"{operation} timed out after {timeout} seconds; rerun to resume.") from exc
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-            raise WorktreeInspectionFailed(f"{operation} failed ({exc}).") from exc
+            raise WorktreeInspectionFailed(redact(f"{operation} failed ({exc}).")) from None
         if result.returncode:
+            if auth:
+                credentials.invalidate()
+                status = re.search(r"(?:HTTP |error: )(401|403|429)", os.fsdecode(result.stderr))
+                if status:
+                    raise WorktreeInspectionFailed(str(failure(int(status[1]), b"rate limit" in result.stderr.lower())))
             raise WorktreeInspectionFailed(
-                os.fsdecode(result.stderr).strip() or f"{operation} exited with code {result.returncode}.",
+                redact(os.fsdecode(result.stderr).strip()) or f"{operation} exited with code {result.returncode}.",
             )
         return result.stdout

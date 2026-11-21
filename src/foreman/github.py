@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict
@@ -10,6 +11,7 @@ from typing_extensions import TypedDict
 from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages
+from foreman.credentials import CredentialFailure, credentials, failure
 from foreman.redaction import redact
 if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
@@ -588,16 +590,28 @@ class LiveForge:
     def _run_command(self, command: list[str], *, timeout: float | None = 30, body: str | None = None) -> str:
         operation = " ".join(command[:2] if command[1] == "api" else command[:3])
         try:
+            repo = (command[command.index("--repo") + 1] if "--repo" in command else
+                    command[3] if command[1:3] == ["repo", "view"] else "/".join(command[2].split("/")[1:3]))
+            env = credentials.environment(repo)
+        except CredentialFailure as exc:
+            raise CommandFailed(str(exc)) from None
+        try:
             result = subprocess.run(
-                command, stdin=subprocess.DEVNULL if body is None else None, input=body,
+                command, env=env, stdin=subprocess.DEVNULL if body is None else None, input=body,
                 capture_output=True, text=True, timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
             raise CommandTimedOut(operation) from exc
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-            raise CommandFailed(f"{operation} failed ({exc}).") from exc
+            raise CommandFailed(redact(f"{operation} failed ({exc}).")) from None
         if result.returncode:
-            raise CommandFailed(result.stderr.strip() or f"{operation} exited with code {result.returncode}.")
+            if env is not None:
+                status = re.search(r"HTTP (401|403|429)", result.stderr)
+                if status:
+                    if status[1] == "401":
+                        credentials.invalidate()
+                    raise CommandFailed(str(failure(int(status[1]), "rate limit" in result.stderr.lower())))
+            raise CommandFailed(redact(result.stderr.strip()) or f"{operation} exited with code {result.returncode}.")
         return result.stdout
 
     def _read(self, model: type[Model], command: list[str], *, timeout: float | None = 30, body: str | None = None) -> Model:
