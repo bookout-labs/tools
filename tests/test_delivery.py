@@ -270,7 +270,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(drop_risk)
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertTrue(result["halt_detail"].startswith("risk:"))
+        self.assertIn("review claude-opus-5-5-high: risk:", result["halt_detail"])
         self.assertEqual(result["path"].count("review"), 1)
         self.assertNotIn("merge", result["path"])
 
@@ -279,7 +279,7 @@ class DeliveryTest(unittest.TestCase):
         handler.risk["level"] = ["low"]
         result = walk(handler)
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertTrue(result["halt_detail"].startswith("risk.level:"))
+        self.assertIn("review claude-opus-5-5-high: risk.level:", result["halt_detail"])
 
     def test_review_quota_never_falls_back_to_the_builder_family(self):
         handler = ScriptHandler()
@@ -294,16 +294,16 @@ class DeliveryTest(unittest.TestCase):
         config = load_config()
         config.nodes["review"] = replace(config.nodes["review"], other_family_from=None)
         result = walk(exhaust_review, config=config)
-        self.assertEqual(offered, ["claude-opus-5-5-high", "grok-4.7-high"])
-        self.assertEqual(result["stop"], "no_reviewer")
-        self.assertIn("quota exhausted", result["halt_detail"])
+        self.assertEqual(offered, ["claude-opus-5-5-high"])
+        self.assertEqual(result["stop"], "reviewer_unavailable")
+        self.assertIn("quota", result["halt_detail"])
         self.assertNotIn("merge", result["path"])
 
     def test_quota_uses_the_next_model(self):
         handler = ScriptHandler()
 
         def exhaust_claude(node, model, state, instruction):
-            if model and model.name == "claude-opus-5-5-high":
+            if node == "triage" and model and model.name == "claude-opus-5-5-high":
                 return Outcome("quota")
             return handler(node, model, state, instruction)
 
@@ -313,11 +313,8 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual([item["model"] for item in triage], ["claude-opus-5-5-high", "grok-4.7-high"])
         self.assertEqual([item["outcome"] for item in triage], ["quota", "ran"])
         self.assertEqual([item["methods"] for item in triage], [["poteto-mode/SKILL.md#L110-L110"]] * 2)
-        self.assertEqual(result["models_used"]["review"], "grok-4.7-high")
-        self.assertNotEqual(
-            result["models_used"]["implement"].split("-", 1)[0],
-            result["models_used"]["review"].split("-", 1)[0],
-        )
+        self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
+        self.assertEqual(result["stop"], "verified")
 
     def test_every_model_exhausted_raises(self):
         def exhaust(node, model, state, instruction):

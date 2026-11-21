@@ -27,7 +27,7 @@ from foreman.config import Config, ConfigError, ModelSpec, family, load_config, 
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
-    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
+    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
@@ -35,7 +35,7 @@ from foreman.redaction import redact
 from foreman.stage_output import (
     CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
-from foreman.readiness import Outcome as ReadinessOutcome
+from foreman.readiness import MergeReceipt, Outcome as ReadinessOutcome
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import ImplementationCandidate, ImplementationRejected, WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -46,8 +46,8 @@ PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
-MergeHalt = Literal["merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red", "readiness_unavailable"]
-ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implementation_rejected", "implement_quota", "quota_exhausted", "review_not_posted"]
+MergeHalt = Literal["merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red", "readiness_unavailable", "queue_rejected"]
+ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implementation_rejected", "implement_quota", "quota_exhausted", "review_not_posted", "reviewer_unavailable"]
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
@@ -55,7 +55,7 @@ HaltReason = Literal[
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 READINESS_HALTS: dict[ReadinessOutcome, MergeHalt] = {
-    "ready": "merge_not_armed", "conflict": "pr_conflict", "pending": "ci_pending", "red": "ci_red",
+    "queue_rejected": "queue_rejected", "ready": "merge_not_armed", "conflict": "pr_conflict", "pending": "ci_pending", "red": "ci_red",
     "policy": "readiness_unavailable", "head_changed": "merge_not_armed", "closed": "merge_not_armed", "retargeted": "merge_not_armed",
 }
 
@@ -172,6 +172,7 @@ class DeliveryFields(TypedDict, total=False):
     verified_head: str
     repair_head: str | None
     readiness_observation: dict[str, JsonValue]
+    merge_receipt: dict[str, JsonValue] | None
     merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
@@ -584,22 +585,30 @@ def compile_delivery(
             if run_tokens(attempt_history) >= state["token_cap"]:
                 return {**stopped, **budget_halt(state, attempt_history, name)}
             index = pending["index"] + 1
+            unavailable = ""
+            if name == "review" and outcome.kind in {"quota", "cli_missing"}:
+                prior = state.get("halt_detail", "") + "; " if pending["index"] else ""
+                unavailable = f"{prior}review {model}: {outcome.kind}. {outcome.detail}".strip()
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):
-                return {"attempts": attempts, "pending_dispatch": PendingDispatch(
+                retry: DeliveryUpdate = {"attempts": attempts, "pending_dispatch": PendingDispatch(
                     stage=name, index=index,
                     quota_model=model if outcome.kind == "quota" else pending["quota_model"],
                 ).record()}
+                if unavailable:
+                    retry["halt_detail"] = unavailable
+                return retry
+            if unavailable:
+                return {**stopped, **halted("reviewer_unavailable", unavailable, name)}
             if outcome.kind == "cli_missing" and pending["quota_model"]:
                 outcome, model = Outcome("quota"), pending["quota_model"]
             if outcome.kind == "failed":
-                return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
+                return {**stopped, **halted("invalid_output", f"{name} {model}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
                 return {**stopped, **halted("cli_missing", outcome.detail, name)}
             if outcome.kind == "quota":
-                if name != "review" and isinstance(run, DryRun):
+                if isinstance(run, DryRun):
                     raise QuotaExhausted(model)
-                reason: HaltReason = "no_reviewer" if isinstance(run, DryRun) else "quota_exhausted"
-                return {**stopped, **halted(reason, f"{name} quota exhausted: {model}", name)}
+                return {**stopped, **halted("quota_exhausted", f"{name} quota exhausted: {model}", name)}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
                 accepted: AcceptedReview | None = None
@@ -616,6 +625,8 @@ def compile_delivery(
                                   findings=[f.record() for f in accepted.findings],
                                   review_change_kind=accepted.change_kind,
                                   review_receipt=None)
+                    if "halt_detail" in state:
+                        update["halt_detail"] = ""
                     if accepted.rethink:
                         update.update(halt="design_rethink", halt_detail=accepted.rethink, human_question=accepted.rethink)
             except InvalidSlicePlan as exc:
@@ -625,7 +636,7 @@ def compile_delivery(
                     rejected.update(halted("spec_cap", str(exc), name))
                 return rejected
             except InvalidOutput as exc:
-                return {**stopped, **halted("invalid_output", str(exc), name)}
+                return {**stopped, **halted("invalid_output", f"{name} {model}: {exc}" if name == "review" else str(exc), name)}
 
             return update
 
@@ -996,6 +1007,18 @@ def compile_delivery(
                 if (state.get("reviewed_head") != head or not receipt or receipt["commit_id"] != head
                         or past.unresolved() or (past.gate and not past.gate.passed)):
                     return merge_halted("merge_not_armed", "Renew review and its posted receipt at the verified head.")
+                if previous := state.get("merge_receipt"):
+                    saved = MergeReceipt.model_validate(previous)
+                    if saved.source_head == head:
+                        try:
+                            confirmed_receipt = forge.reconcile_merge(saved)
+                        except HandoffChanged as exc:
+                            return {**merge_halted("merge_not_armed", str(exc)), "merge_receipt": None}
+                        except QueueRejected as exc:
+                            return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
+                        except MergeNotArmed as exc:
+                            return merge_halted("merge_not_armed", str(exc))
+                        return {"merge": "armed", "path": ["merge"], "merge_receipt": confirmed_receipt.model_dump(mode="json")}
                 try:
                     observation = forge.readiness(repo, issue, worktree.branch, head)
                 except ForgeError as exc:
@@ -1004,14 +1027,18 @@ def compile_delivery(
                     return {**merge_halted(READINESS_HALTS[observation.outcome], observation.detail()),
                             "readiness_observation": observation.model_dump(mode="json")}
                 try:
-                    forge.arm_auto_merge(repo, issue, worktree.branch, head)
+                    merge_receipt = forge.arm_auto_merge(repo, issue, worktree.branch, head, observation).model_dump(mode="json")
+                except QueueRejected as exc:
+                    return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
                 except MergeNotArmed as exc:
                     return merge_halted("merge_not_armed", str(exc))
+                if merge_receipt["status"] == "MERGED":
+                    return {"merge": "armed", "path": ["merge"], "merge_receipt": merge_receipt}
                 try:
                     confirmed = forge.readiness(repo, issue, worktree.branch, head)
                 except ForgeError as exc:
-                    return {**merge_halted("readiness_unavailable", str(exc)), "merge": "armed"}
-                update: DeliveryUpdate = {"merge": "armed", "path": ["merge"], "readiness_observation": confirmed.model_dump(mode="json")}
+                    return {**merge_halted("readiness_unavailable", str(exc)), "merge": "armed", "merge_receipt": merge_receipt}
+                update: DeliveryUpdate = {"merge": "armed", "merge_receipt": merge_receipt, "path": ["merge"], "readiness_observation": confirmed.model_dump(mode="json")}
                 if confirmed.outcome != "ready":
                     update.update(halted(READINESS_HALTS[confirmed.outcome], confirmed.detail(), "merge"))
                 elif (confirmed.pr.number, confirmed.pr.head.sha, confirmed.pr.base.ref, confirmed.pr.state) != (observation.pr.number, observation.pr.head.sha, observation.pr.base.ref, observation.pr.state):

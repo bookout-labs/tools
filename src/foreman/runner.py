@@ -282,7 +282,7 @@ def run_live_delivery(
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             repaired = False
             repair_head: str | None = None
-            if saved_values.get("halt") in get_args(MergeHalt) and (head := saved_values.get("verified_head")) and (branch := saved_values.get("delivery_branch")):
+            if saved_values.get("halt") in get_args(MergeHalt) and not saved_values.get("merge_receipt") and (head := saved_values.get("verified_head")) and (branch := saved_values.get("delivery_branch")):
                 worktree = run.workspace.inspect()
                 try:
                     observed = client.readiness(repo, issue, branch, head)
@@ -304,7 +304,7 @@ def run_live_delivery(
             if presentation is not None:
                 presentation.restore(before, saver)
             replay = before.config
-            retained: DeliveryUpdate = {"repair_head": repair_head}
+            retained: DeliveryUpdate = {"repair_head": repair_head, "merge_receipt": None if repaired else saved_values.get("merge_receipt")}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             if partial := saved_values.get("partial_edits"):
