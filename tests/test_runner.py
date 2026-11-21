@@ -1198,6 +1198,9 @@ class LiveRunnerTest(unittest.TestCase):
             ).stdout.strip()
 
         git("init", "-b", BRANCH)
+        git("config", "user.name", "Synthetic Test")
+        git("config", "user.email", "synthetic@example.invalid")
+        git("config", "commit.gpgsign", "false")
         git("commit", "--allow-empty", "-m", "Verified commit")
         git("branch", "main")
         git("remote", "add", "origin", ".")
@@ -1223,8 +1226,8 @@ class LiveRunnerTest(unittest.TestCase):
 
         with patch.object(LiveWorkspace, "push"):
             halted = run_delivery()
+        self.assertEqual(halted["stop"], "merge_not_armed", halted)
         verified_head = halted["verified_head"]
-        self.assertEqual(halted["stop"], "merge_not_armed")
         self.assertEqual(self.github.merge_calls, [])
         reset = re.search(rf"^  git reset --keep {verified_head}$", halted["halt_detail"], re.MULTILINE)
         self.assertIsNotNone(reset, halted["halt_detail"])
