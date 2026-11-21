@@ -12,6 +12,8 @@ https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/fields.go
       if err := parseField(f, false); err != nil {
 Raw fields retain their string value. Only magic fields invoke the conversion
 that reads @files, substitutes placeholders, or converts JSON scalar types.
+In magicFieldValue, strconv.Atoi converts numeric -F values to integers before
+the boolean/null/placeholder branches. Raw -f values bypass that function.
 
 POST JSON body
 https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/http.go
