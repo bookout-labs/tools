@@ -16,11 +16,9 @@ from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend
 from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
-from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import ForgeError, LiveForge
-from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
 from foreman.runner import AnswerError, RESUMABLE_HALTS, RunPresentation, run_live_delivery
@@ -148,7 +146,7 @@ def positive_budget(raw: str) -> BudgetUsd:
 def main(
     argv: list[str] | None = None,
     *,
-    worker_runner: CommandRunner | None = run_worker_command,
+    worker_runner: CommandRunner = run_worker_command,
     checkpoint: Path | None = None,
     live_run: LiveRun | None = None,
 ) -> int:
@@ -177,9 +175,6 @@ def main(
 
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")
     accept.add_argument("path")
-
-    improve = commands.add_parser("improve", help="propose a change from a failing score")
-    improve.add_argument("failure")
 
     args = parser.parse_args(argv)
     if args.command == "diagram":
@@ -219,13 +214,6 @@ def main(
         print(f"start {decision['source']}")
         print(decision["request"])
         return 0
-    if args.command == "improve":
-        try:
-            print(propose(args.failure), end="")
-        except MeasureError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        return 0
     if args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
         return 2
@@ -236,7 +224,7 @@ def main(
         if args.request is None and args.issue is None:
             run.error("a dry run requires --request or --issue")
         result = run_delivery(
-            FailoverDispatcher(ScriptHandler()),
+            ScriptHandler(),
             repo=args.repo,
             request=args.request or f"Issue #{args.issue}",
             check=args.check,
@@ -256,7 +244,7 @@ def main(
         if live_run is None:
             live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd(), args.repo))
         live_run = replace(live_run, check_log=_write_check_log)
-        dispatcher = FailoverDispatcher(CliWorker(live_run.workspace.root, worker_runner)) if worker_runner else None
+        dispatcher = CliWorker(live_run.workspace.root, worker_runner)
         try:
             result = run_live_delivery(
                 repo=args.repo,
@@ -273,7 +261,7 @@ def main(
                 max_tokens=args.max_tokens,
                 max_budget_usd=args.max_budget_usd,
             )
-        except (AnswerError, ForgeError, OSError, QuotaExhausted, ValueError) as exc:
+        except (AnswerError, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
     _print_run(result, presentation)

@@ -6,4 +6,4 @@ The change fits the codebase, does what the slice acceptance says, and adds no n
 
 If the spec names a property, name the evidence for it. A type check, a behavioral test, or a database constraint is evidence. Call it formal verification only when a formal method checked that property.
 
-The labels approve, block, and insufficient_evidence belong to the scorer. This review replies approve or changes.
+This review replies approve or changes.

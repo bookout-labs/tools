@@ -12,7 +12,5 @@ Every property needs its named constraint with `rejected` true. Missing evidence
 A TypeScript check or application validation alone does not prove an always-true database rule.
 
 Use this evidence in the factory loop. The engine keeps `npm run check` as its one CI check.
-Keep numeric scores in `measure.toml`. `approve` passes, `block` fails, and `insufficient_evidence` is reported as such.
-Sampling does not decide merge.
 
-Report missing evidence or a checker that did not run as `insufficient_evidence`; use `"ran": false` when the checker did not run. Report an accepted violating write with `"rejected": false` as `block`. A typecheck offered instead of the rejection test is also `block`. Rejection evidence for every named constraint accepts the gate without assigning a score.
+Report missing evidence or a checker that did not run as `insufficient_evidence`; use `"ran": false` when the checker did not run. Report an accepted violating write with `"rejected": false` as `block`. A typecheck offered instead of the rejection test is also `block`. Rejection evidence for every named constraint accepts the gate.

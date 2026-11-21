@@ -207,7 +207,7 @@ class RedactionTest(unittest.TestCase):
             patch("foreman.cli.run_live_delivery", side_effect=ValueError(f"Worker error {SYNTHETIC_GITHUB}")),
             redirect_stderr(StringIO()) as stderr,
         ):
-            code = main([*base, "--issue", "8", "--check", "exit 0"], worker_runner=None)
+            code = main([*base, "--issue", "8", "--check", "exit 0"])
         self.assertEqual(code, 1)
         self.assertEqual(stderr.getvalue(), "Worker error [redacted:GitHub Token]\n")
 
@@ -234,8 +234,8 @@ class RedactionTest(unittest.TestCase):
 
             visit(tree)
         self.assertEqual(references, {
-            ("dispatch.py", "FailoverDispatcher.run"): 1,
-            ("dispatch.py", "FailoverDispatcher.run.clean"): 1,
+            ("dispatch.py", "clean_outcome"): 1,
+            ("dispatch.py", "clean_outcome.clean"): 1,
             ("cli.py", "_write_run_log"): 1,
             ("delivery.py", "DryRun.record_merge"): 2,
             ("github.py", "LiveForge._run_command"): 2,
