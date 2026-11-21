@@ -681,6 +681,12 @@ kind = "captured_run"
 argv = ["gh", "pr", "view", "--repo", "bookout-labs/tools", "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest", "--", "60"]
 notes = "Recorded recovery probe for PR 60. Production uses the same argument order with a branch or PR number as the selector."
 
+[fixtures."langgraph_dispatch.md"]
+tool = "langgraph"
+version = "1.2.24"
+kind = "quoted_source"
+sources = ["https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py", "https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/_internal/_config.py", "https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/checkpoint-sqlite/langgraph/checkpoint/sqlite/__init__.py"]
+notes = "Sync durability commits setup before call. update_state as_node selects the completed node's routing. State history is newest-first. The default recursion limit is 10007 (overridable by LANGGRAPH_DEFAULT_RECURSION_LIMIT); delivery derives a smaller bound of 140 with the shipped configuration: 35 steps per round times 4 rounds. Each round allows one setup and every candidate per stage plus graph routing nodes; max_review_rounds plus one bounds retries. Fresh-process evidence is in test_dispatch_recovery.py."
 [fixtures."pydantic-records.txt"]
 tool = "pydantic"
 version = "2"

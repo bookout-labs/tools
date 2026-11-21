@@ -1269,7 +1269,23 @@ class LiveRunnerTest(unittest.TestCase):
                     self.assertIn(detail, result.get("halt_detail", ""))
         self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\n")
 
-    def test_resume_at_implement_rechecks_saved_preflight(self):
+    def test_interrupt_during_setup_has_no_pending_usage(self):
+        with patch("foreman.delivery.EnvironmentProbe.error", new_callable=unittest.mock.PropertyMock,
+                   side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            self.walk([{"triage": "implement"}])
+        result = self.walk([{"implementation": "built"}, APPROVE])
+        self.assertEqual(result["stop"], "verified")
+        self.assertNotIn("interrupted", [a["outcome"] for a in result["attempts"]])
+
+    def test_env_unavailable_resumes_before_implement(self):
+        with patch("foreman.delivery.EnvironmentProbe.error", new_callable=unittest.mock.PropertyMock,
+                   return_value="temporarily unavailable"):
+            result = self.walk([{"triage": "implement"}])
+        self.assertEqual(result["stop"], "env_unavailable")
+        self.assertIsNone(result.get("pending_dispatch"))
+        self.assertEqual(self.walk([{"implementation": "built"}, APPROVE])["stop"], "verified")
+
+    def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
         def interrupted_run(node, model, state, instruction):
             if node == "triage":
                 return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None})
@@ -1286,7 +1302,7 @@ class LiveRunnerTest(unittest.TestCase):
             )
         ready.unlink()
         result = self.walk([])
-        self.assertEqual(result.get("stop"), "env_unavailable")
+        self.assertEqual(result.get("stop"), "usage_unknown")
         self.assertEqual(result.get("review_rounds"), 0)
         self.assertEqual(self.calls, [])
 

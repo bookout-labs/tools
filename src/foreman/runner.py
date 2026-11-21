@@ -13,12 +13,12 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
+from foreman.delivery import HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import Forge
-from foreman.stage_output import StoredSlice, parse_output
+from foreman.stage_output import Attempt, StoredSlice, parse_output
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 
@@ -69,7 +69,8 @@ def _checkpoint_before_halt(
     if not path:
         raise ValueError("Cannot resume a run without a halted node.")
     node = path[-1]
-    before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (node,)), None)
+    entry = entry_node(node)
+    before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (entry,)), None)
     if before is None:
         raise ValueError(f"Cannot resume a run without a checkpoint before {node}.")
     return before
@@ -127,6 +128,17 @@ def run_live_delivery(
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
+        if saved_values is not None and (pending := saved_values.get("pending_dispatch")):
+            assert "dispatch_plan" in saved_values
+            stage = pending["stage"]
+            models = saved_values["dispatch_plan"]["models"]
+            model = models[pending["index"]] if models else None
+            graph.update_state(config, {**halted("usage_unknown", unknown_usage(stage, model), stage),
+                                       "attempts": [Attempt(stage=stage, model=model, commit=pin.commit,
+                                                            methods=saved_values["dispatch_plan"]["methods"], outcome="interrupted", usage=None).record()],
+                                       "pending_dispatch": None}, as_node=stage + "_call")
+            invoke(None, saved_values)
+            return read_delivery_state(graph.get_state(config).values)
         waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == "quota_exhausted"
         if answer is not None:
             if waiting_for_quota:
@@ -152,6 +164,7 @@ def run_live_delivery(
             initial: DeliveryState = {
                 "fact_record": fact_record or MANIFEST_PATH,
                 "repo": repo,
+                "usage_version": 1,
                 "issue": issue,
                 "workspace": workspace,
                 "request": text,

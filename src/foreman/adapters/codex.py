@@ -109,7 +109,7 @@ class CodexAdapter:
 
         kind, output, detail = self._result(process.returncode, turn)
         return build_outcome(
-            kind, output=output, usage=turn.usage, total_cost_usd=None,
+            kind, output=output, usage=turn.usage,
             session_id=turn.session_id, detail=detail,
         )
 
