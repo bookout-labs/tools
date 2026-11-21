@@ -9,13 +9,14 @@ import unittest
 from unittest.mock import patch
 
 from foreman.cli import main
-from foreman.config import NodeConfig, load_config
+from foreman.config import ModelSpec, NodeConfig, load_config
 from foreman.delivery import run_delivery
-from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK
 from foreman.runner import run_live_delivery
-from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, parse_output
+from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker
+from test_adapters import fixture_process
 
 
 HEAD = "a" * 40
@@ -34,7 +35,7 @@ SLICE = {
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
 FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}]}
-APPROVE = {"review": "approve", "risk": DEFAULT_RISK}
+APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "review_note": None}
 
 
 def slice_body(item):
@@ -59,7 +60,10 @@ def worker_reply(args, reply, model=None):
     if "review" in reply:
         reply = {"review_note": None, **reply}
     field = "structured_output" if tool == "claude" else "structuredOutput"
-    return subprocess.CompletedProcess(args, 0, json.dumps({field: reply, "modelUsage": {model: {}}}), "")
+    envelope = {field: reply, "modelUsage": {model: {}}}
+    if tool == "claude":
+        envelope.update(type="result", subtype="success", is_error=False)
+    return subprocess.CompletedProcess(args, 0, json.dumps(envelope), "")
 
 
 class FakeGitHub:
@@ -92,11 +96,11 @@ class FakeGitHub:
 
 
 class CliWorkerTest(unittest.TestCase):
-    def test_all_three_commands_pin_the_configured_slug_and_parse_the_final_result(self):
+    def test_commands_use_the_configured_models_and_parse_the_final_result(self):
         models = {
             "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol-high"],
-            "claude-opus-5-5-high": ["claude", "--model", "claude-opus-5-5-high"],
-            "grok-4.7-high": ["grok", "-m", "grok-4.7-high"],
+            "claude-opus-5-5-high": ["claude", "--model", "claude-opus-5-5", "--effort", "high"],
+            "grok-4.7-high": ["grok", "-m", "grok-4.7", "--reasoning-effort", "high"],
         }
         for model, prefix in models.items():
             with self.subTest(model=model):
@@ -109,72 +113,72 @@ class CliWorkerTest(unittest.TestCase):
                                          STAGE_OUTPUTS["triage"].model_json_schema())
                     return worker_reply(args, {"triage": "implement"})
 
-                result = CliWorker(Path("engine"), run)("triage", model, {"issue": 12}, "Read the issue.")
-                output = result if isinstance(result, dict) else result.output
-                self.assertEqual(output["triage"], "implement")
+                result = CliWorker(Path("engine"), run)(
+                    "triage", ModelSpec.parse(model), {"issue": 12}, "Read the issue.",
+                )
+                self.assertEqual(result.kind, "ran")
+                self.assertEqual(result.output["triage"], "implement")
 
     def test_non_object_replies_are_invalid(self):
         replies = ('Here is the result: {"triage": "implement"}', '["implement"]')
         for reply in replies:
-            with self.subTest(reply=reply), self.assertRaises(InvalidOutput):
+            with self.subTest(reply=reply):
                 worker = CliWorker(Path("."), lambda args, cwd: worker_reply(args, reply))
-                worker("triage", "gpt-6.1-sol-high", {}, "")
+                outcome = worker("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
+                self.assertEqual(outcome.kind, "failed")
+                self.assertIn("did not return a JSON object", outcome.detail)
 
-    def test_native_envelopes(self):
-        output = {"triage": "question", "slice": None, "human_question": None}
-        for tool, field, session, error in (
-            ("claude", "structured_output", "session_id", {"is_error": True, "result": "Unsupported model: test"}),
-            ("grok", "structuredOutput", "sessionId", {"type": "error", "message": "Unsupported model: test"}),
-        ):
-            model = f"{tool}-test"
-            usage = {"input_tokens": 4, "output_tokens": 2}
-            success = {field: output, session: "sample", "usage": usage, "modelUsage": {model: {}}}
-            for envelope, kind, tokens in (
-                (success, "ran", 4),
-                (error, "failed", None),
-                ({key: value for key, value in success.items() if key != "modelUsage"}, "ran", 4),
-                ({field: output}, "ran", None),
-                ({**success, "modelUsage": {"other": {}}}, "failed", 4),
-                ({**success, "usage": {"input_tokens": 0, "output_tokens": 0}}, "ran", 0),
-            ):
-                with self.subTest(tool=tool, envelope=envelope):
-                    result = CliWorker(Path("."), lambda args, _: subprocess.CompletedProcess(
-                        args, 0, json.dumps(envelope), "",
-                    ))("triage", model, {}, "")
-                    self.assertEqual(result.kind, kind)
-                    self.assertEqual(result.usage.input_tokens if result.usage else None, tokens)
-                    if envelope == success:
-                        self.assertEqual((result.output, result.session_id), (output, "sample"))
+    def walk_triage(self, models, run):
+        config = load_config()
+        config.nodes["triage"] = NodeConfig("coordinator", tuple(ModelSpec.parse(model) for model in models))
+        return run_delivery(FailoverDispatcher(CliWorker(Path("."), run)), repo="Example/Engine",
+                            request="List items", check="exit 0", config=config)
 
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
-        for tool, field, error in (
-            ("claude", "structured_output", {"is_error": True, "result": "You've hit your limit"}),
-            ("grok", "structuredOutput", {"type": "error", "message": "You’ve hit the rate limit for your plan."}),
-        ):
-            failed = {**error, "result": "Unknown model: quota", "message": "Unknown model: quota"}
-            for case in ("quota", "cli_missing", "failed", "incomplete"):
-                stops = case in {"failed", "incomplete"}
-                with self.subTest(tool=tool, case=case):
+        for cli in ("claude", "grok"):
+            for case, stop in (("quota", "needs_human"), ("cli_missing", "needs_human"),
+                               ("is_error", "invalid_output"), ("wrong_model", "invalid_output")):
+                with self.subTest(cli=cli, case=case):
                     calls = []
 
                     def run(args, cwd):
                         calls.append(args[0])
-                        if len(calls) > 1:
+                        if args[0] == "codex":
                             return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
                         if case == "cli_missing":
                             raise FileNotFoundError(args[0])
-                        envelope = {"quota": error, "failed": failed, "incomplete": {field: {"triage": "question"}}}[case]
-                        return subprocess.CompletedProcess(args, int(tool == "grok" and case != "incomplete"),
-                                                           json.dumps(envelope), "")
+                        exit_code = 0 if case == "wrong_model" else 1
+                        return fixture_process(args, case, exit_code)
 
-                    config = load_config()
-                    config.nodes["triage"] = NodeConfig("coordinator", (f"{tool}-test", "gpt-test"))
-                    result = run_delivery(FailoverDispatcher(CliWorker(Path("."), run)),
-                                          repo="Example/Engine", request="List items", check="exit 0", config=config)
-                    self.assertEqual(result["stop"], "invalid_output" if stops else "needs_human")
-                    self.assertEqual(calls, [tool] if stops else [tool, "codex"])
-                    if case == "failed":
-                        self.assertIn("Unknown model: quota", result["halt_detail"])
+                    result = self.walk_triage((f"{cli}-test", "gpt-test"), run)
+                    self.assertEqual(result["stop"], stop)
+                    self.assertEqual(calls, [cli, "codex"] if stop == "needs_human" else [cli])
+                    if case == "is_error":
+                        message = "Could not start the session." if cli == "claude" else "Unknown model: quota-example"
+                        self.assertIn(message, result["halt_detail"])
+
+    def test_delivery_stops_for_an_incomplete_native_stage_reply(self):
+        def run(args, cwd):
+            self.assertEqual(args[0], "claude")
+            stdout = json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                                 "structured_output": {"triage": "question"}})
+            return subprocess.CompletedProcess(args, 0, stdout, "")
+
+        result = self.walk_triage(("claude-test", "gpt-test"), run)
+        self.assertEqual(result["stop"], "invalid_output")
+        self.assertIn("Field required", result["halt_detail"])
+
+    def test_delivery_stops_when_every_cli_is_missing(self):
+        calls = []
+
+        def run(args, cwd):
+            calls.append(args[0])
+            raise FileNotFoundError(args[0])
+
+        result = self.walk_triage(("claude-test", "grok-test", "gpt-test"), run)
+        self.assertEqual(calls, ["claude", "grok", "codex"])
+        self.assertEqual(result["stop"], "cli_missing")
+        self.assertIn("codex executable is unavailable", result["halt_detail"])
 
     def test_codex_reroute_is_rejected_even_with_the_requested_banner(self):
         def run(args, cwd):
@@ -182,8 +186,8 @@ class CliWorkerTest(unittest.TestCase):
                 args, 0, '{"triage":"implement"}', "model: gpt-first\nmodel rerouted: gpt-first -> gpt-other\n"
             )
 
-        with self.assertRaises(QuotaExhausted):
-            CliWorker(Path("."), run)("triage", "gpt-first", {}, "")
+        outcome = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-first"), {}, "")
+        self.assertEqual(outcome.kind, "quota")
 
 
 class StageOutputTest(unittest.TestCase):
@@ -203,17 +207,17 @@ class StageOutputTest(unittest.TestCase):
             json.loads(json.dumps(model.model_json_schema()), object_hook=check)
 
     def test_extra_field_reports_its_nested_path(self):
-        raw = {"implementation": "Done", "browser_proof": {"extra": True}}
+        raw = {
+            "implementation": "Done", "head_sha": None, "formal_proof": None,
+            "browser_proof": {"screen": None, "trace": None, "passed": None, "extra": True},
+        }
         with self.assertRaisesRegex(InvalidOutput, r"^browser_proof\.extra:"):
             parse_output(ImplementOutput, raw)
 
-    def test_sectioned_implementation_becomes_one_document(self):
-        result = parse_output(ImplementOutput, {"implementation": {"Changes": "Built.", "Tests": "Passed."}})
-        self.assertEqual(result.implementation, "Changes\nBuilt.\n\nTests\nPassed.")
-
-    def test_punctuated_changes_without_a_note_keeps_null(self):
-        result = parse_output(ReviewOutput, {**APPROVE, "review": "changes."})
-        self.assertEqual((result.review, result.review_note), ("changes", None))
+    def test_screen_rejects_control_characters_and_subdirectories(self):
+        for screen in ("docs/screens/na\x01me.md", "docs/screens/a/b.md"):
+            with self.subTest(screen=screen), self.assertRaisesRegex(InvalidOutput, r"^screen:"):
+                parse_output(Slice, {**SLICE, "screen": screen})
 
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
@@ -223,11 +227,6 @@ class StageOutputTest(unittest.TestCase):
         for verdict in ("Approve.", "Changes. Add a check."):
             with self.subTest(verdict=verdict), self.assertRaisesRegex(InvalidOutput, "^review:"):
                 parse_output(ReviewOutput, {**APPROVE, "review": verdict})
-
-    def test_review_rejects_two_change_notes(self):
-        with self.assertRaisesRegex(InvalidOutput, "inline change note conflicts with review_note"):
-            parse_output(ReviewOutput, {**APPROVE, "review": "changes. Add a check.", "review_note": "Update the docs."})
-
 
 class LiveRunnerTest(unittest.TestCase):
     def setUp(self):

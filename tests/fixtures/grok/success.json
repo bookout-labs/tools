@@ -1,0 +1,29 @@
+{
+  "text": "",
+  "stopReason": "end_turn",
+  "sessionId": "4d8f5dbc-5b69-4be1-a541-402e6f92cafe",
+  "requestId": "5a1c019d-ecd2-4522-8523-e52a32e7666d",
+  "cwd": "/repo",
+  "num_turns": 1,
+  "usage": {
+    "input_tokens": 4,
+    "output_tokens": 2,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 8,
+    "reasoning_tokens": 1,
+    "total_tokens": 14
+  },
+  "modelUsage": {
+    "grok-4.7": {
+      "inputTokens": 4,
+      "outputTokens": 2,
+      "cacheReadInputTokens": 8,
+      "cacheCreationInputTokens": 0,
+      "costUSD": 0.0001,
+      "modelCalls": 1
+    }
+  },
+  "total_cost_usd": 0.0001,
+  "total_cost_usd_ticks": 1000000,
+  "structuredOutput": {"triage": "needs_human", "slice": null, "human_question": "Which items?"}
+}

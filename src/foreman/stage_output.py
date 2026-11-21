@@ -1,29 +1,18 @@
 """Worker output contracts shared by the CLI prompts and delivery graph."""
 
-import re
-from typing import Annotated, Literal, TypeVar, get_args
+from typing import Annotated, Literal, TypeVar
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from foreman.dispatch import InvalidOutput
 
 Text = Annotated[str, StringConstraints(pattern=r"\S")]
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
-Sections = TypeAdapter(dict[TrimmedText, TrimmedText])
 Output = TypeVar("Output", bound=BaseModel)
 
 
 class Contract(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
-
-    @model_validator(mode="before")
-    @classmethod
-    def legacy_nullable_fields(cls, value: object, info: ValidationInfo) -> object:
-        if info.context == "legacy" and isinstance(value, dict):
-            omitted = {name: None for name, field in cls.model_fields.items()
-                       if name not in value and type(None) in get_args(field.annotation)}
-            return {**omitted, **value}
-        return value
 
 
 class SliceProperty(Contract):
@@ -44,7 +33,6 @@ class Slice(Contract):
         pattern=r"^(docs/screens/(?:[^./\\\x00-\x1f]|\.[^./\\\x00-\x1f])+\.md)?$",
     )
     properties: list[SliceProperty]
-
 
 
 class SlicePlanningOutput(Contract):
@@ -93,14 +81,6 @@ class ImplementOutput(Contract):
     browser_proof: BrowserProof | None
     formal_proof: FormalProof | None
 
-    @field_validator("implementation", mode="before")
-    @classmethod
-    def join_sections(cls, value: object, info: ValidationInfo) -> object:
-        if info.context == "legacy" and isinstance(value, dict):
-            sections = Sections.validate_python(value, strict=True)
-            return "\n\n".join(f"{title}\n{body}" for title, body in sections.items())
-        return value
-
 
 class MergeRisk(Contract):
     alignment: TrimmedText
@@ -118,21 +98,6 @@ class ReviewOutput(Contract):
         description="Put the reviewer's requested changes here and keep the verdict in review. Use null when there is no note.",
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def split_verdict(cls, value: object, info: ValidationInfo) -> object:
-        if info.context == "legacy" and isinstance(value, dict) and isinstance(verdict := value.get("review"), str):
-            verdict = verdict.strip()
-            if verdict in {"approve", "approve."}:
-                return {**value, "review": "approve"}
-            match = re.fullmatch(r"changes(?:[.,:;]\s*(.*))?", verdict, re.S)
-            if match:
-                note = value.get("review_note")
-                if match[1] and note is not None:
-                    raise ValueError("inline change note conflicts with review_note")
-                return {**value, "review": "changes", "review_note": match[1] or note}
-        return value
-
 
 class VerifyOutput(Contract):
     verify: Literal["pass", "fail"]
@@ -148,9 +113,9 @@ STAGE_OUTPUTS: dict[str, type[Contract]] = {
 }
 
 
-def parse_output(contract: type[Output], raw: object, *, native: bool = False) -> Output:
+def parse_output(contract: type[Output], raw: object) -> Output:
     try:
-        return contract.model_validate(raw, context=None if native else "legacy")
+        return contract.model_validate(raw)
     except ValidationError as exc:
         error = exc.errors(include_input=False)[0]
         path = ".".join(map(str, error["loc"])) or "$"

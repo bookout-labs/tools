@@ -1,21 +1,16 @@
 """CLI subprocess contracts."""
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from pathlib import Path
-import re
 from subprocess import CompletedProcess
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-QUOTA = re.compile(
-    r"^(?:error: )?(?:api error:? (?:\(status )?429\b|http 429\b|"
-    r"rate[ _-]limit(?:ed|_error| exceeded| reached)\b|too many requests\b|"
-    r"(?:insufficient_quota|quota exceeded|resource_exhausted)\b|"
-    r"you['’]ve (?:hit (?:your |the |your team['’]s API )?(?:rate )?limit|"
-    r"reached your free Grok Build usage limit)\b)",
-    re.IGNORECASE | re.MULTILINE,
-)
+from foreman.config import ModelSpec
+
+if TYPE_CHECKING:
+    from foreman.stage_output import Contract
 
 
 class Usage(BaseModel):
@@ -42,43 +37,57 @@ class Call:
     schema: str
     edit: bool
 
+    @property
+    def permission_mode(self) -> str:
+        return "acceptEdits" if self.edit else "plan"
+
 
 class CliAdapter(Protocol):
     def command(self, call: Call) -> list[str]: ...
-    def read(self, process: CompletedProcess[str], out_path: Path | None = None) -> Outcome: ...
+    def read(self, process: CompletedProcess[str]) -> Outcome: ...
 
 
-class Envelope(BaseModel):
+@dataclass(frozen=True)
+class ModelAdapter:
+    model: ModelSpec
+    contract: "type[Contract]"
+
+
+class NativeEnvelope(BaseModel, ABC):
     model_config = ConfigDict(strict=True)
-    output: dict[str, object] | None = None
-    session_id: str | None = None
-    model_usage: dict[str, object] | None = Field(default=None, alias="modelUsage")
-    usage: Usage | None = None
-    total_cost_usd: float | None = None
-    is_error: bool = False
-    type: str | None = None
-    errors: list[str] = Field(default_factory=list)
-    message: str = ""
+
+    @abstractmethod
+    def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome: ...
 
 
-def read_envelope(process: CompletedProcess[str], contract: type[Envelope], model: str) -> Outcome:
-    try:
-        envelope = contract.model_validate_json(process.stdout)
-    except ValidationError as exc:
-        detail = process.stderr.strip() or process.stdout.strip() or exc.errors(include_input=False)[0]["msg"]
-        return Outcome("quota" if process.returncode and QUOTA.match(detail) else "failed", detail=detail)
+class NativeAdapter(ModelAdapter):
+    envelope: ClassVar[type[NativeEnvelope]]
 
-    usage = envelope.usage
-    if usage is not None and envelope.total_cost_usd is not None:
-        usage = usage.model_copy(update={"total_cost_usd": envelope.total_cost_usd})
-    session_id = envelope.session_id
-    if envelope.model_usage and envelope.model_usage.keys() != {model}:
-        detail = f"requested {model}, modelUsage reported {', '.join(envelope.model_usage)}"
+    def read(self, process: CompletedProcess[str]) -> Outcome:
+        try:
+            envelope = self.envelope.model_validate_json(process.stdout)
+        except ValidationError as exc:
+            detail = process.stderr.strip() or process.stdout.strip() or exc.errors(include_input=False)[0]["msg"]
+            return Outcome("failed", detail=detail)
+        return envelope.outcome(process, self.model.model_id)
+
+
+def build_outcome(
+    model_id: str, *, output: dict[str, object] | None, model_usage: dict[str, object] | None,
+    usage: Usage | None, total_cost_usd: float | None, session_id: str | None, detail: str,
+    failed: bool, quota: bool,
+) -> Outcome:
+    if usage is not None:
+        usage = usage.model_copy(update={"total_cost_usd": total_cost_usd})
+        if not any(usage.model_dump().values()):
+            usage = None
+    if quota:
+        return Outcome("quota", usage=usage, session_id=session_id, detail=detail)
+    if failed:
         return Outcome("failed", usage=usage, session_id=session_id, detail=detail)
-    if process.returncode or envelope.is_error or envelope.type == "error":
-        detail = "\n".join(envelope.errors) or envelope.message or process.stderr.strip()
-        kind = "quota" if QUOTA.match(detail) else "failed"
-        return Outcome(kind, usage=usage, session_id=session_id, detail=detail or f"CLI exited {process.returncode}")
-    if envelope.output is None:
-        return Outcome("failed", usage=usage, session_id=session_id, detail=envelope.message or "missing structured output")
-    return Outcome("ran", envelope.output, usage, session_id)
+    if model_usage and model_usage.keys() != {model_id}:
+        detail = f"requested {model_id}, modelUsage reported {', '.join(model_usage)}"
+        return Outcome("failed", usage=usage, session_id=session_id, detail=detail)
+    if output is None:
+        return Outcome("failed", usage=usage, session_id=session_id, detail=detail or "missing structured output")
+    return Outcome("ran", output, usage, session_id)
