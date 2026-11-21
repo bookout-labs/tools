@@ -391,6 +391,37 @@ class LiveRunnerTest(unittest.TestCase):
                     self.assertEqual(result.get("findings"), [FINDING])
                 self.assertEqual(self.github.merge_calls, [])
 
+    def test_review_halts_when_git_fetch_times_out(self):
+        replies = iter([{"triage": "implement"}, {"implementation": "Built."}])
+        outputs = {
+            ("git", "rev-parse", "HEAD"): HEAD + "\n",
+            ("git", "status", "--porcelain"): "",
+            ("git", "branch", "--show-current"): BRANCH + "\n",
+            ("exit 0",): "",
+        }
+
+        def run(
+            command: str | list[str], *, timeout: float | None = None, **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            if command == ["git", "fetch", "--no-tags", "origin", BASE, HEAD]:
+                self.assertEqual(timeout, 30)
+                raise subprocess.TimeoutExpired(command, 30)
+            self.assertIsNone(timeout)
+            key = (command,) if isinstance(command, str) else tuple(command)
+            return subprocess.CompletedProcess(command, 0, outputs[key])
+
+        with patch("foreman.workspace.subprocess.run", side_effect=run):
+            result = run_live_delivery(
+                repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+                dispatcher=FailoverDispatcher(CliWorker(self.cwd, lambda args, cwd, env: worker_reply(args, next(replies)))),
+                run=LiveRun(self.github, LiveWorkspace(self.cwd)),
+            )
+
+        self.assertEqual(result.get("stop"), "review_unavailable")
+        self.assertRegex(result.get("halt_detail", ""), r"^git fetch .*timed out after 30 seconds")
+        self.assertEqual(self.github.reviews, [])
+        self.assertEqual(self.github.merge_calls, [])
+
     def test_load_slice_issue(self):
         result = self.walk([{"triage": "question"}, {"research": "answer"}])
         self.assertEqual(result["request"], "Issue title\n\n" + slice_body(EMPTY_SLICE))
