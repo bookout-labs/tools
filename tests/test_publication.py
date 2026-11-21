@@ -76,6 +76,10 @@ class PublicationTest(unittest.TestCase):
         if command[1] != "api":
             self.assertEqual(command[command.index("--repo") + 1], REPO)
         match command[1:3]:
+            case ["api", "repos/bookout-labs/tools/issues?state=open&per_page=100"]:
+                response = [[]]
+            case ["api", "repos/bookout-labs/tools/issues"]:
+                response = {"number": 101}
             case ["api", "repos/Example/Engine/issues/8/dependencies/blocked_by"]:
                 response = [[]]
             case ["issue", "view"]:
@@ -509,7 +513,8 @@ class PublicationTest(unittest.TestCase):
         self.assertNotIn("items.txt", rejected["halt_detail"])
         (directory / "drop.tmp").unlink()
         self.git("add", "--all")
-        self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
+        with patch.dict("foreman.dry_run.DEFAULT_RISK", {name: {**dimension, "evidence": [dict(side="head", path="nested/keep.tmp", line=1)]} for name, dimension in ScriptHandler().risk.items() if name != "level"}):
+            self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
         self.assertNotIn("items.txt", self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines())
 
     def test_fact_capture_does_not_authorize_adjacent_scratch(self):

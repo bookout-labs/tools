@@ -188,6 +188,7 @@ class DeliveryFields(TypedDict, total=False):
     review_receipt: ReviewReceipt | None
     models_used: dict[str, str]
     implement_models: list[str]
+    watch: WatchRecord | None
     halt: Annotated[Halt, PlainValidator(lambda code: Halt(code).value)] | None
     halt_detail: str
 
@@ -246,7 +247,7 @@ def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
     if not detail.strip():
         raise ValueError(f"{reason} requires a nonempty halt detail")
     # Checkpoint codes remain strings after validation as Halt members.
-    return {"halt": cast(Halt, reason.value), "halt_detail": detail, "path": [path] if path else []}
+    return {"halt": cast(Halt, reason.value), "halt_detail": detail, "watch": None, "path": [path] if path else []}
 
 
 def budget_halt(state: DeliveryState, attempts: list[AttemptRecord], stage: str) -> DeliveryUpdate:
@@ -552,6 +553,19 @@ def compile_delivery(
             if name == "review":
                 for key in ("review_findings", "settled_rulings", *(("findings", "detail", "implementation") if history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])}).rounds else ())):
                     worker_state.pop(key, None)
+            citation_context = None
+            if name == "review":
+                try:
+                    if isinstance(run, LiveRun):
+                        assert plan["target"] is not None
+                        target = plan["target"]
+                        citation_context = run.workspace.review_context(target["baseRefOid"], target["headRefOid"])
+                    else:
+                        citation_context = run.review_context
+                except WorktreeInspectionFailed as exc:
+                    return {"pending_dispatch": None, **halted(Halt.review_unavailable, str(exc), name)}
+                if not (citation_context.base.changed or citation_context.head.changed):
+                    return {"pending_dispatch": None, **halted(Halt.review_unavailable, "Review requires changed paths.", name)}
             accepted_model = ModelSpec.parse(models[pending["index"]]) if models else None
             outcome = clean_outcome(dispatcher(name, accepted_model, worker_state, plan["instruction"]))
             model = accepted_model.name if accepted_model else None
@@ -598,7 +612,7 @@ def compile_delivery(
                     raise QuotaExhausted(model)
                 return {**stopped, **halted(Halt.quota_exhausted, f"{name} quota exhausted: {model}", name)}
             try:
-                output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                output = parse_output(STAGE_OUTPUTS[name], outcome.output, context=citation_context)
                 accepted: AcceptedReview | None = None
                 if isinstance(output, ReviewOutput):
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})

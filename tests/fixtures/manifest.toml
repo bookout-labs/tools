@@ -457,7 +457,7 @@ tool = "gh and GitHub REST API"
 version = "gh 2.102.0; GitHub REST API 2022-11-28"
 kind = "quoted_source"
 sources = ["https://docs.github.com/en/rest/issues/issues?apiVersion=2022-11-28#list-repository-issues", "https://cli.github.com/manual/gh_api"]
-claim_ids = ["tool-fact-b7f7b6bdb1bb5a702825f471629f67c00400809c27e545b1b6428a12ff37275e", "tool-fact-be0cf7118c96d3bfeca96a572c98bb5d668e9723a10f8a04d7024359561a0c22"]
+claim_ids = ["tool-fact-7e59b1233bdd32eaf95d6d4533108369286d3db75bfdc762c1f2f045d43a10e0", "tool-fact-b7f7b6bdb1bb5a702825f471629f67c00400809c27e545b1b6428a12ff37275e", "tool-fact-be0cf7118c96d3bfeca96a572c98bb5d668e9723a10f8a04d7024359561a0c22"]
 notes = 'Reduced response example with synthetic pagination and a nullable body. GitHub: "You can identify pull requests by the pull_request key." gh: "Pass --slurp to wrap all pages of JSON arrays or objects into an outer JSON array." --paginate requests pages until none remain.'
 
 [fixtures."github/issue-body-schema.json"]
@@ -473,7 +473,7 @@ tool = "gh and GitHub REST API"
 version = "gh 2.102.0; GitHub REST API 2022-11-28"
 kind = "quoted_source"
 sources = ["https://docs.github.com/en/rest/issues/comments?apiVersion=2022-11-28#list-issue-comments", "https://cli.github.com/manual/gh_api"]
-claim_ids = ["tool-fact-4aaf6767289f41162d387a1afa197aafc007d6cd010b3412e53f20b56d0a54c3"]
+claim_ids = ["tool-fact-06effd7f1a496ba2e2e60c6f95dcc183cceb2ac9c604561586af0f075f3a34e6", "tool-fact-4aaf6767289f41162d387a1afa197aafc007d6cd010b3412e53f20b56d0a54c3"]
 notes = 'Reduced GET /repos/{owner}/{repo}/issues/{issue_number}/comments array response quoting "Me too", with synthetic second-page marker and nullable body. per_page allows up to 100. gh: "Pass --slurp to wrap all pages of JSON arrays or objects into an outer JSON array."'
 
 [fixtures."github/created-comment.json"]
@@ -481,7 +481,7 @@ tool = "GitHub REST API"
 version = "2022-11-28"
 kind = "quoted_source"
 sources = ["https://docs.github.com/en/rest/issues/comments?apiVersion=2022-11-28#create-an-issue-comment"]
-claim_ids = ["tool-fact-9395d5cea364408db872a4bc31b0911923850bb76962259b2c20d427586224fc"]
+claim_ids = ["tool-fact-70360d655962d87b9e7a16ef3c3b24ce374776f69552d684cf9e58ecc69f4c92", "tool-fact-9395d5cea364408db872a4bc31b0911923850bb76962259b2c20d427586224fc"]
 notes = 'Reduced 201 response example. POST /repos/{owner}/{repo}/issues/{issue_number}/comments requires body: "The contents of the comment."'
 
 [fixtures."github/gh-api-fields-and-errors.txt"]
@@ -489,7 +489,7 @@ tool = "gh"
 version = "2.102.0"
 kind = "quoted_source"
 sources = ["https://cli.github.com/manual/gh_api", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/fields.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/http.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go", "https://github.com/cli/cli/blob/v2.102.0/internal/ghcmd/cmd.go", "https://github.com/cli/cli/blob/v2.102.0/cmd/gh/main.go"]
-claim_ids = ["tool-fact-1f6c68c0b5ab3ea842ac165c30a9b77d54827b9257640cf085ea4ce551f9349c", "tool-fact-5744e144781330a0494b5a688e342db8c6f5e3cfc41da8d5072c7dceebda21d7", "tool-fact-1a950fe2feda6107b2e0efa96fca69b9a2322eb18925ed90cbc72473d5a511d7", "tool-fact-3669380487e9bfd326457b94682fd4c0c35cb57534293b8be9a73fe371bd2176"]
+claim_ids = ["tool-fact-23a4ecc370e9a7761fdd27a249c6d15a179124323ed41a390998f46f57572fef", "tool-fact-1f6c68c0b5ab3ea842ac165c30a9b77d54827b9257640cf085ea4ce551f9349c", "tool-fact-5744e144781330a0494b5a688e342db8c6f5e3cfc41da8d5072c7dceebda21d7", "tool-fact-1a950fe2feda6107b2e0efa96fca69b9a2322eb18925ed90cbc72473d5a511d7", "tool-fact-3669380487e9bfd326457b94682fd4c0c35cb57534293b8be9a73fe371bd2176"]
 notes = "Versioned source excerpts show literal raw fields, JSON POST bodies, and HTTP failures written to stderr with a nonzero process exit."
 
 # ## Pull request size
@@ -909,6 +909,13 @@ kind = "captured_run"
 argv = ["python", "-c", "from foreman.stage_output import SpecCheckOutput; print(SpecCheckOutput(findings=[dict(id='f1',kind='contract',slice='Save',section='slice',summary='Keep IDs unique.',ruling_id=None)],notes=[],resolutions=[]).model_dump_json(indent=2))"]
 notes = "Synthetic spec-check contract example serialized by Pydantic. No model or external service was called. test_spec_check.py parses it through the native contract and checks rejection of supplied verdicts."
 
+[fixtures."checkpoint-watch.txt"]
+tool = "python argparse; langgraph; langgraph-checkpoint-sqlite"
+version = "3.12.14 1.2.24 3.1.3"
+kind = "captured_run"
+argv = ["python", "-c", "import argparse, contextlib, io, operator, sys\nfrom importlib.metadata import version\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom types import SimpleNamespace\nfrom typing import Annotated\nfrom typing_extensions import TypedDict\nfrom langgraph.checkpoint.sqlite import SqliteSaver\nfrom langgraph.graph import StateGraph, START, END\nfrom foreman.adapters import Outcome\nfrom foreman.delivery import LiveRun\nfrom foreman.runner import run_live_delivery\nsys.path.insert(0, \"tests\")\nfrom skill_fixture import fixture_skills\nclass State(TypedDict):\n    path: Annotated[list[str], operator.add]\nbuilder = StateGraph(State).add_node(\"done\", lambda state: {\"path\": [\"done\"]}).add_edge(START, \"done\").add_edge(\"done\", END)\nconfig = {\"configurable\": {\"thread_id\": \"watch-facts\"}}\nprint(\"versions:\", sys.version.split()[0], version(\"langgraph\"), version(\"langgraph-checkpoint-sqlite\"))\nwith TemporaryDirectory() as directory, SqliteSaver.from_conn_string(str(Path(directory) / \"probe.sqlite\")) as saver:\n    graph = builder.compile(checkpointer=saver)\n    graph.invoke({\"path\": []}, config)\n    before = graph.get_state(config)\n    graph.update_state(config, {\"path\": []}, as_node=\"done\")\n    after = graph.get_state(config)\n    assert before.values[\"path\"] == [\"done\"] and after.next == ()\n    steps = [snapshot.metadata[\"step\"] for snapshot in (before, after)]\n    assert all(type(step) is int for step in steps) and steps[0] != steps[1]\n    print(\"update_state as done: next =\", after.next, \"; integer steps:\", steps)\n    forge = SimpleNamespace(load_issue=lambda *args: {\"title\": \"probe\", \"body\": \"\", \"labels\": []}, open_issues=lambda *args: [], create_issue=lambda *args: 101)\n    run = LiveRun(forge, SimpleNamespace(root=Path(directory)), skills=fixture_skills)\n    kwargs = dict(repo=\"Example/Engine\", issue=8, check=\"exit 0\", checkpoint=Path(directory) / \"live.sqlite\", run=run)\n    first = run_live_delivery(**kwargs, dispatcher=lambda *args: Outcome('failed', detail='bad output'))\n    second = run_live_delivery(**kwargs, dispatcher=lambda *args: Outcome('failed', detail='bad output'))\n    assert first == second and second[\"watch\"] == {\"issue\": 101, \"action\": \"filed\"}\n    print(\"run_live_delivery reopened SQLite: equal result; watch =\", second[\"watch\"])\nwith contextlib.redirect_stderr(io.StringIO()):\n    try:\n        argparse.ArgumentParser().error(\"invalid --watch-repo\")\n    except SystemExit as error:\n        assert error.code == 2\n        print(\"argparse.ArgumentParser.error exit:\", error.code)\n"]
+claim_ids = ["tool-fact-d01fd4feb29a51e4d81d5ce0606352f9110f673fee10bfd9bc92b8a693ab5245", "tool-fact-ce9e7fbd60cb0890debd225074ec31f98f1b32ef582bef8ff54941fa10c8cf18", "tool-fact-4e875fdbaddc5c4e66bc868150f83d8123f0e7df472cbf943e11ee58ae62db8b", "tool-fact-48d992724c9af8c68cd02c80cdad6d3e5bbc68fecadfe383e6e41b417c84f3bb"]
+
 [fixtures."github/readiness-evidence.json"]
 tool = "GitHub REST API"
 version = "2022-11-28"
@@ -1066,3 +1073,72 @@ version = "GraphQL live schema, 2026-11-21"
 kind = "captured_run"
 argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:119){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
 notes = "Live PR 119 later OPEN with no entry or auto request after the recorded QUEUED/AWAITING_CHECKS states. The source head is unchanged. This captures departure, not a cause or CI conclusion. Source https://docs.github.com/en/graphql/reference/objects#pullrequest."
+
+[fixtures."review/grounded.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/placeholder-99.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/padded.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/unrelated.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/stale.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/invented-finding.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/codex-schema-probe.json"]
+kind = "captured_run"
+tool = "codex"
+version = "codex-cli 0.171.0"
+argv = ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", "--ephemeral", "--json", "--output-schema", "<probe>/codex/output-schema.json", "--color", "never", "-s", "read-only", "Return exactly {\"items\":[1]} using the supplied strict schema. Do not use tools or read files."]
+returncode = 0
+claim_ids = ["tool-fact-230c1b4874586ed39a5d550a80dc49e6c553b6316324ecff8c29541c9e311a89"]
+notes = "codex CLI codex-cli 0.171.0 accepts a strict schema containing minItems and exclusiveMinimum. Live probe on 2026-11-21. Strict schema, argv, stdout and stderr are in the fixture. Session IDs, checkout paths and credential expiry are scrubbed. Schema acceptance only; no claim about model enforcement of invalid answers."
+
+[fixtures."review/claude-schema-probe.json"]
+kind = "captured_run"
+tool = "claude"
+version = "2.1.329 (Claude Code)"
+argv = ["claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "plan", "--output-format", "json", "--json-schema", "{\"type\": \"object\", \"properties\": {\"items\": {\"type\": \"array\", \"items\": {\"type\": \"integer\", \"exclusiveMinimum\": 0}, \"minItems\": 1}}, \"required\": [\"items\"], \"additionalProperties\": false}", "-p", "Return exactly {\"items\":[1]} using the supplied strict schema. Do not use tools or read files."]
+returncode = 0
+claim_ids = ["tool-fact-40834e45ef0138a2662ed2a32fba3359649ba0db49f7dc25464375c6dda97908"]
+notes = "claude CLI 2.1.329 (Claude Code) accepts a strict schema containing minItems and exclusiveMinimum. Live probe on 2026-11-21. Strict schema, argv, stdout and stderr are in the fixture. Session IDs, checkout paths and credential expiry are scrubbed. Schema acceptance only; no claim about model enforcement of invalid answers."
+
+[fixtures."review/grok-schema-probe.json"]
+kind = "captured_run"
+tool = "grok"
+version = "grok 1.0.89 (28be5bb1bf65) [stable]"
+argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\": \"object\", \"properties\": {\"items\": {\"type\": \"array\", \"items\": {\"type\": \"integer\", \"exclusiveMinimum\": 0}, \"minItems\": 1}}, \"required\": [\"items\"], \"additionalProperties\": false}", "-p", "Return exactly {\"items\":[1]} using the supplied strict schema. Do not use tools or read files."]
+returncode = 0
+claim_ids = ["tool-fact-2a9a216d957eeb93fab68597f145c04c8bf20d36b3973d9ffb555e3fdb3dd24f"]
+notes = "grok CLI grok 1.0.89 (28be5bb1bf65) [stable] accepts a strict schema containing minItems and exclusiveMinimum. Live probe on 2026-11-21. Strict schema, argv, stdout and stderr are in the fixture. Session IDs, checkout paths and credential expiry are scrubbed. Schema acceptance only; no claim about model enforcement of invalid answers."

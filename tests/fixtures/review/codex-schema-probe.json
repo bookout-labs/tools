@@ -1,0 +1,40 @@
+{
+  "returncode": 0,
+  "stdout": "{\"type\":\"thread.started\",\"thread_id\":\"00000000-0000-4000-8000-000000000001\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"items\\\":[1]}\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":27578,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":15,\"reasoning_output_tokens\":0}}\n",
+  "stderr": "Reading additional input from stdin...\n2026-11-21T13:22:06.167270Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: \"Bearer realm=\\\"OAuth\\\", resource_metadata=\\\"https://<host>/.well-known/oauth-protected-resource/mcp\\\", error=\\\"invalid_token\\\", error_description=\\\"Missing or invalid access token\\\"\" })\n2026-11-21T13:22:06.290465Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: \"Bearer realm=\\\"OAuth\\\", resource_metadata=\\\"https://<host>/.well-known/oauth-protected-resource/mcp\\\", error=\\\"invalid_token\\\", error_description=\\\"Missing or invalid access token\\\"\" })\n",
+  "argv": [
+    "codex",
+    "exec",
+    "-m",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=high",
+    "--ephemeral",
+    "--json",
+    "--output-schema",
+    "<probe>/codex/output-schema.json",
+    "--color",
+    "never",
+    "-s",
+    "read-only",
+    "Return exactly {\"items\":[1]} using the supplied strict schema. Do not use tools or read files."
+  ],
+  "version": "codex-cli 0.171.0",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "minItems": 1
+      }
+    },
+    "required": [
+      "items"
+    ],
+    "additionalProperties": false
+  }
+}

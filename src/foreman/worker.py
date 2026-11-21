@@ -14,14 +14,14 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
-from foreman.stage_output import STAGE_OUTPUTS, Contract
+from foreman.stage_output import STAGE_OUTPUTS
 
 CommandRunner = Callable[[list[str], Path, Mapping[str, str]], subprocess.CompletedProcess[str]]
 
-ADAPTERS: dict[str, Callable[[ModelSpec, type[Contract]], CliAdapter]] = {
-    "claude": lambda model, _: ClaudeAdapter(model),
+ADAPTERS: dict[str, Callable[[ModelSpec], CliAdapter]] = {
+    "claude": ClaudeAdapter,
     "gpt": CodexAdapter,
-    "grok": lambda model, _: GrokAdapter(model),
+    "grok": GrokAdapter,
 }
 
 
@@ -49,7 +49,7 @@ class CliWorker:
         schema = json.dumps(contract.model_json_schema())
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
-        adapter = ADAPTERS[model.family](model, contract)
+        adapter = ADAPTERS[model.family](model)
         checkout = self.cwd.resolve()
         temp_root = Path(tempfile.gettempdir()).resolve()
         if temp_root.is_relative_to(checkout):
