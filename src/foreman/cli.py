@@ -3,6 +3,7 @@
 import argparse
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
+from importlib.resources import files
 import os
 from pathlib import Path
 import re
@@ -36,9 +37,9 @@ def _write_check_log(line: str) -> None:
     _write_run_log(line, end="")
 
 
-def _print_run(result: DeliveryResult, presentation: RunPresentation | None = None) -> None:
+def _print_run(result: DeliveryResult, presentation: RunPresentation | None = None, *, dry_run: bool = False) -> None:
     if presentation is None or presentation.restored is None:
-        _print_run_rows(result)
+        _print_run_rows(result, dry_run=dry_run)
         return
     rows: list[tuple[str, str | None]] = []
     current: DeliveryResult = {"repo": result["repo"], "check": result["check"], "path": [], "stop": result["stop"]}
@@ -60,7 +61,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
 
 
 def _print_run_rows(
-    result: DeliveryResult, *, prefix: str = "", rows: list[tuple[str, str | None]] | None = None,
+    result: DeliveryResult, *, dry_run: bool = False, prefix: str = "", rows: list[tuple[str, str | None]] | None = None,
 ) -> None:
     def write(text: str) -> None:
         _write_run_log("\n".join(prefix + line for line in text.split("\n")))
@@ -75,7 +76,7 @@ def _print_run_rows(
     for command in result.get("commands", []):
         write(f"dry run: {shlex.join(command)}")
     models = result.get("models_used", {})
-    if size := result.get("pr_size"):
+    if (size := result.get("pr_size")) and not dry_run and not result.get("commands"):
         write_literal(f"pull request lines {size['lines']}")
     if rows is None:
         rows = [(node, models.get(node)) for node in result["path"]]
@@ -125,7 +126,8 @@ def _print_run_rows(
             write(" ".join(fields))
     stop = result.get("stop")
     if stop in {"needs_human", Halt.quota_exhausted} and "done" not in result["path"]:
-        write_literal(f"paused {stop}")
+        label = "done" if stop == "needs_human" and dry_run else "paused"
+        write_literal(f"{label} {stop}")
         if detail := result.get("halt_detail"):
             write(detail)
 
@@ -154,6 +156,8 @@ def main(
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    commands.add_parser("coordinator", help="start an interactive Claude coordinator session")
+
     draw = commands.add_parser("diagram", help="print the graph")
     draw.add_argument("graph", nargs="?", default=GRAPH_NAME)
     draw.add_argument("--write", action="store_true", help="update docs/graph and README in the current checkout")
@@ -164,6 +168,7 @@ def main(
     run = commands.add_parser("run", help="walk a graph")
     run.add_argument("graph")
     run.add_argument("--repo", required=True)
+    run.add_argument("--watch-repo", default="bookout-labs/tools")
     run.add_argument("--issue", type=int)
     run.add_argument("--request")
     run.add_argument("--check", default="")
@@ -178,6 +183,21 @@ def main(
     accept.add_argument("path")
 
     args = parser.parse_args(argv)
+    if args.command == "coordinator":
+        try:
+            instruction = files("foreman").joinpath("roles/coordinator.md").read_text(encoding="utf-8")
+            if not instruction.strip():
+                raise ValueError("empty role")
+        except (OSError, UnicodeError, ValueError):
+            print("cannot start coordinator: installed roles/coordinator.md is missing, unreadable, or empty; "
+                  "reinstall the selected bookout-tools revision", file=sys.stderr)
+            return 1
+        try:
+            os.execvp("claude", ["claude", "--append-system-prompt", instruction])
+        except OSError as exc:
+            detail = exc.strerror or str(exc)
+            print(f"cannot start coordinator: failed to run claude: {detail}", file=sys.stderr)
+            return 1
     if args.command == "diagram":
         if args.graph != GRAPH_NAME:
             print(f"unknown graph {args.graph}", file=sys.stderr)
@@ -218,6 +238,8 @@ def main(
     if args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
         return 2
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.watch_repo):
+        run.error("--watch-repo must be OWNER/NAME")
     presentation = RunPresentation()
     if args.dry_run:
         if args.answer is not None:
@@ -234,6 +256,7 @@ def main(
             fact_record=args.fact_record or MANIFEST_PATH,
         )
         print("pstack pin not checked (dry run)")
+        _print_run(result, presentation, dry_run=True)
     else:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
             run.error("--repo must be OWNER/NAME")
@@ -260,12 +283,15 @@ def main(
                 answer=args.answer,
                 presentation=presentation,
                 max_tokens=args.max_tokens,
+                watch_repo=args.watch_repo,
+                report=lambda result: _print_run(result, presentation),
+                log=lambda message: _write_run_log(message, file=sys.stderr),
                 max_budget_usd=args.max_budget_usd,
             )
         except (AnswerError, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
-    _print_run(result, presentation)
+
     return run_exit_code(result)
 
 

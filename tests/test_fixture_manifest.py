@@ -91,7 +91,7 @@ class RecordedEvidenceTest(unittest.TestCase):
             "resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": "result.txt"}],
         })
-        gate = _check_tool_facts(output, self.workspace, {
+        gate = _check_tool_facts(output, LiveRun(Mock(), self.workspace), {
             "repo": "example/repo", "check": "", "path": [], **({"verified_head": head} if head else {}),
         })
         from foreman.review_round import ReviewHistory, accept
@@ -143,16 +143,16 @@ class RecordedEvidenceTest(unittest.TestCase):
         output = ReviewOutput(resolutions=[], risk=DEFAULT_RISK, findings=[], detail="Reviewed.", tool_facts=[])
         run = LiveRun(Mock(), self.workspace)
         self.manifest.write_text(self.manifest.read_text() + f'claim_ids = ["{fact.claim_id}"]\n')
-        self.assertEqual(_check_tool_facts(output, run.workspace, state).passed, False)
+        self.assertEqual(_check_tool_facts(output, run, state).passed, False)
         state["verified_head"] = self.commit()
-        self.assertEqual(_check_tool_facts(output, run.workspace, state).passed, True)
+        self.assertEqual(_check_tool_facts(output, run, state).passed, True)
         repeated = output.model_copy(update={"tool_facts": [ToolFact(claim=fact.claim, fixture="result.txt")]})
-        self.assertEqual(_check_tool_facts(repeated, run.workspace, state).tool_facts[0].model_dump()["claim_id"], fact.claim_id)
+        self.assertEqual(_check_tool_facts(repeated, run, state).tool_facts[0].model_dump()["claim_id"], fact.claim_id)
         unrelated = output.model_copy(update={"tool_facts": [ToolFact(claim="Other behavior", fixture=None)]})
-        self.assertEqual(_check_tool_facts(unrelated, run.workspace, state).passed, False)
+        self.assertEqual(_check_tool_facts(unrelated, run, state).passed, False)
         (self.fixtures / "result.txt").unlink()
         state["verified_head"] = self.commit()
-        self.assertEqual(_check_tool_facts(output, run.workspace, state).passed, False)
+        self.assertEqual(_check_tool_facts(output, run, state).passed, False)
 
     def test_committed_claude_evidence_carries_budget_claim_ids(self):
         from foreman.fixture_manifest import recorded_evidence

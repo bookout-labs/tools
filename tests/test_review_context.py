@@ -247,7 +247,7 @@ class WorkspaceReviewContextTest(unittest.TestCase):
         self.assertEqual(context.head.files, frozenset({".gitmodules", "sub", "text.txt"}))
         self.assertEqual(context.head.lines, {".gitmodules": 4, "text.txt": 1})
 
-    def test_dry_run_context_matches_the_review_diff(self):
+    def test_dry_run_default_matches_the_review_diff_and_can_be_overridden(self):
         for path, content in {"README.md": b"unchanged\n", "items.txt": b"first\nold\nlast\n",
                               "deleted.txt": b"obsolete\n"}.items():
             self.write(path, content)
@@ -257,7 +257,8 @@ class WorkspaceReviewContextTest(unittest.TestCase):
         head = self.commit()
         self.git("push", "origin", "main")
         actual = self.workspace.review_context(base, head)
-        scripted = DryRun().review_context("base", "head")
+        scripted = DryRun().review_context
         self.assertIs(scripted, SCRIPTED_REVIEW_CONTEXT)
         self.assertEqual(replace(scripted.base, sha=base), actual.base)
         self.assertEqual(replace(scripted.head, sha=head), actual.head)
+        self.assertEqual(DryRun(review_context=actual).review_context, actual)

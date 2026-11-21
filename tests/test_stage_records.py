@@ -140,14 +140,15 @@ class StageOwnershipTests(unittest.TestCase):
         from foreman.stage_output import STAGE_OUTPUTS, parse_output
 
         state = {"repo": "org/repo", "check": "", "path": [], "issue_kind": "slice", "review_rounds": 2}
-        handler = ScriptHandler(reviews=["changes"], verify="fail")
+        handler = ScriptHandler(reviews=["changes"])
         for stage, contract in STAGE_OUTPUTS.items():
             with self.subTest(stage=stage):
                 if stage == "spec_check":
                     with self.assertRaisesRegex(NotImplementedError, "candidate-bound"):
                         stage_update(stage, parse_output(contract, {"findings": [], "notes": [], "resolutions": []}), state, "model")
                     continue
-                output = parse_output(contract, handler(stage, None, state, "").output)
+                payload = {"verify": "fail"} if stage == "verify" else handler(stage, None, state, "").output
+                output = parse_output(contract, payload)
                 update = stage_update(stage, output, state, "model")
                 key = {"implement": "implementation", "review": "findings"}.get(stage, stage)
                 self.assertIn(key, update)
