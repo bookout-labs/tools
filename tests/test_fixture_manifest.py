@@ -18,9 +18,9 @@ class FixtureManifestTest(unittest.TestCase):
         manifest = FixtureManifest.from_toml((root / "manifest.toml").read_text())
         help_run = manifest.fixtures["claude/help.txt"]
         self.assertIsInstance(help_run, CapturedRun)
-        self.assertEqual((help_run.tool, help_run.version, help_run.argv, help_run.returncode),
-                         ("claude", "2.1.329", ["claude", "--help"], 0))
-        self.assertEqual(help_run.claim_ids, ["claude-max-budget-usd-flag"])
+        self.assertEqual((help_run.tool, help_run.version, help_run.argv),
+                         ("claude", "2.1.329", ["claude", "--help"]))
+        self.assertIn("claude-max-budget-usd-flag", help_run.claim_ids)
         self.assertIn("--max-budget-usd <amount>", (root / "claude/help.txt").read_text())
         budget = manifest.fixtures["claude/max_budget.json"]
         self.assertEqual((budget.tool, budget.version), ("claude", "2.1.329"))
@@ -153,6 +153,22 @@ class RecordedEvidenceTest(unittest.TestCase):
         (self.fixtures / "result.txt").unlink()
         state["verified_head"] = self.commit()
         self.assertEqual(_check_tool_facts(output, run, state).passed, False)
+
+    def test_committed_claude_evidence_carries_budget_claim_ids(self):
+        from foreman.fixture_manifest import recorded_evidence
+
+        claims = {
+            "claude/help.txt": ["claude-max-budget-usd-flag", "tool-fact-2a92f2eddc7bfdf6f61eec3f700b8512cc517afc17977276c8a0000775275e13"],
+            "claude/max_budget.json": ["tool-fact-7d1a336df8270445c34c1277e0e173d23ecdaaf1bf67e67eacd343124632d16a"],
+            "claude/success.json": ["tool-fact-3142c20a0ada3df91b980473d80bae425e03984b9367f162c8a58597c57959f0"],
+        }
+        source = Path(__file__).with_name("fixtures")
+        self.manifest.write_bytes((source / "manifest.toml").read_bytes())
+        for fixture in claims:
+            destination = self.fixtures / fixture
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((source / fixture).read_bytes())
+        self.assertEqual(recorded_evidence(self.workspace, self.commit()), claims)
 
     def test_only_regular_tracked_files_are_recorded(self):
         from foreman.fixture_manifest import recorded_fixtures

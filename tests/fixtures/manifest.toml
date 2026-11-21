@@ -14,14 +14,14 @@ tool = "claude"
 version = "2.1.329"
 kind = "captured_run"
 argv = ["claude", "--help"]
-returncode = 0
-claim_ids = ["claude-max-budget-usd-flag"]
+claim_ids = ["claude-max-budget-usd-flag", "tool-fact-2a92f2eddc7bfdf6f61eec3f700b8512cc517afc17977276c8a0000775275e13"]
 
 [fixtures."claude/max_budget.json"]
 tool = "claude"
 version = "2.1.329"
 kind = "quoted_source"
 sources = ["https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz"]
+claim_ids = ["tool-fact-7d1a336df8270445c34c1277e0e173d23ecdaaf1bf67e67eacd343124632d16a"]
 notes = "Fallback source quote, not a captured budget run: the installed 2.1.329 binary's result schema names error_max_budget_usd, and the budget_exhausted branch emits that subtype with is_error true. sNa formats Reached maximum budget ($${e}). The session and usage are synthetic, reused from success.json to test preservation. No exit status is claimed; test both 0 and 1."
 
 [fixtures."claude/is_error.json"]
@@ -85,6 +85,7 @@ notes = "The result formatter uses is_error, api_error_status, and api_error_typ
 tool = "claude"
 version = "2.1.329"
 kind = "captured_run"
+claim_ids = ["tool-fact-3142c20a0ada3df91b980473d80bae425e03984b9367f162c8a58597c57959f0"]
 argv = [
   "claude",
   "--model",
