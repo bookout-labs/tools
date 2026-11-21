@@ -1,3 +1,4 @@
+"""Redaction behavior and the permitted output boundaries."""
 import tests
 
 import ast
@@ -230,6 +231,7 @@ class RedactionTest(unittest.TestCase):
             ("dispatch.py", "clean_outcome"): 1,
             ("dispatch.py", "clean_outcome.clean"): 1,
             ("cli.py", "_write_run_log"): 1,
+            ("smoke_command.py", "run_smoke"): 2,
             ("worker_auth.py", "main"): 1,
             ("worker_auth.py", "environment"): 1,
             ("worker_auth.py", "validate_config"): 1,

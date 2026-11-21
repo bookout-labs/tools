@@ -163,6 +163,8 @@ def main(
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    commands.add_parser("smoke", help="run the bounded live scratch-repository smoke")
+
     commands.add_parser("coordinator", help="start an interactive Claude coordinator session")
 
     draw = commands.add_parser("diagram", help="print the graph")
@@ -190,6 +192,9 @@ def main(
     accept.add_argument("path")
 
     args = parser.parse_args(argv)
+    if args.command == "smoke":
+        from foreman.smoke_command import smoke_command
+        return smoke_command()
     if args.command == "coordinator":
         try:
             instruction = files("foreman").joinpath("roles/coordinator.md").read_text(encoding="utf-8")
