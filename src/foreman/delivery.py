@@ -5,12 +5,12 @@ from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict
 import operator
+import json
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from unidiff.errors import UnidiffParseError
-from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
@@ -22,6 +22,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.stage_output import (
     Contract, HumanQuestionOutput, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
 )
+from foreman.review_round import changed_lines, history
 from foreman.workspace import ReviewDiff, Workspace, WorktreeInspectionFailed
 
 GRAPH_NAME = "delivery"
@@ -71,6 +72,9 @@ class DeliveryState(TypedDict, total=False):
     human_question: str
     human_answers: list[str]
     review: str
+    review_findings: list[dict[str, object]]
+    reviewed_head: str
+    settled_rulings: list[dict[str, object]]
     findings: list[dict[str, object]]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
@@ -137,6 +141,7 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
             raise InvalidOutput("slice: required when a parent triages as implement")
         update["slice"] = clean_slices([output.slice], "slice")[0]
     if isinstance(output, ReviewOutput):
+        update["review"] = output.review
         update["review_change_kind"] = None
         if output.review == "changes":
             only_nits = all(finding.severity == "nit" for finding in output.findings)
@@ -155,14 +160,9 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
 
 def review_submission(output: ReviewOutput, diff: ReviewDiff) -> tuple[str, list[ReviewComment]]:
     try:
-        patch = PatchSet(diff.patch)
+        changed = changed_lines(diff.patch)
     except UnidiffParseError:
-        patch = PatchSet("")
-    changed = {
-        (file.path, line.target_line_no)
-        for file in patch if not file.is_removed_file
-        for hunk in file for line in hunk if line.is_added
-    }
+        changed = set()
     body = [output.detail]
     comments: list[ReviewComment] = []
     for finding in output.findings:
@@ -222,6 +222,7 @@ def compile_delivery(
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
+            past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
             review_context: tuple[Forge, PullRequest, ReviewDiff] | None = None
             repo = state.get("repo", "")
             if name == "review" and isinstance(run, LiveRun):
@@ -231,12 +232,23 @@ def compile_delivery(
                     if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
                         raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
                     target = run.forge.review_target(repo, issue, worktree.branch, head)
-                    diff = run.workspace.review_diff(target.baseRefOid, head)
+                    if past.rounds:
+                        diff = run.workspace.review_diff(past.rounds[-1].reviewed_head, head, interdiff=True)
+                    else:
+                        diff = run.workspace.review_diff(target.baseRefOid, head)
                 except (ForgeError, WorktreeInspectionFailed) as exc:
                     return {"path": [name], "halt": "review_unavailable", "halt_detail": str(exc)}
                 review_context = (run.forge, target, diff)
                 instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
-            outcome, model = dispatcher.run(name, models, state, instruction)
+            worker_state: DeliveryState = state.copy()
+            if name == "review":
+                scope = "Full PR review." if not past.rounds else "Check only unresolved findings and the interdiff."
+                instruction += "\n\n" + scope
+                instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
+                instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
+                for key in ("review_findings", "settled_rulings", "findings", "detail", "implementation"):
+                    worker_state.pop(key, None)
+            outcome, model = dispatcher.run(name, models, worker_state, instruction)
             if outcome.kind == "failed":
                 return {"path": [name], "halt": "invalid_output", "halt_detail": f"{model}: {outcome.detail}"}
             if outcome.kind == "cli_missing":
@@ -247,7 +259,20 @@ def compile_delivery(
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                rethink = ""
+                unresolved = []
+                if isinstance(output, ReviewOutput):
+                    patch = review_context[2].patch if review_context else None
+                    unresolved, rethink = past.accept(output, state.get("verified_head") or state.get("head_sha") or "", patch)
                 update = stage_update(name, output, state, model)
+                if isinstance(output, ReviewOutput):
+                    update.update(review_findings=[r.model_dump() for r in past.rounds],
+                                  reviewed_head=past.rounds[-1].reviewed_head,
+                                  findings=[f.model_dump() for f in unresolved])
+                    update["review_change_kind"] = ("nits" if all(f.severity == "nit" for f in unresolved) else "blocking") if unresolved else None
+                    if rethink:
+                        update.update(halt="design_rethink", halt_detail=rethink, human_question=rethink,
+                                      review_rounds=state.get("review_rounds", 0))
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
 
@@ -304,7 +329,12 @@ def compile_delivery(
         stage = state["path"][-1]
         question = state.get("human_question") or "What should Foreman know to continue?"
         answer = interrupt({"stage": stage, "question": question})
-        return {"human_answers": [*state.get("human_answers", []), answer]}
+        update: DeliveryState = {"human_answers": [*state.get("human_answers", []), answer]}
+        if stage == "review":
+            past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
+            update.update(halt="", halt_detail="", settled_rulings=[r.model_dump() for r in past.settled] +
+                          [{"id": f"design:{len(past.rounds)}", "text": answer}])
+        return update
 
     def after_triage(state: DeliveryState) -> str:
         if state.get("halt"):
@@ -326,6 +356,8 @@ def compile_delivery(
         return "implement" if state.get("spec_gate") == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
+        if state.get("halt") == "design_rethink" and checkpointer is not None:
+            return "needs_human"
         if state.get("halt"):
             return "done"
         if state.get("review") == "approve":
@@ -424,14 +456,15 @@ def compile_delivery(
         "spec", after_spec, {"implement": "implement", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges(
-        "needs_human", lambda state: state["path"][-1], {"triage": "triage", "spec": "spec"},
+        "needs_human", lambda state: "implement" if state["path"][-1] == "review" else state["path"][-1],
+        {"triage": "triage", "spec": "spec", "implement": "implement"},
     )
     builder.add_edge("research", "done")
     builder.add_conditional_edges("implement", after_implement, {"verify": "verify", "done": "done"})
     builder.add_conditional_edges(
         "review",
         after_review,
-        {"merge": "merge", "implement": "implement", "done": "done"},
+        {"merge": "merge", "implement": "implement", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges(
         "verify",

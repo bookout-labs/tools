@@ -85,3 +85,10 @@ tests:
         value: does not change models.toml or max_review_rounds
       - type: contains
         value: A person opens the pull request.
+
+  - description: Two review rounds resolve the earlier finding and converge
+    vars:
+      case: review-converges
+    assert:
+      - type: equals
+        value: verified

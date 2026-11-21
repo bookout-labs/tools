@@ -170,7 +170,7 @@ class CodexCompatibilityTest(unittest.TestCase):
         self.assertEqual(proof["implementation"], "Changes\nBuilt.\n\nTests\nPassed.")
         self.assertEqual(proof["browser_proof"], {"trace": "trace.zip", "screen": None, "passed": None})
 
-    def test_codex_review_uses_the_same_exact_verdict_contract(self):
+    def test_codex_review_rejects_the_obsolete_verdict_contract(self):
         outcome = self.read("review", {"review": "changes. Add a check."})
-        with self.assertRaisesRegex(InvalidOutput, "^review:"):
+        with self.assertRaisesRegex(InvalidOutput, "^resolutions:"):
             parse_output(STAGE_OUTPUTS["review"], outcome.output)

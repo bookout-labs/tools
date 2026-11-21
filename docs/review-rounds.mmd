@@ -1,0 +1,14 @@
+stateDiagram-v2
+    [*] --> Reviewing
+    Reviewing --> Fixing: findings_need_fixes
+    Fixing --> Checking: fixes_ready
+    Checking --> Reviewing: check_passes
+    Checking --> Fixing: check_fails_below_cap
+    Checking --> Stopped: check_cap_reached
+    Reviewing --> Merging: no_unresolved_findings
+    Reviewing --> Stopped: review_cap_reached
+    Reviewing --> Human: blocking_kind_recurs
+    Human --> Fixing: design_answer_received
+    Reviewing --> Stopped: invalid_resolution_or_diff
+    Reviewing --> Reviewing: resume_saved_round
+    Merging --> Done: merge_armed

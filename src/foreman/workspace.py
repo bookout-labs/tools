@@ -32,7 +32,7 @@ class Workspace(Protocol):
 
     def run(self, command: str) -> int: ...
     def inspect(self) -> WorktreeState: ...
-    def review_diff(self, base: str, head: str) -> ReviewDiff: ...
+    def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff: ...
 
 
 class LiveWorkspace:
@@ -50,13 +50,13 @@ class LiveWorkspace:
         branch = self._git("branch", "--show-current").strip()
         return WorktreeState(head, not status, branch or None)
 
-    def review_diff(self, base: str, head: str) -> ReviewDiff:
+    def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff:
         if not (FULL_SHA.fullmatch(base) and FULL_SHA.fullmatch(head)):
             raise WorktreeInspectionFailed("Review requires full base and head SHAs.")
         self._git("fetch", "--no-tags", "origin", base, head, timeout=30)
         args = (
             "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
-            "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}...{head}", "--",
+            "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}..{head}" if interdiff else f"{base}...{head}", "--",
         )
         return ReviewDiff(shlex.join(("git", *args)), self._git(*args))
 

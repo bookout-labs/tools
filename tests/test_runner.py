@@ -38,8 +38,8 @@ SLICE = {
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
 FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}]}
-APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request."}
-FINDING = {"file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
+APPROVE = {"resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request."}
+FINDING = {"id": "f1", "kind": "correctness", "fix": "Add a check.", "ruling_id": None, "file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
 DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
 
@@ -59,8 +59,8 @@ class FakeWorkspace(LiveWorkspace):
             raise self.last
         return self.last
 
-    def review_diff(self, base, head):
-        return ReviewDiff(f"git diff {base}...{head}", DIFF)
+    def review_diff(self, base, head, *, interdiff=False):
+        return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
 
 
 def worker_reply(args, reply):
@@ -310,17 +310,13 @@ class StageOutputTest(unittest.TestCase):
 
     def test_review_summary_is_limited_to_200_characters(self):
         self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["Finding"]["properties"]["summary"]["maxLength"], 200)
-        raw = {**APPROVE, "review": "changes", "findings": [{**FINDING, "summary": "a" * 201}]}
+        raw = {**APPROVE, "findings": [{**FINDING, "summary": "a" * 201}]}
         with self.assertRaisesRegex(InvalidOutput, r"^findings\.0\.summary:"):
             parse_output(ReviewOutput, raw)
 
-    def test_review_verdict_requires_matching_findings(self):
-        for raw in (
-            {**APPROVE, "review": "changes"},
-            {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
-        ):
-            with self.subTest(raw=raw), self.assertRaisesRegex(InvalidOutput, "changes requires at least one finding"):
-                parse_output(ReviewOutput, raw)
+    def test_review_derives_verdict_from_findings(self):
+        self.assertEqual(parse_output(ReviewOutput, APPROVE).review, "approve")
+        self.assertEqual(parse_output(ReviewOutput, {**APPROVE, "findings": [FINDING]}).review, "changes")
 
 
 class LiveRunnerTest(unittest.TestCase):
@@ -349,12 +345,12 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes", "detail": "Check the bounds."}
+        changes = {**APPROVE, "detail": "Check the bounds."}
         for severity, kind in (("nit", "nits"), ("blocking", "blocking")):
             with self.subTest(severity=severity):
                 self.checkpoint = self.cwd / f"{severity}.sqlite3"
                 finding = {**FINDING, "severity": severity}
-                self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, APPROVE])
+                self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, {**APPROVE, "resolutions": [{"id": finding["id"], "status": "resolved"}]}])
                 state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
                 self.assertEqual(state["findings"], [finding])
                 self.assertEqual(state["detail"], changes["detail"])
@@ -363,12 +359,12 @@ class LiveRunnerTest(unittest.TestCase):
     def test_review_posts_only_changed_lines_inline(self):
         findings = [
             FINDING,
-            {**FINDING, "line": 1, "summary": "Untouched context."},
-            {**FINDING, "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
+            {**FINDING, "id": "f2", "line": 1, "summary": "Untouched context."},
+            {**FINDING, "id": "f3", "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
         ]
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes", "findings": findings, "detail": "Check the bounds."}
-        self.walk([{"triage": "implement"}, built, changes, built, APPROVE])
+        changes = {**APPROVE, "findings": findings, "detail": "Check the bounds."}
+        self.walk([{"triage": "implement"}, built, changes, built, {**APPROVE, "resolutions": [{"id": f["id"], "status": "resolved"} for f in findings]}])
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
         self.assertEqual(self.github.reviews, [(
             "Example/Engine", 12, HEAD,
@@ -377,7 +373,7 @@ class LiveRunnerTest(unittest.TestCase):
         ), ("Example/Engine", 12, HEAD, APPROVE["detail"], [])])
 
     def test_review_failures_halt_without_merging(self):
-        changes = {**APPROVE, "review": "changes", "findings": [FINDING]}
+        changes = {**APPROVE, "findings": [FINDING]}
         for method, stop, replies in (
             ("review_target", "review_unavailable", []),
             ("post_review", "review_not_posted", [changes]),
@@ -758,6 +754,10 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn(f"{base}...{head}", reviewed.command)
         self.assertIn("-old\n+new\n", reviewed.patch)
         self.assertNotIn("main.txt", reviewed.patch)
+        interdiff = LiveWorkspace(checkout).review_diff(base, head, interdiff=True)
+        self.assertIn(f"{base}..{head}", interdiff.command)
+        self.assertIn("main.txt", interdiff.patch)
+        self.assertEqual(LiveWorkspace(checkout).review_diff(head, head, interdiff=True).patch, "")
 
     def test_live_workspace_rejects_invalid_head_before_the_remaining_inspection(self):
         for head in ("", "abc123", "z" * 40):
