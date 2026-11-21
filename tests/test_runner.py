@@ -104,7 +104,7 @@ class FakeGitHub:
         self.base_branch = "main"
         self.reviews = []
         self.base = BASE
-        self.hold = None
+        self.hold: str | None = None
         self.hold_reads = []
 
     def pull_request_base(self, repo: str, branch: str) -> str:
@@ -503,7 +503,7 @@ class LiveRunnerTest(unittest.TestCase):
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
                 worker_runner=lambda *_: self.fail("An open blocker must prevent dispatch."),
             )
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertEqual(stdout.getvalue(), "done blocked\nOpen blockers: https://github.com/Example/Engine/issues/101\n")
         self.github.closed.add(101)
         self.assertIn("no merged pull request", self.walk([], issue=102)["halt_detail"])
@@ -1150,8 +1150,8 @@ class HaltExitCodeTest(unittest.TestCase):
 
     def test_resumable_halts(self):
         replies = [{"triage": "implement"}, {"implementation": "built"}, APPROVE]
-        self.assert_halt(self.live(replies, hold="Maintenance"), "merge_held", "Maintenance", 75)
-        self.assert_halt(self.live(replies, snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, True, None))),
+        self.assert_halt(self.live(replies, hold="Maintenance"), "merge_held", "FOREMAN_MERGE_HOLD is set: Maintenance", 75)
+        self.assert_halt(self.live(replies, snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, True, None))),
                          "merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.", 75)
 
     def test_invalid_merge_sha_halts_with_detail_and_resumable_exit(self):

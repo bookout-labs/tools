@@ -37,7 +37,7 @@ MergeHalt = Literal["merge_held", "merge_not_armed"]
 HaltReason = Literal[
     MergeHalt, "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "missing_slice", "review_unavailable", "review_not_posted", "spec_cap",
+    "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[MergeHalt] = frozenset(get_args(MergeHalt))
 
@@ -199,7 +199,7 @@ def stage_update(
             split: PullRequestSplit = {
                 "plan": output.spec, "gate": output.spec_gate, "question": output.human_question, "slices": slices,
             }
-            update = {"pr_split": split, "spec_rejection": None}
+            update = cast(DeliveryState, {"pr_split": split, "spec_rejection": None})
         elif state.get("issue_kind") == "parent" and output.spec_gate == "ready":
             update["slices"] = slices
     update["path"] = [name]
@@ -435,13 +435,10 @@ def compile_delivery(
             "Then rerun the same command. New commits need a new run."
         )
 
-    def moved_before_review(actual: str, verified: str) -> dict[str, object]:
-        return {
-            "merge": "not_armed", "halt": "merge_not_armed", "path": ["review"],
-            "halt_detail": moved_head_detail(actual, verified),
-        }
+    def moved_before_review(actual: str, verified: str) -> DeliveryState:
+        return {**halted("merge_not_armed", moved_head_detail(actual, verified), "review"), "merge": "not_armed"}
 
-    def review(state: DeliveryState) -> dict[str, object]:
+    def review(state: DeliveryState) -> DeliveryState:
         if isinstance(run, DryRun):
             return dispatch_review(state)
         try:
@@ -463,7 +460,7 @@ def compile_delivery(
             if not checked.clean or checked.branch != worktree.branch:
                 raise WorktreeInspectionFailed("The worktree changed after verification.")
         except (ForgeError, WorktreeInspectionFailed) as exc:
-            return {"halt": "pr_size_unavailable", "halt_detail": str(exc)}
+            return halted("pr_size_unavailable", str(exc), "review")
         measured: DeliveryState = {**state, "pr_size": size}
         if oversized_pr(measured):
             return {"pr_size": size}
