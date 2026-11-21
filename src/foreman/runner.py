@@ -42,9 +42,9 @@ class RunPresentation:
 def snapshot_result(snapshot: StateSnapshot, saver: SqliteSaver) -> DeliveryResult:
     values = snapshot.values
     if snapshot.interrupts:
-        if values.get("halt") == "quota_exhausted":
+        if values.get("halt") == Halt.quota_exhausted:
             parse_output(QuotaPause, snapshot.interrupts[0].value)
-            return read_delivery_state({**values, "stop": "quota_exhausted"})
+            return read_delivery_state({**values, "stop": Halt.quota_exhausted})
         question = parse_output(HumanPrompt, snapshot.interrupts[0].value).question
         return read_delivery_state({**values, "stop": "needs_human", "halt_detail": question})
     result = read_delivery_state({**values, "stop": values.get("stop", "")})
@@ -227,7 +227,7 @@ def run_live_delivery(
                                        "pending_dispatch": None}, as_node=stage + "_call")
             invoke(None, saved_values)
             return snapshot_result(graph.get_state(config), saver)
-        waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == "quota_exhausted"
+        waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == Halt.quota_exhausted
         if answer is not None:
             if waiting_for_quota:
                 raise AnswerError("This issue has no pending question.")

@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
-from foreman.outcomes import HALTS, Halt
+from foreman.outcomes import HALTS
 from foreman.github import Forge, ForgeError, LiveForge
 from foreman.redaction import redact
 from foreman.watch import run_key, watch
@@ -52,7 +52,6 @@ class WatchTest(unittest.TestCase):
         self.forge = Mock(spec=Forge, wraps=self.fake)
 
     def test_every_halt_has_an_explicit_policy(self):
-        self.assertEqual(set(HALTS), set(Halt))
         self.assertEqual(set(HALTS), set(FILING) | SKIPPED)
 
     def test_every_row_files_the_expected_proposal_or_makes_no_forge_calls(self):

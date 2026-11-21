@@ -10,7 +10,7 @@ from functools import cached_property
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from tomllib import TOMLDecodeError
-from typing import Annotated, Literal, NotRequired, Protocol
+from typing import Annotated, Literal, NotRequired, Protocol, cast
 import re
 import textwrap
 
@@ -19,7 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
-from pydantic import JsonValue, TypeAdapter, ValidationError
+from pydantic import JsonValue, TypeAdapter, ValidationError, PlainValidator
 from typing_extensions import TypedDict
 
 from foreman.adapters import Outcome
@@ -186,7 +186,7 @@ class DeliveryFields(TypedDict, total=False):
     review_receipt: ReviewReceipt | None
     models_used: dict[str, str]
     implement_models: list[str]
-    halt: str | None
+    halt: Annotated[Halt, PlainValidator(lambda code: Halt(code).value)] | None
     halt_detail: str
 
 
@@ -240,10 +240,11 @@ def _last_stage(state: DeliveryState) -> str:
     return state["path"][-1]
 
 
-def halted(reason: Halt | str, detail: str, path: str | None) -> DeliveryUpdate:
+def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
     if not detail.strip():
         raise ValueError(f"{reason} requires a nonempty halt detail")
-    return {"halt": Halt(reason).value, "halt_detail": detail, "path": [path] if path else []}
+    # Checkpoint codes remain strings after validation as Halt members.
+    return {"halt": cast(Halt, reason.value), "halt_detail": detail, "path": [path] if path else []}
 
 
 def budget_halt(state: DeliveryState, attempts: list[AttemptRecord], stage: str) -> DeliveryUpdate:
@@ -381,7 +382,9 @@ def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, 
     return "\n\n".join(body), comments
 
 
-def stop_reason(state: DeliveryState) -> str:
+def stop_reason(state: DeliveryState) -> Halt | Literal[
+    "sliced", "pr_split_required", "needs_human", "answered", "verified", "stopped"
+]:
     if halt := state.get("halt"):
         return halt
     if oversized_pr(state):
@@ -399,9 +402,9 @@ def stop_reason(state: DeliveryState) -> str:
     if state.get("triage") == "question":
         return "answered"
     if state.get("verify") == "fail":
-        return "verify_cap"
+        return Halt.verify_cap
     if state.get("review") == "changes":
-        return "review_cap"
+        return Halt.review_cap
     if state.get("verify") == "pass":
         return "verified"
     return "stopped"
@@ -462,8 +465,10 @@ def compile_delivery(
                     return halted(Halt.git_failed, str(exc), name)
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
+            except ModelDependencyMissing as exc:
+                return halted(Halt.model_dependency_missing, str(exc), name)
             except ConfigError as exc:
-                return halted(Halt.model_dependency_missing if isinstance(exc, ModelDependencyMissing) else Halt.model_family_exhausted, str(exc), name)
+                return halted(Halt.model_family_exhausted, str(exc), name)
             instruction = prompts[name]
             if isinstance(run, LiveRun) and methods_root is None:
                 raise RuntimeError("Delivery execution requires a compiled skill export.")
@@ -605,7 +610,8 @@ def compile_delivery(
                     if "halt_detail" in state:
                         update["halt_detail"] = ""
                     if accepted.rethink:
-                        update.update(halt=Halt.design_rethink.value, halt_detail=accepted.rethink, human_question=accepted.rethink)
+                        update.update(halted(Halt.design_rethink, accepted.rethink, name))
+                        update["human_question"] = accepted.rethink
             except InvalidSlicePlan as exc:
                 rounds = failure_count(state, "spec_failures") + 1
                 rejected: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "spec_failures": rounds}
@@ -672,7 +678,7 @@ def compile_delivery(
             update = dispatch_implement(state, runtime)
             if update.get("pending_dispatch"):
                 return update
-            return {**update, "partial_edits": run.workspace.fingerprint() if update.get("halt") == "quota_exhausted" else ""}
+            return {**update, "partial_edits": run.workspace.fingerprint() if update.get("halt") == Halt.quota_exhausted else ""}
         except WorkspaceError as exc:
             return {**update, **halted(Halt.git_failed, str(exc), "implement")}
 
@@ -900,7 +906,7 @@ def compile_delivery(
         return "prepare" if state.get("spec_gate") == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
-        if state.get("halt") == "design_rethink" and checkpointer is not None:
+        if state.get("halt") == Halt.design_rethink and checkpointer is not None:
             return "needs_human"
         if state.get("halt"):
             return "done"
@@ -1018,11 +1024,11 @@ def compile_delivery(
     def finish(state: DeliveryState) -> DeliveryUpdate:
         reason = stop_reason(state)
         if not state.get("halt"):
-            rounds = failure_count(state, "verify_failures") if reason == "verify_cap" else review_count(state)
-            if reason == "verify_cap":
+            rounds = failure_count(state, "verify_failures") if reason == Halt.verify_cap else review_count(state)
+            if reason == Halt.verify_cap:
                 detail = f"Verification failed after {rounds} rounds. Check {state.get('check') or '(none)'} failed."
                 return {**halted(Halt.verify_cap, detail, "done"), "stop": reason}
-            if reason == "review_cap":
+            if reason == Halt.review_cap:
                 detail = f"Review requested changes after {rounds} rounds. Last review: {state.get('detail', '')}"
                 return {**halted(Halt.review_cap, detail, "done"), "stop": reason}
             if reason == "needs_human":
@@ -1060,7 +1066,7 @@ def compile_delivery(
 
     def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str]) -> None:
         def next_stage(state: DeliveryState) -> str:
-            return "quota_wait" if state.get("halt") == "quota_exhausted" else route(state)
+            return "quota_wait" if state.get("halt") == Halt.quota_exhausted else route(state)
 
         def after_setup(state: DeliveryState) -> str:
             return "call" if state.get("pending_dispatch") and not state.get("halt") else next_stage(state)
@@ -1115,7 +1121,7 @@ def compile_delivery(
     add_agent_edges("implement", after_halt("reconcile"), {"reconcile": "reconcile", "done": "done"})
     add_agent_edges(
         "review",
-        lambda state: after_review(state) if state.get("halt") not in (None, "design_rethink") or oversized_pr(state) else "review_post",
+        lambda state: after_review(state) if state.get("halt") not in (None, Halt.design_rethink) or oversized_pr(state) else "review_post",
         {"review_post": "review_post", "merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges("review_post", after_review,

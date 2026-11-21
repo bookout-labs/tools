@@ -23,6 +23,7 @@ from unittest.mock import patch
 from foreman.adapters import Outcome
 from foreman.cli import run_exit_code
 from foreman.config import ModelSpec, PstackPin, load_config
+from foreman.outcomes import Halt
 from foreman.delivery import LiveRun, compile_delivery, halted
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from foreman.runner import run_live_delivery
@@ -65,7 +66,7 @@ if legacy != "current":
     names.append("grok-4.7-high")
     config.nodes["review"] = replace(config.nodes["review"], models=tuple(ModelSpec.parse(m) for m in names))
 def legacy_halt(reason, detail, stage):
-    return halted("quota_exhausted" if reason == "reviewer_unavailable" else reason, detail, stage)
+    return halted(Halt.quota_exhausted if reason == "reviewer_unavailable" else Halt(reason), detail, stage)
 run = LiveRun(forge, workspace)
 with patch("foreman.runner.load_config", return_value=config), patch("foreman.delivery.halted", legacy_halt if legacy == "pause" else halted):
     try:
