@@ -2,6 +2,7 @@ from subprocess import CompletedProcess
 from typing import Literal
 
 from pydantic import Field
+from typing_extensions import override
 
 from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
 
@@ -29,6 +30,7 @@ class GrokEnvelope(NativeEnvelope):
     usage_is_incomplete: bool = False
     total_cost_usd: float | None = None
 
+    @override
     def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
         kind: OutcomeKind = "ran"
         detail = self.message or self.error or self.structured_output_error or process.stderr.strip()

@@ -2,8 +2,12 @@
 
 from pathlib import Path
 import re
+from typing import NotRequired
+from typing_extensions import TypedDict
 
 import yaml
+
+from foreman._raw import is_dict
 
 SOURCE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REQUIRED = ("source", "ref", "graph")
@@ -15,25 +19,42 @@ class PointerError(ValueError):
     pass
 
 
-def load_pointer(path: Path) -> dict[str, str]:
-    data = yaml.safe_load(path.read_text())
-    if not isinstance(data, dict):
+class Pointer(TypedDict):
+    source: str
+    ref: str
+    graph: str
+    check: NotRequired[str]
+
+
+def load_pointer(path: Path) -> Pointer:
+    data: object = yaml.safe_load(path.read_text())
+    if not is_dict(data):
         raise PointerError("pointer must be a mapping")
-    unknown = set(data) - set(REQUIRED) - set(OPTIONAL)
+    keys: set[str] = set()
+    for key in data:
+        if not isinstance(key, str):
+            raise PointerError(f"pointer keys must be strings, got {type(key).__name__}")
+        keys.add(key)
+    unknown = keys - set(REQUIRED) - set(OPTIONAL)
     if unknown:
         raise PointerError(f"unknown pointer keys: {', '.join(sorted(unknown))}")
-    missing = [key for key in REQUIRED if not isinstance(data.get(key), str) or not data[key].strip()]
+    required: dict[str, str] = {}
+    for key in REQUIRED:
+        value = data.get(key)
+        if isinstance(value, str) and (text := value.strip()):
+            required[key] = text
+    missing = [key for key in REQUIRED if key not in required]
     if missing:
         raise PointerError(f"pointer is missing {', '.join(missing)}")
-    source = data["source"].strip()
+    source = required["source"]
     if not SOURCE.fullmatch(source):
         raise PointerError("source must be owner/repo")
-    graph = data["graph"].strip()
+    graph = required["graph"]
     if graph not in KNOWN_GRAPHS:
         raise PointerError(f"unknown graph {graph}")
-    pointer = {
+    pointer: Pointer = {
         "source": source,
-        "ref": data["ref"].strip(),
+        "ref": required["ref"],
         "graph": graph,
     }
     check = data.get("check")

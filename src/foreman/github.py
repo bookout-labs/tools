@@ -2,7 +2,8 @@
 
 import json
 import subprocess
-from typing import Literal, Protocol, TypedDict, TypeVar
+from typing import Literal, Protocol, TypeVar
+from typing_extensions import TypedDict
 
 from pydantic import BaseModel, PositiveInt, RootModel, ValidationError
 
@@ -171,7 +172,7 @@ def render_slice_body(prose: str, child: StoredSlice) -> str:
     dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
     constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
     stored = child.model_dump(exclude_unset=True)
-    if isinstance(child, StoredSlice) and child.work_kind is not None:
+    if child.work_kind is not None:
         stored["work_kind"] = child.work_kind
     return (
         (f"{prose}\n\n" if prose else "")

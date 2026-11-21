@@ -3,7 +3,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 import tomllib
-from typing import cast
+from typing import TypeGuard
+
+from foreman._raw import is_dict, is_list
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -74,25 +76,29 @@ def family(model: str) -> str:
     return prefix
 
 
-def parse_config(data: dict) -> Config:
-    if not isinstance(data, dict):
+def _model_names(value: object) -> TypeGuard[list[str]]:
+    return is_list(value) and all(isinstance(item, str) and item for item in value)
+
+
+def parse_config(data: object) -> Config:
+    if not is_dict(data):
         raise ConfigError("config must be a table")
     rounds = data.get("max_review_rounds")
     if not isinstance(rounds, int) or rounds < 1:
         raise ConfigError("max_review_rounds must be an integer of at least 1")
     raw_nodes = data.get("nodes")
-    if not isinstance(raw_nodes, dict) or not raw_nodes:
+    if not is_dict(raw_nodes) or not raw_nodes:
         raise ConfigError("nodes must be a non-empty table")
     nodes: dict[str, NodeConfig] = {}
     for name, raw in raw_nodes.items():
-        if not isinstance(name, str) or not isinstance(raw, dict):
+        if not isinstance(name, str) or not is_dict(raw):
             raise ConfigError(f"bad node entry: {name}")
         role = raw.get("role")
         models = raw.get("models")
         other = raw.get("other_family_from")
-        if role not in ROLES:
+        if not isinstance(role, str) or role not in ROLES:
             raise ConfigError(f"{name} has an unknown role")
-        if not isinstance(models, list) or not all(isinstance(item, str) and item for item in models):
+        if not _model_names(models):
             raise ConfigError(f"{name} models must be a list of names")
         if role == "check" and models:
             raise ConfigError(f"{name} is a check and takes no model")
@@ -101,7 +107,7 @@ def parse_config(data: dict) -> Config:
         if other is not None and not isinstance(other, str):
             raise ConfigError(f"{name} other_family_from must be a node name")
         nodes[name] = NodeConfig(
-            role=role, models=tuple(ModelSpec.parse(model) for model in cast(list[str], models)), other_family_from=other,
+            role=role, models=tuple(ModelSpec.parse(model) for model in models), other_family_from=other,
         )
     for name, node in nodes.items():
         if node.other_family_from and node.other_family_from not in nodes:

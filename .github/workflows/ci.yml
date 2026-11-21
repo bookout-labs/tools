@@ -28,6 +28,7 @@ jobs:
           echo "$PRETTY_NAME"
           readlink -f /bin/sh
           dpkg-query -W dash
-      - run: pip install -e .
-      - run: python -m unittest discover -s tests -v
+      - run: pip install -e '.[dev]'
+      - run: python -m unittest discover -s tests
+      - run: pyright
       - run: sh evals/eval.sh
