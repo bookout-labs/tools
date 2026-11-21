@@ -44,3 +44,21 @@ class FixtureSkills:
 
 
 fixture_skills = FixtureSkills()
+
+
+def stored_slice(item):
+    return {**item, "provenance": {"author": {"stage": "spec", "model": "gpt-author", "family": "gpt"}, "revision": "0" * 64}}
+
+
+def approved_spec(item, spec=""):
+    from foreman.stage_output import CandidateSlice, SpecCandidate, SpecAuthor, SpecCheckOutput
+    from foreman.spec_check import SpecHistory, accept
+    candidate = SpecCandidate(slices=[CandidateSlice.model_validate(item)], spec=spec, work_kind="feature",
+                              author=SpecAuthor(stage="spec", model="gpt-author", family="gpt"))
+    checked = accept(SpecHistory(), SpecCheckOutput(findings=[], notes=[], resolutions=[]), candidate, max_rounds=3)
+    return {**candidate.update(single=True), "spec_history": checked.history.model_dump(mode="json"),
+            "spec_approval": checked.approval.model_dump()}
+
+
+def checker_reply(args):
+    return {"findings": [], "notes": [], "resolutions": []} if args[-1].startswith("Check only the supplied candidate") else None

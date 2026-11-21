@@ -66,6 +66,8 @@ class ScriptHandler:
                 "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices,
                 "human_question": None,
             }, usage=SCRIPTED_USAGE)
+        if node == "spec_check":
+            return Outcome("ran", {"findings": [], "notes": [], "resolutions": []}, usage=SCRIPTED_USAGE)
         if node == "implement":
             return Outcome("ran", {
                 "implementation": self.implementation,
