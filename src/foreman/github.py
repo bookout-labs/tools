@@ -51,6 +51,7 @@ class PullRequest(PullRequestStatus):
     headRefOid: str
     headRefName: str
     baseRefName: str
+    baseRefOid: str
     autoMergeRequest: AutoMergeRequest | None
 
 
@@ -108,6 +109,13 @@ class Issue(TypedDict):
     labels: list[str]
 
 
+class ReviewComment(TypedDict):
+    path: str
+    line: int
+    side: Literal["RIGHT"]
+    body: str
+
+
 class Forge(Protocol):
     def load_issue(self, repo: str, number: int) -> Issue: ...
     def create_issue(
@@ -115,6 +123,8 @@ class Forge(Protocol):
     ) -> int: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
+    def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
+    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None: ...
     def merge_hold(self, repo: str) -> str | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
 
@@ -187,6 +197,21 @@ class LiveForge:
         repo, label = (redact(value) for value in (repo, label))
         self._run_command(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
 
+    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None:
+        current = self._view_pr(repo, str(target.number))
+        if current.state != "OPEN" or current.baseRefName != target.baseRefName:
+            raise ForgeError("The pull request changed during review.")
+        payload = {
+            "commit_id": target.headRefOid, "event": "COMMENT", "body": redact(body),
+            "comments": [{**comment, "body": redact(comment["body"]), "path": redact(comment["path"])} for comment in comments],
+        }
+        repo = redact(repo)
+        self._run_command(
+            ["gh", "api", f"repos/{repo}/pulls/{target.number}/reviews", "--method", "POST",
+             "-H", "X-GitHub-Api-Version: 2022-11-28", "--input", "-"],
+            body=json.dumps(payload),
+        )
+
     def merge_hold(self, repo: str) -> str | None:
         try:
             variables = self._read(ActionsVariables, ["gh", "variable", "list", "--repo", repo, "--json", "name,value"])
@@ -202,19 +227,23 @@ class LiveForge:
         except ForgeError as exc:
             raise MergeNotArmed(str(exc)) from exc
 
+    def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest:
+        pr = self._view_pr(repo, branch)
+        if pr.state != "OPEN":
+            raise ForgeError("The pull request is not open.")
+        if pr.headRefOid.lower() != sha.lower():
+            raise ForgeError("The pull request head differs from the verified SHA.")
+        if not pr.headRefName.startswith(f"{issue}-"):
+            raise ForgeError(f"The pull request head branch must start with {issue}-.")
+        if pr.baseRefName != "main":
+            raise ForgeError("The pull request must target main.")
+        return pr
+
     def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
         head = commit_sha(sha)
         if head is None:
             raise MergeNotArmed("Merge arming requires a full 40-hex commit SHA.")
-        pr = self._view_pr(repo, branch)
-        if pr.state != "OPEN":
-            raise MergeNotArmed("The pull request is not open.")
-        if pr.headRefOid.lower() != head.lower():
-            raise MergeNotArmed("The pull request head differs from the verified SHA.")
-        if not pr.headRefName.startswith(f"{issue}-"):
-            raise MergeNotArmed(f"The pull request head branch must start with {issue}-.")
-        if pr.baseRefName != "main":
-            raise MergeNotArmed("The pull request must target main.")
+        pr = self.review_target(repo, issue, branch, head)
         command = merge_command(redact(repo), str(pr.number), head)
         try:
             self._run_command(command)
@@ -232,15 +261,16 @@ class LiveForge:
     def _view_pr(self, repo: str, selector: str) -> PullRequest:
         command = [
             "gh", "pr", "view", "--repo", repo,
-            "--json", "number,state,headRefOid,headRefName,baseRefName,autoMergeRequest", "--", selector,
+            "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,autoMergeRequest", "--", selector,
         ]
         return self._read(PullRequest, command)
 
-    def _run_command(self, command: list[str], *, timeout: float | None = 30) -> str:
+    def _run_command(self, command: list[str], *, timeout: float | None = 30, body: str | None = None) -> str:
         operation = " ".join(command[:2] if command[1] == "api" else command[:3])
         try:
             result = subprocess.run(
-                command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+                command, stdin=subprocess.DEVNULL if body is None else None, input=body,
+                capture_output=True, text=True, timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
             raise CommandTimedOut(operation) from exc

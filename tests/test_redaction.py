@@ -164,7 +164,7 @@ class RedactionTest(unittest.TestCase):
         gh.side_effect = [
             subprocess.CompletedProcess([], 0, (
                 '{"number":42,"state":"OPEN","headRefOid":"' + SYNTHETIC_SHA
-                + '","headRefName":"8-sample","baseRefName":"main","autoMergeRequest":null}'
+                + '","headRefName":"8-sample","baseRefName":"main","baseRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","autoMergeRequest":null}'
             ), ""),
             subprocess.CompletedProcess([], 0, "", ""),
         ]
@@ -227,4 +227,5 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge._redact_slice"): 6,
             ("github.py", "LiveForge.add_label"): 1,
             ("github.py", "LiveForge.create_issue"): 1,
+            ("github.py", "LiveForge.post_review"): 4,
         })

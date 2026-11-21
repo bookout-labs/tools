@@ -9,17 +9,21 @@ import operator
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from unidiff.errors import UnidiffParseError
+from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.github import MERGE_HOLD_VARIABLE, Forge, MergeHoldUnreadable, MergeNotArmed, merge_command
+from foreman.github import (
+    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command,
+)
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+    Contract, HumanQuestionOutput, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
 )
-from foreman.workspace import CheckLog, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
+from foreman.workspace import CheckLog, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -72,7 +76,9 @@ class DeliveryState(TypedDict, total=False):
     human_question: str
     human_answers: list[str]
     review: str
-    review_note: str | None
+    findings: list[dict[str, object]]
+    detail: str
+    review_change_kind: Literal["blocking", "nits"] | None
     risk: dict[str, str]
     verify: str
     review_rounds: int
@@ -135,6 +141,11 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
         if output.slice is None:
             raise InvalidOutput("slice: required when a parent triages as implement")
         update["slice"] = clean_slices([output.slice], "slice")[0]
+    if isinstance(output, ReviewOutput):
+        update["review_change_kind"] = None
+        if output.review == "changes":
+            only_nits = all(finding.severity == "nit" for finding in output.findings)
+            update["review_change_kind"] = "nits" if only_nits else "blocking"
     if update.get("review") == "changes" or update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -145,6 +156,27 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
             history = state.get("implement_models", [latest] if latest else [])
             update["implement_models"] = [*history, model]
     return update
+
+
+def review_submission(output: ReviewOutput, diff: ReviewDiff) -> tuple[str, list[ReviewComment]]:
+    try:
+        patch = PatchSet(diff.patch)
+    except UnidiffParseError:
+        patch = PatchSet("")
+    changed = {
+        (file.path, line.target_line_no)
+        for file in patch if not file.is_removed_file
+        for hunk in file for line in hunk if line.is_added
+    }
+    body = [output.detail]
+    comments: list[ReviewComment] = []
+    for finding in output.findings:
+        message = f"[{finding.severity}] {finding.summary}"
+        if (finding.file, finding.line) in changed:
+            comments.append({"path": finding.file, "line": finding.line, "side": "RIGHT", "body": message})
+        else:
+            body.append(f"{finding.file}:{finding.line} {message}")
+    return "\n\n".join(body), comments
 
 
 def stop_reason(state: DeliveryState) -> str:
@@ -195,6 +227,20 @@ def compile_delivery(
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
+            review_context: tuple[Forge, PullRequest, ReviewDiff] | None = None
+            repo = state.get("repo", "")
+            if name == "review" and isinstance(run, LiveRun):
+                head, issue = state.get("verified_head"), state.get("issue")
+                try:
+                    worktree = run.workspace.inspect()
+                    if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
+                        raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
+                    target = run.forge.review_target(repo, issue, worktree.branch, head)
+                    diff = run.workspace.review_diff(target.baseRefOid, head)
+                except (ForgeError, WorktreeInspectionFailed) as exc:
+                    return {"path": [name], "halt": "review_unavailable", "halt_detail": str(exc)}
+                review_context = (run.forge, target, diff)
+                instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
             outcome, model = dispatcher.run(name, models, state, instruction)
             if outcome.kind == "failed":
                 return {"path": [name], "halt": "invalid_output", "halt_detail": f"{model}: {outcome.detail}"}
@@ -205,9 +251,19 @@ def compile_delivery(
                     raise QuotaExhausted(model)
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
-                return stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model)
+                output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                update = stage_update(name, output, state, model)
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
+
+            if review_context is not None and isinstance(output, ReviewOutput):
+                forge, target, diff = review_context
+                body, comments = review_submission(output, diff)
+                try:
+                    forge.post_review(repo, target, body, comments)
+                except ForgeError as exc:
+                    return {**update, "halt": "review_not_posted", "halt_detail": str(exc)}
+            return update
 
         return node
 
