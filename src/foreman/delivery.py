@@ -618,12 +618,14 @@ def compile_delivery(
                 update = stage_update(name, output, state, model, workspace=plan_workspace, accepted_model=accepted_model)
                 update.update(attempts=attempts, pending_dispatch=None)
                 if accepted is not None:
-                    update.update(review=accepted.review, detail=accepted.detail, halt_detail="",
+                    update.update(review=accepted.review, detail=accepted.detail,
                                   review_findings=[r.model_dump(mode="json") for r in accepted.history.rounds],
                                   reviewed_head=accepted.history.rounds[-1].reviewed_head,
                                   findings=[f.record() for f in accepted.findings],
                                   review_change_kind=accepted.change_kind,
                                   review_receipt=None)
+                    if "halt_detail" in state:
+                        update["halt_detail"] = ""
                     if accepted.rethink:
                         update.update(halt="design_rethink", halt_detail=accepted.rethink, human_question=accepted.rethink)
             except InvalidSlicePlan as exc:
