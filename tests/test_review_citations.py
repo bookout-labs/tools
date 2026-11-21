@@ -40,6 +40,32 @@ class CitationTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidOutput, r"^findings\.1:.*nope.py.*does not exist"):
             self.parse(raw)
 
+    def test_previous_is_not_a_citation_side(self):
+        raw = payload()
+        raw['risk']['alignment']['evidence'] = [dict(side='previous', path='items.txt', line=1)]
+        with self.assertRaisesRegex(InvalidOutput, 'risk.alignment.evidence.0.side'):
+            self.parse(raw)
+
+    def test_pinned_base_lines_deletions_and_rename_source(self):
+        with test_review_rounds.review_trees() as (workspace, tip, base, previous, head):
+            context = workspace.review_context(tip, head)
+            self.assertEqual(context.base.sha, base)
+            self.assertEqual(workspace.review_context(tip, previous).head.lines['shared.txt'], 2)
+            for path, line, valid in [('shared.txt', 1, True), ('shared.txt', 2, False),
+                                      ('deleted.txt', 1, True), ('old.txt', 1, True)]:
+                for side in ('base', 'head'):
+                    raw = payload()
+                    raw['risk']['alignment']['evidence'] = [dict(side=side, path=path, line=line)]
+                    with self.subTest(path=path, line=line, side=side):
+                        if valid and (side == 'base' or path == 'shared.txt'):
+                            self.parse(raw, context)
+                        else:
+                            with self.assertRaises(InvalidOutput):
+                                self.parse(raw, context)
+            raw = dict(payload(), findings=[{**FINDING, 'file': 'deleted.txt', 'line': 1}])
+            with self.assertRaisesRegex(InvalidOutput, 'findings.0'):
+                self.parse(raw, context)
+
     def test_cli_schema_acceptance_captures(self):
         for name in ('codex', 'claude', 'grok'):
             capture = payload(name + '-schema-probe')
@@ -111,6 +137,28 @@ class CitationGraphTests(unittest.TestCase):
         self.assertEqual(len(self.forge.reviews), 1)
         self.assertEqual(result['review_receipt'], {'id': 1, 'state': 'COMMENTED', 'commit_id': result['review_findings'][0]['reviewed_head']})
         self.assertFalse(self.forge.merge_calls)
+
+    def test_captured_previous_only_deletions_reject_then_accept_corrected_payload(self):
+        with test_review_rounds.review_trees() as trees:
+            for path in ('docs/issue-36-verification.md', 'docs/plus-sign-validation.txt'):
+                for line in (1, None):
+                    stale = payload()
+                    stale['resolutions'] = [{'id': 'f1', 'status': 'resolved'}]
+                    stale['risk']['alignment']['evidence'] = [dict(side='base', path=path, line=line)]
+                    with self.subTest(path=path, line=line):
+                        result = self.run_rounds([{**payload(), 'findings': [FINDING]}, stale], trees=trees)
+                        self.assertEqual(result['halt'], Halt.invalid_output)
+                        self.assertIn('review output from claude-opus-5-5-high:', result['halt_detail'])
+                        self.assertIn(path, result['halt_detail'])
+                        self.assertEqual(len(result['review_findings']), 1)
+                        self.assertEqual(len(self.forge.reviews), 1)
+                        self.assertFalse(self.forge.merge_calls)
+                        self.assertEqual(len([a for a in result['attempts'] if a['stage'] == 'review']), 2)
+                corrected = dict(payload(), resolutions=[{'id': 'f1', 'status': 'resolved'}])
+                result = self.run_rounds([{**payload(), 'findings': [FINDING]}, corrected], trees=trees)
+                self.assertEqual(result['merge'], 'armed')
+                self.assertEqual(len(result['review_findings']), 2)
+                self.assertEqual(result['review_findings'][-1]['resolutions'], {'f1': 'resolved'})
 
     def test_grounded_review_arms_merge(self):
         result = self.run_rounds([payload()])

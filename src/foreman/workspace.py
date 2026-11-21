@@ -469,7 +469,15 @@ class LiveWorkspace:
             "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
             "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}..{head}" if interdiff else f"{base}...{head}", "--",
         )
-        return ReviewDiff(shlex.join(("git", *args)), os.fsdecode(self._git(*args)))
+        command = shlex.join(("git", *args))
+        if interdiff:
+            command = f"# previous = last accepted reviewed head {base} (history only)\n# Interdiff: old = previous; new = head\n{command}"
+        else:
+            merge_base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base, head)).strip()
+            if not FULL_SHA.fullmatch(merge_base):
+                raise WorktreeInspectionFailed("Git did not report a full merge-base SHA.")
+            command = f"# base = PR merge-base {merge_base}\n# head = current verified head {head}\n# Full PR diff: old = merge-base (base); new = head\n{command}"
+        return ReviewDiff(command, os.fsdecode(self._git(*args)))
 
     def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope:
         pr = self.review_diff(base, head)
@@ -482,7 +490,7 @@ class LiveWorkspace:
         if previous is None:
             return ReviewScope(pr.command, inline)
         diff = self.review_diff(previous, head, interdiff=True)
-        return ReviewScope(diff.command, inline)
+        return ReviewScope(f"{pr.command}\n\n{diff.command}", inline)
 
     def _ignored_at(self, commit: str, paths: set[bytes]) -> set[bytes]:
         names = self._inspection_git(commit, "ls-tree", "-rz", "--name-only", commit).split(b"\0")

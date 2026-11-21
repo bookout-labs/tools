@@ -1,4 +1,6 @@
 import json
+import subprocess
+from contextlib import contextmanager
 from dataclasses import replace
 import unittest
 from pathlib import Path
@@ -7,6 +9,7 @@ from tempfile import TemporaryDirectory
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
+from foreman.workspace import LiveWorkspace
 from foreman.review_round import GraphCheck, ReviewHistory, accept
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
 from foreman.config import load_config
@@ -18,8 +21,51 @@ from skill_fixture import skill_fixture
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
+@contextmanager
+def review_trees():
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        def git(*args):
+            return subprocess.check_output(
+                ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *args],
+                cwd=root, text=True, stderr=subprocess.PIPE).strip()
+        git("init", "-b", "main")
+        (root / "items.txt").write_text("one\ntwo\n")
+        (root / "shared.txt").write_text("base only line\n")
+        (root / "deleted.txt").write_text("deleted from base\n")
+        (root / "old.txt").write_text("rename source\n")
+        git("add", ".")
+        git("commit", "-m", "Base")
+        base = git("rev-parse", "HEAD")
+        git("switch", "-c", "review")
+        (root / "docs").mkdir()
+        for name in ("issue-36-verification.md", "plus-sign-validation.txt"):
+            (root / "docs" / name).write_text("historical evidence\n" * 14)
+        (root / "items.txt").write_text("one\nchanged\n")
+        (root / "shared.txt").write_text("previous\nextra line\n")
+        (root / "deleted.txt").unlink()
+        git("mv", "old.txt", "new.txt")
+        git("add", ".")
+        git("commit", "-m", "First reviewed head")
+        previous = git("rev-parse", "HEAD")
+        for path in (root / "docs").iterdir():
+            path.unlink()
+        (root / "shared.txt").write_text("head line\n")
+        git("add", ".")
+        git("commit", "-m", "Remove historical evidence")
+        head = git("rev-parse", "HEAD")
+        git("switch", "main")
+        (root / "main.txt").write_text("base tip advance\n")
+        git("add", ".")
+        git("commit", "-m", "Advance base tip")
+        tip = git("rev-parse", "HEAD")
+        git("switch", "review")
+        git("remote", "add", "origin", str(root))
+        yield LiveWorkspace(root), tip, base, previous, head
+
+
 class ReviewRoundsTest(unittest.TestCase):
-    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False, review_crash=False, review_quota=False, bad_interdiff=False, rerun=False):
+    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False, review_crash=False, review_quota=False, bad_interdiff=False, rerun=False, trees=None, quota_after=0):
         self.prompts = []
         self.diffs = []
         self.gate_reads = []
@@ -43,10 +89,14 @@ class ReviewRoundsTest(unittest.TestCase):
             class Workspace(FakeWorkspace):
                 def commit(self, message):
                     super().commit(message)
-                    if answer or advance_head:
+                    if trees:
+                        self.current = type(self.current)(trees[3] if implementations == 1 else trees[4], True, self.current.branch)
+                    elif answer or advance_head:
                         self.current = type(self.current)(str(implementations) * 40, True, self.current.branch)
 
                 def review_context(self, base, head):
+                    if trees:
+                        return trees[0].review_context(base, head)
                     context = super().review_context(base, head)
                     return ReviewContext(context.base, replace(context.head, files=context.head.files | {"main.txt"}, lines={**context.head.lines, "main.txt": 1})) if divergent else context
 
@@ -59,13 +109,16 @@ class ReviewRoundsTest(unittest.TestCase):
 
                 def review_diff(self, base, head, *, interdiff=False):
                     outer.diffs.append((base, head, interdiff))
-                    diff = super().review_diff(base, head, interdiff=interdiff)
+                    diff = (trees[0] if trees else super()).review_diff(base, head, interdiff=interdiff)
                     if divergent and interdiff:
                         return type(diff)(diff.command, "diff --git a/main.txt b/main.txt\n--- a/main.txt\n+++ b/main.txt\n@@ -0,0 +1 @@\n+mainline\n")
                     if bad_diff or (bad_interdiff and interdiff):
                         return type(diff)(diff.command, "--- a/x\n+++ b/x\n@@ -1 +1 @@\ninvalid\n")
                     return diff
 
+            if trees:
+                target = self.forge.review_target
+                self.forge.review_target = lambda repo, issue, branch, head: target(repo, issue, branch, head).model_copy(update={"baseRefOid": trees[1]})
             replies = iter(reviews)
             crashed = False
             quota_returned = False
@@ -79,7 +132,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     if review_crash and not crashed:
                         crashed = True
                         raise RuntimeError("process lost")
-                    if review_quota and not quota_returned:
+                    if review_quota and not quota_returned and len([p for p in self.prompts if p[0] == "review"]) == quota_after + 1:
                         quota_returned = True
                         return Outcome("quota")
                     raw = next(replies)
@@ -121,6 +174,39 @@ class ReviewRoundsTest(unittest.TestCase):
                     self.assertEqual(read_delivery_state({"stop": "needs_human", **result})["review_rounds"], 2)
                     result = graph.invoke(Command(resume="Redesign the ownership."), config)
                 return read_delivery_state({"stop": "needs_human", **result})
+
+    def test_three_pinned_trees_across_rounds_and_unavailable_dispatch(self):
+        with review_trees() as trees:
+            workspace, tip, base, previous, head = trees
+            result = self.run_rounds([
+                {**APPROVE, "findings": [FINDING]},
+                {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
+                 "findings": [{**FINDING, "id": "f2", "severity": "nit", "summary": "Adjust wording.", "fix": "Adjust wording."}]},
+                {**APPROVE, "resolutions": [{"id": "f2", "status": "resolved"}]},
+            ], trees=trees, review_quota=True, quota_after=1)
+            self.assertEqual(result["merge"], "armed")
+            self.assertEqual(result["review_rounds"], 3)
+            prompts = [p[2] for p in self.prompts if p[0] == "review"]
+            self.assertEqual(len(prompts), 4)
+            self.assertNotEqual(tip, base)
+            for index, (prompt, current) in enumerate(zip(prompts, (previous, head, head, head))):
+                self.assertIn(f"# base = PR merge-base {base}", prompt)
+                self.assertIn(f"# head = current verified head {current}", prompt)
+                self.assertIn(f"{tip}...{current}", prompt)
+                self.assertIn("Full PR diff: old = merge-base (base); new = head", prompt)
+                self.assertNotIn("HEAD~1", prompt)
+                self.assertNotIn("origin/main", prompt)
+                if index:
+                    prior = head if index == 3 else previous
+                    self.assertIn(f"# previous = last accepted reviewed head {prior} (history only)", prompt)
+                    self.assertIn("Interdiff: old = previous; new = head", prompt)
+                    self.assertIn(f"{prior}..{current}", prompt)
+                else:
+                    self.assertNotIn("# previous =", prompt)
+            self.assertEqual(prompts[1], prompts[2])
+            self.assertEqual(workspace.review_diff(head, head, interdiff=True).patch, "")
+            subprocess.run(["sh", "-c", workspace.review_scope(tip, head, previous).command],
+                           cwd=workspace.root, check=True, stdout=subprocess.PIPE)
 
     def test_missing_duplicate_unknown_resolutions_and_reused_ids_fail_closed(self):
         resolved = {"id": "f1", "status": "resolved"}
