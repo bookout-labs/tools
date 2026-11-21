@@ -34,6 +34,8 @@ def _write_check_log(line: str) -> None:
 
 def _print_run(result: DeliveryState) -> None:
     models = result.get("models_used", {})
+    if size := result.get("pr_size"):
+        print(f"pull request lines {size['lines']}")
     for node in result["path"]:
         if node == "verify":
             _write_run_log(f"verify {result.get('check') or '(no check)'}")

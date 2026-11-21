@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal, Self, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, StringConstraints, ValidationError, field_validator, model_validator
 from pydantic.config import JsonDict
 
 from foreman.dispatch import InvalidOutput
@@ -23,6 +23,18 @@ class SliceProperty(Contract):
     constraint: TrimmedText = Field(description="Give the exact PostgreSQL constraint name, such as deals_external_id_key.")
 
 
+class Seam(Contract):
+    name: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$", description="Use the same short identifier in every slice that builds or uses this seam.")
+    exists: bool = Field(description="Set true for a seam that already exists in the checkout. Otherwise use false.")
+    path: TrimmedText | None = Field(description="For an existing seam, give a workspace-relative file path. Otherwise use null.")
+
+    @model_validator(mode="after")
+    def existing_file(self) -> Self:
+        if self.exists != (self.path is not None):
+            raise ValueError("path is required exactly when exists is true")
+        return self
+
+
 def _describe_slice(schema: JsonDict) -> None:
     schema["description"] = f"One pull request's outcome, about {PULL_REQUEST_LINES} changed lines or fewer, and its proof obligations."
 
@@ -32,9 +44,8 @@ class Slice(Contract):
 
     title: TrimmedText = Field(description="Name the outcome.")
     acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
-    depends_on: list[TrimmedText] = Field(
-        description="List the titles of other slices from the same parent that must land first. Use an empty list if none must land first.",
-    )
+    builds: list[Seam] = Field(description="List interfaces, modules, and contracts this slice builds for other slices. Use an empty list when there are none.")
+    uses: list[Seam] = Field(description="List seams this slice needs. Use an empty list when there are none.")
     screen: str = Field(
         description=(
             "When the change alters a screen described under docs/screens/, name that Markdown file directly under "
@@ -45,6 +56,20 @@ class Slice(Contract):
     properties: list[SliceProperty] = Field(
         description="List only named PostgreSQL CHECK, UNIQUE, FOREIGN KEY, EXCLUSION, or NOT NULL constraints. Use an empty list when the slice adds no database rule.",
     )
+
+    @field_validator("builds")
+    @classmethod
+    def new_seams(cls, value: list[Seam]) -> list[Seam]:
+        if any(seam.exists for seam in value):
+            raise ValueError("only uses can name existing seams")
+        return value
+
+
+class StoredSlice(Slice):
+    builds: list[Seam] = Field(default_factory=list)
+    uses: list[Seam] = Field(default_factory=list)
+    depends_on: list[TrimmedText] = Field(default_factory=list)
+    blocker_numbers: list[PositiveInt] | None = None
 
 
 class HumanQuestionOutput(Contract):

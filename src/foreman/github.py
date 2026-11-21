@@ -7,7 +7,7 @@ from typing import Literal, Protocol, TypedDict, TypeVar
 from pydantic import BaseModel, PositiveInt, RootModel, ValidationError
 
 from foreman.redaction import redact
-from foreman.stage_output import Slice
+from foreman.stage_output import StoredSlice
 from foreman.workspace import commit_sha
 
 SQUASH_MERGE_FLAG = "--squash"
@@ -40,6 +40,18 @@ class CommandTimedOut(ForgeError):
 
 class PullRequestStatus(BaseModel, strict=True):
     state: PullRequestState
+
+
+class ClosingPullRequestStatus(PullRequestStatus):
+    baseRefName: str
+
+
+class DefaultBranch(BaseModel, strict=True):
+    name: str
+
+
+class RepositoryDefaultBranch(BaseModel, strict=True):
+    defaultBranchRef: DefaultBranch
 
 
 class AutoMergeRequest(BaseModel, strict=True):
@@ -103,6 +115,25 @@ class ActionsVariables(RootModel[list[ActionsVariable]], strict=True):
     pass
 
 
+class IssueIdentity(BaseModel, strict=True):
+    id: PositiveInt
+
+
+class IssueBlocker(BaseModel, strict=True):
+    number: PositiveInt
+    title: str
+    repository_url: str
+    html_url: str
+    state: Literal["open", "closed"]
+
+    def in_repo(self, repo: str) -> bool:
+        return self.repository_url.lower() == f"https://api.github.com/repos/{repo.lower()}"
+
+
+class BlockerPages(RootModel[list[list[IssueBlocker]]]):
+    pass
+
+
 class Issue(TypedDict):
     title: str
     body: str
@@ -119,10 +150,13 @@ class ReviewComment(TypedDict):
 class Forge(Protocol):
     def load_issue(self, repo: str, number: int) -> Issue: ...
     def create_issue(
-        self, repo: str, title: str, body: str, labels: list[str], *, child: Slice | None = None,
+        self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None,
     ) -> int: ...
+    def add_blocker(self, repo: str, number: int, blocker: int) -> None: ...
+    def blockers(self, repo: str, number: int) -> list[IssueBlocker]: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
+    def pull_request_base(self, repo: str, branch: str) -> str: ...
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None: ...
     def merge_hold(self, repo: str) -> str | None: ...
@@ -133,14 +167,14 @@ def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
     return ["gh", "pr", "merge", pull_request, "--repo", repo, SQUASH_MERGE_FLAG, "--auto", "--match-head-commit", sha]
 
 
-def render_slice_body(prose: str, child: Slice) -> str:
+def render_slice_body(prose: str, child: StoredSlice) -> str:
     dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
     constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
     return (
         (f"{prose}\n\n" if prose else "")
         + f"Acceptance:\n{child.acceptance}\n\nDependencies:\n{dependencies}"
         + f"\n\nScreen:\n{child.screen or 'None'}\n\nConstraints:\n{constraints}"
-        + f"\n\n```json\n{json.dumps(child.model_dump(), indent=2)}\n```"
+        + f"\n\n```json\n{json.dumps(child.model_dump(exclude_unset=True), indent=2)}\n```"
     )
 
 
@@ -152,7 +186,7 @@ class LiveForge:
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
     def create_issue(
-        self, repo: str, title: str, body: str, labels: list[str], *, child: Slice | None = None,
+        self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None,
     ) -> int:
         repo, title, body, *labels = (redact(value) for value in (repo, title, body, *labels))
         if child is not None:
@@ -163,10 +197,26 @@ class LiveForge:
             args.extend(["-f", f"labels[]={label}"])
         return self._read(CreatedIssue, args, timeout=None).number
 
+    def add_blocker(self, repo: str, number: int, blocker: int) -> None:
+        repo = redact(repo)
+        identity = self._read(IssueIdentity, ["gh", "api", f"repos/{repo}/issues/{blocker}"])
+        self._run_command([
+            "gh", "api", f"repos/{repo}/issues/{number}/dependencies/blocked_by",
+            "--method", "POST", "-F", f"issue_id={identity.id}",
+        ])
+
+    def blockers(self, repo: str, number: int) -> list[IssueBlocker]:
+        pages = self._read(BlockerPages, [
+            "gh", "api", f"repos/{repo}/issues/{number}/dependencies/blocked_by", "--paginate", "--slurp",
+        ])
+        return [blocker for page in pages.root for blocker in page]
+
     @staticmethod
-    def _redact_slice(child: Slice) -> Slice:
+    def _redact_slice(child: StoredSlice) -> StoredSlice:
         screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
         return child.model_copy(update={
+            "builds": [seam.model_copy(update={"name": redact(seam.name), "path": redact(seam.path) if seam.path else None}) for seam in child.builds],
+            "uses": [seam.model_copy(update={"name": redact(seam.name), "path": redact(seam.path) if seam.path else None}) for seam in child.uses],
             "title": redact(child.title),
             "acceptance": redact(child.acceptance),
             "depends_on": [redact(title) for title in child.depends_on],
@@ -187,15 +237,22 @@ class LiveForge:
         for pr in issue.closedByPullRequestsReferences:
             closing_repo = f"{pr.repository.owner.login}/{pr.repository.name}"
             status = self._read(
-                PullRequestStatus, ["gh", "pr", "view", str(pr.number), "--repo", closing_repo, "--json", "state"],
+                ClosingPullRequestStatus, ["gh", "pr", "view", str(pr.number), "--repo", closing_repo, "--json", "state,baseRefName"],
             )
             if status.state == "MERGED":
-                return True
+                repository = self._read(
+                    RepositoryDefaultBranch, ["gh", "repo", "view", closing_repo, "--json", "defaultBranchRef"],
+                )
+                if status.baseRefName == repository.defaultBranchRef.name:
+                    return True
         return False
 
     def add_label(self, repo: str, number: int, label: str) -> None:
         repo, label = (redact(value) for value in (repo, label))
         self._run_command(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
+
+    def pull_request_base(self, repo: str, branch: str) -> str:
+        return self._view_pr(repo, branch).baseRefName
 
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None:
         current = self._view_pr(repo, str(target.number))
