@@ -59,12 +59,14 @@ class RecordedEvidenceTest(unittest.TestCase):
         from foreman.stage_output import ReviewOutput
 
         output = ReviewOutput.model_validate({
-            "review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
+            "resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": "result.txt"}],
         })
-        return _check_tool_facts(output, LiveRun(Mock(), self.workspace), {
+        gate = _check_tool_facts(output, LiveRun(Mock(), self.workspace), {
             "repo": "example/repo", "check": "", "path": [], **({"verified_head": head} if head else {}),
         })
+        from foreman.review_round import ReviewHistory, accept
+        return accept(ReviewHistory(), output, head or "", gate)
 
     def test_unreadable_manifest_blocks_approval(self):
         cases = {"bad TOML": b"[", "schema failure": b"[fixtures.result]\nkind = 'unknown'",
@@ -78,7 +80,7 @@ class RecordedEvidenceTest(unittest.TestCase):
                 result = self.check_approval(self.commit())
                 self.assertEqual(result.review, "changes")
                 self.assertIn("The CLI accepts --debug.", result.detail)
-                self.assertTrue(any(f.severity == "blocking" for f in result.findings))
+                self.assertEqual(result.change_kind, "blocking")
 
     def test_unavailable_head_blocks_approval(self):
         self.commit()
@@ -106,19 +108,19 @@ class RecordedEvidenceTest(unittest.TestCase):
         fact = StoredToolFact.from_fact(ToolFact(claim="CLI accepts --debug", fixture=None))
         state = {"repo": "example/repo", "check": "", "path": [],
                  "tool_facts": [fact.model_dump()], "verified_head": self.commit()}
-        output = ReviewOutput(review="approve", risk=DEFAULT_RISK, findings=[], detail="Reviewed.", tool_facts=[])
+        output = ReviewOutput(resolutions=[], risk=DEFAULT_RISK, findings=[], detail="Reviewed.", tool_facts=[])
         run = LiveRun(Mock(), self.workspace)
         self.manifest.write_text(self.manifest.read_text() + f'claim_ids = ["{fact.claim_id}"]\n')
-        self.assertEqual(_check_tool_facts(output, run, state).review, "changes")
+        self.assertEqual(_check_tool_facts(output, run, state).passed, False)
         state["verified_head"] = self.commit()
-        self.assertEqual(_check_tool_facts(output, run, state).review, "approve")
+        self.assertEqual(_check_tool_facts(output, run, state).passed, True)
         repeated = output.model_copy(update={"tool_facts": [ToolFact(claim=fact.claim, fixture="result.txt")]})
         self.assertEqual(_check_tool_facts(repeated, run, state).tool_facts[0].model_dump()["claim_id"], fact.claim_id)
         unrelated = output.model_copy(update={"tool_facts": [ToolFact(claim="Other behavior", fixture=None)]})
-        self.assertEqual(_check_tool_facts(unrelated, run, state).review, "changes")
+        self.assertEqual(_check_tool_facts(unrelated, run, state).passed, False)
         (self.fixtures / "result.txt").unlink()
         state["verified_head"] = self.commit()
-        self.assertEqual(_check_tool_facts(output, run, state).review, "changes")
+        self.assertEqual(_check_tool_facts(output, run, state).passed, False)
 
     def test_only_regular_tracked_files_are_recorded(self):
         from foreman.fixture_manifest import recorded_fixtures
@@ -144,10 +146,11 @@ class GraphFactGateTest(unittest.TestCase):
         from foreman.dry_run import DEFAULT_RISK
         from foreman.stage_output import ReviewOutput
         output = ReviewOutput.model_validate({
-            "review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
+            "resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
             "tool_facts": facts,
         })
-        return _check_tool_facts(output, DryRun(), state)
+        from foreman.review_round import ReviewHistory, accept
+        return accept(ReviewHistory(), output, state.get("verified_head", ""), _check_tool_facts(output, DryRun(), state))
 
     def test_only_exact_graph_check_restatement_is_exempt(self):
         from foreman.stage_output import GraphCheck
