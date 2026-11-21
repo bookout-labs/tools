@@ -27,7 +27,8 @@ flowchart TD
   research --> done([Done])
   triage -->|needs a plan| spec["spec<br/>write the plan"]
   triage -->|one slice| spec_check
-  spec --> spec_check["spec_check<br/>the other model family checks the plan"]
+  spec --> spec_check["spec_check<br/>a qualified model checks the plan, preferring another family"]
+  spec -->|override: keep this PR| size
   spec_check -->|gaps: repair the plan| spec
   spec_check -->|parent plan| file_slices["file_slices<br/>file the child issues"]
   file_slices --> done
@@ -42,7 +43,7 @@ flowchart TD
   verify -->|pass| proof["proof<br/>tool facts are recorded"]
   proof -->|missing facts: resume same PR branch| prepare
   proof -->|pass| publish["publish<br/>push and open the PR"]
-  publish --> review["review<br/>the other model family reviews"]
+  publish --> review["review<br/>a qualified model reviews, preferring another family"]
   review --> review_post["review_post<br/>post the review"]
   review_post -->|changes: resume same PR branch| prepare
   review_post -->|approve| merge["merge<br/>check readiness, arm the merge"]
@@ -57,11 +58,11 @@ Any step can pause (quota wait, human question, waiting on GitHub) and resumes a
 ```mermaid
 flowchart TD
   __start__([Dispatch]) --> plan
-  plan["plan<br/>pick the next eligible model, check the budget, save the attempt"] --> call["call<br/>run one model"]
-  call -->|quota or CLI missing: next model| plan
-  call -->|no eligible model now| wait["wait<br/>pause until a model is available"]
+  plan["plan<br/>pick the next eligible model, check the budget, save the attempt"] --> run["call<br/>run one model"]
+  run -->|quota or CLI missing: next model| plan
+  run -->|no eligible model now| wait["wait<br/>pause until a model is available"]
   wait -->|resume| plan
-  call -->|result| __end__([back to the assembly line])
+  run -->|result| __end__([back to the assembly line])
 ```
 
 ### Today's code

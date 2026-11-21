@@ -89,63 +89,81 @@ spec_check = [["file_slices", "parent plan"], ["prepare", "approved slice"], ["s
 triage = [["spec_check", "one slice"]]
 
 [delivery.missing.slice_16]
+spec = [["size", "override: keep this PR"]]
 size = [["spec", "too big: re-plan"]]
 
 
-# Approved remaining targets. D1-D7 declarations and comparisons arrive with slices 9/13.
 
 [stages.commit]
 difference_sha256 = "d966505bb7250aff3d4a16d3d289de2dcfa310ab494c172082c65036446c45d6"
 slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137).", "commit goes to publish before verify (closes in slice 9)."]
 
-[stages.verify]
-difference_sha256 = "a38a1b75a73070153b6a46a9200b90d55e449e121f8dda8b0bd8141e2183d3cb"
-slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
-slice_7 = ["verify is also wired as a model stage with a verify_call node, used by the dry run, and `stages/verify.md` exists only for that (closes in slice 7)."]
-slice_11b = ["verify runs after publish, and a pass skips proof when the slice needs no browser or formal proof (closes in slices 9 and 11b)."]
-
-[stages.proof]
-difference_sha256 = "482a1064ac1034342ab14a4de9f56641e85b2fa551bfe89d5f34d43f03617270"
-slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137).", "proof runs only when the slice names a screen or database properties, and carried tool facts are checked only when a review is accepted (assigned here to slice 9, the proof-before-publish move).", "proof goes to review, not publish (closes in slice 9)."]
-
-[stages.publish]
-difference_sha256 = "26aa04ae03962d4aff772d20e7a2cf192af91535864e5a115fbf44557919e14d"
-slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137).", "publish runs right after commit, before verify and proof (closes in slice 9)."]
-slice_11a = ["a rerun after publish_failed rewinds history instead of resuming at publish (closes in slice 11a)."]
-
-[stages.review]
-difference_sha256 = "4b075eaa74c8710c59b15d064fdc2a950bbd49141051995cc1e028be9fd4ee5f"
-slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
-slice_12 = ["review also measures the PR size and can send the run to spec or decide_pr_size (closes in slices 9 and 12)."]
-slice_11a = ["A head that moved before review still halts as merge_not_armed instead of review_unavailable."]
-slice_13 = ["the model call is a separate review_call node with the shared quota_wait (closes in slice 13).", "Model selection still excludes builders' families instead of preferring other families (#145)."]
-
-[stages.review_post]
-difference_sha256 = "09be7609083da529b116d5118ab7d16243504a26375b2d40b713b2d694df464e"
-slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
-slice_12 = ["the design-rethink question goes through the shared needs_human node (closes in slice 12)."]
-slice_11b = ["the review cap is decided in the done node, not here (closes in slice 11b)."]
-slice_7 = ["the dry run skips this step's body (closes in slice 7)."]
-
-[stages.merge]
-difference_sha256 = "a42e8f4d50eaa789cfbf755380e0432b86455190f23f5f7a52add44c36f727ba"
-slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
-slice_11b = ["the run ends once the merge is armed; it does not wait for the queue to merge, and the webhook only wakes the coordinator (closes in slices 11a and 11b)."]
-slice_14b = ["nothing marks dependents ready when a blocker merges; the runner does it on a later rerun of the parent (closes in slice 14b)."]
-slice_11a = ["head moved and queue rejected halt as merge_not_armed or queue_rejected, and the runner rewinds history to prepare (closes in slice 11a)."]
-
-[stages.done]
-difference_sha256 = "64967cd0ebf011ebf2db042a744b8f3807d5d07267a1f19f306f7f23f4fcf236"
-slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
-slice_11b = ["done works the stop reason out of many fields, turns the review and verify caps into halts, and rebuilds split plans, and every halt has an edge into it (closes in slice 11b)."]
-slice_14b = ["the runner files child issues after done (closes in slice 14b)."]
-
-[stages.dispatch_cell]
-difference_sha256 = "114b1198351ce4da9e4903106f7a9797bec827aa2d480f9730c1d3cc8315cb31"
-slice_13 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137).", "each model step is two nodes, a setup and a `_call`, quota waits go to one shared quota_wait node, and a crash mid-call is caught by the runner (closes in slice 13).", "outside review, every CLI missing stops with cli_missing instead of waiting (closes in slice 13; #122 already waits for review).", "the dollar allowance is stored, but no call checks it before running (#86, after slices 2 and 6).", "Review still excludes builders' families; spec_check is absent (#145, slice 15)."]
-
 [dispatch.missing.slice_13]
 __start__ = [["plan", ""]]
-call = [["__end__", "result"], ["plan", "quota or CLI missing: next model"], ["wait", "no eligible model now"]]
-plan = [["call", ""]]
+run = [["__end__", "result"], ["plan", "quota or CLI missing: next model"], ["wait", "no eligible model now"]]
+plan = [["run", ""]]
 wait = [["plan", "resume"]]
+
+
+[stages.triage]
+slice_11b = ["A question on an issue not labelled slice is treated as a planning request.", "A missing slice halts at the start node, before triage."]
+
+[stages.research]
+slice_12 = ["The answer stays in the run result instead of being posted on the issue once by marker."]
+
+[stages.spec]
+slice_14b = ["The runner files child issues after the graph ends."]
+slice_16 = ["A re-plan does not check that each slice has a new seam and is strictly smaller."]
+slice_14a = ["Plan fields live in several places and the runner re-checks they agree."]
+
+[stages.spec_check]
+slice_15 = ["The checker and prompt exist, but spec_check has no graph step or model-config row.", "Children do not consume approval of their exact candidate revision."]
+slice_14a = ["A parent plan does not carry revision-bound approval to its children."]
+
+[stages.file_slices]
+slice_14b = ["The runner files children without a confirmed sub-issue link.", "A dependent child becomes ready on a later parent rerun instead of its last blocker marking it ready."]
+
+[stages.prepare]
+slice_9 = ["Preflight, branch and attempt-start checks run inside implement's setup."]
+slice_11a = ["Recovery rewinds history instead of resuming at prepare."]
+slice_5 = ["The worker gets no scratch folder of its own."]
+
+[stages.implement]
+slice_13 = ["The partial-edits fingerprint check runs in implement's setup when the run resumes instead of the dispatch cell."]
+
+[stages.reconcile]
+slice_11a = ["Recovery after implementation_rejected rewinds history instead of resuming at reconcile."]
+
+[stages.size]
+slice_12 = ["The split-or-override question uses the shared decide_pr_size node."]
+slice_16 = ["The size override does not carry across fix rounds."]
+
+[stages.verify]
+slice_7 = ["Verify is also wired as a model stage in the dry run, with stages/verify.md instructions."]
+
+[stages.proof]
+slice_9 = ["Proof runs only when the slice names a screen or database properties.", "Carried tool facts are checked only when a review is accepted instead of before publication."]
+
+[stages.publish]
+slice_11a = ["Recovery after publish_failed rewinds history instead of resuming at publish."]
+
+[stages.review]
+slice_9 = ["Review still performs PR-size measurement."]
+slice_11a = ["A head that moved before review halts as merge_not_armed instead of resuming through the moved-head recovery."]
+
+[stages.review_post]
+slice_11b = ["The review cap is decided in done instead of review_post."]
+slice_7 = ["The dry run skips this step's body."]
+
+[stages.merge]
+slice_11a = ["Recovery from a moved head or queue rejection rewinds history instead of resuming at the saved continuation."]
+slice_11b = ["The run ends when merge is armed instead of waiting for queue completion and webhook resume."]
+slice_14b = ["No merge operation marks eligible dependent issues ready; the runner does it on a later parent rerun."]
+
+[stages.done]
+slice_11b = ["Done infers the stop reason from many fields and turns review and verify caps into halts."]
+slice_14b = ["The runner files child issues after done."]
+slice_16 = ["Done rebuilds split plans from duplicate pr_split projections."]
+
+[stages.dispatch_cell]
+slice_13 = ["A crash during a model call is detected by the runner instead of the dispatch cell.", "Outside review, a missing CLI halts as cli_missing instead of waiting."]
