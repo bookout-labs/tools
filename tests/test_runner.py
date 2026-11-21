@@ -13,9 +13,9 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.cli import main
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
-from foreman.delivery import LiveRun, run_delivery
+from foreman.delivery import LiveRun, halted, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
-from foreman.dry_run import DEFAULT_RISK
+from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
@@ -881,17 +881,19 @@ sys.exit(main(
     live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())),
 ))
 """
-        def invoke(*flags):
+        def invoke(*flags, expected=0):
             bootstrap = f"import sys; sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n"
-            return subprocess.run(
+            process = subprocess.run(
                 [sys.executable, "-c", bootstrap + script, str(self.checkpoint), "run", "delivery",
                  "--repo", "Example/Engine", "--issue", "8", "--check", "echo checked >> check.log", *flags],
                 cwd=self.cwd, text=True, capture_output=True, check=False,
-            ).stdout
+            )
+            self.assertEqual(process.returncode, expected, process.stderr)
+            return process.stdout
 
-        first = invoke("--request", "List items")
+        first = invoke("--request", "List items", expected=3)
         self.assertIn("paused needs_human\nWhich items?", first)
-        self.assertEqual(invoke(), first)
+        self.assertEqual(invoke(expected=3), first)
         self.assertFalse((self.cwd / "check.log").exists())
         completed = invoke("--answer", "Only open items")
         self.assertEqual(completed.count("triage "), 1)
@@ -902,18 +904,95 @@ sys.exit(main(
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
 
 class HaltExitCodeTest(unittest.TestCase):
-    def test_halt_reasons_print_detail_and_exit_nonzero(self):
-        reasons = {
-            "no_dispatcher": 1, "no_reviewer": 1, "invalid_output": 1,
-            "cli_missing": 1, "dirty_worktree": 1, "insufficient_evidence": 1,
-            "review_cap": 1, "verify_cap": 1, "missing_slice": 1,
-            "merge_held": 75, "merge_not_armed": 75,
-        }
-        for reason, expected in reasons.items():
-            with self.subTest(reason=reason), patch("foreman.cli.run_delivery") as run:
-                run.return_value = {"path": ["done"], "stop": reason, "halt": reason,
-                                    "halt_detail": f"Explanation for {reason}"}
+    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", dispatcher=True, hold=None):
+        directory = self.enterContext(TemporaryDirectory())
+        root = Path(directory)
+        forge = FakeGitHub()
+        forge.hold = hold
+        if body is not None:
+            forge.body = body
+        outputs = iter(replies)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", check],
+                checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, FakeWorkspace(root, snapshots)),
+                worker_runner=(lambda args, cwd, env: worker_reply(args, next(outputs))) if dispatcher else None,
+            )
+        return code, output.getvalue()
+
+    def assert_halt(self, result, reason, detail, code=1):
+        self.assertEqual(result[0], code, result[1])
+        self.assertIn(f"done {reason}\n{detail}\n", result[1])
+
+    def test_no_dispatcher(self):
+        self.assert_halt(self.live(dispatcher=False), "no_dispatcher", "No dispatcher is configured.")
+
+    def test_dirty_worktree_changes(self):
+        self.assert_halt(self.live(
+            [{"triage": "implement"}, {"implementation": "built"}],
+            snapshots=(WorktreeState(HEAD, False, BRANCH),),
+        ), "dirty_worktree", "The worktree has changes.")
+
+    def test_dirty_worktree_inspection(self):
+        self.assert_halt(self.live(
+            [{"triage": "implement"}, {"implementation": "built"}],
+            snapshots=(WorktreeInspectionFailed("Invalid HEAD"),),
+        ), "dirty_worktree", "Invalid HEAD")
+
+    def test_insufficient_evidence(self):
+        self.assert_halt(self.live(
+            [{"triage": "implement"}, {"implementation": "built"}], body=slice_body(SLICE),
+        ), "insufficient_evidence", "Required proof is missing.")
+
+    def test_proof_review_cap(self):
+        blocked = {"implementation": "built", "browser_proof": {**BROWSER, "passed": False}, "formal_proof": FORMAL}
+        self.assert_halt(self.live(
+            [{"triage": "implement"}] + [blocked] * 3, body=slice_body(SLICE),
+        ), "review_cap", "Proof failed after 3 rounds: {'browser': 'block'}.")
+
+    def test_verify_cap(self):
+        self.assert_halt(self.live(
+            [{"triage": "implement"}] + [{"implementation": "built"}] * 3, check="exit 7",
+        ), "verify_cap", "Verification failed after 3 rounds. Check exit 7 failed.")
+
+    def test_review_cap(self):
+        changes = {**APPROVE, "review": "changes", "findings": [FINDING], "detail": "Add a boundary check."}
+        self.assert_halt(self.live(
+            [{"triage": "implement"}] + [{"implementation": "built"}, changes] * 3,
+        ), "review_cap", "Review requested changes after 3 rounds. Last review: Add a boundary check.")
+
+    def test_missing_slice_has_no_fake_stage(self):
+        result = self.live(body="No JSON")
+        self.assert_halt(result, "missing_slice", "slice issue needs a fenced JSON object")
+        self.assertEqual(result[1], "done missing_slice\nslice issue needs a fenced JSON object\n")
+
+    def test_resumable_halts(self):
+        replies = [{"triage": "implement"}, {"implementation": "built"}, APPROVE]
+        self.assert_halt(self.live(replies, hold="Maintenance"), "merge_held", "Maintenance", 75)
+        self.assert_halt(self.live(replies, snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, True, None))),
+                         "merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.", 75)
+
+    def test_answered_is_success(self):
+        code, output = self.live([{"triage": "question"}, {"research": "The answer."}])
+        self.assertEqual(code, 0, output)
+        self.assertIn("done answered\n", output)
+
+    def test_empty_details_are_rejected(self):
+        for detail in ("", " ", "\n"):
+            with self.subTest(detail=detail), self.assertRaisesRegex(ValueError, "requires a nonempty halt detail"):
+                halted("no_dispatcher", detail, "triage")
+
+    def test_dry_run_success_and_human_stops(self):
+        for handler, stop, expected in (
+            (ScriptHandler(), "verified", 0),
+            (ScriptHandler(triage="spec", slices=[EMPTY_SLICE]), "sliced", 0),
+            (ScriptHandler(triage="needs_human"), "needs_human", 3),
+            (ScriptHandler(triage="spec", spec_gate="needs_human"), "needs_human", 3),
+        ):
+            with self.subTest(stop=stop), patch("foreman.cli.ScriptHandler", return_value=handler):
                 with contextlib.redirect_stdout(io.StringIO()) as output:
-                    code = main(["run", "delivery", "--repo", "example/repo", "--request", "test", "--dry-run"])
-                self.assertEqual(code, expected)
-                self.assertIn(run.return_value["halt_detail"], output.getvalue())
+                    code = main(["run", "delivery", "--repo", "Example/Engine", "--request", "test", "--dry-run"])
+                self.assertEqual(code, expected, output.getvalue())
+                self.assertIn(f"done {stop}\n", output.getvalue())
+                if stop == "needs_human":
+                    self.assertIn("done needs_human\nWhat should Foreman know to continue?\n", output.getvalue())

@@ -166,6 +166,13 @@ def main(
             print(str(exc), file=sys.stderr)
             return 1
     _print_run(result)
-    if result.get("stop") == "verified" and result.get("path", [])[-1:] == ["done"]:
+    return run_exit_code(result)
+
+
+def run_exit_code(result: DeliveryState) -> int:
+    stop = result.get("stop")
+    if stop == "needs_human":
+        return 3
+    if stop in ("verified", "sliced", "answered") and result.get("path", [])[-1:] == ["done"]:
         return 0
     return 75 if result.get("halt") in RESUMABLE_HALTS else 1

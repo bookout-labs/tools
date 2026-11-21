@@ -86,7 +86,7 @@ A ready parent spec records its slices and stops as `sliced`. Each child issue i
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 
-`foreman run` exits 0 for a completed, verified run, 75 for a resumable halt (`merge_held` or `merge_not_armed`), and 1 for other stops.
+`foreman run` exits 0 for successful stops (`done verified`, `done sliced`, or `done answered`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a resumable halt (`merge_held` or `merge_not_armed`), and 1 for every other halt.
 
 ## What enters the graph
 
