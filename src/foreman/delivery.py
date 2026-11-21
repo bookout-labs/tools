@@ -4,7 +4,7 @@ import json
 import operator
 from uuid import uuid4
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cached_property
 from graphlib import CycleError, TopologicalSorter
@@ -15,6 +15,7 @@ import re
 import textwrap
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
@@ -28,7 +29,7 @@ from foreman.dry_run import ScriptHandler
 from foreman.dispatch import Handler, InvalidOutput, QuotaExhausted, clean_outcome
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
-    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
+    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, Issue, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
@@ -37,11 +38,11 @@ from foreman.redaction import redact
 from foreman.stage_output import (
     CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
-from foreman.readiness import MergeReceipt
+from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref, QueuePolicy
 from foreman.outcomes import Halt, READINESS_HALTS
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.usd import BudgetUsd, usd_text
-from foreman.workspace import ImplementationCandidate, ImplementationRejected, WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
+from foreman.workspace import WorktreeState, ReviewDiff, ImplementationCandidate, ImplementationRejected, WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 DEFAULT_TOKEN_CAP = 20_000_000
@@ -86,14 +87,102 @@ class LiveRun:
     skills: SkillSource = export_skills
 
 
-@dataclass(frozen=True)
+@dataclass
 class DryRun:
-    review_context: ReviewContext = SCRIPTED_REVIEW_CONTEXT
     skills: SkillSource = export_skills
+    commands: list[list[str]] = field(default_factory=list[list[str]])
+    root: Path = Path(".")
+    branch: str | None = None
+    head: str = "<sha>"
+    clean: bool = True
+
+    def run(self, command: str, *, log: CheckLog | None = None) -> int:
+        return 0
+
+    def inspect(self) -> WorktreeState:
+        return WorktreeState(self.head, self.clean, self.branch)
+
+    def create_branch(self, branch: str, base: str) -> None:
+        if self.branch != branch:
+            self.commands.append(branch_command(branch, base))
+        self.branch = branch
+
+    def reconcile(self, parent: str, branch: str) -> ImplementationCandidate:
+        self.clean = False
+        return {"disposition": "edits", "fingerprint": self.fingerprint()}
+
+    def fingerprint(self) -> str:
+        return "dry-run"
+
+    def commit(self, message: str) -> None:
+        self.commands.extend(commit_commands(message))
+        self.clean = True
+
+    def push(self, branch: str, repo: str) -> None:
+        self.commands.append(push_command("origin", branch))
+
+    def default_branch(self, repo: str) -> str:
+        return "<default-branch>"
+
+    def pull_request_base(self, repo: str, branch: str) -> str:
+        return self.default_branch(repo)
+
+    def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None:
+        self.commands.append(pull_request_command(repo, head, base, title, body))
+
+    def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
+        return {"head": head, "merge_base": "<base>", "lines": 0}
+
+    def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest:
+        return PullRequest(state="OPEN", number=1, headRefOid=sha, headRefName=branch,
+                           baseRefName=self.default_branch(repo), baseRefOid="<base>", autoMergeRequest=None)
+
+    def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope:
+        return ReviewScope("", frozenset({("example.txt", 1)}))
+
+    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt:
+        return {"id": 1, "state": "COMMENTED", "commit_id": target.headRefOid}
+
+    def merge_hold(self, repo: str) -> str | None:
+        return None
+
+    def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation:
+        return Observation(repo=repo, pr=PullSnapshot(number=1, state="OPEN", draft=False,
+            head=Ref(sha=sha, ref=branch), base=Ref(sha="<base>", ref=self.default_branch(repo)),
+            mergeable=True, merge_commit_sha=None, mergeable_state="clean"), checks=[], outcome="ready", recovery="")
+
+    def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str, observation: Observation) -> MergeReceipt:
+        return MergeReceipt(repo=repo, pr=1, source_head=sha, base="<base>", base_ref=self.default_branch(repo),
+            method="SQUASH", queue_policy=QueuePolicy(merge_method="SQUASH"), identity="dry-run", status="MERGED")
 
     def record_merge(self, repo: str, head: str | None) -> list[str]:
         revision = (commit_sha(head) or redact(head)) if head else "<sha>"
         return merge_command(redact(repo), "<number>", revision)
+
+    def review_context(self, base: str, head: str) -> ReviewContext: return SCRIPTED_REVIEW_CONTEXT
+    def refresh(self, branch: str, head: str) -> None: raise NotImplementedError("Not used by dry delivery")
+    def committed(self, parent: str, message: str) -> bool: raise NotImplementedError("Not used by dry delivery")
+    def tree(self, head: str) -> str: raise NotImplementedError("Not used by dry delivery")
+    def soft_reset(self, parent: str) -> None: raise NotImplementedError("Not used by dry delivery")
+    def files_at(self, head: str, directory: str) -> set[str]: return set()
+    def read_file_at(self, head: str, path: str) -> str: raise NotImplementedError("Not used by dry delivery")
+    def has_file(self, path: str) -> bool: return False
+    def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff: raise NotImplementedError("Not used by dry delivery")
+    def load_issue(self, repo: str, number: int) -> Issue: raise NotImplementedError("Not used by dry delivery")
+    def open_issues(self, repo: str) -> list[OpenIssue]: raise NotImplementedError("Not used by dry delivery")
+    def marked_issues(self, repo: str, marker: str) -> list[int]: raise NotImplementedError("Not used by dry delivery")
+    def sub_issues(self, repo: str, number: int) -> list[LinkedIssue]: raise NotImplementedError("Not used by dry delivery")
+    def parent_issue(self, repo: str, number: int) -> LinkedIssue | None: raise NotImplementedError("Not used by dry delivery")
+    def add_sub_issue(self, repo: str, number: int, child: int) -> None: raise NotImplementedError("Not used by dry delivery")
+    def update_issue_body(self, repo: str, number: int, body: str) -> None: raise NotImplementedError("Not used by dry delivery")
+    def issue_comments(self, repo: str, number: int) -> list[str]: raise NotImplementedError("Not used by dry delivery")
+    def comment_issue(self, repo: str, number: int, body: str) -> None: raise NotImplementedError("Not used by dry delivery")
+    def create_issue(self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None) -> int: raise NotImplementedError("Not used by dry delivery")
+    def add_blocker(self, repo: str, number: int, blocker: int) -> None: raise NotImplementedError("Not used by dry delivery")
+    def blockers(self, repo: str, number: int) -> list[IssueBlocker]: raise NotImplementedError("Not used by dry delivery")
+    def is_merged(self, repo: str, number: int) -> bool: raise NotImplementedError("Not used by dry delivery")
+    def add_label(self, repo: str, number: int, label: str) -> None: raise NotImplementedError("Not used by dry delivery")
+    def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt: raise NotImplementedError("Not used by dry delivery")
 
 
 def unknown_usage(stage: str, model: str | None) -> str:
@@ -319,7 +408,7 @@ def carried_tool_facts(state: DeliveryFields) -> list[StoredToolFact]:
 
 
 def _check_tool_facts(
-    output: ReviewOutput, run: LiveRun | DryRun, state: DeliveryState,
+    output: ReviewOutput, workspace: Workspace, state: DeliveryState,
 ) -> GraphCheck | None:
     head = state.get("verified_head")
     manifest_path = state.get("fact_record", MANIFEST_PATH)
@@ -332,9 +421,9 @@ def _check_tool_facts(
     )]
     recorded: dict[str, list[str]] = {}
     notes: list[str] = []
-    if isinstance(run, LiveRun) and head and outside:
+    if head and outside:
         try:
-            recorded = recorded_evidence(run.workspace, head, manifest_path)
+            recorded = recorded_evidence(workspace, head, manifest_path)
         except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
             notes.append(f"Could not check {manifest_path} at {head}. {exc}")
     claim_ids = {claim_id for ids in recorded.values() for claim_id in ids}
@@ -437,19 +526,21 @@ def compile_delivery(
     scratch: Path | None = None,
     checkpointer: BaseCheckpointSaver[str] | None = None,
 ) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
+    if not isinstance(run, LiveRun):
+        run = LiveRun(forge=run, workspace=run, skills=run.skills)
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     methods_root = run.skills(config.pstack, scratch) if scratch is not None else None
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
-    plan_workspace = run.workspace if isinstance(run, LiveRun) else None
+    plan_workspace = run.workspace
 
     def bind(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
             if run_tokens(state.get("attempts", [])) >= state["token_cap"]:
                 return budget_halt(state, state.get("attempts", []), name)
-            current_run = run if isinstance(run, DryRun) else runtime.context or run
-            if name == "implement" and isinstance(current_run, LiveRun):
+            current_run = runtime.context or run
+            if name == "implement":
                 probe = current_run.environment or EnvironmentProbe(
                     current_run.workspace, state.get("preflight", ""), current_run.check_log,
                 )
@@ -472,7 +563,7 @@ def compile_delivery(
             except ConfigError as exc:
                 return halted(Halt.model_family_exhausted, str(exc), name)
             instruction = prompts[name]
-            if isinstance(run, LiveRun) and methods_root is None:
+            if methods_root is None and scratch is not None:
                 raise RuntimeError("Delivery execution requires a compiled skill export.")
             methods_text, methods = stage_methods(name, state, methods_root) if methods_root is not None else ("", [])
             if methods_text:
@@ -493,9 +584,6 @@ def compile_delivery(
                 instruction += "\nCarried tool facts:\n" + json.dumps([fact.model_dump() for fact in carried_tool_facts(state)])
             if name == "review" and (proven := graph_check(state)) is not None:
                 instruction += f"\nGraph fact: {proven.claim}\nGraph check evidence: {proven.model_dump_json()}"
-            if name == "verify":
-                command = state.get("check") or "(none)"
-                instruction = f"{instruction}\n\nCommand: {command}"
             if name == "spec" and (size := oversized_pr(state)):
                 instruction += (
                     f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."
@@ -511,7 +599,7 @@ def compile_delivery(
                     return halted(Halt.invalid_output, str(exc), name)
             review_context: tuple[Forge, PullRequest, ReviewScope] | None = None
             repo = state.get("repo", "")
-            if name == "review" and isinstance(run, LiveRun):
+            if name == "review":
                 head, issue = state.get("verified_head"), state.get("issue")
                 try:
                     worktree = run.workspace.inspect()
@@ -590,8 +678,6 @@ def compile_delivery(
             if outcome.kind == "cli_missing":
                 return {**stopped, **halted(Halt.cli_missing, outcome.detail, name)}
             if outcome.kind == "quota":
-                if isinstance(run, DryRun):
-                    raise QuotaExhausted(model)
                 return {**stopped, **halted(Halt.quota_exhausted, f"{name} quota exhausted: {model}", name)}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
@@ -599,7 +685,7 @@ def compile_delivery(
                 if isinstance(output, ReviewOutput):
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
                     head = state.get("verified_head") or state.get("head_sha") or ""
-                    accepted = accept(past, output, head, _check_tool_facts(output, run, state))
+                    accepted = accept(past, output, head, _check_tool_facts(output, run.workspace, state))
                 update = stage_update(name, output, state, model, workspace=plan_workspace, accepted_model=accepted_model)
                 update.update(attempts=attempts, pending_dispatch=None)
                 if accepted is not None:
@@ -628,8 +714,6 @@ def compile_delivery(
         return node
 
     def post_review(state: DeliveryState) -> DeliveryUpdate:
-        if not isinstance(run, LiveRun):
-            return {}
         assert "dispatch_plan" in state and "review_findings" in state and "detail" in state and "review_run_id" in state
         plan = state["dispatch_plan"]
         assert plan["target"] is not None and plan["scope"] is not None
@@ -644,17 +728,11 @@ def compile_delivery(
             return halted(Halt.review_not_posted, str(exc), "review_post")
         return {"review_receipt": receipt}
 
-    scripted_verify = bind("verify")
-
     def prepare(state: DeliveryState) -> DeliveryUpdate:
         assert "slice" in state and "repo" in state
         title = redact(str(state["slice"]["title"]))
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
-        branch = state.get("delivery_branch") or f"{state.get('issue', '<issue>')}-{slug}"
-        if isinstance(run, DryRun):
-            base = state.get("delivery_base", "<default-branch>")
-            commands = [] if "delivery_branch" in state else [branch_command(branch, base)]
-            return {"delivery_branch": branch, "delivery_base": base, "commands": commands}
+        branch = state.get("delivery_branch") or f"{state.get('issue') or '<issue>'}-{slug}"
         try:
             before = run.workspace.inspect()
             if not before.clean:
@@ -671,8 +749,6 @@ def compile_delivery(
     dispatch_implement = call("implement")
 
     def implement(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-        if isinstance(run, DryRun):
-            return dispatch_implement(state, runtime)
         assert "delivery_branch" in state and "attempt_head" in state
         assert "pending_dispatch" in state and state["pending_dispatch"] is not None and "dispatch_plan" in state
         update: DeliveryUpdate = {}
@@ -685,8 +761,6 @@ def compile_delivery(
             return {**update, **halted(Halt.git_failed, str(exc), "implement")}
 
     def reconcile(state: DeliveryState) -> DeliveryUpdate:
-        if isinstance(run, DryRun):
-            return {}
         assert "attempt_head" in state and "delivery_branch" in state
         try:
             candidate = run.workspace.reconcile(state["attempt_head"], state["delivery_branch"])
@@ -704,14 +778,12 @@ def compile_delivery(
 
     def commit(state: DeliveryState) -> DeliveryUpdate:
         assert "slice" in state
-        subject = f"{state.get('issue', '<issue>')}: {' '.join(redact(str(state['slice']['title'])).split())}"
+        subject = f"{state.get('issue') or '<issue>'}: {' '.join(redact(str(state['slice']['title'])).split())}"
         subject = textwrap.shorten(subject, width=72, placeholder="")
         model = state.get("models_used", {}).get("implement")
         if not model:
             return halted(Halt.publication_model_missing, "Publication needs the implement model.", None)
         message = f"{subject}\n\nCo-Authored-By: {redact(model)} <{COAUTHOR_EMAILS[family(model)]}>"
-        if isinstance(run, DryRun):
-            return {"commands": commit_commands(message)}
         assert "delivery_branch" in state and "attempt_head" in state
         try:
             observed = run.workspace.inspect()
@@ -746,9 +818,7 @@ def compile_delivery(
         assert "delivery_branch" in state and "delivery_base" in state and "repo" in state and "slice" in state
         branch, base, repo = state["delivery_branch"], state["delivery_base"], state["repo"]
         title = " ".join(redact(str(state["slice"]["title"])).split())
-        body = f"Closes #{state.get('issue', '<issue>')}"
-        if isinstance(run, DryRun):
-            return {"path": ["publish"], "commands": [push_command("origin", branch), pull_request_command(repo, branch, base, title, body)]}
+        body = f"Closes #{state.get('issue') or '<issue>'}"
         try:
             observed = run.workspace.inspect()
             if not observed.clean or observed.branch != branch or observed.head != state.get("head_sha"):
@@ -760,9 +830,7 @@ def compile_delivery(
         return {"path": ["publish"]}
 
     def verify(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-        match run if isinstance(run, DryRun) else runtime.context or run:
-            case DryRun():
-                return scripted_verify(state, runtime)
+        match runtime.context or run:
             case LiveRun(workspace=workspace, check_log=check_log):
                 try:
                     worktree = workspace.inspect()
@@ -852,8 +920,6 @@ def compile_delivery(
         return {**halted(Halt.merge_not_armed, moved_head_detail(actual, verified), "review"), "merge": "not_armed"}
 
     def review(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-        if isinstance(run, DryRun):
-            return dispatch_review(state, runtime)
         try:
             head = state.get("verified_head")
             if head is None:
@@ -884,7 +950,7 @@ def compile_delivery(
             return "done"
         decision = state.get("triage")
         if decision == "needs_human":
-            return "needs_human" if checkpointer is not None else "done"
+            return "needs_human"
         if decision == "question":
             return "spec" if state.get("issue_kind") == "parent" else "research"
         return "prepare" if decision == "implement" else decision or "done"
@@ -895,26 +961,24 @@ def compile_delivery(
         if state.get("spec_rejection"):
             return "spec"
         if oversized_pr(state):
-            if checkpointer is None:
-                return "done"
             split = state.get("pr_split")
             if split and split["gate"] == "needs_human":
                 return "needs_human"
             return "decide_pr_size"
-        if state.get("spec_gate") == "needs_human" and checkpointer is not None:
+        if state.get("spec_gate") == "needs_human":
             return "needs_human"
         if state.get("issue_kind") == "parent":
             return "done"
         return "prepare" if state.get("spec_gate") == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
-        if state.get("halt") == Halt.design_rethink and checkpointer is not None:
+        if state.get("halt") == Halt.design_rethink:
             return "needs_human"
         if state.get("halt"):
             return "done"
         if oversized_pr(state):
             if state.get("pr_size_override"):
-                return "decide_pr_size" if checkpointer is not None else "done"
+                return "decide_pr_size"
             return "spec"
         if state.get("review") == "approve":
             return "merge"
@@ -950,11 +1014,6 @@ def compile_delivery(
             }
 
         match run:
-            case DryRun():
-                return {
-                    "merge": "skipped", "path": ["merge"],
-                    "merge_command": run.record_merge(repo, state.get("head_sha")),
-                }
             case LiveRun(forge=forge, workspace=workspace):
                 if head is None:
                     return merge_halted(Halt.merge_not_armed, "The run did not record a verified HEAD.")
@@ -1078,6 +1137,9 @@ def compile_delivery(
 
     graph_nodes: dict[str, DeliveryNode] = {"implement": implement, "verify": verify, "review": review}
     for name in REQUIRED_NODES:
+        if name == "verify":
+            builder.add_node(name, verify)
+            continue
         builder.add_node(name, graph_nodes[name] if name in graph_nodes and name != "implement" else bind(name))
         builder.add_node(name + "_call", implement if name == "implement" else call(name))
     builder.add_node("prepare", prepare)
@@ -1128,7 +1190,7 @@ def compile_delivery(
     )
     builder.add_conditional_edges("review_post", after_review,
         {"merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"})
-    add_agent_edges(
+    builder.add_conditional_edges(
         "verify",
         after_verify,
         {"proof": "proof", "review": "review", "prepare": "prepare", "done": "done"},
@@ -1141,7 +1203,7 @@ def compile_delivery(
     # Each round visits at most all stages, each with one setup and every configured candidate,
     # plus prepare/commit/publish, proof, prompts, merge and done.
     steps = sum(1 + max(1, len(config.nodes[name].models)) for name in REQUIRED_NODES) + 12
-    return builder.compile(checkpointer=checkpointer).with_config({"recursion_limit": steps * (config.max_review_rounds + 1)})
+    return builder.compile(checkpointer=checkpointer or InMemorySaver()).with_config({"recursion_limit": steps * (config.max_review_rounds + 1), "configurable": {"thread_id": uuid4().hex}})
 
 
 def run_delivery(
@@ -1158,7 +1220,9 @@ def run_delivery(
     skills: SkillSource = export_skills,
     fact_record: str = MANIFEST_PATH,
 ) -> DeliveryResult:
+    dry = DryRun(skills=skills)
     state: DeliveryState = {
+        "issue": 0,
         "repo": repo,
         "token_cap": max_tokens,
         "max_budget_usd": usd_text(max_budget_usd) if max_budget_usd is not None else None,
@@ -1176,11 +1240,25 @@ def run_delivery(
     if scratch is not None:
         state["pstack_pin"] = config.pstack.model_dump()
     try:
-        graph = compile_delivery(dispatcher, config, run=DryRun(skills=skills), scratch=scratch)
+        graph = compile_delivery(dispatcher, config, run=dry, scratch=scratch)
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,
                                     "skill_reason": exc.reason})
-    return read_delivery_state(graph.invoke(state, version="v2").value)
+    invocation = graph.invoke(state, version="v2")
+    raw = invocation.value
+    if raw.get("halt") == Halt.quota_exhausted:
+        attempts = raw.get("attempts", [])
+        raise QuotaExhausted(attempts[-1]["model"] if attempts else None)
+    result = read_delivery_state({**raw, "stop": raw.get("stop", stop_reason({**state, **raw}))})
+    if invocation.interrupts:
+        result["halt_detail"] = HumanPrompt.model_validate(invocation.interrupts[0].value).question
+    result.pop("pr_size", None)
+    if result["path"][-1:] != ["done"]:
+        result["path"].append("done")
+    result["commands"] = dry.commands
+    if result.get("merge") == "armed":
+        result.update(merge="skipped", merge_command=dry.record_merge(repo, None))
+    return result
 
 
 def diagram() -> str:

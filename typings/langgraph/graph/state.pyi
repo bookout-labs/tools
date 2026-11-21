@@ -6,7 +6,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.graph import Graph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
-from langgraph.types import Command, StateSnapshot, UpdatesStreamPart
+from langgraph.types import Command, Interrupt, StateSnapshot, UpdatesStreamPart
 from _typeshed import DataclassInstance
 
 State = TypeVar("State")
@@ -21,6 +21,7 @@ class RuntimeNode(Protocol[NodeState, NodeContext]):
 
 class GraphOutput(Generic[Output]):
     value: Output
+    interrupts: tuple[Interrupt, ...]
 
 class CompiledStateGraph(Generic[State, Context, Input, Output]):
     @overload

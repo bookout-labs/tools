@@ -14,7 +14,6 @@ graph TD;
 	implement(implement)
 	implement_call(implement_call)
 	verify(verify)
-	verify_call(verify_call)
 	review(review)
 	review_call(review_call)
 	prepare(prepare)
@@ -117,14 +116,7 @@ graph TD;
 	verify -.-> done;
 	verify -.-> prepare;
 	verify -.-> proof;
-	verify -.-> quota_wait;
 	verify -.-> review;
-	verify -. &nbsp;call&nbsp; .-> verify_call;
-	verify_call -.-> done;
-	verify_call -.-> prepare;
-	verify_call -.-> proof;
-	verify_call -.-> quota_wait;
-	verify_call -.-> review;
 	done --> __end__;
 	implement_call -. &nbsp;call&nbsp; .-> implement_call;
 	research_call -. &nbsp;call&nbsp; .-> research_call;
@@ -132,7 +124,6 @@ graph TD;
 	spec -.-> spec;
 	spec_call -. &nbsp;call&nbsp; .-> spec_call;
 	triage_call -. &nbsp;call&nbsp; .-> triage_call;
-	verify_call -. &nbsp;call&nbsp; .-> verify_call;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

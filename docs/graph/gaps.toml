@@ -2,10 +2,6 @@
 # Slice 11a also owns the queue-rejected fix loop approved on 2026-11-21.
 # spec_check -> file_slices closes in 15, when spec_check exists (file_slices arrives in 14b).
 
-[delivery.extra.slice_7]
-verify = [["quota_wait", ""], ["verify_call", "call"]]
-verify_call = [["done", ""], ["prepare", ""], ["proof", ""], ["quota_wait", ""], ["review", ""], ["verify_call", "call"]]
-
 [delivery.extra.slice_9]
 commit = [["publish", ""]]
 proof = [["review", ""]]

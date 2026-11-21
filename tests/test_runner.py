@@ -1854,7 +1854,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(code, 0)
         self.assertIn(
             "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --match-head-commit '<sha>'\n"
-            "tokens 8 of 20000000\ndone verified",
+            "check exit 0\ntokens 6 of 20000000\ndone verified",
             stdout.getvalue(),
         )
         self.assertIn("pstack pin not checked (dry run)", stdout.getvalue())
