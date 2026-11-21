@@ -40,6 +40,8 @@ graph TD;
 	implement -.-> done;
 	implement -.-> quota_wait;
 	merge --> done;
+	needs_human -.-> done;
+	needs_human -.-> implement;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
 	prepare -.-> done;
@@ -90,7 +92,8 @@ Generate the diagram with `foreman diagram delivery`. The model list is `src/for
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high.
 
-Every round reviews the full PR diff. Typed findings have stable IDs, kinds, fixes and
+Round 1 reviews the full PR diff. Later rounds check unresolved findings and added
+interdiff lines also in the PR diff. Out-of-scope findings become coordinator notes. Typed findings have stable IDs, kinds, fixes and
 explicit resolutions. Resolved findings become settled rulings. Disagreements with
 rulings become coordinator notes. The graph owns tool-fact checks separately from
 reviewer findings. Rulings exist only within a run. The failure cap stays unchanged.
@@ -247,3 +250,6 @@ Interrupted calls with no committed usage halt as unknown rather than being
 retried. Checkpoints from before usage accounting require a new run.
 
 Settled rulings exist only within a run. Resolved findings become rulings for later reviews.
+
+A repeated blocking kind pauses as `design_rethink` without consuming a failure round.
+A design answer resumes implementation and becomes a settled ruling in the next review.

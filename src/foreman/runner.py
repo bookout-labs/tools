@@ -20,9 +20,19 @@ from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, DeliveryState, E
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge
-from foreman.stage_output import StoredSlice, parse_output
+from foreman.stage_output import Attempt, StoredSlice, parse_output
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
+
+
+def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
+    if not values:
+        return None
+    normalized = dict(values)
+    if normalized.get("slice") is not None:
+        normalized["slice"] = StoredSlice.model_validate(normalized["slice"]).record()
+    return _CHECKPOINT_STATE.validate_python(normalized, strict=True)
+
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 
@@ -126,7 +136,7 @@ def run_live_delivery(
                 if "token_cap" not in saved.values:
                     return read_delivery_state(saved.values)
             require_token_cap(saved.values, checkpoint)
-        saved_values = _CHECKPOINT_STATE.validate_python(saved.values, strict=True) if saved.values else None
+        saved_values = checkpoint_state(saved.values)
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
@@ -134,8 +144,8 @@ def run_live_delivery(
             assert "dispatch_plan" in saved_values
             stage, model = pending["stage"], pending["model"]
             graph.update_state(config, {**halted("usage_unknown", unknown_usage(stage, model), stage),
-                                       "attempts": [{"stage": stage, "model": model, "commit": pin.commit,
-                                                     "methods": saved_values["dispatch_plan"]["methods"], "outcome": "interrupted", "usage": None}],
+                                       "attempts": [Attempt(stage=stage, model=model, commit=pin.commit,
+                                                            methods=saved_values["dispatch_plan"]["methods"], outcome="interrupted", usage=None).record()],
                                        "pending_dispatch": None}, as_node=stage + "_call")
             invoke(None, saved_values)
             return read_delivery_state(graph.get_state(config).values)
@@ -182,7 +192,7 @@ def run_live_delivery(
                 else:
                     if detail := _blocker_detail(client, repo, issue, item):
                         return {**initial, "path": ["done"], "stop": "blocked", "halt_detail": detail}
-                    initial["slice"] = item.model_dump(exclude_unset=True)
+                    initial["slice"] = item.record()
                     if item.work_kind is not None:
                         initial["work_kind"] = item.work_kind
             invoke(initial, initial)
