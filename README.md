@@ -340,6 +340,8 @@ If the live command prints `paused quota_exhausted`, run it again from the same 
 
 Before review, Foreman fetches the pull request's base branch from `origin` and counts added and deleted lines across every path against the merge base, including root files, docs, and logs. Use Git 2.43 or later.
 
+Reconciliation rejects paths matching the merge base's `.gitignore` files, including staged files and worker commits. Here, `evidence/` declares disposable worker output. The default and configured fact records and their named regular captures remain deliverables, without exempting adjacent files. `implementation_rejected` names rejected paths and preserves the checkout. Remove the scratch and rerun to reconcile again without repeating the implement call.
+
 Files marked `linguist-generated` by [`.gitattributes`](.gitattributes) at the merge base do not count. Here, that means fixtures, generated schemas, and lockfiles. Candidate attribute changes cannot exempt their own lines.
 
 Pure renames add no lines. For renames across an exclusion boundary, only the handwritten side counts. Binary files count through Git's text diff. If Foreman presents a split plan, use `--answer split` to accept it or `--answer override` to continue with that measured diff.

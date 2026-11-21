@@ -4,10 +4,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 import subprocess
+from tempfile import TemporaryDirectory
 from typing import Annotated, Literal, NewType, Protocol
 from typing_extensions import NotRequired, TypedDict
 from pydantic import BeforeValidator, ConfigDict, TypeAdapter, with_config
@@ -158,7 +159,8 @@ class Workspace(Protocol):
     def refresh(self, branch: str, head: str) -> None: ...
     def commit(self, message: str) -> None: ...
     def committed(self, parent: str, message: str) -> bool: ...
-    def reconcile(self, parent: str, branch: str) -> ImplementationCandidate | None: ...
+    def reconcile(self, parent: str, branch: str, base_branch: str = "main",
+                  fact_record: str = "tests/fixtures/manifest.toml") -> ImplementationCandidate | None: ...
     def tree(self, head: str) -> str: ...
     def soft_reset(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
@@ -254,11 +256,57 @@ class LiveWorkspace:
     def tree(self, head: str) -> str:
         return os.fsdecode(self._git("--no-replace-objects", "rev-parse", f"{head}^{{tree}}")).strip()
 
-    def reconcile(self, parent: str, branch: str) -> ImplementationCandidate | None:
+    def reconcile(self, parent: str, branch: str, base_branch: str = "main",
+                  fact_record: str = "tests/fixtures/manifest.toml") -> ImplementationCandidate | None:
         observed = self.inspect()
         recovery = f" Checkout preserved. Restore branch {branch} at {parent}, keep the intended edits, then rerun."
         if observed.branch != branch:
             raise ImplementationRejected(f"HEAD {observed.head} is not attached to delivery branch {branch}." + recovery)
+        merge_base = os.fsdecode(self._inspection_git(
+            parent, "merge-base", parent, f"refs/heads/{base_branch}",
+        )).strip()
+        paths = set(self._inspection_git(
+            merge_base, "diff", "--name-only", "--no-renames", "-z", parent, "--",
+        ).split(b"\0"))
+        status = iter(self._inspection_git(
+            merge_base, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=traditional",
+        ).split(b"\0"))
+        unstaged_ignored: set[bytes] = set()
+        for entry in status:
+            if entry:
+                paths.add(entry[3:])
+                if entry[:2] == b"!!":
+                    unstaged_ignored.add(entry[3:])
+                if b"R" in entry[:2] or b"C" in entry[:2]:
+                    paths.add(next(status))
+        paths.discard(b"")
+        ignored = set(self._inspection_git(
+            merge_base, "check-ignore", "--no-index", "-z", "--stdin",
+            input_paths=b"\0".join(sorted(paths)) + b"\0" if paths else b"",
+            allowed_returncodes=(0, 1),
+        ).split(b"\0")) - {b""}
+        # Fact records authorize only their regular captures, never their directory.
+        from foreman.fixture_manifest import FixtureManifest, MANIFEST_PATH, fact_record_path
+        facts: set[bytes] = set()
+        for record in {MANIFEST_PATH, fact_record}:
+            if not self.has_file(record) or (self.root / record).is_symlink():
+                continue
+            facts.add(os.fsencode(record))
+            try:
+                manifest = FixtureManifest.from_toml((self.root / record).read_text())
+                for capture in manifest.fixtures:
+                    path = (PurePosixPath(record).parent / fact_record_path(capture)).as_posix()
+                    if self.has_file(path) and not (self.root / path).is_symlink():
+                        facts.add(os.fsencode(path))
+            except (ValueError, OSError):
+                pass
+        rejected = ignored - facts
+        if rejected:
+            names = ", ".join(repr(os.fsdecode(path)) for path in sorted(rejected))
+            raise ImplementationRejected(f"Disposable paths rejected: {names}. Remove them, keep intended edits, then rerun. Checkout preserved.")
+        if unstaged_ignored:
+            self._git("add", "--force", "--", *(os.fsdecode(path) for path in sorted(unstaged_ignored)))
+            observed = self.inspect()
         if observed.head == parent:
             return None if observed.clean else {"disposition": "edits", "fingerprint": self.fingerprint()}
         if not observed.clean:
@@ -432,6 +480,19 @@ class LiveWorkspace:
 
     def _inspection_git(self, attribute_source: str, command: str, *args: str, input_paths: bytes | None = None,
                         allowed_returncodes: tuple[int, ...] = (0,)) -> bytes:
+        if command == "check-ignore":
+            with TemporaryDirectory(prefix="foreman-ignore-") as directory:
+                policy = LiveWorkspace(Path(directory))
+                policy._git("init", "--quiet", "--template=")
+                names = self._inspection_git(attribute_source, "ls-tree", "-rz", attribute_source)
+                for entry in names.split(b"\0"):
+                    metadata, _, name = entry.partition(b"\t")
+                    if metadata.startswith((b"100644 blob ", b"100755 blob ")) and PurePosixPath(os.fsdecode(name)).name == ".gitignore":
+                        path = policy.root / os.fsdecode(name)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(self._inspection_git(attribute_source, "show", f"{attribute_source}:{os.fsdecode(name)}"))
+                return policy._git("-c", "core.excludesFile=/dev/null", "check-ignore", *args,
+                                   input_paths=input_paths, allowed_returncodes=allowed_returncodes)
         attributes = Path(os.fsdecode(self._git(
             "rev-parse", "--path-format=absolute", "--git-path", "info/attributes",
         )).removesuffix("\n"))

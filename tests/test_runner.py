@@ -81,6 +81,9 @@ class FakeWorkspace(LiveWorkspace):
     def fingerprint(self):
         return "synthetic-edits"
 
+    def reconcile(self, parent, branch, base_branch="main", fact_record="tests/fixtures/manifest.toml"):
+        return None if self.current.clean else {"disposition": "edits", "fingerprint": self.fingerprint()}
+
     def create_branch(self, branch, base):
         self.current = WorktreeState(self.current.head, True, branch)
 

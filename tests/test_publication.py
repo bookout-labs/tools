@@ -132,7 +132,7 @@ class PublicationTest(unittest.TestCase):
     def no_worker(self):
         self.fail("completed worker must not repeat")
 
-    def walk(self, edit=None, reviews=None, family=None):
+    def walk(self, edit=None, reviews=None, family=None, fact_record="tests/fixtures/manifest.toml"):
         script = ScriptHandler(reviews=reviews)
         workspace = LiveWorkspace(self.checkout)
 
@@ -150,7 +150,7 @@ class PublicationTest(unittest.TestCase):
             return script(node, model, state, instruction)
 
         return run_live_delivery(
-            repo=REPO, issue=8, check="test -f items.txt", checkpoint=self.checkpoint,
+            repo=REPO, issue=8, check="test -f items.txt", checkpoint=self.checkpoint, fact_record=fact_record,
             run=LiveRun(LiveForge(), workspace), dispatcher=handler,
         )
 
@@ -364,6 +364,138 @@ class PublicationTest(unittest.TestCase):
                 self.assertIn(f"Worker HEAD {head} is a non-descendant of {parent}", result["halt_detail"])
                 self.assertNotIn("merge commit", result["halt_detail"])
 
+    def scratch_policy(self):
+        (self.checkout / ".gitignore").write_text("evidence/\n*.log\nnested/cache/\n")
+        self.git("add", ".gitignore")
+        self.git("commit", "-m", "Declare disposable paths")
+        self.git("push", "origin", "main")
+
+    def test_118_tree_rejects_edits_and_commits_then_resumes(self):
+        paths = (
+            "README.md", "diff-check.txt", "direct-unit-tests.txt", "evals-offline.txt",
+            "evals-provider.txt", "evals.txt", "grant-green.txt", "grant-red.txt",
+            "newline-red.txt", "offline-bootstrap/sitecustomize.py", "pyright.txt",
+            "quoted-operator-red.txt", "run-eval-provider.py", "run-unit-tests.py",
+            "runner-checks.txt", "unit-tests-final.txt",
+        )
+        for mode in ("untracked", "staged", "committed", "tracked"):
+            with self.subTest(mode=mode):
+                self.reset_fixture()
+                self.scratch_policy()
+                if mode == "tracked":
+                    (self.checkout / "evidence").mkdir()
+                    (self.checkout / "evidence/README.md").write_text("previous\n")
+                    self.git("add", "-f", "evidence/README.md")
+                    self.git("commit", "-m", "Old scratch")
+                    self.git("push", "origin", "main")
+                def edit():
+                    self.edit()
+                    for name in paths:
+                        path = self.checkout / "evidence" / name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text("scratch\n")
+                    if mode in ("staged", "committed"):
+                        self.git("add", "-f", "evidence")
+                    if mode == "committed":
+                        self.worker_commit()
+                result = self.walk(edit)
+                self.assertEqual(result["stop"], "implementation_rejected")
+                for name in paths:
+                    self.assertIn("evidence/" + name, result["halt_detail"])
+                    self.assertTrue((self.checkout / "evidence" / name).is_file())
+                self.assertFalse(self.created)
+                again = self.walk(self.no_worker)
+                self.assertEqual(again["stop"], "implementation_rejected")
+                self.assertEqual(again["attempts"], result["attempts"])
+                if mode == "committed":
+                    self.git("reset", "--soft", result["attempt_head"])
+                for name in paths:
+                    (self.checkout / "evidence" / name).unlink()
+                if mode in ("staged", "committed", "tracked"):
+                    self.git("add", "--all")
+                # A tracked disposable deletion is still part of the delta.
+                if mode == "tracked":
+                    self.git("restore", "--source=HEAD", "--staged", "--worktree", "evidence/README.md")
+                resumed = self.walk(self.no_worker)
+                self.assertEqual(resumed["stop"], "verified")
+                self.assertEqual(resumed["attempts"][:2], result["attempts"])
+
+    def test_nested_ignore_and_negation_ignore_local_excludes(self):
+        self.scratch_policy()
+        directory = self.checkout / "nested"
+        directory.mkdir()
+        (directory / ".gitignore").write_text("*.tmp\n!keep.tmp\n")
+        self.git("add", "nested/.gitignore")
+        self.git("commit", "-m", "Nested policy")
+        self.git("push", "origin", "main")
+        (self.checkout / ".git/info/exclude").write_text("items.txt\n")
+        def edit():
+            self.edit()
+            (directory / "drop.tmp").write_text("scratch")
+            (directory / "keep.tmp").write_text("deliverable")
+        rejected = self.walk(edit)
+        self.assertEqual(rejected["stop"], "implementation_rejected")
+        self.assertIn("nested/drop.tmp", rejected["halt_detail"])
+        self.assertNotIn("keep.tmp", rejected["halt_detail"])
+        self.assertNotIn("items.txt", rejected["halt_detail"])
+        (directory / "drop.tmp").unlink()
+        self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
+        self.assertEqual(self.git("show", "HEAD:items.txt"), "one")
+
+    def test_fact_capture_does_not_authorize_adjacent_scratch(self):
+        self.scratch_policy()
+        def edit():
+            self.edit()
+            directory = self.checkout / "evidence"
+            directory.mkdir()
+            (directory / "facts.toml").write_text('[fixtures."capture.txt"]\nkind="captured_run"\ntool="tool"\nversion="1"\nargv=["tool"]\n')
+            (directory / "capture.txt").write_text("capture")
+            (directory / "scratch.txt").write_text("scratch")
+        result = self.walk(edit, fact_record="evidence/facts.toml")
+        self.assertEqual(result["stop"], "implementation_rejected")
+        self.assertIn("evidence/scratch.txt", result["halt_detail"])
+        self.assertNotIn("evidence/capture.txt", result["halt_detail"])
+        self.assertNotIn("evidence/facts.toml", result["halt_detail"])
+        self.assertFalse(self.created)
+
+    def test_ignore_policy_comes_from_merge_base_and_handles_odd_paths(self):
+        self.scratch_policy()
+        def edit():
+            self.edit()
+            (self.checkout / ".gitignore").write_text("!evidence/\n!*.log\nitems.txt\n")
+            (self.checkout / "odd\nname.log").write_text("scratch")
+            self.git("add", "--all")
+        result = self.walk(edit)
+        self.assertEqual(result["stop"], "implementation_rejected")
+        self.assertIn(repr("odd\nname.log"), result["halt_detail"])
+        self.assertNotIn("'items.txt'", result["halt_detail"])
+
+    def test_fact_captures_are_exact_deliverables_under_ignored_directory(self):
+        for committed in (False, True):
+            for record in ("tests/fixtures/manifest.toml", "evidence/facts.toml"):
+                with self.subTest(committed=committed, record=record):
+                    self.reset_fixture()
+                    self.scratch_policy()
+                    def edit():
+                        self.edit()
+                        path = self.checkout / record
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text('[fixtures."capture.log"]\nkind="captured_run"\ntool="tool"\nversion="1"\nargv=["tool"]\n')
+                        (path.parent / "capture.log").write_text("captured output\n")
+                        for name in ("src/new.py", "tests/test_new.py", "docs/new.md"):
+                            file = self.checkout / name
+                            file.parent.mkdir(parents=True, exist_ok=True)
+                            file.write_text("deliverable\n")
+                        if committed:
+                            self.git("add", "-f", record, str(path.parent / "capture.log"))
+                            self.worker_commit()
+                    result = self.walk(edit, fact_record=record)
+                    self.assertEqual(result["stop"], "verified")
+                    files = self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines()
+                    self.assertIn(record, files)
+                    self.assertIn(str(Path(record).parent / "capture.log"), files)
+                    self.assertEqual(result["verified_head"], self.remote_head())
+
     def test_reconciled_candidate_mutation_is_rejected_before_publication(self):
         original = LiveWorkspace.reconcile
         def mutate(workspace, *args):
@@ -378,6 +510,22 @@ class PublicationTest(unittest.TestCase):
             result = self.walk(edit)
         self.assertEqual(result["stop"], "git_failed")
         self.assertIn("expected implementation commit", result["halt_detail"])
+        self.assertFalse(self.created)
+
+    def test_stale_candidate_after_soft_reset_cannot_publish(self):
+        original = LiveWorkspace.soft_reset
+        def crash(workspace, parent):
+            original(workspace, parent)
+            raise SystemExit("after soft reset")
+        def edit():
+            self.edit()
+            self.worker_commit()
+        with patch.object(LiveWorkspace, "soft_reset", crash), self.assertRaises(SystemExit):
+            self.walk(edit)
+        (self.checkout / "items.txt").write_text("stale change\n")
+        result = self.walk(self.no_worker)
+        self.assertEqual(result["stop"], "git_failed")
+        self.assertIn("changed after reconciliation", result["halt_detail"])
         self.assertFalse(self.created)
 
     def test_recovery_with_edits_uses_reconciled_fingerprint(self):
@@ -404,7 +552,7 @@ class PublicationTest(unittest.TestCase):
         self.reset_fixture()
         original = self.subprocess
         def fail(command, **kwargs):
-            if command[:3] == ["git", "--no-replace-objects", operation]:
+            if command[0] == "git" and "--no-replace-objects" in command and operation in command:
                 if detail == "timed out":
                     raise subprocess.TimeoutExpired(f"git {operation}", 10)
                 return subprocess.CompletedProcess(command, 128, b"", b"index.lock exists")
