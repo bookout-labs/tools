@@ -591,6 +591,13 @@ kind = "captured_run"
 argv = ["git", "remote", "get-url", "origin"]
 notes = "The checkout's existing origin is checked against the selected repository before pushing. Its HTTPS transport uses the configured credential helper."
 
+[fixtures."git/push-origin.txt"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "remote", "get-url", "--push", "--all", "origin"]
+notes = "All push URLs are checked against the selected repository before pushing."
+
 [fixtures."github/setup-git.txt"]
 tool = "gh"
 version = "2.102.0"
@@ -602,5 +609,5 @@ notes = "Quoted documentation: This command configures `git` to use GitHub CLI a
 tool = "gh"
 version = "2.102.0"
 kind = "captured_run"
-argv = ["gh", "pr", "view", "60", "--repo", "bookout-labs/tools", "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest"]
-notes = "Recorded recovery probe for PR 60. Production selects its branch with gh pr view BRANCH --repo OWNER/REPO using the same JSON fields."
+argv = ["gh", "pr", "view", "--repo", "bookout-labs/tools", "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest", "--", "60"]
+notes = "Recorded recovery probe for PR 60. Production uses the same argument order with a branch or PR number as the selector."
