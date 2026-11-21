@@ -1,32 +1,22 @@
-# Resolve the delivery types in #52 before restoring strict checking.
-# pyright: basic
 """Pure admission gates for browser, constraint, and scoring evidence."""
+
+
+from foreman.stage_output import BrowserProofRecord, FormalProofRecord, SliceRecord
 
 
 class ProofError(ValueError):
     pass
 
 
-def browser_required(slice: dict[str, object]) -> bool:
+def browser_required(slice: SliceRecord) -> bool:
     return bool(slice["screen"])
 
 
-def formal_required(slice: dict[str, object]) -> bool:
+def formal_required(slice: SliceRecord) -> bool:
     return bool(slice["properties"])
 
 
-def score_verdict(label: str) -> str:
-    verdicts = {
-        "approve": "pass",
-        "block": "fail",
-        "insufficient_evidence": "insufficient_evidence",
-    }
-    if not isinstance(label, str) or label not in verdicts:
-        raise ProofError(f"unknown score label {label!r}")
-    return verdicts[label]
-
-
-def browser_proof_label(slice: dict, artifact: dict | None) -> str | None:
+def browser_proof_label(slice: SliceRecord, artifact: BrowserProofRecord | None) -> str | None:
     """Return a failure label, or None when the gate accepts."""
     if not browser_required(slice):
         return None
@@ -40,7 +30,7 @@ def browser_proof_label(slice: dict, artifact: dict | None) -> str | None:
     return None
 
 
-def formal_proof_label(slice: dict, artifact: dict | None) -> str | None:
+def formal_proof_label(slice: SliceRecord, artifact: FormalProofRecord | None) -> str | None:
     """Return a failure label, or None when the gate accepts."""
     if not formal_required(slice):
         return None

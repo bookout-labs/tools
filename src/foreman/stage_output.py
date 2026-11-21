@@ -1,12 +1,14 @@
-# Resolve the delivery types in #52 before restoring strict checking.
-# pyright: basic
 """Worker output contracts shared by the CLI prompts and delivery graph."""
 
-from typing import Annotated, Literal, Self, TypeVar
+from typing import Annotated, Generic, Literal, Self, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, StringConstraints, ValidationError, field_validator, model_validator
-from pydantic.config import JsonDict
+from abc import abstractmethod
 
+from typing_extensions import NotRequired, TypedDict, override
+
+from pydantic import BaseModel, ConfigDict, JsonValue, Field, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator
+
+from foreman.adapters import OutcomeKind
 from foreman.dispatch import InvalidOutput
 
 PULL_REQUEST_LINES = 400
@@ -17,16 +19,163 @@ Output = TypeVar("Output", bound=BaseModel)
 WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
 
 
+@with_config(ConfigDict(extra="forbid"))
+class SlicePropertyRecord(TypedDict):
+    name: str
+    constraint: str
+
+
+@with_config(ConfigDict(extra="forbid"))
+class SeamRecord(TypedDict):
+    name: str
+    exists: bool
+    path: str | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class SliceRecord(TypedDict):
+    title: str
+    stateful: bool
+    acceptance: str
+    builds: list[SeamRecord]
+    uses: list[SeamRecord]
+    screen: str
+    properties: list[SlicePropertyRecord]
+    depends_on: NotRequired[list[str]]
+    blocker_numbers: NotRequired[list[int]]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class BrowserProofRecord(TypedDict):
+    screen: str | None
+    trace: str | None
+    passed: bool | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class ConstraintResultRecord(TypedDict):
+    constraint: str
+    rejected: bool
+
+
+@with_config(ConfigDict(extra="forbid"))
+class FormalProofRecord(TypedDict):
+    ran: bool | None
+    constraints: list[ConstraintResultRecord] | None
+    typecheck: str | bool | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class MergeRiskRecord(TypedDict):
+    alignment: str
+    impact: str
+    verification: str
+    rollback: str
+    error_detection: str
+    level: Literal["low", "medium", "high"]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class ToolFactRecord(TypedDict):
+    claim: str
+    fixture: str | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class FindingRecord(TypedDict):
+    id: str
+    kind: Literal["correctness", "contract-unenforced", "duplicate-owner", "hand-built-parsing", "untested-path", "docs"]
+    fix: str
+    ruling_id: str | None
+    file: str
+    line: int
+    severity: Literal["blocking", "nit"]
+    summary: str
+
+
 class Contract(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
 
-class SliceProperty(Contract):
+Record = TypeVar("Record")
+
+
+class RecordContract(Contract, Generic[Record]):
+    @classmethod
+    @abstractmethod
+    def record_adapter(cls) -> TypeAdapter[Record]:
+        raise NotImplementedError
+
+    def record(self) -> Record:
+        excluded = {key for key in ("depends_on", "blocker_numbers") if key not in self.model_fields_set}
+        return self.record_adapter().validate_python(self.model_dump(exclude=excluded), strict=True)
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AttemptUsageRecord(TypedDict):
+    input: int
+    output: int
+    cache_read: int
+    cache_creation: int
+    cost_usd: float | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AttemptRecord(TypedDict):
+    stage: str
+    model: str | None
+    commit: str
+    methods: list[str]
+    outcome: OutcomeKind
+    usage: AttemptUsageRecord | None
+
+
+class AttemptUsage(RecordContract[AttemptUsageRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[AttemptUsageRecord]:
+        return TypeAdapter(AttemptUsageRecord)
+
+    input: int = Field(validation_alias="input_tokens")
+    output: int = Field(validation_alias="output_tokens")
+    cache_read: int = Field(validation_alias="cache_read_input_tokens")
+    cache_creation: int = Field(validation_alias="cache_creation_input_tokens")
+    cost_usd: float | None = Field(validation_alias="total_cost_usd")
+
+    @field_validator("cache_read", "cache_creation", mode="before")
+    @classmethod
+    def absent_cache(cls, value: object) -> object:
+        return 0 if value is None else value
+
+
+class Attempt(RecordContract[AttemptRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[AttemptRecord]:
+        return TypeAdapter(AttemptRecord)
+
+    stage: str
+    model: str | None
+    commit: str
+    methods: list[str]
+    outcome: OutcomeKind
+    usage: AttemptUsage | None
+
+
+class SliceProperty(RecordContract[SlicePropertyRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SlicePropertyRecord]:
+        return TypeAdapter(SlicePropertyRecord)
     name: TrimmedText = Field(description="State the database rule in plain words.")
     constraint: TrimmedText = Field(description="Give the exact PostgreSQL constraint name, such as deals_external_id_key.")
 
 
-class Seam(Contract):
+class Seam(RecordContract[SeamRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SeamRecord]:
+        return TypeAdapter(SeamRecord)
     name: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$", description="Use the same short identifier in every slice that builds or uses this seam.")
     exists: bool = Field(description="Set true for a seam that already exists in the checkout. Otherwise use false.")
     path: TrimmedText | None = Field(description="For an existing seam, give a workspace-relative file path. Otherwise use null.")
@@ -38,11 +187,15 @@ class Seam(Contract):
         return self
 
 
-def _describe_slice(schema: JsonDict) -> None:
+def _describe_slice(schema: dict[str, JsonValue]) -> None:
     schema["description"] = f"One pull request's outcome, about {PULL_REQUEST_LINES} changed lines or fewer, and its proof obligations."
 
 
-class Slice(Contract):
+class Slice(RecordContract[SliceRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SliceRecord]:
+        return TypeAdapter(SliceRecord)
     model_config = ConfigDict(json_schema_extra=_describe_slice)
 
     title: TrimmedText = Field(description="Name the outcome.")
@@ -72,10 +225,10 @@ class Slice(Contract):
 class StoredSlice(Slice):
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
-    builds: list[Seam] = Field(default_factory=list)
-    uses: list[Seam] = Field(default_factory=list)
-    depends_on: list[TrimmedText] = Field(default_factory=list)
-    blocker_numbers: list[PositiveInt] | None = None
+    builds: list[Seam] = Field(default_factory=list[Seam])
+    uses: list[Seam] = Field(default_factory=list[Seam])
+    depends_on: list[TrimmedText] = Field(default_factory=list[str])
+    blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
 
 
 class HumanQuestionOutput(Contract):
@@ -111,21 +264,35 @@ class SpecOutput(HumanQuestionOutput):
     )
 
 
-class BrowserProof(Contract):
+class BrowserProof(RecordContract[BrowserProofRecord]):
     """For a required screen, report only browser evidence you actually collected."""
+
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[BrowserProofRecord]:
+        return TypeAdapter(BrowserProofRecord)
 
     screen: str | None
     trace: str | None
     passed: bool | None
 
 
-class ConstraintResult(Contract):
+class ConstraintResult(RecordContract[ConstraintResultRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[ConstraintResultRecord]:
+        return TypeAdapter(ConstraintResultRecord)
     constraint: Text
     rejected: bool
 
 
-class FormalProof(Contract):
+class FormalProof(RecordContract[FormalProofRecord]):
     """For required properties, report only formal evidence you actually collected."""
+
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[FormalProofRecord]:
+        return TypeAdapter(FormalProofRecord)
 
     ran: bool | None
     constraints: list[ConstraintResult] | None
@@ -138,7 +305,11 @@ class ImplementOutput(Contract):
     formal_proof: FormalProof | None
 
 
-class MergeRisk(Contract):
+class MergeRisk(RecordContract[MergeRiskRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[MergeRiskRecord]:
+        return TypeAdapter(MergeRiskRecord)
     alignment: TrimmedText
     impact: TrimmedText
     verification: TrimmedText
@@ -147,14 +318,22 @@ class MergeRisk(Contract):
     level: Literal["low", "medium", "high"]
 
 
-class ToolFact(Contract):
+class ToolFact(RecordContract[ToolFactRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[ToolFactRecord]:
+        return TypeAdapter(ToolFactRecord)
     claim: TrimmedText = Field(description="State the outside-tool behavior the diff relies on.")
     fixture: TrimmedText | None = Field(
         description="Give the exact entry ID in tests/fixtures/manifest.toml. Use null when the claim has no recorded evidence.",
     )
 
 
-class Finding(Contract):
+class Finding(RecordContract[FindingRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[FindingRecord]:
+        return TypeAdapter(FindingRecord)
     id: TrimmedText = Field(description="Unique finding ID. Never reuse an earlier finding ID.")
     kind: Literal["correctness", "contract-unenforced", "duplicate-owner", "hand-built-parsing", "untested-path", "docs"]
     fix: Text = Field(description="State the requested fix.")

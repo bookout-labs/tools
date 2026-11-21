@@ -22,8 +22,6 @@ from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 from pydantic import TypeAdapter, ValidationError
 from typing_extensions import TypedDict
-from unidiff.errors import UnidiffParseError
-from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome, OutcomeKind
 from foreman.config import Config, ConfigError, family, load_config, order_for
@@ -36,10 +34,10 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
+    Attempt, AttemptRecord, AttemptUsage, BrowserProofRecord, FormalProofRecord, SliceRecord, Contract, Finding, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
-from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
+from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -51,7 +49,7 @@ ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_fai
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+    "skill_missing", "design_rethink", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
@@ -84,24 +82,7 @@ class DryRun:
         return merge_command(redact(repo), "<number>", revision)
 
 
-class AttemptUsage(TypedDict):
-    input: int
-    output: int
-    cache_read: int
-    cache_creation: int
-    cost_usd: float | None
-
-
-class Attempt(TypedDict):
-    stage: str
-    model: str | None
-    commit: str
-    methods: list[str]
-    outcome: OutcomeKind
-    usage: AttemptUsage | None
-
-
-def run_tokens(attempts: list[Attempt]) -> int:
+def run_tokens(attempts: list[AttemptRecord]) -> int:
     return sum(usage["input"] + usage["output"] + usage["cache_read"] + usage["cache_creation"]
                for attempt in attempts if (usage := attempt["usage"]) is not None)
 
@@ -129,7 +110,7 @@ class PullRequestSplit(TypedDict):
     plan: str
     gate: Literal["ready", "needs_human"]
     question: str | None
-    slices: list[dict[str, object]]
+    slices: list[SliceRecord]
 
 
 class DeliveryFields(TypedDict, total=False):
@@ -142,14 +123,14 @@ class DeliveryFields(TypedDict, total=False):
     spec: str
     spec_gate: str
     spec_rejection: SpecRejection | None
-    slices: list[dict[str, object]]
+    slices: list[SliceRecord]
     child_issue_numbers: list[int]
-    slice: dict[str, object]
+    slice: SliceRecord
     issue_kind: str
     work_kind: WorkKind
     pstack_pin: dict[str, str]
     skill_reason: SkillFailureReason
-    attempts: Annotated[list[Attempt], operator.add]
+    attempts: Annotated[list[AttemptRecord], operator.add]
     research: str
     implementation: str
     delivery_branch: str
@@ -163,8 +144,8 @@ class DeliveryFields(TypedDict, total=False):
     merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
-    browser_proof: dict[str, object] | None
-    formal_proof: dict[str, object] | None
+    browser_proof: BrowserProofRecord | None
+    formal_proof: FormalProofRecord | None
     proof_labels: dict[str, str]
     human_question: str
     human_answers: list[str]
@@ -216,7 +197,7 @@ def read_delivery_state(raw: object) -> DeliveryResult:
     return _DELIVERY_STATE.validate_python(raw, strict=True)
 
 
-def _active_slice(state: DeliveryState) -> dict[str, object]:
+def _active_slice(state: DeliveryState) -> SliceRecord:
     slice = state.get("slice")
     if slice is None:
         raise InvalidOutput("implementation requires an active slice")
@@ -240,11 +221,11 @@ def stage_text(name: str) -> str:
 def clean_slices(
     raw: list[Slice] | None,
     workspace: Workspace | None,
-) -> list[dict[str, object]]:
+) -> list[SliceRecord]:
     if not raw:
         raise InvalidOutput("slices: ready parent spec needs at least one slice")
     if len(raw) == 1:
-        return [{**raw[0].model_dump(), "depends_on": []}]
+        return [{**raw[0].record(), "depends_on": []}]
     slices = {item.title: item for item in raw}
     if len(slices) != len(raw):
         raise InvalidSlicePlan("duplicate_title", "Slice titles must be unique.")
@@ -271,12 +252,12 @@ def clean_slices(
         ordered = list(TopologicalSorter(graph).static_order())
     except CycleError as exc:
         raise InvalidSlicePlan("dependency_cycle", "Dependency cycle: " + " -> ".join(exc.args[1])) from exc
-    return [{**slices[title].model_dump(), "depends_on": list(graph[title])} for title in ordered]
+    return [{**slices[title].record(), "depends_on": list(graph[title])} for title in ordered]
 
 
 def load_slice(raw: object) -> DeliveryUpdate:
     stored = parse_output(StoredSlice, raw)
-    state: DeliveryUpdate = {"slice": stored.model_dump(exclude_unset=True)}
+    state: DeliveryUpdate = {"slice": stored.record()}
     if stored.work_kind is not None:
         state["work_kind"] = stored.work_kind
     return state
@@ -312,8 +293,8 @@ def stage_update(
     elif isinstance(output, ImplementOutput):
         update.update(
             implementation=output.implementation,
-            browser_proof=output.browser_proof.model_dump() if output.browser_proof else None,
-            formal_proof=output.formal_proof.model_dump() if output.formal_proof else None,
+            browser_proof=output.browser_proof.record() if output.browser_proof else None,
+            formal_proof=output.formal_proof.record() if output.formal_proof else None,
         )
     elif isinstance(output, ReviewOutput):
         update.update(
@@ -344,7 +325,7 @@ def stage_update(
     if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
         if output.slice is None:
             raise InvalidOutput("slice: required when a parent triages as implement")
-        update["slice"] = output.slice.model_dump()
+        update["slice"] = output.slice.record()
     if update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -357,21 +338,12 @@ def stage_update(
     return update
 
 
-def review_submission(output: ReviewOutput | AcceptedReview, diff: ReviewDiff) -> tuple[str, list[ReviewComment]]:
-    try:
-        patch = PatchSet(diff.patch)
-    except UnidiffParseError:
-        patch = PatchSet("")
-    changed = {
-        (file.path, line.target_line_no)
-        for file in patch if not file.is_removed_file
-        for hunk in file for line in hunk if line.is_added
-    }
+def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, list[ReviewComment]]:
     body = [output.detail]
     comments: list[ReviewComment] = []
     for finding in output.findings:
         message = f"[{finding.severity}] {finding.summary}"
-        if (finding.file, finding.line) in changed:
+        if (finding.file, finding.line) in scope.inline:
             comments.append({"path": finding.file, "line": finding.line, "side": "RIGHT", "body": message})
         else:
             body.append(f"{finding.file}:{finding.line} {message}")
@@ -469,7 +441,7 @@ def compile_delivery(
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
                 except InvalidOutput as exc:
                     return halted("invalid_output", str(exc), name)
-            review_context: tuple[Forge, PullRequest, ReviewDiff] | None = None
+            review_context: tuple[Forge, PullRequest, ReviewScope] | None = None
             repo = state.get("repo", "")
             if name == "review" and isinstance(run, LiveRun):
                 head, issue = state.get("verified_head"), state.get("issue")
@@ -478,32 +450,27 @@ def compile_delivery(
                     if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
                         raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
                     target = run.forge.review_target(repo, issue, worktree.branch, head)
-                    diff = run.workspace.review_diff(target.baseRefOid, head)
+                    diff = run.workspace.review_scope(target.baseRefOid, head, past.rounds[-1].reviewed_head if past.rounds else None)
                 except (ForgeError, WorktreeInspectionFailed) as exc:
                     return halted("review_unavailable", str(exc), name)
                 review_context = (run.forge, target, diff)
                 instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
             worker_state: DeliveryState = state.copy()
             if name == "review":
-                scope = "Full PR review."
+                scope = "Full PR review." if not past.rounds else "Check unresolved findings and added interdiff lines also in the PR diff."
                 instruction += "\n\n" + scope
                 instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
                 instruction += "\nGraph checks, not yours to resolve:\n" + json.dumps(past.rounds[-1].graph_check.model_dump(mode="json") if past.rounds and past.rounds[-1].graph_check else None)
                 instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
-                for key in ("review_findings", "settled_rulings"):
+                for key in ("review_findings", "settled_rulings", *( ("findings", "detail", "implementation") if past.rounds else ())):
                     worker_state.pop(key, None)
-            attempts: list[Attempt] = []
+            attempts: list[AttemptRecord] = []
 
             def record_attempt(model: str | None, outcome: Outcome) -> None:
-                attempts.append({
-                    "stage": name, "model": model, "commit": config.pstack.commit, "methods": methods, "outcome": outcome.kind,
-                    "usage": None if outcome.usage is None else {
-                        "input": outcome.usage.input_tokens, "output": outcome.usage.output_tokens,
-                        "cache_read": outcome.usage.cache_read_input_tokens or 0,
-                        "cache_creation": outcome.usage.cache_creation_input_tokens or 0,
-                        "cost_usd": outcome.usage.total_cost_usd,
-                    },
-                })
+                attempts.append(Attempt(
+                    stage=name, model=model, commit=config.pstack.commit, methods=methods, outcome=outcome.kind,
+                    usage=None if outcome.usage is None else AttemptUsage.model_validate(outcome.usage.model_dump()),
+                ).record())
 
             outcome, model = dispatcher.run(
                 name, models, worker_state, instruction, on_attempt=record_attempt,
@@ -526,7 +493,7 @@ def compile_delivery(
                                   | {f.claim: f for f in output.tool_facts}).values())
                     checked = output.model_copy(update={"tool_facts": facts})
                     head = state.get("verified_head") or state.get("head_sha") or ""
-                    accepted = accept(past, checked, head, _check_tool_facts(checked, run, head))
+                    accepted = accept(past, checked, head, _check_tool_facts(checked, run, head), review_context[2] if review_context else None)
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
                 update["attempts"] = attempts
                 if accepted is not None:
@@ -536,6 +503,9 @@ def compile_delivery(
                                   findings=[f.model_dump() for f in accepted.findings],
                                   review_change_kind=accepted.change_kind,
                                   review_rounds=state.get("review_rounds", 0) + (accepted.review == "changes"))
+                    if accepted.rethink:
+                        update.update(halt="design_rethink", halt_detail=accepted.rethink, human_question=accepted.rethink,
+                                      review_rounds=state.get("review_rounds", 0))
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
                 rejected: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
@@ -709,7 +679,13 @@ def compile_delivery(
         split = state.get("pr_split") if stage == "spec" and oversized_pr(state) else None
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
         answer = interrupt({"stage": stage, "question": question})
-        return {"human_answers": [*state.get("human_answers", []), answer]}
+        update: DeliveryUpdate = {"human_answers": [*state.get("human_answers", []), answer]}
+        if stage == "review":
+            past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
+            update.update(halt=None, halt_detail="", settled_rulings=[r.model_dump() for r in past.settled] +
+                          [{"id": f"design:{len(past.rounds)}", "text": answer}])
+            update.update(prepare(state))
+        return update
 
     def quota_wait(state: DeliveryState) -> DeliveryUpdate:
         interrupt({"reason": "quota_exhausted", "detail": state.get("halt_detail")})
@@ -802,6 +778,8 @@ def compile_delivery(
         return "prepare" if state.get("spec_gate") == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
+        if state.get("halt") == "design_rethink" and checkpointer is not None:
+            return "needs_human"
         if state.get("halt"):
             return "done"
         if oversized_pr(state):
@@ -937,7 +915,8 @@ def compile_delivery(
         "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify"},
     )
     builder.add_conditional_edges(
-        "needs_human", _last_stage, {"triage": "triage", "spec": "spec"},
+        "needs_human", lambda state: "done" if state.get("halt") else "implement" if _last_stage(state) == "review" else _last_stage(state),
+        {"triage": "triage", "spec": "spec", "implement": "implement", "done": "done"},
     )
     builder.add_conditional_edges("prepare", lambda state: "done" if state.get("halt") else "implement", {"done": "done", "implement": "implement"})
     builder.add_conditional_edges("commit", lambda state: "done" if state.get("halt") else "publish", {"done": "done", "publish": "publish"})
@@ -972,7 +951,7 @@ def run_delivery(
     request: str,
     check: str = "",
     config: Config | None = None,
-    slice: dict[str, object] | None = None,
+    slice: object = None,
     scratch: Path | None = None,
 ) -> DeliveryResult:
     state: DeliveryState = {
