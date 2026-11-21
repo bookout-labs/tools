@@ -27,7 +27,6 @@ class ScriptHandler:
         implementation: str = "diff",
         research: str = "answer",
         risk: dict | None = None,
-        head_sha: str | None = None,
         slice: dict | None = None,
     ):
         self.triage = triage
@@ -44,7 +43,6 @@ class ScriptHandler:
             "properties": [],
         }
         self.implementation = implementation
-        self.head_sha = head_sha
         self.research = research
         self.risk = dict(DEFAULT_RISK if risk is None else risk)
         self.calls: list[dict[str, str | None]] = []
@@ -63,7 +61,7 @@ class ScriptHandler:
             })
         if node == "implement":
             return Outcome("ran", {
-                "implementation": self.implementation, "head_sha": self.head_sha,
+                "implementation": self.implementation,
                 "browser_proof": None, "formal_proof": None,
             })
         if node == "research":

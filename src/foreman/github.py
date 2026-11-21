@@ -7,6 +7,7 @@ from pydantic import BaseModel, PositiveInt, RootModel, ValidationError
 
 SQUASH_MERGE_FLAG = "--squash"
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
+MERGE_BASE = "main"
 PullRequestState = Literal["OPEN", "CLOSED", "MERGED"]
 Model = TypeVar("Model", bound=BaseModel)
 
@@ -47,6 +48,16 @@ class PullRequest(PullRequestStatus):
     headRefName: str
     baseRefName: str
     autoMergeRequest: AutoMergeRequest | None
+
+
+class OpenPullRequest(BaseModel, strict=True):
+    headRefName: str
+    baseRefName: str
+    isCrossRepository: bool
+
+
+class OpenPullRequests(RootModel[list[OpenPullRequest]]):
+    pass
 
 
 class IssueLabel(BaseModel, strict=True):
@@ -109,7 +120,16 @@ class Forge(Protocol):
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
     def merge_hold(self, repo: str) -> str | None: ...
+    def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
+
+
+def repository_url(repo: str) -> str:
+    return f"https://github.com/{repo}.git"
+
+
+def pull_request_command(repo: str, head: str, base: str, title: str, body: str) -> list[str]:
+    return ["gh", "pr", "create", "--repo", repo, "--base", base, "--head", head, "--title", title, "--body", body]
 
 
 def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
@@ -155,6 +175,27 @@ class LiveForge:
             raise MergeHoldUnreadable(str(exc)) from exc
         return next((variable.value for variable in variables.root if variable.name == MERGE_HOLD_VARIABLE), None)
 
+    def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None:
+        if self._has_open_pull_request(repo, head, base):
+            return
+        try:
+            self._run_command(pull_request_command(repo, head, base, title, body))
+        except (CommandFailed, CommandTimedOut):
+            if not self._has_open_pull_request(repo, head, base):
+                raise
+
+    def _has_open_pull_request(self, repo: str, head: str, base: str) -> bool:
+        prs = self._read(OpenPullRequests, [
+            "gh", "pr", "list", "--repo", repo, "--head", head, "--state", "open",
+            "--json", "headRefName,baseRefName,isCrossRepository",
+        ])
+        matches = [pr for pr in prs.root if not pr.isCrossRepository and pr.headRefName == head]
+        if any(pr.baseRefName == base for pr in matches):
+            return True
+        if matches:
+            raise ForgeError(f"The open pull request for {head} must target {base}.")
+        return False
+
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
         try:
             self._arm_auto_merge(repo, issue, branch, sha)
@@ -171,8 +212,8 @@ class LiveForge:
             raise MergeNotArmed("The pull request head differs from the verified SHA.")
         if not pr.headRefName.startswith(f"{issue}-"):
             raise MergeNotArmed(f"The pull request head branch must start with {issue}-.")
-        if pr.baseRefName != "main":
-            raise MergeNotArmed("The pull request must target main.")
+        if pr.baseRefName != MERGE_BASE:
+            raise MergeNotArmed(f"The pull request must target {MERGE_BASE}.")
         command = merge_command(repo, str(pr.number), sha)
         try:
             self._run_command(command)

@@ -20,6 +20,7 @@ graph TD;
 	implement(implement)
 	verify(verify)
 	review(review)
+	publish(publish)
 	proof(proof)
 	needs_human(needs_human)
 	merge(merge)
@@ -28,13 +29,15 @@ graph TD;
 	__start__ -.-> done;
 	__start__ -.-> triage;
 	implement -.-> done;
-	implement -.-> verify;
+	implement -.-> publish;
 	merge --> done;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
 	proof -.-> done;
 	proof -.-> implement;
 	proof -.-> review;
+	publish -.-> done;
+	publish -.-> verify;
 	research --> done;
 	review -.-> done;
 	review -.-> implement;
@@ -61,6 +64,8 @@ graph TD;
 Generate the diagram with `foreman diagram delivery`. The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. A node does not edit the list, and it does not decide the next node.
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the builder model is missing or every eligible reviewer is out of quota, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
+
+Foreman creates an `<issue>-<slug>` branch from local `main` before the first edit and commits each successful implementation. An attempt with no file changes or an unexpected HEAD or branch change stops with `failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against `main`. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
 Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs use a scripted verdict. When the check passes, the graph evaluates the browser and formal evidence required by the slice. Missing evidence stops the run. A failed proof consumes a round and sends the slice back to implement while rounds remain.
 

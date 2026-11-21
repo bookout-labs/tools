@@ -29,9 +29,6 @@ SLICES = [
 EMPTY_SLICE = {**SLICES[1], "depends_on": []}
 
 
-HEAD_SHA = "a" * 40
-
-
 def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
     return run_delivery(
         FailoverDispatcher(handler),
@@ -51,23 +48,23 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "verified")
 
     def test_clear_change_skips_spec(self):
-        handler = ScriptHandler(head_sha=HEAD_SHA)
+        handler = ScriptHandler()
 
         def check_review_context(node, model, state, instruction):
             if node == "review":
                 self.assertEqual(state["verify"], "pass")
-                self.assertEqual(state["head_sha"], HEAD_SHA)
+                self.assertNotIn("head_sha", state)
             return handler(node, model, state, instruction)
 
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "implement", "verify", "review", "merge", "done"],
+            ["triage", "implement", "publish", "verify", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["risk"]["level"], "low")
         self.assertEqual(result["merge"], "skipped")
-        self.assertEqual(result["head_sha"], HEAD_SHA)
+        self.assertNotIn("head_sha", result)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
         self.assertNotIn("verify", result["models_used"])
@@ -76,13 +73,13 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="spec", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec", "implement", "verify", "review", "merge", "done"],
+            ["triage", "spec", "implement", "publish", "verify", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
     def test_ready_spec_keeps_the_loaded_slice_proof_obligations(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec", "implement", "verify", "proof", "done"])
+        self.assertEqual(result["path"], ["triage", "spec", "implement", "publish", "verify", "proof", "done"])
         self.assertEqual(result["stop"], "insufficient_evidence")
 
     def test_triage_slice_rejects_a_dependency(self):
@@ -132,7 +129,7 @@ class DeliveryTest(unittest.TestCase):
         config.nodes["review"] = replace(config.nodes["review"], models=(ModelSpec.parse("gpt-6.1-terra-high"),))
         handler = ScriptHandler()
         result = walk(handler, config=config)
-        self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "done"])
+        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "done"])
         self.assertEqual(result["stop"], "no_reviewer")
         self.assertIn("gpt family", result["halt_detail"])
         self.assertNotIn("review", [call["node"] for call in handler.calls])
@@ -161,7 +158,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "implement", "verify", "review", "implement", "verify", "review", "merge", "done"],
+            ["triage", "implement", "publish", "verify", "review", "implement", "publish", "verify", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
@@ -171,7 +168,7 @@ class DeliveryTest(unittest.TestCase):
             with self.subTest(review_models=tuple(ModelSpec.parse(model) for model in review_models)):
                 config = load_config()
                 config.nodes["review"] = replace(config.nodes["review"], models=tuple(ModelSpec.parse(model) for model in review_models))
-                handler = ScriptHandler(reviews=["changes", "approve"], head_sha=HEAD_SHA)
+                handler = ScriptHandler(reviews=["changes", "approve"])
 
                 def switch_builder(node, model, state, instruction):
                     if node == "implement" and state.get("review") == "changes" and model and model.family == "gpt":
@@ -191,32 +188,18 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual(result["implement_models"], ["gpt-6.1-sol-high", "claude-opus-5-5-high"])
 
     def test_review_cap_stops_without_arming(self):
-        result = walk(ScriptHandler(reviews=[], head_sha=HEAD_SHA))
+        result = walk(ScriptHandler(reviews=[]))
         self.assertEqual(result["path"].count("implement"), 3)
         self.assertEqual(result["path"].count("verify"), 3)
         self.assertNotIn("merge", result["path"])
         self.assertEqual(result["stop"], "review_cap")
 
     def test_verify_cap_stops_without_review(self):
-        result = walk(ScriptHandler(verify="fail", head_sha=HEAD_SHA))
+        result = walk(ScriptHandler(verify="fail"))
         self.assertEqual(result["path"].count("verify"), 3)
         self.assertNotIn("review", result["path"])
         self.assertNotIn("merge", result["path"])
         self.assertEqual(result["stop"], "verify_cap")
-
-    def test_merge_requires_the_latest_build_head(self):
-        handler = ScriptHandler(reviews=["changes", "approve"], head_sha=HEAD_SHA)
-
-        def drop_second_head(node, model, state, instruction):
-            output = handler(node, model, state, instruction)
-            if node == "implement" and state.get("review") == "changes":
-                output.output["head_sha"] = None
-            return output
-
-        result = walk(drop_second_head)
-        self.assertIn("merge", result["path"])
-        self.assertEqual(result["merge"], "skipped")
-        self.assertIsNone(result["head_sha"])
 
     def test_needs_human_stops_at_triage(self):
         result = walk(ScriptHandler(triage="needs_human"))
@@ -246,7 +229,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertTrue(result["halt_detail"].startswith("risk.level:"))
 
     def test_review_quota_never_falls_back_to_the_builder_family(self):
-        handler = ScriptHandler(head_sha=HEAD_SHA)
+        handler = ScriptHandler()
         offered = []
 
         def exhaust_review(node, model, state, instruction):

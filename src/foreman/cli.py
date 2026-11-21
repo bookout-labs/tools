@@ -14,7 +14,7 @@ from foreman.accept import AcceptError, accept_event
 from foreman.delivery import DeliveryState, GRAPH_NAME, LiveRun, diagram, run_delivery
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
-from foreman.github import ForgeError, LiveForge
+from foreman.github import ForgeError, LiveForge, repository_url
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
 from foreman.runner import run_live_delivery
@@ -23,6 +23,8 @@ from foreman.workspace import LiveWorkspace
 
 
 def _print_run(result: DeliveryState) -> None:
+    for command in result.get("commands", []):
+        print(f"dry run: {shlex.join(command)}")
     models = result.get("models_used", {})
     for node in result["path"]:
         if node == "verify":
@@ -139,6 +141,7 @@ def main(
             repo=args.repo,
             request=args.request or f"Issue #{args.issue}",
             check=args.check,
+            issue=args.issue,
         )
     else:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
@@ -149,7 +152,7 @@ def main(
             state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
         if live_run is None:
-            live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd()))
+            live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd(), repository_url(args.repo)))
         dispatcher = FailoverDispatcher(CliWorker(live_run.workspace.root, worker_runner)) if worker_runner else None
         try:
             result = run_live_delivery(

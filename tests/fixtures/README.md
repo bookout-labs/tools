@@ -64,3 +64,30 @@ claude --model claude-opus-5-5 --effort high --permission-mode plan \
 codex exec -m gpt-6.1-sol -c model_reasoning_effort=high --color never \
   -s read-only "$codex_prompt_with_schema"
 ```
+
+## Delivery publication
+
+A Git 2.56.0 probe used a temporary checkout with a local `main` and a bare `origin`. These commands all exited 0.
+
+| Command | Observed result |
+| --- | --- |
+| `git switch -c 55-probe refs/heads/main` | Switched to a new branch named `55-probe`. |
+| `git rev-parse HEAD` | Printed a full 40-hex SHA before and after the commit. |
+| `git branch --show-current` | Printed `55-probe`. |
+| `git status --porcelain --untracked-files=all` | Printed `?? probe.txt` after creating the file. Printed nothing after committing it. |
+| `git add --all` and `git commit -m '55: Probe'` | Staged the untracked file and created commit `cb9dc37`. |
+| `git push --no-follow-tags origin refs/heads/55-probe:refs/heads/55-probe` | Created the remote branch. Repeating the command printed `Everything up-to-date`. |
+| `git ls-remote origin refs/heads/55-probe` | Printed the same SHA as local HEAD, followed by a tab and `refs/heads/55-probe`. |
+
+A push repository can be a remote name or URL. An explicit source and destination ref publish that branch. Git rejects non-fast-forward branch updates by default. `--no-follow-tags` overrides `push.followTags`. [Git 2.56.0 push documentation](https://github.com/git/git/blob/v2.56.0/Documentation/git-push.adoc)
+
+GitHub CLI 2.102.0 returned these JSON arrays with exit 0. The tests substitute the branch in the captured response.
+
+```text
+$ gh pr list --repo bookout-labs/tools --head 55-graph-git-ops --state open --json headRefName,baseRefName,isCrossRepository
+[]
+$ gh pr list --repo bookout-labs/tools --head 43-slice-seams --state open --json headRefName,baseRefName,isCrossRepository
+[{"baseRefName":"main","headRefName":"43-slice-seams","isCrossRepository":false}]
+```
+
+GitHub CLI 2.102.0 documents that `gh pr create --repo OWNER/REPO --base main --head BRANCH --title TITLE --body BODY` selects the repo and both refs, supplies the title and body without prompting, and skips pushing or forking. Success prints the PR URL. Foreman leaves that output unparsed and uses the open PR list to resolve retries. The body uses the documented `Closes #N` syntax. [GitHub CLI 2.102.0 create command](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/pr/create/create.go)

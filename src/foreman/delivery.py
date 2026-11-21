@@ -5,6 +5,7 @@ from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict
 import operator
+import re
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -13,12 +14,17 @@ from langgraph.types import interrupt
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.github import MERGE_HOLD_VARIABLE, Forge, MergeHoldUnreadable, MergeNotArmed, merge_command
+from foreman.github import (
+    MERGE_BASE, MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, merge_command,
+    pull_request_command, repository_url,
+)
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.stage_output import (
     Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
 )
-from foreman.workspace import Workspace, WorktreeInspectionFailed
+from foreman.workspace import (
+    Workspace, WorkspaceError, WorktreeInspectionFailed, branch_command, commit_commands, push_command,
+)
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -28,6 +34,7 @@ SKILLS_FOR = {
     "review": ("review-quality", "merge-risk"),
 }
 MergeHalt = Literal["merge_held", "merge_not_armed"]
+PUBLISH_FAILED = "publish_failed"
 
 
 @dataclass(frozen=True)
@@ -57,7 +64,9 @@ class DeliveryState(TypedDict, total=False):
     issue_kind: str
     research: str
     implementation: str
-    head_sha: str | None
+    delivery_branch: str
+    head_sha: str
+    commands: Annotated[list[list[str]], operator.add]
     verified_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
@@ -206,7 +215,73 @@ def compile_delivery(
 
         return node
 
+    scripted_implement = bind("implement")
     scripted_verify = bind("verify")
+
+    def implement(state: DeliveryState) -> dict[str, object]:
+        if dispatcher is None:
+            return scripted_implement(state)
+        assert "slice" in state
+        title = str(state["slice"]["title"])
+        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
+        branch = state.get("delivery_branch") or f"{state.get('issue', '<issue>')}-{slug}"
+        message = f"{state.get('issue', '<issue>')}: {' '.join(title.split())}"
+        if isinstance(run, DryRun):
+            update = scripted_implement(state)
+            if not update.get("halt"):
+                commands = [] if "delivery_branch" in state else [branch_command(branch, MERGE_BASE)]
+                update.update(delivery_branch=branch, commands=[*commands, *commit_commands(message)])
+            return update
+
+        workspace = run.workspace
+        try:
+            before = workspace.inspect()
+            if not before.clean:
+                return {"path": ["implement"], "halt": "dirty_worktree"}
+            if "delivery_branch" in state and (before.branch != branch or before.head != state.get("head_sha")):
+                raise WorkspaceError("The checkout moved since the previous implementation.")
+            if before.branch != branch:
+                workspace.create_branch(branch, MERGE_BASE)
+                before = workspace.inspect()
+                if not before.clean or before.branch != branch:
+                    raise WorkspaceError("Git did not leave a clean checkout on the delivery branch.")
+            update = scripted_implement(state)
+            after = workspace.inspect()
+            if after.head != before.head or after.branch != branch:
+                return {"path": ["implement"], "halt": "failed", "head_sha": after.head,
+                        "halt_detail": "The worker changed HEAD or switched branches."}
+            if update.get("halt"):
+                return update
+            if after.clean:
+                raise WorkspaceError("no changes")
+            workspace.commit(message)
+            committed = workspace.inspect()
+            if not committed.clean or committed.branch != branch or committed.head == before.head:
+                raise WorkspaceError("Git did not leave a clean new commit on the delivery branch.")
+            return {**update, "delivery_branch": branch, "head_sha": committed.head}
+        except WorkspaceError as exc:
+            return {"path": ["implement"], "halt": "failed", "halt_detail": str(exc)}
+
+    def publish(state: DeliveryState) -> DeliveryState:
+        assert "repo" in state and "delivery_branch" in state and "slice" in state
+        repo = state["repo"]
+        branch = state["delivery_branch"]
+        title = str(state["slice"]["title"])
+        body = f"Closes #{state.get('issue', '<issue>')}"
+        if isinstance(run, DryRun):
+            return {"path": ["publish"], "commands": [
+                push_command(repository_url(repo), branch),
+                pull_request_command(repo, branch, MERGE_BASE, title, body),
+            ]}
+        try:
+            worktree = run.workspace.inspect()
+            if not worktree.clean or worktree.branch != branch or worktree.head != state.get("head_sha"):
+                raise WorkspaceError("Restore the clean delivery branch at its implementation commit before publishing.")
+            run.workspace.push(branch)
+            run.forge.open_pull_request(repo, branch, MERGE_BASE, title, body)
+        except (WorkspaceError, ForgeError) as exc:
+            return {"path": ["publish"], "halt": PUBLISH_FAILED, "halt_detail": str(exc)}
+        return {"path": ["publish"]}
 
     def verify(state: DeliveryState) -> dict[str, object]:
         match run:
@@ -219,6 +294,11 @@ def compile_delivery(
                     return {"path": ["verify"], "halt": "dirty_worktree", "halt_detail": str(exc)}
                 if not worktree.clean:
                     return {"path": ["verify"], "halt": "dirty_worktree"}
+                if "delivery_branch" in state and (
+                    worktree.branch != state["delivery_branch"] or worktree.head != state.get("head_sha")
+                ):
+                    return {"path": ["verify"], "halt": "dirty_worktree",
+                            "halt_detail": "The checkout moved since publication."}
                 exit_code = workspace.run(state["check"])
                 verdict = "pass" if exit_code == 0 else "fail"
                 checked = {"verified_head": worktree.head} if exit_code == 0 else {}
@@ -295,9 +375,6 @@ def compile_delivery(
             return "done"
         return "implement" if state.get("proof_labels") else "review"
 
-    def after_implement(state: DeliveryState) -> str:
-        return "done" if state.get("halt") else "verify"
-
     def arm_merge(state: DeliveryState) -> DeliveryState:
         repo = state["repo"]
         head = state.get("verified_head")
@@ -312,7 +389,7 @@ def compile_delivery(
             case DryRun():
                 return {
                     "merge": "skipped", "path": ["merge"],
-                    "merge_command": merge_command(repo, "<number>", state.get("head_sha") or "<sha>"),
+                    "merge_command": merge_command(repo, "<number>", "<sha>"),
                 }
             case LiveRun(forge=forge, workspace=workspace):
                 if head is None:
@@ -333,6 +410,8 @@ def compile_delivery(
                     )
                 if worktree.branch is None:
                     return halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")
+                if worktree.branch != state.get("delivery_branch", worktree.branch):
+                    return halted("merge_not_armed", "Switch back to the delivery branch before arming merge.")
                 try:
                     hold = forge.merge_hold(repo)
                 except MergeHoldUnreadable as exc:
@@ -350,7 +429,8 @@ def compile_delivery(
 
     builder = StateGraph(DeliveryState)
     for name in REQUIRED_NODES:
-        builder.add_node(name, verify if name == "verify" else bind(name))
+        builder.add_node(name, {"implement": implement, "verify": verify}.get(name) or bind(name))
+    builder.add_node("publish", publish)
     builder.add_node("proof", prove)
     builder.add_node("needs_human", needs_human)
     builder.add_node("merge", arm_merge)
@@ -371,7 +451,12 @@ def compile_delivery(
         "needs_human", lambda state: state["path"][-1], {"triage": "triage", "spec": "spec"},
     )
     builder.add_edge("research", "done")
-    builder.add_conditional_edges("implement", after_implement, {"verify": "verify", "done": "done"})
+    builder.add_conditional_edges(
+        "implement", lambda state: "done" if state.get("halt") else "publish", {"publish": "publish", "done": "done"},
+    )
+    builder.add_conditional_edges(
+        "publish", lambda state: "done" if state.get("halt") else "verify", {"verify": "verify", "done": "done"},
+    )
     builder.add_conditional_edges(
         "review",
         after_review,
@@ -398,6 +483,7 @@ def run_delivery(
     check: str = "",
     config: Config | None = None,
     slice: dict[str, object] | None = None,
+    issue: int | None = None,
 ) -> DeliveryState:
     state: DeliveryState = {
         "repo": repo,
@@ -410,6 +496,8 @@ def run_delivery(
     }
     if slice is not None:
         state["slice"] = load_slice(slice)
+    if issue is not None:
+        state["issue"] = issue
     graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
     return graph.invoke(state)
 

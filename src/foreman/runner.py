@@ -10,11 +10,11 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, MergeHalt, compile_delivery, load_slice
+from foreman.delivery import PUBLISH_FAILED, DeliveryState, LiveRun, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
-RESUMABLE_HALTS: frozenset[MergeHalt] = frozenset({"merge_held", "merge_not_armed"})
+RESUMABLE_HALTS = frozenset({"merge_held", "merge_not_armed", PUBLISH_FAILED})
 
 
 def _load_slice(body: str) -> dict[str, object]:
