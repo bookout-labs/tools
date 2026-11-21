@@ -1,9 +1,12 @@
 import json
 from pathlib import Path
+from subprocess import CompletedProcess
 import unittest
 from unittest.mock import patch
 
 from foreman.dispatch import InvalidOutput
+from foreman.adapters.claude import ClaudeAdapter
+from foreman.config import ModelSpec
 from foreman.outcomes import Halt
 from foreman.review_context import ReviewContext, ReviewSide, SCRIPTED_REVIEW_CONTEXT
 from foreman.stage_output import ReviewOutput, parse_output
@@ -85,6 +88,43 @@ class CitationTests(unittest.TestCase):
 
 class CitationGraphTests(unittest.TestCase):
     run_rounds = test_review_rounds.ReviewRoundsTest.run_rounds
+
+    def test_preescaped_smoke_detail_cannot_be_posted(self):
+        captured = payload('escaped-smoke')
+        self.assertIn(r'Approve.\n\n', captured['detail'])
+        current = dict(payload(), detail=captured['detail'])
+        result = self.run_rounds([current])
+        self.assertEqual(result['halt'], Halt.invalid_output)
+        self.assertIn('detail: Extra inputs are not permitted', result['halt_detail'])
+        self.assertEqual(self.forge.reviews, [])
+
+    def test_captured_risk_through_claude_adapter_to_posted_body(self):
+        captured = payload('escaped-smoke')
+        current = payload()
+        for name, assessment in captured['risk'].items():
+            if name != 'level':
+                current['risk'][name]['assessment'] = assessment
+        current['risk']['alignment']['assessment'] += '\n\n' + captured['risk']['impact']
+        current['risk']['error_detection']['assessment'] += '\n\n' + captured['tool_facts'][5]['claim']
+        current['risk']['level'] = captured['risk']['level']
+        adapter = ClaudeAdapter(ModelSpec.parse('claude-opus-5-5-high'))
+        for pretty in (False, True):
+            with self.subTest(pretty=pretty):
+                envelope = dict(type='result', subtype='success', is_error=False,
+                                modelUsage={'claude-opus-5-5': {}}, structured_output=current)
+                process = CompletedProcess(['claude'], 0, json.dumps(envelope, indent=2 if pretty else None), '')
+                outcome = adapter.read(process)
+                self.assertEqual(outcome.kind, 'ran')
+                self.run_rounds([outcome.output])
+                body = self.forge.reviews[0][3]
+                self.assertIn('Merge risk: low\n\nalignment:', body)
+                self.assertIn('\n\nimpact:', body)
+                self.assertIn('\n\nVery small blast radius:', body)
+                self.assertIn(r"'Ada;\t' and '\n' in 'Ada;\n'", body)
+                self.assertIn('`if ";" in name: raise ValueError("name must not contain a semicolon")`', body)
+                self.assertNotIn(r'\n\n', body)
+                self.assertNotIn(r'\"', body)
+                self.assertNotIn('**What changed.**', body)
 
     def test_placeholder_rejected_before_post_or_merge(self):
         result = self.run_rounds([payload('placeholder-99')])
