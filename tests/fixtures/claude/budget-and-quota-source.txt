@@ -1,0 +1,19 @@
+Claude Code 2.1.329: verbatim embedded JavaScript from bin/claude.exe.
+Source: https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz
+Installed binary SHA-256: 8c1729568b19cdadedd0a978bf692f9f279ef554c8a333c4e132b94fd8725550
+
+aMl converts decimal text with Number, without a fixed decimal-place limit.
+The shared hs fields include costs from the session ledger on quota errors.
+A populated ledger can corroborate the total. This is source evidence, not a live quota capture.
+Byte offset 286305590:
+function aMl(e){let n=Number(e);return isNaN(n)||n<=0?void 0:n}
+Byte offset 308489439:
+.addOption(new _s("--max-budget-usd <amount>","Maximum dollar amount to spend on API calls (only works with --print)").argParser((y)=>{let P=aMl(y);if(P===void 0)throw new Xwe("--max-budget-usd must be a number greater than 0");return P}))
+Byte offset 286247146:
+function VS(){return n().costLedger.totalCostUSD()}
+Byte offset 286251067:
+function S1(){return n().costLedger.modelUsage()}
+Byte offset 309319390:
+function wde({startedAt:e,common:r,variant:o}){let y={type:"result",duration_ms:Math.max(0,Math.round(performance.now()-e)),uuid:jn()};return{...r,...o,...y}}
+Byte offset 309396687:
+let hs={duration_api_ms:mV(),stop_reason:Pe,session_id:et,total_cost_usd:VS(),usage:Ms(),modelUsage:S1(),permission_denials:Te,terminal_reason:nt,...is&&{stopped_by_permission_check:!0},fast_mode_state:yt(ge),fast_mode_disabled_reason:yt(xe),origin:F.origin,subagent_stats:Ghe(z.toolUseContext?.session),safety_stops:Are()},Fs=nt==="budget_exhausted"?{...wde({startedAt:N,common:{...hs,is_error:!0,num_turns:pt},variant:{subtype:"error_max_budget_usd",errors:[sNa(ye)],user_message_uuid:void 0}}),...q}:Ge===null&&L===void 0&&Tt?{...wde({startedAt:N,common:{...hs,is_error:!0,num_turns:Tt.turnCount},variant:{subtype:"error_max_turns",errors:[`Reached maximum number of turns (${Tt.maxTurns})`],user_message_uuid:void 0}}),...q}:zs!==null?{...wde({startedAt:N,common:{...hs,is_error:!0,num_turns:pt},variant:{subtype:"error_during_execution",errors:zs,user_message_uuid:void 0}}),...q}:{...wde({startedAt:N,common:{...hs,...L!==void 0&&{stop_reason:"tool_deferred"},is_error:Oe||Is,num_turns:pt},variant:{subtype:"success",api_error_status:we,...Lt!==void 0&&{api_error_code:Lt},...Ht!==void 0&&{api_error_type:Ht},...ft!==void 0&&{api_error_origin:ft},...X!==void 0&&{api_error:X},result:xs,structured_output:Es,ttft_ms:!Oe&&_s!==null?Math.max(0,Math.round(_s-N)):void 0,deferred_tool_use:L}}),...q}

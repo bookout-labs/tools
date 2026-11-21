@@ -86,10 +86,19 @@ class CitationTests(unittest.TestCase):
 class CitationGraphTests(unittest.TestCase):
     run_rounds = test_review_rounds.ReviewRoundsTest.run_rounds
 
+    def test_preescaped_smoke_detail_cannot_be_posted(self):
+        captured = payload('escaped-smoke')
+        self.assertIn(r'Approve.\n\n', captured['detail'])
+        current = dict(payload(), detail=captured['detail'])
+        result = self.run_rounds([current])
+        self.assertEqual(result['halt'], Halt.invalid_output)
+        self.assertIn('detail: Extra inputs are not permitted', result['halt_detail'])
+        self.assertEqual(self.forge.reviews, [])
+
     def test_placeholder_rejected_before_post_or_merge(self):
         result = self.run_rounds([payload('placeholder-99')])
         self.assertEqual(result['halt'], Halt.invalid_output)
-        self.assertIn('review claude-opus-5-5-high:', result['halt_detail'])
+        self.assertIn('review output from claude-opus-5-5-high:', result['halt_detail'])
         self.assertFalse(result.get('review_findings'))
         self.assertFalse(result.get('review_receipt'))
         self.assertEqual((self.forge.reviews, self.forge.merge_calls), ([], []))
