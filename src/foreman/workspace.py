@@ -19,7 +19,9 @@ def commit_sha(value: str) -> CommitSHA | None:
 def head_mismatch_detail(observed: str, verified: str) -> str:
     return (
         f"HEAD is {observed}, verification checked {verified}. "
-        "This run is finished and the merge was not armed."
+        "Reset the PR branch to the verified commit.\n"
+        f"  git reset --keep {verified}\n"
+        "Then rerun the same command. New commits need a new run."
     )
 
 

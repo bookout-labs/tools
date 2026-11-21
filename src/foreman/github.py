@@ -4,13 +4,14 @@ import json
 import subprocess
 from typing import Literal, Protocol, TypedDict, TypeVar
 
-from pydantic import BaseModel, PositiveInt, ValidationError
+from pydantic import BaseModel, PositiveInt, RootModel, ValidationError
 
 from foreman.redaction import redact
 from foreman.stage_output import Slice
 from foreman.workspace import commit_sha
 
 SQUASH_MERGE_FLAG = "--squash"
+MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
 PullRequestState = Literal["OPEN", "CLOSED", "MERGED"]
 Model = TypeVar("Model", bound=BaseModel)
 
@@ -20,6 +21,10 @@ class ForgeError(RuntimeError):
 
 
 class MergeNotArmed(ForgeError):
+    pass
+
+
+class MergeHoldUnreadable(ForgeError):
     pass
 
 
@@ -84,6 +89,19 @@ class CreatedIssue(BaseModel, strict=True):
     number: PositiveInt
 
 
+class ActionsVariable(BaseModel, strict=True):
+    name: str
+    value: str
+
+
+class ActionsVariables(RootModel[list[ActionsVariable]], strict=True):
+    # gh variable list --json name,value, v2.102.0:
+    # https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/variable/list/list_test.go#L112-L122
+    # gh fetches every page with per_page=100 and RESTWithNext.
+    # https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/variable/list/list.go#L237-L250
+    pass
+
+
 class Issue(TypedDict):
     title: str
     body: str
@@ -97,6 +115,7 @@ class Forge(Protocol):
     ) -> int: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
+    def merge_hold(self, repo: str) -> str | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
 
 
@@ -167,6 +186,13 @@ class LiveForge:
     def add_label(self, repo: str, number: int, label: str) -> None:
         repo, label = (redact(value) for value in (repo, label))
         self._run_command(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
+
+    def merge_hold(self, repo: str) -> str | None:
+        try:
+            variables = self._read(ActionsVariables, ["gh", "variable", "list", "--repo", repo, "--json", "name,value"])
+        except ForgeError as exc:
+            raise MergeHoldUnreadable(str(exc)) from exc
+        return next((variable.value for variable in variables.root if variable.name == MERGE_HOLD_VARIABLE), None)
 
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
         try:
