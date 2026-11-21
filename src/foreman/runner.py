@@ -11,7 +11,7 @@ from langgraph.types import Command
 
 from foreman.delivery import DeliveryState, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
-from foreman.github import GhClient, GitHub
+from foreman.github import Forge, LiveForge
 
 WorktreeInspector = Callable[[Path], tuple[str, bool]]
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
@@ -39,9 +39,8 @@ def run_live_delivery(
     checkpoint: Path,
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
-    github: GitHub | None = None,
+    forge: Forge | None = None,
     answer: str | None = None,
-    run_gh: Callable[[list[str]], int] | None = None,
     inspect_worktree: WorktreeInspector | None = None,
 ) -> dict:
     def run_check(command: str) -> int:
@@ -51,9 +50,10 @@ def run_live_delivery(
     config = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(cwd.resolve())
     inspect = inspect_worktree or _inspect_worktree
+    client = forge if forge is not None else LiveForge(cwd)
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         graph = compile_delivery(
-            dispatcher, checkpointer=saver, run_check=run_check, run_gh=run_gh,
+            dispatcher, checkpointer=saver, run_check=run_check, forge=client,
             inspect_worktree=lambda: inspect(cwd),
         )
         saved = graph.get_state(config)
@@ -67,7 +67,7 @@ def run_live_delivery(
                 raise ValueError("The answer must contain text.")
             graph.invoke(Command(resume=answer), config, durability="sync")
         elif not saved.values:
-            loaded = (github or GhClient()).load_issue(repo, issue)
+            loaded = client.load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
                 "repo": repo,
@@ -88,7 +88,6 @@ def run_live_delivery(
 
         saved = graph.get_state(config)
         if saved.values.get("stop") == "sliced":
-            client = github or GhClient()
             numbers = list(saved.values.get("child_issue_numbers", []))
             for item in saved.values["slices"][len(numbers):]:
                 dependencies = "\n".join(f"- {title}" for title in item["depends_on"]) or "None"

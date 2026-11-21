@@ -12,6 +12,7 @@ from langgraph.types import interrupt
 
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.github import DryRunForge, Forge, MergeNotArmed
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.stage_output import (
     Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
@@ -46,7 +47,7 @@ class DeliveryState(TypedDict, total=False):
     head_sha: str | None
     head_checked: bool
     merge_armed: bool
-    merge_args: list[str]
+    merge_skipped: bool
     browser_proof: dict[str, object] | None
     formal_proof: dict[str, object] | None
     proof_labels: dict[str, str]
@@ -152,9 +153,11 @@ def compile_delivery(
     *,
     checkpointer: BaseCheckpointSaver | None = None,
     run_check: Callable[[str], int] | None = None,
-    run_gh: Callable[[list[str]], int] | None = None,
+    forge: Forge | None = None,
     inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
 ):
+    if forge is None or (run_check is not None and isinstance(forge, DryRunForge)):
+        raise ValueError("Delivery requires a forge, and live checks require a live forge.")
     config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
@@ -281,16 +284,32 @@ def compile_delivery(
         return "done" if state.get("halt") else "verify"
 
     def arm_merge(state: DeliveryState) -> DeliveryState:
+        if isinstance(forge, DryRunForge):
+            forge.arm_auto_merge(state["repo"], state.get("issue"), state.get("head_sha"))
+            return {"merge_armed": False, "merge_skipped": True, "path": ["merge"]}
+
+        def halted(detail: str) -> DeliveryState:
+            return {"merge_armed": False, "halt": "merge_not_armed", "halt_detail": detail, "path": ["merge"]}
+
         head = state.get("head_sha")
         if not head or not FULL_SHA.fullmatch(head):
-            return {"merge_armed": False, "path": ["merge"]}
-        args = ["gh", "pr", "merge", "--auto", "--match-head-commit", head]
-        if inspect_worktree is not None:
-            current, clean = inspect_worktree()
-            if not state.get("head_checked") or not clean or current != head:
-                return {"merge_armed": False, "merge_args": args, "path": ["merge"]}
-        armed = run_gh(args) == 0 if run_gh is not None else run_check is None
-        return {"merge_armed": armed, "merge_args": args, "path": ["merge"]}
+            return halted("Merge requires a full head SHA from verification.")
+        if not state.get("head_checked") or inspect_worktree is None:
+            return halted("Verification did not check HEAD in the worktree.")
+        current, clean = inspect_worktree()
+        if not clean:
+            return halted("The worktree has changes or Git could not inspect it.")
+        if current != head:
+            return halted(
+                f"HEAD changed after verification. Check out {head} and rerun the same command. "
+                "New commits need a new run."
+            )
+        repo, issue = state["repo"], state["issue"]
+        try:
+            forge.arm_auto_merge(repo, issue, head)
+        except MergeNotArmed as exc:
+            return halted(str(exc))
+        return {"merge_armed": True, "path": ["merge"]}
 
     def finish(state: DeliveryState) -> DeliveryState:
         return {"stop": stop_reason(state), "path": ["done"]}
@@ -357,12 +376,12 @@ def run_delivery(
     }
     if slice is not None:
         state["slice"] = load_slice(slice)
-    graph = compile_delivery(dispatcher, config)
+    graph = compile_delivery(dispatcher, config, forge=DryRunForge())
     return graph.invoke(state)
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
     if dispatcher is None:
         dispatcher = FailoverDispatcher(lambda *args: {"triage": "implement"})
-    graph = compile_delivery(dispatcher, config)
+    graph = compile_delivery(dispatcher, config, forge=DryRunForge())
     return graph.get_graph().draw_mermaid()

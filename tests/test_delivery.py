@@ -7,6 +7,7 @@ from foreman.config import NodeConfig, load_config
 from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
+from foreman.github import DryRunForge
 
 
 SLICES = [
@@ -65,7 +66,8 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["risk"]["level"], "low")
-        self.assertTrue(result["merge_armed"])
+        self.assertFalse(result["merge_armed"])
+        self.assertTrue(result["merge_skipped"])
         self.assertEqual(result["head_sha"], HEAD_SHA)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
@@ -301,7 +303,12 @@ class DeliveryTest(unittest.TestCase):
         for name in REQUIRED_NODES + ("merge", "done"):
             self.assertIn(name, picture)
         self.assertNotIn("claude-opus", picture)
-        compile_delivery(FailoverDispatcher(ScriptHandler()), load_config())
+        compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), forge=DryRunForge())
+
+    def test_live_checks_require_a_live_forge(self):
+        for forge in (None, DryRunForge()):
+            with self.subTest(forge=forge), self.assertRaisesRegex(ValueError, "require a live forge"):
+                compile_delivery(None, forge=forge, run_check=lambda command: 0)
 
     def test_readme_diagram_matches_the_generated_graph(self):
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()

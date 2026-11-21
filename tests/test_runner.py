@@ -11,17 +11,13 @@ from unittest.mock import patch
 from foreman.cli import main
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
+from foreman.github import MergeNotArmed
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, parse_output
 from foreman.worker import CliWorker
 
 
 HEAD = "a" * 40
-OPEN_PR = {
-    "number": 12, "state": "OPEN", "headRefOid": HEAD.upper(),
-    "headRefName": "8-list-items", "baseRefName": "main",
-}
-ARM_ARGS = ["gh", "pr", "merge", "--auto", "--match-head-commit", HEAD]
 SLICE = {
     "title": "List items once",
     "acceptance": "The view lists every item once.",
@@ -62,6 +58,10 @@ class FakeGitHub:
         self.merged = set()
         self.label_calls = []
         self.issue_labels = {}
+        self.merge_calls = []
+
+    def arm_auto_merge(self, repo, issue, sha):
+        self.merge_calls.append((repo, issue, sha))
 
     def load_issue(self, repo, number):
         if number in self.issue_labels:
@@ -200,7 +200,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.prompts = []
         self.github = FakeGitHub()
 
-    def walk(self, replies, *, issue=8, check="exit 0", run_gh=None, inspect_worktree=clean_worktree):
+    def walk(self, replies, *, issue=8, check="exit 0", inspect_worktree=clean_worktree):
         outputs = iter(replies)
 
         def run(args, cwd):
@@ -212,13 +212,13 @@ class LiveRunnerTest(unittest.TestCase):
         return run_live_delivery(
             repo="Example/Engine", issue=issue, check=check, cwd=self.cwd,
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
-            run_gh=run_gh, github=self.github, inspect_worktree=inspect_worktree,
+            forge=self.github, inspect_worktree=inspect_worktree,
         )
 
     def test_review_note_reaches_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
         changes = {**APPROVE, "review": "changes. Add a check."}
-        self.walk([{"triage": "implement"}, built, changes, built, APPROVE], run_gh=lambda _: 0)
+        self.walk([{"triage": "implement"}, built, changes, built, APPROVE])
         prompt = self.prompts[3]
         self.assertIn('"title": "ImplementOutput"', prompt)
         self.assertEqual(json.loads(prompt.split("Delivery state:\n")[1])["review_note"], "Add a check.")
@@ -280,22 +280,15 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_injected_workers_reach_merge_after_a_real_check_in_the_repo(self):
         (self.cwd / "expected").touch()
-        calls = []
-
-        def gh(args):
-            calls.append(args)
-            return 0
-
         result = self.walk(
             [{"triage": "implement"}, {"implementation": "built", "head_sha": "b" * 40}, APPROVE],
-            check="test -f expected", run_gh=gh,
+            check="test -f expected",
         )
         self.assertEqual(self.calls, ["claude", "codex", "claude"])
         self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "merge", "done"])
         self.assertEqual(result["check_exit_code"], 0)
         self.assertEqual(result["head_sha"], HEAD)
-        self.assertEqual(result["merge_args"], ARM_ARGS)
-        self.assertEqual(calls, [ARM_ARGS])
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, HEAD)])
         self.assertTrue(result["merge_armed"])
 
     def test_nonzero_check_exit_consumes_the_cap_without_dispatched_verify_or_review(self):
@@ -305,7 +298,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.calls, ["claude", "codex", "codex", "codex"])
         self.assertNotIn("merge", result["path"])
 
-    def test_both_proofs_pass_before_review_and_record_the_merge_command(self):
+    def test_both_proofs_pass_before_review_and_merge(self):
         self.github.body = slice_body(SLICE)
         result = self.walk([
             {"triage": "spec"},
@@ -316,8 +309,8 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["path"][-5:], ["verify", "proof", "review", "merge", "done"])
         self.assertEqual(result["slice"], SLICE)
         self.assertEqual(result["proof_labels"], {})
-        self.assertEqual(result["merge_args"], ARM_ARGS)
-        self.assertFalse(result["merge_armed"])
+        self.assertTrue(result["merge_armed"])
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, HEAD)])
 
     def test_missing_proof_stops_before_review(self):
         self.github.body = slice_body(SLICE)
@@ -362,8 +355,8 @@ class LiveRunnerTest(unittest.TestCase):
             "triage", "implement", "verify", "proof", "implement", "verify", "proof", "review", "merge", "done",
         ])
         self.assertEqual(result["review_rounds"], 1)
-        self.assertFalse(result["merge_armed"])
-        self.assertEqual(result["merge_args"], ARM_ARGS)
+        self.assertTrue(result["merge_armed"])
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, HEAD)])
 
     def test_formal_block_consumes_the_review_cap(self):
         self.github.body = slice_body(SLICE)
@@ -381,7 +374,7 @@ class LiveRunnerTest(unittest.TestCase):
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "touch ran"],
-                worker_runner=None, checkpoint=self.checkpoint, github=self.github, inspect_worktree=clean_worktree,
+                worker_runner=None, checkpoint=self.checkpoint, forge=self.github, inspect_worktree=clean_worktree,
             )
         self.assertEqual(code, 0)
         self.assertIn("done no_dispatcher", stdout.getvalue())
@@ -394,63 +387,30 @@ class LiveRunnerTest(unittest.TestCase):
                 result = self.walk(
                     [{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}],
                     check="touch ran", inspect_worktree=lambda cwd: snapshot,
-                    run_gh=lambda args: self.fail(f"unexpected merge command {args}"),
                 )
                 self.assertEqual(result["stop"], "dirty_worktree")
                 self.assertEqual(result["path"], ["triage", "implement", "verify", "done"])
                 self.assertFalse((self.cwd / "ran").exists())
                 self.assertNotIn("check_exit_code", result)
+                self.assertEqual(self.github.merge_calls, [])
 
     def test_worktree_changes_after_check_leave_the_command_unarmed(self):
-        for snapshot in ((HEAD, False), ("b" * 40, True)):
+        for snapshot, detail in (
+            ((HEAD, False), "worktree has changes"),
+            (("b" * 40, True), f"Check out {HEAD} and rerun the same command. New commits need a new run."),
+        ):
             with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd) as directory:
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 snapshots = iter([(HEAD, True), snapshot])
                 result = self.walk(
                     [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
                     inspect_worktree=lambda cwd: next(snapshots),
-                    run_gh=lambda args: self.fail(f"unexpected merge command {args}"),
                 )
                 self.assertEqual(result["check_exit_code"], 0)
-                self.assertEqual(result["merge_args"], ARM_ARGS)
                 self.assertFalse(result["merge_armed"])
-
-    def test_failed_gh_leaves_the_exact_command_recorded_but_unarmed(self):
-        result = self.walk(
-            [{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}, APPROVE],
-            run_gh=lambda args: 1,
-        )
-        self.assertFalse(result["merge_armed"])
-        self.assertEqual(result["merge_args"], ARM_ARGS)
-
-    def test_default_merge_runner_discards_stdin_and_returns_exit_code(self):
-        from foreman.cli import _run_gh
-
-        with patch("foreman.cli.subprocess.run", return_value=subprocess.CompletedProcess(ARM_ARGS, 1)) as run:
-            self.assertEqual(_run_gh(ARM_ARGS), 1)
-        run.assert_called_once_with(ARM_ARGS, shell=False, stdin=subprocess.DEVNULL)
-
-    def test_default_pr_lookup_handles_gh_responses(self):
-        from foreman.cli import _find_pr
-
-        args = [
-            "gh", "pr", "view", "--repo", "Example/Engine", "--json",
-            "number,state,headRefOid,headRefName,baseRefName", "",
-        ]
-        for exit_code, output, expected in (
-            (0, json.dumps(OPEN_PR), OPEN_PR),
-            (1, json.dumps(OPEN_PR), None),
-            (0, "invalid JSON", None),
-            (0, "[]", None),
-        ):
-            with self.subTest(exit_code=exit_code, output=output), patch(
-                "foreman.cli.subprocess.run", return_value=subprocess.CompletedProcess(args, exit_code, output),
-            ) as run:
-                self.assertEqual(_find_pr("Example/Engine"), expected)
-                run.assert_called_once_with(
-                    args, shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL, text=True,
-                )
+                self.assertEqual(result["stop"], "merge_not_armed")
+                self.assertIn(detail, result["halt_detail"])
+                self.assertEqual(self.github.merge_calls, [])
 
     def test_default_inspector_reads_head_and_porcelain_status(self):
         from foreman.runner import _inspect_worktree
@@ -467,80 +427,38 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertTrue(all(call.kwargs["shell"] is False for call in run.call_args_list))
                 self.assertTrue(all(call.kwargs["cwd"] == self.cwd for call in run.call_args_list))
 
-    def run_main_merge(self, checkpoint, find_pr, run_gh):
-        replies = iter([
-            {"triage": "implement", "slice": EMPTY_SLICE},
-            {"implementation": "built", "head_sha": HEAD},
-            APPROVE,
-        ])
-
-        def worker(args, cwd):
-            return worker_reply(args, next(replies))
-
-        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
+    def test_main_displays_the_forge_failure(self):
+        replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        detail = "GraphQL: Auto-merge is disabled"
+        with (
+            contextlib.chdir(self.cwd),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+            patch.object(self.github, "arm_auto_merge", side_effect=MergeNotArmed(detail)) as arm,
+        ):
             code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
-                worker_runner=worker, checkpoint=checkpoint, github=self.github, run_gh=run_gh, find_pr=find_pr,
-                inspect_worktree=clean_worktree,
+                ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
+                worker_runner=lambda args, cwd: worker_reply(args, next(replies)),
+                checkpoint=self.checkpoint, forge=self.github, inspect_worktree=clean_worktree,
             )
         self.assertEqual(code, 0)
-        self.assertIn(" ".join(ARM_ARGS), stdout.getvalue())
-        return stdout.getvalue()
+        arm.assert_called_once_with("Example/Target", 8, HEAD)
+        self.assertIn(f"merge not armed\ncheck exit 0\ndone merge_not_armed\n{detail}", stdout.getvalue())
 
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["factory"])
-        calls = []
-
-        def gh(args):
-            calls.append(args)
-            return 0
-
-        result = self.run_main_merge(self.checkpoint, lambda repo: OPEN_PR, gh)
-        path = [line.split()[0] for line in result.splitlines() if not line.startswith(("check exit ", "gh "))]
-        self.assertEqual(path, ["triage", "implement", "verify", "review", "merge", "done"])
-        self.assertIn("merge armed", result)
-        self.assertIn("done verified", result)
-        self.assertEqual(calls, [ARM_ARGS])
+        result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "merge", "done"])
+        self.assertTrue(result["merge_armed"])
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, HEAD)])
         self.assertEqual(self.github.created, [])
 
-    def test_main_arms_or_records_merge_using_injected_runner(self):
-        for exit_code in (0, 1):
-            with self.subTest(exit_code=exit_code), TemporaryDirectory(dir=self.cwd) as directory:
-                calls = []
-
-                def find_pr(repo):
-                    self.assertEqual(repo, "Example/Engine")
-                    return OPEN_PR
-
-                def gh(args):
-                    calls.append(args)
-                    return exit_code
-
-                result = self.run_main_merge(Path(directory) / "run.sqlite3", find_pr, gh)
-                self.assertEqual(calls, [ARM_ARGS])
-                self.assertIn("merge armed" if exit_code == 0 else "merge arm recorded", result)
-
-    def test_main_records_merge_when_there_is_no_pull_request(self):
-        self.assert_merge_recorded_without_calling_gh(None)
-
-    def test_main_records_merge_when_the_pull_request_head_differs(self):
-        self.assert_merge_recorded_without_calling_gh({**OPEN_PR, "headRefOid": "b" * 40})
-
-    def test_main_records_merge_when_the_pull_request_is_closed(self):
-        self.assert_merge_recorded_without_calling_gh({**OPEN_PR, "state": "CLOSED"})
-
-    def test_main_records_merge_when_the_pull_request_is_for_another_issue(self):
-        self.assert_merge_recorded_without_calling_gh({**OPEN_PR, "headRefName": "80-list-items"})
-
-    def test_main_records_merge_when_the_pull_request_targets_another_branch(self):
-        self.assert_merge_recorded_without_calling_gh({**OPEN_PR, "baseRefName": "pr-match"})
-
-    def assert_merge_recorded_without_calling_gh(self, pr):
-        def unexpected_merge(args):
-            self.fail(f"unexpected merge command {args}")
-
-        result = self.run_main_merge(self.checkpoint, lambda repo: pr, unexpected_merge)
-        self.assertIn("merge arm recorded", result)
+    def test_main_dry_run_reports_a_skipped_merge(self):
+        with contextlib.redirect_stdout(io.StringIO()) as stdout, patch("foreman.github.subprocess.run") as run:
+            code = main(["run", "delivery", "--repo", "Example/Target", "--request", "List items", "--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertIn("merge skipped (dry run)\ndone verified", stdout.getvalue())
+        run.assert_not_called()
 
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
         script = """
@@ -548,7 +466,7 @@ import json
 from pathlib import Path
 import sys
 from foreman.cli import main
-from test_runner import APPROVE, HEAD, OPEN_PR, FakeGitHub, clean_worktree, worker_reply
+from test_runner import APPROVE, HEAD, FakeGitHub, clean_worktree, worker_reply
 
 def run(args, cwd):
     prompt = args[-1]
@@ -571,8 +489,8 @@ def run(args, cwd):
     return worker_reply(args, APPROVE)
 
 sys.exit(main(
-    sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]), github=FakeGitHub(),
-    run_gh=lambda args: 0, find_pr=lambda repo: OPEN_PR, inspect_worktree=clean_worktree,
+    sys.argv[2:], worker_runner=run, checkpoint=Path(sys.argv[1]), forge=FakeGitHub(),
+    inspect_worktree=clean_worktree,
 ))
 """
         def invoke(*flags):
@@ -591,7 +509,6 @@ sys.exit(main(
         self.assertEqual(completed.count("triage "), 1)
         self.assertEqual(completed.count("spec "), 2)
         self.assertIn("merge armed", completed)
-        self.assertIn(" ".join(ARM_ARGS), completed)
         self.assertIn("done verified", completed)
         self.assertEqual(invoke(), completed)
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
