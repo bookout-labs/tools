@@ -7,39 +7,58 @@ Shared tools for the engine repositories. This repo lives in the bookout-labs or
 ## Delivery graph
 
 ```mermaid
-flowchart TD
-  __start__([start])
-  __end__([end])
-  __start__ -. missing or invalid live slice .-> done
-  __start__ -.-> triage
-  implement -. halted .-> done
-  implement -.-> verify
-  merge --> done
-  needs_human -. answer to spec .-> spec
-  needs_human -. answer to triage .-> triage
-  proof -. missing evidence or cap reached .-> done
-  proof -. blocked, under the cap .-> implement
-  proof -. accepted .-> review
-  research --> done
-  review -. cap reached or no reviewer .-> done
-  review -. changes, under the cap .-> implement
-  review -. approve .-> merge
-  spec -. parent sliced or stopped .-> done
-  spec -. slice ready .-> implement
-  spec -. needs a person .-> needs_human
-  triage -. halted or dry run needs a person .-> done
-  triage -. decided, one pull request .-> implement
-  triage -. needs a person .-> needs_human
-  triage -. question on a slice .-> research
-  triage -. larger change, open choice, or question on a parent .-> spec
-  verify -. dirty worktree, invalid HEAD, or cap reached .-> done
-  verify -. fail, under the cap .-> implement
-  verify -. pass with proof obligations .-> proof
-  verify -. pass without proof obligations .-> review
-  done --> __end__
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	triage(triage)
+	research(research)
+	spec(spec)
+	implement(implement)
+	verify(verify)
+	review(review)
+	proof(proof)
+	needs_human(needs_human)
+	merge(merge)
+	done(done)
+	__end__([<p>__end__</p>]):::last
+	__start__ -.-> done;
+	__start__ -.-> triage;
+	implement -.-> done;
+	implement -.-> verify;
+	merge --> done;
+	needs_human -.-> spec;
+	needs_human -.-> triage;
+	proof -.-> done;
+	proof -.-> implement;
+	proof -.-> review;
+	research --> done;
+	review -.-> done;
+	review -.-> implement;
+	review -.-> merge;
+	spec -.-> done;
+	spec -.-> implement;
+	spec -.-> needs_human;
+	triage -.-> done;
+	triage -.-> implement;
+	triage -.-> needs_human;
+	triage -.-> research;
+	triage -.-> spec;
+	verify -.-> done;
+	verify -.-> implement;
+	verify -.-> proof;
+	verify -.-> review;
+	done --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+
 ```
 
-The edges are code. The model list is `src/foreman/models.toml`. Quota exhaustion tries the next model in that list. A node does not edit the list, and it does not decide the next node.
+Generate the diagram with `foreman diagram delivery`. The model list is `src/foreman/models.toml`. Quota exhaustion tries the next model in that list. A node does not edit the list, and it does not decide the next node.
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If the builder model is missing or every eligible reviewer is unavailable, the run stops with `no_reviewer`. The record includes `halt_detail` for both stops.
 
@@ -51,7 +70,7 @@ After approval, the live merge node records `gh pr merge --auto --match-head-com
 
 Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 
-A parent or slice goes straight to implement when the behavior is decided and the change fits in one pull request of about 400 changed lines or fewer. A parent on this route files no child issues. Changes that need more than one pull request or leave a product choice open go to spec. An informational request goes to spec on a parent and to research on a slice. An open product choice pauses a live run for a person's answer.
+A parent or slice goes straight to implement when the behavior is decided and the change fits in one pull request of about 400 changed lines or fewer. A parent on this route is its own slice. It carries the same proof obligations as any slice and files no child issues. Changes that need more than one pull request or leave a product choice open go to spec. An informational request goes to spec on a parent and to research on a slice. An open product choice pauses a live run for a person's answer.
 
 A ready parent spec records its slices and stops as `sliced`. Each child issue includes a fenced JSON object with its title, acceptance, dependency titles, screen path or empty string, and any named PostgreSQL constraints. Live runs load that object as the slice for the run. A `slice`-labelled issue with a missing or invalid object stops at `missing_slice`.
 

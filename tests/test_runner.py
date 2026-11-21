@@ -317,6 +317,13 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(result["proof_labels"], {missing: "insufficient_evidence"})
                 self.assertNotIn("review", result["path"])
 
+    def test_parent_stops_before_review_when_its_proof_is_missing(self):
+        self.github = FakeGitHub(["factory"])
+        result = self.walk([{"triage": "implement", "slice": SLICE}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "proof", "done"])
+        self.assertEqual(result["stop"], "insufficient_evidence")
+        self.assertEqual(result["proof_labels"], {"browser": "insufficient_evidence", "formal": "insufficient_evidence"})
+
     def test_browser_block_rebuilds_and_rechecks_before_review(self):
         self.github.body = slice_body(SLICE)
         blocked = {"implementation": "built", "formal_proof": FORMAL, "browser_proof": {**BROWSER, "passed": False}}
@@ -432,7 +439,11 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertTrue(all(call.kwargs["cwd"] == self.cwd for call in run.call_args_list))
 
     def run_main_merge(self, checkpoint, find_pr, run_gh):
-        replies = iter([{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}, APPROVE])
+        replies = iter([
+            {"triage": "implement", "slice": EMPTY_SLICE},
+            {"implementation": "built", "head_sha": HEAD},
+            APPROVE,
+        ])
 
         def worker(args, cwd):
             return worker_reply(args, next(replies))
@@ -446,6 +457,22 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(" ".join(ARM_ARGS), stdout.getvalue())
         return stdout.getvalue()
+
+    def test_parent_arms_its_pull_request_without_filing_slices(self):
+        self.github = FakeGitHub(["factory"])
+        calls = []
+
+        def gh(args):
+            calls.append(args)
+            return 0
+
+        result = self.run_main_merge(self.checkpoint, lambda repo: OPEN_PR, gh)
+        path = [line.split()[0] for line in result.splitlines() if not line.startswith(("check exit ", "gh "))]
+        self.assertEqual(path, ["triage", "implement", "verify", "review", "merge", "done"])
+        self.assertIn("merge armed", result)
+        self.assertIn("done verified", result)
+        self.assertEqual(calls, [ARM_ARGS])
+        self.assertEqual(self.github.created, [])
 
     def test_main_arms_or_records_merge_using_injected_runner(self):
         for exit_code in (0, 1):

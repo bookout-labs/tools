@@ -2,15 +2,11 @@ import unittest
 
 from dataclasses import replace
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from unittest.mock import Mock
 
 from foreman.config import NodeConfig, load_config
 from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
-from foreman.github import GitHub
-from foreman.runner import run_live_delivery
 
 
 SLICES = [
@@ -19,7 +15,7 @@ SLICES = [
         "acceptance": "The board shows the deals.",
         "depends_on": [],
         "screen": "docs/screens/deals.md",
-        "properties": [{"name": "deals_external_id_key", "constraint": "UNIQUE (external_id)"}],
+        "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
     },
     {
         "title": "Board saves a move",
@@ -82,26 +78,6 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "invalid_output")
         self.assertEqual(result["halt_detail"], "slice.depends_on.0: unknown dependency Other")
 
-    def test_a_parent_goes_straight_to_implement_and_files_no_slices(self):
-        github = Mock(spec=GitHub)
-        github.load_issue.return_value = {"title": "Add a field", "body": "", "labels": ["factory"]}
-        github.create_issue.side_effect = [101, 102]
-        merge = Mock(return_value=0)
-        with TemporaryDirectory() as directory:
-            cwd = Path(directory)
-            result = run_live_delivery(
-                repo="Example/Engine", issue=1, check="exit 0", cwd=cwd,
-                checkpoint=cwd / "runs.sqlite3",
-                dispatcher=FailoverDispatcher(ScriptHandler(triage="implement", slices=SLICES)),
-                github=github, run_gh=merge, inspect_worktree=lambda _: (HEAD_SHA, True),
-            )
-
-        self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "merge", "done"])
-        self.assertEqual(result["stop"], "verified")
-        self.assertTrue(result["merge_armed"])
-        merge.assert_called_once_with(["gh", "pr", "merge", "--auto", "--match-head-commit", HEAD_SHA])
-        github.create_issue.assert_not_called()
-
     def test_a_parent_routes_spec_and_question_to_spec(self):
         for triage in ("spec", "question"):
             with self.subTest(triage=triage):
@@ -123,8 +99,8 @@ class DeliveryTest(unittest.TestCase):
             "double dot": [{**first, "screen": "docs/screens/deals..draft.md"}],
             "backslash": [{**first, "screen": r"docs/screens/other\deals.md"}],
             "nested screen": [{**first, "screen": "docs/screens/sub/deals.md"}],
-            "blank constraint": [{**first, "properties": [{"name": "Visibility", "constraint": " "}]}],
-            "missing name": [{**first, "properties": [{"constraint": "Every deal appears once."}]}],
+            "blank constraint": [{**first, "properties": [{"name": "Deal external IDs are unique", "constraint": " "}]}],
+            "missing name": [{**first, "properties": [{"constraint": "deals_external_id_key"}]}],
         }
         for case, slices in cases.items():
             with self.subTest(case=case):
@@ -311,6 +287,11 @@ class DeliveryTest(unittest.TestCase):
             self.assertIn(name, picture)
         self.assertNotIn("claude-opus", picture)
         compile_delivery(FailoverDispatcher(ScriptHandler()), load_config())
+
+    def test_readme_diagram_matches_the_generated_graph(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        mermaid = readme.split("```mermaid\n", 1)[1].split("\n```", 1)[0]
+        self.assertEqual(mermaid, diagram())
 
 
 if __name__ == "__main__":

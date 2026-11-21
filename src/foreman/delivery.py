@@ -106,8 +106,10 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
         update["slices"] = clean_slices(output.slices, "slices")
     if isinstance(output, SlicePlanningOutput):
         update["human_question"] = output.human_question or ""
-        ready = update.get("triage") == "implement" or update.get("spec_gate") == "ready"
-        if ready and state.get("issue_kind") == "slice" and "slice" not in state and output.slice is not None:
+        ready = update.get("triage") == "implement" or (
+            state.get("issue_kind") == "slice" and update.get("spec_gate") == "ready"
+        )
+        if ready and "slice" not in state and output.slice is not None:
             update["slice"] = clean_slices([output.slice], "slice")[0]
     if update.get("review") == "changes" or update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1

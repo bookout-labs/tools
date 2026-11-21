@@ -65,7 +65,7 @@ def call_api(prompt, options, context):
                         "acceptance": "The board shows the deals.",
                         "depends_on": [],
                         "screen": "docs/screens/deals.md",
-                        "properties": [{"name": "deals_external_id_key", "constraint": "UNIQUE (external_id)"}],
+                        "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
                     },
                     {
                         "title": "Board saves a move",

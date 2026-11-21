@@ -8,7 +8,7 @@ Each slice has exactly these keys.
 - `acceptance` states how to check the outcome, including response checks and other behavior checks.
 - `depends_on` lists other slice titles that must land first. Use an empty list when independent.
 - `screen` gives the proof obligation as a path like `docs/screens/deals.md`. Use an empty string for work without a screen. Use a Markdown file directly under `docs/screens/` and omit any `..` from the path.
-- `properties` lists only named rules that PostgreSQL enforces: `CHECK`, `UNIQUE`, `FOREIGN KEY`, `EXCLUSION`, or `NOT NULL`. Set `name` to the constraint name and `constraint` to the database rule. Use an empty list when the slice adds no database rule.
+- `properties` lists named PostgreSQL `CHECK`, `UNIQUE`, `FOREIGN KEY`, `EXCLUSION`, or `NOT NULL` constraints. Set `name` to the rule in plain words and `constraint` to the exact PostgreSQL constraint name, such as `deals_external_id_key`. Use an empty list when the slice adds no database rule.
 
 The graph records the slices and stops the parent run.
 
