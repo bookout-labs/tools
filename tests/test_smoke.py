@@ -109,8 +109,12 @@ class SmokeTest(unittest.TestCase):
         for halt in (Halt.cli_missing, Halt.env_unavailable, Halt.quota_exhausted, Halt.reviewer_unavailable):
             with self.subTest(halt=halt):
                 state = DeliveryResult(run=RunState(), plan=PlanState(), checks=ChecksState(),
-                                      path=["done"], stop=halt, halt=halt)
+                                      path=["triage"] if halt == Halt.quota_exhausted else ["done"], stop=halt, halt=halt)
                 self.assert_verdict(state, 78, f"halt={halt}", "checkpoint")
+                before = state["path"]
+                state["path"] = []
+                self.assert_verdict(state, 1, "terminal.done", "checkpoint")
+                state["path"] = before
                 state["merge"] = MergeState(status="armed")
                 self.assert_verdict(state, 1, "merge.armed_with_halt", "checkpoint")
                 state["stop"] = "verified"
