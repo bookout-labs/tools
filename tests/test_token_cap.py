@@ -1,5 +1,4 @@
 import tests
-from foreman.dry_run import DryRun
 import contextlib
 import io
 from pathlib import Path
@@ -12,7 +11,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.adapters import Outcome, Usage
 from foreman.cli import _print_run, main, run_exit_code
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, run_delivery, run_tokens
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import run_live_delivery
 from foreman.state import ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION, CheckpointVersionError
 from foreman.skill_rules import SkillMissing
@@ -143,7 +142,7 @@ class TokenCapTests(unittest.TestCase):
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=live, checkpointer=saver)
                 graph.update_state(invocation, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
-                    "triage": "implement",  "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
+                    "triage": "implement", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
                 graph.update_state(invocation, {"run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                                 "path": ["implement", "done"]}, as_node="done")
             with self.assertRaisesRegex(ValueError, "unknown usage history"):

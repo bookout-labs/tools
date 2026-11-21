@@ -30,7 +30,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.state import ChecksState, RunState, checkpoint_serializer, CheckpointVersionError
-from foreman.skill_rules import export_skills, git
+from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
@@ -995,12 +995,26 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         commit = "f" * 40
         pin = self.pin.model_copy(update={"commit": commit})
         with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
-            result = self.walk([])
+            result = self.walk([], preflight="exit 9")
+        self.assertEqual(result["checks"], ChecksState(check="exit 0", preflight="exit 9"))
         self.assertEqual(result["stop"], "skill_missing")
         self.assertEqual(run_exit_code(result), 1)
         self.assertEqual(result["skill_reason"], "pin_unavailable")
         self.assertEqual(result["halt_detail"], f"pstack pin unavailable, commit {commit}")
         self.assertEqual(self.calls, [])
+
+    def test_missing_pin_on_resume_preserves_checks(self):
+        pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending"})
+        with patch.object(self.github, "readiness", return_value=pending):
+            halted = self.walk([{"triage": "implement"},
+                {"implementation": "built", "browser_proof": BROWSER, "formal_proof": FORMAL}, APPROVE], preflight="exit 0")
+        self.assertEqual(halted["stop"], "ci_pending")
+        result = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
+        self.assertEqual(result["checks"], halted["checks"])
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
+        self.assertEqual(saved.checkpoint["channel_values"]["checks"], halted["checks"])
 
     def test_quota_pause_returns_the_resumable_cli_exit_code(self):
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
@@ -1708,6 +1722,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result.get("stop"), "env_unavailable")
         self.assertEqual(result.get("review_rounds"), 0)
         self.assertEqual(result["checks"].check_exit_code, 1)
+        self.assertEqual(result["checks"].verify, "")
         self.assertIn("test -f ready", result.get("halt_detail", ""))
         self.assertIn("exited with 1", result.get("halt_detail", ""))
         self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "done"])
@@ -1748,6 +1763,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual(result.get("stop"), "env_unavailable")
                 self.assertEqual(result.get("review_rounds"), 0)
                 self.assertEqual(result["checks"].check_exit_code, exit_code)
+                self.assertEqual(result["checks"].verify, "")
                 for detail in (command, str(exit_code), reason):
                     self.assertIn(detail, result.get("halt_detail", ""))
         self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\n")
@@ -1868,8 +1884,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         with patch.object(workspace, "commit", side_effect=commit), patch.object(
             self.github, "readiness", return_value=ready.model_copy(update={"outcome": "conflict"}),
         ):
-            halted = self.walk([{"triage": "implement"}, {"implementation": "first"}, changes,
-                                {"implementation": "second"}, resolved], workspace=workspace)
+            halted = self.walk([{"triage": "implement"}, {"implementation": "first", "browser_proof": BROWSER, "formal_proof": FORMAL}, changes,
+                                {"implementation": "second", "browser_proof": BROWSER, "formal_proof": FORMAL}, resolved], workspace=workspace, preflight="exit 0")
+        self.assertEqual(halted["checks"].browser_proof, BROWSER)
+        self.assertEqual(halted["checks"].formal_proof, FORMAL)
+        self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "pr_conflict")
         self.assertEqual(halted["work"].head_sha, "2" * 40)
         remote = ready.model_copy(deep=True)
@@ -1885,6 +1904,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
+        self.assertEqual(saved.checkpoint["channel_values"]["checks"], resumed["checks"])
         self.assertEqual(saved.checkpoint["channel_values"]["work"], expected)
         self.assertEqual(saved.checkpoint["channel_values"]["run"], halted["run"])
 
@@ -1902,7 +1922,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
         changes = {**APPROVE, "findings": [FINDING]}
         with patch.object(workspace, "create_branch", side_effect=prepare_branch):
-            halted = self.walk([{"triage": "implement"}, {"implementation": "first"}, changes], workspace=workspace)
+            halted = self.walk([{"triage": "implement"}, {"implementation": "first", "browser_proof": BROWSER, "formal_proof": FORMAL}, changes], workspace=workspace, preflight="exit 0")
+        self.assertEqual(halted["checks"].browser_proof, BROWSER)
+        self.assertEqual(halted["checks"].formal_proof, FORMAL)
+        self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "git_failed")
         self.assertIsNotNone(halted["work"].candidate)
         workspace.current = WorktreeState(HEAD, False, BRANCH)
@@ -1913,6 +1936,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(resumed["merge"], MergeState())
         self.assertEqual(halted["checks"].verified_head, HEAD)
         self.assertEqual(resumed["checks"], ChecksState(check=halted["checks"].check, preflight=halted["checks"].preflight))
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
+        self.assertEqual(saved.checkpoint["channel_values"]["checks"], resumed["checks"])
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"

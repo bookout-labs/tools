@@ -189,7 +189,7 @@ def run_live_delivery(
                                           "run": run_state if prior else RunState(issue=issue, workspace=workspace, repo=repo,
                                               max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None,
                                               token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
-                                          "checks": ChecksState(check=check)}
+                                          "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(check=check, preflight=preflight)}
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
             else:

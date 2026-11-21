@@ -1,6 +1,4 @@
 import tests
-from foreman.state import ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
-from foreman.dry_run import DryRun
 import contextlib
 from decimal import Decimal
 import io
@@ -19,8 +17,9 @@ from foreman.adapters import Outcome, Usage
 from foreman.budget import CostUnknown, Exhausted, Remaining, dollar_admission
 from foreman.cli import _print_run, main
 from foreman.delivery import LiveRun, compile_delivery, run_delivery, run_tokens
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import run_live_delivery
+from foreman.state import ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 from foreman.usd import BudgetUsd
 from foreman.workspace import WorkspaceError
 from tests.skill_fixture import skill_fixture
@@ -246,7 +245,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
                 graph.update_state(THREAD, {"schema_version": 3, "run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
-                    "triage": "implement",  "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
+                    "triage": "implement", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
                 graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                             "path": ["implement", "done"]}, as_node="done")
             with patch("foreman.runner.compile_delivery", wraps=compile_delivery) as compile_graph:

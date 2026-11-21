@@ -34,7 +34,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     check: str = ""
     preflight: str = ""
     check_exit_code: int | None = None
-    verify: str = ""
+    verify: Literal["", "pass", "fail"] = ""
     verified_head: str = ""
     browser_proof: BrowserProofRecord | None = None
     formal_proof: FormalProofRecord | None = None

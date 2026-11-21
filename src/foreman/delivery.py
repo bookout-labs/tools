@@ -720,10 +720,13 @@ def compile_delivery(
         elif exit_code:
             detail = failed_preflight(workspace, checks.preflight, log=check_log)
         checked = checks.model_copy(update={"check_exit_code": exit_code, "proof_labels": {},
-            "verify": "pass" if exit_code == 0 else "fail", "verified_head": worktree.head if exit_code == 0 else ""})
+            "verify": "" if detail else "pass" if exit_code == 0 else "fail", "verified_head": worktree.head if exit_code == 0 else ""})
         if detail:
             return {**halted(Halt.env_unavailable, detail, "verify"), "checks": checked}
-        return {**stage_update("verify", VerifyOutput(verify="pass" if exit_code == 0 else "fail"), state), "checks": checked}
+        update: DeliveryUpdate = {"path": ["verify"], "checks": checked}
+        if exit_code:
+            update["verify_failures"] = failure_count(state, "verify_failures") + 1
+        return update
 
     def prove(state: DeliveryState) -> DeliveryUpdate:
         slice = _active_slice(state)

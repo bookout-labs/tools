@@ -17,7 +17,7 @@ from foreman.outcomes import Halt
 from foreman.readiness import MergeState
 from foreman.workspace import WorkState
 from foreman.runner import run_live_delivery
-from foreman.state import ChecksState, RunState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer
+from foreman.state import ChecksState, RunState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
 
 
 class CheckpointBoundaryTests(unittest.TestCase):
@@ -30,32 +30,56 @@ class CheckpointBoundaryTests(unittest.TestCase):
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                         saver.serde = checkpoint_serializer()
                         saved = saver.get_tuple({"configurable": {"thread_id": "before-move"}})
+                        values = saved.checkpoint["channel_values"]
+                        values.clear()
+                        values.update(path=["triage"], attempts=[], review_rounds=2)
+                        checks = ChecksState(check="true", preflight="env", check_exit_code=0, verify="pass",
+                            verified_head="b" * 40, browser_proof={"screen": "page", "trace": "trace", "passed": True},
+                            formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
+                            proof_labels={"browser": "block"})
+                        run = RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
+                                       token_cap=100, max_budget_usd="1.5")
+                        work = WorkState(branch="8-change", base="main", attempt_head="a" * 40,
+                            candidate={"disposition": "edits", "fingerprint": "edits"}, partial_edits="partial",
+                            head_sha="b" * 40, repair_head="c" * 40)
+                        merge = MergeState(status="not_armed", receipt={"status": "QUEUED"},
+                            observation={"outcome": "ready"}, observed_head="c" * 40, command=["gh", "pr", "merge"])
+                        revision = version if type(version) is int else 1
                         if version is not None:
-                            saved.checkpoint["channel_values"]["schema_version"] = version
-                        saved.checkpoint["channel_values"].update(
-                            repo="a/b", token_cap=100, issue=8, request="Build it", workspace="/checkout", max_budget_usd="1.5",
-                            merge="not_armed", merge_receipt={"status": "QUEUED"}, readiness_observation={"outcome": "ready"},
-                            merge_observed_head="c" * 40, merge_command=["gh", "pr", "merge"], delivery_branch="8-change",
-                            delivery_base="main", attempt_head="a" * 40, implementation_candidate={"disposition": "edits", "fingerprint": "edits"},
-                            partial_edits="partial", head_sha="b" * 40, repair_head="c" * 40, check="true", preflight="true",
-                            check_exit_code=0, verify="pass", verified_head="b" * 40, browser_proof=None, formal_proof=None, proof_labels={})
-                        if type(version) is int and version >= 2:
-                            saved.checkpoint["channel_values"]["merge"] = MergeState(status="not_armed")
-                        if type(version) is int and version >= 3:
-                            saved.checkpoint["channel_values"]["work"] = WorkState(branch="8-change")
-                        if type(version) is int and version >= 4:
-                            saved.checkpoint["channel_values"]["run"] = RunState(repo="a/b", issue=8)
+                            values["schema_version"] = version
+                        if revision >= 5:
+                            values["checks"] = checks
+                        else:
+                            values.update(checks.model_dump())
+                        if revision >= 4:
+                            values["run"] = run
+                        else:
+                            values.update(run.model_dump())
+                        if revision >= 3:
+                            values["work"] = work
+                        else:
+                            values.update(delivery_branch=work.branch, delivery_base=work.base, attempt_head=work.attempt_head,
+                                implementation_candidate=work.candidate, partial_edits=work.partial_edits,
+                                head_sha=work.head_sha, repair_head=work.repair_head)
+                        if revision >= 2:
+                            values["merge"] = merge
+                        else:
+                            values.update(merge=merge.status, merge_receipt=merge.receipt, readiness_observation=merge.observation,
+                                merge_observed_head=merge.observed_head, merge_command=merge.command)
                         saver.put({"configurable": {"thread_id": "a/b#8", "checkpoint_ns": ""}}, saved.checkpoint, saved.metadata, {})
                     before = checkpoint.read_bytes()
                     with patch("foreman.runner.compile_delivery") as compile_graph, \
                          patch("foreman.runner.checkpoint_state") as validate, \
-                         patch("foreman.runner.load_config") as config:
+                         patch("foreman.runner.load_config") as config, \
+                         patch("foreman.runner.require_schema_version", wraps=require_schema_version) as refuse:
                         with self.assertRaisesRegex(CheckpointVersionError, "schema_version.*Start a new run") as raised:
                             run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint,
                                               dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun()))
                         self.assertIn(str(checkpoint), str(raised.exception))
                         if version is None:
                             self.assertIn("schema_version missing", str(raised.exception))
+                        refuse.assert_called_once()
+                        self.assertEqual(refuse.call_args.args[0], values)
                         compile_graph.assert_not_called()
                         validate.assert_not_called()
                         config.assert_not_called()
