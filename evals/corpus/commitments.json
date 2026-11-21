@@ -9,9 +9,9 @@
     },
     {
       "id": "bug-001",
-      "sha256": "9afbaf00cabf9f4af170c14b950c779c8b2e47ee4a1995cdf67d8ffac7bd8480",
+      "sha256": "a178476b882394be9ef21673524c903baab6937a500fa8dd56c0c64fe8323fb0",
       "request_sha256": "3ec9c555bee85683027b4901fcfdaf5d17fcdeb9111286551a7659f42cb5da92",
-      "answer_sha256": "95c8e08b53a2f41a68c38f667769c7b796251f206ff8a1f8230d3c8f773ece7f"
+      "answer_sha256": "d6ee0efd95b4b7848a4365df8e873a4c71bba50fd3036bb1d2e81192ca204236"
     }
   ]
 }
