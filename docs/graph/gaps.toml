@@ -89,6 +89,7 @@ spec_check = [["file_slices", "parent plan"], ["prepare", "approved slice"], ["s
 triage = [["spec_check", "one slice"]]
 
 [delivery.missing.slice_16]
+spec = [["size", "override: keep this PR"]]
 size = [["spec", "too big: re-plan"]]
 
 [dispatch.missing.slice_13]
@@ -96,3 +97,62 @@ __start__ = [["plan", ""]]
 call = [["__end__", "result"], ["plan", "quota or CLI missing: next model"], ["wait", "no eligible model now"]]
 plan = [["call", ""]]
 wait = [["plan", "resume"]]
+
+
+# Stage pages are not generated until slices 9/13 expose native declarations.
+# The digest freezes the exact generated-to-target difference, not hidden Python behavior.
+# D1-D7 coverage and native structural comparisons arrive with those declarations.
+
+[stages.triage]
+difference_sha256 = "94caaf197054cf06d11bbe72fa410ed0fe302afef4ea6e51e9fe96c97d9d95b3"
+slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
+slice_11b = ["a question on any issue not labelled slice goes to spec, not research (closes in slice 11b).", "a missing slice halts at the start node, before triage (closes in slice 11b)."]
+slice_15 = ["triage's implement goes straight to prepare, so nothing checks a one-slice plan (closes in slice 15)."]
+slice_12 = ["the question goes through the shared needs_human node (closes in slice 12)."]
+slice_13 = ["the model call is a separate triage_call node and quota waits use the shared quota_wait node (closes in slice 13)."]
+
+[stages.research]
+difference_sha256 = "e636560fcbe3cfc6b3867ad8d41b7fb6d67f2d4a97d27d41e64ac81d588c1985"
+slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
+slice_11b = ["research is only reached from a slice issue's question (see triage; closes in slice 11b)."]
+slice_14b = ["the answer stays in the run result and is never posted on the issue (assigned here to slice 14b, the GitHub publication seam)."]
+slice_13 = ["the model call is a separate research_call node with the shared quota_wait (closes in slice 13)."]
+
+[stages.spec]
+difference_sha256 = "927e96cc3fd69f632b215b780439a17550ad6c365cc89c3e1d9ae217d9a63b6d"
+slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
+slice_15 = ["an invalid slice plan loops spec back to itself in the big picture (closes in slice 15).", "a ready plan goes to prepare or to done, and the runner files child issues after the graph ends (closes in slices 14b and 15)."]
+slice_16 = ["an oversized PR reaches spec from review, and nothing checks that the split shrinks (closes in slices 9 and 16)."]
+slice_14a = ["plan fields live in several places and the runner re-checks they agree (closes in slice 14a)."]
+
+[stages.spec_check]
+difference_sha256 = "cee53d3fd62c45356b60dd948c590b64ffad5d2f8efdd71bd2ecd9f997fe99b6"
+slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
+slice_15 = ["spec_check is not in the graph. Its checker (`spec_check.py`) and prompt (`stages/spec_check.md`) exist, and models.toml has no row for it (closes in slice 15).", "nothing carries a parent plan's approval to its children (closes in slices 14a and 15)."]
+
+[stages.file_slices]
+difference_sha256 = "c463b545ba694e88e87066f5460655ae419bc3088098b5cda03aca7abe951669"
+slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
+slice_14b = ["the runner files children after the graph stops, without a sub-issue link, and marks a dependent child ready on a later rerun once its blockers merge (closes in slice 14b). In the target, a child that waits on others is marked ready by its last blocker's merge step."]
+
+[stages.prepare]
+difference_sha256 = "14f818ef20165e7edb0a3c3c381ba37137a88305a4c953db451b662dd5cf52fb"
+slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137).", "the preflight probe and the branch and start checks run inside implement's setup (closes in slice 9)."]
+slice_11a = ["merge's head-moved and queue-rejected cases reach prepare by the runner rewinding history, not by an arrow (closes in slice 11a)."]
+slice_5 = ["the worker gets no scratch folder of its own (closes in slice 5)."]
+
+[stages.implement]
+difference_sha256 = "114f42ddd0df5727ec4771422c9329cb4f24fa2eeded20ef931c8b659c9a4167"
+slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137)."]
+slice_13 = ["the model call is a separate implement_call node with the shared quota_wait, and the partial-edits check runs in implement's setup when the run resumes (closes in slice 13)."]
+
+[stages.reconcile]
+difference_sha256 = "1ec842fd7e7b75ff685e1bfafc893c8ad18db5bad6c7998767a69b41b05d4c82"
+slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137).", "reconcile goes to commit; size runs later, inside review (closes in slice 9)."]
+slice_4 = ["scratch files the worker wrote are adopted and committed, with no .gitignore check (closes in slice 4)."]
+slice_11a = ["a rerun after implementation_rejected rewinds history instead of resuming at reconcile (closes in slice 11a)."]
+
+[stages.size]
+difference_sha256 = "cb31a3ead809d1431dd5ef40fb50f2eb07a6b9a05983550938475a4363444ae8"
+slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137).", "size is measured inside review, after publish (closes in slice 9)."]
+slice_16 = ["an oversized PR goes to spec first and then asks split or override in decide_pr_size, and an override does not carry across fix rounds (closes in slices 12 and 16)."]

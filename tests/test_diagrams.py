@@ -1,4 +1,5 @@
 import ast
+from hashlib import sha256
 from pathlib import Path
 import re
 import tomllib
@@ -103,6 +104,35 @@ class DiagramTests(unittest.TestCase):
                         recorded.extend((source, target, label) for target, label in targets)
                 self.assertEqual(len(recorded), len(set(recorded)), "duplicate gap")
                 self.assertEqual(set(recorded), difference, f"{name} {direction}")
+
+    def test_stage_targets_have_exact_scheduled_differences(self):
+        targets = {path.stem.removesuffix(".target"): path.read_text()
+                   for path in (GRAPH / "stages").glob("*.target.mmd")}
+        gaps = tomllib.loads((GRAPH / "gaps.toml").read_text()).get("stages", {})
+        self.assertLessEqual(set(gaps), set(targets), "orphan stage gap")
+        pictures = drawings()
+        self.assertLessEqual({key.removeprefix("stages/") for key in pictures
+                              if key.startswith("stages/")}, set(targets), "orphan generated page")
+        for name, target in targets.items():
+            with self.subTest(stage=name):
+                actual = pictures.get(f"stages/{name}", "")
+                if actual == target:
+                    self.assertNotIn(name, gaps, "stage now matches; delete its gap")
+                    continue
+                self.assertEqual(sha256((actual + "\0" + target).encode()).hexdigest(),
+                                 gaps[name]["difference_sha256"], "new stage difference")
+                owners = set(gaps[name]) - {"difference_sha256"}
+                self.assertTrue(owners)
+                self.assertLessEqual(owners, SLICES)
+                for owner in owners:
+                    self.assertTrue(gaps[name][owner], "gap must describe missing behavior")
+
+    def test_new_stage_difference_fails(self):
+        with patch(__name__ + ".drawings", return_value={"stages/triage": "new decision"}):
+            result = unittest.TestResult()
+            DiagramTests("test_stage_targets_have_exact_scheduled_differences").run(result)
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn("new stage difference", result.failures[0][1])
 
     def test_edge_labels_and_invalid_syntax(self):
         self.assertEqual(edges('a -->|fail: fix| b["step"]\na -. &nbsp;call&nbsp; .-> c;'),
