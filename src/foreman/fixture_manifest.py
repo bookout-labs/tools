@@ -1,13 +1,16 @@
 """Provenance and claim references for repository-tracked outside-tool evidence."""
 
+from __future__ import annotations
+
 import tomllib
 from pathlib import PurePosixPath
-from typing import Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import Field, HttpUrl, model_validator
 
-from foreman.stage_output import Contract, Text
-from foreman.workspace import Workspace
+from foreman.contracts import Contract, Text
+if TYPE_CHECKING:
+    from foreman.workspace import Workspace
 
 FIXTURE_DIR = "tests/fixtures"
 MANIFEST_PATH = f"{FIXTURE_DIR}/manifest.toml"

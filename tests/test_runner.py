@@ -83,6 +83,9 @@ class FakeWorkspace(LiveWorkspace):
     def fingerprint(self):
         return "synthetic-edits"
 
+    def reconcile(self, parent, branch, base_branch, fact_record):
+        return None if self.current.clean else {"disposition": "edits", "fingerprint": self.fingerprint()}
+
     def create_branch(self, branch, base):
         self.current = WorktreeState(self.current.head, True, branch)
 
@@ -1110,6 +1113,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             cwd=root, check=True,
         )
         subprocess.run(["git", "branch", "main"], cwd=root, check=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=root, check=True)
         subprocess.run(["git", "config", "user.name", "Synthetic Test"], cwd=root, check=True)
         subprocess.run(["git", "config", "user.email", "synthetic@example.invalid"], cwd=root, check=True)
         subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=root, check=True)
