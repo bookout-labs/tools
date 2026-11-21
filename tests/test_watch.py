@@ -4,14 +4,13 @@ import ast
 import json
 from pathlib import Path
 import subprocess
-from typing import get_args
 import unittest
 from unittest.mock import Mock, patch
 
-from foreman.delivery import HaltReason
+from foreman.outcomes import HALTS, Halt
 from foreman.github import Forge, ForgeError, LiveForge
 from foreman.redaction import redact
-from foreman.watch import WATCH, run_key, watch
+from foreman.watch import run_key, watch
 from test_runner import FakeGitHub
 
 
@@ -35,7 +34,7 @@ FILING = {
     "usage_unknown": ("codex attempts report usage", "adapters/codex.py"),
     "skill_missing": ("Pinned skills are available before dispatch", "skill_rules.py"),
 }
-SKIPPED = {"reviewer_unavailable", "no_reviewer", "cli_missing", "merge_held", "merge_not_armed", "budget_exceeded",
+SKIPPED = {"reviewer_unavailable", "model_dependency_missing", "model_family_exhausted", "publication_model_missing", "cli_missing", "merge_held", "merge_not_armed", "budget_exceeded",
            "env_unavailable", "quota_exhausted", "publish_failed", "failed",
            "design_rethink", "implementation_rejected", "pr_conflict", "ci_pending", "ci_red",
            "readiness_unavailable", "queue_rejected"}
@@ -47,24 +46,20 @@ def state(halt="invalid_output", detail="bad output", node="review", model="gpt-
                                                            commit="pin", methods=[], usage=None)])
 
 
-def literals(kind):
-    return {value for arg in get_args(kind) for value in ({arg} if isinstance(arg, str) else literals(arg))}
-
-
 class WatchTest(unittest.TestCase):
     def setUp(self):
         self.fake = FakeGitHub()
         self.forge = Mock(spec=Forge, wraps=self.fake)
 
     def test_every_halt_has_an_explicit_policy(self):
-        self.assertEqual(set(WATCH), literals(HaltReason))
-        self.assertEqual(set(WATCH), set(FILING) | SKIPPED)
+        self.assertEqual(set(HALTS), set(Halt))
+        self.assertEqual(set(HALTS), set(FILING) | SKIPPED)
 
     def test_every_row_files_the_expected_proposal_or_makes_no_forge_calls(self):
         self.assertEqual(KEY, "Example/Engine#8@42")
         self.assertEqual(redact(KEY), KEY)
         self.assertEqual(redact(RUN_MARKER), RUN_MARKER)
-        for halt in WATCH:
+        for halt in HALTS:
             with self.subTest(halt=halt):
                 forge = Mock(spec=Forge, wraps=FakeGitHub())
                 result = watch(state(halt), forge, TARGET, KEY)

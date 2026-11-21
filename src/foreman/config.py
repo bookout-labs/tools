@@ -26,6 +26,10 @@ class ConfigError(ValueError):
     pass
 
 
+class ModelDependencyMissing(ConfigError):
+    pass
+
+
 class PstackPin(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -137,7 +141,7 @@ def order_for(
     latest = models_used.get(source)
     used = (implement_models if node == "review" else None) or ([latest] if latest else [])
     if not used:
-        raise ConfigError(f"{node} needs the {source} model")
+        raise ModelDependencyMissing(f"{node} needs the {source} model")
     excluded = {family(model) for model in used}
     others = [model for model in models if model.family not in excluded]
     if not others:

@@ -166,7 +166,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
     def test_empty_eligibility_is_terminal_and_names_all_excluded_families(self):
         with TemporaryDirectory(dir=self.root) as directory:
             result = self.invoke(Path(directory), "mixed", ["changes"], 1)
-            self.assertEqual(result["result"]["halt"], "no_reviewer")
+            self.assertEqual(result["result"]["halt"], "model_family_exhausted")
             self.assertIn("claude, gpt families", result["result"]["halt_detail"])
             self.assertEqual(result["calls"], ["claude-opus-5-5-high"])
             self.assertEqual((result["posts"], result["merges"]), (1, 0))
