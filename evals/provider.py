@@ -15,13 +15,22 @@ from foreman.dry_run import ScriptHandler  # noqa: E402
 from foreman.measure import grade, propose, selected  # noqa: E402
 
 
-def _stop(handler: Handler, issue_kind: str = "slice") -> str:
+FIELD_SLICE: dict[str, object] = {
+    "title": "Add a field",
+    "acceptance": "The response includes the new field.",
+    "depends_on": [],
+    "screen": "",
+    "properties": [],
+}
+
+
+def _stop(handler: Handler, *, slice: dict[str, object] | None = None) -> str:
     result = run_delivery(
         FailoverDispatcher(handler),
         repo="DoctorCRE/doctorcre-engine",
         request="Add a field",
         check="npm run check",
-        issue_kind=issue_kind,
+        slice=slice,
     )
     return result.get("stop", "missing stop")
 
@@ -39,6 +48,7 @@ def _with_quota_gap() -> str:
         repo="DoctorCRE/doctorcre-engine",
         request="Add a field",
         check="npm run check",
+        slice=FIELD_SLICE,
     )
     models = result.get("models_used", {})
     implement = models["implement"]
@@ -51,15 +61,17 @@ def _with_quota_gap() -> str:
 def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, object]]) -> dict[str, str]:
     case = (context.get("vars") or {}).get("case") or prompt
     if case == "clear":
-        output = _stop(ScriptHandler(triage="implement"))
+        output = _stop(ScriptHandler(triage="implement"), slice=FIELD_SLICE)
     elif case == "spec-ready":
-        output = _stop(ScriptHandler(triage="spec", spec_gate="ready"))
+        output = _stop(ScriptHandler(triage="spec", spec_gate="ready"), slice=FIELD_SLICE)
     elif case == "spec-gate":
-        output = _stop(ScriptHandler(triage="spec", spec_gate="needs_human"))
+        output = _stop(ScriptHandler(triage="spec", spec_gate="needs_human"), slice=FIELD_SLICE)
     elif case == "parent":
+        output = _stop(ScriptHandler(triage="implement", slice=FIELD_SLICE))
+    elif case == "parent-spec":
         output = _stop(
             ScriptHandler(
-                triage="implement",
+                triage="spec",
                 spec_gate="ready",
                 slices=[
                     {
@@ -67,7 +79,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                         "acceptance": "The board shows the deals.",
                         "depends_on": [],
                         "screen": "docs/screens/deals.md",
-                        "properties": [{"name": "Visibility", "constraint": "Every open deal appears once."}],
+                        "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
                     },
                     {
                         "title": "Board saves a move",
@@ -78,10 +90,9 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                     },
                 ],
             ),
-            issue_kind="parent",
         )
     elif case == "question":
-        output = _stop(ScriptHandler(triage="question"))
+        output = _stop(ScriptHandler(triage="question"), slice=FIELD_SLICE)
     elif case == "failover":
         output = _with_quota_gap()
     elif case == "score-approve":

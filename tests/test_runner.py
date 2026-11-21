@@ -51,10 +51,10 @@ def worker_reply(args, reply):
     if args[0] == "codex":
         stdout = json.dumps(reply) if isinstance(reply, dict) else reply
         return subprocess.CompletedProcess(args, recorded.returncode, stdout, recorded.stderr)
-    if "triage" in reply or "spec" in reply:
+    if "triage" in reply:
         reply = {"slice": None, "human_question": None, **reply}
     if "spec" in reply:
-        reply = {"slices": None, **reply}
+        reply = {"slices": None, "human_question": None, **reply}
     if "review" in reply:
         reply = {"review_note": None, **reply}
     envelope = json.loads(recorded.stdout)
@@ -133,7 +133,7 @@ class CliWorkerTest(unittest.TestCase):
         config = load_config()
         config.nodes["triage"] = NodeConfig("coordinator", tuple(ModelSpec.parse(model) for model in models))
         return run_delivery(FailoverDispatcher(CliWorker(Path("."), run)), repo="Example/Engine",
-                            request="List items", check="exit 0", config=config)
+                            request="List items", check="exit 0", config=config, slice=EMPTY_SLICE)
 
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
         for cli, model in (("claude", "claude-opus-5-5-high"), ("grok", "grok-4.7-high")):
@@ -206,7 +206,11 @@ class StageOutputTest(unittest.TestCase):
             return schema
 
         for model in STAGE_OUTPUTS.values():
-            json.loads(json.dumps(model.model_json_schema()), object_hook=check)
+            schema = model.model_json_schema()
+            self.assertEqual(schema["type"], "object")
+            self.assertNotIn("anyOf", schema)
+            self.assertNotIn("oneOf", schema)
+            json.loads(json.dumps(schema), object_hook=check)
 
     def test_extra_field_reports_its_nested_path(self):
         raw = {
@@ -220,6 +224,18 @@ class StageOutputTest(unittest.TestCase):
         for screen in ("docs/screens/na\x01me.md", "docs/screens/a/b.md"):
             with self.subTest(screen=screen), self.assertRaisesRegex(InvalidOutput, r"^screen:"):
                 parse_output(Slice, {**SLICE, "screen": screen})
+
+    def test_formal_rejection_requires_a_boolean(self):
+        for fields in ({}, {"rejected": "true"}, {"rejected": 1}):
+            with self.subTest(fields=fields):
+                raw = {
+                    "implementation": "Done",
+                    "head_sha": None, "browser_proof": None,
+                    "formal_proof": {"ran": None, "typecheck": None,
+                                     "constraints": [{"constraint": "unique_item_id", **fields}]},
+                }
+                with self.assertRaisesRegex(InvalidOutput, r"^formal_proof\.constraints\.0\.rejected:"):
+                    parse_output(ImplementOutput, raw)
 
     def test_head_sha_requires_a_full_hex_commit_or_null(self):
         implementation = {"implementation": "Done", "browser_proof": None, "formal_proof": None}
@@ -357,7 +373,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.github.body = slice_body(SLICE)
         result = self.walk([
             {"triage": "spec"},
-            {"spec_gate": "ready", "spec": "Make IDs unique", "slice": EMPTY_SLICE},
+            {"spec_gate": "ready", "spec": "Make IDs unique"},
             {"implementation": "built", "head_sha": HEAD, "browser_proof": BROWSER, "formal_proof": FORMAL},
             APPROVE,
         ])
@@ -378,6 +394,28 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(result["stop"], "insufficient_evidence")
                 self.assertEqual(result["proof_labels"], {missing: "insufficient_evidence"})
                 self.assertNotIn("review", result["path"])
+
+    def test_parent_stops_before_review_when_its_proof_is_missing(self):
+        self.github = FakeGitHub(["factory"])
+        result = self.walk([{"triage": "implement", "slice": SLICE}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "proof", "done"])
+        self.assertEqual(result["stop"], "insufficient_evidence")
+        self.assertEqual(result["proof_labels"], {"browser": "insufficient_evidence", "formal": "insufficient_evidence"})
+
+    def test_parent_cannot_implement_without_a_slice(self):
+        self.github = FakeGitHub(["factory"])
+        for triage in ({"triage": "implement"}, {"triage": "implement", "slice": None}):
+            with self.subTest(triage=triage), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "run.sqlite3"
+                self.calls.clear()
+                merge_calls = []
+                result = self.walk([triage, {"implementation": "built"}, APPROVE], run_gh=merge_calls.append)
+                self.assertEqual(result["path"], ["triage", "done"])
+                self.assertEqual(result["stop"], "invalid_output")
+                self.assertTrue(result["halt_detail"].startswith("slice:"))
+                self.assertEqual(len(self.calls), 1)
+                self.assertEqual(merge_calls, [])
+                self.assertEqual(self.github.created, [])
 
     def test_browser_block_rebuilds_and_rechecks_before_review(self):
         self.github.body = slice_body(SLICE)
@@ -494,7 +532,11 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertTrue(all(call.kwargs["cwd"] == self.cwd for call in run.call_args_list))
 
     def run_main_merge(self, checkpoint, find_pr, run_gh):
-        replies = iter([{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}, APPROVE])
+        replies = iter([
+            {"triage": "implement", "slice": EMPTY_SLICE},
+            {"implementation": "built", "head_sha": HEAD},
+            APPROVE,
+        ])
 
         def worker(args, cwd):
             return worker_reply(args, next(replies))
@@ -508,6 +550,22 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(" ".join(ARM_ARGS), stdout.getvalue())
         return stdout.getvalue()
+
+    def test_parent_arms_its_pull_request_without_filing_slices(self):
+        self.github = FakeGitHub(["factory"])
+        calls = []
+
+        def gh(args):
+            calls.append(args)
+            return 0
+
+        result = self.run_main_merge(self.checkpoint, lambda repo: OPEN_PR, gh)
+        path = [line.split()[0] for line in result.splitlines() if not line.startswith(("check exit ", "gh "))]
+        self.assertEqual(path, ["triage", "implement", "verify", "review", "merge", "done"])
+        self.assertIn("merge armed", result)
+        self.assertIn("done verified", result)
+        self.assertEqual(calls, [ARM_ARGS])
+        self.assertEqual(self.github.created, [])
 
     def test_main_arms_or_records_merge_using_injected_runner(self):
         for exit_code in (0, 1):
