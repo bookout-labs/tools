@@ -118,7 +118,14 @@ class StageOwnershipTests(unittest.TestCase):
                 self.assertEqual(update["path"], [stage])
                 self.assertEqual(update["models_used"][stage], "model")
                 if stage == "verify":
-                    self.assertEqual(update["review_rounds"], 3)
+                    self.assertEqual(update["verify_failures"], 3)
+
+    def test_legacy_failure_budget_is_preserved_separately(self):
+        from foreman.delivery import read_delivery_state
+        result = read_delivery_state({"repo": "org/repo", "check": "", "path": [], "stop": "verify_cap", "review_rounds": 2})
+        self.assertEqual(result["review_rounds"], 0)
+        for key in ("verify_failures", "proof_failures", "spec_failures"):
+            self.assertEqual(result[key], 2)
 
     def test_checkpoint_rejects_incomplete_nested_record(self):
         from foreman.delivery import read_delivery_state

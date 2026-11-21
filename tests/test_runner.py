@@ -165,8 +165,9 @@ class FakeGitHub:
             "baseRefName": "main", "baseRefOid": self.base, "autoMergeRequest": None,
         })
 
-    def post_review(self, repo, target, body, comments):
+    def post_review(self, repo, target, body, comments, *, marker):
         self.reviews.append((repo, target.number, target.headRefOid, body, comments))
+        return {"id": len(self.reviews), "state": "COMMENTED", "commit_id": target.headRefOid}
     def merge_hold(self, repo):
         self.hold_reads.append(repo)
         return self.hold
@@ -472,9 +473,9 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
         self.assertEqual(self.github.reviews, [(
             "Example/Engine", 12, HEAD,
-            "Check the bounds.\n\nitems.txt:1 [blocking] Untouched context.\n\ndeleted.txt:1 [blocking] Deleted file.",
+            "Graph verdict: changes. Review event: COMMENT (Foreman authors this PR).\n\nCheck the bounds.\n\nitems.txt:1 [blocking] Untouched context.\n\ndeleted.txt:1 [blocking] Deleted file.",
             [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[blocking] Add a check."}],
-        ), ("Example/Engine", 12, HEAD, APPROVE["detail"], [])])
+        ), ("Example/Engine", 12, HEAD, "Graph verdict: approve. Review event: COMMENT (Foreman authors this PR).\n\n" + APPROVE["detail"], [])])
 
     def test_review_failures_halt_without_merging(self):
         changes = {**APPROVE, "findings": [FINDING]}
@@ -490,6 +491,19 @@ class LiveRunnerTest(unittest.TestCase):
                 if replies:
                     self.assertEqual(result.get("findings"), [FINDING])
                 self.assertEqual(self.github.merge_calls, [])
+
+    def test_posting_retry_preserves_round_and_does_not_dispatch(self):
+        with patch.object(self.github, "post_review", side_effect=ForgeError("Unavailable")):
+            stopped = self.walk([{"triage": "implement"}, {"implementation": "Built."}, APPROVE])
+        self.assertEqual(stopped["halt"], "review_not_posted")
+        self.assertEqual(stopped["review_rounds"], 1)
+        calls = self.calls.copy()
+        result = self.walk([])
+        self.assertEqual(self.calls, calls)
+        self.assertEqual(result["review_rounds"], 1)
+        self.assertEqual(len(result["review_findings"]), 1)
+        self.assertEqual(result["review_receipt"]["state"], "COMMENTED")
+        self.assertEqual(result["merge"], "armed")
 
     def test_review_halts_when_git_fetch_times_out(self):
         real_run = subprocess.run
@@ -757,7 +771,8 @@ class LiveRunnerTest(unittest.TestCase):
             spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
             result = self.walk([{"triage": "spec"}, spec, spec, spec])
         self.assertEqual(result["stop"], "spec_cap")
-        self.assertEqual(result["review_rounds"], 3)
+        self.assertEqual(result["review_rounds"], 0)
+        self.assertEqual(result["spec_failures"], 3)
         self.assertEqual(result["spec_rejection"]["kind"], "dangling_seam")
         self.assertEqual(self.github.created, [])
 
@@ -1058,7 +1073,8 @@ class LiveRunnerTest(unittest.TestCase):
         result = self.walk([{"triage": "implement"}] + [blocked] * 3)
         self.assertEqual(result["stop"], "review_cap")
         self.assertEqual(result["proof_labels"], {"formal": "block"})
-        self.assertEqual(result["review_rounds"], 3)
+        self.assertEqual(result["review_rounds"], 0)
+        self.assertEqual(result["proof_failures"], 3)
         self.assertNotIn("review", result["path"])
 
     def test_unconfigured_worker_stops_without_running_the_check(self):
@@ -1133,7 +1149,7 @@ class LiveRunnerTest(unittest.TestCase):
             preflight=preflight,
         )
         self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(result.get("review_rounds"), 0)
+        self.assertEqual(result.get("review_rounds"), 1)
         self.assertNotIn("halt_detail", result)
         self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "review", "merge", "done"])
 
@@ -1233,7 +1249,7 @@ class LiveRunnerTest(unittest.TestCase):
         resumed = self.walk([APPROVE])
         self.assertEqual(resumed.get("stop"), "verified")
         self.assertEqual(resumed.get("check_exit_code"), 0)
-        self.assertEqual(resumed.get("review_rounds"), 0)
+        self.assertEqual(resumed.get("review_rounds"), 1)
         self.assertEqual(self.calls, ["claude", "codex", "claude"])
 
     def test_failed_check_consumes_round_with_healthy_or_unspecified_environment(self):

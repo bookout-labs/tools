@@ -169,6 +169,28 @@ class ReviewComment(TypedDict):
     body: str
 
 
+class ReviewReceipt(TypedDict):
+    id: int
+    state: Literal["COMMENTED"]
+    commit_id: str
+
+
+class PostedReview(BaseModel, strict=True):
+    id: PositiveInt
+    state: str
+    commit_id: str
+    body: str
+
+    def receipt(self, head: str) -> ReviewReceipt:
+        if self.state != "COMMENTED" or self.commit_id.lower() != head.lower():
+            raise ForgeError("Review receipt does not match the submitted COMMENT at the verified head.")
+        return {"id": self.id, "state": "COMMENTED", "commit_id": self.commit_id}
+
+
+class ReviewPages(RootModel[list[list[PostedReview]]]):
+    pass
+
+
 class Forge(Protocol):
     def default_branch(self, repo: str) -> str: ...
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
@@ -182,7 +204,7 @@ class Forge(Protocol):
     def add_label(self, repo: str, number: int, label: str) -> None: ...
     def pull_request_base(self, repo: str, branch: str) -> str: ...
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
-    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None: ...
+    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt: ...
     def merge_hold(self, repo: str) -> str | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
 
@@ -316,20 +338,28 @@ class LiveForge:
     def pull_request_base(self, repo: str, branch: str) -> str:
         return self._view_pr(repo, branch).baseRefName
 
-    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None:
+    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt:
         current = self._view_pr(repo, str(target.number))
-        if current.state != "OPEN" or current.baseRefName != target.baseRefName:
+        if (current.state != "OPEN" or current.baseRefName != target.baseRefName
+                or current.baseRefOid != target.baseRefOid or current.headRefOid != target.headRefOid):
             raise ForgeError("The pull request changed during review.")
+        endpoint = f"repos/{redact(repo)}/pulls/{target.number}/reviews"
+        tag = f"<!-- foreman-review:{marker} -->"
+        pages = self._read(ReviewPages, ["gh", "api", endpoint, "--paginate", "--slurp"])
+        for page in pages.root:
+            for review in page:
+                if tag in review.body:
+                    return review.receipt(target.headRefOid)
         payload = {
-            "commit_id": target.headRefOid, "event": "COMMENT", "body": redact(body),
+            "commit_id": target.headRefOid, "event": "COMMENT", "body": redact(body) + "\n\n" + tag,
             "comments": [{**comment, "body": redact(comment["body"]), "path": redact(comment["path"])} for comment in comments],
         }
-        repo = redact(repo)
-        self._run_command(
-            ["gh", "api", f"repos/{repo}/pulls/{target.number}/reviews", "--method", "POST",
+        posted = self._read(PostedReview,
+            ["gh", "api", endpoint, "--method", "POST",
              "-H", "X-GitHub-Api-Version: 2022-11-28", "--input", "-"],
             body=json.dumps(payload),
         )
+        return posted.receipt(target.headRefOid)
 
     def merge_hold(self, repo: str) -> str | None:
         try:
@@ -399,8 +429,8 @@ class LiveForge:
             raise CommandFailed(result.stderr.strip() or f"{operation} exited with code {result.returncode}.")
         return result.stdout
 
-    def _read(self, model: type[Model], command: list[str], *, timeout: float | None = 30) -> Model:
-        output = self._run_command(command, timeout=timeout)
+    def _read(self, model: type[Model], command: list[str], *, timeout: float | None = 30, body: str | None = None) -> Model:
+        output = self._run_command(command, timeout=timeout, body=body)
         try:
             return model.model_validate_json(output)
         except ValidationError as exc:

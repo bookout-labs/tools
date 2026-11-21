@@ -18,18 +18,28 @@ from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, F
 
 
 class ReviewRoundsTest(unittest.TestCase):
-    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None):
+    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False):
         self.prompts = []
         self.diffs = []
         self.gate_reads = []
         self.forge = FakeGitHub()
+        original_post = self.forge.post_review
+        receipts = {}
+        def post(*args, marker):
+            if marker in receipts:
+                return receipts[marker]
+            receipts[marker] = original_post(*args, marker=marker)
+            if post_crash:
+                raise RuntimeError("process lost")
+            return receipts[marker]
+        self.forge.post_review = post
         with TemporaryDirectory() as directory, skill_fixture() as (settings, scratch):
             outer = self
 
             class Workspace(FakeWorkspace):
                 def commit(self, message):
                     super().commit(message)
-                    if answer:
+                    if answer or advance_head:
                         self.current = type(self.current)(str(implementations) * 40, True, self.current.branch)
 
                 def files_at(self, head, prefix):
@@ -43,7 +53,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     outer.diffs.append((base, head, interdiff))
                     diff = super().review_diff(base, head, interdiff=interdiff)
                     if divergent and interdiff:
-                        return type(diff)(diff.command, diff.patch + "diff --git a/main.txt b/main.txt\n--- a/main.txt\n+++ b/main.txt\n@@ -0,0 +1 @@\n+mainline\n")
+                        return type(diff)(diff.command, "diff --git a/main.txt b/main.txt\n--- a/main.txt\n+++ b/main.txt\n@@ -0,0 +1 @@\n+mainline\n")
                     if bad_diff:
                         return type(diff)(diff.command, "--- a/x\n+++ b/x\n@@ -1 +1 @@\ninvalid\n")
                     return diff
@@ -75,7 +85,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 config = {"configurable": {"thread_id": "rounds"}}
                 state = {"repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": EMPTY_SLICE,
                          "check": "exit 0", "token_cap": 20_000_000, **(initial or {})}
-                if crash:
+                if crash or post_crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
                         graph.invoke(state, config)
                     (scratch / "resume").mkdir()
@@ -86,7 +96,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     result = graph.invoke(state, config)
                 if answer:
                     self.assertEqual(result["halt"], "design_rethink")
-                    self.assertEqual(result["review_rounds"], 1)
+                    self.assertEqual(result["review_rounds"], 2)
                     result = graph.invoke(Command(resume="Redesign the ownership."), config)
                 return result
 
@@ -146,12 +156,12 @@ class ReviewRoundsTest(unittest.TestCase):
         result = self.run_rounds([APPROVE], initial={"review_findings": [{"broken": True}]})
         self.assertEqual(result["halt"], "invalid_output")
         self.assertIn("implement", result["path"])
-    def test_recurrence_pauses_without_consuming_round_or_patching(self):
+    def test_recurrence_pauses_and_counts_accepted_round(self):
         result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
                                  {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
                                   "findings": [{**FINDING, "id": "again"}]}])
         self.assertEqual(result["halt"], "design_rethink")
-        self.assertEqual(result["review_rounds"], 1)
+        self.assertEqual(result["review_rounds"], 2)
         self.assertEqual(result["path"].count("implement"), 2)
         self.assertEqual([json.loads(line)["id"] for line in result["halt_detail"].splitlines()[1:]], ["f1", "again"])
         self.assertFalse(self.forge.merge_calls)
@@ -167,14 +177,40 @@ class ReviewRoundsTest(unittest.TestCase):
         instruction = [p[2] for p in self.prompts if p[0] == "review"][2]
         self.assertEqual(json.loads(instruction.split("Settled, don't reopen:\n")[1])[0]["id"], "design:2")
 
-    def test_interdiff_mainline_is_a_note_and_never_inline(self):
+    def test_outside_interdiff_nit_needs_explicit_resolution(self):
         nit = {**FINDING, "severity": "nit"}
-        result = self.run_rounds([{**APPROVE, "findings": [nit]},
-                                 {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
-                                  "findings": [{**FINDING, "id": "main", "file": "main.txt", "line": 1}]}], divergent=True)
+        for status in ("resolved", "unresolved"):
+            result = self.run_rounds([{**APPROVE, "findings": [nit]},
+                {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
+                 "findings": [{**nit, "id": "main", "file": "main.txt", "line": 1}, {**nit, "id": "old"}]},
+                {**APPROVE, "resolutions": [{"id": "main", "status": status}, {"id": "old", "status": status}]}], divergent=True)
+            self.assertEqual(result["review_rounds"], 3)
+            self.assertEqual(result["stop"], "verified" if status == "resolved" else "review_cap")
+            self.assertIn("main.txt:1 [nit]", self.forge.reviews[1][3])
+            self.assertNotIn("Coordinator note main", self.forge.reviews[1][3])
+            self.assertEqual(len(self.forge.reviews[1][4]), 1)
+            self.assertEqual(result["path"].count("implement"), 3)
+
+    def test_unknown_settled_ruling_rejected(self):
+        result = self.run_rounds([{**APPROVE, "findings": [{**FINDING, "ruling_id": "unknown"}]}])
+        self.assertEqual(result["halt"], "invalid_output")
+
+    def test_graph_then_nit_then_approval_counts_at_cap(self):
+        fact = {"claim": "CLI behavior", "fixture": "result.txt"}
+        result = self.run_rounds([{**APPROVE, "tool_facts": [fact]},
+            {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
+            {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}],
+            advance_head=True, gate_heads=["2" * 40, "3" * 40])
+        self.assertEqual(result["review_rounds"], 3)
         self.assertEqual(result["merge"], "armed")
-        self.assertIn("Coordinator note main", self.forge.reviews[-1][3])
-        self.assertEqual(self.forge.reviews[-1][4], [])
+        self.assertIn("Graph verdict: changes", self.forge.reviews[0][3])
+
+    def test_post_crash_reuses_accepted_round(self):
+        result = self.run_rounds([APPROVE], post_crash=True)
+        self.assertEqual(result["review_rounds"], 1)
+        self.assertEqual(len(self.forge.reviews), 1)
+        self.assertEqual(result["review_receipt"]["id"], 1)
+        self.assertEqual([p[0] for p in self.prompts].count("review"), 1)
 
     def test_diff_parse_failure_is_tolerated_first_and_unavailable_later(self):
         result = self.run_rounds([APPROVE], bad_diff=True)

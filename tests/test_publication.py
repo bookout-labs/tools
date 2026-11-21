@@ -97,7 +97,8 @@ class PublicationTest(unittest.TestCase):
                 response = {"number": 12, "state": "OPEN", "headRefOid": self.remote_head(), "headRefName": self.branch,
                             "baseRefName": self.base, "baseRefOid": self.git("rev-parse", self.base), "autoMergeRequest": None}
             case ["api", "repos/Example/Engine/pulls/12/reviews"]:
-                return subprocess.CompletedProcess(command, 0, "{}", "")
+                response = ({"id": 1, "state": "COMMENTED", "commit_id": self.remote_head(), "body": "posted"}
+                            if "POST" in command else [[]])
             case ["pr", "merge"]:
                 self.assertEqual(command[-2:], ["--match-head-commit", self.remote_head()])
                 return subprocess.CompletedProcess(command, 0, "", "")
