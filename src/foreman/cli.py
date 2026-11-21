@@ -37,9 +37,9 @@ def _write_check_log(line: str) -> None:
     _write_run_log(line, end="")
 
 
-def _print_run(result: DeliveryResult, presentation: RunPresentation | None = None) -> None:
+def _print_run(result: DeliveryResult, presentation: RunPresentation | None = None, *, dry_run: bool = False) -> None:
     if presentation is None or presentation.restored is None:
-        _print_run_rows(result)
+        _print_run_rows(result, dry_run=dry_run)
         return
     rows: list[tuple[str, str | None]] = []
     current: DeliveryResult = {"repo": result["repo"], "check": result["check"], "path": [], "stop": result["stop"]}
@@ -61,7 +61,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
 
 
 def _print_run_rows(
-    result: DeliveryResult, *, prefix: str = "", rows: list[tuple[str, str | None]] | None = None,
+    result: DeliveryResult, *, dry_run: bool = False, prefix: str = "", rows: list[tuple[str, str | None]] | None = None,
 ) -> None:
     def write(text: str) -> None:
         _write_run_log("\n".join(prefix + line for line in text.split("\n")))
@@ -76,7 +76,7 @@ def _print_run_rows(
     for command in result.get("commands", []):
         write(f"dry run: {shlex.join(command)}")
     models = result.get("models_used", {})
-    if size := result.get("pr_size"):
+    if (size := result.get("pr_size")) and not dry_run and not result.get("commands"):
         write_literal(f"pull request lines {size['lines']}")
     if rows is None:
         rows = [(node, models.get(node)) for node in result["path"]]
@@ -126,7 +126,10 @@ def _print_run_rows(
             write(" ".join(fields))
     stop = result.get("stop")
     if stop in {"needs_human", Halt.quota_exhausted} and "done" not in result["path"]:
-        write_literal(f"paused {stop}")
+        if "token_cap" in result:
+            write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {result['token_cap']}")
+        label = "done" if stop == "needs_human" and dry_run else "paused"
+        write_literal(f"{label} {stop}")
         if detail := result.get("halt_detail"):
             write(detail)
 
@@ -255,7 +258,7 @@ def main(
             fact_record=args.fact_record or MANIFEST_PATH,
         )
         print("pstack pin not checked (dry run)")
-        _print_run(result, presentation)
+        _print_run(result, presentation, dry_run=True)
     else:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
             run.error("--repo must be OWNER/NAME")
@@ -290,6 +293,7 @@ def main(
         except (AnswerError, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
+
     return run_exit_code(result)
 
 

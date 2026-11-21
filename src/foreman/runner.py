@@ -9,6 +9,7 @@ import re
 from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
@@ -40,7 +41,7 @@ class RunPresentation:
         self.restored = snapshot_result(snapshot, saver)
 
 
-def snapshot_result(snapshot: StateSnapshot, saver: SqliteSaver) -> DeliveryResult:
+def snapshot_result(snapshot: StateSnapshot, saver: BaseCheckpointSaver[str]) -> DeliveryResult:
     values = snapshot.values
     if snapshot.interrupts:
         if values.get("halt") == Halt.quota_exhausted:

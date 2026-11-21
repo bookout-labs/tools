@@ -100,8 +100,8 @@ class UsageTests(unittest.TestCase):
 
     def test_all_attempts_and_required_cache(self):
         result = run_delivery(ScriptHandler(), repo="a/b", request="x")
-        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement", "verify", "review"])
-        self.assertEqual(run_tokens(result["attempts"]), 8)
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement", "review"])
+        self.assertEqual(run_tokens(result["attempts"]), 6)
         attempt = {"stage": "triage", "model": None, "commit": "x", "methods": [], "outcome": "quota",
                    "usage": {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": 0.2}}
         self.assertEqual(run_tokens([attempt]), 7)

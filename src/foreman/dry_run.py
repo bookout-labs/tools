@@ -25,7 +25,6 @@ class ScriptHandler:
         triage: str = "implement",
         spec_gate: str = "ready",
         reviews: list[str] | None = None,
-        verify: str = "pass",
         spec: str = "Behavior, decisions, and technical design.",
         slices: list[object] | None = None,
         implementation: str = "diff",
@@ -38,7 +37,6 @@ class ScriptHandler:
         self.work_kind = work_kind
         self.spec_gate = spec_gate
         self.reviews = list(reviews if reviews is not None else ["approve"])
-        self.verify = verify
         self.spec = spec
         self.slices = slices
         self.slice: Mapping[str, object] = slice if slice is not None else {
@@ -86,6 +84,5 @@ class ScriptHandler:
             return Outcome("ran", {
                 "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if state.get("review") else [], "risk": dict(self.risk), "findings": findings, "tool_facts": [],
             }, usage=SCRIPTED_USAGE)
-        if node == "verify":
-            return Outcome("ran", {"verify": self.verify}, usage=SCRIPTED_USAGE)
         raise ValueError(f"no script for {node}")
+
