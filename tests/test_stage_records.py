@@ -3,6 +3,7 @@ import unittest
 from pydantic import TypeAdapter, ValidationError
 
 from foreman.stage_output import (
+    CandidateSlice, CandidateSliceRecord, SpecAuthor, SpecAuthorRecord, SpecCandidate, SpecCandidateRecord, SliceProvenance, SliceProvenanceRecord,
     PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, AttemptUsageRecord, ConstraintResult, ConstraintResultRecord,
     BrowserProof, BrowserProofRecord, Finding, FindingRecord, FormalProof, FormalProofRecord,
     MergeRisk, MergeRiskRecord, Seam, SeamRecord, Slice, SliceRecord, SliceProperty,
@@ -12,8 +13,15 @@ from foreman.stage_output import (
 
 class StageRecordTests(unittest.TestCase):
     def test_validated_records_round_trip(self):
+        author = {"stage": "spec", "model": "gpt-test", "family": "gpt"}
+        slice = {"title": "Ship", "stateful": False, "acceptance": "Pass", "builds": [], "uses": [], "screen": "", "properties": [], "depends_on": [], "blocker_numbers": []}
+        candidate = SpecCandidate(slices=[CandidateSlice.model_validate(slice)], spec="Ship", work_kind="feature", author=SpecAuthor.model_validate(author))
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
         cases = (
+            (SpecAuthor, SpecAuthorRecord, author),
+            (SliceProvenance, SliceProvenanceRecord, {"author": author, "revision": candidate.revision}),
+            (CandidateSlice, CandidateSliceRecord, slice),
+            (SpecCandidate, SpecCandidateRecord, candidate.record()),
             (PendingDispatch, PendingDispatchRecord, {"stage": "triage", "index": 0, "quota_model": None}),
             (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)], "eligible": []}}),
             (AttemptUsage, AttemptUsageRecord, usage),
@@ -31,10 +39,11 @@ class StageRecordTests(unittest.TestCase):
         )
         for model, record, raw in cases:
             with self.subTest(model=model.__name__):
-                self.assertEqual(set(model.model_fields), set(record.__annotations__) - {"depends_on", "blocker_numbers"})
-                value = model.model_validate(raw).record()
+                optional = {"depends_on", "blocker_numbers", "provenance"} if model is Slice else set()
+                self.assertEqual(set(model.model_fields) | set(model.model_computed_fields), set(record.__annotations__) - optional)
+                value = (SpecCandidate.from_record(raw) if model is SpecCandidate else model.model_validate(raw)).record()
                 self.assertEqual(value, raw)
-                self.assertEqual(model.model_validate(value).record(), raw)
+                self.assertEqual((SpecCandidate.from_record(value) if model is SpecCandidate else model.model_validate(value)).record(), raw)
                 self.assertEqual(TypeAdapter(record).validate_python(value, strict=True), raw)
                 for key in record.__required_keys__:
                     with self.assertRaises(ValidationError):
@@ -66,6 +75,21 @@ class StageRecordTests(unittest.TestCase):
                     {"ran": True, "constraints": [{"constraint": "positive", "rejected": 1}], "typecheck": None}):
             with self.subTest(raw=raw), self.assertRaises(ValidationError):
                 FormalProof.model_validate(raw)
+
+    def test_candidate_nested_boundaries_reject_coercion(self):
+        from test_spec_candidate import CandidateTests, SLICE
+        candidate = CandidateTests().candidate().record()
+        for model, record, raw in (
+            (SpecAuthor, SpecAuthorRecord, {"stage": "spec", "model": 1, "family": "gpt"}),
+            (SliceProvenance, SliceProvenanceRecord, {"author": {"stage": "spec", "model": 1, "family": "gpt"}, "revision": "0" * 64}),
+            (CandidateSlice, CandidateSliceRecord, {**SLICE, "stateful": "true"}),
+            (SpecCandidate, SpecCandidateRecord, {**candidate, "slices": [{**SLICE, "stateful": "true"}]}),
+        ):
+            with self.subTest(model=model.__name__):
+                with self.assertRaises(ValidationError):
+                    (SpecCandidate.from_record(raw) if model is SpecCandidate else model.model_validate(raw))
+                with self.assertRaises(ValidationError):
+                    TypeAdapter(record).validate_python(raw, strict=True)
 
     def test_stored_slice_keeps_checkpoint_metadata(self):
         raw = {"title": "Ship", "acceptance": "Pass", "screen": "", "properties": [],

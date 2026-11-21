@@ -19,7 +19,7 @@ from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import Forge
-from foreman.stage_output import Attempt, StoredSlice, parse_output
+from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 
@@ -30,7 +30,14 @@ def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
     normalized = dict(values)
     if normalized.get("slice") is not None:
         normalized["slice"] = StoredSlice.model_validate(normalized["slice"]).record()
-    return _CHECKPOINT_STATE.validate_python(normalized, strict=True)
+    state = _CHECKPOINT_STATE.validate_python(normalized, strict=True)
+    if "spec_candidate" in state:
+        candidate = SpecCandidate.from_record(state["spec_candidate"])
+        expected = candidate.update(single="slice" in state)
+        for key in ("slice", "slices", "spec", "work_kind"):
+            if key in state and state.get(key) != expected.get(key):
+                raise ValueError(f"{key} differs from candidate")
+    return state
 
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
