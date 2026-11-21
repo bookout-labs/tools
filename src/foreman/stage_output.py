@@ -9,11 +9,12 @@ from dataclasses import dataclass
 
 from typing_extensions import NotRequired, TypedDict, override
 
-from pydantic import BaseModel, ConfigDict, JsonValue, Field, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator, computed_field
+from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator, computed_field
 
 from pydantic.config import JsonDict
 
 from foreman.config import ModelSpec
+from foreman.adapters import OutcomeKind
 from foreman.dispatch import InvalidOutput
 
 PULL_REQUEST_LINES = 400
@@ -22,6 +23,8 @@ Text = Annotated[str, StringConstraints(pattern=r"\S")]
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Output = TypeVar("Output", bound=BaseModel)
 WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
+Severity = Literal["blocking", "nit"]
+ResolutionStatus = Literal["resolved", "unresolved"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -116,7 +119,7 @@ class FindingRecord(TypedDict):
     ruling_id: str | None
     file: str
     line: int
-    severity: Literal["blocking", "nit"]
+    severity: Severity
     summary: str
 
 
@@ -139,6 +142,52 @@ class RecordContract(Contract, Generic[Record]):
         if getattr(self, "provenance", None) is None:
             excluded.add("provenance")
         return self.record_adapter().validate_python(self.model_dump(exclude=excluded), strict=True)
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AttemptUsageRecord(TypedDict):
+    input: NonNegativeInt
+    output: NonNegativeInt
+    cache_read: NonNegativeInt
+    cache_creation: NonNegativeInt
+    cost_usd: float | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AttemptRecord(TypedDict):
+    stage: str
+    model: str | None
+    commit: str
+    methods: list[str]
+    outcome: OutcomeKind
+    usage: AttemptUsageRecord | None
+
+
+class AttemptUsage(RecordContract[AttemptUsageRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[AttemptUsageRecord]:
+        return TypeAdapter(AttemptUsageRecord)
+
+    input: NonNegativeInt
+    output: NonNegativeInt
+    cache_read: NonNegativeInt
+    cache_creation: NonNegativeInt
+    cost_usd: float | None
+
+
+class Attempt(RecordContract[AttemptRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[AttemptRecord]:
+        return TypeAdapter(AttemptRecord)
+
+    stage: str
+    model: str | None
+    commit: str
+    methods: list[str]
+    outcome: OutcomeKind
+    usage: AttemptUsage | None
 
 
 class SliceProperty(RecordContract[SlicePropertyRecord]):
@@ -534,13 +583,13 @@ class Finding(RecordContract[FindingRecord]):
     ruling_id: str | None = Field(description="If this contradicts a settled ruling, give its ID so it becomes a coordinator note. Otherwise null.")
     file: Text = Field(description="Give the path relative to the repository root.")
     line: int = Field(description="Give the line number in the reviewed commit.")
-    severity: Literal["blocking", "nit"]
+    severity: Severity
     summary: Text = Field(max_length=200)
 
 
 class FindingResolution(Contract):
     id: TrimmedText
-    status: Literal["resolved", "unresolved"]
+    status: ResolutionStatus
 
 
 class SettledRuling(Contract):

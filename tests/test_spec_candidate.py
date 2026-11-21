@@ -77,7 +77,7 @@ class CandidateTests(unittest.TestCase):
                     result = run_delivery(FailoverDispatcher(handler), repo="org/repo", request="Save", config=configured, scratch=scratch)
                 candidate = SpecCandidate.from_record(result["spec_candidate"])
                 self.assertEqual(candidate.author.record(), {"stage": stage, "model": "claude-test", "family": "claude"})
-                attempts = [a for a in result["skill_attempts"] if a["stage"] == stage]
+                attempts = [a for a in result["attempts"] if a["stage"] == stage]
                 self.assertEqual([a["outcome"] for a in attempts], ["quota", "ran"])
                 stored = result["slice"] if stage == "triage" else result["slices"][0]
                 self.assertEqual(stored["provenance"], {"revision": candidate.revision, "author": candidate.author.record()})
@@ -121,8 +121,8 @@ class CandidateTests(unittest.TestCase):
         self.assertNotIn("spec_candidate", result)
 
 
-    def test_without_methods_keeps_attempts_empty_and_records_dispatch_author(self):
+    def test_without_methods_records_dispatch_author_independently_of_attempts(self):
         result = compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), run=DryRun()).invoke(
             {"repo": "org/repo", "check": "", "path": [], "issue_kind": "parent"})
-        self.assertEqual(result["skill_attempts"], [])
+        self.assertNotIn("skill_attempts", result)
         self.assertEqual(result["spec_candidate"]["author"]["model"], result["models_used"]["triage"])

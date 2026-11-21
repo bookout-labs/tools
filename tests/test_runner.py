@@ -302,7 +302,7 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertEqual(result["stop"], stop)
                     self.assertEqual(calls, [cli, "codex"] if stop == "needs_human" else [cli])
                     expected = [case, "ran"] if stop == "needs_human" else ["failed"]
-                    self.assertEqual([item["outcome"] for item in result["skill_attempts"]], expected)
+                    self.assertEqual([item["outcome"] for item in result["attempts"]], expected)
                     if case == "is_error":
                         message = "turn_handoff:" if cli == "claude" else "unknown model id"
                         self.assertIn(message, result["halt_detail"])
@@ -645,15 +645,15 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(run_exit_code(paused), 75)
         self.assertNotIn("done", paused["path"])
         self.assertEqual(paused["pstack_pin"], self.pin.model_dump())
-        attempts = paused["skill_attempts"]
+        attempts = paused["attempts"]
         self.assertEqual([a["outcome"] for a in attempts], ["ran"] + ["quota"] * 4)
         self.assertTrue(all(a["stage"] == "implement" and a["commit"] == self.pin.commit for a in attempts[1:]))
 
         resumed = self.walk([{"implementation": "built"}, APPROVE])
         self.assertEqual(resumed["stop"], "verified")
         self.assertEqual(resumed["path"].count("triage"), 1)
-        self.assertEqual(resumed["skill_attempts"][:len(attempts)], attempts)
-        self.assertEqual([a["stage"] for a in resumed["skill_attempts"][len(attempts):]], ["implement", "review"])
+        self.assertEqual(resumed["attempts"][:len(attempts)], attempts)
+        self.assertEqual([a["stage"] for a in resumed["attempts"][len(attempts):]], ["implement", "review"])
 
     def test_load_parent_and_file_slices_only_once(self):
         self.github = FakeGitHub(["factory"])
