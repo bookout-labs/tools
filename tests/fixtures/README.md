@@ -222,16 +222,9 @@ A Git 2.56.0 probe used a temporary checkout with a local `main` and a bare `ori
 
 A push repository can be a remote name or URL. An explicit source and destination ref publish that branch. Git rejects non-fast-forward branch updates by default. `--no-follow-tags` overrides `push.followTags`. [Git 2.56.0 push documentation](https://github.com/git/git/blob/v2.56.0/Documentation/git-push.adoc)
 
-GitHub CLI 2.102.0 returned these JSON arrays with exit 0. The tests substitute the branch in the captured response.
+Publication looks up the branch with `gh pr view BRANCH --repo OWNER/REPO --json number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest`. Its captured response and command are recorded in [manifest.toml](manifest.toml).
 
-```text
-$ gh pr list --repo bookout-labs/tools --head 55-graph-git-ops --state open --json headRefName,baseRefName,isCrossRepository
-[]
-$ gh pr list --repo bookout-labs/tools --head 43-slice-seams --state open --json headRefName,baseRefName,isCrossRepository
-[{"baseRefName":"main","headRefName":"43-slice-seams","isCrossRepository":false}]
-```
-
-GitHub CLI 2.102.0 documents that `gh pr create --repo OWNER/REPO --base main --head BRANCH --title TITLE --body BODY` selects the repo and both refs, supplies the title and body without prompting, and skips pushing or forking. Success prints the PR URL. Foreman leaves that output unparsed and uses the open PR list to resolve retries. The body uses the documented `Closes #N` syntax. [GitHub CLI 2.102.0 create command](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/pr/create/create.go)
+GitHub CLI 2.102.0 documents that `gh pr create --repo OWNER/REPO --base main --head BRANCH --title TITLE --body BODY` selects the repo and both refs, supplies the title and body without prompting, and skips pushing or forking. Success prints the PR URL. Foreman leaves that output unparsed and uses `gh pr view` to resolve retries. The body uses the documented `Closes #N` syntax. [GitHub CLI 2.102.0 create command](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/pr/create/create.go)
 
 ## Publication recovery probes, 2026-11-20
 
@@ -246,7 +239,7 @@ gh pr view 60 --repo bookout-labs/tools --json number,state,headRefOid,headRefNa
 {"autoMergeRequest":null,"baseRefName":"main","baseRefOid":"84c08237e585eef84306d6d42ec1f2451b8a058e","headRefName":"55-graph-git-ops","headRefOid":"6e3de512844fff969c17976adc4f1df790ffff8b","isCrossRepository":false,"number":60,"state":"OPEN"}
 ```
 
-The checkout's origin is used without rewriting its URL. `git remote get-url origin` is checked against the selected repository before publication. Its HTTPS transport uses the operator's configured credential helper. The gh 2.102.0 `auth setup-git` documentation says, "This command configures git to use GitHub CLI as a credential helper." [Versioned source](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/auth/setupgit/setup_git.go), [manual](https://cli.github.com/manual/gh_auth_setup-git). The operator configures that helper once; the graph does not mutate authentication configuration.
+Origin identity and credential-helper provenance live in [manifest.toml](manifest.toml), with the captured origin and quoted gh documentation. The graph uses the existing origin and does not mutate authentication configuration.
 
 Git's `GIT_TERMINAL_PROMPT=0` prevents terminal authentication prompts. Fetch, push, ls-remote and commit are bounded to 30 seconds, including credential helpers, hooks and signing. Other git calls are bounded to 10 seconds. [Git 2.56.0 environment documentation](https://github.com/git/git/blob/v2.56.0/Documentation/git.adoc).
 

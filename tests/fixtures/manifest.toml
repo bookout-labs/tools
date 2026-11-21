@@ -582,3 +582,25 @@ version = "0.171.0"
 kind = "quoted_source"
 sources = ["https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L823-L959"]
 notes = "Synthetic substitutions for source formatter cases; see Codex quota formatter notes above."
+
+
+[fixtures."git/origin.txt"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "remote", "get-url", "origin"]
+notes = "The checkout's existing origin is checked against the selected repository before pushing. Its HTTPS transport uses the configured credential helper."
+
+[fixtures."github/setup-git.txt"]
+tool = "gh"
+version = "2.102.0"
+kind = "quoted_source"
+sources = ["https://cli.github.com/manual/gh_auth_setup-git", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/auth/setupgit/setup_git.go"]
+notes = "Quoted documentation: This command configures `git` to use GitHub CLI as a credential helper. Confirmed with gh auth setup-git --help at this version. The operator configures the helper once; the graph does not change authentication configuration."
+
+[fixtures."github/publication-pr.json"]
+tool = "gh"
+version = "2.102.0"
+kind = "captured_run"
+argv = ["gh", "pr", "view", "60", "--repo", "bookout-labs/tools", "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest"]
+notes = "Recorded recovery probe for PR 60. Production selects its branch with gh pr view BRANCH --repo OWNER/REPO using the same JSON fields."

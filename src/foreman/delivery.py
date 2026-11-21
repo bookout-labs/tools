@@ -24,7 +24,7 @@ from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome
-from foreman.config import Config, ConfigError, load_config, order_for
+from foreman.config import Config, ConfigError, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, recorded_fixtures
 from foreman.github import (
@@ -41,6 +41,7 @@ GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
+COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 SKILLS_FOR = {
     "review": ("review-quality", "merge-risk"),
 }
@@ -543,8 +544,10 @@ def compile_delivery(
         assert "slice" in state
         subject = f"{state.get('issue', '<issue>')}: {' '.join(redact(str(state['slice']['title'])).split())}"
         subject = textwrap.shorten(subject, width=72, placeholder="")
-        model = redact(state.get("models_used", {}).get("implement", "unknown"))
-        message = f"{subject}\n\nCo-Authored-By: {model} <noreply@openai.com>"
+        model = state.get("models_used", {}).get("implement")
+        if not model:
+            return halted("no_reviewer", "Publication needs the implement model.", None)
+        message = f"{subject}\n\nCo-Authored-By: {redact(model)} <{COAUTHOR_EMAILS[family(model)]}>"
         if isinstance(run, DryRun):
             return {"commands": commit_commands(message)}
         assert "delivery_branch" in state and "attempt_head" in state and "implementation_edits" in state

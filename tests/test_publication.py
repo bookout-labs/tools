@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import subprocess
@@ -5,6 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+from foreman.adapters import Outcome
 from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.delivery import LiveRun
@@ -18,14 +20,18 @@ REPO = "Example/Engine"
 REF = f"refs/heads/{BRANCH}"
 run_subprocess = subprocess.run
 
-
 class PublicationTest(unittest.TestCase):
     def setUp(self):
+        self.fixture = self.enterContext(ExitStack())
+        self.reset_fixture()
+
+    def reset_fixture(self):
+        self.fixture.close()
         self.base = "main"
         self.branch = BRANCH
         self.ref = REF
         self.slice = EMPTY_SLICE
-        root = Path(self.enterContext(TemporaryDirectory()))
+        root = Path(self.fixture.enter_context(TemporaryDirectory()))
         self.checkout = root / "checkout"
         self.checkout.mkdir()
         self.remote = root / "remote.git"
@@ -41,7 +47,7 @@ class PublicationTest(unittest.TestCase):
         self.created = []
         self.published_heads = []
         self.create_error = False
-        self.enterContext(patch("foreman.github.subprocess.run", side_effect=self.subprocess))
+        self.fixture.enter_context(patch("foreman.github.subprocess.run", side_effect=self.subprocess))
 
     def git(self, *args):
         return run_subprocess(["git", *args], cwd=self.checkout, check=True, capture_output=True, text=True).stdout.strip()
@@ -63,9 +69,6 @@ class PublicationTest(unittest.TestCase):
                 response = [[]]
             case ["issue", "view"]:
                 response = {"title": self.slice["title"], "body": slice_body(self.slice), "labels": [{"name": "slice"}]}
-            case ["pr", "list"]:
-                self.assertEqual(command[command.index("--head") + 1], self.branch)
-                response = [{"baseRefName": "main", "headRefName": self.branch, "isCrossRepository": False}] if self.created else []
             case ["pr", "create"]:
                 self.assertEqual(command[3:], [
                     "--repo", REPO, "--base", self.base, "--head", self.branch,
@@ -91,14 +94,22 @@ class PublicationTest(unittest.TestCase):
                 self.fail(f"Unexpected command: {command}")
         return subprocess.CompletedProcess(command, 0, json.dumps(response), "")
 
-    def walk(self, edit, reviews=None):
+    def edit(self):
+        (self.checkout / "items.txt").write_text("one\n")
+
+    def no_worker(self):
+        self.fail("completed worker must not repeat")
+
+    def walk(self, edit=None, reviews=None, family=None):
         script = ScriptHandler(reviews=reviews)
         workspace = LiveWorkspace(self.checkout)
 
         def handler(node, model, state, instruction):
             if node == "implement":
                 self.assertEqual(workspace.inspect().branch, self.branch)
-                edit()
+                if family and model.family != family:
+                    return Outcome("cli_missing")
+                (edit or self.edit)()
             if node == "review":
                 self.published_heads.append(self.remote_head())
             return script(node, model, state, instruction)
@@ -109,15 +120,21 @@ class PublicationTest(unittest.TestCase):
         )
 
     def test_graph_commits_and_pushes_before_opening_one_pull_request(self):
-        self.git("switch", "-c", "unrelated")
-        self.git("commit", "--allow-empty", "-m", "Unrelated change")
-        result = self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        self.assertEqual(result.get("merge"), "armed")
-        self.assertEqual(self.remote_head(), result.get("head_sha"))
-        self.assertEqual(result.get("verified_head"), self.remote_head())
-        self.assertEqual(self.created, [self.remote_head()])
-        self.assertEqual(self.git("rev-parse", f"{self.ref}^"), self.git("rev-parse", "main"))
-        self.assertEqual(self.git("--git-dir", str(self.remote), "show", f"{self.ref}:items.txt"), "one")
+        for family, email in (("gpt", "noreply@openai.com"), ("claude", "noreply@anthropic.com"), ("grok", "noreply@x.ai")):
+            with self.subTest(family=family):
+                self.reset_fixture()
+                self.git("switch", "-c", "unrelated")
+                self.git("commit", "--allow-empty", "-m", "Unrelated change")
+                result = self.walk(family=family)
+                self.assertEqual(result.get("merge"), "armed")
+                self.assertEqual(self.remote_head(), result.get("head_sha"))
+                self.assertEqual(result.get("verified_head"), self.remote_head())
+                self.assertEqual(self.created, [self.remote_head()])
+                self.assertEqual(self.git("rev-parse", f"{self.ref}^"), self.git("rev-parse", self.base))
+                self.assertEqual(self.git("--git-dir", str(self.remote), "show", f"{self.ref}:items.txt"), "one")
+                message = self.git("show", "-s", "--format=%B", "HEAD")
+                self.assertLessEqual(len(message.splitlines()[0]), 72)
+                self.assertTrue(message.endswith(f"Co-Authored-By: {result['models_used']['implement']} <{email}>"))
 
     def test_second_attempt_adds_a_commit_to_the_same_pull_request(self):
         edits = iter(("one\n", "two\n"))
@@ -149,7 +166,7 @@ class PublicationTest(unittest.TestCase):
 
     def test_rerun_retries_publication_without_rerunning_the_worker(self):
         self.create_error = True
-        failed = self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
+        failed = self.walk()
         self.assertEqual(failed.get("stop"), "publish_failed")
         self.assertEqual(failed.get("head_sha"), self.remote_head())
         self.create_error = False
@@ -157,72 +174,58 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(result.get("merge"), "armed")
         self.assertEqual(self.created, [failed.get("head_sha")])
 
-    def test_crash_after_branch_creation_reuses_branch(self):
-        original = LiveWorkspace.create_branch
-        def crash(workspace, branch, base):
-            original(workspace, branch, base)
-            raise SystemExit("synthetic crash after branch")
-        with patch.object(LiveWorkspace, "create_branch", crash), self.assertRaises(SystemExit):
-            self.walk(lambda: self.fail("worker must follow preparation checkpoint"))
-        result = self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        self.assertEqual(result.get("stop"), "verified")
+    def test_crash_windows_resume_without_duplicate_completed_work(self):
+        cases = (
+            ("branch created", LiveWorkspace, "create_branch", True, False),
+            ("worker checkpointed", LiveWorkspace, "commit", False, True),
+            ("commit completed", LiveWorkspace, "commit", True, True),
+            ("push completed", LiveWorkspace, "push", True, True),
+            ("PR created", LiveForge, "open_pull_request", True, True),
+        )
+        for label, owner, operation, completed, worker_done in cases:
+            with self.subTest(window=label):
+                self.reset_fixture()
+                original = getattr(owner, operation)
+                def crash(*args, **kwargs):
+                    if completed:
+                        original(*args, **kwargs)
+                    raise SystemExit(label)
+                with patch.object(owner, operation, crash), self.assertRaises(SystemExit):
+                    self.walk(self.edit if worker_done else self.no_worker)
+                head = self.git("rev-parse", "HEAD")
+                original_git = LiveWorkspace._git
+                def resume_git(workspace, *args, **kwargs):
+                    if operation == "commit" and completed:
+                        self.assertNotEqual(args[0], "commit", "duplicate commit")
+                    if operation in ("push", "open_pull_request"):
+                        self.assertNotEqual(args[0], "push", "duplicate push")
+                    return original_git(workspace, *args, **kwargs)
+                with patch.object(LiveWorkspace, "_git", resume_git):
+                    result = self.walk(self.no_worker if worker_done else self.edit)
+                self.assertEqual(result.get("stop"), "verified")
+                self.assertEqual(len(self.created), 1)
+                if completed and worker_done:
+                    self.assertEqual(self.remote_head(), head)
 
-    def test_crash_after_worker_checkpoint_never_repeats_worker(self):
-        with patch.object(LiveWorkspace, "commit", side_effect=SystemExit("synthetic crash before commit")), self.assertRaises(SystemExit):
-            self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        self.assertEqual(self.walk(lambda: self.fail("worker already checkpointed")).get("stop"), "verified")
-
-    def test_crash_after_commit_recovers_without_worker_or_second_commit(self):
-        original = LiveWorkspace.commit
-        def crash(workspace, message):
-            original(workspace, message)
-            raise SystemExit("synthetic crash after commit")
-        with patch.object(LiveWorkspace, "commit", crash), self.assertRaises(SystemExit):
-            self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        head = self.git("rev-parse", "HEAD")
-        with patch.object(LiveWorkspace, "commit", side_effect=AssertionError("duplicate commit")):
-            result = self.walk(lambda: self.fail("duplicate worker"))
-        self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(self.remote_head(), head)
-
-    def test_crash_after_push_skips_finished_push(self):
-        original = LiveWorkspace.push
-        def crash(workspace, branch, repo):
-            original(workspace, branch, repo)
-            raise SystemExit("synthetic crash after push")
-        with patch.object(LiveWorkspace, "push", crash), self.assertRaises(SystemExit):
-            self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        original_git = LiveWorkspace._git
-        def no_duplicate(workspace, *args, **kwargs):
-            self.assertNotEqual(args[0], "push")
-            return original_git(workspace, *args, **kwargs)
-        with patch.object(LiveWorkspace, "_git", no_duplicate):
-            self.assertEqual(self.walk(lambda: self.fail("duplicate worker")).get("stop"), "verified")
-
-    def test_crash_after_pr_create_reuses_pr(self):
-        original = LiveForge.open_pull_request
-        def crash(forge, *args):
-            original(forge, *args)
-            raise SystemExit("synthetic crash after PR")
-        with patch.object(LiveForge, "open_pull_request", crash), self.assertRaises(SystemExit):
-            self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        self.assertEqual(self.walk(lambda: self.fail("duplicate worker")).get("stop"), "verified")
-        self.assertEqual(len(self.created), 1)
-
-    def test_index_lock_is_resumable_without_repeating_worker(self):
-        lock = self.checkout / ".git/index.lock"
-        def edit():
-            (self.checkout / "items.txt").write_text("one\n")
-            lock.touch()
-        result = self.walk(edit)
-        self.assertEqual(result.get("stop"), "git_failed")
-        self.assertIn("index.lock", result["halt_detail"])
-        lock.unlink()
-        self.assertEqual(self.walk(lambda: self.fail("duplicate worker")).get("stop"), "verified")
+    def test_index_lock_is_resumable(self):
+        for phase, before_worker in (("prepare", True), ("commit", False)):
+            with self.subTest(phase=phase):
+                self.reset_fixture()
+                lock = self.checkout / ".git/index.lock"
+                def edit_with_lock():
+                    self.edit()
+                    lock.touch()
+                if before_worker:
+                    lock.touch()
+                result = self.walk(self.no_worker if before_worker else edit_with_lock)
+                self.assertEqual(result.get("stop"), "git_failed")
+                self.assertIn("index.lock", result["halt_detail"])
+                lock.unlink()
+                self.assertEqual(self.walk(self.edit if before_worker else self.no_worker).get("stop"), "verified")
 
     def test_existing_branch_at_expected_base_is_reused(self):
         self.git("branch", self.branch, "main")
-        self.assertEqual(self.walk(lambda: (self.checkout / "items.txt").write_text("one\n")).get("stop"), "verified")
+        self.assertEqual(self.walk().get("stop"), "verified")
 
     def test_quota_stop_continues_owned_partial_edits(self):
         from foreman.dispatch import QuotaExhausted
@@ -252,21 +255,31 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(result.get("stop"), "dirty_worktree")
         self.assertIn("Unowned edits", result["halt_detail"])
 
-    def test_push_rejection_halts_and_retry_converges(self):
-        hook = self.remote / "hooks/pre-receive"
-        hook.write_text("#!/bin/sh\necho 'synthetic rejection' >&2\nexit 1\n")
-        hook.chmod(0o755)
-        result = self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        self.assertEqual(result.get("stop"), "publish_failed")
-        self.assertIn("rejected", result["halt_detail"])
-        hook.unlink()
-        self.assertEqual(self.walk(lambda: self.fail("duplicate worker")).get("stop"), "verified")
-
-    def test_missing_remote_halts_with_detail(self):
-        self.git("remote", "remove", "origin")
-        result = self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        self.assertEqual(result.get("stop"), "publish_failed")
-        self.assertIn("origin", result["halt_detail"])
+    def test_publication_failures(self):
+        cases = (("rejected push", "rejected"), ("missing remote", "origin"), ("wrong push URL", "origin does not point"))
+        for case, detail in cases:
+            with self.subTest(case=case):
+                self.reset_fixture()
+                hook = self.remote / "hooks/pre-receive"
+                hook.write_text("#!/bin/sh\necho 'synthetic rejection' >&2\nexit 1\n")
+                hook.chmod(0o755)
+                if case == "missing remote":
+                    self.git("remote", "remove", "origin")
+                original = self.subprocess
+                def remote(command, **kwargs):
+                    if case == "wrong push URL" and command[:3] == ["git", "remote", "get-url"] and "--push" in command:
+                        return subprocess.CompletedProcess(command, 0, b"https://github.com/Example/Other.git", b"")
+                    if case == "wrong push URL":
+                        self.assertNotEqual(command[:2], ["git", "push"], "wrong URL must fail before network")
+                    return original(command, **kwargs)
+                with patch("foreman.workspace.subprocess.run", side_effect=remote):
+                    result = self.walk()
+                self.assertEqual(result.get("stop"), "publish_failed")
+                self.assertIn(detail, result["halt_detail"])
+                self.assertEqual(self.created, [])
+                hook.unlink()
+                if case == "rejected push":
+                    self.assertEqual(self.walk(self.no_worker).get("stop"), "verified")
 
     def test_wrong_base_open_pr_stops_without_creation(self):
         from foreman.github import ForgeError, PullRequest
@@ -276,12 +289,6 @@ class PublicationTest(unittest.TestCase):
             with self.assertRaisesRegex(ForgeError, "selected base"):
                 LiveForge().open_pull_request(REPO, self.branch, "main", "Synthetic", "Closes #8")
         self.assertEqual(self.created, [])
-
-    def test_commit_subject_and_dispatch_model_trailer(self):
-        result = self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        message = self.git("show", "-s", "--format=%B", "HEAD")
-        self.assertLessEqual(len(message.splitlines()[0]), 72)
-        self.assertTrue(message.endswith(f"Co-Authored-By: {result['models_used']['implement']} <noreply@openai.com>"))
 
     def test_git_calls_disable_prompts_and_bound_network_and_commit(self):
         from foreman.workspace import WorkspaceError
@@ -353,57 +360,52 @@ class PublicationTest(unittest.TestCase):
             server.server_close()
             thread.join()
 
-    def test_synthetic_token_never_reaches_dry_run_writes_or_print(self):
+    def test_synthetic_token_never_reaches_publication_writes(self):
         from contextlib import redirect_stdout
         from io import StringIO
         from foreman.cli import _print_run
         from foreman.delivery import run_delivery
         from foreman.github import pull_request_command
-        synthetic = "ghp_SECRETtoken123"
-        result = run_delivery(FailoverDispatcher(ScriptHandler()), repo=REPO, request="synthetic fixture",
-                              slice={**EMPTY_SLICE, "title": f"Fix {synthetic}"})
-        output = StringIO()
-        with redirect_stdout(output):
-            _print_run(result)
-        self.assertNotIn(synthetic, output.getvalue())
-        self.assertNotIn(synthetic, json.dumps(result["commands"]))
-        self.assertNotIn(synthetic, json.dumps(pull_request_command(REPO, self.branch, "main", f"Fix {synthetic}", synthetic)))
-
-    def test_default_branch_is_parsed_and_cached_once(self):
-        forge = LiveForge()
-        command = ["gh", "repo", "view", REPO, "--json", "defaultBranchRef"]
-        with patch("foreman.github.subprocess.run", return_value=subprocess.CompletedProcess(command, 0, '{"defaultBranchRef":{"name":"trunk"}}', "")) as call:
-            self.assertEqual(forge.default_branch(REPO), "trunk")
-            self.assertEqual(forge.default_branch(REPO), "trunk")
-            self.assertEqual(call.call_count, 1)
-            self.assertEqual(call.call_args.args[0], command)
-
-    def test_live_title_is_redacted_and_long_subject_ends_at_word(self):
-        synthetic = "ghp_SECRETtoken123"
-        self.slice = {**EMPTY_SLICE, "title": f"Fix {synthetic} " + "synthetic words " * 9}
-        from foreman.redaction import redact
         import re
-        slug = re.sub(r"[^a-z0-9]+", "-", redact(self.slice["title"]).lower()).strip("-")[:60].rstrip("-")
-        self.branch = f"8-{slug}"
-        self.ref = f"refs/heads/{self.branch}"
-        # The fixture asserts the redacted GitHub title at the subprocess boundary.
-        result = self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        self.assertEqual(result.get("stop"), "verified")
-        message = self.git("show", "-s", "--format=%B", "HEAD")
-        self.assertNotIn(synthetic, message)
-        self.assertNotIn(synthetic.lower(), self.branch)
-        self.assertLessEqual(len(message.splitlines()[0]), 72)
-        self.assertTrue(message.splitlines()[0].endswith("words") or message.splitlines()[0].endswith("synthetic"))
+        synthetic = "ghp_SECRETtoken123"
+        for mode in ("dry", "live"):
+            with self.subTest(mode=mode):
+                self.reset_fixture()
+                self.slice = {**EMPTY_SLICE, "title": f"Fix {synthetic} " + "synthetic words " * 9}
+                slug = re.sub(r"[^a-z0-9]+", "-", redact(self.slice["title"]).lower()).strip("-")[:60].rstrip("-")
+                self.branch, self.ref = f"8-{slug}", f"refs/heads/8-{slug}"
+                if mode == "dry":
+                    result = run_delivery(FailoverDispatcher(ScriptHandler()), repo=REPO, request="synthetic fixture", slice=self.slice)
+                    output = StringIO()
+                    with redirect_stdout(output):
+                        _print_run(result)
+                    self.assertNotIn(synthetic, output.getvalue())
+                    self.assertNotIn(synthetic, json.dumps(result["commands"]))
+                    self.assertNotIn(synthetic, json.dumps(pull_request_command(REPO, self.branch, self.base, self.slice["title"], synthetic)))
+                else:
+                    self.assertEqual(self.walk().get("stop"), "verified")
+                    message = self.git("show", "-s", "--format=%B", "HEAD")
+                    self.assertNotIn(synthetic, message)
+                    self.assertNotIn(synthetic.lower(), self.branch)
+                    self.assertLessEqual(len(message.splitlines()[0]), 72)
+                    self.assertTrue(message.splitlines()[0].endswith(("words", "synthetic")))
 
-    def test_wrong_push_remote_is_rejected_before_network(self):
-        from foreman.workspace import WorkspaceError
-        def remote(command, **kwargs):
-            value = b"https://github.com/Example/Other.git" if "--push" in command else b"https://github.com/Example/Engine.git"
-            return subprocess.CompletedProcess(command, 0, value, b"")
-        with patch("foreman.workspace.subprocess.run", side_effect=remote) as call:
-            with self.assertRaisesRegex(WorkspaceError, "origin does not point"):
-                LiveWorkspace(self.checkout).push(self.branch, REPO)
-        self.assertEqual(call.call_count, 2)
+    def test_repository_default_branch(self):
+        for base in ("main", "trunk"):
+            with self.subTest(base=base):
+                self.reset_fixture()
+                if base != self.base:
+                    self.git("branch", "-m", self.base, base)
+                    self.base = base
+                    self.git("push", "origin", base)
+                original = self.subprocess
+                with patch("foreman.github.subprocess.run", side_effect=original) as call:
+                    result = self.walk()
+                self.assertEqual(result.get("delivery_base"), base)
+                self.assertEqual(result.get("stop"), "verified")
+                self.assertEqual(self.git("rev-parse", "HEAD^"), self.git("rev-parse", base))
+                commands = [c.args[0] for c in call.call_args_list if c.args[0][:3] == ["gh", "repo", "view"]]
+                self.assertEqual(commands, [["gh", "repo", "view", REPO, "--json", "defaultBranchRef"]])
 
     def test_crash_during_worker_continues_partial_edits(self):
         def crash():
@@ -415,21 +417,3 @@ class PublicationTest(unittest.TestCase):
             self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
             (self.checkout / "items.txt").write_text("finished\n")
         self.assertEqual(self.walk(finish).get("stop"), "verified")
-
-    def test_index_lock_during_prepare_retries_before_worker(self):
-        lock = self.checkout / ".git/index.lock"
-        lock.touch()
-        result = self.walk(lambda: self.fail("preparation must finish first"))
-        self.assertEqual(result.get("stop"), "git_failed")
-        self.assertIn("index.lock", result["halt_detail"])
-        lock.unlink()
-        self.assertEqual(self.walk(lambda: (self.checkout / "items.txt").write_text("one\n")).get("stop"), "verified")
-
-    def test_repository_default_branch_drives_branch_pr_and_merge(self):
-        self.git("branch", "-m", "main", "trunk")
-        self.base = "trunk"
-        self.git("push", "origin", self.base)
-        result = self.walk(lambda: (self.checkout / "items.txt").write_text("one\n"))
-        self.assertEqual(result.get("delivery_base"), "trunk")
-        self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(self.git("rev-parse", "HEAD^"), self.git("rev-parse", "trunk"))
