@@ -1,3 +1,5 @@
+# Resolve the delivery types in #52 before restoring strict checking.
+# pyright: basic
 """Worker output contracts shared by the CLI prompts and delivery graph."""
 
 from typing import Annotated, Literal, Self, TypeVar

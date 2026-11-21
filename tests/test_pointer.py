@@ -1,6 +1,9 @@
 from pathlib import Path
 import json
 import unittest
+import subprocess
+import tempfile
+import sys
 
 from foreman.pointer import KNOWN_GRAPHS, OPTIONAL, REQUIRED, PointerError, load_pointer
 
@@ -23,6 +26,19 @@ class PointerTest(unittest.TestCase):
         self.assertEqual(tuple(schema["required"]), REQUIRED)
         self.assertEqual(set(schema["properties"]), set(REQUIRED) | set(OPTIONAL))
         self.assertEqual(tuple(schema["properties"]["graph"]["enum"]), KNOWN_GRAPHS)
+
+    def test_non_string_key_is_a_cli_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "pointer.yaml"
+            path.write_text("1: x\n")
+            result = subprocess.run(
+                [sys.executable, "-c", "from foreman.cli import main; raise SystemExit(main())",
+                 "check-pointer", str(path)],
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr.strip(), "pointer keys must be strings, got int")
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_bad_pointer_is_rejected(self):
         path = ROOT / "examples" / "missing.yaml"

@@ -3,6 +3,7 @@ from subprocess import CompletedProcess
 from typing import ClassVar, Literal
 
 from pydantic import Field
+from typing_extensions import override
 
 from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
 
@@ -24,6 +25,7 @@ class ClaudeEnvelope(NativeEnvelope):
     usage: Usage | None = None
     total_cost_usd: float | None = None
 
+    @override
     def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
         kind: OutcomeKind = "ran"
         detail = "\n".join(self.errors) or self.result or process.stderr.strip()
