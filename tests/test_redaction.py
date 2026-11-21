@@ -1,3 +1,5 @@
+import tests
+
 import ast
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout

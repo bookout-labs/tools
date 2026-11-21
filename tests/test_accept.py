@@ -1,3 +1,5 @@
+import tests
+
 import unittest
 
 from foreman.accept import AcceptError, accept_event

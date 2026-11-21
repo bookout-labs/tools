@@ -1,5 +1,6 @@
 """Worker methods selected by delivery state."""
 
+from collections.abc import Callable
 from pathlib import Path
 import subprocess
 import tarfile
@@ -13,6 +14,8 @@ from foreman.stage_output import WorkKind
 
 if TYPE_CHECKING:
     from foreman.delivery import DeliveryState
+
+SkillSource = Callable[[PstackPin, Path], Path]
 
 AgentStage = Literal["triage", "research", "spec", "implement", "review"]
 LocalSkill = Literal["browser-proof", "code-quality", "formal-proof", "merge-risk", "review-quality"]

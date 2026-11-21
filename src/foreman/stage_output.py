@@ -3,7 +3,8 @@
 from hashlib import sha256
 from typing import Annotated, Generic, Literal, Self, TypeVar
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from typing_extensions import NotRequired, TypedDict, override
 
@@ -284,7 +285,48 @@ class StoredSlice(Slice):
     blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
 
 
-class HumanQuestionOutput(Contract):
+class PullRequestSplit(TypedDict):
+    plan: str
+    gate: Literal["ready", "needs_human"]
+    question: str | None
+    slices: list[SliceRecord]
+
+
+class StageUpdate(TypedDict, total=False):
+    triage: str
+    work_kind: WorkKind
+    human_question: str
+    slice: SliceRecord
+    research: str
+    spec: str
+    spec_gate: str
+    spec_rejection: None
+    slices: list[SliceRecord]
+    pr_split: PullRequestSplit
+    implementation: str
+    browser_proof: BrowserProofRecord | None
+    formal_proof: FormalProofRecord | None
+    risk: MergeRiskRecord
+    detail: str
+    findings: list[FindingRecord]
+    verify: str
+
+
+@dataclass(frozen=True)
+class UpdateContext:
+    issue_kind: str | None
+    work_kind: WorkKind | None
+    oversized: bool
+    slices: list[SliceRecord]
+
+
+class StageOutput(Contract, ABC):
+    @abstractmethod
+    def update(self, context: UpdateContext) -> StageUpdate:
+        raise NotImplementedError
+
+
+class HumanQuestionOutput(StageOutput):
     human_question: str | None = Field(
         description="When this stage returns needs_human, put the question for the person here. Use null otherwise.",
     )
@@ -304,9 +346,26 @@ class TriageOutput(HumanQuestionOutput):
         description="For a parent issue that triages as implement, return its single slice. Use null otherwise, including for slice issues.",
     )
 
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        update: StageUpdate = {
+            "triage": self.triage, "work_kind": self.work_kind, "human_question": self.human_question or "",
+        }
+        if context.issue_kind == "slice" and context.work_kind is not None:
+            update["work_kind"] = context.work_kind
+        if context.issue_kind == "parent" and self.triage == "implement":
+            if self.slice is None:
+                raise InvalidOutput("slice: required when a parent triages as implement")
+            update["slice"] = self.slice.record()
+        return update
 
-class ResearchOutput(Contract):
+
+class ResearchOutput(StageOutput):
     research: Text
+
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        return {"research": self.research}
 
 
 class SpecOutput(HumanQuestionOutput):
@@ -315,6 +374,22 @@ class SpecOutput(HumanQuestionOutput):
     slices: list[Slice] | None = Field(
         description="For a ready parent spec, return one entry per pull request. Use null otherwise.",
     )
+
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        slices = context.slices
+        if context.oversized:
+            return {
+                "pr_split": {"plan": self.spec, "gate": self.spec_gate, "question": self.human_question, "slices": slices},
+                "spec_rejection": None,
+            }
+        update: StageUpdate = {
+            "spec": self.spec, "spec_gate": self.spec_gate,
+            "human_question": self.human_question or "", "spec_rejection": None,
+        }
+        if context.issue_kind == "parent" and self.spec_gate == "ready":
+            update["slices"] = slices
+        return update
 
 
 class BrowserProof(RecordContract[BrowserProofRecord]):
@@ -352,10 +427,18 @@ class FormalProof(RecordContract[FormalProofRecord]):
     typecheck: str | bool | None
 
 
-class ImplementOutput(Contract):
+class ImplementOutput(StageOutput):
     implementation: Text
     browser_proof: BrowserProof | None
     formal_proof: FormalProof | None
+
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        return {
+            "implementation": self.implementation,
+            "browser_proof": self.browser_proof.record() if self.browser_proof else None,
+            "formal_proof": self.formal_proof.record() if self.formal_proof else None,
+        }
 
 
 class MergeRisk(RecordContract[MergeRiskRecord]):
@@ -434,7 +517,7 @@ class SettledRuling(Contract):
     text: Text
 
 
-class ReviewOutput(Contract):
+class ReviewOutput(StageOutput):
     resolutions: list[FindingResolution] = Field(description="Mark every earlier unresolved reviewer finding once. The graph resolves tool-fact gate findings. Return an empty list in round 1.")
     risk: MergeRisk
     findings: list[Finding] = Field(
@@ -446,11 +529,21 @@ class ReviewOutput(Contract):
     detail: Text = Field(description="Write the pull request review body, including any longer explanation.")
 
 
-class VerifyOutput(Contract):
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        return {"risk": self.risk.record(), "detail": self.detail,
+                "findings": [finding.record() for finding in self.findings]}
+
+
+class VerifyOutput(StageOutput):
     verify: Literal["pass", "fail"]
 
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        return {"verify": self.verify}
 
-STAGE_OUTPUTS: dict[str, type[Contract]] = {
+
+STAGE_OUTPUTS: dict[str, type[StageOutput]] = {
     "triage": TriageOutput,
     "research": ResearchOutput,
     "spec": SpecOutput,
