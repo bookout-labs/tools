@@ -82,6 +82,9 @@ class FakeWorkspace(LiveWorkspace):
     def fingerprint(self):
         return "synthetic-edits"
 
+    def reconcile(self, parent, branch, base_branch, fact_record):
+        return None if self.current.clean else {"disposition": "edits", "fingerprint": self.fingerprint()}
+
     def create_branch(self, branch, base):
         self.current = WorktreeState(self.current.head, True, branch)
 
@@ -200,7 +203,7 @@ class FakeGitHub:
         return {"title": "Issue title", "body": self.bodies.get((repo, number), self.body), "labels": self.labels}
 
     def open_issues(self, repo) -> list[OpenIssue]:
-        return [OpenIssue(number=number, body=self.load_issue(repo, number)["body"])
+        return [OpenIssue(number=number, body=self.bodies[repo, number])
                 for number in self.issue_labels if self.issue_repos[number] == repo
                 and number not in self.closed and number not in self.merged]
 
@@ -741,11 +744,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         changes = {**APPROVE, "findings": findings, "detail": "Check the bounds."}
         self.walk([{"triage": "implement"}, built, changes, built, {**APPROVE, "resolutions": [{"id": f["id"], "status": "resolved"} for f in findings]}])
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
+        selection = '\n\nReviewer claude-opus-5-5-high; implemented by gpt-6.1-sol-high; same-family fallback: not needed.'
         self.assertEqual(self.github.reviews, [(
             "Example/Engine", 12, HEAD,
-            "Graph verdict: changes. Review event: COMMENT (Foreman authors this PR).\n\nCheck the bounds.\n\nitems.txt:1 [blocking] Untouched context.\n\ndeleted.txt:1 [blocking] Deleted file.",
+            "Graph verdict: changes. Review event: COMMENT (Foreman authors this PR).\n\nCheck the bounds." + selection + "\n\nitems.txt:1 [blocking] Untouched context.\n\ndeleted.txt:1 [blocking] Deleted file.",
             [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[blocking] Add a check."}],
-        ), ("Example/Engine", 12, HEAD, "Graph verdict: approve. Review event: COMMENT (Foreman authors this PR).\n\n" + APPROVE["detail"], [])])
+        ), ("Example/Engine", 12, HEAD, "Graph verdict: approve. Review event: COMMENT (Foreman authors this PR).\n\n" + APPROVE["detail"] + selection, [])])
 
     def test_review_failures_halt_without_merging(self):
         changes = {**APPROVE, "findings": [FINDING]}
@@ -841,6 +845,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             ("why/SKILL.md", "", "method is empty"),
         ):
             with self.subTest(method=method, detail=detail), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "runs.sqlite3"
                 pin = fixture_pin(Path(directory) / "fixture")
                 source = Path(pin.repository)
                 (source / "pstack" / "skills" / method).write_text(content, encoding="utf-8")
@@ -1018,7 +1023,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.walk([{"triage": "spec"}, spec, spec, spec])
         self.assertEqual(result["stop"], "spec_cap")
         self.assertEqual(result["spec_rejection"]["kind"], "existing_seam_builder")
-        self.assertEqual(self.github.created, [])
+        self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_workspace_file_paths_resolve_inside_the_root(self):
         (self.cwd / "api.py").touch()
@@ -1046,7 +1051,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["review_rounds"], 0)
         self.assertEqual(result["spec_failures"], 3)
         self.assertEqual(result["spec_rejection"]["kind"], "dangling_seam")
-        self.assertEqual(self.github.created, [])
+        self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_link_failure_leaves_child_blocked_and_parent_retry_repairs_it(self):
         self.github = FakeGitHub(["factory"])
@@ -1103,6 +1108,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             cwd=root, check=True,
         )
         subprocess.run(["git", "branch", "main"], cwd=root, check=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=root, check=True)
         subprocess.run(["git", "config", "user.name", "Synthetic Test"], cwd=root, check=True)
         subprocess.run(["git", "config", "user.email", "synthetic@example.invalid"], cwd=root, check=True)
         subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=root, check=True)
@@ -1356,7 +1362,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertTrue(result["halt_detail"].startswith("slice:"))
                 self.assertEqual(len(self.calls), 1)
                 self.assertEqual(self.github.merge_calls, [])
-                self.assertEqual(self.github.created, [])
+                self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_browser_block_rebuilds_and_rechecks_before_review(self):
         self.github.body = slice_body(SLICE)
@@ -1676,7 +1682,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(held["merge"], "not_armed")
         self.assertEqual(held["halt_detail"], f"could not read FOREMAN_MERGE_HOLD: {reason}")
         self.assertEqual(held["merge_command"], [
-            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--auto", "--match-head-commit", HEAD,
+            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--auto", "--squash", "--match-head-commit", HEAD,
         ])
         self.assertEqual(self.github.merge_calls, [])
         released = self.walk([])
@@ -1853,7 +1859,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         worker_runner=worker, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(code, 0)
         self.assertIn(
-            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --match-head-commit '<sha>'\n"
+            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --squash --match-head-commit '<sha>'\n"
             "tokens 8 of 20000000\ndone verified",
             stdout.getvalue(),
         )
@@ -2252,7 +2258,7 @@ class HaltExitCodeTest(unittest.TestCase):
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
         result = {**halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
-        with patch("foreman.cli.run_live_delivery", return_value=result), contextlib.redirect_stdout(io.StringIO()) as output:
+        with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
 

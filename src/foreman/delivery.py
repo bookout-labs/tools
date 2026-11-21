@@ -25,7 +25,7 @@ from typing_extensions import TypedDict
 
 from foreman.adapters import Outcome
 from foreman.budget import CostUnknown, Exhausted, Remaining, claude_spend, dollar_admission
-from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, family, load_config, order_for
+from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, contributors_for, family, load_config, order_for
 from foreman.dry_run import ScriptHandler
 from foreman.dispatch import Handler, InvalidOutput, QuotaExhausted, clean_outcome
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
@@ -37,7 +37,7 @@ from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, e
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
 from foreman.stage_output import (
-    CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
+    ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.readiness import MergeReceipt
 from foreman.outcomes import Halt, READINESS_HALTS
@@ -190,6 +190,7 @@ class DeliveryFields(TypedDict, total=False):
     review_receipt: ReviewReceipt | None
     models_used: dict[str, str]
     implement_models: list[str]
+    watch: WatchRecord | None
     halt: Annotated[Halt, PlainValidator(lambda code: Halt(code).value)] | None
     halt_detail: str
 
@@ -248,7 +249,7 @@ def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
     if not detail.strip():
         raise ValueError(f"{reason} requires a nonempty halt detail")
     # Checkpoint codes remain strings after validation as Halt members.
-    return {"halt": cast(Halt, reason.value), "halt_detail": detail, "path": [path] if path else []}
+    return {"halt": cast(Halt, reason.value), "halt_detail": detail, "watch": None, "path": [path] if path else []}
 
 
 def dollar_detail(state: DeliveryState, attempts: list[AttemptRecord]) -> str:
@@ -396,6 +397,10 @@ def stage_update(
 
 def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, list[ReviewComment]]:
     body = [f"Graph verdict: {output.review}. Review event: COMMENT (Foreman authors this PR).", output.detail]
+    provenance = output.history.rounds[-1].provenance if output.history.rounds else None
+    if provenance is not None:
+        reason = provenance.reason.replace("_", " ") if provenance.reason else "not needed"
+        body.append(f"Reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; same-family fallback: {reason}.")
     comments: list[ReviewComment] = []
     for finding in output.findings:
         message = f"[{finding.severity}] {finding.summary}"
@@ -626,6 +631,16 @@ def compile_delivery(
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
                     head = state.get("verified_head") or state.get("head_sha") or ""
                     accepted = accept(past, output, head, _check_tool_facts(output, run, state))
+                if accepted is not None and accepted_model is not None:
+                    contributors, families = contributors_for(name, config, state.get("models_used", {}), state.get("implement_models"))
+                    same_family = accepted_model.family in families
+                    other_configured = any(ModelSpec.parse(candidate).family not in families for candidate in models)
+                    provenance = ReviewSelection(
+                        reviewer=accepted_model.name, contributors=contributors, same_family=same_family,
+                        reason=("preceding_candidates_unavailable" if other_configured else "no_other_family_configured") if same_family else None,
+                    )
+                    accepted.history.rounds[-1].provenance = provenance
+                    attempts[0]["provenance"] = provenance.record()
                 update = stage_update(name, output, state, model, workspace=plan_workspace, accepted_model=accepted_model)
                 update.update(attempts=attempts, pending_dispatch=None)
                 if accepted is not None:
@@ -713,9 +728,10 @@ def compile_delivery(
     def reconcile(state: DeliveryState) -> DeliveryUpdate:
         if isinstance(run, DryRun):
             return {}
-        assert "attempt_head" in state and "delivery_branch" in state
+        assert "attempt_head" in state and "delivery_branch" in state and "delivery_base" in state
         try:
-            candidate = run.workspace.reconcile(state["attempt_head"], state["delivery_branch"])
+            candidate = run.workspace.reconcile(state["attempt_head"], state["delivery_branch"],
+                                                state["delivery_base"], state.get("fact_record", MANIFEST_PATH))
             if candidate is None:
                 identifiers = [str(f.get("id")) for f in state.get("findings", [])]
                 if (gate := history({"rounds": state.get("review_findings", [])}).gate) and not gate.passed:

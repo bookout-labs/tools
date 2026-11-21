@@ -117,11 +117,7 @@ def parse_config(data: object) -> Config:
         if node.other_family_from and node.other_family_from not in nodes:
             raise ConfigError(f"{name} refers to a missing node {node.other_family_from}")
     pin = PstackPin.model_validate(data["pstack"]) if "pstack" in data else PSTACK_PIN
-    config = Config(max_review_rounds=rounds, nodes=nodes, pstack=pin)
-    if "implement" in nodes and "review" in nodes:
-        for builder in nodes["implement"].models:
-            order_for("review", config, {}, [builder.name])
-    return config
+    return Config(max_review_rounds=rounds, nodes=nodes, pstack=pin)
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -130,22 +126,21 @@ def load_config(path: Path | None = None) -> Config:
         return parse_config(tomllib.load(handle))
 
 
-def order_for(
+def contributors_for(
     node: str, config: Config, models_used: dict[str, str], implement_models: list[str] | None = None,
-) -> list[ModelSpec]:
-    spec = config.nodes[node]
-    models = list(spec.models)
-    source = "implement" if node == "review" else spec.other_family_from
+) -> tuple[list[str], set[str]]:
+    source = "implement" if node == "review" else config.nodes[node].other_family_from
     if not source:
-        return models
+        return [], set()
     latest = models_used.get(source)
     used = (implement_models if node == "review" else None) or ([latest] if latest else [])
     if not used:
         raise ModelDependencyMissing(f"{node} needs the {source} model")
-    excluded = {family(model) for model in used}
-    others = [model for model in models if model.family not in excluded]
-    if not others:
-        names = ", ".join(sorted(excluded))
-        group = "family" if len(excluded) == 1 else "families"
-        raise ConfigError(f"no {node} model outside the {names} {group}")
-    return others
+    return list(dict.fromkeys(used)), {family(model) for model in used}
+
+
+def order_for(
+    node: str, config: Config, models_used: dict[str, str], implement_models: list[str] | None = None,
+) -> list[ModelSpec]:
+    _, contributing = contributors_for(node, config, models_used, implement_models)
+    return sorted(config.nodes[node].models, key=lambda model: model.family in contributing)
