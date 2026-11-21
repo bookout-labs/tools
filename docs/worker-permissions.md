@@ -51,17 +51,18 @@ HOME and intentionally supplies credentials to approved worker commands. Reuse i
 environment filtering once available, but hide host gh auth, credential helpers,
 App keys and SSH access from model-controlled processes too.
 The workspace profile limits writes but permits child network and temporary writes.
-Moving method exports out of temp, as planned in #120 slice 13, removes one writable
-location; a read-only method mount is still needed inside any writable checkout.
+Stable method exports outside the checkout, Grok home and temp paths, as planned
+in #120 slice 13, would be read-only under workspace. They need no container just
+for immutability. Exports inside a writable checkout still need a read-only boundary.
 A hook can compare the whole command without shell parsing, but the official contract
 fails open on crashes and timeouts. Local hook probes did not discover their guards,
 so they establish no enforcement claim. Root-owned requirements can pin rules but
 require operator installation; this slice installs nothing under /etc.
 TanStack's Grok adapter requires an outer sandbox; Superserve isolates credentials
 outside its microVM. The container capture proves filesystem mounts and network
-isolation only. Recommend an outer launcher for immutable method mounts, inaccessible
-host credentials and restricted model-only egress that the lighter native boundary
-has not proven. A pinned Linux CLI/toolchain image and model-auth transport need their
+isolation only. Recommend an outer launcher only for inaccessible host credentials and restricted
+model-only egress that the lighter native boundary has not proven; read-only mounts
+also protect exports when they must sit inside writable directories. A pinned Linux CLI/toolchain image and model-auth transport need their
 own slice; `--network none` alone cannot run Grok's model API.
 
 Source references are the [Grok sandbox guide](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/18-sandbox.md),
