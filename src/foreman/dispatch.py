@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
-from foreman.adapters import Outcome, OutcomeKind
+from foreman.adapters import Outcome
 from foreman.config import ModelSpec
 
 if TYPE_CHECKING:
@@ -30,7 +30,7 @@ class FailoverDispatcher:
 
     def run(
         self, node: str, models: list[ModelSpec], state: "DeliveryState", instruction: str,
-        *, on_attempt: Callable[[str | None, OutcomeKind], None] | None = None,
+        *, on_attempt: Callable[[str | None, Outcome], None] | None = None,
     ) -> tuple[Outcome, str | None]:
         candidates: list[ModelSpec | None] = list(models) or [None]
         quota: tuple[Outcome, str | None] | None = None
@@ -39,7 +39,7 @@ class FailoverDispatcher:
             outcome = self.handler(node, model, state, instruction)
             name = model.name if model else None
             if on_attempt is not None:
-                on_attempt(name, outcome.kind)
+                on_attempt(name, outcome)
             if outcome.kind == "quota":
                 quota = outcome, name
             elif outcome.kind == "cli_missing":

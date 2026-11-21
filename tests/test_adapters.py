@@ -29,9 +29,9 @@ class NativeAdaptersTest(unittest.TestCase):
                 if not has_usage:
                     self.assertIsNone(outcome.usage)
                 else:
-                    self.assertEqual(outcome.usage.input_tokens, input_tokens)
-                    self.assertEqual(outcome.usage.cache_read_input_tokens, cached_tokens)
-                    self.assertEqual(outcome.usage.total_cost_usd, cost)
+                    self.assertEqual(outcome.usage.input_tokens, 1477 if cli == "claude" and name in {"quota", "wrong_model"} else input_tokens)
+                    self.assertEqual(outcome.usage.cache_read_input_tokens, 0 if cli == "claude" and name in {"quota", "wrong_model"} else cached_tokens)
+                    self.assertAlmostEqual(outcome.usage.total_cost_usd, 0.00016570000000000002 if cli == "claude" and name in {"quota", "wrong_model"} else cost)
                 if kind == "ran":
                     self.assertEqual(outcome.output, {
                         "triage": "needs_human", "slice": None, "human_question": "Which items?",
@@ -47,10 +47,10 @@ class NativeAdaptersTest(unittest.TestCase):
             ("is_error", 1, "failed", False),
             ("quota", 1, "quota", True),
             ("model_substitution_disabled", 1, "failed", False),
-            ("missing_model_usage", 0, "failed", True),
+            ("missing_model_usage", 0, "failed", False),
             ("wrong_model", 0, "failed", True),
             ("zero_usage", 0, "failed", False),
-        ), input_tokens=4, cached_tokens=3985, cost=0.037886699999999995)
+        ), input_tokens=1481, cached_tokens=3985, cost=0.037886699999999995)
 
     def test_grok_envelopes(self):
         adapter = GrokAdapter(ModelSpec.parse("grok-4.7-high"))
@@ -58,7 +58,7 @@ class NativeAdaptersTest(unittest.TestCase):
             ("success", 0, "ran", True),
             ("is_error", 1, "failed", False),
             ("quota", 1, "quota", False),
-            ("missing_model_usage", 0, "failed", True),
+            ("missing_model_usage", 0, "failed", False),
             ("zero_usage", 0, "failed", False),
             ("incomplete_usage", 0, "ran", False),
         ), input_tokens=18007, cached_tokens=9344, cost=0.01448196)
@@ -97,6 +97,9 @@ class NativeAdaptersTest(unittest.TestCase):
                     self.assertEqual((outcome.kind, outcome.detail), ("failed", detail))
                 success = fixture_process([cli], "success", 0)
                 envelope["modelUsage"] = json.loads(success.stdout)["modelUsage"]
+                for row in envelope["modelUsage"].values():
+                    for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"):
+                        row[key] = 0
                 process = CompletedProcess(recorded.args, 0, json.dumps(envelope), "")
                 outcome = adapter.read(process)
                 self.assertEqual(outcome.kind, "ran")

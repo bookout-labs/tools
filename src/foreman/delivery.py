@@ -79,12 +79,26 @@ class DryRun:
         return merge_command(redact(repo), "<number>", revision)
 
 
-class SkillAttempt(TypedDict):
+class AttemptUsage(TypedDict):
+    input: int
+    output: int
+    cache_read: NotRequired[int]
+    cache_creation: NotRequired[int]
+    cost_usd: float | None
+
+
+class Attempt(TypedDict):
     stage: str
     model: str | None
     commit: str
     methods: list[str]
     outcome: OutcomeKind
+    usage: AttemptUsage | None
+
+
+def run_tokens(attempts: list[Attempt]) -> int:
+    return sum(usage["input"] + usage["output"] + usage.get("cache_read", 0) + usage.get("cache_creation", 0)
+               for attempt in attempts if (usage := attempt["usage"]) is not None)
 
 
 SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle", "existing_seam_builder"]
@@ -130,7 +144,7 @@ class DeliveryFields(TypedDict, total=False):
     work_kind: WorkKind
     pstack_pin: dict[str, str]
     skill_reason: SkillFailureReason
-    skill_attempts: Annotated[list[SkillAttempt], operator.add]
+    attempts: Annotated[list[Attempt], operator.add]
     research: str
     implementation: str
     head_sha: str | None
@@ -460,17 +474,23 @@ def compile_delivery(
                     return halted("review_unavailable", str(exc), name)
                 review_context = (run.forge, target, diff)
                 instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
-            attempts: list[SkillAttempt] = []
+            attempts: list[Attempt] = []
 
-            def record_attempt(model: str | None, kind: OutcomeKind) -> None:
+            def record_attempt(model: str | None, outcome: Outcome) -> None:
                 attempts.append({
-                    "stage": name, "model": model, "commit": config.pstack.commit, "methods": methods, "outcome": kind,
+                    "stage": name, "model": model, "commit": config.pstack.commit, "methods": methods, "outcome": outcome.kind,
+                    "usage": None if outcome.usage is None else {
+                        "input": outcome.usage.input_tokens, "output": outcome.usage.output_tokens,
+                        "cache_read": outcome.usage.cache_read_input_tokens or 0,
+                        "cache_creation": outcome.usage.cache_creation_input_tokens or 0,
+                        "cost_usd": outcome.usage.total_cost_usd,
+                    },
                 })
 
             outcome, model = dispatcher.run(
-                name, models, state, instruction, on_attempt=record_attempt if methods_root and name != "verify" else None,
+                name, models, state, instruction, on_attempt=record_attempt,
             )
-            stopped: DeliveryUpdate = {"path": [name], "skill_attempts": attempts}
+            stopped: DeliveryUpdate = {"path": [name], "attempts": attempts}
             if outcome.kind == "failed":
                 return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
@@ -485,7 +505,7 @@ def compile_delivery(
                 if isinstance(output, ReviewOutput):
                     output = _check_tool_facts(output, run, state.get("verified_head"))
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
-                update["skill_attempts"] = attempts
+                update["attempts"] = attempts
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
                 update: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}

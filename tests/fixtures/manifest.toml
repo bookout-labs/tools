@@ -582,3 +582,67 @@ version = "0.171.0"
 kind = "quoted_source"
 sources = ["https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L823-L959"]
 notes = "Synthetic substitutions for source formatter cases; see Codex quota formatter notes above."
+
+[fixtures."claude/negative-side.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "captured_run"
+derived_from = "claude/success.json"
+argv = ["claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "dontAsk", "--tools", "WebFetch", "--allowedTools", "WebFetch", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\""]
+notes = "Synthetic negative-side ledger derived from the captured success."
+
+[fixtures."claude/partial-side.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "captured_run"
+derived_from = "claude/success.json"
+argv = ["claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "dontAsk", "--tools", "WebFetch", "--allowedTools", "WebFetch", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\""]
+notes = "Synthetic partial-side ledger derived from the captured success."
+
+[fixtures."claude/fractional-side.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "captured_run"
+derived_from = "claude/success.json"
+argv = ["claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "dontAsk", "--tools", "WebFetch", "--allowedTools", "WebFetch", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\""]
+notes = "Synthetic fractional-side ledger derived from the captured success."
+
+[fixtures."claude/zero-cost.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "captured_run"
+derived_from = "claude/success.json"
+argv = ["claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "dontAsk", "--tools", "WebFetch", "--allowedTools", "WebFetch", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\""]
+notes = "Synthetic zero-cost ledger derived from the captured success."
+
+[fixtures."grok/negative-side.json"]
+tool = "grok"
+version = "1.0.89"
+kind = "captured_run"
+derived_from = "grok/success.json"
+argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema."]
+notes = "Synthetic negative-side ledger derived from the captured success."
+
+[fixtures."grok/partial-side.json"]
+tool = "grok"
+version = "1.0.89"
+kind = "captured_run"
+derived_from = "grok/success.json"
+argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema."]
+notes = "Synthetic partial-side ledger derived from the captured success."
+
+[fixtures."grok/fractional-side.json"]
+tool = "grok"
+version = "1.0.89"
+kind = "captured_run"
+derived_from = "grok/success.json"
+argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema."]
+notes = "Synthetic fractional-side ledger derived from the captured success."
+
+[fixtures."grok/zero-cost.json"]
+tool = "grok"
+version = "1.0.89"
+kind = "captured_run"
+derived_from = "grok/success.json"
+argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema."]
+notes = "Synthetic zero-cost ledger derived from the captured success."

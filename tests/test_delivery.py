@@ -310,7 +310,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(exhaust_claude)
         self.assertEqual(result["models_used"]["triage"], "grok-4.7-high")
-        triage = [item for item in result["skill_attempts"] if item["stage"] == "triage"]
+        triage = [item for item in result["attempts"] if item["stage"] == "triage"]
         self.assertEqual([item["model"] for item in triage], ["claude-opus-5-5-high", "grok-4.7-high"])
         self.assertEqual([item["outcome"] for item in triage], ["quota", "ran"])
         self.assertEqual([item["methods"] for item in triage], [["poteto-mode/SKILL.md#L110-L110"]] * 2)
@@ -344,13 +344,13 @@ class DeliveryTest(unittest.TestCase):
         for kind in ("feature", "bug_fix", "refactoring", "perf_issue"):
             with self.subTest(kind=kind):
                 built = walk(ScriptHandler(work_kind=kind))
-                methods = next(record["methods"] for record in built["skill_attempts"] if record["stage"] == "implement")
+                methods = next(record["methods"] for record in built["attempts"] if record["stage"] == "implement")
                 self.assertEqual("tdd/SKILL.md" in methods, kind == "bug_fix")
                 self.assertEqual("benchmark-checklist/SKILL.md" in methods, kind == "perf_issue")
                 self.assertIn("principle-prove-it-works/SKILL.md", methods)
 
                 researched = walk(ScriptHandler(triage="question", work_kind=kind))
-                research = researched["skill_attempts"][-1]["methods"]
+                research = researched["attempts"][-1]["methods"]
                 self.assertIn("how/SKILL.md#L17-L17", research)
                 self.assertEqual("why/SKILL.md" in research, kind == "bug_fix")
 
@@ -358,7 +358,7 @@ class DeliveryTest(unittest.TestCase):
         for item in (None, EMPTY_SLICE, {**EMPTY_SLICE, "stateful": True}):
             with self.subTest(item=item):
                 result = walk(ScriptHandler(triage="spec", slices=[{**EMPTY_SLICE, "stateful": True}]), slice=item)
-                methods = next(record["methods"] for record in result["skill_attempts"] if record["stage"] == "spec")
+                methods = next(record["methods"] for record in result["attempts"] if record["stage"] == "spec")
                 self.assertEqual("statechart/SKILL.md" in methods, item is not None and item["stateful"])
 
     def test_local_proof_methods_keep_independent_conditions(self):
@@ -366,7 +366,7 @@ class DeliveryTest(unittest.TestCase):
             for properties in ([], SLICES[0]["properties"]):
                 with self.subTest(screen=screen, properties=properties):
                     result = walk(ScriptHandler(), slice={**EMPTY_SLICE, "screen": screen, "properties": properties})
-                    methods = next(record["methods"] for record in result["skill_attempts"] if record["stage"] == "implement")
+                    methods = next(record["methods"] for record in result["attempts"] if record["stage"] == "implement")
                     self.assertEqual("foreman/skills/browser-proof.md" in methods, bool(screen))
                     self.assertEqual("foreman/skills/formal-proof.md" in methods, bool(properties))
 
@@ -387,7 +387,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(read_methods)
         self.assertEqual(result["stop"], "verified")
-        self.assertEqual([item["stage"] for item in result["skill_attempts"]], ["triage", "spec", "implement", "review"])
+        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec", "implement", "verify", "review"])
 
     def test_diagram_names_the_nodes(self):
         picture = diagram()

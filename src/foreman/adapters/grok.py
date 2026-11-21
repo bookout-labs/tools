@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import Field
 from typing_extensions import override
 
-from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
+from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, build_outcome
 
 # Grok Build 1.0.89 emits these exact quota messages from sampling/error.rs.
 # Other server text has no rate-limit code in headless JSON and is treated as a failure.
@@ -25,8 +25,6 @@ class GrokEnvelope(NativeEnvelope):
     structured_output: dict[str, object] | None = Field(default=None, alias="structuredOutput")
     structured_output_error: str = Field(default="", alias="structuredOutputError")
     session_id: str | None = Field(default=None, alias="sessionId")
-    model_usage: dict[str, object] | None = Field(default=None, alias="modelUsage")
-    usage: Usage | None = None
     usage_is_incomplete: bool = False
     total_cost_usd: float | None = None
 
@@ -50,7 +48,7 @@ class GrokEnvelope(NativeEnvelope):
             kind = "failed"
             detail = detail or "missing structured output"
         return build_outcome(
-            kind, output=self.structured_output, usage=None if self.usage_is_incomplete else self.usage,
+            kind, output=self.structured_output, usage=None if self.usage_is_incomplete else self.read_usage(),
             total_cost_usd=self.total_cost_usd, session_id=self.session_id, detail=detail,
         )
 

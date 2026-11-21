@@ -7,7 +7,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from foreman.config import ModelSpec
 
@@ -50,8 +50,31 @@ class CliAdapter(Protocol):
     def read(self, process: CompletedProcess[str]) -> Outcome: ...
 
 
+class ModelUsage(BaseModel):
+    model_config = ConfigDict(strict=True)
+    input: int = Field(alias="inputTokens", ge=0)
+    output: int = Field(alias="outputTokens", ge=0)
+    cache_read: int = Field(default=0, alias="cacheReadInputTokens", ge=0)
+    cache_creation: int = Field(default=0, alias="cacheCreationInputTokens", ge=0)
+    cost: float | None = Field(default=None, alias="costUSD")
+
+
 class NativeEnvelope(BaseModel, ABC):
     model_config = ConfigDict(strict=True)
+
+    model_usage: dict[str, ModelUsage] | None = Field(default=None, alias="modelUsage")
+
+    def read_usage(self) -> Usage | None:
+        rows = list((self.model_usage or {}).values())
+        if not rows:
+            return None
+        costs = [row.cost for row in rows if row.cost is not None]
+        return Usage(
+            input_tokens=sum(row.input for row in rows), output_tokens=sum(row.output for row in rows),
+            cache_read_input_tokens=sum(row.cache_read for row in rows),
+            cache_creation_input_tokens=sum(row.cache_creation for row in rows),
+            total_cost_usd=sum(costs) if costs else None,
+        )
 
     @abstractmethod
     def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome: ...
@@ -81,8 +104,10 @@ def build_outcome(
     total_cost_usd: float | None, session_id: str | None, detail: str,
 ) -> Outcome:
     if usage is not None:
-        usage = usage.model_copy(update={"total_cost_usd": total_cost_usd})
-        if not any(usage.model_dump().values()):
+        if usage.total_cost_usd is None:
+            usage = usage.model_copy(update={"total_cost_usd": total_cost_usd})
+        if not any((usage.input_tokens, usage.output_tokens,
+                    usage.cache_read_input_tokens, usage.cache_creation_input_tokens)):
             usage = None
     if kind == "ran" and output is not None:
         return Outcome(kind, output, usage, session_id)
