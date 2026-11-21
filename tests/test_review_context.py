@@ -174,6 +174,7 @@ class WorkspaceReviewContextTest(unittest.TestCase):
         self.git("push", "origin", "pr")
         self.git("config", "grep.patternType", "fixed")
         self.git("config", "grep.extendedRegexp", "true")
+        self.git("config", "color.grep", "always")
         context = self.workspace.review_context(base, head)
         self.assertEqual(context.base.lines, {"src/text.txt": 2})
         self.assertEqual(context.head.lines, {"src/text.txt": 2})

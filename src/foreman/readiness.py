@@ -6,7 +6,12 @@ from typing import Literal
 from pydantic import BaseModel as PydanticModel, Field, RootModel, AliasChoices
 
 
-Outcome = Literal["ready", "conflict", "pending", "red", "policy", "head_changed", "closed", "retargeted"]
+MergeMethod = Literal["MERGE", "REBASE", "SQUASH"]
+PullRequestState = Literal["OPEN", "CLOSED", "MERGED"]
+MergeQueueEntryState = Literal["QUEUED", "AWAITING_CHECKS", "MERGEABLE", "UNMERGEABLE", "LOCKED"]
+
+
+Outcome = Literal["ready", "conflict", "pending", "red", "policy", "head_changed", "closed", "retargeted", "queue_rejected"]
 
 
 class StrictModel(PydanticModel, strict=True):
@@ -22,6 +27,7 @@ class PullSnapshot(StrictModel):
     number: int
     state: str
     draft: bool
+    merged: bool = False
     head: Ref
     base: Ref
     mergeable: bool | None
@@ -36,6 +42,18 @@ class Requirement(StrictModel):
 
 class Parameters(StrictModel):
     required_status_checks: list[Requirement] = Field(default_factory=list[Requirement])
+    merge_method: MergeMethod | None = None
+    grouping_strategy: str | None = None
+
+
+class QueuePolicy(StrictModel):
+    merge_method: MergeMethod
+    grouping_strategy: str | None = None
+
+
+class AutoMergeRequest(StrictModel):
+    mergeMethod: MergeMethod
+    enabledAt: str | None = None
 
 
 class Rule(StrictModel):
@@ -95,6 +113,7 @@ class Observation(StrictModel):
     checks: list[CheckEvidence]
     outcome: Outcome
     recovery: str
+    queue_policy: QueuePolicy | None = None
 
     def detail(self) -> str:
         checks = ", ".join(f"{c.context}={c.state}" for c in self.checks) or "no check evidence"
@@ -129,3 +148,31 @@ class BranchTip(StrictModel):
 class BranchPolicy(StrictModel):
     commit: BranchTip
     protection: Protection
+
+
+class QueueEntry(StrictModel):
+    id: str
+    state: MergeQueueEntryState
+
+
+class QueueSnapshot(StrictModel):
+    number: int
+    state: PullRequestState
+    headRefOid: str
+    baseRefOid: str
+    baseRefName: str
+    isDraft: bool
+    autoMergeRequest: AutoMergeRequest | None
+    mergeQueueEntry: QueueEntry | None
+
+
+class MergeReceipt(StrictModel):
+    repo: str
+    pr: int
+    source_head: str
+    base: str
+    base_ref: str
+    method: MergeMethod
+    queue_policy: QueuePolicy
+    identity: str
+    status: Literal[MergeQueueEntryState, "AUTO_MERGE_ENABLED", "MERGED"]

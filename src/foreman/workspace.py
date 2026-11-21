@@ -18,7 +18,6 @@ from foreman.redaction import redact
 from foreman.review_context import ReviewContext, ReviewSide
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
-ATTRIBUTE_CONFIG = ("-c", "core.attributesFile=/dev/null")
 HUNK = re.compile(rb"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", re.MULTILINE)
 CommitSHA = NewType("CommitSHA", str)
 CheckLog = Callable[[str], None]
@@ -138,6 +137,7 @@ class Workspace(Protocol):
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int: ...
     def inspect(self) -> WorktreeState: ...
+    def review_context(self, base: str, head: str) -> ReviewContext: ...
     def create_branch(self, branch: str, base: str) -> None: ...
     def refresh(self, branch: str, head: str) -> None: ...
     def commit(self, message: str) -> None: ...
@@ -153,7 +153,6 @@ class Workspace(Protocol):
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff: ...
     def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope: ...
-    def review_context(self, base: str, head: str) -> ReviewContext: ...
 
 
 def branch_command(branch: str, base: str) -> list[str]:
@@ -319,13 +318,13 @@ class LiveWorkspace:
             "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
             f"+refs/heads/{base_branch}:{base_ref}",
         )
-        merge_base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base_ref, head)).strip()
+        merge_base = os.fsdecode(self._git("merge-base", base_ref, head)).strip()
         diff_options = (
-            "diff", "--find-renames", "--text",
+            "--find-renames", "--text",
             "--no-ext-diff", "--no-textconv",
         )
         raw = self._inspection_git(
-            merge_base, *diff_options, "--numstat", "-z", merge_base, head, "--", "src/", "tests/",
+            merge_base, "diff", *diff_options, "--numstat", "-z", merge_base, head, "--", "src/", "tests/",
         )
         if not raw:
             return {"head": head, "merge_base": merge_base, "lines": 0}
@@ -338,7 +337,7 @@ class LiveWorkspace:
             entries.append((before, after, removed, added))
             paths.update((before, after))
         attrs = self._inspection_git(
-            merge_base, "check-attr", f"--source={merge_base}", "--stdin", "-z", "linguist-generated",
+            merge_base, "check-attr", "--stdin", "-z", "linguist-generated",
             input_paths=b"\0".join(paths) + b"\0",
         )
         fields = attrs.removesuffix(b"\0").split(b"\0")
@@ -354,7 +353,7 @@ class LiveWorkspace:
             if added == b"-":
                 # Numstat can report binary even when Git emits a text patch.
                 patch = self._inspection_git(
-                    merge_base, "--literal-pathspecs", *diff_options, "--patch", "--unified=0", "--inter-hunk-context=0",
+                    merge_base, "diff", *diff_options, "--patch", "--unified=0", "--inter-hunk-context=0",
                     "--no-color", merge_base, head, "--", os.fsdecode(before), os.fsdecode(after),
                 )
                 hunks = HUNK.findall(patch)
@@ -426,7 +425,7 @@ class LiveWorkspace:
             raise WorktreeInspectionFailed("Unterminated git grep line-count record.")
         return ReviewSide(sha, files, lines, changed)
 
-    def _inspection_git(self, attribute_source: str, *args: str, input_paths: bytes | None = None,
+    def _inspection_git(self, attribute_source: str, command: str, *args: str, input_paths: bytes | None = None,
                         allowed_returncodes: tuple[int, ...] = (0,)) -> bytes:
         attributes = Path(os.fsdecode(self._git(
             "rev-parse", "--path-format=absolute", "--git-path", "info/attributes",
@@ -438,10 +437,10 @@ class LiveWorkspace:
             pass
         except OSError as exc:
             raise WorktreeInspectionFailed(f"Could not inspect {attributes}: {exc}") from exc
-        pattern_options = ("-G",) if args[0] == "grep" else ()
+        pattern_options = ("-G", "--no-color") if command == "grep" else ()
         return self._git(
-            "--no-replace-objects", *ATTRIBUTE_CONFIG, f"--attr-source={attribute_source}",
-            args[0], *pattern_options, *args[1:], input_paths=input_paths,
+            "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null",
+            f"--attr-source={attribute_source}", command, *pattern_options, *args, input_paths=input_paths,
             allowed_returncodes=allowed_returncodes,
         )
 
