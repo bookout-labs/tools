@@ -10,7 +10,7 @@ from typing import NewType, Protocol
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 CommitSHA = NewType("CommitSHA", str)
-CheckLog = Callable[[str, str], None]
+CheckLog = Callable[[str], None]
 
 
 def commit_sha(value: str) -> CommitSHA | None:
@@ -56,13 +56,15 @@ class LiveWorkspace:
         self.root = root
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int:
-        result = subprocess.run(
+        with subprocess.Popen(
             command, shell=True, cwd=self.root, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, errors="replace",
-        )
-        if log is not None:
-            log(result.stdout, result.stderr)
-        return result.returncode
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+        ) as process:
+            assert process.stdout is not None
+            for line in process.stdout:
+                if log is not None:
+                    log(line)
+            return process.wait()
 
     def inspect(self) -> WorktreeState:
         head = self._git("rev-parse", "HEAD").strip()

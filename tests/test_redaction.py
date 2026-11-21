@@ -105,6 +105,12 @@ class RedactionTest(unittest.TestCase):
         forge.add_label("Example/Target", 42, SYNTHETIC_GITHUB)
         self.assertEqual(gh.call_args.args[0][-1], "[redacted:GitHub Token]")
 
+    def test_keyword_redacts_only_the_assigned_synthetic_value(self):
+        self.assertEqual(
+            redact('Synthetic abc before password="abc" and abc after'),
+            'Synthetic abc before password="[redacted:Secret Keyword]" and abc after',
+        )
+
     @patch("foreman.github.subprocess.run")
     def test_issue_write_redacts_repeated_keyword_matches_on_one_line(self, gh):
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")

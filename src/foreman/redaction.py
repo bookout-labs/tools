@@ -8,7 +8,7 @@ from threading import Lock
 from detect_secrets.plugins.base import BasePlugin, RegexBasedDetector
 from detect_secrets.plugins.high_entropy_strings import HighEntropyStringsPlugin
 from detect_secrets.plugins.jwt import JwtTokenDetector
-from detect_secrets.plugins.keyword import KeywordDetector
+from detect_secrets.plugins.keyword import KeywordDetector, QUOTES_REQUIRED_DENYLIST_REGEX_TO_GROUP
 from detect_secrets.plugins.private_key import PrivateKeyDetector
 from detect_secrets.settings import default_settings, get_plugins
 
@@ -26,16 +26,12 @@ class _Match:
 
 
 def _keyword_spans(plugin: KeywordDetector, line: str) -> Iterator[tuple[int, int]]:
-    while values := {value for value in plugin.analyze_string(line) if value.strip()}:
-        masked = line
-        for value in values:
-            start = line.find(value)
-            while start != -1:
-                end = start + len(value)
-                yield start, end
-                start = line.find(value, end)
-            masked = masked.replace(value, " " * len(value))
-        line = masked
+    if plugin.keyword_exclude and plugin.keyword_exclude.search(line):
+        return
+    for pattern, group in QUOTES_REQUIRED_DENYLIST_REGEX_TO_GROUP.items():
+        for match in pattern.finditer(line):
+            if match.group(group).strip():
+                yield match.span(group)
 
 
 def _spans(plugin: BasePlugin, line: str) -> Iterator[tuple[int, int]]:

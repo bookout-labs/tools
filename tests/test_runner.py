@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import shlex
 import sys
 from tempfile import TemporaryDirectory
 import unittest
@@ -11,7 +12,7 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.cli import main
+from foreman.cli import _write_check_log, main
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
@@ -514,8 +515,37 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("done verified\n", stdout.getvalue())
         self.assertIn("Check stdout [redacted:GitHub Token]\n", stdout.getvalue())
-        self.assertEqual(stderr.getvalue(), "Check stderr [redacted:GitHub Token]\n")
+        self.assertIn("Check stderr [redacted:GitHub Token]\n", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, stdout.getvalue() + stderr.getvalue())
+
+    def test_check_streams_in_write_order_before_the_command_exits(self):
+        check = self.cwd / "stream.py"
+        acknowledgement = self.cwd / "logged"
+        check.write_text(
+            "import os, pathlib, time\n"
+            f"os.write(1, b'First synthetic {SYNTHETIC_QUESTION_TOKEN}\\n')\n"
+            f"ack = pathlib.Path({str(acknowledgement)!r})\n"
+            "deadline = time.monotonic() + 5\n"
+            "while not ack.exists() and time.monotonic() < deadline: time.sleep(0.01)\n"
+            "if not ack.exists(): raise SystemExit(9)\n"
+            f"os.write(2, b'Second synthetic {SYNTHETIC_QUESTION_TOKEN}\\n')\n"
+            "os.write(1, b'Third\\n')\n"
+            "os.write(2, b'Fourth')\n"
+            "raise SystemExit(7)\n"
+        )
+
+        def log(line):
+            _write_check_log(line)
+            acknowledgement.touch()
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = LiveWorkspace(self.cwd).run(shlex.join([sys.executable, str(check)]), log=log)
+        self.assertEqual(code, 7)
+        self.assertEqual(stdout.getvalue(), (
+            "First synthetic [redacted:GitHub Token]\n"
+            "Second synthetic [redacted:GitHub Token]\nThird\nFourth"
+        ))
 
     def test_cli_uses_one_workspace_root_for_the_worker_check_and_checkpoint(self):
         root = self.cwd / "checkout"
@@ -877,7 +907,7 @@ class LiveRunnerTest(unittest.TestCase):
 import json
 from pathlib import Path
 import sys
-from foreman.cli import main
+from foreman.cli import _write_check_log, main
 from foreman.delivery import LiveRun
 from test_runner import APPROVE, HEAD, SYNTHETIC_QUESTION_TOKEN, FakeGitHub, FakeWorkspace, worker_reply
 

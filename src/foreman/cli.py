@@ -25,14 +25,11 @@ from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
 
 
 def _write_run_log(text: str, *, file: TextIO | None = None, end: str = "\n") -> None:
-    print(redact(text), file=file, end=end)
+    print(redact(text), file=file, end=end, flush=True)
 
 
-def _write_check_log(stdout: str, stderr: str) -> None:
-    if stdout:
-        _write_run_log(stdout, end="")
-    if stderr:
-        _write_run_log(stderr, file=sys.stderr, end="")
+def _write_check_log(line: str) -> None:
+    _write_run_log(line, end="")
 
 
 def _print_run(result: DeliveryState) -> None:

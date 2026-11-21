@@ -84,9 +84,13 @@ place of the full match.
 The [entropy plugins][entropy] expose their compiled pattern and threshold
 through the plugin instance. Foreman uses their unquoted mode and applies
 their original thresholds. The [keyword plugin][keyword] has no `denylist`
-attribute. Its `analyze_string()` method recognizes quoted assignments in the
-original slice leaves. Foreman masks its reported values and scans again for
-later assignments on the same line.
+attribute. In v1.5.0, `analyze_string()` defaults to
+`QUOTES_REQUIRED_DENYLIST_REGEX_TO_GROUP`, a map from compiled patterns to
+secret capture group numbers. Foreman uses that same upstream map and
+`pattern.finditer(line)`, then `match.span(group_number)`, to locate every
+assigned value without masking unrelated occurrences of the same text.
+Foreman also honors the plugin's `keyword_exclude` guard. These attributes and
+the default map are defined in the [pinned plugin source][keyword].
 
 The [JWT plugin][jwt] reports the header and payload, and the
 [private key plugin][key] reports armor headers. Regression tests record both
@@ -129,3 +133,12 @@ sends `commit_id`, `event: COMMENT`, `body`, and a `comments` array
 with `path`, `line`, `side`, and `body` per inline comment. The
 [`RIGHT` side identifies the new file](https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request).
 
+
+## Ordered check output
+
+Python 3.11's [subprocess documentation](https://docs.python.org/3.11/library/subprocess.html#subprocess.STDOUT)
+defines `stderr=STDOUT` as sending stderr to the same handle as stdout.
+`Popen(stdout=PIPE, stderr=STDOUT, text=True, errors="replace")` gives Foreman
+one text stream. Foreman iterates its lines and passes each to the CLI's
+redacting writer before waiting for the exit code. The writer flushes every
+line. An unterminated final line is emitted at EOF.
