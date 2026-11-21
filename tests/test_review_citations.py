@@ -11,9 +11,9 @@ from foreman.workspace import WorktreeInspectionFailed
 import test_review_rounds
 from test_runner import FakeWorkspace, FINDING
 
-FIXTURES = Path(__file__).with_name('fixtures') / 'review'
+
 def payload(name='grounded'):
-    return json.loads((FIXTURES / f'{name}.json').read_text())
+    return json.loads((Path(__file__).with_name('fixtures') / 'review' / f'{name}.json').read_text())
 
 
 class CitationTests(unittest.TestCase):
