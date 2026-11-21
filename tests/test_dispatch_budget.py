@@ -128,8 +128,10 @@ class DispatchBudgetTests(unittest.TestCase):
                         self.assertEqual(run_exit_code(result), 1)
                         self.assertNotIn("triage", result)
                         self.assertIsNone(result["pending_dispatch"])
-                        self.assertIn("$1", result["halt_detail"])
-                        self.assertIn("spend", result["halt_detail"])
+                        self.assertEqual(result["halt_detail"], {
+                            0.2: "Run Claude spend: $1.0. Dollar allowance: $1.",
+                            0.25: "Run Claude spend: $1.05. Dollar allowance: $1.",
+                        }[cost])
                     else:
                         self.assertEqual(result["triage"], "needs_human")
 

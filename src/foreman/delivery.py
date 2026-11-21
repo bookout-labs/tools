@@ -24,7 +24,7 @@ from pydantic import TypeAdapter, ValidationError
 from typing_extensions import TypedDict
 
 from foreman.adapters import Outcome
-from foreman.budget import CostUnknown, Remaining, claude_spend, dollar_admission
+from foreman.budget import CostUnknown, Exhausted, Remaining, claude_spend, dollar_admission
 from foreman.config import Config, ConfigError, ModelSpec, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
@@ -272,14 +272,26 @@ def dollar_detail(state: DeliveryState, attempts: list[AttemptRecord]) -> str:
     return detail
 
 
-def remaining_budget(state: DeliveryState, attempts: list[AttemptRecord], stage: str) -> BudgetUsd | DeliveryUpdate | None:
+def dollar_admission_for(state: DeliveryState, attempts: list[AttemptRecord]) -> Remaining | Exhausted | CostUnknown | None:
     if (limit := state.get("max_budget_usd")) is None:
         return None
-    admission = dollar_admission(BudgetUsd(Decimal(limit)), attempts)
-    if isinstance(admission, Remaining):
+    return dollar_admission(BudgetUsd(Decimal(limit)), attempts)
+
+
+def dollar_stop(state: DeliveryState, attempts: list[AttemptRecord], stage: str) -> DeliveryUpdate | None:
+    match dollar_admission_for(state, attempts):
+        case CostUnknown():
+            return halted("cost_unknown", dollar_detail(state, attempts), stage)
+        case Exhausted():
+            return halted("budget_exceeded", dollar_detail(state, attempts), stage)
+        case None | Remaining():
+            return None
+
+
+def dispatch_budget(state: DeliveryState, attempts: list[AttemptRecord]) -> BudgetUsd | None:
+    if isinstance(admission := dollar_admission_for(state, attempts), Remaining):
         return BudgetUsd(admission.usd)
-    reason = "cost_unknown" if isinstance(admission, CostUnknown) else "budget_exceeded"
-    return halted(reason, dollar_detail(state, attempts), stage)
+    return None
 
 
 def stage_text(name: str) -> str:
@@ -471,7 +483,7 @@ def compile_delivery(
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
             if run_tokens(state.get("attempts", [])) >= state["token_cap"]:
                 return budget_halt(state, state.get("attempts", []), name)
-            if isinstance(budget_stop := remaining_budget(state, state.get("attempts", []), name), dict):
+            if budget_stop := dollar_stop(state, state.get("attempts", []), name):
                 return budget_stop
             if dispatcher is None:
                 return halted("no_dispatcher", "No dispatcher is configured.", name)
@@ -572,9 +584,8 @@ def compile_delivery(
             prior = state.get("attempts", [])
             if run_tokens(prior) >= state["token_cap"]:
                 return {"pending_dispatch": None, **budget_halt(state, prior, name)}
-            budget = remaining_budget(state, prior, name)
-            if isinstance(budget, dict):
-                return {"pending_dispatch": None, **budget}
+            if budget_stop := dollar_stop(state, prior, name):
+                return {"pending_dispatch": None, **budget_stop}
             models, methods = plan["models"], plan["methods"]
             attempts: list[AttemptRecord] = []
             def record_attempt(model: str | None, outcome: Outcome) -> None:
@@ -594,7 +605,7 @@ def compile_delivery(
                     worker_state.pop(key, None)
             outcome, accepted_model = dispatcher.run(
                 name, ModelSpec.parse(models[pending["index"]]) if models else None, worker_state, plan["instruction"],
-                budget_usd=budget, on_attempt=record_attempt,
+                budget_usd=dispatch_budget(state, prior), on_attempt=record_attempt,
             )
             model = accepted_model.name if accepted_model else None
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
@@ -605,7 +616,7 @@ def compile_delivery(
                 return {**stopped, **halted("usage_unknown", unknown_usage(name, model), name)}
             if run_tokens(attempt_history) >= state["token_cap"]:
                 return {**stopped, **budget_halt(state, attempt_history, name)}
-            if isinstance(budget_stop := remaining_budget(state, attempt_history, name), dict):
+            if budget_stop := dollar_stop(state, attempt_history, name):
                 return {**stopped, **budget_stop}
             index = pending["index"] + 1
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):

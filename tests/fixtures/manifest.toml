@@ -14,14 +14,22 @@ tool = "claude"
 version = "2.1.329"
 kind = "captured_run"
 argv = ["claude", "--help"]
-claim_ids = ["claude-max-budget-usd-flag", "tool-fact-2a92f2eddc7bfdf6f61eec3f700b8512cc517afc17977276c8a0000775275e13"]
+claim_ids = ["claude-max-budget-usd-flag", "tool-fact-2a92f2eddc7bfdf6f61eec3f700b8512cc517afc17977276c8a0000775275e13", "tool-fact-6f2eaa1ba19448b55cb031e5b77fa470da2f35a802276f1ba8de044971fbdb12"]
+
+[fixtures."claude/budget-and-quota-source.txt"]
+tool = "claude"
+version = "2.1.329"
+kind = "quoted_source"
+sources = ["https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz"]
+claim_ids = ["tool-fact-dfcf5e01dec739b4551d7d79c786f8fffdc94b0ee347dc044dc34e6e2c1d13b1", "tool-fact-4aa91dac314f4b136a516da99e5246d6430b90254873b854ec5f99c19212ff2e"]
+notes = "Verbatim installed-binary source for budget parsing and the shared result emitter, with byte offsets and binary hash. Decimal text has no fixed scale; Number conversion is not arbitrary-precision arithmetic. Quota results carry session-ledger cost fields; incomplete ledgers still halt cost_unknown."
 
 [fixtures."claude/max_budget.json"]
 tool = "claude"
 version = "2.1.329"
 kind = "quoted_source"
 sources = ["https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz"]
-claim_ids = ["tool-fact-7d1a336df8270445c34c1277e0e173d23ecdaaf1bf67e67eacd343124632d16a"]
+claim_ids = ["tool-fact-7d1a336df8270445c34c1277e0e173d23ecdaaf1bf67e67eacd343124632d16a", "tool-fact-1ac7e0f5d278fb03cc6137ab68433226aeffa5f42a65e721126483f95f190e9e"]
 notes = "Fallback source quote, not a captured budget run: the installed 2.1.329 binary's result schema names error_max_budget_usd, and the budget_exhausted branch emits that subtype with is_error true. sNa formats Reached maximum budget ($${e}). The session and usage are synthetic, reused from success.json to test preservation. No exit status is claimed; test both 0 and 1."
 
 [fixtures."claude/is_error.json"]
@@ -85,7 +93,7 @@ notes = "The result formatter uses is_error, api_error_status, and api_error_typ
 tool = "claude"
 version = "2.1.329"
 kind = "captured_run"
-claim_ids = ["tool-fact-3142c20a0ada3df91b980473d80bae425e03984b9367f162c8a58597c57959f0"]
+claim_ids = ["tool-fact-3142c20a0ada3df91b980473d80bae425e03984b9367f162c8a58597c57959f0", "tool-fact-9ee20fbbd3b05212e0d84cb708eeb5bc1fd46fbb47f3af8645a5d88a092bad9a"]
 argv = [
   "claude",
   "--model",
