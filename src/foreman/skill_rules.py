@@ -13,7 +13,7 @@ from foreman.proof import browser_required, formal_required
 from foreman.stage_output import WorkKind
 
 if TYPE_CHECKING:
-    from foreman.delivery import DeliveryState
+    from foreman.state import DeliveryState
 
 SkillSource = Callable[[PstackPin, Path], Path]
 
