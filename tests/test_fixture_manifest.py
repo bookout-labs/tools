@@ -85,12 +85,13 @@ class RecordedEvidenceTest(unittest.TestCase):
     def check_approval(self, head):
         from foreman.delivery import LiveRun, _check_tool_facts
         from foreman.dry_run import DEFAULT_RISK
+        from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import ReviewOutput
 
         output = ReviewOutput.model_validate({
-            "resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
+            "resolutions": [], "risk": DEFAULT_RISK, "findings": [],
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": "result.txt"}],
-        })
+        }, context=SCRIPTED_REVIEW_CONTEXT)
         gate = _check_tool_facts(output, LiveRun(Mock(), self.workspace), {
             "repo": "example/repo", "check": "", "path": [], **({"verified_head": head} if head else {}),
         })
@@ -132,6 +133,7 @@ class RecordedEvidenceTest(unittest.TestCase):
     def test_carried_claim_requires_committed_evidence_for_its_id(self):
         from foreman.delivery import LiveRun, _check_tool_facts
         from foreman.dry_run import DEFAULT_RISK
+        from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import ReviewOutput, StoredToolFact, ToolFact
         from foreman.review_round import GraphCheck, ReviewRound
 
@@ -140,7 +142,7 @@ class RecordedEvidenceTest(unittest.TestCase):
                  "review_findings": [ReviewRound(round=1, reviewed_head="a" * 40, findings=[], resolutions={},
                      graph_check=GraphCheck(detail="Unrecorded fact", tool_facts=[fact])).model_dump()],
                  "verified_head": self.commit()}
-        output = ReviewOutput(resolutions=[], risk=DEFAULT_RISK, findings=[], detail="Reviewed.", tool_facts=[])
+        output = ReviewOutput.model_validate(dict(resolutions=[], risk=DEFAULT_RISK, findings=[], tool_facts=[]), context=SCRIPTED_REVIEW_CONTEXT)
         run = LiveRun(Mock(), self.workspace)
         self.manifest.write_text(self.manifest.read_text() + f'claim_ids = ["{fact.claim_id}"]\n')
         self.assertEqual(_check_tool_facts(output, run, state).passed, False)
@@ -207,11 +209,12 @@ class GraphFactGateTest(unittest.TestCase):
     def gate(self, facts, state):
         from foreman.delivery import DryRun, _check_tool_facts
         from foreman.dry_run import DEFAULT_RISK
+        from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import ReviewOutput
         output = ReviewOutput.model_validate({
-            "resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
+            "resolutions": [], "risk": DEFAULT_RISK, "findings": [],
             "tool_facts": facts,
-        })
+        }, context=SCRIPTED_REVIEW_CONTEXT)
         from foreman.review_round import ReviewHistory, accept
         return accept(ReviewHistory(), output, state.get("verified_head", ""), _check_tool_facts(output, DryRun(), state))
 

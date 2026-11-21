@@ -23,6 +23,7 @@ from foreman.outcomes import Halt
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
+from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, render_slice_body
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
@@ -57,7 +58,7 @@ FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejecte
 SEAM = {"name": "item-list", "exists": False, "path": None}
 BUILDER = {**SLICE, "builds": [SEAM]}
 CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "uses": [SEAM]}
-APPROVE = {"resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request.", "tool_facts": []}
+APPROVE = {"resolutions": [], "risk": DEFAULT_RISK, "findings": [], "tool_facts": []}
 FINDING = {"id": "f1", "kind": "correctness", "fix": "Add a check.", "ruling_id": None, "file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
 DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
@@ -104,6 +105,9 @@ class FakeWorkspace(LiveWorkspace):
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": "b" * 40, "lines": 1}
 
+    def review_context(self, base, head):
+        return SCRIPTED_REVIEW_CONTEXT
+
     def review_diff(self, base, head, *, interdiff=False):
         return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
 
@@ -133,6 +137,9 @@ class FixtureWorkspace(LiveWorkspace):
 
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": BASE, "lines": 1}
+
+    def review_context(self, base, head):
+        return SCRIPTED_REVIEW_CONTEXT
 
     def review_diff(self, base, head, *, interdiff=False):
         return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
@@ -345,7 +352,7 @@ class CliWorkerTest(unittest.TestCase):
     def test_non_object_replies_are_invalid(self):
         replies = (
             ('Here is the result: {"triage": "implement"}', "did not return valid JSON"),
-            ('["implement"]', "valid dictionary"),
+            ('["implement"]', "JSON object"),
         )
         for reply, detail in replies:
             with self.subTest(reply=reply):
@@ -483,18 +490,18 @@ class StageOutputTest(unittest.TestCase):
 
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
-            parse_output(ReviewOutput, {**APPROVE, "review": "approve, but please fix X first"})
+            parse_output(ReviewOutput, {**APPROVE, "review": "approve, but please fix X first"}, context=SCRIPTED_REVIEW_CONTEXT)
 
     def test_review_requires_an_exact_verdict(self):
         for verdict in ("Approve.", "approve.", "changes.", "changes. Add a check."):
             with self.subTest(verdict=verdict), self.assertRaisesRegex(InvalidOutput, "^review:"):
-                parse_output(ReviewOutput, {**APPROVE, "review": verdict})
+                parse_output(ReviewOutput, {**APPROVE, "review": verdict}, context=SCRIPTED_REVIEW_CONTEXT)
 
     def test_review_summary_is_limited_to_200_characters(self):
-        self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["Finding"]["properties"]["summary"]["maxLength"], 200)
+        self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["ReviewFinding"]["properties"]["summary"]["maxLength"], 200)
         raw = {**APPROVE, "findings": [{**FINDING, "summary": "a" * 201}]}
         with self.assertRaisesRegex(InvalidOutput, r"^findings\.0\.summary:"):
-            parse_output(ReviewOutput, raw)
+            parse_output(ReviewOutput, raw, context=SCRIPTED_REVIEW_CONTEXT)
 
 
 class LiveRunnerTest(unittest.TestCase):
@@ -723,7 +730,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "detail": "Check the bounds."}
+        changes = dict(APPROVE)
         for severity, kind in (("nit", "nits"), ("blocking", "blocking")):
             with self.subTest(severity=severity):
                 self.checkpoint = self.cwd / f"{severity}.sqlite3"
@@ -731,25 +738,25 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, {**APPROVE, "resolutions": [{"id": finding["id"], "status": "resolved"}]}])
                 state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
                 self.assertEqual(state["findings"], [finding])
-                self.assertEqual(state["detail"], changes["detail"])
+                self.assertEqual(state["detail"], ReviewOutput.model_validate(changes, context=SCRIPTED_REVIEW_CONTEXT).risk.render())
                 self.assertEqual(state["review_change_kind"], kind)
 
     def test_review_posts_only_changed_lines_inline(self):
         findings = [
             FINDING,
             {**FINDING, "id": "f2", "line": 1, "summary": "Untouched context."},
-            {**FINDING, "id": "f3", "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
+            {**FINDING, "id": "f3", "file": "README.md", "line": 1, "summary": "Unchanged dependency."},
         ]
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "findings": findings, "detail": "Check the bounds."}
+        changes = {**APPROVE, "findings": findings}
         self.walk([{"triage": "implement"}, built, changes, built, {**APPROVE, "resolutions": [{"id": f["id"], "status": "resolved"} for f in findings]}])
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
         selection = '\n\nReviewer claude-opus-5-5-high; implemented by gpt-6.1-sol-high; same-family fallback: not needed.'
         self.assertEqual(self.github.reviews, [(
             "Example/Engine", 12, HEAD,
-            "Graph verdict: changes. Review event: COMMENT (Foreman authors this PR).\n\nCheck the bounds." + selection + "\n\nitems.txt:1 [blocking] Untouched context.\n\ndeleted.txt:1 [blocking] Deleted file.",
+            "Graph verdict: changes. Review event: COMMENT (Foreman authors this PR).\n\n" + ReviewOutput.model_validate(APPROVE, context=SCRIPTED_REVIEW_CONTEXT).risk.render() + selection + "\n\nitems.txt:1 [blocking] Untouched context.\n\nREADME.md:1 [blocking] Unchanged dependency.",
             [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[blocking] Add a check."}],
-        ), ("Example/Engine", 12, HEAD, "Graph verdict: approve. Review event: COMMENT (Foreman authors this PR).\n\n" + APPROVE["detail"] + selection, [])])
+        ), ("Example/Engine", 12, HEAD, "Graph verdict: approve. Review event: COMMENT (Foreman authors this PR).\n\n" + ReviewOutput.model_validate(APPROVE, context=SCRIPTED_REVIEW_CONTEXT).risk.render() + selection, [])])
 
     def test_review_failures_halt_without_merging(self):
         changes = {**APPROVE, "findings": [FINDING]}
@@ -2220,12 +2227,12 @@ class HaltExitCodeTest(unittest.TestCase):
         ), "verify_cap", "Verification failed after 3 rounds. Check exit 7 failed.")
 
     def test_review_cap(self):
-        changes = {**APPROVE, "findings": [FINDING], "detail": "Add a boundary check."}
-        unresolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "unresolved"}], "detail": "Add a boundary check."}
+        changes = {**APPROVE, "findings": [FINDING]}
+        unresolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "unresolved"}]}
         self.assert_halt(self.live(
             [{"triage": "implement"}] + [{"implementation": "built"}, changes]
             + [{"implementation": "built"}, unresolved] * 2,
-        ), "review_cap", "Review requested changes after 3 rounds. Last review: Add a boundary check.")
+        ), "review_cap", "Review requested changes after 3 rounds. Last review: " + ReviewOutput.model_validate(APPROVE, context=SCRIPTED_REVIEW_CONTEXT).risk.render())
 
     def test_missing_slice_has_no_fake_stage(self):
         result = self.live(body="No JSON")

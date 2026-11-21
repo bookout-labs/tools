@@ -1,0 +1,14 @@
+{
+  "resolutions": [],
+  "risk": {
+    "alignment": "A",
+    "impact": "B",
+    "verification": "C",
+    "rollback": "D",
+    "error_detection": "E",
+    "level": "low"
+  },
+  "findings": [],
+  "tool_facts": [],
+  "detail": "x"
+}
