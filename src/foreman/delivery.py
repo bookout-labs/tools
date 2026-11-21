@@ -3,6 +3,7 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from dataclasses import dataclass
+from functools import cached_property
 from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
@@ -13,6 +14,7 @@ import operator
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 from pydantic import TypeAdapter, ValidationError
 from typing_extensions import TypedDict
@@ -41,12 +43,26 @@ SKILLS_FOR = {
     "review": ("review-quality", "merge-risk"),
 }
 MergeHalt = Literal["merge_held", "merge_not_armed"]
+ResumableHalt = Literal[MergeHalt, "env_unavailable"]
 HaltReason = Literal[
-    MergeHalt, "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
+    ResumableHalt, "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
     "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
-RESUMABLE_HALTS: frozenset[MergeHalt] = frozenset(get_args(MergeHalt))
+RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
+
+CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
+
+
+@dataclass(frozen=True)
+class EnvironmentProbe:
+    workspace: Workspace
+    command: str
+    log: CheckLog | None = None
+
+    @cached_property
+    def error(self) -> str | None:
+        return failed_preflight(self.workspace, self.command, log=self.log)
 
 
 @dataclass(frozen=True)
@@ -54,6 +70,7 @@ class LiveRun:
     forge: Forge
     workspace: Workspace
     check_log: CheckLog | None = None
+    environment: EnvironmentProbe | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +110,7 @@ class DeliveryFields(TypedDict, total=False):
     request: str
     issue: int
     workspace: str
+    preflight: str
     check_exit_code: int
     triage: str
     spec: str
@@ -357,6 +375,12 @@ def stop_reason(state: DeliveryState) -> str:
     return "stopped"
 
 
+def failed_preflight(workspace: Workspace, command: str, *, log: CheckLog | None = None) -> str | None:
+    if command and (exit_code := workspace.run(command, log=log)):
+        return f"Preflight {command!r} exited with {exit_code}"
+    return None
+
+
 def oversized_pr(state: DeliveryState) -> PullRequestSize | None:
     size = state.get("pr_size")
     if size is not None and size["lines"] > PULL_REQUEST_LINES and size != state.get("pr_size_override"):
@@ -370,7 +394,7 @@ def compile_delivery(
     *,
     run: LiveRun | DryRun,
     checkpointer: BaseCheckpointSaver | None = None,
-) -> CompiledStateGraph[DeliveryState, None, DeliveryState, DeliveryResult]:
+) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
@@ -378,9 +402,16 @@ def compile_delivery(
     plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
     def bind(name: str):
-        def node(state: DeliveryState) -> DeliveryUpdate:
+        def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
             if dispatcher is None:
                 return halted("no_dispatcher", "No dispatcher is configured.", name)
+            current_run = runtime.context or run
+            if name == "implement" and isinstance(current_run, LiveRun):
+                probe = current_run.environment or EnvironmentProbe(
+                    current_run.workspace, state.get("preflight", ""), current_run.check_log,
+                )
+                if detail := probe.error:
+                    return halted("env_unavailable", detail, name)
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
@@ -452,10 +483,10 @@ def compile_delivery(
 
     scripted_verify = bind("verify")
 
-    def verify(state: DeliveryState) -> DeliveryUpdate:
-        match run:
+    def verify(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+        match runtime.context or run:
             case DryRun():
-                return scripted_verify(state)
+                return scripted_verify(state, runtime)
             case LiveRun(workspace=workspace, check_log=check_log):
                 try:
                     worktree = workspace.inspect()
@@ -463,7 +494,15 @@ def compile_delivery(
                     return halted("dirty_worktree", str(exc), "verify")
                 if not worktree.clean:
                     return halted("dirty_worktree", "The worktree has changes.", "verify")
-                exit_code = workspace.run(state["check"], log=check_log)
+                command = state["check"]
+                exit_code = workspace.run(command, log=check_log)
+                detail = None
+                if reason := CHECK_START_FAILURES.get(exit_code):
+                    detail = f"Check {command!r} exited with {exit_code} ({reason})"
+                elif exit_code:
+                    detail = failed_preflight(workspace, state.get("preflight", ""), log=check_log)
+                if detail:
+                    return {**halted("env_unavailable", detail, "verify"), "check_exit_code": exit_code}
                 verdict = "pass" if exit_code == 0 else "fail"
                 checked: DeliveryUpdate = {"verified_head": worktree.head} if exit_code == 0 else {}
                 return {
@@ -526,9 +565,9 @@ def compile_delivery(
     def moved_before_review(actual: str, verified: str) -> DeliveryUpdate:
         return {**halted("merge_not_armed", moved_head_detail(actual, verified), "review"), "merge": "not_armed"}
 
-    def review(state: DeliveryState) -> DeliveryUpdate:
+    def review(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
         if isinstance(run, DryRun):
-            return dispatch_review(state)
+            return dispatch_review(state, runtime)
         try:
             head = state.get("verified_head")
             if head is None:
@@ -552,7 +591,7 @@ def compile_delivery(
         measured: DeliveryState = {**state, "pr_size": size}
         if oversized_pr(measured):
             return {"pr_size": size}
-        return {**dispatch_review(measured), "pr_size": size}
+        return {**dispatch_review(measured, runtime), "pr_size": size}
 
     def after_triage(state: DeliveryState) -> str:
         if state.get("halt"):
@@ -683,7 +722,7 @@ def compile_delivery(
             update["halt_detail"] = split["plan"] if split else state.get("spec", "")
         return update
 
-    builder = StateGraph(DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult)
+    builder = StateGraph(DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun)
     graph_nodes = {"verify": verify, "review": review}
     for name in REQUIRED_NODES:
         builder.add_node(name, graph_nodes[name] if name in graph_nodes else bind(name))
