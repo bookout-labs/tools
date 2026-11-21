@@ -10,3 +10,5 @@ Resume reconciles existing PR, review and push receipts after ambiguous writes.
 
 [Documented tool contracts](../tests/fixtures/github/app-credentials.txt) and their sources are recorded in the fixture manifest.
 See [factory worker setup and command usage](worker-launcher.md).
+Configured commits use the bot author and committer, resolved from its numeric user ID.
+Identity is command-scoped; adoption re-commits the worker tree through the same path.
