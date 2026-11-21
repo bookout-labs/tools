@@ -147,10 +147,23 @@ class MergeRisk(Contract):
     level: Literal["low", "medium", "high"]
 
 
+class GraphCheck(Contract):
+    head: Text
+    command: Text
+    exit_code: int
+
+    @property
+    def claim(self) -> str:
+        return f"Check {self.command!r} exited {self.exit_code} at {self.head}."
+
+
 class ToolFact(Contract):
+    model_config = ConfigDict(json_schema_extra={"required": ["claim", "fixture", "graph_check"]})
+
     claim: TrimmedText = Field(description="State the outside-tool behavior the diff relies on.")
+    graph_check: GraphCheck | None = Field(default=None, description="Only for an exact graph check restatement. Copy its claim verbatim and its structured evidence; otherwise null.")
     fixture: TrimmedText | None = Field(
-        description="Give the exact entry ID in tests/fixtures/manifest.toml. Use null when the claim has no recorded evidence.",
+        description="Give the exact entry ID in the run state fact_record. Use null when the claim has no recorded evidence.",
     )
 
 

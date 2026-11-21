@@ -207,3 +207,11 @@ Before review, Foreman fetches the pull request's base branch from `origin` and 
 uv sync
 uv run python -m unittest discover -s tests
 ```
+
+Outside-tool facts cited by review need recorded evidence at the verified head.
+`foreman run delivery --fact-record evidence/facts.toml` selects a repository-relative
+TOML record. The default is `tests/fixtures/manifest.toml`. The checkpoint retains
+this setting on resume. Fixture IDs name regular tracked files relative to the record.
+When evidence is missing, implement receives the claims and recording schema and
+can create the record. Unresolved claims carry across reviews until the gate passes.
+A typed exact restatement of the graph's verified check result needs no fixture.

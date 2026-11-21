@@ -86,6 +86,16 @@ class RecordedEvidenceTest(unittest.TestCase):
                 self.assertEqual(result.review, "changes")
                 self.assertIn("The CLI accepts --debug.", result.detail)
 
+    def test_custom_record_uses_its_own_directory_at_verified_head(self):
+        from foreman.fixture_manifest import recorded_fixtures
+        head = self.commit()
+        directory = self.root / "evidence"
+        directory.mkdir()
+        self.manifest.rename(directory / "facts.toml")
+        (self.fixtures / "result.txt").rename(directory / "result.txt")
+        self.assertEqual(recorded_fixtures(self.workspace, head, "evidence/facts.toml"), set())
+        self.assertEqual(recorded_fixtures(self.workspace, self.commit(), "evidence/facts.toml"), {"result.txt"})
+
     def test_only_regular_tracked_files_are_recorded(self):
         from foreman.fixture_manifest import recorded_fixtures
 
@@ -102,6 +112,45 @@ class RecordedEvidenceTest(unittest.TestCase):
         head = self.git("rev-parse", "HEAD")
         self.assertEqual(recorded_fixtures(self.workspace, head), set())
         self.assertEqual(self.check_approval(head).review, "changes")
+
+
+class GraphFactGateTest(unittest.TestCase):
+    def gate(self, facts, state):
+        from foreman.delivery import DryRun, _check_tool_facts
+        from foreman.dry_run import DEFAULT_RISK
+        from foreman.stage_output import ReviewOutput
+        output = ReviewOutput.model_validate({
+            "review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
+            "tool_facts": facts,
+        })
+        return _check_tool_facts(output, DryRun(), state.get("verified_head"), state)
+
+    def test_only_exact_graph_check_restatement_is_exempt(self):
+        from foreman.stage_output import GraphCheck
+        check = GraphCheck(head="a" * 40, command="exit 0", exit_code=0)
+        state = {"repo": "example/repo", "check": check.command, "path": [],
+                 "verified_head": check.head, "check_exit_code": 0, "verify": "pass"}
+        fact = {"claim": check.claim, "fixture": None, "graph_check": check.model_dump()}
+        self.assertEqual(self.gate([fact], state).review, "approve")
+        for altered in ({"claim": "CLI accepts --debug"}, {"graph_check": None},
+                        {"graph_check": {**check.model_dump(), "head": "b" * 40}},
+                        {"graph_check": {**check.model_dump(), "command": "other"}},
+                        {"graph_check": {**check.model_dump(), "exit_code": 1}}):
+            with self.subTest(altered=altered):
+                self.assertEqual(self.gate([{**fact, **altered}], state).review, "changes")
+        self.assertEqual(self.gate([fact], {**state, "verify": "fail"}).review, "changes")
+
+    def test_omission_cannot_resolve_an_unrecorded_fact(self):
+        fact = {"claim": "CLI accepts --debug", "fixture": None}
+        state = {"repo": "example/repo", "check": "exit 0", "path": [], "tool_facts": [fact]}
+        self.assertEqual(self.gate([], state).review, "changes")
+
+    def test_record_paths_are_relative_and_normalized(self):
+        from foreman.fixture_manifest import fact_record_path
+        for path in ("../manifest.toml", "/manifest.toml", "a/../manifest.toml", "", ".", "a//b"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                fact_record_path(path)
+        self.assertEqual(fact_record_path("evidence/facts.toml"), "evidence/facts.toml")
 
 
 class DerivedCaptureTest(unittest.TestCase):

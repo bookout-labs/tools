@@ -755,11 +755,11 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
 
-    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False):
+    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml"):
         root = self.cwd / "checkout"
         root.mkdir()
         subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=root, check=True)
-        fixtures = root / "tests/fixtures"
+        fixtures = (root / record_path).parent
         fixtures.mkdir(parents=True)
         (fixtures / "result.txt").write_text("debug output\n")
 
@@ -772,7 +772,7 @@ class LiveRunnerTest(unittest.TestCase):
                 'argv = ["example", "--debug"]\n'
             )
 
-        manifest_path = fixtures / "manifest.toml"
+        manifest_path = root / record_path
         if not (recover or no_changes):
             manifest_path.write_text(manifest(entry) if entry is not None else "[fixtures]\n")
         subprocess.run(["git", "add", "."], cwd=root, check=True)
@@ -814,7 +814,7 @@ class LiveRunnerTest(unittest.TestCase):
             return worker_reply(args, reply)
 
         return run_live_delivery(
-            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, fact_record=record_path,
             dispatcher=FailoverDispatcher(CliWorker(root, worker)),
             run=LiveRun(self.github, FixtureWorkspace(root)),
         )
@@ -824,6 +824,11 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(result.get("merge"), "armed")
         self.assertEqual(result.get("fact_record"), "tests/fixtures/manifest.toml")
+
+    def test_custom_fact_record_reaches_approval(self):
+        result = self.review_tool_fact("result.txt", recover=True, record_path="evidence/facts.toml")
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("fact_record"), "evidence/facts.toml")
 
     def test_no_changes_names_unresolved_fact_gate(self):
         result = self.review_tool_fact(None, no_changes=True)

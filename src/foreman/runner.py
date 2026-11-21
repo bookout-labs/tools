@@ -18,6 +18,7 @@ from foreman.config import PstackPin, load_config
 from foreman.delivery import DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
+from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import Forge
 from foreman.stage_output import StoredSlice, parse_output
 
@@ -77,7 +78,9 @@ def run_live_delivery(
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
     answer: str | None = None,
+    fact_record: str = MANIFEST_PATH,
 ) -> DeliveryResult:
+    fact_record = fact_record_path(fact_record)
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(run.workspace.root.resolve())
@@ -98,7 +101,8 @@ def run_live_delivery(
         except SkillMissing as exc:
             return read_delivery_state({**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                         "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
-                                        "repo": repo, "check": check})
+                                        "fact_record": fact_record,
+                "repo": repo, "check": check})
         def invoke(
             graph_input: DeliveryState | Command | None,
             state: DeliveryState,
@@ -135,6 +139,7 @@ def run_live_delivery(
             loaded = client.load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
+                "fact_record": fact_record,
                 "repo": repo,
                 "issue": issue,
                 "workspace": workspace,

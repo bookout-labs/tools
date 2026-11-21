@@ -1,6 +1,7 @@
 """Provenance for outside-tool evidence under tests/fixtures."""
 
 import tomllib
+from pathlib import PurePosixPath
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, HttpUrl, model_validator
@@ -50,10 +51,19 @@ class FixtureManifest(Contract):
         return cls.model_validate(tomllib.loads(content))
 
 
-def recorded_fixtures(workspace: Workspace, head: str) -> set[str]:
-    files = workspace.files_at(head, FIXTURE_DIR)
-    if MANIFEST_PATH not in files:
+def fact_record_path(path: str) -> str:
+    parsed = PurePosixPath(path)
+    if not path or parsed.is_absolute() or ".." in parsed.parts or parsed.as_posix() != path or path == ".":
+        raise ValueError("fact record must be a normalized repository-relative file path")
+    return path
+
+
+def recorded_fixtures(workspace: Workspace, head: str, manifest_path: str = MANIFEST_PATH) -> set[str]:
+    manifest_path = fact_record_path(manifest_path)
+    directory = PurePosixPath(manifest_path).parent.as_posix()
+    files = workspace.files_at(head, directory)
+    if manifest_path not in files:
         return set()
-    manifest = FixtureManifest.from_toml(workspace.read_file_at(head, MANIFEST_PATH))
-    files.remove(MANIFEST_PATH)
-    return manifest.fixtures.keys() & {path.removeprefix(f"{FIXTURE_DIR}/") for path in files}
+    manifest = FixtureManifest.from_toml(workspace.read_file_at(head, manifest_path))
+    files.remove(manifest_path)
+    return manifest.fixtures.keys() & {path.removeprefix(f"{directory}/") if directory != "." else path for path in files}
