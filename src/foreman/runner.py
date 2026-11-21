@@ -2,6 +2,7 @@
 # pyright: basic
 """Run one delivery issue against its SQLite checkpoint."""
 
+from collections.abc import Mapping
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -15,7 +16,7 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
+from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge
@@ -60,11 +61,16 @@ def _checkpoint_before_halt(
     if not path:
         raise ValueError("Cannot resume a run without a halted node.")
     node = path[-1]
-    entry = node + "_start" if node in {"triage", "research", "spec", "implement", "review"} else node
+    entry = entry_node(node)
     before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (entry,)), None)
     if before is None:
         raise ValueError(f"Cannot resume a run without a checkpoint before {node}.")
     return before
+
+
+def require_token_cap(values: Mapping[str, object], checkpoint: Path) -> None:
+    if "token_cap" not in values:
+        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run with a new checkpoint path.")
 
 
 def run_live_delivery(
@@ -80,8 +86,6 @@ def run_live_delivery(
     answer: str | None = None,
     max_tokens: int | None = None,
 ) -> DeliveryResult:
-    if max_tokens is not None and max_tokens <= 0:
-        raise ValueError("max_tokens must be positive")
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(run.workspace.root.resolve())
@@ -90,9 +94,7 @@ def run_live_delivery(
         delivery_config = load_config()
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
-        if prior and (channels.get("usage_version") != 1 or "token_cap" not in channels):
-            raise ValueError("Cannot resume a pre-S4 checkpoint with unknown usage history. Start a new run.")
-        if prior and max_tokens is not None and channels["token_cap"] != max_tokens:
+        if prior and "token_cap" in channels and max_tokens is not None and channels["token_cap"] != max_tokens:
             raise ValueError("--max-tokens differs from the stored token cap")
         saved_pin = channels.get("pstack_pin")
         if prior and not channels.get("stop") and saved_pin is None:
@@ -106,7 +108,8 @@ def run_live_delivery(
         except SkillMissing as exc:
             return read_delivery_state({**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                         "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
-                                        "repo": repo, "check": check})
+                                        "repo": repo, "check": check,
+                                        "token_cap": channels["token_cap"] if prior else (max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)})
         def invoke(
             graph_input: DeliveryState | Command | None,
             state: DeliveryState,
@@ -116,14 +119,22 @@ def run_live_delivery(
             graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync")
 
         saved = graph.get_state(config)
+        if saved.values:
+            if not saved.next and not saved.interrupts and saved.values.get("halt") not in RESUMABLE_HALTS:
+                if "token_cap" not in saved.values:
+                    return read_delivery_state(saved.values)
+            require_token_cap(saved.values, checkpoint)
         saved_values = _CHECKPOINT_STATE.validate_python(saved.values, strict=True) if saved.values else None
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
         if saved_values is not None and (pending := saved_values.get("pending_dispatch")):
+            assert "dispatch_plan" in saved_values
             stage, model = pending["stage"], pending["model"]
-            graph.update_state(config, {**halted("usage_unknown", f"{model} ran {stage} without a usage report", stage),
-                                       "attempts": [pending], "pending_dispatch": None}, as_node=stage)
+            graph.update_state(config, {**halted("usage_unknown", unknown_usage(stage, model), stage),
+                                       "attempts": [{"stage": stage, "model": model, "commit": pin.commit,
+                                                     "methods": saved_values["dispatch_plan"]["methods"], "outcome": "interrupted", "usage": None}],
+                                       "pending_dispatch": None}, as_node=stage + "_call")
             invoke(None, saved_values)
             return read_delivery_state(graph.get_state(config).values)
         waiting_for_quota = bool(saved.interrupts) and saved.values.get("halt") == "quota_exhausted"
@@ -150,7 +161,6 @@ def run_live_delivery(
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
                 "repo": repo,
-                "usage_version": 1,
                 "token_cap": max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
                 "issue": issue,
                 "workspace": workspace,
@@ -176,14 +186,15 @@ def run_live_delivery(
             invoke(initial, initial)
         elif waiting_for_quota:
             invoke(Command(resume=True), saved_values)
-        elif (halt := saved_values.get("halt")) in RESUMABLE_HALTS:
+        elif saved_values.get("halt") in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
-            if before.values.get("usage_version") != 1 or before.values.get("token_cap") != saved_values.get("token_cap"):
-                raise ValueError("Cannot resume a pre-S4 checkpoint with unknown usage history. Start a new run.")
-            if halt == "env_unavailable":
-                invoke(None, _CHECKPOINT_STATE.validate_python(before.values, strict=True), before.config)
-            else:
-                graph.invoke(None, before.config, durability="sync")
+            require_token_cap(before.values, checkpoint)
+            if before.values["token_cap"] != saved_values["token_cap"]:
+                raise ValueError("The historical checkpoint has a different token cap. Start a new run.")
+            replay = before.config
+            if partial := saved_values.get("partial_edits"):
+                replay = graph.update_state(replay, {"partial_edits": partial})
+            invoke(None, _CHECKPOINT_STATE.validate_python(before.values, strict=True), replay)
         elif saved.next and not saved.interrupts:
             invoke(None, saved_values)
 

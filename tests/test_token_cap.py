@@ -19,34 +19,38 @@ from test_runner import FakeGitHub, FakeWorkspace
 
 class TokenCapTests(unittest.TestCase):
     def test_persisted_history_boundary_and_quota_fallback(self):
-        for kind, tokens, expected in (("ran", 9, None), ("ran", 10, "budget_exceeded"),
-                                       ("ran", 11, "budget_exceeded"), ("quota", 10, "budget_exceeded")):
-            with self.subTest(kind=kind, tokens=tokens), skill_fixture() as (config, scratch), TemporaryDirectory() as folder:
+        cases = ((90, (("ran", 9),), None), (90, (("ran", 10),), "budget_exceeded"),
+                 (90, (("ran", 11),), "budget_exceeded"), (90, (("quota", 10),), "budget_exceeded"),
+                 (95, (("quota", 3), ("ran", 2)), "budget_exceeded"))
+        for prior, replies, expected in cases:
+            with self.subTest(prior=prior, replies=replies), skill_fixture() as (config, scratch), TemporaryDirectory() as folder:
                 checkpoint = str(Path(folder) / "cap.sqlite")
                 invocation = {"configurable": {"thread_id": "cap"}}
-                calls = []
+                calls, outcomes = [], iter(replies)
                 def handler(node, model, state, instruction):
                     calls.append(model.name)
+                    kind, tokens = next(outcomes)
                     return Outcome(kind, {"triage": "needs_human", "work_kind": "feature", "slice": None,
                                           "human_question": "Which?"}, usage=Usage(input_tokens=tokens, output_tokens=0))
                 dispatch = FailoverDispatcher(handler)
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
                     graph = compile_delivery(dispatch, config, run=DryRun(), checkpointer=saver)
                     graph.update_state(invocation, {"repo": "a/b", "check": "", "path": ["triage"], "request": "x",
-                        "issue_kind": "parent", "token_cap": 100, "usage_version": 1, "attempts": [{"stage": "spec",
+                        "issue_kind": "parent", "token_cap": 100, "attempts": [{"stage": "spec",
                         "model": "prior", "commit": "a", "methods": [], "outcome": "ran",
-                        "usage": {"input": 90, "output": 0, "cost_usd": None}}]}, as_node="needs_human")
+                        "usage": {"input": prior, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}, as_node="needs_human")
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
                     graph = compile_delivery(dispatch, config, run=DryRun(), checkpointer=saver)
                     graph.invoke(None, invocation, durability="sync")
                     result = graph.get_state(invocation).values
+                total = prior + sum(tokens for _, tokens in replies)
                 self.assertEqual(result.get("stop"), expected)
-                self.assertEqual(len(calls), 1)
-                self.assertEqual(run_tokens(result["attempts"]), 90 + tokens)
-                self.assertEqual(len(result["attempts"]), 2)
+                self.assertEqual(len(calls), len(replies))
+                self.assertEqual(run_tokens(result["attempts"]), total)
+                self.assertEqual(len(result["attempts"]), 1 + len(replies))
                 if expected == "budget_exceeded":
                     self.assertNotIn("triage", result)
-                    self.assertIn(f"Run used {90 + tokens} tokens; cap is 100. Last attempt: triage", result["halt_detail"])
+                    self.assertIn(f"Run used {total} tokens; cap is 100. Last attempt: triage", result["halt_detail"])
                     self.assertEqual(run_exit_code(result), 1)
 
     def test_reached_cap_never_calls_handler_and_unknown_never_applies_output(self):
@@ -62,7 +66,7 @@ class TokenCapTests(unittest.TestCase):
             self.assertEqual(run_exit_code(result), 1)
             graph = compile_delivery(FailoverDispatcher(unknown), config, run=DryRun())
             saved = {**result, "halt": None, "stop": "", "path": [], "token_cap": 1,
-                     "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cost_usd": None}}]}
+                     "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
             stopped = graph.invoke(saved)
             self.assertEqual(stopped["stop"], "budget_exceeded")
             self.assertEqual(calls, ["triage"])
@@ -85,12 +89,14 @@ class TokenCapTests(unittest.TestCase):
             self.assertEqual(second["attempts"][:len(first["attempts"])], first["attempts"])
             self.assertEqual(len(second["attempts"]), 2 * len(first["attempts"]))
             for snapshot in (first, {**second, "stop": "needs_human", "halt": None},
-                             {**second, "stop": "env_unavailable", "halt": "env_unavailable"}):
-                with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                             *({**second, "stop": halt, "halt": halt} for halt in
+                               ("env_unavailable", "implement_quota", "git_failed", "publish_failed"))):
+                legacy = checkpoint.with_name(str(snapshot["stop"]) + ".sqlite")
+                with SqliteSaver.from_conn_string(str(legacy)) as saver:
                     graph = compile_delivery(FailoverDispatcher(quota), config, run=DryRun(), checkpointer=saver)
-                    graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {**snapshot, "usage_version": 0})
+                    graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {key: value for key, value in snapshot.items() if key != "token_cap"})
                 with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
-                    run_live_delivery(**kwargs, dispatcher=FailoverDispatcher(quota))
+                    run_live_delivery(**{**kwargs, "checkpoint": legacy}, dispatcher=FailoverDispatcher(quota))
 
     def test_cli_positive_tokens_default_and_done_log(self):
         for raw in ("0", "-1", "abc"):
@@ -112,11 +118,23 @@ class TokenCapTests(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 graph = compile_delivery(FailoverDispatcher(ScriptHandler()), config, run=live, checkpointer=saver)
                 graph.update_state(invocation, {"repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"],
-                    "triage": "implement", "preflight": "exit 1", "token_cap": 100, "usage_version": 0,
-                    "pstack_pin": config.pstack.model_dump()}, as_node="triage")
-                graph.invoke(None, invocation, durability="sync")
-                self.assertEqual(graph.get_state(invocation).values["halt"], "env_unavailable")
-                graph.update_state(invocation, {"usage_version": 1}, as_node="done")
+                    "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
+                graph.update_state(invocation, {"token_cap": 100, "halt": "env_unavailable", "stop": "env_unavailable",
+                                                "path": ["implement", "done"]}, as_node="done")
             with self.assertRaisesRegex(ValueError, "unknown usage history"):
                 run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=live,
                                   dispatcher=FailoverDispatcher(ScriptHandler()))
+
+    def test_finished_legacy_checkpoint_can_be_printed(self):
+        with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
+            checkpoint = Path(folder) / "finished.sqlite"
+            with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                graph = compile_delivery(None, config, run=DryRun(), checkpointer=saver)
+                graph.update_state({"configurable": {"thread_id": "a/b#8"}},
+                                   {"repo": "a/b", "check": "", "path": ["done"], "stop": "answered"}, as_node="done")
+            result = run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint,
+                                       run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                _print_run(result)
+            self.assertIn("done answered", output.getvalue())
+            self.assertNotIn("tokens", output.getvalue())

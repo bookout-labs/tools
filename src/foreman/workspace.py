@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -9,6 +10,8 @@ import shlex
 import subprocess
 from typing import NewType, Protocol
 from typing_extensions import TypedDict
+
+from foreman.redaction import redact
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 ATTRIBUTE_CONFIG = ("-c", "core.attributesFile=/dev/null")
@@ -30,7 +33,11 @@ def head_mismatch_detail(observed: str, verified: str) -> str:
     )
 
 
-class WorktreeInspectionFailed(RuntimeError):
+class WorkspaceError(RuntimeError):
+    pass
+
+
+class WorktreeInspectionFailed(WorkspaceError):
     pass
 
 
@@ -58,11 +65,29 @@ class Workspace(Protocol):
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int: ...
     def inspect(self) -> WorktreeState: ...
+    def create_branch(self, branch: str, base: str) -> None: ...
+    def commit(self, message: str) -> None: ...
+    def committed(self, parent: str, message: str) -> bool: ...
+    def fingerprint(self) -> str: ...
+    def push(self, branch: str, repo: str) -> None: ...
     def files_at(self, head: str, directory: str) -> set[str]: ...
     def read_file_at(self, head: str, path: str) -> str: ...
     def has_file(self, path: str) -> bool: ...
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str) -> ReviewDiff: ...
+
+
+def branch_command(branch: str, base: str) -> list[str]:
+    return ["git", "switch", "-c", redact(branch), f"refs/heads/{base}"]
+
+
+def commit_commands(message: str) -> list[list[str]]:
+    return [["git", "add", "--all"], ["git", "commit", "-m", redact(message)]]
+
+
+def push_command(remote: str, branch: str) -> list[str]:
+    ref = f"refs/heads/{redact(branch)}"
+    return ["git", "push", "--no-follow-tags", remote, f"{ref}:{ref}"]
 
 
 class LiveWorkspace:
@@ -95,6 +120,45 @@ class LiveWorkspace:
         status = self._git("status", "--porcelain")
         branch = os.fsdecode(self._git("branch", "--show-current")).strip()
         return WorktreeState(head, not status, branch or None)
+
+    def create_branch(self, branch: str, base: str) -> None:
+        branch = redact(branch)
+        refs = self._git("for-each-ref", "--format=%(refname)", f"refs/heads/{branch}")
+        if f"refs/heads/{branch}" in os.fsdecode(refs).splitlines():
+            self._git("merge-base", "--is-ancestor", f"refs/heads/{base}", f"refs/heads/{branch}")
+            self._git("switch", branch)
+        else:
+            self._git(*branch_command(branch, base)[1:])
+
+    def fingerprint(self) -> str:
+        digest = hashlib.sha256(self._git("diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv"))
+        for name in self._git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0"):
+            if name:
+                digest.update(name)
+                path = self.root / os.fsdecode(name)
+                digest.update(os.fsencode(os.readlink(path)) if path.is_symlink() else path.read_bytes())
+        return digest.hexdigest()
+
+    def commit(self, message: str) -> None:
+        for command in commit_commands(message):
+            self._git(*command[1:])
+
+    def committed(self, parent: str, message: str) -> bool:
+        return (os.fsdecode(self._git("show", "-s", "--format=%P%n%B", "HEAD")).strip()
+                == f"{parent}\n{redact(message)}".strip())
+
+    def push(self, branch: str, repo: str) -> None:
+        remote = os.fsdecode(self._git("remote", "get-url", "origin")).strip()
+        expected = repo.lower()
+        urls = (f"https://github.com/{expected}", f"git@github.com:{expected}", f"ssh://git@github.com/{expected}")
+        push_urls = os.fsdecode(self._git("remote", "get-url", "--push", "--all", "origin")).splitlines()
+        if not push_urls or any(url.lower().removesuffix(".git").rstrip("/") not in urls for url in [remote, *push_urls]):
+            raise WorkspaceError("origin does not point at the selected GitHub repository.")
+        ref = f"refs/heads/{redact(branch)}"
+        observed = self._git("ls-remote", "origin", ref).split()
+        head = self._git("rev-parse", ref).strip()
+        if not observed or observed[0] != head:
+            self._git(*push_command("origin", branch)[1:])
 
     def files_at(self, head: str, directory: str) -> set[str]:
         tree = os.fsdecode(self._git("--no-replace-objects", "ls-tree", "-rz", "--full-tree", head, "--", directory))
@@ -187,13 +251,17 @@ class LiveWorkspace:
         return ReviewDiff(shlex.join(("git", *args)), os.fsdecode(self._git(*args)))
 
     def _git(self, *args: str, input_paths: bytes | None = None, timeout: float | None = None) -> bytes:
-        operation = " ".join(("git", *args))
+        operation = f"git {args[0]}"
+        if timeout is None:
+            timeout = 30 if args[0] in {"fetch", "push", "ls-remote", "commit"} else 10
         try:
             result = subprocess.run(
                 ["git", *args], cwd=self.root, capture_output=True, input=input_paths,
-                env={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
+                env={**os.environ, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"},
                 stdin=subprocess.DEVNULL if input_paths is None else None, timeout=timeout,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise WorktreeInspectionFailed(f"{operation} timed out after {timeout} seconds; rerun to resume.") from exc
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
             raise WorktreeInspectionFailed(f"{operation} failed ({exc}).") from exc
         if result.returncode:

@@ -35,6 +35,8 @@ def _write_check_log(line: str) -> None:
 
 
 def _print_run(result: DeliveryResult) -> None:
+    for command in result.get("commands", []):
+        _write_run_log(f"dry run: {shlex.join(command)}")
     models = result.get("models_used", {})
     if size := result.get("pr_size"):
         print(f"pull request lines {size['lines']}")
@@ -46,7 +48,8 @@ def _print_run(result: DeliveryResult) -> None:
                 print(f"check exit {result['check_exit_code']}")
             for proof, label in result.get("proof_labels", {}).items():
                 _write_run_log(f"{proof} proof {label}")
-            print(f"tokens {run_tokens(result.get('attempts', []))} of {result.get('token_cap', DEFAULT_TOKEN_CAP)}")
+            if "token_cap" in result:
+                print(f"tokens {run_tokens(result.get('attempts', []))} of {result['token_cap']}")
             _write_run_log(f"done {result['stop']}")
             if result.get("stop") == "skill_missing":
                 pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))

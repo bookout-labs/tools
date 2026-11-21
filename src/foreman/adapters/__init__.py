@@ -7,7 +7,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, TypeAdapter, ValidationError
 
 from foreman.config import ModelSpec
 
@@ -16,10 +16,10 @@ class Usage(BaseModel):
     """Token counts with uncached input separate from cache reads and writes."""
 
     model_config = ConfigDict(strict=True, frozen=True)
-    input_tokens: int
-    output_tokens: int
-    cache_read_input_tokens: int | None = None
-    cache_creation_input_tokens: int | None = None
+    input_tokens: NonNegativeInt
+    output_tokens: NonNegativeInt
+    cache_read_input_tokens: NonNegativeInt | None = None
+    cache_creation_input_tokens: NonNegativeInt | None = None
     total_cost_usd: float | None = None
 
 
@@ -62,10 +62,13 @@ class ModelUsage(BaseModel):
 class NativeEnvelope(BaseModel, ABC):
     model_config = ConfigDict(strict=True)
 
-    model_usage: dict[str, ModelUsage] | None = Field(default=None, alias="modelUsage")
+    model_usage: dict[str, object] | None = Field(default=None, alias="modelUsage")
 
     def read_usage(self) -> Usage | None:
-        rows = list((self.model_usage or {}).values())
+        try:
+            rows = list(TypeAdapter(dict[str, ModelUsage]).validate_python(self.model_usage or {}).values())
+        except ValidationError:
+            return None
         if not rows:
             return None
         costs = [row.cost for row in rows if row.cost is not None]
@@ -73,7 +76,7 @@ class NativeEnvelope(BaseModel, ABC):
             input_tokens=sum(row.input for row in rows), output_tokens=sum(row.output for row in rows),
             cache_read_input_tokens=sum(row.cache_read for row in rows),
             cache_creation_input_tokens=sum(row.cache_creation for row in rows),
-            total_cost_usd=sum(costs) if costs else None,
+            total_cost_usd=sum(costs) if len(costs) == len(rows) else None,
         )
 
     @abstractmethod
@@ -104,8 +107,6 @@ def build_outcome(
     total_cost_usd: float | None, session_id: str | None, detail: str,
 ) -> Outcome:
     if usage is not None:
-        if usage.total_cost_usd is None:
-            usage = usage.model_copy(update={"total_cost_usd": total_cost_usd})
         if not any((usage.input_tokens, usage.output_tokens,
                     usage.cache_read_input_tokens, usage.cache_creation_input_tokens)):
             usage = None
