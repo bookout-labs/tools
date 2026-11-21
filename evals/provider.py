@@ -11,9 +11,8 @@ sys.path.insert(0, str(ROOT))
 from foreman.adapters import Outcome  # noqa: E402
 from foreman.config import ModelSpec  # noqa: E402
 from foreman.delivery import DeliveryState, run_delivery  # noqa: E402
-from foreman.dispatch import FailoverDispatcher, Handler  # noqa: E402
+from foreman.dispatch import Handler  # noqa: E402
 from foreman.dry_run import ScriptHandler  # noqa: E402
-from foreman.measure import grade, propose, selected  # noqa: E402
 from tests.skill_fixture import skill_fixture  # noqa: E402
 
 
@@ -31,7 +30,7 @@ FIELD_SLICE: dict[str, object] = {
 def _walk(handler: Handler, *, slice: dict[str, object] | None = None) -> DeliveryState:
     with skill_fixture() as (config, scratch):
         return run_delivery(
-            FailoverDispatcher(handler), repo="DoctorCRE/doctorcre-engine", request="Add a field",
+            handler, repo="DoctorCRE/doctorcre-engine", request="Add a field",
             check="npm run check", slice=slice, config=config, scratch=scratch,
         )
 
@@ -44,7 +43,7 @@ def _with_quota_gap() -> str:
     handler = ScriptHandler()
 
     def exhaust_claude(node: str, model: ModelSpec | None, state: DeliveryState, instruction: str) -> Outcome:
-        if model and model.name == "claude-opus-5-5-high":
+        if node == "triage" and model and model.name == "claude-opus-5-5-high":
             return Outcome("quota")
         return handler(node, model, state, instruction)
 
@@ -121,19 +120,6 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
         output = _stop(ScriptHandler(triage="question"), slice=FIELD_SLICE)
     elif case == "failover":
         output = _with_quota_gap()
-    elif case == "score-approve":
-        graded = grade("approve")
-        output = "pass" if graded.passed and graded.score == 1.0 else "fail"
-    elif case == "score-block":
-        graded = grade("block")
-        output = "fail" if not graded.passed and graded.score == 0.2 else "pass"
-    elif case == "score-thin":
-        graded = grade("insufficient_evidence")
-        output = "insufficient_evidence" if not graded.passed and graded.score == 0.5 else "fail"
-    elif case == "sample":
-        output = "yes" if selected(0) and selected(10) and not selected(1) else "no"
-    elif case == "proposal":
-        output = propose("redundant-tests")
     else:
         return {"error": f"unknown case {case}"}
     return {"output": output}

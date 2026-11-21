@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
 SkillSource = Callable[[PstackPin, Path], Path]
 
-AgentStage = Literal["triage", "research", "spec", "implement", "review"]
-LocalSkill = Literal["browser-proof", "code-quality", "formal-proof", "merge-risk", "review-quality"]
+AgentStage = Literal["triage", "research", "spec", "spec_check", "implement", "review"]
+LocalSkill = Literal["browser-proof", "formal-proof", "merge-risk", "review-quality"]
 Condition = WorkKind | Literal["stateful", "browser", "formal"]
 SkillFailureReason = Literal["pin_unavailable", "method_missing"]
 LineNumber = Annotated[int, Field(ge=1)]
@@ -75,6 +75,10 @@ SKILL_RULES = (
     principle("spec", "boundary-discipline"),
     principle("spec", "type-system-discipline"),
     SkillRule(stage="spec", skill=PstackMethod(path="statechart/SKILL.md", kind="skill"), when="stateful"),
+    principle("spec_check", "model-the-domain"),
+    principle("spec_check", "boundary-discipline"),
+    principle("spec_check", "type-system-discipline"),
+    principle("spec_check", "prove-it-works"),
     principle("implement", "laziness-protocol"),
     principle("implement", "test-behavior-not-implementation"),
     principle("implement", "prove-it-works"),

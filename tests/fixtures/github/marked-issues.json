@@ -1,0 +1,36 @@
+[
+  [
+    {
+      "number": 1347,
+      "body": "Plan\n<!-- foreman:issue-103 -->",
+      "state": "open"
+    },
+    {
+      "number": 1348,
+      "body": "<!-- foreman:issue-103 -->",
+      "pull_request": {
+        "url": "https://api.github.com/repos/octocat/Hello-World/pulls/1348"
+      }
+    },
+    {
+      "number": 1350,
+      "body": null
+    }
+  ],
+  [
+    {
+      "number": 1349,
+      "body": "<!-- foreman:issue-103 -->\nDone",
+      "state": "closed"
+    },
+    {
+      "number": 1351,
+      "body": "<!-- foreman:issue-103 -->",
+      "pull_request": null
+    },
+    {
+      "number": 1352,
+      "body": "<!-- foreman:issue-104 -->"
+    }
+  ]
+]

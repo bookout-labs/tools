@@ -19,7 +19,6 @@ from foreman.github import Forge, ForgeError, LiveForge
 from foreman.runner import run_live_delivery
 from foreman.skill_rules import SkillMissing
 from foreman.workspace import WorkspaceError
-from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.worker import CliWorker
 from skill_fixture import fixture_skills
@@ -37,7 +36,7 @@ class LiveWatchTest(unittest.TestCase):
 
     def invoke(self, **kwargs):
         return run_live_delivery(repo='Example/Engine', issue=8, check='exit 0',
-                                 checkpoint=self.checkpoint, run=self.run, **kwargs)
+                                 checkpoint=self.checkpoint, run=self.run, **({'dispatcher': lambda *args: Outcome('failed', detail='bad output')} | kwargs))
 
     def stored(self):
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
@@ -46,7 +45,7 @@ class LiveWatchTest(unittest.TestCase):
     def test_reopen_records_once_and_reports_before_filing(self):
         events = []
         result = self.invoke(report=lambda result: events.append(result['stop']), log=events.append)
-        self.assertEqual(events, ['no_dispatcher', 'watch filed #101'])
+        self.assertEqual(events, ['invalid_output', 'watch filed #101'])
         self.assertEqual(result['watch'], {'issue': 101, 'action': 'filed'})
         self.assertEqual(self.stored()['watch'], result['watch'])
         self.assertEqual(self.invoke(), result)
@@ -87,7 +86,7 @@ class LiveWatchTest(unittest.TestCase):
         workspace = FakeWorkspace(self.root)
         workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
         self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
-        dispatcher = FailoverDispatcher(CliWorker(self.root, lambda args, *unused: worker_reply(args, {"triage": "implement"})))
+        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, {"triage": "implement"}))
         first = self.invoke(dispatcher=dispatcher)
         self.assertEqual(first['halt'], 'git_failed')
         second = self.invoke(dispatcher=dispatcher)
@@ -108,7 +107,7 @@ class LiveWatchTest(unittest.TestCase):
             self.forge.open_issues.return_value = []
             flags = self.flags + (['--watch-repo', target] if target else [])
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(main(flags, checkpoint=self.checkpoint, live_run=self.run, worker_runner=None), 1)
+                self.assertEqual(main(flags, checkpoint=self.checkpoint, live_run=self.run, worker_runner=lambda *args: subprocess.CompletedProcess([], 0, 'invalid', '')), 1)
             self.assertEqual(self.forge.create_issue.call_args.args[0], target or 'bookout-labs/tools')
         for target in ('repo', 'owner/repo/extra', '/repo', 'owner/'):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
@@ -147,7 +146,7 @@ class LiveWatchTest(unittest.TestCase):
         def dispatch(stage, *args):
             return (Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
                             usage=Usage(input_tokens=1, output_tokens=1)) if stage == 'triage' else Outcome('quota'))
-        quota = FailoverDispatcher(dispatch)
+        quota = dispatch
         paused = self.invoke(dispatcher=quota)
         self.assertEqual(paused['stop'], 'quota_exhausted')
         again = self.invoke(dispatcher=quota)
@@ -168,7 +167,7 @@ class LiveWatchTest(unittest.TestCase):
                         return Outcome('quota')
                     return Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
                                    usage=Usage(input_tokens=1, output_tokens=1))
-                dispatcher = FailoverDispatcher(dispatch)
+                dispatcher = dispatch
                 self.assertEqual(self.invoke(dispatcher=dispatcher)['stop'], stop)
                 before = self.stored()
                 self.run = LiveRun(self.forge, workspace, skills=Mock(side_effect=SkillMissing(load_config().pstack)))
@@ -203,7 +202,7 @@ class LiveWatchTest(unittest.TestCase):
         workspace = FakeWorkspace(self.root)
         workspace.create_branch = Mock(side_effect=WorkspaceError('#48 ' + secret))
         self.run = LiveRun(LiveForge(), workspace, skills=fixture_skills)
-        dispatcher = FailoverDispatcher(CliWorker(self.root, lambda args, *unused: worker_reply(args, {'triage': 'implement'})))
+        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, {'triage': 'implement'}))
         real_run = subprocess.run
         fake_gh = lambda args, **kwargs: gh(args, **kwargs) if args[0] == 'gh' else real_run(args, **kwargs)
         with patch('foreman.github.subprocess.run', side_effect=fake_gh):
@@ -215,22 +214,22 @@ class LiveWatchTest(unittest.TestCase):
 
     def test_watch_errors_keep_exit_codes_are_redacted_ordered_and_retried(self):
         secret = 'ghp_' + 'a' * 36
-        for stop, code in (('no_dispatcher', 1), ('git_failed', 75), ('needs_human', 3)):
+        for stop, code in (('invalid_output', 1), ('git_failed', 75), ('needs_human', 3)):
             self.checkpoint = self.root / f'{stop}.sqlite3'
             if code == 75:
                 self.run.workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
-                dispatcher = FailoverDispatcher(CliWorker(self.root, lambda args, *unused: worker_reply(args, {'triage': 'implement'})))
+                dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, {'triage': 'implement'}))
                 self.invoke(dispatcher=dispatcher)
             else:
                 self.invoke()
             with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-                graph = compile_delivery(None, load_config(), run=self.run, checkpointer=saver)
+                graph = compile_delivery(lambda *args: Outcome('failed', detail='bad output'), load_config(), run=self.run, checkpointer=saver)
                 graph.update_state({'configurable': {'thread_id': 'example/engine#8'}},
                                    {'stop': stop, 'watch': None}, as_node='done')
             self.forge.open_issues.side_effect = ForgeError('#48 ' + secret)
             stream = io.StringIO()
             with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
-                actual = main(self.flags, checkpoint=self.checkpoint, live_run=self.run, worker_runner=None)
+                actual = main(self.flags, checkpoint=self.checkpoint, live_run=self.run, worker_runner=lambda *args: subprocess.CompletedProcess([], 0, 'invalid', ''))
             self.assertEqual(actual, code)
             text = stream.getvalue()
             self.assertNotIn(secret, text)

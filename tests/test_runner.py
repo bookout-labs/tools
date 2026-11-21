@@ -19,11 +19,13 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.adapters import Outcome, Usage
 from foreman.cli import _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
+from foreman.outcomes import Halt
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
-from foreman.dispatch import FailoverDispatcher, InvalidOutput
+from foreman.dispatch import InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
-from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, PullRequest, render_slice_body
+from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, render_slice_body
 
+from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
@@ -143,6 +145,10 @@ class FakeGitHub:
         self.merged = set()
         self.label_calls = []
         self.issue_labels: dict[int, list[str]] = {}
+        self.issue_repos: dict[int, str] = {}
+        self.bodies: dict[tuple[str, int], str] = {}
+        self.parents: dict[tuple[str, int], int] = {}
+        self.failures: dict[tuple[str, bool], list[BaseException]] = {}
         self.merge_calls = []
         self.dependencies = {}
         self.base_branch = "main"
@@ -169,22 +175,79 @@ class FakeGitHub:
     def post_review(self, repo, target, body, comments, *, marker):
         self.reviews.append((repo, target.number, target.headRefOid, body, comments))
         return {"id": len(self.reviews), "state": "COMMENTED", "commit_id": target.headRefOid}
+    def readiness(self, repo, issue, branch, sha):
+        return Observation(repo=repo, pr=PullSnapshot(number=12, state="open", draft=False,
+            head={"sha": sha, "ref": branch}, base={"sha": self.base, "ref": "main"},
+            mergeable=True, merge_commit_sha=None, mergeable_state="clean"),
+            checks=[], outcome="ready", recovery="Eligible.", queue_policy={"merge_method": "SQUASH"})
+
+    def reconcile_merge(self, receipt):
+        return receipt
+
     def merge_hold(self, repo):
         self.hold_reads.append(repo)
         return self.hold
 
-    def arm_auto_merge(self, repo, issue, branch, sha):
+    def arm_auto_merge(self, repo, issue, branch, sha, observation):
         self.merge_calls.append((repo, issue, branch, sha))
+        return MergeReceipt(repo=repo, pr=12, source_head=sha, base=self.base,
+                            base_ref="main", method="SQUASH", queue_policy={"merge_method": "SQUASH"}, identity="queue-test", status="QUEUED")
 
     def load_issue(self, repo, number) -> Issue:
         if number in self.issue_labels:
             title, body, _ = self.created[number - 101]
-            return {"title": title, "body": body, "labels": self.issue_labels[number]}
-        return {"title": "Issue title", "body": self.body, "labels": self.labels}
+            return {"title": title, "body": self.bodies.get((repo, number), body), "labels": self.issue_labels[number]}
+        return {"title": "Issue title", "body": self.bodies.get((repo, number), self.body), "labels": self.labels}
 
     def open_issues(self, repo) -> list[OpenIssue]:
-        return [OpenIssue(number=number, body=self.created[number - 101][1])
-                for number in self.issue_labels if number not in self.closed and number not in self.merged]
+        return [OpenIssue(number=number, body=self.load_issue(repo, number)["body"])
+                for number in self.issue_labels if self.issue_repos[number] == repo
+                and number not in self.closed and number not in self.merged]
+
+    def marked_issues(self, repo, marker) -> list[int]:
+        numbers = dict.fromkeys([number for number, issue_repo in self.issue_repos.items() if issue_repo == repo]
+                                + [number for issue_repo, number in self.bodies if issue_repo == repo])
+        return [number for number in numbers if marker in self.load_issue(repo, number)["body"]]
+
+    def _linked_issue(self, repo, number) -> LinkedIssue:
+        return LinkedIssue(id=number + 10000, number=number, title=self.load_issue(repo, number)["title"],
+                           repository_url=f"https://api.github.com/repos/{repo}",
+                           html_url=f"https://github.com/{repo}/issues/{number}",
+                           state="closed" if number in self.closed or number in self.merged else "open")
+
+    def sub_issues(self, repo, number) -> list[LinkedIssue]:
+        return [self._linked_issue(repo, child) for (issue_repo, child), parent in self.parents.items()
+                if issue_repo == repo and parent == number]
+
+    def parent_issue(self, repo, number) -> LinkedIssue | None:
+        parent = self.parents.get((repo, number))
+        return self._linked_issue(repo, parent) if parent is not None else None
+
+    def preset_sub_issues(self, repo, number, count):
+        start = max(19999, max((child for issue_repo, child in self.parents if issue_repo == repo), default=0)) + 1
+        for child in range(start, start + count):
+            self.parents[repo, child] = number
+
+    def add_sub_issue(self, repo, number, child):
+        self._fail("add_sub_issue", after_write=False)
+        if (repo, child) in self.parents or len(self.sub_issues(repo, number)) >= 100:
+            raise ForgeError("Child already has a parent or parent is full.")
+        self.parents[repo, child] = number
+        self._fail("add_sub_issue", after_write=True)
+
+    def update_issue_body(self, repo, number, body):
+        self._fail("update_issue_body", after_write=False)
+        self.bodies[repo, number] = body
+        self._fail("update_issue_body", after_write=True)
+
+    def fail_next(self, operation, *, after_write=False, error=None):
+        self.failures.setdefault((operation, after_write), []).append(
+            error if error is not None else ForgeError("Injected write failure."))
+
+    def _fail(self, operation, *, after_write):
+        failures = self.failures.get((operation, after_write), [])
+        if failures:
+            raise failures.pop(0)
 
     def issue_comments(self, repo, number) -> list[str]:
         return list(self.comments.get((repo, number), []))
@@ -193,11 +256,15 @@ class FakeGitHub:
         self.comments.setdefault((repo, number), []).append(body)
 
     def create_issue(self, repo, title, body, labels, *, child=None):
+        self._fail("create_issue", after_write=False)
         if child is not None:
             body = render_slice_body(body, child)
         self.created.append((title, body, labels))
         number = 100 + len(self.created)
         self.issue_labels[number] = list(labels)
+        self.issue_repos[number] = repo
+        self.bodies[repo, number] = body
+        self._fail("create_issue", after_write=True)
         return number
 
     def is_merged(self, repo, number):
@@ -288,7 +355,7 @@ class CliWorkerTest(unittest.TestCase):
         config = load_config()
         config.nodes["triage"] = NodeConfig("coordinator", tuple(ModelSpec.parse(model) for model in models))
         with skill_fixture(config) as (fixture_config, scratch):
-            return run_delivery(FailoverDispatcher(CliWorker(Path("."), run)), repo="Example/Engine",
+            return run_delivery(CliWorker(Path("."), run), repo="Example/Engine",
                                 request="List items", check="exit 0", config=fixture_config, slice=EMPTY_SLICE, scratch=scratch)
 
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
@@ -455,9 +522,201 @@ class LiveRunnerTest(unittest.TestCase):
 
         return run_live_delivery(
             repo="Example/Engine", issue=issue, check=check, preflight=preflight, answer=answer,
-            checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)), presentation=presentation,
+            checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, run), presentation=presentation,
             run=LiveRun(self.github, active, skills=skills),
         )
+
+    def test_readiness_halts_resume_without_repeating_workers(self):
+        for outcome, reason in [("pending", "ci_pending"), ("red", "ci_red"), ("conflict", "pr_conflict")]:
+            self.checkpoint = self.cwd / (outcome + ".sqlite3")
+            observed = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+            observed.outcome = outcome
+            observed.recovery = "Repair or wait, then resume."
+            with patch.object(self.github, "readiness", return_value=observed):
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual(result["stop"], reason)
+            self.assertIsInstance(result["readiness_observation"], dict)
+            self.assertIn("PR #12 head=", result["halt_detail"])
+            self.assertIn("base=main@", result["halt_detail"])
+            self.assertEqual(run_exit_code(result), 75)
+            count = len(self.calls)
+            resumed = self.walk([])
+            self.assertEqual(resumed["stop"], "verified")
+            self.assertEqual(len(self.calls), count)
+            self.assertEqual(resumed["review_receipt"], result["review_receipt"])
+
+    def test_queue_receipt_is_persisted_and_completion_does_not_reobserve(self):
+        result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        receipt = result["merge_receipt"]
+        self.assertEqual((receipt["source_head"], receipt["identity"]), (HEAD, "queue-test"))
+        with patch.object(self.github, "readiness", side_effect=AssertionError("completed run reobserved")):
+            resumed = self.walk([])
+        self.assertEqual(resumed["merge_receipt"], result["merge_receipt"])
+
+    def test_saved_receipt_reconciles_before_readiness_without_reenqueue(self):
+        for status in ["missing", "merged"]:
+            self.checkpoint = self.cwd / (status + ".sqlite3")
+            ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+            with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
+                first = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+            count = len(self.calls)
+            receipt = MergeReceipt.model_validate(first["merge_receipt"])
+            effect = QueueRejected(f"Queue receipt {receipt.identity} disappeared") if status == "missing" else None
+            with patch.object(self.github, "readiness", side_effect=AssertionError("readiness ran before receipt")), patch.object(self.github, "arm_auto_merge", side_effect=AssertionError("re-enqueued")), patch.object(self.github, "reconcile_merge", side_effect=effect, return_value=receipt.model_copy(update={"status": "MERGED"})) as read:
+                result = self.walk([])
+            read.assert_called_once_with(receipt)
+            self.assertEqual(len(self.calls), count)
+            self.assertEqual(result["stop"], "queue_rejected" if effect else "verified")
+            if effect:
+                self.assertEqual(run_exit_code(result), 75)
+                self.assertIn(receipt.identity, result["halt_detail"])
+
+    def test_changed_saved_handoff_invalidates_receipt_for_renewed_proof(self):
+        ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
+            self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        with patch.object(self.github, "reconcile_merge", side_effect=HandoffChanged("PR head changed; resume to renew proof")):
+            result = self.walk([])
+        self.assertEqual(result["stop"], "merge_not_armed")
+        self.assertIsNone(result["merge_receipt"])
+        with patch.object(self.github, "reconcile_merge", side_effect=AssertionError("stale receipt resurrected")):
+            self.assertEqual(self.walk([])["stop"], "verified")
+
+    def test_fresh_process_reconciles_crash_after_write_or_merge(self):
+        script = r"""
+import json, os, sys
+from pathlib import Path
+from dataclasses import replace
+from unittest.mock import patch
+from foreman.cli import main
+from foreman.config import PstackPin, load_config
+from foreman.delivery import LiveRun
+from foreman.github import LiveForge
+from foreman.readiness import QueueSnapshot
+from test_runner import APPROVE, BASE, BRANCH, HEAD, FakeGitHub, FakeWorkspace, worker_reply
+
+class Forge(FakeGitHub):
+    arm_auto_merge = LiveForge.arm_auto_merge
+    _arm_auto_merge = LiveForge._arm_auto_merge
+    reconcile_merge = LiveForge.reconcile_merge
+    def readiness(self, *args):
+        value = super().readiness(*args)
+        if Path("merges.log").exists() and sys.argv[3] == "merged":
+            value.pr.state, value.pr.merged = "closed", True
+        return value
+    def _queue_snapshot(self, repo, number):
+        written = Path("merges.log").exists()
+        return QueueSnapshot(number=12, state="MERGED" if written and sys.argv[3] == "merged" else "OPEN",
+            headRefOid=HEAD, baseRefOid=BASE, baseRefName="main", isDraft=False, autoMergeRequest=None,
+            mergeQueueEntry={"id": "queue-crash", "state": "QUEUED"} if written else None)
+    def _run_command(self, repo, command):
+        assert command[1:3] == ["pr", "merge"]
+        with Path("merges.log").open("a") as log:
+            log.write("merge\n")
+        os._exit(17)
+
+workspace = FakeWorkspace(Path.cwd())
+def worker(args, cwd, env):
+    schema = json.loads(Path(args[args.index("--output-schema")+1]).read_text()) if args[0] == "codex" else json.loads(args[args.index("--json-schema")+1])
+    with Path("workers.log").open("a") as log:
+        log.write(schema["title"] + "\n")
+    if schema["title"] == "TriageOutput":
+        return worker_reply(args, {"triage": "implement"})
+    if schema["title"] == "ImplementOutput":
+        return workspace.reply(args, {"implementation": "built"})
+    return worker_reply(args, APPROVE)
+pin = PstackPin.model_validate_json(sys.argv[2])
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
+    sys.exit(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                  checkpoint=Path(sys.argv[1]), worker_runner=worker, live_run=LiveRun(Forge(), workspace)))
+"""
+        bootstrap = f"import sys; sys.path[:0] = {[str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]!r}\n"
+        for mode in ["queued", "merged"]:
+            directory = self.cwd / mode
+            directory.mkdir()
+            command = [sys.executable, "-c", bootstrap + script, str(directory / "checkpoint.sqlite3"), self.pin.model_dump_json(), mode]
+            first = subprocess.run(command, cwd=directory, capture_output=True, text=True)
+            self.assertEqual(first.returncode, 17, first.stderr)
+            resumed = subprocess.run(command, cwd=directory, capture_output=True, text=True)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertIn("done verified", resumed.stdout)
+            self.assertEqual((directory / "merges.log").read_text(), "merge\n")
+            self.assertEqual((directory / "workers.log").read_text().splitlines(), ["TriageOutput", "ImplementOutput", "ReviewOutput"])
+
+    def test_readiness_is_reconciled_after_arming(self):
+        ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        for outcome, halt in [("conflict", "pr_conflict"), ("red", "ci_red"), ("pending", "ci_pending")]:
+            self.checkpoint = self.cwd / (outcome + "-reconcile.sqlite3")
+            changed = ready.model_copy(update={"outcome": outcome})
+            with patch.object(self.github, "readiness", side_effect=[ready, changed]), patch.object(self.github, "arm_auto_merge", wraps=self.github.arm_auto_merge) as arm:
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+            arm.assert_called_once()
+            self.assertEqual((result["stop"], result["merge"], run_exit_code(result)), (halt, "armed", 75))
+        self.checkpoint = self.cwd / "advanced-base.sqlite3"
+        changed = ready.model_copy(deep=True)
+        changed.pr.base.sha = "c" * 40
+        changed.pr.merge_commit_sha = "d" * 40
+        with patch.object(self.github, "readiness", side_effect=[ready, changed]):
+            self.assertEqual(self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])["stop"], "verified")
+
+    def test_unavailable_and_policy_outcomes_fail_closed(self):
+        ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        for index, sequence in enumerate([[ForgeError("HTTP 503")], [ready, ForgeError("HTTP 503")],
+                                          [ready.model_copy(update={"outcome": "policy"})]]):
+            self.checkpoint = self.cwd / f"unavailable-{index}.sqlite3"
+            with patch.object(self.github, "readiness", side_effect=sequence):
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual((result["stop"], run_exit_code(result)), ("readiness_unavailable", 75))
+            self.assertEqual(result["merge"], "armed" if index == 1 else "not_armed")
+
+    def test_receipt_and_ledger_guard_prevent_arming(self):
+        from foreman.review_round import ReviewHistory
+        for kind in ["receipt", "ledger"]:
+            self.checkpoint = self.cwd / (kind + ".sqlite3")
+            def posted(*args, **kwargs):
+                if kind == "ledger":
+                    self.enterContext(patch.object(ReviewHistory, "unresolved", return_value=[FINDING]))
+                return {"id": 1, "state": "COMMENTED", "commit_id": "d"*40 if kind == "receipt" else HEAD}
+            with patch.object(self.github, "post_review", side_effect=posted), patch.object(self.github, "arm_auto_merge", wraps=self.github.arm_auto_merge) as arm:
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual(result["stop"], "merge_not_armed")
+            self.assertIn("Renew review", result["halt_detail"])
+            arm.assert_not_called()
+
+    def test_remote_only_repair_fetches_and_renews_proof(self):
+        workspace = FakeWorkspace(self.cwd)
+        ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        with patch.object(self.github, "readiness", return_value=ready.model_copy(update={"outcome": "conflict"})):
+            self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE], workspace=workspace)
+        remote = ready.model_copy(deep=True)
+        remote.outcome, remote.pr.head.sha = "head_changed", "d"*40
+        observe = self.github.readiness
+        def refreshed(branch, head):
+            workspace.current = WorktreeState(head, True, branch)
+        with patch.object(self.github, "readiness", side_effect=lambda repo, issue, branch, sha: remote if sha == HEAD else observe(repo, issue, branch, sha)), patch.object(workspace, "refresh", side_effect=refreshed) as fetch, patch.object(workspace, "commit", side_effect=lambda message: refreshed(BRANCH, "d"*40)):
+            result = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
+        fetch.assert_called_once_with(BRANCH, "d"*40)
+        self.assertEqual(result["stop"], "verified", result)
+        self.assertEqual((result["verified_head"], result["reviewed_head"], result["review_receipt"]["commit_id"]), ("d"*40,)*3)
+
+    def test_external_conflict_repair_renews_entire_lifecycle(self):
+        workspace = FakeWorkspace(self.cwd)
+        conflict = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        conflict.outcome = "conflict"
+        with patch.object(self.github, "readiness", return_value=conflict):
+            result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE], workspace=workspace)
+        self.assertEqual(result["stop"], "pr_conflict")
+        repaired = "d" * 40
+        workspace.current = WorktreeState(repaired, True, BRANCH)
+        def commit(message):
+            workspace.current = WorktreeState(repaired, True, BRANCH)
+        with patch.object(workspace, "commit", side_effect=commit):
+            resumed = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
+        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["reviewed_head"], repaired)
+        self.assertEqual(resumed["verified_head"], repaired)
+        self.assertEqual(resumed["review_receipt"]["commit_id"], repaired)
+        self.assertEqual(len(self.github.reviews), 2)
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
@@ -640,12 +899,12 @@ class LiveRunnerTest(unittest.TestCase):
         first = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", fact_record="evidence/facts.toml",
             checkpoint=self.checkpoint, run=run,
-            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+            dispatcher=lambda *args: Outcome("quota"),
         )
         self.assertEqual(first["fact_record"], "evidence/facts.toml")
         resumed = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, run=run,
-            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+            dispatcher=lambda *args: Outcome("quota"),
         )
         self.assertEqual(resumed["fact_record"], "evidence/facts.toml")
 
@@ -653,7 +912,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
         with self.assertRaisesRegex(ValueError, "--fact-record differs"):
             run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
-                              fact_record="evidence/other.toml", checkpoint=self.checkpoint,
+                              fact_record="evidence/other.toml", checkpoint=self.checkpoint, dispatcher=ScriptHandler(),
                               run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(self.walk([])["stop"], "verified")
 
@@ -665,7 +924,7 @@ class LiveRunnerTest(unittest.TestCase):
 
         paused = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-            dispatcher=FailoverDispatcher(exhaust), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            dispatcher=exhaust, run=LiveRun(self.github, FakeWorkspace(self.cwd)),
         )
         self.assertEqual(paused["stop"], "quota_exhausted")
         self.assertEqual(run_exit_code(paused), 75)
@@ -891,7 +1150,7 @@ class LiveRunnerTest(unittest.TestCase):
         return run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
             **({"fact_record": record_path} if record_path != "tests/fixtures/manifest.toml" else {}),
-            dispatcher=FailoverDispatcher(CliWorker(root, worker)),
+            dispatcher=CliWorker(root, worker),
             run=LiveRun(self.github, FixtureWorkspace(root)),
         )
 
@@ -1041,7 +1300,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue((root / "checked").exists())
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
-        rerun = {"repo": "Example/Engine", "issue": 8, "check": "exit 0", "checkpoint": self.checkpoint}
+        rerun = {"repo": "Example/Engine", "issue": 8, "check": "exit 0", "checkpoint": self.checkpoint, "dispatcher": ScriptHandler()}
         self.assertEqual(run_live_delivery(**rerun, run=live_run)["workspace"], str(root.resolve()))
         with self.assertRaisesRegex(ValueError, "Run this issue from"):
             run_live_delivery(**rerun, run=LiveRun(self.github, FakeWorkspace(self.cwd)))
@@ -1124,17 +1383,6 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["review_rounds"], 0)
         self.assertEqual(result["proof_failures"], 3)
         self.assertNotIn("review", result["path"])
-
-    def test_unconfigured_worker_stops_without_running_the_check(self):
-        fake = FakeWorkspace(self.cwd)
-        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
-            code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "touch ran"],
-                worker_runner=None, checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
-            )
-        self.assertEqual(code, 1)
-        self.assertIn("done no_dispatcher", stdout.getvalue())
-        self.assertFalse((self.cwd / "ran").exists())
 
     def test_cli_preflight_stops_before_dispatch_and_uses_engine_checkout(self):
         root = self.cwd / "checkout"
@@ -1362,7 +1610,7 @@ class LiveRunnerTest(unittest.TestCase):
             run_live_delivery(
                 repo="Example/Engine", issue=8, check="exit 0", preflight="test -f ready",
                 checkpoint=self.checkpoint, run=LiveRun(self.github, FakeWorkspace(self.cwd)),
-                dispatcher=FailoverDispatcher(interrupted_run),
+                dispatcher=interrupted_run,
             )
         ready.unlink()
         result = self.walk([])
@@ -1429,7 +1677,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(held["merge"], "not_armed")
         self.assertEqual(held["halt_detail"], f"could not read FOREMAN_MERGE_HOLD: {reason}")
         self.assertEqual(held["merge_command"], [
-            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--squash", "--auto", "--match-head-commit", HEAD,
+            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--auto", "--match-head-commit", HEAD,
         ])
         self.assertEqual(self.github.merge_calls, [])
         released = self.walk([])
@@ -1490,7 +1738,7 @@ class LiveRunnerTest(unittest.TestCase):
         def run_delivery():
             return run_live_delivery(
                 repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-                dispatcher=FailoverDispatcher(CliWorker(repo, run_worker)),
+                dispatcher=CliWorker(repo, run_worker),
                 run=LiveRun(self.github, LiveWorkspace(repo)),
             )
 
@@ -1583,7 +1831,7 @@ class LiveRunnerTest(unittest.TestCase):
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 75)
-        arm.assert_called_once_with("Example/Target", 8, BRANCH, HEAD)
+        self.assertEqual(arm.call_args.args[:4], ("Example/Target", 8, BRANCH, HEAD))
         self.assertIn(f"merge not armed\ncheck exit 0\ntokens 47606 of 20000000\ndone merge_not_armed\n{detail}", stdout.getvalue())
 
     def test_parent_arms_its_pull_request_without_filing_slices(self):
@@ -1606,7 +1854,7 @@ class LiveRunnerTest(unittest.TestCase):
                         worker_runner=worker, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(code, 0)
         self.assertIn(
-            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --squash --auto --match-head-commit '<sha>'\n"
+            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --match-head-commit '<sha>'\n"
             "tokens 8 of 20000000\ndone verified",
             stdout.getvalue(),
         )
@@ -1692,7 +1940,7 @@ def run(args, cwd, env):
             })
         assert state["human_answers"] == ["Only open items"]
         assert state["request"] == "List items"
-        assert state["human_question"] == f"Which items? {SYNTHETIC_QUESTION_TOKEN}"
+        assert state["human_question"] == "Which items? [redacted:GitHub Token]"
         return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
     if schema["title"] == "ImplementOutput":
         return workspace.reply(args, {"implementation": "built"})
@@ -1702,7 +1950,7 @@ class Forge(FakeGitHub):
     def arm_auto_merge(self, *args):
         with Path("merges.log").open("a") as log:
             log.write("merge\\n")
-        super().arm_auto_merge(*args)
+        return super().arm_auto_merge(*args)
 
 workspace = FakeWorkspace(Path.cwd())
 pin = PstackPin.model_validate_json(sys.argv[2])
@@ -1793,22 +2041,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         worker.assert_not_called()
         self.assertEqual(self.github.merge_calls, [])
 
-    def test_answer_rerun_without_a_dispatcher_does_not_claim_the_saved_model(self):
-        self.walk([{"triage": "spec"}, {"spec": "Needs input", "spec_gate": "needs_human", "human_question": "Which items?"}])
-        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as output:
-            code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0",
-                 "--answer", "Only open items"],
-                worker_runner=None, checkpoint=self.checkpoint,
-                live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
-            )
-        self.assertEqual(code, 1)
-        restored, current = output.getvalue().split("this invocation:\n")
-        self.assertIn("restored spec claude-opus-5-5-high", restored)
-        self.assertEqual(current, "spec\ndone no_dispatcher\nNo dispatcher is configured.\n")
-        self.assertEqual(len(self.calls), 2)
-        self.assertEqual(self.github.merge_calls, [])
-
     def test_fresh_process_retries_quota_and_an_older_merge_checkpoint(self):
         script = r'''
 import json
@@ -1839,7 +2071,7 @@ class Workspace(FakeWorkspace):
 class Forge(FakeGitHub):
     def arm_auto_merge(self, *args):
         record("merge")
-        super().arm_auto_merge(*args)
+        return super().arm_auto_merge(*args)
 
     def post_review(self, *args, marker):
         record("post_review")
@@ -1933,7 +2165,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual((root / "check.log").read_text(), "checked\n")
 
 class HaltExitCodeTest(unittest.TestCase):
-    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", preflight="", dispatcher=True, hold=None):
+    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", preflight="", hold=None):
         directory = self.enterContext(TemporaryDirectory())
         root = Path(directory)
         forge = FakeGitHub()
@@ -1946,16 +2178,13 @@ class HaltExitCodeTest(unittest.TestCase):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", check, "--preflight", preflight],
                 checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace, skills=fixture_skills),
-                worker_runner=(lambda args, cwd, env: workspace.reply(args, next(outputs))) if dispatcher else None,
+                worker_runner=(lambda args, cwd, env: workspace.reply(args, next(outputs))),
             )
         return code, output.getvalue()
 
     def assert_halt(self, result, reason, detail, code=1):
         self.assertEqual(result[0], code, result[1])
         self.assertIn(f"done {reason}\n{detail}\n", result[1])
-
-    def test_no_dispatcher(self):
-        self.assert_halt(self.live(dispatcher=False), "no_dispatcher", "No dispatcher is configured.")
 
     def test_dirty_worktree_changes(self):
         self.assert_halt(self.live(
@@ -2022,8 +2251,8 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_invalid_merge_sha_halts_with_detail_and_resumable_exit(self):
         detail = "Merge arming requires a full 40-hex commit SHA."
         with self.assertRaisesRegex(MergeNotArmed, detail):
-            LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid")
-        result = {**halted("merge_not_armed", detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
+            LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
+        result = {**halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
         with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
@@ -2036,7 +2265,7 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_empty_details_are_rejected(self):
         for detail in ("", " ", "\n"):
             with self.subTest(detail=detail), self.assertRaisesRegex(ValueError, "requires a nonempty halt detail"):
-                halted("no_dispatcher", detail, "triage")
+                halted(Halt.failed, detail, "triage")
 
     def test_dry_run_success_and_human_stops(self):
         for handler, stop, expected in (

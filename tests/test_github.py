@@ -9,8 +9,9 @@ from unittest.mock import call, patch
 from pydantic import ValidationError
 
 from foreman.github import (
-    CommandFailed, CommandTimedOut, ForgeError, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, ReviewComment,
+    CommandFailed, CommandTimedOut, ForgeError, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, ReviewComment,
 )
+from test_runner import FakeGitHub
 
 
 HEAD = "a" * 40
@@ -32,7 +33,7 @@ VIEW_FIELDS = [
 ]
 VIEW = [*VIEW_FIELDS, BRANCH]
 CONFIRM = [*VIEW_FIELDS, "12"]
-MERGE = ["gh", "pr", "merge", "12", "--repo", REPO, "--squash", "--auto", "--match-head-commit", HEAD]
+MERGE = ["gh", "pr", "merge", "12", "--repo", REPO, "--auto", "--match-head-commit", HEAD]
 
 
 def gh_result(stdout):
@@ -41,6 +42,97 @@ def gh_result(stdout):
 
 def pr_result(pr=PR, command=VIEW):
     return subprocess.CompletedProcess(command, 0, json.dumps(pr), "")
+
+
+class WriteInterrupted(BaseException):
+    pass
+
+
+class FakeGitHubTest(unittest.TestCase):
+    def test_bodies_survive_updates_and_markers_include_closed_and_merged_issues(self):
+        forge = FakeGitHub()
+        first = forge.create_issue(REPO, "First", "marker old", [])
+        second = forge.create_issue(REPO, "Second", "marker done", [])
+        third = forge.create_issue(REPO, "Third", "marker merged", [])
+        forge.create_issue("Other/Repo", "Elsewhere", "marker", [])
+        forge.closed.add(second)
+        forge.merged.add(third)
+        forge.update_issue_body(REPO, first, "replaced")
+        forge.update_issue_body(REPO, 8, "marker root")
+        self.assertEqual(forge.load_issue(REPO, first)["body"], "replaced")
+        self.assertEqual(forge.load_issue(REPO, 8)["body"], "marker root")
+        self.assertEqual(forge.marked_issues(REPO, "marker"), [102, 103, 8])
+        self.assertEqual(forge.marked_issues(REPO, "absent"), [])
+        self.assertEqual(forge.open_issues(REPO), [OpenIssue(number=101, body="replaced")])
+
+    def test_relationships_preserve_identity_state_and_one_parent_per_child(self):
+        forge = FakeGitHub()
+        child = forge.create_issue(REPO, "Child", "", [])
+        self.assertIsNone(forge.parent_issue(REPO, child))
+        forge.add_sub_issue(REPO, 8, child)
+        forge.closed.add(child)
+        self.assertEqual([(issue.id, issue.number, issue.state) for issue in forge.sub_issues(REPO, 8)],
+                         [(10101, 101, "closed")])
+        self.assertEqual(forge.parent_issue(REPO, child).number, 8)
+        for parent in (8, 9):
+            with self.subTest(parent=parent), self.assertRaises(ForgeError):
+                forge.add_sub_issue(REPO, parent, child)
+        self.assertEqual(forge.parent_issue(REPO, child).number, 8)
+        self.assertEqual(forge.sub_issues(REPO, 9), [])
+        self.assertIsNone(forge.parent_issue("Other/Repo", child))
+
+    def test_preset_conflicts_and_child_counts_are_visible_and_enforced(self):
+        forge = FakeGitHub()
+        forge.parents[REPO, 9] = 7
+        forge.preset_sub_issues(REPO, 8, 99)
+        self.assertEqual(forge.parent_issue(REPO, 9).number, 7)
+        with self.assertRaises(ForgeError):
+            forge.add_sub_issue(REPO, 8, 9)
+        forge.add_sub_issue(REPO, 8, 10)
+        self.assertEqual(len(forge.sub_issues(REPO, 8)), 100)
+        with self.assertRaises(ForgeError):
+            forge.add_sub_issue(REPO, 8, 11)
+        self.assertIsNone(forge.parent_issue(REPO, 11))
+        forge.preset_sub_issues(REPO, 7, 2)
+        self.assertEqual(len(forge.sub_issues(REPO, 7)), 3)
+        self.assertEqual(len(forge.sub_issues(REPO, 8)), 100)
+
+    def test_injected_failures_expose_whether_each_write_committed(self):
+        for operation in ("create_issue", "add_sub_issue", "update_issue_body"):
+            for after_write in (False, True):
+                for error_type in (ForgeError, WriteInterrupted):
+                    with self.subTest(operation=operation, after_write=after_write, error=error_type):
+                        forge = FakeGitHub()
+                        error = error_type("Interrupted")
+                        forge.fail_next(operation, after_write=after_write, error=error)
+                        with self.assertRaises(error_type) as caught:
+                            if operation == "create_issue":
+                                forge.create_issue(REPO, "Child", "marker", [])
+                            elif operation == "add_sub_issue":
+                                forge.add_sub_issue(REPO, 8, 9)
+                            else:
+                                forge.update_issue_body(REPO, 8, "marker")
+                        self.assertIs(caught.exception, error)
+                        if operation == "create_issue":
+                            self.assertEqual(forge.marked_issues(REPO, "marker"), [101] if after_write else [])
+                            if after_write:
+                                self.assertEqual(forge.load_issue(REPO, 101)["body"], "marker")
+                        elif operation == "add_sub_issue":
+                            self.assertEqual([child.number for child in forge.sub_issues(REPO, 8)],
+                                             [9] if after_write else [])
+                            parent = forge.parent_issue(REPO, 9)
+                            self.assertEqual(parent.number if parent else None, 8 if after_write else None)
+                        else:
+                            self.assertEqual(forge.load_issue(REPO, 8)["body"], "marker" if after_write else forge.body)
+                        # A consumed failure must not poison the next write.
+                        if operation == "create_issue":
+                            self.assertEqual(forge.create_issue(REPO, "Next", "marker", []), 102 if after_write else 101)
+                        elif operation == "add_sub_issue":
+                            forge.add_sub_issue(REPO, 8, 10)
+                            self.assertEqual(forge.parent_issue(REPO, 10).number, 8)
+                        else:
+                            forge.update_issue_body(REPO, 8, "next")
+                            self.assertEqual(forge.load_issue(REPO, 8)["body"], "next")
 
 
 class LiveForgeTest(unittest.TestCase):
@@ -172,6 +264,104 @@ class LiveForgeTest(unittest.TestCase):
         ])
         run.return_value = gh_result('[[{"number":1,"body":"PR","pull_request":null},{"number":2,"body":"Issue"}]]')
         self.assertEqual(LiveForge().open_issues(REPO), [OpenIssue(number=2, body="Issue")])
+
+    @patch("foreman.github.subprocess.run")
+    def test_sub_issues_flattens_pages_preserving_global_ids(self, run):
+        run.return_value = gh_result((GITHUB_FIXTURES / "sub-issues.json").read_text())
+        children = LiveForge().sub_issues(REPO, 8)
+        self.assertTrue(all(isinstance(child, LinkedIssue) for child in children))
+        self.assertEqual([(child.id, child.number, child.state) for child in children],
+                         [(1, 1347, "open"), (2, 1349, "closed")])
+        self.assertTrue(children[0].in_repo("OCTOCAT/hello-world"))
+        self.assertFalse(children[0].in_repo(REPO))
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], [
+            "gh", "api", f"repos/{REPO}/issues/8/sub_issues?per_page=100", "--paginate", "--slurp",
+        ])
+
+    @patch("foreman.github.subprocess.run")
+    def test_parent_issue_only_normalizes_the_captured_no_parent_error(self, run):
+        linked = (GITHUB_FIXTURES / "linked-issue.json").read_text()
+        no_parent = json.loads((GITHUB_FIXTURES / "no-parent.json").read_text())
+        run.side_effect = [gh_result(linked), subprocess.CompletedProcess(
+            [], 1, json.dumps(no_parent), f"gh: {no_parent['message']} (HTTP {no_parent['status']})\n",
+        )]
+        forge = LiveForge()
+        parent = forge.parent_issue(REPO, 1349)
+        self.assertEqual(parent, LinkedIssue(id=1, number=1347, title="Found a bug", state="open",
+                                            repository_url="https://api.github.com/repos/octocat/Hello-World",
+                                            html_url="https://github.com/octocat/Hello-World/issues/1347"))
+        self.assertIsNone(forge.parent_issue(REPO, 1349))
+        self.assertEqual([invocation.args[0] for invocation in run.call_args_list],
+                         [["gh", "api", f"repos/{REPO}/issues/1349/parent"]] * 2)
+        run.side_effect = None
+        for error in json.loads((GITHUB_FIXTURES / "parent-errors.json").read_text()):
+            with self.subTest(error=error):
+                run.return_value = subprocess.CompletedProcess([], **error)
+                with self.assertRaises(ForgeError):
+                    forge.parent_issue(REPO, 1349)
+
+    @patch("foreman.github.subprocess.run")
+    def test_add_sub_issue_resolves_the_child_id_before_posting_without_reparenting(self, run):
+        response = (GITHUB_FIXTURES / "linked-issue.json").read_text()
+        run.side_effect = [gh_result(response), gh_result(response)]
+        self.assertIsNone(LiveForge().add_sub_issue(REPO, 8, 1347))
+        self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [
+            ["gh", "api", f"repos/{REPO}/issues/1347"],
+            ["gh", "api", f"repos/{REPO}/issues/8/sub_issues", "--method", "POST", "-F", "sub_issue_id=1"],
+        ])
+
+    @patch("foreman.github.subprocess.run")
+    def test_add_sub_issue_does_not_write_after_a_failed_identity_read(self, run):
+        for result in (subprocess.CompletedProcess([], 1, "", "gh: Forbidden (HTTP 403)"),
+                       gh_result('{"id":"1347"}')):
+            with self.subTest(result=result):
+                run.reset_mock()
+                run.return_value = result
+                with self.assertRaises(ForgeError):
+                    LiveForge().add_sub_issue(REPO, 8, 1347)
+                run.assert_called_once()
+
+    @patch("foreman.github.subprocess.run")
+    def test_update_issue_body_patches_literal_redacted_text(self, run):
+        run.return_value = gh_result((GITHUB_FIXTURES / "linked-issue.json").read_text())
+        secret = "ghp_" + "a" * 36
+        self.assertIsNone(LiveForge().update_issue_body(f"Example/{secret}", 8, f"@draft {{repo}}\n{secret}"))
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], [
+            "gh", "api", "repos/Example/[redacted:GitHub Token]/issues/8", "--method", "PATCH", "-f",
+            "body=@draft {repo}\n[redacted:GitHub Token]",
+        ])
+        run.return_value = subprocess.CompletedProcess([], 1, "", "gh: Forbidden (HTTP 403)")
+        with self.assertRaises(ForgeError):
+            LiveForge().update_issue_body(REPO, 8, "Changed")
+
+    @patch("foreman.github.subprocess.run")
+    def test_marked_issues_reads_all_states_and_pages_without_pull_requests(self, run):
+        run.return_value = gh_result((GITHUB_FIXTURES / "marked-issues.json").read_text())
+        forge = LiveForge()
+        self.assertEqual(forge.marked_issues(REPO, "<!-- foreman:issue-103 -->"), [1347, 1349])
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], [
+            "gh", "api", f"repos/{REPO}/issues?state=all&per_page=100", "--paginate", "--slurp",
+        ])
+        self.assertEqual(forge.marked_issues(REPO, "<!-- absent -->"), [])
+
+    @patch("foreman.github.subprocess.run")
+    def test_relationship_and_marker_reads_reject_malformed_or_failed_responses(self, run):
+        forge = LiveForge()
+        for read, payload in ((lambda: forge.parent_issue(REPO, 8), "null"),
+                              (lambda: forge.sub_issues(REPO, 8), '[[{"id":1,"number":8}]]'),
+                              (lambda: forge.marked_issues(REPO, "marker"), '[[{"number":8,"body":123}]]')):
+            for result in (gh_result(payload), subprocess.CompletedProcess([], 1, "", "HTTP 422")):
+                with self.subTest(payload=payload, result=result):
+                    run.return_value = result
+                    with self.assertRaises(ForgeError):
+                        read()
+            run.side_effect = subprocess.TimeoutExpired(["gh", "api"], 30)
+            with self.assertRaises(ForgeError):
+                read()
+            run.side_effect = None
 
     @patch("foreman.github.subprocess.run")
     def test_issue_comments_preserves_the_second_page_marker_and_normalizes_null(self, run):
@@ -343,16 +533,6 @@ class LiveForgeTest(unittest.TestCase):
                 forge.post_review(REPO, target, "Graph verdict: approve.", [], marker="run:1:head")
 
     @patch("foreman.github.subprocess.run")
-    def test_arms_the_checked_pull_request_in_the_requested_repository(self, run):
-        run.side_effect = [
-            pr_result(),
-            subprocess.CompletedProcess(MERGE, 0, "", ""),
-        ]
-        self.assertIsNone(LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD))
-        options = {"stdin": subprocess.DEVNULL, "input": None, "capture_output": True, "text": True, "timeout": 30}
-        self.assertEqual(run.call_args_list, [call(command, **options) for command in (VIEW, MERGE)])
-
-    @patch("foreman.github.subprocess.run")
     def test_rejects_pull_requests_that_fail_a_merge_check(self, run):
         for field, value, reason in (
             ("state", "CLOSED", "pull request is not open"),
@@ -364,8 +544,8 @@ class LiveForgeTest(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 run.reset_mock()
                 run.side_effect = [pr_result({**PR, field: value})]
-                with self.assertRaisesRegex(MergeNotArmed, reason):
-                    LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
+                with self.assertRaisesRegex(ForgeError, reason):
+                    LiveForge().review_target(REPO, 8, BRANCH, HEAD)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW])
 
     @patch("foreman.github.subprocess.run")
@@ -377,10 +557,9 @@ class LiveForgeTest(unittest.TestCase):
             with self.subTest(stdout=stdout):
                 run.reset_mock()
                 run.side_effect = [subprocess.CompletedProcess(VIEW, 0, stdout, "")]
-                with self.assertRaisesRegex(MergeNotArmed, "Invalid PullRequest response") as exc:
-                    LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-                self.assertIs(type(exc.exception.__cause__), ForgeError)
-                self.assertIsInstance(exc.exception.__cause__.__cause__, ValidationError)
+                with self.assertRaisesRegex(ForgeError, "Invalid PullRequest response") as exc:
+                    LiveForge().review_target(REPO, 8, BRANCH, HEAD)
+                self.assertIsInstance(exc.exception.__cause__, ValidationError)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW])
 
     @patch("foreman.github.subprocess.run")
@@ -395,73 +574,7 @@ class LiveForgeTest(unittest.TestCase):
                 run.side_effect = [
                     subprocess.CompletedProcess(view, 1, "", reason + "\n"),
                 ]
-                with self.assertRaises(MergeNotArmed) as exc:
-                    LiveForge().arm_auto_merge(REPO, 8, branch, HEAD)
+                with self.assertRaises(ForgeError) as exc:
+                    LiveForge().review_target(REPO, 8, branch, HEAD)
                 self.assertEqual(str(exc.exception), reason)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [view])
-
-    @patch("foreman.github.subprocess.run")
-    def test_gh_failures_carry_stderr(self, run):
-        reason = "GraphQL: Auto-merge is disabled for this repository (enablePullRequestAutoMerge)"
-        run.side_effect = [
-            pr_result(),
-            subprocess.CompletedProcess(MERGE, 1, "", reason + "\n"),
-        ]
-        with self.assertRaises(MergeNotArmed) as exc:
-            LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-        self.assertEqual(str(exc.exception), reason)
-
-    @patch("foreman.github.subprocess.run")
-    def test_wraps_launch_errors_and_view_timeouts(self, run):
-        launch_error = FileNotFoundError("gh")
-        run.side_effect = [pr_result(), launch_error]
-        with self.assertRaisesRegex(MergeNotArmed, "gh pr merge failed") as error:
-            LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-        self.assertIsInstance(error.exception.__cause__, CommandFailed)
-        self.assertIs(error.exception.__cause__.__cause__, launch_error)
-        run.reset_mock()
-        run.side_effect = subprocess.TimeoutExpired(VIEW, 30)
-        with self.assertRaisesRegex(MergeNotArmed, "gh pr view timed out") as error:
-            LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-        self.assertIsInstance(error.exception.__cause__, CommandTimedOut)
-        self.assertEqual(error.exception.__cause__.operation, "gh pr view")
-        self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW])
-
-    @patch("foreman.github.subprocess.run")
-    def test_merge_timeout_confirms_an_open_squash_request_or_merge_at_the_verified_head(self, run):
-        squash_request = {"enabledAt": "2026-11-20T15:00:00Z", "mergeMethod": "SQUASH"}
-        wrong_method = {**squash_request, "mergeMethod": "MERGE"}
-
-        for previous, reply, armed in (
-            (None, pr_result({**PR, "autoMergeRequest": squash_request}, CONFIRM), True),
-            (None, pr_result(PR, CONFIRM), False),
-            (wrong_method, pr_result({**PR, "autoMergeRequest": squash_request}, CONFIRM), True),
-            (None, pr_result({**PR, "autoMergeRequest": wrong_method}, CONFIRM), False),
-            (squash_request, pr_result({**PR, "autoMergeRequest": squash_request}, CONFIRM), True),
-            (None, pr_result({**PR, "state": "CLOSED", "autoMergeRequest": squash_request}, CONFIRM), False),
-            (None, pr_result({**PR, "state": "MERGED"}, CONFIRM), True),
-            (None, pr_result({**PR, "state": "MERGED", "headRefOid": "b" * 40}, CONFIRM), False),
-            (None, pr_result({**PR, "headRefOid": "b" * 40, "autoMergeRequest": squash_request}, CONFIRM), False),
-        ):
-            with self.subTest(armed=armed, previous=previous, reply=reply):
-                run.reset_mock()
-                run.side_effect = [
-                    pr_result({**PR, "autoMergeRequest": previous}), subprocess.TimeoutExpired(MERGE, 30), reply,
-                ]
-                if armed:
-                    self.assertIsNone(LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD))
-                else:
-                    with self.assertRaisesRegex(MergeNotArmed, "timed out and was not confirmed"):
-                        LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-                self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW, MERGE, CONFIRM])
-
-    @patch("foreman.github.subprocess.run")
-    def test_merge_timeout_preserves_failed_confirmation_read_message(self, run):
-        reason = "HTTP 503: Service Unavailable"
-        run.side_effect = [
-            pr_result(), subprocess.TimeoutExpired(MERGE, 30), subprocess.CompletedProcess(CONFIRM, 1, "", reason),
-        ]
-        with self.assertRaises(MergeNotArmed) as exc:
-            LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-        self.assertEqual(str(exc.exception), reason)
-        self.assertIsInstance(exc.exception.__cause__, CommandFailed)

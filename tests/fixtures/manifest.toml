@@ -9,6 +9,54 @@
 # A derived fixture records the argv of its original capture.
 # Source quotes link to published evidence without a capture command.
 
+[fixtures."github/linked-issue.json"]
+tool = "GitHub REST API"
+version = "2026-03-10"
+kind = "quoted_source"
+claim_ids = ["tool-fact-a57c981238d488e12a76226a2f974c0923afe9f1e28ba36219de1bdf8d65aef9"]
+sources = ["https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue", "https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue", "https://docs.github.com/en/rest/issues/issues#get-an-issue"]
+notes = "Selected fields from the published issue response example. The global id (1) differs from the repository issue number (1347). Used for parent, identity GET, POST receipt and PATCH receipt."
+
+[fixtures."github/sub-issues.json"]
+tool = "gh and GitHub REST API"
+version = "gh 2.102.0; GitHub REST API 2026-03-10"
+kind = "quoted_source"
+claim_ids = ["tool-fact-d810e24b7980bffd2fa900daf24077057fb1de243e68295f189561fb901b6dfd"]
+sources = ["https://docs.github.com/en/rest/issues/sub-issues#list-sub-issues", "https://cli.github.com/manual/gh_api"]
+notes = "Reduced published response example, with a synthetic second page (id 2, number 1349, closed) in gh --paginate --slurp format. Tests consume both pages and distinguish id from number."
+
+[fixtures."github/no-parent.json"]
+tool = "GitHub connector fetch"
+version = "GitHub REST API; captured 2026-11-21"
+kind = "captured_run"
+claim_ids = ["tool-fact-7e6aa77feee0e8037222175897642e2896bc4b02a2c319e3042779a177ca96cf"]
+argv = ["mcp__codex_apps__github_fetch", '{"url":"https://api.github.com/repos/octocat/Hello-World/issues/1347/parent"}']
+notes = "Unmodified JSON error_data from the connector's HTTP 404 response. gh cannot reach api.github.com from this sandbox; this is a connector capture, not a gh run. Tests render the diagnostic using the versioned CLI formatter recorded in github/gh-api-fields-and-errors.txt."
+
+[fixtures."github/parent-errors.json"]
+tool = "gh and GitHub REST API"
+version = "gh 2.102.0; GitHub REST API 2026-03-10"
+kind = "quoted_source"
+claim_ids = ["tool-fact-c7bf1a80f3c39a9e80ef9e966139d04b90ea5bdcc4172bce16a477161ccee978"]
+sources = ["https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go", "https://github.com/cli/cli/blob/v2.102.0/internal/ghcmd/cmd.go", "https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue"]
+notes = "Synthetic error cases using gh's published HTTP error formatter and exit code 1, not live permission/validation probes. Includes generic 404 and a no-parent message with the wrong status to prevent broad exception suppression."
+
+[fixtures."github/marked-issues.json"]
+tool = "gh and GitHub REST API"
+version = "gh 2.102.0; GitHub REST API 2026-03-10"
+kind = "quoted_source"
+claim_ids = ["tool-fact-40728bfb14309980599b7c49fe28c5fdc2ffa7ea8bc13f5b67ea0e4ef78f5d9a"]
+sources = ["https://docs.github.com/en/rest/issues/issues#list-repository-issues", "https://cli.github.com/manual/gh_api"]
+notes = "Reduced issue response schema with synthetic two-page bodies, exact markers, states and PR entries (including pull_request:null). state=all includes closed issues; the pull_request key distinguishes PRs; --slurp wraps pages."
+
+[fixtures."github/sub-issue-contract.txt"]
+tool = "GitHub REST API and GitHub Issues"
+version = "REST API 2026-03-10; documentation retrieved 2026-11-21"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue", "https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue", "https://docs.github.com/en/rest/issues/sub-issues#list-sub-issues", "https://docs.github.com/en/rest/issues/issues#update-an-issue", "https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/adding-sub-issues"]
+claim_ids = ["tool-fact-173ba0e7208604c1d3c163fe565d00e6c97970de7e7e13b0c6b6daa8d8b2524f", "tool-fact-297e2634ebaa29cab98824048a22e80a756129eb2fda4a8ed01b1c7dc7e3f2da", "tool-fact-b52299208e96e6f4ad971a58f6ca72ce969a721a0d78a441285b079905365cb5"]
+notes = "Short source excerpts and attributed summaries of the add parameters, ownership requirement, hierarchy limits, and fine-grained token permissions. No live mutations."
+
 [fixtures."claude/help.txt"]
 tool = "claude"
 version = "2.1.329"
@@ -441,7 +489,7 @@ tool = "gh"
 version = "2.102.0"
 kind = "quoted_source"
 sources = ["https://cli.github.com/manual/gh_api", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/fields.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/http.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go", "https://github.com/cli/cli/blob/v2.102.0/internal/ghcmd/cmd.go", "https://github.com/cli/cli/blob/v2.102.0/cmd/gh/main.go"]
-claim_ids = ["tool-fact-23a4ecc370e9a7761fdd27a249c6d15a179124323ed41a390998f46f57572fef", "tool-fact-1f6c68c0b5ab3ea842ac165c30a9b77d54827b9257640cf085ea4ce551f9349c", "tool-fact-5744e144781330a0494b5a688e342db8c6f5e3cfc41da8d5072c7dceebda21d7"]
+claim_ids = ["tool-fact-23a4ecc370e9a7761fdd27a249c6d15a179124323ed41a390998f46f57572fef", "tool-fact-1f6c68c0b5ab3ea842ac165c30a9b77d54827b9257640cf085ea4ce551f9349c", "tool-fact-5744e144781330a0494b5a688e342db8c6f5e3cfc41da8d5072c7dceebda21d7", "tool-fact-1a950fe2feda6107b2e0efa96fca69b9a2322eb18925ed90cbc72473d5a511d7", "tool-fact-3669380487e9bfd326457b94682fd4c0c35cb57534293b8be9a73fe371bd2176"]
 notes = "Versioned source excerpts show literal raw fields, JSON POST bodies, and HTTP failures written to stderr with a nonzero process exit."
 
 # ## Pull request size
@@ -865,5 +913,163 @@ notes = "Synthetic spec-check contract example serialized by Pydantic. No model 
 tool = "python argparse; langgraph; langgraph-checkpoint-sqlite"
 version = "3.12.14 1.2.24 3.1.3"
 kind = "captured_run"
-argv = ["python", "-c", "import argparse, contextlib, io, operator, sys\nfrom importlib.metadata import version\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom types import SimpleNamespace\nfrom typing import Annotated\nfrom typing_extensions import TypedDict\nfrom langgraph.checkpoint.sqlite import SqliteSaver\nfrom langgraph.graph import StateGraph, START, END\nfrom foreman.delivery import LiveRun\nfrom foreman.runner import run_live_delivery\nsys.path.insert(0, \"tests\")\nfrom skill_fixture import fixture_skills\nclass State(TypedDict):\n    path: Annotated[list[str], operator.add]\nbuilder = StateGraph(State).add_node(\"done\", lambda state: {\"path\": [\"done\"]}).add_edge(START, \"done\").add_edge(\"done\", END)\nconfig = {\"configurable\": {\"thread_id\": \"watch-facts\"}}\nprint(\"versions:\", sys.version.split()[0], version(\"langgraph\"), version(\"langgraph-checkpoint-sqlite\"))\nwith TemporaryDirectory() as directory, SqliteSaver.from_conn_string(str(Path(directory) / \"probe.sqlite\")) as saver:\n    graph = builder.compile(checkpointer=saver)\n    graph.invoke({\"path\": []}, config)\n    before = graph.get_state(config)\n    graph.update_state(config, {\"path\": []}, as_node=\"done\")\n    after = graph.get_state(config)\n    assert before.values[\"path\"] == [\"done\"] and after.next == ()\n    steps = [snapshot.metadata[\"step\"] for snapshot in (before, after)]\n    assert all(type(step) is int for step in steps) and steps[0] != steps[1]\n    print(\"update_state as done: next =\", after.next, \"; integer steps:\", steps)\n    forge = SimpleNamespace(load_issue=lambda *args: {\"title\": \"probe\", \"body\": \"\", \"labels\": []}, open_issues=lambda *args: [], create_issue=lambda *args: 101)\n    run = LiveRun(forge, SimpleNamespace(root=Path(directory)), skills=fixture_skills)\n    kwargs = dict(repo=\"Example/Engine\", issue=8, check=\"exit 0\", checkpoint=Path(directory) / \"live.sqlite\", run=run)\n    first = run_live_delivery(**kwargs)\n    second = run_live_delivery(**kwargs)\n    assert first == second and second[\"watch\"] == {\"issue\": 101, \"action\": \"filed\"}\n    print(\"run_live_delivery reopened SQLite: equal result; watch =\", second[\"watch\"])\nwith contextlib.redirect_stderr(io.StringIO()):\n    try:\n        argparse.ArgumentParser().error(\"invalid --watch-repo\")\n    except SystemExit as error:\n        assert error.code == 2\n        print(\"argparse.ArgumentParser.error exit:\", error.code)\n"]
+argv = ["python", "-c", "import argparse, contextlib, io, operator, sys\nfrom importlib.metadata import version\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom types import SimpleNamespace\nfrom typing import Annotated\nfrom typing_extensions import TypedDict\nfrom langgraph.checkpoint.sqlite import SqliteSaver\nfrom langgraph.graph import StateGraph, START, END\nfrom foreman.adapters import Outcome\nfrom foreman.delivery import LiveRun\nfrom foreman.runner import run_live_delivery\nsys.path.insert(0, \"tests\")\nfrom skill_fixture import fixture_skills\nclass State(TypedDict):\n    path: Annotated[list[str], operator.add]\nbuilder = StateGraph(State).add_node(\"done\", lambda state: {\"path\": [\"done\"]}).add_edge(START, \"done\").add_edge(\"done\", END)\nconfig = {\"configurable\": {\"thread_id\": \"watch-facts\"}}\nprint(\"versions:\", sys.version.split()[0], version(\"langgraph\"), version(\"langgraph-checkpoint-sqlite\"))\nwith TemporaryDirectory() as directory, SqliteSaver.from_conn_string(str(Path(directory) / \"probe.sqlite\")) as saver:\n    graph = builder.compile(checkpointer=saver)\n    graph.invoke({\"path\": []}, config)\n    before = graph.get_state(config)\n    graph.update_state(config, {\"path\": []}, as_node=\"done\")\n    after = graph.get_state(config)\n    assert before.values[\"path\"] == [\"done\"] and after.next == ()\n    steps = [snapshot.metadata[\"step\"] for snapshot in (before, after)]\n    assert all(type(step) is int for step in steps) and steps[0] != steps[1]\n    print(\"update_state as done: next =\", after.next, \"; integer steps:\", steps)\n    forge = SimpleNamespace(load_issue=lambda *args: {\"title\": \"probe\", \"body\": \"\", \"labels\": []}, open_issues=lambda *args: [], create_issue=lambda *args: 101)\n    run = LiveRun(forge, SimpleNamespace(root=Path(directory)), skills=fixture_skills)\n    kwargs = dict(repo=\"Example/Engine\", issue=8, check=\"exit 0\", checkpoint=Path(directory) / \"live.sqlite\", run=run)\n    first = run_live_delivery(**kwargs, dispatcher=lambda *args: Outcome('failed', detail='bad output'))\n    second = run_live_delivery(**kwargs, dispatcher=lambda *args: Outcome('failed', detail='bad output'))\n    assert first == second and second[\"watch\"] == {\"issue\": 101, \"action\": \"filed\"}\n    print(\"run_live_delivery reopened SQLite: equal result; watch =\", second[\"watch\"])\nwith contextlib.redirect_stderr(io.StringIO()):\n    try:\n        argparse.ArgumentParser().error(\"invalid --watch-repo\")\n    except SystemExit as error:\n        assert error.code == 2\n        print(\"argparse.ArgumentParser.error exit:\", error.code)\n"]
 claim_ids = ["tool-fact-d01fd4feb29a51e4d81d5ce0606352f9110f673fee10bfd9bc92b8a693ab5245", "tool-fact-ce9e7fbd60cb0890debd225074ec31f98f1b32ef582bef8ff54941fa10c8cf18", "tool-fact-4e875fdbaddc5c4e66bc868150f83d8123f0e7df472cbf943e11ee58ae62db8b", "tool-fact-48d992724c9af8c68cd02c80cdad6d3e5bbc68fecadfe383e6e41b417c84f3bb"]
+
+[fixtures."github/readiness-evidence.json"]
+tool = "GitHub REST API"
+version = "2022-11-28"
+kind = "captured_run"
+argv = ["gh", "api", "repos/bookout-labs/tools/pulls/97"]
+notes = "API excerpts captured 2026-11-21. Contract source: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request (pull_request GITHUB_SHA identifies the synthetic merge). The JSON records all exact queried URLs. PR base.sha can differ from the current base tip; the synthetic merge parents are validated against branches/{base}.commit.sha. A head-attached check run and its check_suite id identify source-head evidence, not the synthetic tested commit. Capture uses additional gh api GETs for the branch, merge commit and source check runs named in sources in the JSON."
+
+[fixtures."github/app-credentials.txt"]
+tool = "GitHub App REST, gh and Git credential helpers"
+version = "Documentation read 2026-11-21"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app", "https://cli.github.com/manual/gh_help_environment", "https://git-scm.com/docs/gitcredentials", "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github#githubs-token-formats", "https://git-scm.com/docs/git-config", "https://git-scm.com/docs/git", "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation", "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app"]
+notes = "Published source excerpts. Offline tests use generated keys, fake HTTP and a fake clock. No real installation token was minted."
+[fixtures."git/grep-lines.z"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+returncode = 0
+claim_ids = ["tool-fact-416aca2b5c431d219d6f7d2c411efca75f9d0cad87cf19bf73c1e85b47be7581", "tool-fact-9b32cb6284cc3690a5cde64203421d5cc230e6a29ceba9ee69297ed040fb621c"]
+notes = "Raw stdout: revision:path NUL count LF records, including a path with spaces and a colon. items.txt has a final line without a newline (count 3). Binary and empty files are omitted. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/grep-no-text.z"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+returncode = 1
+claim_ids = ["tool-fact-eef0eb712a1a44e916168a9537ce67cfb3d7698c15f7b6257e8f3f5bbf4a246e"]
+notes = "Raw stdout is empty. The committed tree contains only an empty file and a NUL-containing binary file. Exit 1 means no matching text lines, not a Git error. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/grep-basic-regexp.json"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "-c", "grep.patternType=fixed", "-c", "grep.extendedRegexp=true", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+returncode = 0
+claim_ids = ["tool-fact-252363c0742309ea3cf1d14f902c2427be74d71c9da813e24017cf797eb5a9f4"]
+notes = "Captured argv, exit statuses, stdout and stderr: fixed patterns without -G match nothing; -G restores exact counts despite grep.patternType=fixed and grep.extendedRegexp=true. An extendedRegexp-only probe gives the same counts; escaped-group probes distinguish basic from extended syntax and confirm -G overrides extendedRegexp. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/grep-attribute-source.json"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+returncode = 0
+claim_ids = ["tool-fact-7eabb45fa52b6b4baab29981370d2c119a0b91f2bc44ac54fde8c0f449f1342d"]
+notes = "Captured inputs, argv, exit statuses, stdout and stderr. Local worktree/index .gitattributes and a user attributes file hide three text paths. --attr-source=HEAD restores the first two; core.attributesFile=/dev/null restores the third. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/name-status-rename.z"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "diff", "--name-status", "-z", "--find-renames", "--no-ext-diff", "--no-textconv", "--no-relative", "HEAD^", "HEAD", "--"]
+returncode = 0
+claim_ids = ["tool-fact-3f776955d5f300759da92b2c60b9710c261d2a0412eb6e98abcd75462b07af1d"]
+notes = "Raw stdout: R100 NUL old name.txt NUL new : name.txt NUL. A rename uses separate status, old-path and new-path fields. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/name-status-types.md"]
+tool = "git"
+version = "2.56.0"
+kind = "quoted_source"
+sources = ["https://github.com/git/git/blob/v2.56.0/Documentation/diff-format.adoc", "https://github.com/git/git/blob/v2.56.0/Documentation/diff-options.adoc", "https://github.com/git/git/blob/v2.56.0/diff.c", "https://github.com/git/git/blob/v2.56.0/tree-diff.c"]
+claim_ids = ["tool-fact-2ead4967f10238c5e4985fe3bdea19202632e5248e06c8323169c3d4f3fd504a"]
+notes = "Versioned documentation and source excerpts with the inference for valid two-commit comparisons. U is an index conflict state; X is suppressed before name-status output."
+
+[fixtures."git/grep-fatal.stderr.txt"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "-c", "grep.patternType=invalid", "grep", "-c", "-I", "-e", "^", "HEAD", "--"]
+returncode = 128
+claim_ids = ["tool-fact-ed56f581f35b98abb08378cc9d638a57c19058aac7ffb7a7e52357447dbe7102"]
+notes = "Raw stderr; stdout is empty. Invalid pattern configuration is a fatal error, distinct from a no-match exit 1. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/fetch-by-sha.json"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "fetch", "origin", "21316f64d74e61197f814606dff72d9d9d493823", "e537eb10fa7f8f3be0e522e4d58f94f6b2e55bc8"]
+returncode = 0
+claim_ids = ["tool-fact-4fffcb45b5d4ba67e4d4916f963692a121e3199e1b0438c1d19027cc35902d04"]
+notes = "Captured argv, return codes, stdout and stderr from an empty receiver with a synthetic file-protocol origin. cat-file probes show both objects absent before fetch and present as commits afterward. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/merge-base.txt"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "merge-base", "21316f64d74e61197f814606dff72d9d9d493823", "e537eb10fa7f8f3be0e522e4d58f94f6b2e55bc8"]
+returncode = 0
+claim_ids = ["tool-fact-edaf4958ff6ea7e0d1ce95ef5cf04b3d608101cc20114b6db9f63a243ada5e40"]
+notes = "Raw stdout is the full 40-hex merge-base SHA followed by LF. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/ls-tree.z"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "ls-tree", "-rz", "--name-only", "--full-tree", "21316f64d74e61197f814606dff72d9d9d493823", "--"]
+returncode = 0
+claim_ids = ["tool-fact-6e5c4b4a5e76755f905f8862485478c327eb158fd64bcb3a1033af4224941181"]
+notes = "Raw NUL-terminated stdout lists all six blob paths, including nested, binary, empty and space/colon paths. Recapture with python tests/capture-review-context.py."
+
+[fixtures."github/merge-queue-help.txt"]
+tool = "gh"
+version = "gh version 2.102.0 (2026-09-30)"
+kind = "captured_run"
+argv = ["gh", "pr", "merge", "--help"]
+notes = "Exact three-line queue paragraph excerpt. Queue admission needs no strategy flag; required checks determine auto-merge versus immediate queue entry. No bypass flag is used."
+
+[fixtures."github/queue-schema.json"]
+tool = "GitHub API via gh"
+version = "gh version 2.102.0 (2026-09-30)"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {entry:__type(name:\"MergeQueueEntry\"){fields{name description}} states:__type(name:\"MergeQueueEntryState\"){enumValues{name description}}}"]
+notes = "Read-only live schema capture. Contract sources https://docs.github.com/en/graphql/reference/objects#mergequeueentry and https://docs.github.com/en/graphql/reference/enums#mergequeueentrystate and https://docs.github.com/en/graphql/reference/objects#automergerequest. All descriptions are direct API output; shape alone does not establish the source identity of headCommit."
+
+[fixtures."github/queue-pr-schema.json"]
+tool = "GitHub API via gh"
+version = "gh version 2.102.0 (2026-09-30)"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {auto:__type(name:\"AutoMergeRequest\"){fields{name description}} pr:__type(name:\"PullRequest\"){fields{name description}}}", "--jq", "{data:{auto:{fields:[.data.auto.fields[]|select(.name==\"enabledAt\" or .name==\"mergeMethod\")]},pr:{fields:[.data.pr.fields[]|select(.name==\"isDraft\" or .name==\"baseRefOid\" or .name==\"headRefOid\" or .name==\"mergeQueueEntry\" or .name==\"autoMergeRequest\" or .name==\"baseRefName\" or .name==\"state\" or .name==\"number\")]}}}"]
+notes = "Read-only live schema. Sources https://docs.github.com/en/graphql/reference/objects#pullrequest and https://docs.github.com/en/graphql/reference/objects#automergerequest."
+
+[fixtures."github/queue-rules.json"]
+tool = "GitHub API via gh"
+version = "gh version 2.102.0 (2026-09-30)"
+kind = "captured_run"
+argv = ["gh", "api", "repos/bookout-labs/tools/rules/branches/main"]
+notes = "Read-only effective rules from tools/main. Source https://docs.github.com/en/rest/branches/rules#get-rules-for-a-branch. merge_queue.parameters.merge_method is the effective queue method."
+
+[fixtures."github/queue-empty.json"]
+tool = "GitHub API via gh"
+version = "gh version 2.102.0 (2026-09-30)"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:123){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
+notes = "Read-only snapshot of PR 123 before admission. Source https://docs.github.com/en/graphql/reference/objects#pullrequest. Both admission fields are null; no queued or enabled state is claimed."
+
+[fixtures."github/queue-queued.json"]
+tool = "GitHub GraphQL via gh"
+version = "GraphQL live schema, 2026-11-21"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:119){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
+notes = "Live PR 119 after coordinator admission. headCommit is null while QUEUED; autoMergeRequest is null. Sources https://docs.github.com/en/graphql/reference/objects#mergequeueentry and https://docs.github.com/en/graphql/reference/objects#pullrequest. No auto-enabled state is claimed."
+
+[fixtures."github/queue-awaiting.json"]
+tool = "GitHub GraphQL via gh"
+version = "GraphQL live schema, 2026-11-21"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:119){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
+notes = "Live PR 119 AWAITING_CHECKS. Entry headCommit 9bf8198 differs from PR source b53f86b9; therefore it cannot be used as the PR source identity. Source https://docs.github.com/en/graphql/reference/objects#mergequeueentry. autoMergeRequest remains null."
+
+[fixtures."github/queue-dequeued.json"]
+tool = "GitHub GraphQL via gh"
+version = "GraphQL live schema, 2026-11-21"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:119){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
+notes = "Live PR 119 later OPEN with no entry or auto request after the recorded QUEUED/AWAITING_CHECKS states. The source head is unchanged. This captures departure, not a cause or CI conclusion. Source https://docs.github.com/en/graphql/reference/objects#pullrequest."

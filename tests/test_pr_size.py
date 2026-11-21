@@ -91,9 +91,9 @@ class PullRequestSizeTest(unittest.TestCase):
     def invoke(self, *flags, expected_code=0, from_triage=False):
         if not self.checkpoint.exists() and not from_triage:
             with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-                graph = compile_delivery(None, self.config, run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills), checkpointer=saver)
+                graph = compile_delivery(lambda *_: self.fail("unexpected dispatch"), self.config, run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
-                    "pstack_pin": self.config.pstack.model_dump(), "token_cap": DEFAULT_TOKEN_CAP,
+                    "pstack_pin": self.config.pstack.model_dump(), "token_cap": DEFAULT_TOKEN_CAP, "max_budget_usd": None,
                     "repo": "Example/Engine", "issue": 8, "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
                     **({"spec": self.original_spec} if self.original_spec else {}),
                     "workspace": str(self.root.resolve()), "check": "exit 0", "head_sha": self.git("rev-parse", "HEAD"),
@@ -143,8 +143,71 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(self.stages, ["SpecOutput"])
         self.assertEqual(self.forge.merge_calls, [])
 
+    def assert_path_pauses_before_review(self, path):
+        self.write(path, "handwritten\n" * 700)
+        head = self.commit()
+        stdout, _ = self.invoke(expected_code=3)
+        self.assertIn("paused needs_human", stdout)
+        self.assertEqual(self.spec_state["pr_size"], {
+            "head": head, "merge_base": self.base, "lines": 700,
+        })
+        self.assertNotIn("ReviewOutput", self.stages)
+        self.assertEqual(self.forge.merge_calls, [])
+
+    def test_root_file_pauses_before_review(self):
+        self.assert_path_pauses_before_review("NOTES.md")
+
+    def test_docs_file_pauses_before_review(self):
+        self.assert_path_pauses_before_review("docs/guide.md")
+
+    def test_log_file_pauses_before_review(self):
+        self.assert_path_pauses_before_review("evidence/test.log")
+
+    def test_deletions_and_edited_renames_outside_source_count(self):
+        self.git("switch", "main")
+        self.write("docs/deleted.md", "deleted\n" * 7)
+        self.write("original.txt", "unchanged\n" * 100)
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("switch", "-C", BRANCH, base)
+        self.git("rm", "docs/deleted.md")
+        renamed = "renamed \tline\n.txt"
+        self.git("mv", "original.txt", renamed)
+        head = self.commit()
+        workspace = LiveWorkspace(self.root)
+        self.assertEqual(workspace.pull_request_size(head, "main")["lines"], 7)
+        self.write(renamed, "unchanged\n" * 100 + "added\n" * 2)
+        head = self.commit()
+        self.assertEqual(workspace.pull_request_size(head, "main")["lines"], 9)
+
+    def test_binary_rename_with_edit_counts_only_changed_lines(self):
+        self.git("switch", "main")
+        self.write("original.dat", "\0item\n" * 500)
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("switch", "-C", BRANCH, base)
+        self.git("mv", "original.dat", "renamed.dat")
+        self.write("renamed.dat", "\0item\n" * 500 + "added\n")
+        head = self.commit()
+        self.assertEqual(LiveWorkspace(self.root).pull_request_size(head, "main")["lines"], 1)
+
+    def test_rename_across_generated_boundary_counts_handwritten_side(self):
+        self.git("switch", "main")
+        self.write("docs/original.md", "content\n" * 11)
+        self.write("tests/fixtures/original.json", "fixture\n" * 13)
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("switch", "-C", BRANCH, base)
+        self.git("mv", "docs/original.md", "tests/fixtures/moved.json")
+        self.git("mv", "tests/fixtures/original.json", "extracted.md")
+        head = self.commit()
+        self.assertEqual(LiveWorkspace(self.root).pull_request_size(head, "main")["lines"], 24)
+
     def test_generated_only_diff_reaches_review(self):
-        for path in ("tests/fixtures/nested/example\tline\n.json", "tests/stage-schemas.json", "src/example.lock"):
+        for path in (
+            "tests/fixtures/nested/example\tline\n.json", "tests/stage-schemas.json", "src/example.lock",
+            "uv.lock", "package-lock.json", "pnpm-lock.yaml",
+        ):
             self.write(path, "generated\n" * (PULL_REQUEST_LINES + 1))
         head = self.commit()
         stdout, _ = self.invoke()
@@ -260,9 +323,24 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(self.forge.merge_calls, [])
         self.assertIn("done verified", self.invoke("--answer", "override")[0])
 
+    def test_hardened_grep_uses_base_attributes_and_basic_patterns(self):
+        self.write("src/items.py", "first\nlast")
+        self.write(".gitattributes", "src/items.py -diff\n")
+        head = self.commit()
+        self.git("config", "grep.patternType", "fixed")
+        self.git("config", "grep.extendedRegexp", "true")
+        self.git("config", "color.grep", "always")
+        self.write("../local-attributes", "src/items.py -diff\n")
+        self.git("config", "core.attributesFile", str(self.root.parent / "local-attributes"))
+        raw = LiveWorkspace(self.root)._inspection_git(
+            self.base, "grep", "-c", "-I", "-z", "--no-textconv", "-e", "^", head,
+            "--", "src/items.py", allowed_returncodes=(0, 1),
+        )
+        self.assertEqual(raw, head.encode() + b":src/items.py\x002\n")
+
     def test_branch_attributes_cannot_exempt_its_own_diff(self):
-        self.write(".gitattributes", "src/** linguist-generated -diff\n")
-        self.write("src/items.py", "changed\n" * PULL_REQUEST_LINES)
+        self.write(".gitattributes", (self.root / ".gitattributes").read_text() + "** linguist-generated -diff\n")
+        self.write("docs/items.md", "changed\n" * PULL_REQUEST_LINES)
         self.commit()
         stdout, _ = self.invoke(expected_code=3)
         self.assertIn("paused needs_human", stdout)
@@ -294,7 +372,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertNotIn("ReviewOutput", self.stages)
 
     def test_nul_bearing_file_counts_all_500_lines(self):
-        self.write("src/items.dat", "\0item\n" * 500)
+        self.write(":(glob)* weird\tline\n.dat", "\0item\n" * 500)
         self.commit()
         self.assertIn("500 changed lines", self.invoke(expected_code=3)[0])
         self.assertNotIn("ReviewOutput", self.stages)

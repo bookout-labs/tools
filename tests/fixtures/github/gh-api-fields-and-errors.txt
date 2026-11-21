@@ -12,6 +12,8 @@ https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/fields.go
       if err := parseField(f, false); err != nil {
 Raw fields retain their string value. Only magic fields invoke the conversion
 that reads @files, substitutes placeholders, or converts JSON scalar types.
+In magicFieldValue, strconv.Atoi converts numeric -F values to integers before
+the boolean/null/placeholder branches. Raw -f values bypass that function.
 
 POST JSON body
 https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/http.go
@@ -41,3 +43,14 @@ https://github.com/cli/cli/blob/v2.102.0/cmd/gh/main.go
   code := ghcmd.Main()
   os.Exit(int(code))
 Thus HTTP failures such as 403 and 502 write diagnostics to stderr and exit 1.
+
+Parent lookup diagnostic
+https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go
+  if parsedBody.Message != "" {
+      return bodyCopy, fmt.Sprintf("%s (HTTP %d)", parsedBody.Message, statusCode), nil
+  }
+These lines from parseErrorResponse, together with the stderr formatter above,
+render the captured message "No parent issue found" at status 404 as
+"gh: No parent issue found (HTTP 404)". Generic "Not Found" at status 404 and
+permission/validation failures remain distinct diagnostics. The captured API
+body is in no-parent.json; no live gh capture is claimed.

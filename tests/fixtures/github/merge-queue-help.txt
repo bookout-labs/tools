@@ -1,0 +1,3 @@
+When targeting a branch that requires a merge queue, no merge strategy is required.
+If required checks have not yet passed, auto-merge will be enabled.
+If required checks have passed, the pull request will be added to the merge queue.

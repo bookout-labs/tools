@@ -11,13 +11,12 @@ from unittest.mock import patch
 
 from foreman.adapters import Outcome
 from foreman.config import load_config
-from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.delivery import LiveRun
 from foreman.redaction import redact
 from foreman.github import LiveForge
 from foreman.runner import run_live_delivery
-from foreman.workspace import LiveWorkspace
+from foreman.workspace import WorkspaceError, LiveWorkspace
 from skill_fixture import fixture_pin
 from test_runner import BRANCH, EMPTY_SLICE, slice_body
 
@@ -58,6 +57,7 @@ class PublicationTest(unittest.TestCase):
         self.created = []
         self.published_heads = []
         self.create_error = False
+        self.queued = False
         self.fixture.enter_context(patch("foreman.github.subprocess.run", side_effect=self.subprocess))
 
     def git(self, *args):
@@ -100,10 +100,30 @@ class PublicationTest(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 1, "", f'no pull requests found for branch "{self.branch}"')
                 response = {"number": 12, "state": "OPEN", "headRefOid": self.remote_head(), "headRefName": self.branch,
                             "baseRefName": self.base, "baseRefOid": self.git("rev-parse", self.base), "autoMergeRequest": None}
+            case ["api", "graphql"]:
+                response = dict(number=12, state="OPEN", headRefOid=self.remote_head(),
+                    baseRefName=self.base, baseRefOid=self.git("rev-parse", self.base),
+                    isDraft=False, autoMergeRequest=None,
+                    mergeQueueEntry=dict(id="queue-12", state="QUEUED", headCommit=dict(oid=self.remote_head())) if self.queued else None)
             case ["api", "repos/Example/Engine/pulls/12/reviews"]:
                 response = ({"id": 1, "state": "COMMENTED", "commit_id": self.remote_head(), "body": "posted"}
                             if "POST" in command else [[]])
+            case ["api", "repos/Example/Engine/pulls/12"]:
+                response = dict(number=12, state="open", draft=False, mergeable=True, mergeable_state="clean",
+                    merge_commit_sha=None, head=dict(sha=self.remote_head(), ref=self.branch),
+                    base=dict(sha=self.git("rev-parse", self.base), ref=self.base))
+            case ["api", url] if "/rules/branches/" in url:
+                response = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test", integration_id=15368)])),
+                            dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))]
+            case ["api", url] if "/branches/" in url:
+                response = dict(commit=dict(sha=self.git("rev-parse", self.base)), protection=dict(required_status_checks=dict(checks=[], contexts=[])))
+            case ["api", url] if "/check-runs" in url:
+                response = [dict(check_runs=[dict(id=1, name="test", head_sha=self.remote_head(),
+                    app=dict(id=15368), check_suite=dict(id=30), status="completed", conclusion="success")])]
+            case ["api", url] if "/statuses" in url:
+                response = [[]]
             case ["pr", "merge"]:
+                self.queued = True
                 self.assertEqual(command[-2:], ["--match-head-commit", self.remote_head()])
                 return subprocess.CompletedProcess(command, 0, "", "")
             case _:
@@ -135,8 +155,27 @@ class PublicationTest(unittest.TestCase):
 
         return run_live_delivery(
             repo=REPO, issue=8, check="test -f items.txt", checkpoint=self.checkpoint,
-            run=LiveRun(LiveForge(), workspace), dispatcher=FailoverDispatcher(handler),
+            run=LiveRun(LiveForge(), workspace), dispatcher=handler,
         )
+
+    def test_refresh_adopts_only_the_observed_remote_repair(self):
+        self.walk()
+        repaired = self.checkout.parent / "repair"
+        run_subprocess(["git", "clone", str(self.remote), str(repaired)], check=True, capture_output=True)
+        run_subprocess(["git", "switch", self.branch], cwd=repaired, check=True, capture_output=True)
+        (repaired / "repair.txt").write_text("external repair")
+        for args in [("config", "user.name", "Repair"), ("config", "user.email", "repair@example.com"),
+                     ("add", "repair.txt"), ("-c", "commit.gpgsign=false", "commit", "-m", "Repair"),
+                     ("push", "origin", self.branch)]:
+            run_subprocess(["git", *args], cwd=repaired, check=True, capture_output=True)
+        head = self.remote_head()
+        before = LiveWorkspace(self.checkout).inspect().head
+        with self.assertRaisesRegex(WorkspaceError, "changed during fetch"):
+            LiveWorkspace(self.checkout).refresh(self.branch, before)
+        self.assertEqual(LiveWorkspace(self.checkout).inspect().head, before)
+        LiveWorkspace(self.checkout).refresh(self.branch, head)
+        self.assertEqual(LiveWorkspace(self.checkout).inspect().head, head)
+        self.assertEqual((self.checkout / "repair.txt").read_text(), "external repair")
 
     def test_graph_commits_and_pushes_before_opening_one_pull_request(self):
         for family, email in (("gpt", "noreply@openai.com"), ("claude", "noreply@anthropic.com"), ("grok", "noreply@x.ai")):
@@ -447,26 +486,19 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(self.walk().get("stop"), "verified")
 
     def test_quota_stop_continues_owned_partial_edits(self):
-        from foreman.dispatch import QuotaExhausted
-        for kind, stop_reason in (("exception", "implement_quota"), ("outcome", "quota_exhausted")):
-            with self.subTest(kind=kind):
-                self.reset_fixture()
-                def stop():
-                    (self.checkout / "items.txt").write_text("partial\n")
-                    if kind == "exception":
-                        raise QuotaExhausted("synthetic-model")
-                    return Outcome("quota")
-                self.assertEqual(self.walk(stop).get("stop"), stop_reason)
-                def finish():
-                    self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
-                    (self.checkout / "items.txt").write_text("finished\n")
-                self.assertEqual(self.walk(finish).get("stop"), "verified")
-
-    def test_foreign_edits_after_quota_stop_are_rejected(self):
-        from foreman.dispatch import QuotaExhausted
         def stop():
             (self.checkout / "items.txt").write_text("partial\n")
-            raise QuotaExhausted("synthetic-model")
+            return Outcome("quota")
+        self.assertEqual(self.walk(stop).get("stop"), "quota_exhausted")
+        def finish():
+            self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
+            (self.checkout / "items.txt").write_text("finished\n")
+        self.assertEqual(self.walk(finish).get("stop"), "verified")
+
+    def test_foreign_edits_after_quota_stop_are_rejected(self):
+        def stop():
+            (self.checkout / "items.txt").write_text("partial\n")
+            return Outcome("quota")
         self.walk(stop)
         (self.checkout / "foreign.txt").write_text("unowned\n")
         result = self.walk(lambda: self.fail("foreign edits must halt"))
@@ -600,7 +632,7 @@ class PublicationTest(unittest.TestCase):
                 slug = re.sub(r"[^a-z0-9]+", "-", redact(self.slice["title"]).lower()).strip("-")[:60].rstrip("-")
                 self.branch, self.ref = f"8-{slug}", f"refs/heads/8-{slug}"
                 if mode == "dry":
-                    result = run_delivery(FailoverDispatcher(ScriptHandler()), repo=REPO, request="synthetic fixture", slice=self.slice)
+                    result = run_delivery(ScriptHandler(), repo=REPO, request="synthetic fixture", slice=self.slice)
                     output = StringIO()
                     with redirect_stdout(output):
                         _print_run(result)
