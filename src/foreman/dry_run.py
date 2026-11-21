@@ -39,7 +39,8 @@ class ScriptHandler:
         self.slice = slice if slice is not None else {
             "title": "Implement the requested change",
             "acceptance": "The requested change passes verification.",
-            "depends_on": [],
+            "builds": [],
+            "uses": [],
             "screen": "",
             "properties": [],
         }
@@ -75,7 +76,7 @@ class ScriptHandler:
                 if verdict == "changes" else []
             )
             return Outcome("ran", {
-                "review": verdict, "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.",
+                "review": verdict, "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.", "tool_facts": [],
             })
         if node == "verify":
             return Outcome("ran", {"verify": self.verify})

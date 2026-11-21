@@ -10,23 +10,27 @@ from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 
 
+BOARD = {"name": "deals-board", "exists": False, "path": None}
+MOVE = {"name": "deal-move", "exists": False, "path": None}
 SLICES = [
     {
         "title": "Board lists the deals",
         "acceptance": "The board shows the deals.",
-        "depends_on": [],
+        "builds": [BOARD],
+        "uses": [],
         "screen": "docs/screens/deals.md",
         "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
     },
     {
         "title": "Board saves a move",
         "acceptance": "A move is stored.",
-        "depends_on": ["Board lists the deals"],
+        "builds": [MOVE],
+        "uses": [BOARD],
         "screen": "",
         "properties": [],
     },
 ]
-EMPTY_SLICE = {**SLICES[1], "depends_on": []}
+EMPTY_SLICE = {**SLICES[1], "builds": [], "uses": []}
 
 
 HEAD_SHA = "a" * 40
@@ -85,7 +89,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["path"], ["triage", "spec", "implement", "verify", "proof", "done"])
         self.assertEqual(result["stop"], "insufficient_evidence")
 
-    def test_triage_slice_rejects_a_dependency(self):
+    def test_worker_cannot_declare_depends_on(self):
         result = walk(
             lambda *_: Outcome("ran", {
                 "triage": "implement", "human_question": None, "slice": {**SLICES[0], "depends_on": ["Other"]},
@@ -94,22 +98,54 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["path"], ["triage", "done"])
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertEqual(result["halt_detail"], "slice.depends_on.0: unknown dependency Other")
+        self.assertTrue(result["halt_detail"].startswith("slice.depends_on:"))
 
     def test_a_parent_routes_spec_and_question_to_spec(self):
         for triage in ("spec", "question"):
             with self.subTest(triage=triage):
-                result = walk(ScriptHandler(triage=triage, slices=SLICES), slice=None)
+                result = walk(ScriptHandler(triage=triage, slices=SLICES[::-1]), slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "sliced")
-                self.assertEqual(result["slices"], SLICES)
+                self.assertEqual(result["slices"], [
+                    {**SLICES[0], "depends_on": []},
+                    {**SLICES[1], "depends_on": [SLICES[0]["title"]]},
+                ])
+
+    def test_single_slice_parents_skip_seam_ordering(self):
+        consumer = SLICES[1]
+        triaged = walk(ScriptHandler(slice=consumer), slice=None)
+        self.assertEqual(triaged["stop"], "verified")
+        specified = walk(ScriptHandler(triage="spec", slices=[consumer]), slice=None)
+        self.assertEqual(specified["slices"], [{**consumer, "depends_on": []}])
+
+    def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
+        first, second = SLICES
+        cases = {
+            "dependency_cycle": [{**first, "uses": [MOVE]}, second],
+            "dangling_seam": [{**first, "builds": []}, second],
+            "duplicate_builder": [first, {**second, "builds": [BOARD]}],
+        }
+        for kind, invalid in cases.items():
+            with self.subTest(kind=kind):
+                handler = ScriptHandler(triage="spec", slices=invalid)
+
+                def repair(node, model, state, instruction):
+                    if rejection := state.get("spec_rejection"):
+                        self.assertEqual(rejection["kind"], kind)
+                        self.assertIn(BOARD["name"] if kind != "dependency_cycle" else first["title"], rejection["detail"])
+                        handler.slices = SLICES
+                    return handler(node, model, state, instruction)
+
+                result = walk(repair, slice=None)
+                self.assertEqual(result["path"], ["triage", "spec", "spec", "done"])
+                self.assertEqual(result["review_rounds"], 1)
+                self.assertEqual(result["stop"], "sliced")
+                self.assertIsNone(result["spec_rejection"])
 
     def test_a_parent_stops_on_malformed_slices(self):
-        first, second = SLICES
+        first = SLICES[0]
         missing_key = {key: value for key, value in first.items() if key != "screen"}
         cases = {
-            "cycle": [{**first, "depends_on": [second["title"]]}, second],
-            "unknown dependency": [{**first, "depends_on": ["Unknown"]}],
             "missing key": [missing_key],
             "extra key": [{**first, "branch": "extra"}],
             "outside screens": [{**first, "screen": "docs/system.md"}],

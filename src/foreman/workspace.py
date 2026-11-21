@@ -57,6 +57,9 @@ class Workspace(Protocol):
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int: ...
     def inspect(self) -> WorktreeState: ...
+    def files_at(self, head: str, directory: str) -> set[str]: ...
+    def read_file_at(self, head: str, path: str) -> str: ...
+    def has_file(self, path: str) -> bool: ...
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str) -> ReviewDiff: ...
 
@@ -76,6 +79,14 @@ class LiveWorkspace:
                     log(line)
             return process.wait()
 
+    def has_file(self, path: str) -> bool:
+        root = self.root.resolve()
+        try:
+            file = (root / path).resolve()
+            return file.is_relative_to(root) and file.is_file()
+        except (OSError, RuntimeError, ValueError):
+            return False
+
     def inspect(self) -> WorktreeState:
         head = os.fsdecode(self._git("rev-parse", "HEAD")).strip()
         if commit_sha(head) is None:
@@ -84,6 +95,20 @@ class LiveWorkspace:
         branch = os.fsdecode(self._git("branch", "--show-current")).strip()
         return WorktreeState(head, not status, branch or None)
 
+    def files_at(self, head: str, directory: str) -> set[str]:
+        tree = os.fsdecode(self._git("--no-replace-objects", "ls-tree", "-rz", "--full-tree", head, "--", directory))
+        files: set[str] = set()
+        for entry in tree.split("\0"):
+            metadata, _, path = entry.partition("\t")
+            if metadata.startswith(("100644 blob ", "100755 blob ")):
+                files.add(path)
+        return files
+
+    def read_file_at(self, head: str, path: str) -> str:
+        try:
+            return self._git("--no-replace-objects", "show", f"{head}:{path}").decode("utf-8")
+        except UnicodeError as exc:
+            raise WorktreeInspectionFailed(f"Could not decode {path}: {exc}") from exc
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         attributes = Path(os.fsdecode(self._git(
             "rev-parse", "--path-format=absolute", "--git-path", "info/attributes",

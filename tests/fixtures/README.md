@@ -1,6 +1,6 @@
 # CLI result fixtures
 
-The recorded calls ran in separate empty temporary directories with a synthetic prompt. The native calls used JSON output, a JSON schema, and high effort. UUIDs, paths, and credential expiry are scrubbed. The Grok reasoning text is redacted. The Codex JSONL recordings contain lifecycle events, assistant output or error messages, usage totals, and scrubbed thread IDs. They contain no prompt text.
+The recorded calls ran in separate empty temporary directories with a synthetic prompt. The native calls used JSON output, a JSON schema, and high effort. UUIDs, paths, and credential expiry are scrubbed. The Grok reasoning text is redacted. The Codex stderr fixture contains the relevant banner lines.
 
 | Fixture | Source |
 | --- | --- |
@@ -13,9 +13,8 @@ The recorded calls ran in separate empty temporary directories with a synthetic 
 | Grok `is_error.json` | Grok Build 1.0.89, a recorded call with the invalid synthetic model ID `grok-foreman-fixture-invalid`. Exit 1. |
 | Grok `quota.json` | Grok Build 1.0.89 binary, `RATE_LIMITED_USER_MESSAGE_OAUTH`. The API key and free-usage messages in the tests also match binary literals. The headless docs list exit 1 for errors. [Message source](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-shell/src/sampling/error.rs#L17-L64) · [Headless emitter](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/src/headless.rs#L351-L359) · [Exit codes](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md#exit-codes) |
 | Native `missing_model_usage.json`, `wrong_model.json`, `zero_usage.json` and Grok `incomplete_usage.json` | Derived from each CLI's recorded success. Each changes the model or usage fields needed for the case. |
-| Codex `success.jsonl` | `codex --version` reported `codex-cli 0.171.0`. The real triage schema was passed as a file. Exit 0. |
-| Codex `invalid-model.jsonl` | Codex CLI 0.171.0. The same probe used `gpt-foreman-fixture-invalid`. Exit 1 with a structured unsupported-model failure. |
-| Codex `quota.jsonl` | Codex CLI 0.171.0. A loopback Responses API stub returned HTTP 429 with `error.code` and `error.type` set to `insufficient_quota`. Exit 1. |
+| Codex `success.json`, `success.stderr.txt` | Codex 0.171.0, `exec -m gpt-6.1-sol -c model_reasoning_effort=high -s read-only`. Exit 0. The banner reported the requested model and effort separately. |
+| Codex `quota.stderr.txt` | Codex 0.171.0, three rendered messages with synthetic substitution values and no reset time. [Retry and quota formatters](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L822-L977) |
 
 ## Probe arguments
 
@@ -49,40 +48,37 @@ grok -m grok-foreman-fixture-invalid --reasoning-effort high --permission-mode p
   -p 'Return triage needs_human, slice null and human_question "Which items?" per the schema.'
 ```
 
-With the probe schema and a read-only call, this is the Claude adapter argv before the recording-only flags above. The worker supplies the final prompt argument.
+Codex 0.171.0 `success.json` and `success.stderr.txt` were recorded with the following argv. Codex receives its schema in the prompt until S3. The probe used extra flags to run outside a checkout with an ephemeral session.
+
+```sh
+codex exec -m gpt-6.1-sol -c model_reasoning_effort=high -c approval_policy=never \
+  -c 'mcp_servers={}' --ephemeral --skip-git-repo-check --color never -s read-only \
+  'Do not use tools or read files. Reply with just this JSON: {"triage":"needs_human","slice":null,"human_question":"Which items?"}'
+```
+
+With the probe schemas and a read-only call, these are the Claude and Codex adapter argv before the recording-only flags above. The command's final prompt argument is supplied by the worker.
 
 ```sh
 claude --model claude-opus-5-5 --effort high --permission-mode plan \
   --output-format json --json-schema "$triage_schema" -p "$claude_prompt"
+codex exec -m gpt-6.1-sol -c model_reasoning_effort=high --color never \
+  -s read-only "$codex_prompt_with_schema"
 ```
 
-## Codex JSONL
+## GitHub issue dependency contract
 
-Generate `triage.json` with `json.dumps(STAGE_OUTPUTS["triage"].model_json_schema())` from `foreman.stage_output`.
-The success probe used this argv in a temporary directory with stdin closed.
+Foreman calls the GitHub REST API through `gh api`.
+
+- `GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` returns issue objects. Foreman reads `number`, `title`, `repository_url`, `html_url`, and `state` from each page. [GitHub REST API 2026-03-10](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#list-dependencies-an-issue-is-blocked-by)
+- `POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` takes the blocker's numeric `issue_id`. Foreman gets that ID from `GET /repos/{owner}/{repo}/issues/{issue_number}`. [Add a dependency](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#add-a-dependency-an-issue-is-blocked-by), [Get an issue](https://docs.github.com/en/rest/issues/issues?apiVersion=2026-03-10#get-an-issue)
+- `gh api --paginate --slurp` returns an array of pages. `-F issue_id=<id>` sends the ID as a JSON integer. [GitHub CLI 2.102.0](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go)
+
+Read-only reachability check with `gh 2.102.0`:
 
 ```sh
-codex exec -m gpt-6.1-sol -c model_reasoning_effort=high -c approval_policy=never \
-  -c 'mcp_servers={}' --ephemeral --skip-git-repo-check --json --output-schema triage.json \
-  --color never -s read-only \
-  'Do not use tools or read files. Choose needs_human, with no slice, and ask "Which items?"'
+gh api --method GET 'repos/bookout-labs/tools/issues/43/dependencies/blocked_by' --paginate --slurp
+# [[]]
 ```
-
-For the invalid-model probe, replace the `-m` value with `gpt-foreman-fixture-invalid`. For the quota probe, use an empty `CODEX_HOME`, set `FOREMAN_PROBE_KEY` to a synthetic value, and replace `-c 'mcp_servers={}'` with the following arguments. Substitute the stub's port for `<port>`.
-
-```sh
--c model_provider=synthetic \
--c 'model_providers.synthetic={name="Synthetic", env_key="FOREMAN_PROBE_KEY", base_url="http://127.0.0.1:<port>/v1", request_max_retries=0, wire_api="responses"}'
-```
-
-The adapter uses the following facts from the captures and Codex tag `rust-v0.171.0`.
-
-- `--json` emits events to stdout. `--output-schema` reads the schema file, and `--ephemeral` disables session persistence. [Exec CLI arguments](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/cli.rs#L63-L93)
-- `thread.started.thread_id` identifies the session. The last `item.completed.item` of type `agent_message` supplies `text`, a JSON string with a schema. [Event types](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/exec_events.rs#L8-L101) · [Agent messages](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/exec_events.rs#L104-L140) · [Final message selection](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L388-L403)
-- `turn.completed.usage` reports `input_tokens`, `output_tokens`, `cached_input_tokens`, and `cache_write_input_tokens`. Codex emits a zero-filled report if it has no totals. [Usage payload](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/exec_events.rs#L49-L73) · [Usage defaults](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L119-L130)
-- `turn.failed.error.message` gives the terminal error. `error.message` can precede a retry, so it supplies a diagnostic when a turn fails without a terminal message. Both event shapes omit the upstream error code. [JSONL conversion](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L450-L460) · [Terminal errors](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L528-L560) · [Retry and exit handling](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/lib.rs#L1472-L1491)
-- Quota checks use the formatters for `RateLimitExceeded`, `QuotaExceeded`, retry exhaustion with HTTP 429, and the usage-limit, plan, and workspace cap variants of `UsageLimitReachedError`. [Rate limit message](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L132-L136) · [Quota message](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L219-L228) · [Retry and usage-limit messages](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L823-L959)
-- The success events carry no model ID, and the unknown-model probe failed with exit 1. Codex emits a `model rerouted: ` message as a completed `error` item when the server switches models. [Reroute notification](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L486-L511)
 
 ## Pull request size
 
@@ -166,34 +162,23 @@ sends `commit_id`, `event: COMMENT`, `body`, and a `comments` array
 with `path`, `line`, `side`, and `body` per inline comment. The
 [`RIGHT` side identifies the new file](https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request).
 
-## Codex quota formatter cases
+## Closing pull request contract
 
-`codex/quota-formatters.json` quotes Codex CLI 0.171.0 formatters with synthetic
-substitution values. Each row links its formatter's source lines. The table test
-wraps each message as `turn.failed.error.message`, matching the
-[terminal JSONL emitter](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L541-L559).
-Both workspace credit variants share one prefix. Near-miss tests keep local
-errors, other HTTP statuses, and `Reconnecting...` retry text as failures.
+Checked against GitHub GraphQL documentation on 2026-11-20 and GitHub CLI
+v2.102.0 [query builder](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L78-L95).
+The CLI requests closing references without a base-branch filter. The
+[Issue field](https://docs.github.com/en/graphql/reference/issues#issue)
+also admits manually linked PRs by default. A closed issue and a merged
+referenced PR therefore do not establish that the work reached the default branch.
+Foreman checks the closing repository's default branch, including for cross-repository references.
 
-Codex `input_tokens` includes cached input. The adapter reports non-cached input
-in `Usage.input_tokens` and cache reads in `Usage.cache_read_input_tokens`, so a
-consumer counts each input token once. This follows
-[`TokenUsage::non_cached_input` and `cached_input`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/protocol.rs#L2760-L2765)
-at `rust-v0.171.0`, including their zero clamps. Claude's existing cache fields
-already fit this shape. Missing cached totals leave Codex usage unknown.
-
-`codex/cached-success.jsonl` was captured from `codex-cli 0.171.0`, exit 0,
-with the success argv above plus `-c model_provider=synthetic` and the same
-loopback provider configuration as the quota probe. `CODEX_HOME` was an empty
-temporary directory and `FOREMAN_PROBE_KEY` was synthetic. The loopback Responses
-API returned SSE `response.created`, `response.output_item.added`,
-`response.content_part.added`, `response.output_text.delta`,
-`response.output_item.done`, and `response.completed` events. The completed
-response carried `input_tokens: 120`, `input_tokens_details.cached_tokens: 80`,
-`output_tokens: 29`, `output_tokens_details.reasoning_tokens: 0`, and
-`total_tokens: 149`. Codex emitted the recorded JSONL, including
-`cached_input_tokens: 80`. Only the thread ID was scrubbed. The production parser
-must report 40 non-cached input tokens, 80 cache reads, and 29 output tokens.
+CLI v2.102.0 exposes `state` and `baseRefName` in `gh pr view --json`
+and `defaultBranchRef { name }` in `gh repo view --json`.
+[PR fields](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L353-L357),
+[repository field](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L603-L604).
+The tests feed those documented shapes through the production Pydantic parsers.
+A merged PR targeting `release` with default branch `main` must return false;
+a merged PR targeting default branch `trunk` must return true.
 
 
 ## Ordered check output
