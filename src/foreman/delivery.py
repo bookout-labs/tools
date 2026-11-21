@@ -192,6 +192,7 @@ class DeliveryFields(TypedDict, total=False):
     review_receipt: ReviewReceipt | None
     models_used: dict[str, str]
     implement_models: list[str]
+    watch: WatchRecord | None
     halt: HaltReason | None
     halt_detail: str
 
@@ -249,7 +250,7 @@ def _last_stage(state: DeliveryState) -> str:
 def halted(reason: HaltReason, detail: str, path: str | None) -> DeliveryUpdate:
     if not detail.strip():
         raise ValueError(f"{reason} requires a nonempty halt detail")
-    return {"halt": reason, "halt_detail": detail, "path": [path] if path else []}
+    return {"halt": reason, "halt_detail": detail, "watch": None, "path": [path] if path else []}
 
 
 def budget_halt(state: DeliveryState, attempts: list[AttemptRecord], stage: str) -> DeliveryUpdate:

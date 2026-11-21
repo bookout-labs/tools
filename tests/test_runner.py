@@ -183,7 +183,7 @@ class FakeGitHub:
         return {"title": "Issue title", "body": self.body, "labels": self.labels}
 
     def open_issues(self, repo) -> list[OpenIssue]:
-        return [OpenIssue(number=number, body=self.load_issue(repo, number)["body"])
+        return [OpenIssue(number=number, body=self.created[number - 101][1])
                 for number in self.issue_labels if number not in self.closed and number not in self.merged]
 
     def issue_comments(self, repo, number) -> list[str]:
@@ -582,6 +582,7 @@ class LiveRunnerTest(unittest.TestCase):
             ("why/SKILL.md", "", "method is empty"),
         ):
             with self.subTest(method=method, detail=detail), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "runs.sqlite3"
                 pin = fixture_pin(Path(directory) / "fixture")
                 source = Path(pin.repository)
                 (source / "pstack" / "skills" / method).write_text(content, encoding="utf-8")
@@ -759,7 +760,7 @@ class LiveRunnerTest(unittest.TestCase):
         result = self.walk([{"triage": "spec"}, spec, spec, spec])
         self.assertEqual(result["stop"], "spec_cap")
         self.assertEqual(result["spec_rejection"]["kind"], "existing_seam_builder")
-        self.assertEqual(self.github.created, [])
+        self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_workspace_file_paths_resolve_inside_the_root(self):
         (self.cwd / "api.py").touch()
@@ -787,7 +788,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["review_rounds"], 0)
         self.assertEqual(result["spec_failures"], 3)
         self.assertEqual(result["spec_rejection"]["kind"], "dangling_seam")
-        self.assertEqual(self.github.created, [])
+        self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_link_failure_leaves_child_blocked_and_parent_retry_repairs_it(self):
         self.github = FakeGitHub(["factory"])
@@ -1097,7 +1098,7 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertTrue(result["halt_detail"].startswith("slice:"))
                 self.assertEqual(len(self.calls), 1)
                 self.assertEqual(self.github.merge_calls, [])
-                self.assertEqual(self.github.created, [])
+                self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_browser_block_rebuilds_and_rechecks_before_review(self):
         self.github.body = slice_body(SLICE)
@@ -2023,7 +2024,7 @@ class HaltExitCodeTest(unittest.TestCase):
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid")
         result = {**halted("merge_not_armed", detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
-        with patch("foreman.cli.run_live_delivery", return_value=result), contextlib.redirect_stdout(io.StringIO()) as output:
+        with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
 
