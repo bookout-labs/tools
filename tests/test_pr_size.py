@@ -56,8 +56,8 @@ class PullRequestSizeTest(unittest.TestCase):
 
     def worker(self, args, cwd, env):
         self.assertEqual(cwd, self.root)
-        prompt, state_json = args[-1].rsplit("\n\nDelivery state:\n", 1)
-        schema = prompt.rsplit("\n\nOutput schema:\n", 1)[1] if args[0] == "codex" else args[args.index("--json-schema") + 1]
+        _, state_json = args[-1].rsplit("\n\nDelivery state:\n", 1)
+        schema = Path(args[args.index("--output-schema") + 1]).read_text() if args[0] == "codex" else args[args.index("--json-schema") + 1]
         stage = json.loads(schema)["title"]
         self.stages.append(stage)
         state = json.loads(state_json)

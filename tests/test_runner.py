@@ -24,7 +24,7 @@ from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
-from test_adapters import fixture_process
+from test_adapters import codex_events, fixture_process
 
 
 HEAD = "a" * 40
@@ -44,7 +44,7 @@ SLICE = {
 }
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
-FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}]}
+FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}], "typecheck": None}
 SEAM = {"name": "item-list", "exists": False, "path": None}
 BUILDER = {**SLICE, "builds": [SEAM]}
 CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "uses": [SEAM]}
@@ -77,14 +77,18 @@ class FakeWorkspace(LiveWorkspace):
 
 
 def worker_reply(args, reply):
-    recorded = fixture_process(args, "success", 0)
+    if isinstance(reply, dict):
+        if "triage" in reply:
+            reply = {"slice": None, "human_question": None, **reply}
+        if "spec" in reply:
+            reply = {"slices": None, "human_question": None, **reply}
+        if "implementation" in reply and args[0] == "codex":
+            reply = {"head_sha": None, "browser_proof": None, "formal_proof": None, **reply}
     if args[0] == "codex":
-        stdout = json.dumps(reply) if isinstance(reply, dict) else reply
-        return subprocess.CompletedProcess(args, recorded.returncode, stdout, recorded.stderr)
-    if "triage" in reply:
-        reply = {"slice": None, "human_question": None, **reply}
-    if "spec" in reply:
-        reply = {"slices": None, "human_question": None, **reply}
+        events = codex_events()
+        events[-2]["item"]["text"] = json.dumps(reply) if isinstance(reply, dict) else reply
+        return subprocess.CompletedProcess(args, 0, "\n".join(map(json.dumps, events)), "")
+    recorded = fixture_process(args, "success", 0)
     envelope = json.loads(recorded.stdout)
     field = "structured_output" if args[0] == "claude" else "structuredOutput"
     envelope[field] = reply
@@ -177,18 +181,24 @@ class CliWorkerTest(unittest.TestCase):
         }
         for model, prefix in models.items():
             with self.subTest(model=model):
+                schema_paths = []
+
                 def run(args, cwd, env):
                     self.assertEqual(args[:len(prefix)], prefix)
                     self.assertEqual(cwd, Path("engine"))
                     self.assertIn('{"issue": 12}', args[-1])
                     expected_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"} if args[0] == "claude" else {}
                     self.assertEqual(env, expected_env)
+                    self.assertNotIn("Output schema:", args[-1])
                     if args[0] == "codex":
-                        self.assertIn("Output schema:", args[-1])
+                        self.assertIn("--json", args)
+                        self.assertIn("--ephemeral", args)
+                        schema_path = Path(args[args.index("--output-schema") + 1])
+                        schema_paths.append(schema_path)
+                        schema = json.loads(schema_path.read_text())
                     else:
-                        self.assertNotIn("Output schema:", args[-1])
-                        self.assertEqual(json.loads(args[args.index("--json-schema") + 1]),
-                                         STAGE_OUTPUTS["triage"].model_json_schema())
+                        schema = json.loads(args[args.index("--json-schema") + 1])
+                    self.assertEqual(schema, STAGE_OUTPUTS["triage"].model_json_schema())
                     return worker_reply(args, {"triage": "implement"})
 
                 result = CliWorker(Path("engine"), run)(
@@ -196,6 +206,8 @@ class CliWorkerTest(unittest.TestCase):
                 )
                 self.assertEqual(result.kind, "ran")
                 self.assertEqual(result.output["triage"], "implement")
+                for path in schema_paths:
+                    self.assertFalse(path.exists())
 
     def test_subprocess_merges_adapter_environment_with_inherited_environment(self):
         inherited = {"PATH": "/bin", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0"}
@@ -213,13 +225,16 @@ class CliWorkerTest(unittest.TestCase):
             worker("triage", None, {}, "")
 
     def test_non_object_replies_are_invalid(self):
-        replies = ('Here is the result: {"triage": "implement"}', '["implement"]')
-        for reply in replies:
+        replies = (
+            ('Here is the result: {"triage": "implement"}', "did not return valid JSON"),
+            ('["implement"]', "valid dictionary"),
+        )
+        for reply, detail in replies:
             with self.subTest(reply=reply):
                 worker = CliWorker(Path("."), lambda args, cwd, env: worker_reply(args, reply))
                 outcome = worker("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
                 self.assertEqual(outcome.kind, "failed")
-                self.assertIn("did not return a JSON object", outcome.detail)
+                self.assertIn(detail, outcome.detail)
 
     def walk_triage(self, models, run):
         config = load_config()
@@ -277,14 +292,18 @@ class CliWorkerTest(unittest.TestCase):
         self.assertEqual(result["stop"], "cli_missing")
         self.assertIn("codex executable is unavailable", result["halt_detail"])
 
-    def test_codex_reroute_is_rejected_even_with_the_requested_banner(self):
-        def run(args, cwd, env):
-            return subprocess.CompletedProcess(
-                args, 0, '{"triage":"implement"}', "model: gpt-first\nmodel rerouted: gpt-first -> gpt-other\n"
-            )
+    def test_codex_cli_missing_removes_the_schema_file(self):
+        paths = []
 
-        outcome = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-first"), {}, "")
-        self.assertEqual(outcome.kind, "quota")
+        def run(args, cwd, env):
+            path = Path(args[args.index("--output-schema") + 1])
+            self.assertTrue(path.is_file())
+            paths.append(path)
+            raise FileNotFoundError(args[0])
+
+        outcome = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
+        self.assertEqual((outcome.kind, outcome.detail), ("cli_missing", "codex executable is unavailable"))
+        self.assertFalse(paths[0].exists())
 
 
 class StageOutputTest(unittest.TestCase):
@@ -823,7 +842,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.github.body = slice_body(SLICE)
         blocked = {
             "implementation": "built", "browser_proof": BROWSER,
-            "formal_proof": {"constraints": [{"constraint": "unique_item_id", "rejected": False}]},
+            "formal_proof": {**FORMAL, "constraints": [{"constraint": "unique_item_id", "rejected": False}]},
         }
         result = self.walk([{"triage": "implement"}] + [blocked] * 3)
         self.assertEqual(result["stop"], "review_cap")
@@ -1116,7 +1135,7 @@ def run(args, cwd, env):
     prompt = args[-1]
     state = json.loads(prompt.split("Delivery state:\\n")[1])
     if args[0] == "codex":
-        schema = json.loads(prompt.split("Output schema:\\n")[1].split("\\n\\nDelivery state:")[0])
+        schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
     else:
         schema = json.loads(args[args.index("--json-schema") + 1])
     if schema["title"] == "TriageOutput":
