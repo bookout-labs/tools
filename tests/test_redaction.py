@@ -17,7 +17,7 @@ from foreman.delivery import DryRun
 from foreman.github import LiveForge
 from foreman.redaction import redact
 from foreman.runner import _load_slice
-from foreman.stage_output import Slice
+from foreman.stage_output import StoredSlice
 
 
 # Synthetic credential shapes assembled at runtime. None have been issued.
@@ -79,7 +79,7 @@ class RedactionTest(unittest.TestCase):
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
         for kind, (secret, surrounding) in SYNTHETIC_CASES.items():
             with self.subTest(kind=kind):
-                child = Slice(
+                child = StoredSlice(
                     title="Child issue", acceptance=f'Before \\ "{surrounding.format(secret)}"\nAfter',
                     depends_on=[], screen="", properties=[],
                 )
@@ -88,7 +88,7 @@ class RedactionTest(unittest.TestCase):
                 argv = gh.call_args.args[0]
                 self.assertIn("title=Synthetic case [redacted:GitHub Token]", argv)
                 body = next(arg.removeprefix("body=") for arg in argv if arg.startswith("body="))
-                acceptance = _load_slice(body)["acceptance"]
+                acceptance = _load_slice(body).acceptance
                 assert isinstance(acceptance, str)
                 self.assertIn(f"[redacted:{kind}]", acceptance)
                 self.assertNotIn(secret, acceptance)
@@ -125,7 +125,7 @@ class RedactionTest(unittest.TestCase):
     def test_redaction_preserves_the_slice_json_delimiters(self, gh):
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
         token = "npm_" + "a" * 36
-        child = Slice.model_validate({
+        child = StoredSlice.model_validate({
             "title": f"Explain BEGIN PRIVATE KEY in the docs {SYNTHETIC_GITHUB}",
             "acceptance": f"//example.invalid/:_authToken={token}",
             "screen": f"docs/screens/{SYNTHETIC_GITHUB}.md",
@@ -138,9 +138,10 @@ class RedactionTest(unittest.TestCase):
         LiveForge().create_issue("Example/Target", child.title, f"Excerpt {SYNTHETIC_GITHUB}", ["slice"], child=child)
         written = next(arg for arg in gh.call_args.args[0] if arg.startswith("body="))
         self.assertIn("body=Excerpt [redacted:GitHub Token]\n", written)
-        self.assertEqual(_load_slice(written.removeprefix("body=")), {
+        self.assertEqual(_load_slice(written.removeprefix("body=")).model_dump(exclude_unset=True), {
             "title": "Explain [redacted:Private Key] in the docs [redacted:GitHub Token]",
             "acceptance": "[redacted:NPM tokens]",
+            "builds": [], "uses": [],
             "screen": "docs/screens/[redacted:GitHub Token].md",
             "depends_on": ["Setup [redacted:GitHub Token]"],
             "properties": [{"name": "[redacted:Private Key]", "constraint": "row_check [redacted:GitHub Token]"}],
@@ -230,8 +231,9 @@ class RedactionTest(unittest.TestCase):
             ("cli.py", "_write_run_log"): 1,
             ("delivery.py", "DryRun.record_merge"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,
-            ("github.py", "LiveForge._redact_slice"): 6,
+            ("github.py", "LiveForge._redact_slice"): 10,
             ("github.py", "LiveForge.add_label"): 1,
+            ("github.py", "LiveForge.add_blocker"): 1,
             ("github.py", "LiveForge.create_issue"): 1,
             ("github.py", "LiveForge.post_review"): 4,
         })

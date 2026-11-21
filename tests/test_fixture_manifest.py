@@ -19,7 +19,7 @@ class FixtureManifestTest(unittest.TestCase):
         files = {
             path.relative_to(root).as_posix()
             for path in root.rglob("*")
-            if path != manifest_path and path.is_file() and not path.is_symlink()
+            if path not in {manifest_path, root / "README.md"} and path.is_file() and not path.is_symlink()
         }
         with self.subTest("fixtures without manifest entries"):
             self.assertEqual(files - manifest.fixtures.keys(), set())
