@@ -1,3 +1,5 @@
+"""Live runner behavior with offline workers and forge doubles."""
+
 import tests
 
 import contextlib
@@ -37,6 +39,7 @@ from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, ReviewD
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
 from test_adapters import codex_events, fixture_process
 from test_spec_candidate import CandidateTests
+from owner_contract import assert_channels, assert_repaired
 
 
 HEAD = "a" * 40
@@ -301,37 +304,6 @@ class FakeGitHub:
 
 
 class CliWorkerTest(unittest.TestCase):
-    def test_owner_states_are_serialized_in_worker_prompt(self):
-        merge = MergeState(status="not_armed", observation={"outcome": "ready"},
-                           receipt={"status": "QUEUED"}, observed_head=HEAD, command=["gh", "pr", "merge"])
-
-        work = WorkState(branch=BRANCH, base="main", attempt_head=HEAD,
-                         candidate={"disposition": "edits", "fingerprint": "tree"},
-                         partial_edits="partial", head_sha=HEAD, repair_head="b" * 40)
-
-        run_state = RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout", token_cap=100, max_budget_usd="1.5")
-
-        checks = ChecksState(check="true", preflight="env", check_exit_code=0, verify="pass", verified_head=HEAD,
-            browser_proof=BROWSER, formal_proof=FORMAL, proof_labels={"browser": "block"})
-
-        plan = PlanState(triage="implement", issue_kind="slice", spec_gate="ready", child_issue_numbers=[9],
-            spec_rejection={"kind": "dangling_seam", "detail": "Missing"},
-            pr_split={"plan": "Split", "gate": "ready", "question": "Keep?", "slices": [EMPTY_SLICE]})
-
-        plan = CandidateTests().candidate().update(plan, single=True)
-
-        def run(args, cwd, env):
-            state = json.loads(args[-1].split("Delivery state:\n")[1])
-            self.assertEqual(state["plan"], plan.model_dump(mode="json"))
-            self.assertEqual(state["checks"], checks.model_dump(mode="json"))
-            self.assertEqual(state["run"], run_state.model_dump(mode="json"))
-            self.assertEqual(state["work"], work.model_dump(mode="json"))
-            self.assertEqual(state["merge"], merge.model_dump(mode="json"))
-            return worker_reply(args, {"triage": "implement"})
-
-        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge, "work": work, "run": run_state, "checks": checks, "plan": plan}, "Read.")
-        self.assertEqual(result.kind, "ran")
-
     def test_commands_use_the_configured_models_and_parse_the_final_result(self):
         models = {
             "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"],
@@ -688,7 +660,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual((receipt["source_head"], receipt["identity"]), (HEAD, "queue-test"))
         with patch.object(self.github, "readiness", side_effect=AssertionError("completed run reobserved")):
             resumed = self.walk([])
-        self.assertEqual(resumed["merge"].receipt, result["merge"].receipt)
+        assert_channels(self, resumed, result)
 
     def test_saved_receipt_reconciles_before_readiness_without_reenqueue(self):
         for status in ["missing", "merged"]:
@@ -1023,8 +995,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
-        self.assertEqual(saved.checkpoint["channel_values"]["checks"], halted["checks"])
-        self.assertEqual(saved.checkpoint["channel_values"]["plan"], halted["plan"])
+        assert_channels(self, saved.checkpoint["channel_values"], halted)
 
     def test_quota_pause_returns_the_resumable_cli_exit_code(self):
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
@@ -1913,19 +1884,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         with patch.object(self.github, "readiness", return_value=remote):
             resumed = self.walk([], workspace=workspace)
         self.assertEqual(resumed["stop"], "dirty_worktree")
-        expected = WorkState(branch=BRANCH, base="main", repair_head="3" * 40)
-        self.assertEqual(resumed["work"], expected)
-        self.assertEqual(resumed["checks"], ChecksState(check=halted["checks"].check, preflight=halted["checks"].preflight))
-        self.assertEqual(resumed["run"], halted["run"])
-        self.assertIsNone(resumed["plan"].pr_split)
-        self.assertEqual(resumed["plan"], halted["plan"].model_copy(update={"pr_split": None}))
+        assert_repaired(self, halted, resumed, repair_head="3" * 40)
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
-        self.assertEqual(saved.checkpoint["channel_values"]["checks"], resumed["checks"])
-        self.assertEqual(saved.checkpoint["channel_values"]["work"], expected)
-        self.assertEqual(saved.checkpoint["channel_values"]["run"], halted["run"])
-        self.assertEqual(saved.checkpoint["channel_values"]["plan"], resumed["plan"])
+        assert_channels(self, saved.checkpoint["channel_values"], resumed)
 
     def test_multi_round_repair_halt_preserves_run_and_discards_previous_attempt(self):
         workspace = FakeWorkspace(self.cwd)
@@ -1950,17 +1913,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         workspace.current = WorktreeState(HEAD, False, BRANCH)
         resumed = self.walk([], workspace=workspace)
         self.assertEqual(resumed["stop"], "dirty_worktree")
-        self.assertEqual(resumed["run"], halted["run"])
-        self.assertEqual(resumed["work"], WorkState(branch=BRANCH, base="main"))
-        self.assertEqual(resumed["merge"], MergeState())
-        self.assertEqual(resumed["plan"], halted["plan"])
-        self.assertEqual(halted["checks"].verified_head, HEAD)
-        self.assertEqual(resumed["checks"], ChecksState(check=halted["checks"].check, preflight=halted["checks"].preflight))
+        assert_repaired(self, halted, resumed, repair_head=None)
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
-        self.assertEqual(saved.checkpoint["channel_values"]["plan"], halted["plan"])
-        self.assertEqual(saved.checkpoint["channel_values"]["checks"], resumed["checks"])
+        assert_channels(self, saved.checkpoint["channel_values"], resumed)
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
