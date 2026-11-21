@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "feature-001",
+      "sha256": "7740b0cff5f9527cdde0d65ac8637754e0905ef5d4f9129f3a87ff24511cd495",
+      "request_sha256": "81284aebe65960b2bdfcb482761f33e341cd8e32532af8f79d7801b32182b80f",
+      "answer_sha256": "9a8b4d239944993bb3b72b6eb7636a5bbe705c2ddc9b3a53ea27cb593a4ff685"
+    }
+  ]
+}
