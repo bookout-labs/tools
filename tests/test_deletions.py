@@ -14,7 +14,9 @@ class DeletionTests(unittest.TestCase):
         for path in root.rglob("*.py"):
             with self.subTest(path=path.name):
                 self.assertIsNone(retired.search(path.read_text()))
-        self.assertFalse((root / "measure.py").exists())
+        for name in ("measure.py", "measure.toml"):
+            with self.subTest(name=name):
+                self.assertFalse((root / name).exists())
 
     def test_improve_command_is_rejected(self):
         with redirect_stderr(StringIO()) as error, self.assertRaises(SystemExit) as stopped:

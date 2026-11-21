@@ -28,7 +28,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-foreman = ["models.toml", "measure.toml", "stages/*.md", "skills/*.md", "roles/*.md"]
+foreman = ["models.toml", "stages/*.md", "skills/*.md", "roles/*.md"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
