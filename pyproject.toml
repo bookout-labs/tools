@@ -8,6 +8,7 @@ dependencies = [
   "detect-secrets==1.5.0",
   "langgraph==1.2.24",
   "langgraph-checkpoint-sqlite>=3.0.1,<4",
+  "PyJWT[crypto]>=2.10.1,<3",
   "pydantic>=2.9,<3",
   "pyyaml>=6.0.2,<7",
   "typing-extensions>=4.6.1,<5",
@@ -28,7 +29,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-foreman = ["models.toml", "measure.toml", "stages/*.md", "skills/*.md", "roles/*.md"]
+foreman = ["models.toml", "stages/*.md", "skills/*.md", "roles/*.md"]
 
 [tool.pyright]
 typeCheckingMode = "strict"

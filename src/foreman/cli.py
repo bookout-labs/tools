@@ -242,7 +242,7 @@ def main(
             state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
         if live_run is None:
-            live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd()))
+            live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd(), args.repo))
         live_run = replace(live_run, check_log=_write_check_log)
         dispatcher = CliWorker(live_run.workspace.root, worker_runner)
         try:

@@ -611,7 +611,7 @@ class Forge(FakeGitHub):
         return QueueSnapshot(number=12, state="MERGED" if written and sys.argv[3] == "merged" else "OPEN",
             headRefOid=HEAD, baseRefOid=BASE, baseRefName="main", isDraft=False, autoMergeRequest=None,
             mergeQueueEntry={"id": "queue-crash", "state": "QUEUED"} if written else None)
-    def _run_command(self, command):
+    def _run_command(self, repo, command):
         assert command[1:3] == ["pr", "merge"]
         with Path("merges.log").open("a") as log:
             log.write("merge\n")
@@ -1942,7 +1942,7 @@ def run(args, cwd, env):
             })
         assert state["human_answers"] == ["Only open items"]
         assert state["request"] == "List items"
-        assert state["human_question"] == f"Which items? {SYNTHETIC_QUESTION_TOKEN}"
+        assert state["human_question"] == "Which items? [redacted:GitHub Token]"
         return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
     if schema["title"] == "ImplementOutput":
         return workspace.reply(args, {"implementation": "built"})

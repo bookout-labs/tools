@@ -25,13 +25,14 @@ from typing_extensions import TypedDict
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, ModelSpec, family, load_config, order_for
 from foreman.dry_run import ScriptHandler
-from foreman.dispatch import Handler, InvalidOutput, QuotaExhausted
+from foreman.dispatch import Handler, InvalidOutput, QuotaExhausted, clean_outcome
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
+from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
 from foreman.stage_output import (
     CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
@@ -99,6 +100,7 @@ class LiveRun:
 
 @dataclass(frozen=True)
 class DryRun:
+    review_context: ReviewContext = SCRIPTED_REVIEW_CONTEXT
     skills: SkillSource = export_skills
 
     def record_merge(self, repo: str, head: str | None) -> list[str]:
@@ -554,7 +556,7 @@ def compile_delivery(
                 for key in ("review_findings", "settled_rulings", *(("findings", "detail", "implementation") if history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])}).rounds else ())):
                     worker_state.pop(key, None)
             accepted_model = ModelSpec.parse(models[pending["index"]]) if models else None
-            outcome = dispatcher(name, accepted_model, worker_state, plan["instruction"])
+            outcome = clean_outcome(dispatcher(name, accepted_model, worker_state, plan["instruction"]))
             model = accepted_model.name if accepted_model else None
             attempts = [Attempt(
                 stage=name, model=model, commit=config.pstack.commit, methods=methods, outcome=outcome.kind,

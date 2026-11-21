@@ -32,7 +32,8 @@ class MergeReceiptTest(unittest.TestCase):
     def arm(self, before=SNAPSHOT, after=QUEUED, error=None):
         self.commands = []
         snapshots = iter([before, after])
-        def command(argv, **kwargs):
+        def command(repo, argv, **kwargs):
+            self.assertEqual(repo, REPO)
             self.commands.append(argv)
             if argv[1:3] == ["api", "graphql"]:
                 return json.dumps(next(snapshots))
@@ -108,7 +109,7 @@ class MergeReceiptTest(unittest.TestCase):
         with self.assertRaises(MergeNotArmed) as error:
             LiveForge().arm_auto_merge(REPO, 82, BRANCH, HEAD, OBSERVATION)
         self.assertIsInstance(error.exception.__cause__, CommandFailed)
-        self.assertIs(error.exception.__cause__.__cause__, launch)
+        self.assertIsNone(error.exception.__cause__.__cause__)
         run.side_effect = subprocess.TimeoutExpired(["gh", "pr", "view"], 30)
         with self.assertRaisesRegex(CommandTimedOut, "gh pr view timed out") as error:
             LiveForge().readiness(REPO, 82, BRANCH, HEAD)
