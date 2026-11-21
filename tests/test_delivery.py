@@ -328,6 +328,9 @@ class DeliveryTest(unittest.TestCase):
         walk(handler)
         by_node = {call["node"]: call["instruction"] for call in handler.calls}
         self.assertTrue(by_node["triage"].startswith(stage_text("triage")))
+        for instruction in by_node.values():
+            self.assertNotIn("Talk through the work with the person.", instruction)
+            self.assertNotIn("The factory label triggers the delivery graph.", instruction)
         self.assertIn("Do not edit it.", by_node["implement"])
         self.assertIn("Do not add a test that restates the code.", by_node["implement"])
         self.assertIn("review-quality.md", by_node["review"])
