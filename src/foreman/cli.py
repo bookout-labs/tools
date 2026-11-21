@@ -1,29 +1,28 @@
 """Command line for the foreman tool."""
 
 import argparse
-import json
 import os
 from pathlib import Path
 import re
 import shlex
-import subprocess
 import sys
-from typing import Callable
+from typing import assert_never
 
 import yaml
 
 from foreman.accept import AcceptError, accept_event
-from foreman.delivery import GRAPH_NAME, diagram, run_delivery
+from foreman.delivery import DeliveryState, GRAPH_NAME, LiveRun, diagram, run_delivery
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
-from foreman.github import GitHub
+from foreman.github import ForgeError, LiveForge
 from foreman.measure import MeasureError, propose
 from foreman.pointer import PointerError, load_pointer
-from foreman.runner import WorktreeInspector, run_live_delivery
+from foreman.runner import run_live_delivery
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
+from foreman.workspace import LiveWorkspace
 
 
-def _print_run(result: dict) -> None:
+def _print_run(result: DeliveryState) -> None:
     models = result.get("models_used", {})
     for node in result["path"]:
         if node == "verify":
@@ -37,14 +36,15 @@ def _print_run(result: dict) -> None:
             if detail := result.get("halt_detail"):
                 print(detail)
         elif node == "merge":
-            if result["merge_armed"]:
-                print("merge armed")
-            elif result.get("merge_args"):
-                print("merge arm recorded")
-            else:
-                print("merge unarmed")
-            if args := result.get("merge_args"):
-                print(shlex.join(args))
+            match outcome := result["merge"]:
+                case "armed":
+                    print("merge armed")
+                case "skipped":
+                    print(f"merge skipped (dry run): {shlex.join(result['merge_command'])}")
+                case "not_armed":
+                    print("merge not armed")
+                case _:
+                    assert_never(outcome)
         else:
             fields = [node]
             if model := models.get(node):
@@ -57,34 +57,12 @@ def _print_run(result: dict) -> None:
         print(result["halt_detail"])
 
 
-def _run_gh(args: list[str]) -> int:
-    return subprocess.run(args, shell=False, stdin=subprocess.DEVNULL).returncode
-
-
-def _find_pr(repo: str) -> dict[str, object] | None:
-    # An empty selector keeps current-branch lookup while satisfying gh's --repo argument check.
-    try:
-        result = subprocess.run(
-            ["gh", "pr", "view", "--repo", repo, "--json", "number,state,headRefOid,headRefName,baseRefName", ""],
-            shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-        )
-        if result.returncode != 0:
-            return None
-        pr = json.loads(result.stdout)
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None
-    return pr if isinstance(pr, dict) else None
-
-
 def main(
     argv: list[str] | None = None,
     *,
     worker_runner: CommandRunner | None = run_worker_command,
     checkpoint: Path | None = None,
-    github: GitHub | None = None,
-    run_gh: Callable[[list[str]], int] | None = None,
-    find_pr: Callable[[str], dict[str, object] | None] | None = None,
-    inspect_worktree: WorktreeInspector | None = None,
+    live_run: LiveRun | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -170,43 +148,21 @@ def main(
         if checkpoint is None:
             state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
-        cwd = Path.cwd()
-        dispatcher = FailoverDispatcher(CliWorker(cwd, worker_runner)) if worker_runner else None
-        lookup = _find_pr if find_pr is None else find_pr
-        merge = _run_gh if run_gh is None else run_gh
-
-        def merge_if_matching_pr(command: list[str]) -> int:
-            if command[:-1] != ["gh", "pr", "merge", "--auto", "--match-head-commit"]:
-                return 1
-            sha = command[-1]
-            if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
-                return 1
-            pr = lookup(args.repo)
-            if pr is None or pr.get("state") != "OPEN":
-                return 1
-            head = pr.get("headRefOid")
-            if not isinstance(head, str) or head.lower() != sha.lower():
-                return 1
-            branch = pr.get("headRefName")
-            if not isinstance(branch, str) or not branch.startswith(f"{args.issue}-") or pr.get("baseRefName") != "main":
-                return 1
-            return merge(command)
-
+        if live_run is None:
+            live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd()))
+        dispatcher = FailoverDispatcher(CliWorker(live_run.workspace.root, worker_runner)) if worker_runner else None
         try:
             result = run_live_delivery(
                 repo=args.repo,
                 issue=args.issue,
                 check=args.check,
-                cwd=cwd,
                 checkpoint=checkpoint,
                 dispatcher=dispatcher,
                 request=args.request,
-                github=github,
-                run_gh=merge_if_matching_pr,
+                run=live_run,
                 answer=args.answer,
-                inspect_worktree=inspect_worktree,
             )
-        except (OSError, QuotaExhausted, ValueError) as exc:
+        except (ForgeError, OSError, QuotaExhausted, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
     _print_run(result)

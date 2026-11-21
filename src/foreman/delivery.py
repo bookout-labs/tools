@@ -1,10 +1,10 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
+from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from typing import Annotated, Callable, Literal, TypedDict
+from typing import Annotated, Literal, TypedDict
 import operator
-import re
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -13,10 +13,12 @@ from langgraph.types import interrupt
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.github import Forge, MergeNotArmed, merge_command
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.stage_output import (
     Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
 )
+from foreman.workspace import Workspace, WorktreeInspectionFailed
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -25,7 +27,15 @@ STAGE_ORDER = REQUIRED_NODES + ("merge",)
 SKILLS_FOR = {
     "review": ("review-quality", "merge-risk"),
 }
-FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+@dataclass(frozen=True)
+class LiveRun:
+    forge: Forge
+    workspace: Workspace
+
+
+@dataclass(frozen=True)
+class DryRun:
+    pass
 
 
 class DeliveryState(TypedDict, total=False):
@@ -45,9 +55,9 @@ class DeliveryState(TypedDict, total=False):
     research: str
     implementation: str
     head_sha: str | None
-    head_checked: bool
-    merge_armed: bool
-    merge_args: list[str]
+    verified_head: str
+    merge: Literal["armed", "skipped", "not_armed"]
+    merge_command: list[str]
     browser_proof: dict[str, object] | None
     formal_proof: dict[str, object] | None
     proof_labels: dict[str, str]
@@ -149,14 +159,11 @@ def stop_reason(state: DeliveryState) -> str:
 
 def compile_delivery(
     dispatcher: FailoverDispatcher | None,
-    config: Config | None = None,
+    config: Config,
     *,
+    run: LiveRun | DryRun,
     checkpointer: BaseCheckpointSaver | None = None,
-    run_check: Callable[[str], int] | None = None,
-    run_gh: Callable[[list[str]], int] | None = None,
-    inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
 ):
-    config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
@@ -190,32 +197,34 @@ def compile_delivery(
                     raise QuotaExhausted(model)
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
-                output = parse_output(STAGE_OUTPUTS[name], outcome.output)
-                update = stage_update(name, output, state, model)
-                if name == "implement" and inspect_worktree is not None:
-                    update.update(head_sha=None, head_checked=False)
-                return update
+                return stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model)
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
 
         return node
 
+    scripted_verify = bind("verify")
+
     def verify(state: DeliveryState) -> dict[str, object]:
-        assert run_check is not None
-        checked = {}
-        if inspect_worktree is not None:
-            head, clean = inspect_worktree()
-            if not clean or not FULL_SHA.fullmatch(head):
-                return {"path": ["verify"], "halt": "dirty_worktree"}
-            checked = {"head_sha": head, "head_checked": True}
-        exit_code = run_check(state["check"])
-        verdict = "pass" if exit_code == 0 else "fail"
-        return {
-            **stage_update("verify", VerifyOutput(verify=verdict), state),
-            "check_exit_code": exit_code,
-            "proof_labels": {},
-            **(checked if exit_code == 0 else {}),
-        }
+        match run:
+            case DryRun():
+                return scripted_verify(state)
+            case LiveRun(workspace=workspace):
+                try:
+                    worktree = workspace.inspect()
+                except WorktreeInspectionFailed as exc:
+                    return {"path": ["verify"], "halt": "dirty_worktree", "halt_detail": str(exc)}
+                if not worktree.clean:
+                    return {"path": ["verify"], "halt": "dirty_worktree"}
+                exit_code = workspace.run(state["check"])
+                verdict = "pass" if exit_code == 0 else "fail"
+                checked = {"verified_head": worktree.head} if exit_code == 0 else {}
+                return {
+                    **stage_update("verify", VerifyOutput(verify=verdict), state),
+                    "check_exit_code": exit_code,
+                    "proof_labels": {},
+                    **checked,
+                }
 
     def prove(state: DeliveryState) -> DeliveryState:
         slice = state["slice"]
@@ -287,23 +296,44 @@ def compile_delivery(
         return "done" if state.get("halt") else "verify"
 
     def arm_merge(state: DeliveryState) -> DeliveryState:
-        head = state.get("head_sha")
-        if not head or not FULL_SHA.fullmatch(head):
-            return {"merge_armed": False, "path": ["merge"]}
-        args = ["gh", "pr", "merge", "--auto", "--match-head-commit", head]
-        if inspect_worktree is not None:
-            current, clean = inspect_worktree()
-            if not state.get("head_checked") or not clean or current != head:
-                return {"merge_armed": False, "merge_args": args, "path": ["merge"]}
-        armed = run_gh(args) == 0 if run_gh is not None else run_check is None
-        return {"merge_armed": armed, "merge_args": args, "path": ["merge"]}
+        def halted(detail: str) -> DeliveryState:
+            return {"merge": "not_armed", "halt": "merge_not_armed", "halt_detail": detail, "path": ["merge"]}
+
+        match run:
+            case DryRun():
+                return {
+                    "merge": "skipped", "path": ["merge"],
+                    "merge_command": merge_command(state["repo"], "<number>", state.get("head_sha") or "<sha>"),
+                }
+            case LiveRun(forge=forge, workspace=workspace):
+                head = state.get("verified_head")
+                if head is None:
+                    return halted("The run did not record a verified HEAD.")
+                try:
+                    worktree = workspace.inspect()
+                except WorktreeInspectionFailed as exc:
+                    return halted(str(exc))
+                if not worktree.clean:
+                    return halted("The worktree has changes or Git could not inspect it.")
+                if worktree.head != head:
+                    return halted(
+                        f"HEAD is {worktree.head}, verification checked {head}. "
+                        "This run is finished and the merge was not armed."
+                    )
+                if worktree.branch is None:
+                    return halted("HEAD is detached. Merge requires a checked-out branch.")
+                try:
+                    forge.arm_auto_merge(state["repo"], state["issue"], worktree.branch, head)
+                except MergeNotArmed as exc:
+                    return halted(str(exc))
+                return {"merge": "armed", "path": ["merge"]}
 
     def finish(state: DeliveryState) -> DeliveryState:
         return {"stop": stop_reason(state), "path": ["done"]}
 
     builder = StateGraph(DeliveryState)
     for name in REQUIRED_NODES:
-        builder.add_node(name, verify if name == "verify" and run_check is not None else bind(name))
+        builder.add_node(name, verify if name == "verify" else bind(name))
     builder.add_node("proof", prove)
     builder.add_node("needs_human", needs_human)
     builder.add_node("merge", arm_merge)
@@ -363,7 +393,7 @@ def run_delivery(
     }
     if slice is not None:
         state["slice"] = load_slice(slice)
-    graph = compile_delivery(dispatcher, config)
+    graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
     return graph.invoke(state)
 
 
@@ -374,5 +404,5 @@ def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None 
                 "ran", {"triage": "implement", "slice": None, "human_question": None},
             ),
         )
-    graph = compile_delivery(dispatcher, config)
+    graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
     return graph.get_graph().draw_mermaid()
