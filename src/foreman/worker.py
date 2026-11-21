@@ -10,7 +10,7 @@ import tempfile
 from tempfile import TemporaryDirectory
 from typing import Callable
 
-from foreman.adapters import Call, CliAdapter, Outcome
+from foreman.adapters import Call, CapabilityUnavailable, CliAdapter, Outcome
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
@@ -64,9 +64,12 @@ class CliWorker:
         with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
             scratch = Path(directory) / "scratch"
             scratch.mkdir()
-            args = adapter.command(Call(prompt, schema, edit=edit, check=check if isinstance(check, str) else None,
-                                        read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
-                                        temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None))
+            try:
+                args = adapter.command(Call(prompt, schema, edit=edit, check=check if isinstance(check, str) else None,
+                                            read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
+                                            temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None))
+            except CapabilityUnavailable as exc:
+                return Outcome("cli_missing", detail=str(exc))
             try:
                 process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch)})
             except FileNotFoundError:

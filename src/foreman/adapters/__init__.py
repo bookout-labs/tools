@@ -48,6 +48,10 @@ class Call:
     read_roots: tuple[Path, ...] = ()
 
 
+class CapabilityUnavailable(ValueError):
+    """The native CLI cannot enforce the requested worker boundary."""
+
+
 class CliAdapter(Protocol):
     env: ClassVar[Mapping[str, str]]
 

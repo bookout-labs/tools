@@ -117,3 +117,36 @@ class PermissionsTest(unittest.TestCase):
             reads = [c for c in content if c.get("type") == "tool_use" and c.get("name") == "Read" and c["input"]["file_path"].endswith("methods/method.md")]
             self.assertTrue(reads)
             self.assertTrue(any(c.get("type") == "tool_result" and c.get("tool_use_id") == reads[0]["id"] and not c.get("is_error") for c in content))
+
+    def test_grok_fails_before_launch_for_editing_and_readonly(self):
+        from unittest.mock import Mock, patch
+        for system in ('Darwin', 'Linux', 'Windows'):
+            for stage in ('implement', 'review'):
+                runner = Mock()
+                with patch('foreman.adapters.grok.platform.system', return_value=system):
+                    outcome = CliWorker(Path.cwd(), runner)(stage, ModelSpec.parse('grok-4.7-high'), {}, 'probe')
+                self.assertEqual(outcome.kind, 'cli_missing')
+                self.assertIn(system, outcome.detail)
+                self.assertIn('editing requires an isolated worker launcher' if stage == 'implement' else 'temp writes', outcome.detail)
+                runner.assert_not_called()
+
+    def test_codex_kernel_captures_enforce_writes_and_network(self):
+        for mode in ('edit', 'readonly'):
+            capture = json.loads((Path(__file__).parent / f'fixtures/codex/permissions/{mode}.json').read_text())
+            self.assertEqual(capture['returncode'], 0)
+            self.assertIn('--ignore-user-config', capture['argv'])
+            self.assertIn('--ignore-rules', capture['argv'])
+            self.assertFalse(capture['commit_succeeded'])
+            for row in capture['kernel']:
+                command = row['command']
+                allowed = command.startswith('cat ') or (mode == 'edit' and (
+                    command == 'sh check.sh' or command.startswith('echo scratch ')))
+                self.assertEqual(row['returncode'] == 0, allowed, row)
+            for path in ('methods/method.md', 'scratch/methods/method.md', 'repo/methods/method.md'):
+                self.assertEqual(capture['files'][path], 'original\n')
+            self.assertNotIn('outside/escape', capture['files'])
+            self.assertEqual('repo/checked' in capture['files'], mode == 'edit')
+            self.assertNotEqual(capture['unavailable_policy']['returncode'], 0)
+            self.assertEqual(capture['unavailable_policy']['stdout'], '')
+            self.assertNotEqual(capture['sandbox_unavailable']['returncode'], 0)
+            self.assertEqual(capture['sandbox_unavailable']['stdout'], '')
