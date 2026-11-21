@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, Po
 
 from pydantic.config import JsonDict
 
+from foreman.contracts import Contract as Contract, Text as Text
 from foreman.config import ModelSpec
 from foreman.adapters import OutcomeKind
 from foreman.usd import CostUsd
@@ -22,7 +23,6 @@ from foreman.dispatch import InvalidOutput
 
 PULL_REQUEST_LINES = 400
 
-Text = Annotated[str, StringConstraints(pattern=r"\S")]
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Output = TypeVar("Output", bound=BaseModel)
 WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
@@ -124,10 +124,6 @@ class FindingRecord(TypedDict):
     line: int
     severity: Severity
     summary: str
-
-
-class Contract(BaseModel):
-    model_config = ConfigDict(strict=True, extra="forbid")
 
 
 Record = TypeVar("Record")

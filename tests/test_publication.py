@@ -378,7 +378,7 @@ class PublicationTest(unittest.TestCase):
             "quoted-operator-red.txt", "run-eval-provider.py", "run-unit-tests.py",
             "runner-checks.txt", "unit-tests-final.txt",
         )
-        for mode in ("untracked", "staged", "committed", "tracked"):
+        for mode in ("staged", "committed", "tracked"):
             with self.subTest(mode=mode):
                 self.reset_fixture()
                 self.scratch_policy()
@@ -394,7 +394,7 @@ class PublicationTest(unittest.TestCase):
                         path = self.checkout / "evidence" / name
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_text("scratch\n")
-                    if mode in ("staged", "committed"):
+                    if mode in ("staged", "committed", "tracked"):
                         self.git("add", "-f", "evidence")
                     if mode == "committed":
                         self.worker_commit()
@@ -413,12 +413,80 @@ class PublicationTest(unittest.TestCase):
                     (self.checkout / "evidence" / name).unlink()
                 if mode in ("staged", "committed", "tracked"):
                     self.git("add", "--all")
-                # A tracked disposable deletion is still part of the delta.
-                if mode == "tracked":
-                    self.git("restore", "--source=HEAD", "--staged", "--worktree", "evidence/README.md")
                 resumed = self.walk(self.no_worker)
                 self.assertEqual(resumed["stop"], "verified")
                 self.assertEqual(resumed["attempts"][:2], result["attempts"])
+
+    def test_ignored_runtime_and_local_files_never_enter_the_commit(self):
+        for committed in (False, True):
+            with self.subTest(committed=committed):
+                self.reset_fixture()
+                self.scratch_policy()
+                ignore = self.checkout / ".gitignore"
+                ignore.write_text(ignore.read_text() + ".venv/\n__pycache__/\n")
+                self.git("add", ".gitignore")
+                self.git("commit", "-m", "Runtime ignores")
+                self.git("push", "origin", "main")
+                (self.checkout / ".git/info/exclude").write_text(".env\n.DS_Store\n")
+                paths = (".venv/bin/python", "__pycache__/m.cpython-312.pyc", ".env", ".DS_Store", "evidence/run.log")
+                def edit():
+                    self.edit()
+                    for name in paths:
+                        file = self.checkout / name
+                        file.parent.mkdir(parents=True, exist_ok=True)
+                        file.write_text("local")
+                    if committed:
+                        self.worker_commit()
+                result = self.walk(edit)
+                self.assertEqual(result["stop"], "verified")
+                files = self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines()
+                for name in paths:
+                    self.assertNotIn(name, files)
+                    self.assertTrue((self.checkout / name).is_file())
+
+    def test_malformed_fact_records_fail_closed(self):
+        for content in ('[broken', '[fixtures."../bad"]\nkind="captured_run"\ntool="tool"\nversion="1"\nargv=["tool"]\n'):
+            with self.subTest(content=content):
+                self.reset_fixture()
+                def edit():
+                    self.edit()
+                    path = self.checkout / "evidence/facts.toml"
+                    path.parent.mkdir()
+                    path.write_text(content)
+                result = self.walk(edit, fact_record="evidence/facts.toml")
+                self.assertEqual(result["stop"], "implementation_rejected")
+                self.assertIn("evidence/facts.toml", result["halt_detail"])
+                self.assertFalse(self.created)
+
+    def test_reconcile_uses_remote_base_when_local_base_differs(self):
+        self.scratch_policy()
+        self.git("switch", "-c", self.branch)
+        self.git("branch", "-f", "main", "HEAD^")
+        def edit():
+            self.edit()
+            (self.checkout / "evidence").mkdir()
+            (self.checkout / "evidence/scratch").touch()
+            self.git("add", "-f", "evidence/scratch")
+        self.assertEqual(self.walk(edit)["stop"], "implementation_rejected")
+
+    def test_deleting_tracked_scratch_is_allowed(self):
+        for committed in (False, True):
+            with self.subTest(committed=committed):
+                self.reset_fixture()
+                self.scratch_policy()
+                file = self.checkout / "evidence/old.log"
+                file.parent.mkdir()
+                file.write_text("old scratch")
+                self.git("add", "-f", "evidence/old.log")
+                self.git("commit", "-m", "Old scratch")
+                self.git("push", "origin", "main")
+                def edit():
+                    self.edit()
+                    file.unlink()
+                    if committed:
+                        self.worker_commit()
+                self.assertEqual(self.walk(edit)["stop"], "verified")
+                self.assertNotIn("evidence/old.log", self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines())
 
     def test_nested_ignore_and_negation_ignore_local_excludes(self):
         self.scratch_policy()
@@ -432,6 +500,7 @@ class PublicationTest(unittest.TestCase):
         def edit():
             self.edit()
             (directory / "drop.tmp").write_text("scratch")
+            self.git("add", "-f", "nested/drop.tmp")
             (directory / "keep.tmp").write_text("deliverable")
         rejected = self.walk(edit)
         self.assertEqual(rejected["stop"], "implementation_rejected")
@@ -439,8 +508,9 @@ class PublicationTest(unittest.TestCase):
         self.assertNotIn("keep.tmp", rejected["halt_detail"])
         self.assertNotIn("items.txt", rejected["halt_detail"])
         (directory / "drop.tmp").unlink()
+        self.git("add", "--all")
         self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
-        self.assertEqual(self.git("show", "HEAD:items.txt"), "one")
+        self.assertNotIn("items.txt", self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines())
 
     def test_fact_capture_does_not_authorize_adjacent_scratch(self):
         self.scratch_policy()
@@ -451,6 +521,7 @@ class PublicationTest(unittest.TestCase):
             (directory / "facts.toml").write_text('[fixtures."capture.txt"]\nkind="captured_run"\ntool="tool"\nversion="1"\nargv=["tool"]\n')
             (directory / "capture.txt").write_text("capture")
             (directory / "scratch.txt").write_text("scratch")
+            self.git("add", "-f", "evidence/scratch.txt")
         result = self.walk(edit, fact_record="evidence/facts.toml")
         self.assertEqual(result["stop"], "implementation_rejected")
         self.assertIn("evidence/scratch.txt", result["halt_detail"])
@@ -464,10 +535,12 @@ class PublicationTest(unittest.TestCase):
             self.edit()
             (self.checkout / ".gitignore").write_text("!evidence/\n!*.log\nitems.txt\n")
             (self.checkout / "odd\nname.log").write_text("scratch")
+            (self.checkout / ":!x.log").write_text("scratch")
             self.git("add", "--all")
         result = self.walk(edit)
         self.assertEqual(result["stop"], "implementation_rejected")
         self.assertIn(repr("odd\nname.log"), result["halt_detail"])
+        self.assertIn(":!x.log", result["halt_detail"])
         self.assertNotIn("'items.txt'", result["halt_detail"])
 
     def test_fact_captures_are_exact_deliverables_under_ignored_directory(self):
@@ -663,10 +736,10 @@ class PublicationTest(unittest.TestCase):
                 hook = self.remote / "hooks/pre-receive"
                 hook.write_text("#!/bin/sh\necho 'synthetic rejection' >&2\nexit 1\n")
                 hook.chmod(0o755)
-                if case == "missing remote":
-                    self.git("remote", "remove", "origin")
                 original = self.subprocess
                 def remote(command, **kwargs):
+                    if case == "missing remote" and command[:3] == ["git", "remote", "get-url"]:
+                        return subprocess.CompletedProcess(command, 128, b"", b"origin is missing")
                     if case == "wrong push URL" and command[:3] == ["git", "remote", "get-url"] and "--push" in command:
                         return subprocess.CompletedProcess(command, 0, b"https://github.com/Example/Other.git", b"")
                     if case == "wrong push URL":

@@ -3,11 +3,13 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
+from io import BytesIO
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
 import subprocess
+import tarfile
 from tempfile import TemporaryDirectory
 from typing import Annotated, Literal, NewType, Protocol
 from typing_extensions import NotRequired, TypedDict
@@ -15,6 +17,7 @@ from pydantic import BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
+from foreman.fixture_manifest import FixtureManifest, MANIFEST_PATH, fact_record_path
 from foreman.redaction import redact
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
@@ -115,8 +118,8 @@ class Workspace(Protocol):
     def refresh(self, branch: str, head: str) -> None: ...
     def commit(self, message: str) -> None: ...
     def committed(self, parent: str, message: str) -> bool: ...
-    def reconcile(self, parent: str, branch: str, base_branch: str = "main",
-                  fact_record: str = "tests/fixtures/manifest.toml") -> ImplementationCandidate | None: ...
+    def reconcile(self, parent: str, branch: str, base_branch: str,
+                  fact_record: str) -> ImplementationCandidate | None: ...
     def tree(self, head: str) -> str: ...
     def soft_reset(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
@@ -212,37 +215,32 @@ class LiveWorkspace:
     def tree(self, head: str) -> str:
         return os.fsdecode(self._git("--no-replace-objects", "rev-parse", f"{head}^{{tree}}")).strip()
 
-    def reconcile(self, parent: str, branch: str, base_branch: str = "main",
-                  fact_record: str = "tests/fixtures/manifest.toml") -> ImplementationCandidate | None:
+    def reconcile(self, parent: str, branch: str, base_branch: str,
+                  fact_record: str) -> ImplementationCandidate | None:
         observed = self.inspect()
         recovery = f" Checkout preserved. Restore branch {branch} at {parent}, keep the intended edits, then rerun."
         if observed.branch != branch:
             raise ImplementationRejected(f"HEAD {observed.head} is not attached to delivery branch {branch}." + recovery)
-        merge_base = os.fsdecode(self._inspection_git(
-            parent, "merge-base", parent, f"refs/heads/{base_branch}",
-        )).strip()
+        base_ref = f"refs/remotes/origin/{base_branch}"
+        self._git(
+            "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
+            f"+refs/heads/{base_branch}:{base_ref}",
+        )
+        merge_base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base_ref, parent)).strip()
         paths = set(self._inspection_git(
-            merge_base, "diff", "--name-only", "--no-renames", "-z", parent, "--",
+            merge_base, "diff", "--name-only", "--no-renames", "--diff-filter=d", "-z", parent, "--",
         ).split(b"\0"))
         status = iter(self._inspection_git(
-            merge_base, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=traditional",
+            merge_base, "status", "--porcelain=v1", "-z", "--untracked-files=all",
         ).split(b"\0"))
-        unstaged_ignored: set[bytes] = set()
         for entry in status:
             if entry:
-                paths.add(entry[3:])
-                if entry[:2] == b"!!":
-                    unstaged_ignored.add(entry[3:])
+                if b"D" not in entry[:2]:
+                    paths.add(entry[3:])
                 if b"R" in entry[:2] or b"C" in entry[:2]:
-                    paths.add(next(status))
+                    next(status)
         paths.discard(b"")
-        ignored = set(self._inspection_git(
-            merge_base, "check-ignore", "--no-index", "-z", "--stdin",
-            input_paths=b"\0".join(sorted(paths)) + b"\0" if paths else b"",
-            allowed_returncodes=(0, 1),
-        ).split(b"\0")) - {b""}
-        # Fact records authorize only their regular captures, never their directory.
-        from foreman.fixture_manifest import FixtureManifest, MANIFEST_PATH, fact_record_path
+        ignored = self._ignored_at(merge_base, paths)
         facts: set[bytes] = set()
         for record in {MANIFEST_PATH, fact_record}:
             if not self.has_file(record) or (self.root / record).is_symlink():
@@ -254,14 +252,18 @@ class LiveWorkspace:
                     path = (PurePosixPath(record).parent / fact_record_path(capture)).as_posix()
                     if self.has_file(path) and not (self.root / path).is_symlink():
                         facts.add(os.fsencode(path))
-            except (ValueError, OSError):
-                pass
+            except (ValueError, OSError) as exc:
+                raise ImplementationRejected(f"Invalid fact record {record}: {exc}. Checkout preserved.") from exc
         rejected = ignored - facts
         if rejected:
             names = ", ".join(repr(os.fsdecode(path)) for path in sorted(rejected))
             raise ImplementationRejected(f"Disposable paths rejected: {names}. Remove them, keep intended edits, then rerun. Checkout preserved.")
-        if unstaged_ignored:
-            self._git("add", "--force", "--", *(os.fsdecode(path) for path in sorted(unstaged_ignored)))
+        ignored_facts = self._inspection_git(
+            merge_base, "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--",
+            *(os.fsdecode(path) for path in sorted(facts)),
+        ).split(b"\0") if facts else []
+        if any(ignored_facts):
+            self._git("--literal-pathspecs", "add", "--force", "--", *(os.fsdecode(path) for path in ignored_facts if path))
             observed = self.inspect()
         if observed.head == parent:
             return None if observed.clean else {"disposition": "edits", "fingerprint": self.fingerprint()}
@@ -411,21 +413,32 @@ class LiveWorkspace:
         diff = self.review_diff(previous, head, interdiff=True)
         return ReviewScope(diff.command, inline)
 
+    def _ignored_at(self, commit: str, paths: set[bytes]) -> set[bytes]:
+        names = self._inspection_git(commit, "ls-tree", "-rz", "--name-only", commit).split(b"\0")
+        ignores = [os.fsdecode(name) for name in names if name and PurePosixPath(os.fsdecode(name)).name == ".gitignore"]
+        if not paths or not ignores:
+            return set()
+        archive = self._inspection_git(commit, "archive", commit, "--", *ignores)
+        with TemporaryDirectory(prefix="foreman-ignore-") as directory:
+            policy = LiveWorkspace(Path(directory))
+            policy._git("init", "--quiet", "--template=")
+            with tarfile.open(fileobj=BytesIO(archive)) as tree:
+                for entry in tree:
+                    if entry.isfile():
+                        content = tree.extractfile(entry)
+                        assert content is not None
+                        path = policy.root / entry.name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(content.read())
+            ignored = policy._git(
+                "-c", "core.excludesFile=/dev/null", "check-ignore", "--no-index", "-z", "--stdin",
+                input_paths=b"\0".join(b"./" + path for path in sorted(paths)) + b"\0",
+                allowed_returncodes=(0, 1),
+            )
+        return {path.removeprefix(b"./") for path in ignored.split(b"\0") if path}
+
     def _inspection_git(self, attribute_source: str, command: str, *args: str, input_paths: bytes | None = None,
                         allowed_returncodes: tuple[int, ...] = (0,)) -> bytes:
-        if command == "check-ignore":
-            with TemporaryDirectory(prefix="foreman-ignore-") as directory:
-                policy = LiveWorkspace(Path(directory))
-                policy._git("init", "--quiet", "--template=")
-                names = self._inspection_git(attribute_source, "ls-tree", "-rz", attribute_source)
-                for entry in names.split(b"\0"):
-                    metadata, _, name = entry.partition(b"\t")
-                    if metadata.startswith((b"100644 blob ", b"100755 blob ")) and PurePosixPath(os.fsdecode(name)).name == ".gitignore":
-                        path = policy.root / os.fsdecode(name)
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(self._inspection_git(attribute_source, "show", f"{attribute_source}:{os.fsdecode(name)}"))
-                return policy._git("-c", "core.excludesFile=/dev/null", "check-ignore", *args,
-                                   input_paths=input_paths, allowed_returncodes=allowed_returncodes)
         attributes = Path(os.fsdecode(self._git(
             "rev-parse", "--path-format=absolute", "--git-path", "info/attributes",
         )).removesuffix("\n"))
