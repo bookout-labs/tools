@@ -143,8 +143,61 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(self.stages, ["SpecOutput"])
         self.assertEqual(self.forge.merge_calls, [])
 
+    def assert_path_pauses_before_review(self, path):
+        self.write(path, "handwritten\n" * 700)
+        head = self.commit()
+        stdout, _ = self.invoke(expected_code=3)
+        self.assertIn("paused needs_human", stdout)
+        self.assertEqual(self.spec_state["pr_size"], {
+            "head": head, "merge_base": self.base, "lines": 700,
+        })
+        self.assertNotIn("ReviewOutput", self.stages)
+        self.assertEqual(self.forge.merge_calls, [])
+
+    def test_root_file_pauses_before_review(self):
+        self.assert_path_pauses_before_review("NOTES.md")
+
+    def test_docs_file_pauses_before_review(self):
+        self.assert_path_pauses_before_review("docs/guide.md")
+
+    def test_log_file_pauses_before_review(self):
+        self.assert_path_pauses_before_review("evidence/test.log")
+
+    def test_deletions_and_edited_renames_outside_source_count(self):
+        self.git("switch", "main")
+        self.write("docs/deleted.md", "deleted\n" * 7)
+        self.write("original.txt", "unchanged\n" * 100)
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("switch", "-C", BRANCH, base)
+        self.git("rm", "docs/deleted.md")
+        renamed = "renamed \tline\n.txt"
+        self.git("mv", "original.txt", renamed)
+        head = self.commit()
+        workspace = LiveWorkspace(self.root)
+        self.assertEqual(workspace.pull_request_size(head, "main")["lines"], 7)
+        self.write(renamed, "unchanged\n" * 100 + "added\n" * 2)
+        head = self.commit()
+        self.assertEqual(workspace.pull_request_size(head, "main")["lines"], 9)
+
+    def test_rename_across_generated_boundary_counts_handwritten_side(self):
+        self.git("switch", "main")
+        self.write("docs/original.md", "content\n" * 11)
+        self.write("tests/fixtures/original.json", "fixture\n" * 13)
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("switch", "-C", BRANCH, base)
+        self.git("mv", "docs/original.md", "tests/fixtures/moved.json")
+        self.git("mv", "tests/fixtures/original.json", "extracted.md")
+        self.write("tests/fixtures/original.json", "replacement\n" * 17)
+        head = self.commit()
+        self.assertEqual(LiveWorkspace(self.root).pull_request_size(head, "main")["lines"], 24)
+
     def test_generated_only_diff_reaches_review(self):
-        for path in ("tests/fixtures/nested/example\tline\n.json", "tests/stage-schemas.json", "src/example.lock"):
+        for path in (
+            "tests/fixtures/nested/example\tline\n.json", "tests/stage-schemas.json", "src/example.lock",
+            "uv.lock", "package-lock.json", "pnpm-lock.yaml",
+        ):
             self.write(path, "generated\n" * (PULL_REQUEST_LINES + 1))
         head = self.commit()
         stdout, _ = self.invoke()
@@ -261,12 +314,12 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertIn("done verified", self.invoke("--answer", "override")[0])
 
     def test_branch_attributes_cannot_exempt_its_own_diff(self):
-        self.write(".gitattributes", "src/** linguist-generated -diff\n")
-        self.write("src/items.py", "changed\n" * PULL_REQUEST_LINES)
+        self.write(".gitattributes", "** linguist-generated -diff\n")
+        self.write("docs/items.md", "changed\n" * PULL_REQUEST_LINES)
         self.commit()
         stdout, _ = self.invoke(expected_code=3)
         self.assertIn("paused needs_human", stdout)
-        self.assertEqual(self.spec_state["pr_size"]["lines"], PULL_REQUEST_LINES + 1)
+        self.assertEqual(self.spec_state["pr_size"]["lines"], PULL_REQUEST_LINES + 6)
 
     def test_missing_base_stops_before_review(self):
         self.forge.base_branch = "missing"
@@ -294,7 +347,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertNotIn("ReviewOutput", self.stages)
 
     def test_nul_bearing_file_counts_all_500_lines(self):
-        self.write("src/items.dat", "\0item\n" * 500)
+        self.write(":(glob)* weird\tline\n.dat", "\0item\n" * 500)
         self.commit()
         self.assertIn("500 changed lines", self.invoke(expected_code=3)[0])
         self.assertNotIn("ReviewOutput", self.stages)
