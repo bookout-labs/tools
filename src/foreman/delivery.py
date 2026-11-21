@@ -1186,11 +1186,4 @@ def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None 
             ),
         )
     graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
-    drawing = graph.get_graph()
-    for name in REQUIRED_NODES:
-        drawing.nodes.pop(name + "_call")
-    drawing.edges = list(dict.fromkeys(
-        edge._replace(source=edge.source.removesuffix("_call"), target=edge.target.removesuffix("_call"))
-        for edge in drawing.edges if edge.data != "call"
-    ))
-    return drawing.draw_mermaid()
+    return graph.get_graph().draw_mermaid()

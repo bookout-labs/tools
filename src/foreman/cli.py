@@ -15,6 +15,7 @@ import yaml
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend
 from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
+from foreman.diagrams import write_diagrams
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -155,7 +156,8 @@ def main(
     commands = parser.add_subparsers(dest="command", required=True)
 
     draw = commands.add_parser("diagram", help="print the graph")
-    draw.add_argument("graph")
+    draw.add_argument("graph", nargs="?", default=GRAPH_NAME)
+    draw.add_argument("--write", action="store_true", help="update docs/graph and README in the current checkout")
 
     check = commands.add_parser("check-pointer", help="check an engine pointer file")
     check.add_argument("path")
@@ -184,7 +186,10 @@ def main(
         if args.graph != GRAPH_NAME:
             print(f"unknown graph {args.graph}", file=sys.stderr)
             return 2
-        print(diagram())
+        if args.write:
+            write_diagrams(Path.cwd())
+        else:
+            print(diagram(), end="")
         return 0
     if args.command == "check-pointer":
         try:
