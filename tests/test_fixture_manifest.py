@@ -1,4 +1,5 @@
 import tests
+from foreman.dry_run import DryRun
 
 from pathlib import Path
 import unittest
@@ -85,13 +86,14 @@ class RecordedEvidenceTest(unittest.TestCase):
     def check_approval(self, head):
         from foreman.delivery import LiveRun, _check_tool_facts
         from foreman.dry_run import DEFAULT_RISK
+        from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import ReviewOutput
 
         output = ReviewOutput.model_validate({
-            "resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
+            "resolutions": [], "risk": DEFAULT_RISK, "findings": [],
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": "result.txt"}],
-        })
-        gate = _check_tool_facts(output, LiveRun(Mock(), self.workspace), {
+        }, context=SCRIPTED_REVIEW_CONTEXT)
+        gate = _check_tool_facts(output, self.workspace, {
             "repo": "example/repo", "check": "", "path": [], **({"verified_head": head} if head else {}),
         })
         from foreman.review_round import ReviewHistory, accept
@@ -132,6 +134,7 @@ class RecordedEvidenceTest(unittest.TestCase):
     def test_carried_claim_requires_committed_evidence_for_its_id(self):
         from foreman.delivery import LiveRun, _check_tool_facts
         from foreman.dry_run import DEFAULT_RISK
+        from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import ReviewOutput, StoredToolFact, ToolFact
         from foreman.review_round import GraphCheck, ReviewRound
 
@@ -140,19 +143,19 @@ class RecordedEvidenceTest(unittest.TestCase):
                  "review_findings": [ReviewRound(round=1, reviewed_head="a" * 40, findings=[], resolutions={},
                      graph_check=GraphCheck(detail="Unrecorded fact", tool_facts=[fact])).model_dump()],
                  "verified_head": self.commit()}
-        output = ReviewOutput(resolutions=[], risk=DEFAULT_RISK, findings=[], detail="Reviewed.", tool_facts=[])
+        output = ReviewOutput.model_validate(dict(resolutions=[], risk=DEFAULT_RISK, findings=[], tool_facts=[]), context=SCRIPTED_REVIEW_CONTEXT)
         run = LiveRun(Mock(), self.workspace)
         self.manifest.write_text(self.manifest.read_text() + f'claim_ids = ["{fact.claim_id}"]\n')
-        self.assertEqual(_check_tool_facts(output, run, state).passed, False)
+        self.assertEqual(_check_tool_facts(output, run.workspace, state).passed, False)
         state["verified_head"] = self.commit()
-        self.assertEqual(_check_tool_facts(output, run, state).passed, True)
+        self.assertEqual(_check_tool_facts(output, run.workspace, state).passed, True)
         repeated = output.model_copy(update={"tool_facts": [ToolFact(claim=fact.claim, fixture="result.txt")]})
-        self.assertEqual(_check_tool_facts(repeated, run, state).tool_facts[0].model_dump()["claim_id"], fact.claim_id)
+        self.assertEqual(_check_tool_facts(repeated, run.workspace, state).tool_facts[0].model_dump()["claim_id"], fact.claim_id)
         unrelated = output.model_copy(update={"tool_facts": [ToolFact(claim="Other behavior", fixture=None)]})
-        self.assertEqual(_check_tool_facts(unrelated, run, state).passed, False)
+        self.assertEqual(_check_tool_facts(unrelated, run.workspace, state).passed, False)
         (self.fixtures / "result.txt").unlink()
         state["verified_head"] = self.commit()
-        self.assertEqual(_check_tool_facts(output, run, state).passed, False)
+        self.assertEqual(_check_tool_facts(output, run.workspace, state).passed, False)
 
     def test_committed_claude_evidence_carries_budget_claim_ids(self):
         from foreman.fixture_manifest import recorded_evidence
@@ -173,9 +176,13 @@ class RecordedEvidenceTest(unittest.TestCase):
             for fixture, claim in claims.items()
         }
         expected["claude/help.txt"].insert(0, "claude-max-budget-usd-flag")
+        expected["claude/budget-and-quota-source.txt"] = [
+            "tool-fact-dfcf5e01dec739b4551d7d79c786f8fffdc94b0ee347dc044dc34e6e2c1d13b1",
+            "tool-fact-4aa91dac314f4b136a516da99e5246d6430b90254873b854ec5f99c19212ff2e",
+        ]
         source = Path(__file__).with_name("fixtures")
         self.manifest.write_bytes((source / "manifest.toml").read_bytes())
-        for fixture in claims:
+        for fixture in expected:
             destination = self.fixtures / fixture
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes((source / fixture).read_bytes())
@@ -201,13 +208,14 @@ class RecordedEvidenceTest(unittest.TestCase):
 
 class GraphFactGateTest(unittest.TestCase):
     def gate(self, facts, state):
-        from foreman.delivery import DryRun, _check_tool_facts
+        from foreman.delivery import _check_tool_facts
         from foreman.dry_run import DEFAULT_RISK
+        from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import ReviewOutput
         output = ReviewOutput.model_validate({
-            "resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
+            "resolutions": [], "risk": DEFAULT_RISK, "findings": [],
             "tool_facts": facts,
-        })
+        }, context=SCRIPTED_REVIEW_CONTEXT)
         from foreman.review_round import ReviewHistory, accept
         return accept(ReviewHistory(), output, state.get("verified_head", ""), _check_tool_facts(output, DryRun(), state))
 

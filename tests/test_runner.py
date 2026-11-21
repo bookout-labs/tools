@@ -23,6 +23,7 @@ from foreman.outcomes import Halt
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
+from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, render_slice_body
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
@@ -57,7 +58,7 @@ FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejecte
 SEAM = {"name": "item-list", "exists": False, "path": None}
 BUILDER = {**SLICE, "builds": [SEAM]}
 CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "uses": [SEAM]}
-APPROVE = {"resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request.", "tool_facts": []}
+APPROVE = {"resolutions": [], "risk": DEFAULT_RISK, "findings": [], "tool_facts": []}
 FINDING = {"id": "f1", "kind": "correctness", "fix": "Add a check.", "ruling_id": None, "file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
 DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
@@ -104,6 +105,9 @@ class FakeWorkspace(LiveWorkspace):
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": "b" * 40, "lines": 1}
 
+    def review_context(self, base, head):
+        return SCRIPTED_REVIEW_CONTEXT
+
     def review_diff(self, base, head, *, interdiff=False):
         return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
 
@@ -133,6 +137,9 @@ class FixtureWorkspace(LiveWorkspace):
 
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": BASE, "lines": 1}
+
+    def review_context(self, base, head):
+        return SCRIPTED_REVIEW_CONTEXT
 
     def review_diff(self, base, head, *, interdiff=False):
         return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
@@ -203,7 +210,7 @@ class FakeGitHub:
         return {"title": "Issue title", "body": self.bodies.get((repo, number), self.body), "labels": self.labels}
 
     def open_issues(self, repo) -> list[OpenIssue]:
-        return [OpenIssue(number=number, body=self.load_issue(repo, number)["body"])
+        return [OpenIssue(number=number, body=self.bodies[repo, number])
                 for number in self.issue_labels if self.issue_repos[number] == repo
                 and number not in self.closed and number not in self.merged]
 
@@ -306,7 +313,8 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertEqual(cwd, Path("engine"))
                     self.assertIn('{"issue": 12}', args[-1])
                     expected_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"} if args[0] == "claude" else {}
-                    self.assertEqual(env, expected_env)
+                    self.assertEqual(env, {**expected_env, "TMPDIR": env["TMPDIR"]})
+                    self.assertTrue(Path(env["TMPDIR"]).is_dir())
                     self.assertNotIn("Output schema:", args[-1])
                     if args[0] == "codex":
                         self.assertIn("--json", args)
@@ -327,6 +335,75 @@ class CliWorkerTest(unittest.TestCase):
                 for path in schema_paths:
                     self.assertFalse(path.exists())
 
+    def test_each_family_can_use_scratch_outside_checkout(self):
+        with TemporaryDirectory() as root:
+            checkout = Path(root) / "checkout"
+            checkout.mkdir()
+            paths = []
+            for model in ("gpt-6.1-sol-high", "claude-opus-5-5-high", "grok-4.7-high"):
+                with self.subTest(model=model):
+                    def run(args, cwd, env):
+                        scratch = Path(env["TMPDIR"])
+                        paths.append(scratch)
+                        self.assertTrue(scratch.is_absolute())
+                        self.assertFalse(scratch.resolve().is_relative_to(checkout.resolve()))
+                        self.assertEqual(list(scratch.iterdir()), [])
+                        if args[0] == "codex":
+                            schema_path = Path(args[args.index("--output-schema") + 1])
+                            self.assertFalse(schema_path.resolve().is_relative_to(scratch.resolve()))
+                            self.assertTrue(schema_path.is_file())
+                        self.assertNotIn(str(scratch), args[-1])
+                        process = run_worker_command([
+                            sys.executable, "-c",
+                            "import os, pathlib; "
+                            "p = pathlib.Path(os.environ['TMPDIR']) / 'scratch.txt'; "
+                            "p.write_text('worker scratch'); print(p.read_text())",
+                        ], cwd, env)
+                        self.assertEqual(process.returncode, 0, process.stderr)
+                        self.assertEqual(process.stdout.strip(), "worker scratch")
+                        return worker_reply(args, {"triage": "implement"})
+
+                    result = CliWorker(checkout, run)("triage", ModelSpec.parse(model), {}, "Read the issue.")
+                    self.assertEqual(result.kind, "ran")
+                    self.assertFalse(paths[-1].exists())
+            self.assertEqual(len(set(paths)), 3)
+            self.assertEqual(list(checkout.iterdir()), [])
+
+    def test_inherited_checkout_tmpdir_is_overridden_without_changing_environment(self):
+        script = """
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+from foreman.config import ModelSpec
+from foreman.worker import CliWorker
+
+checkout = Path.cwd().resolve()
+assert Path(tempfile.gettempdir()).resolve().is_relative_to(checkout)
+inherited = dict(os.environ)
+paths = []
+def run(args, cwd, env):
+    scratch = Path(env["TMPDIR"])
+    assert not scratch.resolve().is_relative_to(checkout)
+    assert list(scratch.iterdir()) == []
+    paths.append(scratch)
+    return subprocess.CompletedProcess(args, 1, "", "")
+CliWorker(checkout, run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "Read.")
+assert paths and all(not path.parent.exists() for path in paths)
+assert dict(os.environ) == inherited
+"""
+        with TemporaryDirectory() as root:
+            checkout = Path(root) / "checkout"
+            checkout.mkdir()
+            inherited_temp = checkout / "temp"
+            inherited_temp.mkdir()
+            env = {**os.environ, "TMPDIR": str(inherited_temp),
+                   "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+            process = subprocess.run([sys.executable, "-c", script], cwd=checkout,
+                                     env=env, capture_output=True, text=True)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(list(checkout.iterdir()), [inherited_temp])
+
     def test_subprocess_merges_adapter_environment_with_inherited_environment(self):
         inherited = {"PATH": "/bin", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0"}
         adapter_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
@@ -345,7 +422,7 @@ class CliWorkerTest(unittest.TestCase):
     def test_non_object_replies_are_invalid(self):
         replies = (
             ('Here is the result: {"triage": "implement"}', "did not return valid JSON"),
-            ('["implement"]', "valid dictionary"),
+            ('["implement"]', "JSON object"),
         )
         for reply, detail in replies:
             with self.subTest(reply=reply):
@@ -483,18 +560,18 @@ class StageOutputTest(unittest.TestCase):
 
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
-            parse_output(ReviewOutput, {**APPROVE, "review": "approve, but please fix X first"})
+            parse_output(ReviewOutput, {**APPROVE, "review": "approve, but please fix X first"}, context=SCRIPTED_REVIEW_CONTEXT)
 
     def test_review_requires_an_exact_verdict(self):
         for verdict in ("Approve.", "approve.", "changes.", "changes. Add a check."):
             with self.subTest(verdict=verdict), self.assertRaisesRegex(InvalidOutput, "^review:"):
-                parse_output(ReviewOutput, {**APPROVE, "review": verdict})
+                parse_output(ReviewOutput, {**APPROVE, "review": verdict}, context=SCRIPTED_REVIEW_CONTEXT)
 
     def test_review_summary_is_limited_to_200_characters(self):
-        self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["Finding"]["properties"]["summary"]["maxLength"], 200)
+        self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["ReviewFinding"]["properties"]["summary"]["maxLength"], 200)
         raw = {**APPROVE, "findings": [{**FINDING, "summary": "a" * 201}]}
         with self.assertRaisesRegex(InvalidOutput, r"^findings\.0\.summary:"):
-            parse_output(ReviewOutput, raw)
+            parse_output(ReviewOutput, raw, context=SCRIPTED_REVIEW_CONTEXT)
 
 
 class LiveRunnerTest(unittest.TestCase):
@@ -723,7 +800,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "detail": "Check the bounds."}
+        changes = dict(APPROVE)
         for severity, kind in (("nit", "nits"), ("blocking", "blocking")):
             with self.subTest(severity=severity):
                 self.checkpoint = self.cwd / f"{severity}.sqlite3"
@@ -731,24 +808,25 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, {**APPROVE, "resolutions": [{"id": finding["id"], "status": "resolved"}]}])
                 state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
                 self.assertEqual(state["findings"], [finding])
-                self.assertEqual(state["detail"], changes["detail"])
+                self.assertEqual(state["detail"], ReviewOutput.model_validate(changes, context=SCRIPTED_REVIEW_CONTEXT).risk.render())
                 self.assertEqual(state["review_change_kind"], kind)
 
     def test_review_posts_only_changed_lines_inline(self):
         findings = [
             FINDING,
             {**FINDING, "id": "f2", "line": 1, "summary": "Untouched context."},
-            {**FINDING, "id": "f3", "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
+            {**FINDING, "id": "f3", "file": "README.md", "line": 1, "summary": "Unchanged dependency."},
         ]
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "findings": findings, "detail": "Check the bounds."}
+        changes = {**APPROVE, "findings": findings}
         self.walk([{"triage": "implement"}, built, changes, built, {**APPROVE, "resolutions": [{"id": f["id"], "status": "resolved"} for f in findings]}])
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
+        selection = '\n\nReviewer claude-opus-5-5-high; implemented by gpt-6.1-sol-high; same-family fallback: not needed.'
         self.assertEqual(self.github.reviews, [(
             "Example/Engine", 12, HEAD,
-            "Graph verdict: changes. Review event: COMMENT (Foreman authors this PR).\n\nCheck the bounds.\n\nitems.txt:1 [blocking] Untouched context.\n\ndeleted.txt:1 [blocking] Deleted file.",
+            "Graph verdict: changes. Review event: COMMENT (Foreman authors this PR).\n\n" + ReviewOutput.model_validate(APPROVE, context=SCRIPTED_REVIEW_CONTEXT).risk.render() + selection + "\n\nitems.txt:1 [blocking] Untouched context.\n\nREADME.md:1 [blocking] Unchanged dependency.",
             [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[blocking] Add a check."}],
-        ), ("Example/Engine", 12, HEAD, "Graph verdict: approve. Review event: COMMENT (Foreman authors this PR).\n\n" + APPROVE["detail"], [])])
+        ), ("Example/Engine", 12, HEAD, "Graph verdict: approve. Review event: COMMENT (Foreman authors this PR).\n\n" + ReviewOutput.model_validate(APPROVE, context=SCRIPTED_REVIEW_CONTEXT).risk.render() + selection, [])])
 
     def test_review_failures_halt_without_merging(self):
         changes = {**APPROVE, "findings": [FINDING]}
@@ -844,6 +922,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             ("why/SKILL.md", "", "method is empty"),
         ):
             with self.subTest(method=method, detail=detail), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "runs.sqlite3"
                 pin = fixture_pin(Path(directory) / "fixture")
                 source = Path(pin.repository)
                 (source / "pstack" / "skills" / method).write_text(content, encoding="utf-8")
@@ -917,6 +996,45 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                               fact_record="evidence/other.toml", checkpoint=self.checkpoint, dispatcher=ScriptHandler(),
                               run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(self.walk([])["stop"], "verified")
+
+    def test_resume_allocates_fresh_scratch_without_checkpointing_paths(self):
+        paths = []
+
+        def quota(args, cwd, env):
+            scratch = Path(env["TMPDIR"])
+            self.assertFalse(scratch.resolve().is_relative_to(self.cwd.resolve()))
+            self.assertNotIn(scratch, paths)
+            self.assertEqual(list(scratch.iterdir()), [])
+            self.assertTrue(all(not path.exists() for path in paths))
+            (scratch / "scratch.txt").write_text("discard on quota")
+            paths.append(scratch)
+            return fixture_process(args, "quota", 1)
+
+        paused = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+            dispatcher=CliWorker(self.cwd, quota), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+        )
+        self.assertEqual(paused["stop"], "quota_exhausted")
+        self.assertTrue(all(not path.exists() for path in paths))
+        before_resume = len(paths)
+        self.assertGreater(before_resume, 1)
+        replies = iter([{"triage": "question"}, {"research": "Only open items."}])
+
+        def answer(args, cwd, env):
+            quota(args, cwd, env)
+            return worker_reply(args, next(replies))
+
+        resumed = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+            dispatcher=CliWorker(self.cwd, answer), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+        )
+        self.assertEqual(resumed["stop"], "answered")
+        self.assertGreater(len(paths), before_resume)
+        self.assertTrue(all(not path.exists() for path in paths))
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            checkpoints = repr(list(saver.list({"configurable": {"thread_id": "example/engine#8"}})))
+        for path in paths:
+            self.assertNotIn(str(path), checkpoints)
 
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
         def exhaust(node, model, state, instruction):
@@ -1021,7 +1139,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.walk([{"triage": "spec"}, spec, spec, spec])
         self.assertEqual(result["stop"], "spec_cap")
         self.assertEqual(result["spec_rejection"]["kind"], "existing_seam_builder")
-        self.assertEqual(self.github.created, [])
+        self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_workspace_file_paths_resolve_inside_the_root(self):
         (self.cwd / "api.py").touch()
@@ -1049,7 +1167,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["review_rounds"], 0)
         self.assertEqual(result["spec_failures"], 3)
         self.assertEqual(result["spec_rejection"]["kind"], "dangling_seam")
-        self.assertEqual(self.github.created, [])
+        self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_link_failure_leaves_child_blocked_and_parent_retry_repairs_it(self):
         self.github = FakeGitHub(["factory"])
@@ -1357,10 +1475,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 result = self.walk([triage, {"implementation": "built"}, APPROVE])
                 self.assertEqual(result["path"], ["triage", "done"])
                 self.assertEqual(result["stop"], "invalid_output")
-                self.assertTrue(result["halt_detail"].startswith("slice:"))
+                self.assertTrue(result["halt_detail"].startswith("triage output from claude-opus-5-5-high: slice:"))
                 self.assertEqual(len(self.calls), 1)
                 self.assertEqual(self.github.merge_calls, [])
-                self.assertEqual(self.github.created, [])
+                self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
     def test_browser_block_rebuilds_and_rechecks_before_review(self):
         self.github.body = slice_body(SLICE)
@@ -1858,7 +1976,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(code, 0)
         self.assertIn(
             "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --squash --match-head-commit '<sha>'\n"
-            "tokens 8 of 20000000\ndone verified",
+            "check exit 0\ntokens 6 of 20000000\ndone verified",
             stdout.getvalue(),
         )
         self.assertIn("pstack pin not checked (dry run)", stdout.getvalue())
@@ -2154,7 +2272,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertEqual(current, "merge armed\ndone verified\n")
                     expected_workers = ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"]
                 else:
-                    self.assertIn("restored implement\nrestored paused quota_exhausted", restored)
+                    self.assertRegex(restored, r"restored implement\nrestored tokens \d+ of 20000000\nrestored paused quota_exhausted")
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
                     self.assertEqual(saved_path(), ["triage", "implement", "implement", "publish", "verify", "review", "merge", "done"])
                     expected_workers = (["TriageOutput"] + ["ImplementOutput"] * attempts
@@ -2218,12 +2336,12 @@ class HaltExitCodeTest(unittest.TestCase):
         ), "verify_cap", "Verification failed after 3 rounds. Check exit 7 failed.")
 
     def test_review_cap(self):
-        changes = {**APPROVE, "findings": [FINDING], "detail": "Add a boundary check."}
-        unresolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "unresolved"}], "detail": "Add a boundary check."}
+        changes = {**APPROVE, "findings": [FINDING]}
+        unresolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "unresolved"}]}
         self.assert_halt(self.live(
             [{"triage": "implement"}] + [{"implementation": "built"}, changes]
             + [{"implementation": "built"}, unresolved] * 2,
-        ), "review_cap", "Review requested changes after 3 rounds. Last review: Add a boundary check.")
+        ), "review_cap", "Review requested changes after 3 rounds. Last review: " + ReviewOutput.model_validate(APPROVE, context=SCRIPTED_REVIEW_CONTEXT).risk.render())
 
     def test_missing_slice_has_no_fake_stage(self):
         result = self.live(body="No JSON")
@@ -2256,7 +2374,7 @@ class HaltExitCodeTest(unittest.TestCase):
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
         result = {**halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
-        with patch("foreman.cli.run_live_delivery", return_value=result), contextlib.redirect_stdout(io.StringIO()) as output:
+        with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
 

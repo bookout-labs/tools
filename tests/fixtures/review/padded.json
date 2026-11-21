@@ -1,0 +1,63 @@
+{
+  "resolutions": [],
+  "risk": {
+    "alignment": {
+      "applies": true,
+      "assessment": "Items are listed once.",
+      "evidence": [
+        {
+          "side": "head",
+          "path": "nonexistent.py",
+          "line": 2
+        }
+      ]
+    },
+    "impact": {
+      "applies": true,
+      "assessment": "Items are listed once.",
+      "evidence": [
+        {
+          "side": "head",
+          "path": "items.txt",
+          "line": 2
+        }
+      ]
+    },
+    "verification": {
+      "applies": true,
+      "assessment": "Items are listed once.",
+      "evidence": [
+        {
+          "side": "head",
+          "path": "items.txt",
+          "line": 2
+        }
+      ]
+    },
+    "rollback": {
+      "applies": true,
+      "assessment": "Items are listed once.",
+      "evidence": [
+        {
+          "side": "head",
+          "path": "items.txt",
+          "line": 2
+        }
+      ]
+    },
+    "error_detection": {
+      "applies": true,
+      "assessment": "Items are listed once.",
+      "evidence": [
+        {
+          "side": "head",
+          "path": "items.txt",
+          "line": 2
+        }
+      ]
+    },
+    "level": "low"
+  },
+  "findings": [],
+  "tool_facts": []
+}

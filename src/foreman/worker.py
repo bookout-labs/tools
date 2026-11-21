@@ -1,10 +1,12 @@
 """Run a pinned worker and read its final stage result."""
 
 from collections.abc import Mapping
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 from tempfile import TemporaryDirectory
 from typing import Callable
 
@@ -13,14 +15,15 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
-from foreman.stage_output import STAGE_OUTPUTS, Contract
+from foreman.stage_output import STAGE_OUTPUTS, DispatchPlan
+from foreman.usd import BudgetUsd
 
 CommandRunner = Callable[[list[str], Path, Mapping[str, str]], subprocess.CompletedProcess[str]]
 
-ADAPTERS: dict[str, Callable[[ModelSpec, type[Contract]], CliAdapter]] = {
-    "claude": lambda model, _: ClaudeAdapter(model),
+ADAPTERS: dict[str, Callable[[ModelSpec], CliAdapter]] = {
+    "claude": ClaudeAdapter,
     "gpt": CodexAdapter,
-    "grok": lambda model, _: GrokAdapter(model),
+    "grok": GrokAdapter,
 }
 
 
@@ -41,16 +44,32 @@ class CliWorker:
         prompt = (
             f"{instruction}\n\nReturn exactly one JSON object that matches the output schema. "
             "Use null for inapplicable nullable fields. Do not arm a merge."
+            " Write disposable scratch only under $TMPDIR, outside the checkout."
+            " Do not return the scratch path as evidence."
         )
         contract = STAGE_OUTPUTS[node]
         schema = json.dumps(contract.model_json_schema())
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
-        adapter = ADAPTERS[model.family](model, contract)
-        with TemporaryDirectory(prefix="foreman-worker-") as directory:
-            args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory)))
+        plan = state.get("dispatch_plan")
+        plan = DispatchPlan.model_validate(plan) if plan else None
+        budget = plan.budget_usd if plan else None
+        edit = node == "implement"
+        check = state.get("check") if edit else plan.scope["command"] if plan and plan.scope else None
+        adapter = ADAPTERS[model.family](model)
+        checkout = self.cwd.resolve()
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        if temp_root.is_relative_to(checkout):
+            temp_root = checkout.parent
+        with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
+            scratch = Path(directory) / "scratch"
+            scratch.mkdir()
+            call = Call(prompt, schema, edit=edit, check=check if isinstance(check, str) else None,
+                        read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
+                        temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None)
+            args = adapter.command(call)
             try:
-                process = self.run(args, self.cwd, adapter.env)
+                process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch)})
             except FileNotFoundError:
                 return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable")
-            return adapter.read(process)
+            return adapter.read(process, call)

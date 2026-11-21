@@ -658,82 +658,70 @@
   },
   "review": {
     "$defs": {
-      "Finding": {
+      "Citation": {
         "additionalProperties": false,
         "properties": {
-          "id": {
-            "description": "Unique finding ID. Never reuse an earlier finding ID.",
-            "pattern": "\\S",
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
+          "side": {
             "enum": [
-              "correctness",
-              "contract-unenforced",
-              "duplicate-owner",
-              "hand-built-parsing",
-              "untested-path",
-              "docs"
+              "head",
+              "base"
             ],
-            "title": "Kind",
+            "title": "Side",
             "type": "string"
           },
-          "fix": {
-            "description": "State the requested fix.",
+          "path": {
             "pattern": "\\S",
-            "title": "Fix",
+            "title": "Path",
             "type": "string"
           },
-          "ruling_id": {
+          "line": {
             "anyOf": [
               {
-                "type": "string"
+                "exclusiveMinimum": 0,
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "If this contradicts a settled ruling, give its ID so it becomes a coordinator note. Otherwise null.",
-            "title": "Ruling Id"
-          },
-          "file": {
-            "description": "Give the path relative to the repository root.",
-            "pattern": "\\S",
-            "title": "File",
-            "type": "string"
-          },
-          "line": {
-            "description": "Give the line number in the reviewed commit.",
-            "title": "Line",
-            "type": "integer"
-          },
-          "severity": {
-            "enum": [
-              "blocking",
-              "nit"
-            ],
-            "title": "Severity",
-            "type": "string"
-          },
-          "summary": {
-            "maxLength": 200,
-            "pattern": "\\S",
-            "title": "Summary",
-            "type": "string"
+            "title": "Line"
           }
         },
         "required": [
-          "id",
-          "kind",
-          "fix",
-          "ruling_id",
-          "file",
-          "line",
-          "severity",
-          "summary"
+          "side",
+          "path",
+          "line"
         ],
-        "title": "Finding",
+        "title": "Citation",
+        "type": "object"
+      },
+      "Dimension": {
+        "additionalProperties": false,
+        "properties": {
+          "applies": {
+            "title": "Applies",
+            "type": "boolean"
+          },
+          "assessment": {
+            "pattern": "\\S",
+            "title": "Assessment",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          }
+        },
+        "required": [
+          "applies",
+          "assessment",
+          "evidence"
+        ],
+        "title": "Dimension",
         "type": "object"
       },
       "FindingResolution": {
@@ -790,29 +778,19 @@
         "additionalProperties": false,
         "properties": {
           "alignment": {
-            "pattern": "\\S",
-            "title": "Alignment",
-            "type": "string"
+            "$ref": "#/$defs/Dimension"
           },
           "impact": {
-            "pattern": "\\S",
-            "title": "Impact",
-            "type": "string"
+            "$ref": "#/$defs/Dimension"
           },
           "verification": {
-            "pattern": "\\S",
-            "title": "Verification",
-            "type": "string"
+            "$ref": "#/$defs/Dimension"
           },
           "rollback": {
-            "pattern": "\\S",
-            "title": "Rollback",
-            "type": "string"
+            "$ref": "#/$defs/Dimension"
           },
           "error_detection": {
-            "pattern": "\\S",
-            "title": "Error Detection",
-            "type": "string"
+            "$ref": "#/$defs/Dimension"
           },
           "level": {
             "enum": [
@@ -833,6 +811,85 @@
           "level"
         ],
         "title": "MergeRisk",
+        "type": "object"
+      },
+      "ReviewFinding": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Unique finding ID. Never reuse an earlier finding ID.",
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "correctness",
+              "contract-unenforced",
+              "duplicate-owner",
+              "hand-built-parsing",
+              "untested-path",
+              "docs"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "fix": {
+            "description": "State the requested fix.",
+            "pattern": "\\S",
+            "title": "Fix",
+            "type": "string"
+          },
+          "ruling_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "If this contradicts a settled ruling, give its ID so it becomes a coordinator note. Otherwise null.",
+            "title": "Ruling Id"
+          },
+          "file": {
+            "description": "Give the path relative to the repository root.",
+            "pattern": "\\S",
+            "title": "File",
+            "type": "string"
+          },
+          "line": {
+            "description": "Give the line number in the reviewed commit.",
+            "exclusiveMinimum": 0,
+            "title": "Line",
+            "type": "integer"
+          },
+          "severity": {
+            "enum": [
+              "blocking",
+              "nit"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 200,
+            "pattern": "\\S",
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "fix",
+          "ruling_id",
+          "file",
+          "line",
+          "severity",
+          "summary"
+        ],
+        "title": "ReviewFinding",
         "type": "object"
       },
       "ToolFact": {
@@ -895,7 +952,7 @@
       "findings": {
         "description": "List each new requested fix, including nits. Return an empty list when there are none.",
         "items": {
-          "$ref": "#/$defs/Finding"
+          "$ref": "#/$defs/ReviewFinding"
         },
         "title": "Findings",
         "type": "array"
@@ -907,20 +964,13 @@
         },
         "title": "Tool Facts",
         "type": "array"
-      },
-      "detail": {
-        "description": "Write the pull request review body, including any longer explanation.",
-        "pattern": "\\S",
-        "title": "Detail",
-        "type": "string"
       }
     },
     "required": [
       "resolutions",
       "risk",
       "findings",
-      "tool_facts",
-      "detail"
+      "tool_facts"
     ],
     "title": "ReviewOutput",
     "type": "object"

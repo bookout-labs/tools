@@ -76,6 +76,10 @@ class PublicationTest(unittest.TestCase):
         if command[1] != "api":
             self.assertEqual(command[command.index("--repo") + 1], REPO)
         match command[1:3]:
+            case ["api", "repos/bookout-labs/tools/issues?state=open&per_page=100"]:
+                response = [[]]
+            case ["api", "repos/bookout-labs/tools/issues"]:
+                response = {"number": 101}
             case ["api", "repos/Example/Engine/issues/8/dependencies/blocked_by"]:
                 response = [[]]
             case ["issue", "view"]:
@@ -509,7 +513,8 @@ class PublicationTest(unittest.TestCase):
         self.assertNotIn("items.txt", rejected["halt_detail"])
         (directory / "drop.tmp").unlink()
         self.git("add", "--all")
-        self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
+        with patch.dict("foreman.dry_run.DEFAULT_RISK", {name: {**dimension, "evidence": [dict(side="head", path="nested/keep.tmp", line=1)]} for name, dimension in ScriptHandler().risk.items() if name != "level"}):
+            self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
         self.assertNotIn("items.txt", self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines())
 
     def test_fact_capture_does_not_authorize_adjacent_scratch(self):
@@ -838,6 +843,7 @@ class PublicationTest(unittest.TestCase):
         from contextlib import redirect_stdout
         from io import StringIO
         from foreman.cli import _print_run
+        from foreman.runner import RunPresentation
         from foreman.delivery import run_delivery
         from foreman.github import pull_request_command
         import re
@@ -849,12 +855,13 @@ class PublicationTest(unittest.TestCase):
                 slug = re.sub(r"[^a-z0-9]+", "-", redact(self.slice["title"]).lower()).strip("-")[:60].rstrip("-")
                 self.branch, self.ref = f"8-{slug}", f"refs/heads/8-{slug}"
                 if mode == "dry":
-                    result = run_delivery(ScriptHandler(), repo=REPO, request="synthetic fixture", slice=self.slice)
+                    presentation = RunPresentation()
+                    result = run_delivery(ScriptHandler(), repo=REPO, request="synthetic fixture", slice=self.slice, commands=presentation.commands)
                     output = StringIO()
                     with redirect_stdout(output):
-                        _print_run(result)
+                        _print_run(result, presentation, dry_run=True)
                     self.assertNotIn(synthetic, output.getvalue())
-                    self.assertNotIn(synthetic, json.dumps(result["commands"]))
+                    self.assertNotIn(synthetic, json.dumps(presentation.commands))
                     self.assertNotIn(synthetic, json.dumps(pull_request_command(REPO, self.branch, self.base, self.slice["title"], synthetic)))
                 else:
                     self.assertEqual(self.walk().get("stop"), "verified")

@@ -27,7 +27,8 @@ flowchart TD
   research --> done([Done])
   triage -->|needs a plan| spec["spec<br/>write the plan"]
   triage -->|one slice| spec_check
-  spec --> spec_check["spec_check<br/>the other model family checks the plan"]
+  spec --> spec_check["spec_check<br/>a qualified model checks the plan, preferring another family"]
+  spec -->|override: keep this PR| size
   spec_check -->|gaps: repair the plan| spec
   spec_check -->|parent plan| file_slices["file_slices<br/>file the child issues"]
   file_slices --> done
@@ -42,7 +43,7 @@ flowchart TD
   verify -->|pass| proof["proof<br/>tool facts are recorded"]
   proof -->|missing facts: resume same PR branch| prepare
   proof -->|pass| publish["publish<br/>push and open the PR"]
-  publish --> review["review<br/>the other model family reviews"]
+  publish --> review["review<br/>a qualified model reviews, preferring another family"]
   review --> review_post["review_post<br/>post the review"]
   review_post -->|changes: resume same PR branch| prepare
   review_post -->|approve| merge["merge<br/>check readiness, arm the merge"]
@@ -57,11 +58,11 @@ Any step can pause (quota wait, human question, waiting on GitHub) and resumes a
 ```mermaid
 flowchart TD
   __start__([Dispatch]) --> plan
-  plan["plan<br/>pick the next eligible model, check the budget, save the attempt"] --> call["call<br/>run one model"]
-  call -->|quota or CLI missing: next model| plan
-  call -->|no eligible model now| wait["wait<br/>pause until a model is available"]
+  plan["plan<br/>pick the next eligible model, check the budget, save the attempt"] --> run["call<br/>run one model"]
+  run -->|quota or CLI missing: next model| plan
+  run -->|no eligible model now| wait["wait<br/>pause until a model is available"]
   wait -->|resume| plan
-  call -->|result| __end__([back to the assembly line])
+  run -->|result| __end__([back to the assembly line])
 ```
 
 ### Today's code
@@ -82,10 +83,9 @@ graph TD;
 	spec_call(spec_call)
 	implement(implement)
 	implement_call(implement_call)
-	verify(verify)
-	verify_call(verify_call)
 	review(review)
 	review_call(review_call)
+	verify(verify)
 	prepare(prepare)
 	reconcile(reconcile)
 	commit(commit)
@@ -186,14 +186,7 @@ graph TD;
 	verify -.-> done;
 	verify -.-> prepare;
 	verify -.-> proof;
-	verify -.-> quota_wait;
 	verify -.-> review;
-	verify -. &nbsp;call&nbsp; .-> verify_call;
-	verify_call -.-> done;
-	verify_call -.-> prepare;
-	verify_call -.-> proof;
-	verify_call -.-> quota_wait;
-	verify_call -.-> review;
 	done --> __end__;
 	implement_call -. &nbsp;call&nbsp; .-> implement_call;
 	research_call -. &nbsp;call&nbsp; .-> research_call;
@@ -201,7 +194,6 @@ graph TD;
 	spec -.-> spec;
 	spec_call -. &nbsp;call&nbsp; .-> spec_call;
 	triage_call -. &nbsp;call&nbsp; .-> triage_call;
-	verify_call -. &nbsp;call&nbsp; .-> verify_call;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
@@ -213,9 +205,9 @@ The approved blueprint is in `docs/graph/target.mmd`; `gaps.toml` records each t
 The dispatch drawing stays empty until slice 13 builds the dispatch cell.
 Changes to `docs/graph/` require Joe's written approval on the PR before merge.
 
-The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. Review uses only Opus and Sol, filtered by implementation family. Grok remains in the other model orders. A node does not edit the list, and it does not decide the next node.
+The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. Review uses only the configured Opus and Sol list, preferring models outside all successful implementation families. Grok remains in the other model orders. A node does not edit the list, and it does not decide the next node.
 
-Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high.
+Review keeps configured order within the preferred and contributing-family groups. A fresh invocation may review with the builder's own model, including a one-model configuration. The accepted attempt and round record the reviewer, contributing models, same-family flag, and fallback reason. The posted review includes that saved evidence, including after a posting retry. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Each dimension must cite the diff; an ungrounded review halts `invalid_output`.
 
 Round 1 reviews the full PR diff. Later rounds check unresolved findings and added
 interdiff lines also in the PR diff. Out-of-scope findings become coordinator notes. Typed findings have stable IDs, kinds, fixes and
@@ -223,7 +215,7 @@ explicit resolutions. Resolved findings become settled rulings. Disagreements wi
 rulings become coordinator notes. The graph owns tool-fact checks separately from
 reviewer findings. Rulings exist only within a run. The failure cap stays unchanged.
 
-An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every eligible reviewer is out of quota or its CLI is missing, review stops with `reviewer_unavailable` (exit 75). Rerun the same command without `--answer` to select from the current review order again. Other stages retain `cli_missing` for missing CLIs. If the graph cannot select a reviewer from a different model family, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
+An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every configured reviewer is out of quota or its CLI is missing, review stops with `reviewer_unavailable` (exit 75). Rerun the same command without `--answer` to select from the current review order again. Other stages retain `cli_missing` for missing CLIs. Missing implementation provenance still stops with `no_reviewer`. The future spec checker uses the same ordering rule against its actual author; its separate checker-unavailability contract is unchanged. The record includes `halt_detail` for these stops.
 
 Foreman creates an `<issue>-<slug>` branch from the repository default branch before the first edit and commits each successful implementation. An attempt with no file changes stops with `failed`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
@@ -286,6 +278,8 @@ Claude launches.
 The factory label is the delivery trigger contract. A host integration must still
 route GitHub label events through `foreman accept` and launch accepted runs;
 `foreman coordinator` does not install a webhook or start a polling loop.
+
+After reporting a halted live run, Foreman watches eligible failures by filing a proposed fix or commenting on the existing open proposal for that cause. It records the watch in SQLite and uses a run marker to avoid duplicate writes after a crash; a new halt can add fresh evidence. `--watch-repo OWNER/NAME` selects the proposal repository (default `bookout-labs/tools`). Skipped halts and watch failures are logged without changing the run's exit code; failures retry on the next invocation. Dry runs never contact Forge.
 
 `foreman run` exits 0 for successful stops (`done verified`, `done sliced`, or `done answered`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a resumable halt (`merge_held`, `merge_not_armed`, `env_unavailable`, or `reviewer_unavailable`), and 1 for every other halt.
 
@@ -387,6 +381,11 @@ and Codex or Grok costs. If any counted attempt lacks a dollar cost, the display
 is `claude spend unknown of $L`. Resumable checkpoints predating the stored
 dollar allowance require a new run; finished legacy runs remain readable.
 
+Claude dispatches receive the remaining allowance through `--max-budget-usd`.
+Reaching the allowance halts `budget_exceeded` before output or fallback.
+Unknown Claude costs halt bounded runs as `usage_unknown`. Missing CLIs fall through.
+Both halts exit 1. Dry runs record zero dollar cost.
+
 `foreman run delivery --max-tokens N` stores a positive token cap, defaulting to
 20,000,000. Resume keeps the stored cap and rejects a differing flag.
 Each dispatch checks the sum of all attempt input, output, cache read and cache
@@ -398,6 +397,8 @@ retried. Checkpoints from before usage accounting require a new run.
 
 Claude's `error_max_budget_usd` result also halts as `budget_exceeded`, retaining
 the attempt's usage without applying its output or trying the next model.
+It precedes missing usage and the token cap. Otherwise missing successful usage
+halts first, then the token cap, then the dollar allowance.
 Claude dollar costs are known only when every model ledger cost is finite and
 nonnegative and their sum agrees with the envelope total within floating-point
 tolerance; invalid costs leave token accounting intact.

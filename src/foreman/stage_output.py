@@ -9,10 +9,11 @@ from dataclasses import dataclass
 
 from typing_extensions import NotRequired, TypedDict, override
 
-from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator, computed_field
+from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, with_config, field_validator, model_validator, computed_field
 
 from pydantic.config import JsonDict
 
+from foreman.review_context import ReviewContext
 from foreman.contracts import Contract as Contract, Text as Text
 from foreman.config import ModelSpec
 from foreman.adapters import OutcomeKind
@@ -91,12 +92,26 @@ class FormalProofRecord(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class CitationRecord(TypedDict):
+    side: Literal["head", "base"]
+    path: str
+    line: int | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class DimensionRecord(TypedDict):
+    applies: bool
+    assessment: str
+    evidence: list[CitationRecord]
+
+
+@with_config(ConfigDict(extra="forbid"))
 class MergeRiskRecord(TypedDict):
-    alignment: str
-    impact: str
-    verification: str
-    rollback: str
-    error_detection: str
+    alignment: DimensionRecord
+    impact: DimensionRecord
+    verification: DimensionRecord
+    rollback: DimensionRecord
+    error_detection: DimensionRecord
     level: Literal["low", "medium", "high"]
 
 
@@ -152,6 +167,29 @@ class AttemptUsageRecord(TypedDict):
     cost_usd: CostUsd | None
 
 
+SelectionReason = Literal["no_other_family_configured", "preceding_candidates_unavailable"]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class ReviewSelectionRecord(TypedDict):
+    reviewer: str
+    contributors: list[str]
+    same_family: bool
+    reason: SelectionReason | None
+
+
+class ReviewSelection(RecordContract[ReviewSelectionRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[ReviewSelectionRecord]:
+        return TypeAdapter(ReviewSelectionRecord)
+
+    reviewer: str
+    contributors: list[str]
+    same_family: bool
+    reason: SelectionReason | None
+
+
 @with_config(ConfigDict(extra="forbid"))
 class AttemptRecord(TypedDict):
     stage: str
@@ -160,6 +198,7 @@ class AttemptRecord(TypedDict):
     methods: list[str]
     outcome: OutcomeKind | Literal["interrupted"]
     usage: AttemptUsageRecord | None
+    provenance: NotRequired[ReviewSelectionRecord]
 
 
 class AttemptUsage(RecordContract[AttemptUsageRecord]):
@@ -187,6 +226,7 @@ class Attempt(RecordContract[AttemptRecord]):
     methods: list[str]
     outcome: OutcomeKind | Literal["interrupted"]
     usage: AttemptUsage | None
+    provenance: ReviewSelection | None = None
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -209,9 +249,11 @@ class PendingDispatch(RecordContract[PendingDispatchRecord]):
 
 @with_config(ConfigDict(extra="forbid"))
 class DispatchPlanRecord(TypedDict):
+    budget_usd: NotRequired[str | None]
     models: list[str]
     instruction: str
     methods: list[str]
+    read_roots: NotRequired[list[str]]
     target: PullRequestRecord | None
     scope: ReviewScopeRecord | None
 
@@ -222,9 +264,11 @@ class DispatchPlan(RecordContract[DispatchPlanRecord]):
     def record_adapter(cls) -> TypeAdapter[DispatchPlanRecord]:
         return TypeAdapter(DispatchPlanRecord)
 
+    budget_usd: str | None = None
     models: list[str]
     instruction: str
     methods: list[str]
+    read_roots: list[str] = Field(default_factory=list)
     target: PullRequest | None
     scope: ReviewScopeRecord | None
 
@@ -565,17 +609,56 @@ class ImplementOutput(StageOutput):
         }
 
 
+class Citation(Contract):
+    side: Literal["head", "base"]
+    path: TrimmedText
+    line: PositiveInt | None
+
+    @model_validator(mode="after")
+    def resolve(self, info: ValidationInfo) -> Self:
+        if not isinstance(info.context, ReviewContext):
+            raise ValueError("trusted review context required")
+        tree = getattr(info.context, self.side)
+        if self.path not in tree.files:
+            raise ValueError(f"{self.side} path {self.path!r} does not exist")
+        if self.line is not None and not 1 <= self.line <= tree.lines.get(self.path, 0):
+            raise ValueError(f"{self.side} {self.path}:{self.line} is not a text line")
+        return self
+
+
+class Dimension(Contract):
+    applies: bool
+    assessment: TrimmedText
+    evidence: list[Citation] = Field(min_length=1)
+
+    @field_validator("evidence")
+    @classmethod
+    def cites_diff(cls, value: list[Citation], info: ValidationInfo) -> list[Citation]:
+        assert isinstance(info.context, ReviewContext)
+        if not any(c.path in getattr(info.context, c.side).changed for c in value):
+            raise ValueError("evidence must cite a changed path")
+        return value
+
+
 class MergeRisk(RecordContract[MergeRiskRecord]):
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[MergeRiskRecord]:
         return TypeAdapter(MergeRiskRecord)
-    alignment: TrimmedText
-    impact: TrimmedText
-    verification: TrimmedText
-    rollback: TrimmedText
-    error_detection: TrimmedText
+    alignment: Dimension
+    impact: Dimension
+    verification: Dimension
+    rollback: Dimension
+    error_detection: Dimension
     level: Literal["low", "medium", "high"]
+
+    def render(self) -> str:
+        sections = [f"Merge risk: {self.level}"]
+        for name in ("alignment", "impact", "verification", "rollback", "error_detection"):
+            dimension = getattr(self, name)
+            evidence = ", ".join(f"{c.side} {c.path}" + (f":{c.line}" if c.line else "") for c in dimension.evidence)
+            sections.append(f"{name}: " + ("" if dimension.applies else "Not applicable. ") + f"{dimension.assessment} ({evidence})")
+        return "\n\n".join(sections)
 
 
 class GraphCheck(Contract):
@@ -626,7 +709,7 @@ class Finding(RecordContract[FindingRecord]):
     fix: Text = Field(description="State the requested fix.")
     ruling_id: str | None = Field(description="If this contradicts a settled ruling, give its ID so it becomes a coordinator note. Otherwise null.")
     file: Text = Field(description="Give the path relative to the repository root.")
-    line: int = Field(description="Give the line number in the reviewed commit.")
+    line: PositiveInt = Field(description="Give the line number in the reviewed commit.")
     severity: Severity
     summary: Text = Field(max_length=200)
 
@@ -641,21 +724,26 @@ class SettledRuling(Contract):
     text: Text
 
 
+class ReviewFinding(Finding):
+    @model_validator(mode="after")
+    def resolve(self, info: ValidationInfo) -> Self:
+        Citation.model_validate(dict(side="head", path=self.file, line=self.line), context=info.context)
+        return self
+
+
 class ReviewOutput(StageOutput):
     resolutions: list[FindingResolution] = Field(description="Mark every earlier unresolved reviewer finding once. The graph resolves tool-fact gate findings. Return an empty list in round 1.")
     risk: MergeRisk
-    findings: list[Finding] = Field(
+    findings: list[ReviewFinding] = Field(
         description="List each new requested fix, including nits. Return an empty list when there are none.",
     )
     tool_facts: list[ToolFact] = Field(
         description="List every outside-tool fact the diff relies on, including unrecorded facts. Use an empty list if there are none.",
     )
-    detail: Text = Field(description="Write the pull request review body, including any longer explanation.")
-
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        return {"risk": self.risk.record(), "detail": self.detail,
+        return {"risk": self.risk.record(),
                 "findings": [finding.record() for finding in self.findings]}
 
 
@@ -701,9 +789,9 @@ STAGE_OUTPUTS: dict[str, type[StageOutput]] = {
 }
 
 
-def parse_output(contract: type[Output], raw: object) -> Output:
+def parse_output(contract: type[Output], raw: object, *, context: ReviewContext | None = None) -> Output:
     try:
-        return contract.model_validate(raw)
+        return contract.model_validate(raw, context=context)
     except ValidationError as exc:
         error = exc.errors(include_input=False)[0]
         path = ".".join(map(str, error["loc"])) or "$"

@@ -1,6 +1,8 @@
+from foreman.dry_run import DryRun
 import contextlib
 from decimal import Decimal
 import io
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -14,7 +16,7 @@ from langgraph.types import Overwrite
 from foreman.adapters import Outcome, Usage
 from foreman.budget import CostUnknown, Exhausted, Remaining, dollar_admission
 from foreman.cli import _print_run, main
-from foreman.delivery import DryRun, LiveRun, compile_delivery, run_delivery, run_tokens
+from foreman.delivery import LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import ScriptHandler
 from foreman.runner import run_live_delivery
 from foreman.usd import BudgetUsd
@@ -63,6 +65,8 @@ class DollarAllowanceTests(unittest.TestCase):
         script = r'''
 from dataclasses import replace
 from pathlib import Path
+import json
+import subprocess
 import sys
 from unittest.mock import patch
 from foreman.cli import main
@@ -73,10 +77,17 @@ from test_runner import FakeGitHub, FakeWorkspace, fixture_process, worker_reply
 checkpoint, raw_pin, phase = sys.argv[1:4]
 def worker(args, cwd, env):
     with Path("workers.log").open("a") as log:
-        log.write(args[0] + "\n")
+        log.write(json.dumps(args) + "\n")
     if phase == "needs_human":
         return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
-    return fixture_process(args, "quota", 1)
+    process = fixture_process(args, "quota", 1)
+    if args[0] == "claude":
+        envelope = json.loads(process.stdout)
+        envelope["total_cost_usd"] = 0.01
+        for index, row in enumerate(envelope["modelUsage"].values()):
+            row["costUSD"] = 0.01 if index == 0 else 0.0
+        return subprocess.CompletedProcess(args, 1, json.dumps(envelope), "")
+    return process
 
 pin = PstackPin.model_validate_json(raw_pin)
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
@@ -122,7 +133,17 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         self.assertIn("restored ", resumed.stdout)
                         self.assertIn("paused quota_exhausted", resumed.stdout)
                         self.assertGreater(len(log.read_text()), len(before))
+                        new_calls = [json.loads(line) for line in log.read_text()[len(before):].splitlines()]
+                        if stored:
+                            claude = next(args for args in new_calls if args[0] == "claude")
+                            prior_costs = [Decimal(repr(a["usage"]["cost_usd"])) for a in snapshot["attempts"]
+                                           if a["model"].startswith("claude-")]
+                            expected = Decimal(stored) - sum(prior_costs)
+                            self.assertEqual(claude.count("--max-budget-usd"), 1)
+                            self.assertEqual(Decimal(claude[claude.index("--max-budget-usd") + 1]), expected)
+                        self.assertTrue(all("--max-budget-usd" not in args for args in new_calls if args[0] != "claude"))
                         before = log.read_text()
+                        snapshot = saved()
                         self.assertEqual(saved()["max_budget_usd"], stored)
                         if stored:
                             self.assertIn("claude spend", resumed.stdout)
@@ -138,7 +159,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         for raw, stored in (("1", "1"), ("1.50", "1.5"), ("1e-4", "0.0001")):
             with self.subTest(raw=raw), contextlib.redirect_stdout(io.StringIO()) as output:
                 main(["run", "delivery", "--repo", "a/b", "--dry-run", "--request", "x", "--max-budget-usd", raw])
-            self.assertIn(f"claude spend unknown of ${stored}", output.getvalue())
+            self.assertIn(f"claude spend $0.0 of ${stored}", output.getvalue())
 
     def test_run_delivery_stores_canonical_text_or_null(self):
         bounded = run_delivery(ScriptHandler(), repo="a/b", request="x", max_budget_usd=usd("1.50"))
@@ -170,7 +191,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         calls.append(node)
                         if pause == "needs_human" and len(calls) == 1:
                             return Outcome("ran", NEEDS_HUMAN, usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=0.1))
-                        return Outcome("quota")
+                        return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=0.0))
 
                     kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=Path(folder) / "allowance.sqlite",
                                   run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))), dispatcher=handler)
@@ -210,7 +231,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 with self.subTest(stop=snapshot["stop"]):
                     legacy = root / f"{snapshot['stop']}.sqlite"
                     with SqliteSaver.from_conn_string(str(legacy)) as saver:
-                        graph = compile_delivery(quota, config, run=DryRun(), checkpointer=saver)
+                        graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {key: value for key, value in snapshot.items() if key != "max_budget_usd"})
                     with self.assertRaisesRegex(ValueError, "unknown usage history for --max-budget-usd.*new run"):
                         run_live_delivery(**kwargs, checkpoint=legacy)
@@ -229,7 +250,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
             finished = root / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(finished)) as saver:
-                graph = compile_delivery(ScriptHandler(), config, run=DryRun(), checkpointer=saver)
+                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state(THREAD, {"repo": "a/b", "check": "", "path": ["done"], "stop": "answered",
                                             "token_cap": 100}, as_node="done")
             output = printed(run_live_delivery(**kwargs, checkpoint=finished))
@@ -272,7 +293,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 dispatched = len(calls)
                 if case == "non_prefix":
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-                        graph = compile_delivery(ScriptHandler(), config, run=DryRun(), checkpointer=saver)
+                        graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {"attempts": Overwrite(implement)}, as_node="done")
                     with self.assertRaisesRegex(ValueError, "non-prefix attempt history"):
                         run_live_delivery(**kwargs)

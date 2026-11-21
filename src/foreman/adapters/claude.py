@@ -1,9 +1,10 @@
 from collections.abc import Mapping
 from math import isclose
+import json
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal
 
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from typing_extensions import override
 
 from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
@@ -11,6 +12,11 @@ from foreman.usd import CostUsd, usd_text
 
 
 QUOTA_ERRORS = {"usage_limit_reached", "model_requires_usage_credits"}
+
+
+class PermissionDenial(BaseModel):
+    tool_name: str
+    tool_input: dict[str, object] = Field(default_factory=dict)
 
 
 class ClaudeEnvelope(NativeEnvelope):
@@ -24,6 +30,7 @@ class ClaudeEnvelope(NativeEnvelope):
     structured_output: dict[str, object] | None = None
     session_id: str | None = None
     total_cost_usd: object = None
+    permission_denials: object = Field(default_factory=list)
 
     @override
     def read_usage(self) -> Usage | None:
@@ -40,7 +47,7 @@ class ClaudeEnvelope(NativeEnvelope):
         return usage
 
     @override
-    def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
+    def outcome(self, process: CompletedProcess[str], model_id: str, call: Call) -> Outcome:
         kind: OutcomeKind = "ran"
         detail = "\n".join(self.errors) or self.result or process.stderr.strip()
         if self.subtype == "error_max_budget_usd":
@@ -61,6 +68,21 @@ class ClaudeEnvelope(NativeEnvelope):
         elif self.structured_output is None:
             kind = "failed"
             detail = detail or "missing structured output"
+        if kind == "ran" and call.check:
+            try:
+                denials = TypeAdapter(list[PermissionDenial]).validate_python(self.permission_denials, strict=True)
+            except ValidationError:
+                kind, detail = "failed", f"Claude denied-check evidence malformed: {call.check}"
+            else:
+                for denial in denials:
+                    command = denial.tool_input.get("command")
+                    if denial.tool_name == "Bash" and (
+                        not isinstance(command, str) or not command.strip()
+                        or call.check in command or command in call.check
+                    ):
+                        kind = "failed"
+                        detail = f"Claude denied the granted check: {call.check}; denied command: {command!r}"
+                        break
         return build_outcome(
             kind, output=self.structured_output, usage=self.read_usage(),
             session_id=self.session_id, detail=detail,
@@ -74,5 +96,18 @@ class ClaudeAdapter(NativeAdapter):
     def command(self, call: Call) -> list[str]:
         effort = ["--effort", self.model.effort] if self.model.effort else []
         budget = ["--max-budget-usd", usd_text(call.budget_usd)] if call.budget_usd is not None else []
-        return ["claude", "--model", self.model.model_id, *effort, "--permission-mode", self.permission_mode(call),
+        allow = [f"Bash({call.check})"] if call.check else []
+        if call.edit:
+            allow += ["Edit", "Write"]
+        settings = {"permissions": {"allow": allow, "deny": [
+            f"Edit(/{root.resolve()}/**)" for root in call.read_roots
+        ]}}
+        directories = [str(root) for root in call.read_roots]
+        if call.edit:
+            directories.append(str(call.temp_dir))
+        scope = [arg for directory in directories for arg in ("--add-dir", directory)]
+        return ["claude", "--model", self.model.model_id, *effort, "--restricted",
+                "--strict-mcp-config", "--permission-mode", "dontAsk",
+                "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else "Read,Glob,Grep,Bash",
+                *scope, "--settings", json.dumps(settings),
                 *budget, "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]

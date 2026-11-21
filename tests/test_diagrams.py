@@ -1,3 +1,4 @@
+from foreman.dry_run import DryRun
 import ast
 from pathlib import Path
 import re
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 from foreman.cli import main
 from foreman.config import load_config
-from foreman.delivery import DryRun, compile_delivery
+from foreman.delivery import LiveRun, compile_delivery
 from foreman.diagrams import LEGEND, drawings, readme_diagrams
 from foreman.dry_run import ScriptHandler
 
@@ -49,8 +50,13 @@ def edges(text):
 
 
 class DiagramTests(unittest.TestCase):
+    def test_model_stage_loops_do_not_filter_verify(self):
+        tree = ast.parse(Path(compile_delivery.__code__.co_filename).read_text())
+        comparisons = (node for node in ast.walk(tree) if isinstance(node, ast.Compare))
+        self.assertFalse(any(isinstance(value, ast.Constant) and value.value == "verify" for node in comparisons for value in node.comparators))
+
     def test_native_drawings_and_readme_are_exact(self):
-        compiled = compile_delivery(ScriptHandler(), load_config(), run=DryRun())
+        compiled = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=DryRun(), workspace=DryRun()))
         pictures = drawings()
         self.assertEqual(pictures["delivery"], compiled.get_graph().draw_mermaid())
         for name, text in pictures.items():
@@ -103,6 +109,23 @@ class DiagramTests(unittest.TestCase):
                         recorded.extend((source, target, label) for target, label in targets)
                 self.assertEqual(len(recorded), len(set(recorded)), "duplicate gap")
                 self.assertEqual(set(recorded), difference, f"{name} {direction}")
+
+    def test_stage_targets_and_gap_owners(self):
+        targets = {path.name.removesuffix(".target.mmd")
+                   for path in (GRAPH / "stages").glob("*.target.mmd")}
+        blueprint = edges((GRAPH / "target.mmd").read_text())
+        steps = {node for source, target, _ in blueprint for node in (source, target)}
+        steps = (steps - {"__start__", "__end__"}) | {"dispatch_cell"}
+        self.assertEqual(targets, steps, "missing or orphan stage target")
+        gaps = tomllib.loads((GRAPH / "gaps.toml").read_text()).get("stages", {})
+        self.assertLessEqual(set(gaps), targets, "orphan stage gap")
+        for owners in gaps.values():
+            self.assertTrue(owners)
+            self.assertLessEqual(set(owners), SLICES)
+            for lines in owners.values():
+                self.assertTrue(lines)
+                self.assertTrue(all(line.strip() for line in lines))
+        self.assertFalse(any(name.startswith("stages/") for name in drawings()))
 
     def test_edge_labels_and_invalid_syntax(self):
         self.assertEqual(edges('a -->|fail: fix| b["step"]\na -. &nbsp;call&nbsp; .-> c;'),

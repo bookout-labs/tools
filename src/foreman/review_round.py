@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from foreman.resolution import ResolutionLedger
-from foreman.stage_output import Contract, Finding, ReviewOutput, ResolutionStatus, SettledRuling, StoredToolFact, parse_output
+from foreman.stage_output import Contract, Finding, ReviewOutput, ReviewSelection, ResolutionStatus, SettledRuling, StoredToolFact, parse_output
 
 
 class GraphCheck(Contract):
@@ -18,6 +18,7 @@ class GraphCheck(Contract):
 class ReviewRound(Contract):
     round: int
     reviewed_head: str
+    provenance: ReviewSelection | None = None
     findings: list[Finding]
     resolutions: dict[str, ResolutionStatus]
     graph_check: GraphCheck | None = None
@@ -76,7 +77,7 @@ def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphChec
     entry = ReviewRound(round=len(past.rounds) + 1, reviewed_head=head, findings=findings,
                         resolutions=resolutions, coordinator_notes=notes, graph_check=gate)
     history = ReviewHistory(rounds=[*past.rounds, entry], settled=past.settled)
-    detail = [output.detail, *(f"Coordinator note {f.id}: {f.file}:{f.line} {f.summary}" for f in notes)]
+    detail = [output.risk.render(), *(f"Coordinator note {f.id}: {f.file}:{f.line} {f.summary}" for f in notes)]
     if gate and not gate.passed:
         detail.append(gate.detail)
     recurrence = accounting.recurrence(findings)
