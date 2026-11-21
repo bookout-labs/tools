@@ -499,7 +499,7 @@ def compile_delivery(
             except ConfigError as exc:
                 return halted(Halt.model_family_exhausted, str(exc), name)
             instruction = prompts[name]
-            methods_text, methods = stage_methods(name, state, methods_root) if methods_root is not None else ("", [])
+            methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
             if name in {"implement", "review"}:
@@ -554,7 +554,7 @@ def compile_delivery(
             return {"verify_failures": failure_count(state, "verify_failures"),
                     "proof_failures": failure_count(state, "proof_failures"), "spec_failures": failure_count(state, "spec_failures"),
                     "review_run_id": state.get("review_run_id") or uuid4().hex, "dispatch_plan": DispatchPlan(
-                models=[model.name for model in models], instruction=instruction, methods=methods,
+                models=[model.name for model in models], instruction=instruction, methods=methods, read_roots=read_roots,
                 budget_usd=dispatch_budget(admission),
                 target=review_context[1] if review_context else None,
                 scope=review_context[2].record() if review_context else None,
