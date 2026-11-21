@@ -658,6 +658,72 @@
   },
   "review": {
     "$defs": {
+      "Citation": {
+        "additionalProperties": false,
+        "properties": {
+          "side": {
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Side",
+            "type": "string"
+          },
+          "path": {
+            "pattern": "\\S",
+            "title": "Path",
+            "type": "string"
+          },
+          "line": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Line"
+          }
+        },
+        "required": [
+          "side",
+          "path",
+          "line"
+        ],
+        "title": "Citation",
+        "type": "object"
+      },
+      "Dimension": {
+        "additionalProperties": false,
+        "properties": {
+          "applies": {
+            "title": "Applies",
+            "type": "boolean"
+          },
+          "assessment": {
+            "pattern": "\\S",
+            "title": "Assessment",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          }
+        },
+        "required": [
+          "applies",
+          "assessment",
+          "evidence"
+        ],
+        "title": "Dimension",
+        "type": "object"
+      },
       "Finding": {
         "additionalProperties": false,
         "properties": {
@@ -705,6 +771,7 @@
           },
           "line": {
             "description": "Give the line number in the reviewed commit.",
+            "exclusiveMinimum": 0,
             "title": "Line",
             "type": "integer"
           },
@@ -790,29 +857,19 @@
         "additionalProperties": false,
         "properties": {
           "alignment": {
-            "pattern": "\\S",
-            "title": "Alignment",
-            "type": "string"
+            "$ref": "#/$defs/Dimension"
           },
           "impact": {
-            "pattern": "\\S",
-            "title": "Impact",
-            "type": "string"
+            "$ref": "#/$defs/Dimension"
           },
           "verification": {
-            "pattern": "\\S",
-            "title": "Verification",
-            "type": "string"
+            "$ref": "#/$defs/Dimension"
           },
           "rollback": {
-            "pattern": "\\S",
-            "title": "Rollback",
-            "type": "string"
+            "$ref": "#/$defs/Dimension"
           },
           "error_detection": {
-            "pattern": "\\S",
-            "title": "Error Detection",
-            "type": "string"
+            "$ref": "#/$defs/Dimension"
           },
           "level": {
             "enum": [
@@ -907,20 +964,13 @@
         },
         "title": "Tool Facts",
         "type": "array"
-      },
-      "detail": {
-        "description": "Write the pull request review body, including any longer explanation.",
-        "pattern": "\\S",
-        "title": "Detail",
-        "type": "string"
       }
     },
     "required": [
       "resolutions",
       "risk",
       "findings",
-      "tool_facts",
-      "detail"
+      "tool_facts"
     ],
     "title": "ReviewOutput",
     "type": "object"

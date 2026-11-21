@@ -12,7 +12,7 @@ from foreman._raw import is_dict
 from foreman.adapters import Call, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.config import ModelSpec
 from foreman.dispatch import InvalidOutput
-from foreman.stage_output import Contract, parse_output
+from foreman.stage_output import Contract, ReviewOutput, parse_output
 
 EVENT = TypeAdapter(dict[str, object])
 QUOTA_PREFIXES = (
@@ -125,7 +125,8 @@ class CodexAdapter:
         if turn.message is None:
             return "failed", None, "Codex did not return a final agent message"
         try:
-            output = parse_output(self.contract, json.loads(turn.message)).model_dump()
+            raw = json.loads(turn.message)
+            output = raw if self.contract is ReviewOutput else parse_output(self.contract, raw).model_dump()
         except json.JSONDecodeError:
             return "failed", None, "Codex did not return valid JSON"
         except InvalidOutput as exc:

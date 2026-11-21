@@ -13,6 +13,7 @@ from foreman.config import load_config
 from foreman.adapters import Outcome
 from foreman.dry_run import SCRIPTED_USAGE
 from foreman.stage_output import ReviewOutput, parse_output
+from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from skill_fixture import skill_fixture
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
@@ -44,6 +45,10 @@ class ReviewRoundsTest(unittest.TestCase):
                     super().commit(message)
                     if answer or advance_head:
                         self.current = type(self.current)(str(implementations) * 40, True, self.current.branch)
+
+                def review_context(self, base, head):
+                    context = super().review_context(base, head)
+                    return ReviewContext(context.base, replace(context.head, files=context.head.files | {"main.txt"}, lines={**context.head.lines, "main.txt": 1})) if divergent else context
 
                 def files_at(self, head, prefix):
                     outer.gate_reads.append(head)
@@ -78,7 +83,7 @@ class ReviewRoundsTest(unittest.TestCase):
                         quota_returned = True
                         return Outcome("quota")
                     raw = next(replies)
-                    return Outcome("ran", parse_output(ReviewOutput, raw).model_dump(), usage=SCRIPTED_USAGE)
+                    return Outcome("ran", raw, usage=SCRIPTED_USAGE)
                 if crash and state.get("review_findings") and not crashed:
                     crashed = True
                     raise RuntimeError("process lost")
@@ -145,7 +150,7 @@ class ReviewRoundsTest(unittest.TestCase):
                                  {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}], crash=True)
         self.assertEqual(result["merge"], "armed")
         self.assertEqual(self.diffs, [(BASE, HEAD, False), (BASE, HEAD, False), (HEAD, HEAD, True)])
-        raw = parse_output(ReviewOutput, {**APPROVE, "findings": [FINDING]})
+        raw = parse_output(ReviewOutput, {**APPROVE, "findings": [FINDING]}, context=SCRIPTED_REVIEW_CONTEXT)
         before = raw.model_dump()
         past = ReviewHistory()
         accepted = accept(past, raw, HEAD, None)
@@ -155,7 +160,7 @@ class ReviewRoundsTest(unittest.TestCase):
 
     def test_gate_rejects_every_previously_failing_head(self):
         past = ReviewHistory()
-        output = parse_output(ReviewOutput, APPROVE)
+        output = parse_output(ReviewOutput, APPROVE, context=SCRIPTED_REVIEW_CONTEXT)
         for head, fails, expected in [("a", True, "changes"), ("b", True, "changes"),
                                       ("b", False, "changes"), ("c", False, "approve")]:
             accepted = accept(past, output, head, GraphCheck(failing_heads=[head], detail="Missing fixture") if fails else None)
