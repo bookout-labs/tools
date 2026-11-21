@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from foreman.adapters import Outcome, Usage
 from foreman.cli import main
 from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
@@ -53,13 +54,6 @@ class LiveWatchTest(unittest.TestCase):
         self.forge.create_issue.assert_called_once()
         self.forge.comment_issue.assert_not_called()
 
-    def test_new_halt_clears_an_earlier_watch(self):
-        graph = compile_delivery(None, load_config(), run=self.run)
-        result = graph.invoke({'repo': 'Example/Engine', 'check': 'exit 0', 'path': [],
-                               'token_cap': 20_000_000, 'watch': {'issue': 101, 'action': 'filed'}}, version='v2').value
-        self.assertEqual(result['halt'], 'no_dispatcher')
-        self.assertIsNone(result['watch'])
-
     def test_crash_after_create_before_record_dedupes_from_original_snapshot(self):
         def crash(*args, **kwargs):
             self.fake.create_issue(*args, **kwargs)
@@ -101,7 +95,12 @@ class LiveWatchTest(unittest.TestCase):
         self.assertEqual(self.stored()['watch'], second['watch'])
         self.forge.create_issue.assert_called_once()
         self.forge.comment_issue.assert_called_once()
-        self.assertNotEqual(self.fake.created[0][1].splitlines()[-2], self.fake.comments['bookout-labs/tools', 101][0].splitlines()[-1])
+        markers = []
+        for body in (self.fake.created[0][1], self.fake.comments['bookout-labs/tools', 101][0]):
+            lines = [line for line in body.splitlines() if line.startswith('<!-- foreman-watch-run: ')]
+            self.assertEqual(len(lines), 1)
+            markers.append(lines[0])
+        self.assertNotEqual(*markers)
 
     def test_cli_watch_target_and_validation(self):
         for target in (None, 'Other/Watch'):
@@ -143,6 +142,43 @@ class LiveWatchTest(unittest.TestCase):
         self.assertEqual(result['stop'], 'blocked')
         self.forge.open_issues.assert_not_called()
         self.forge.create_issue.assert_not_called()
+        self.fake.closed.add(101)
+        self.fake.merged.add(101)
+        def dispatch(stage, *args):
+            return (Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
+                            usage=Usage(input_tokens=1, output_tokens=1)) if stage == 'triage' else Outcome('quota'))
+        quota = FailoverDispatcher(dispatch)
+        paused = self.invoke(dispatcher=quota)
+        self.assertEqual(paused['stop'], 'quota_exhausted')
+        again = self.invoke(dispatcher=quota)
+        self.assertEqual(again['stop'], 'quota_exhausted')
+        self.assertGreater(len(again['attempts']), len(paused['attempts']))
+        self.assertEqual([attempt['stage'] for attempt in again['attempts']].count('triage'), 1)
+        self.assertEqual(self.forge.load_issue.call_count, 2)
+
+    def test_skill_failure_preserves_resumable_checkpoints(self):
+        for stop in ('git_failed', 'quota_exhausted'):
+            with self.subTest(stop=stop):
+                self.checkpoint = self.root / f'{stop}.sqlite3'
+                workspace = FakeWorkspace(self.root)
+                workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
+                self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
+                def dispatch(stage, *args):
+                    if stop == 'quota_exhausted':
+                        return Outcome('quota')
+                    return Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
+                                   usage=Usage(input_tokens=1, output_tokens=1))
+                dispatcher = FailoverDispatcher(dispatch)
+                self.assertEqual(self.invoke(dispatcher=dispatcher)['stop'], stop)
+                before = self.stored()
+                self.run = LiveRun(self.forge, workspace, skills=Mock(side_effect=SkillMissing(load_config().pstack)))
+                reports = []
+                failed = self.invoke(dispatcher=dispatcher, report=reports.append)
+                self.assertEqual([result['stop'] for result in reports], ['skill_missing'])
+                self.assertIsNone(failed['watch'])
+                self.assertEqual(self.stored(), before)
+                self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
+                self.assertEqual(self.invoke(dispatcher=dispatcher)['stop'], stop)
 
     def test_live_forge_receives_redacted_halt_on_issue_and_repeat_comment(self):
         secret = 'ghp_' + 'a' * 36

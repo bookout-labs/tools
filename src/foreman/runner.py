@@ -159,6 +159,7 @@ def run_live_delivery(
         if prior and not channels.get("stop") and saved_pin is None:
             raise ValueError("Cannot resume a delivery checkpoint without a pstack pin.")
         pin = PstackPin.model_validate(saved_pin) if saved_pin is not None else delivery_config.pstack
+        early_result: DeliveryResult | None = None
         try:
             graph = compile_delivery(
                 dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver,
@@ -166,12 +167,15 @@ def run_live_delivery(
             )
         except SkillMissing as exc:
             graph = compile_delivery(dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver)
-            graph.update_state(config, {**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
-                                       "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "pending_dispatch": None,
-                                       "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
-                                       "issue": issue, "workspace": workspace, "repo": repo, "check": check,
-                                       "token_cap": channels.get("token_cap", max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)},
-                               as_node="done")
+            skill_halt: DeliveryUpdate = {**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
+                                          "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "pending_dispatch": None,
+                                          "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
+                                          "issue": issue, "workspace": workspace, "repo": repo, "check": check,
+                                          "token_cap": channels.get("token_cap", max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)}
+            if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
+                early_result = read_delivery_state(skill_halt)
+            else:
+                graph.update_state(config, skill_halt, as_node="done")
         def invoke(
             graph_input: DeliveryState | Command[str] | None,
             state: DeliveryState,
@@ -203,7 +207,7 @@ def run_live_delivery(
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
         waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == "quota_exhausted"
-        if answer is not None:
+        if answer is not None and early_result is None:
             if waiting_for_quota:
                 raise AnswerError("This issue has no pending question.")
             if not answer.strip():
@@ -214,7 +218,9 @@ def run_live_delivery(
                     raise AnswerError("This issue has no pending question.")
                 if answer != answers[-1]:
                     raise AnswerError("This question was already answered differently. Resume with the recorded answer.")
-        if saved_values is not None and (pending := saved_values.get("pending_dispatch")):
+        if early_result is not None:
+            pass
+        elif saved_values is not None and (pending := saved_values.get("pending_dispatch")):
             assert "dispatch_plan" in saved_values
             stage = pending["stage"]
             models = saved_values["dispatch_plan"]["models"]
@@ -235,7 +241,7 @@ def run_live_delivery(
             invoke(Command(resume=answer), saved_values)
         elif saved_values is None or saved_values.get("stop") == "blocked":
             if saved_values is not None:
-                graph.update_state(config, {"path": Overwrite([])}, as_node="done")
+                graph.update_state(config, {"path": Overwrite([]), "stop": "", "halt_detail": ""}, as_node="done")
             loaded = client.load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
@@ -264,7 +270,7 @@ def run_live_delivery(
                     if item.work_kind is not None:
                         initial["work_kind"] = item.work_kind
             if initial.get("stop") == "blocked":
-                graph.update_state(config, initial, as_node="done")
+                early_result = read_delivery_state(initial)
             else:
                 invoke(initial, initial)
         elif waiting_for_quota:
@@ -284,7 +290,7 @@ def run_live_delivery(
             invoke(None, saved_values)
 
         saved = graph.get_state(config)
-        result = snapshot_result(saved, saver)
+        result = early_result if early_result is not None else snapshot_result(saved, saver)
         if result.get("stop") == "sliced":
             saved_values = checkpoint_state(saved.values)
             assert saved_values is not None
@@ -320,7 +326,7 @@ def run_live_delivery(
         if (halt := result.get("halt")) is not None:
             if WATCH[halt] is None:
                 log(f"watch skipped {halt}")
-            elif result.get("watch") is None:
+            elif result.get("watch") is None and early_result is None:
                 step = (saved.metadata or {}).get("step")
                 assert step is not None
                 key = run_key(repo, issue, step)
