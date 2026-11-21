@@ -1,5 +1,7 @@
 """Keep every source module under the strict type gate."""
 
+import tests
+
 from pathlib import Path
 import re
 import tomllib

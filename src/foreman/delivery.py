@@ -29,7 +29,7 @@ from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command, pull_request_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
-from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
+from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
     Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
@@ -81,10 +81,13 @@ class LiveRun:
     workspace: Workspace
     check_log: CheckLog | None = None
     environment: EnvironmentProbe | None = None
+    skills: SkillSource = export_skills
 
 
 @dataclass(frozen=True)
 class DryRun:
+    skills: SkillSource = export_skills
+
     def record_merge(self, repo: str, head: str | None) -> list[str]:
         revision = (commit_sha(head) or redact(head)) if head else "<sha>"
         return merge_command(redact(repo), "<number>", revision)
@@ -394,7 +397,7 @@ def compile_delivery(
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
-    methods_root = export_skills(config.pstack, scratch) if scratch is not None else None
+    methods_root = run.skills(config.pstack, scratch) if scratch is not None else None
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
     plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
@@ -971,6 +974,7 @@ def run_delivery(
     config: Config | None = None,
     slice: object = None,
     scratch: Path | None = None,
+    skills: SkillSource = export_skills,
     fact_record: str = MANIFEST_PATH,
 ) -> DeliveryResult:
     state: DeliveryState = {
@@ -989,7 +993,7 @@ def run_delivery(
     if scratch is not None:
         state["pstack_pin"] = config.pstack.model_dump()
     try:
-        graph = compile_delivery(dispatcher, config, run=DryRun(), scratch=scratch)
+        graph = compile_delivery(dispatcher, config, run=DryRun(skills=skills), scratch=scratch)
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                     "skill_reason": exc.reason})
