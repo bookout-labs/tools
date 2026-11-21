@@ -110,15 +110,9 @@ def run_live_delivery(
             plan = [parse_output(StoredSlice, raw) for raw in saved.values["slices"]]
             siblings = {item.title: number for item, number in zip(plan, numbers)}
             for item in plan[len(numbers):]:
-                payload = item.model_dump(exclude_unset=True)
-                payload["blocker_numbers"] = [siblings[title] for title in item.depends_on]
-                dependencies = "\n".join(f"- {title}" for title in item.depends_on) or "None"
-                constraints = "\n".join(f"- {prop.constraint}" for prop in item.properties) or "None"
-                body = (f"Acceptance:\n{item.acceptance}\n\nDependencies:\n{dependencies}"
-                        f"\n\nScreen:\n{item.screen or 'None'}\n\nConstraints:\n{constraints}"
-                        f"\n\n```json\n{json.dumps(payload, indent=2)}\n```")
+                child = item.model_copy(update={"blocker_numbers": [siblings[title] for title in item.depends_on]})
                 labels = ["slice"] + ([] if item.depends_on else ["factory"])
-                number = client.create_issue(repo, item.title, body, labels)
+                number = client.create_issue(repo, item.title, "", labels, child=child)
                 numbers.append(number)
                 siblings[item.title] = number
                 graph.update_state(config, {"child_issue_numbers": numbers})

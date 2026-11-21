@@ -19,10 +19,11 @@ from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
+from foreman.redaction import redact
 from foreman.stage_output import (
     Contract, HumanQuestionOutput, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, parse_output,
 )
-from foreman.workspace import ReviewDiff, Workspace, WorktreeInspectionFailed
+from foreman.workspace import CheckLog, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -38,11 +39,14 @@ MergeHalt = Literal["merge_held", "merge_not_armed"]
 class LiveRun:
     forge: Forge
     workspace: Workspace
+    check_log: CheckLog | None = None
 
 
 @dataclass(frozen=True)
 class DryRun:
-    pass
+    def record_merge(self, repo: str, head: str | None) -> list[str]:
+        revision = (commit_sha(head) or redact(head)) if head else "<sha>"
+        return merge_command(redact(repo), "<number>", revision)
 
 
 SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle", "existing_seam_builder"]
@@ -78,6 +82,7 @@ class DeliveryState(TypedDict, total=False):
     implementation: str
     head_sha: str | None
     verified_head: str
+    merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
     browser_proof: dict[str, object] | None
@@ -304,14 +309,14 @@ def compile_delivery(
         match run:
             case DryRun():
                 return scripted_verify(state)
-            case LiveRun(workspace=workspace):
+            case LiveRun(workspace=workspace, check_log=check_log):
                 try:
                     worktree = workspace.inspect()
                 except WorktreeInspectionFailed as exc:
                     return {"path": ["verify"], "halt": "dirty_worktree", "halt_detail": str(exc)}
                 if not worktree.clean:
                     return {"path": ["verify"], "halt": "dirty_worktree"}
-                exit_code = workspace.run(state["check"])
+                exit_code = workspace.run(state["check"], log=check_log)
                 verdict = "pass" if exit_code == 0 else "fail"
                 checked = {"verified_head": worktree.head} if exit_code == 0 else {}
                 return {
@@ -406,7 +411,7 @@ def compile_delivery(
             case DryRun():
                 return {
                     "merge": "skipped", "path": ["merge"],
-                    "merge_command": merge_command(repo, "<number>", state.get("head_sha") or "<sha>"),
+                    "merge_command": run.record_merge(repo, state.get("head_sha")),
                 }
             case LiveRun(forge=forge, workspace=workspace):
                 if head is None:
@@ -418,13 +423,10 @@ def compile_delivery(
                 if not worktree.clean:
                     return halted("merge_not_armed", "The worktree has changes or Git could not inspect it.")
                 if worktree.head != head:
-                    return halted(
-                        "merge_not_armed",
-                        f"HEAD is {worktree.head}, verification checked {head}. "
-                        "Reset the PR branch to the verified commit.\n"
-                        f"  git reset --keep {head}\n"
-                        "Then rerun the same command. New commits need a new run."
-                    )
+                    return {
+                        **halted("merge_not_armed", head_mismatch_detail(worktree.head, head)),
+                        "merge_observed_head": worktree.head,
+                    }
                 if worktree.branch is None:
                     return halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")
                 try:
