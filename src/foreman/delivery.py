@@ -3,6 +3,9 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from collections.abc import Callable
+import json
+import operator
+
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
@@ -10,8 +13,6 @@ from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from tomllib import TOMLDecodeError
 from typing import Annotated, Literal, NotRequired, get_args
-import operator
-import json
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
