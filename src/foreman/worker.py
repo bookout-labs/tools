@@ -10,6 +10,8 @@ import tempfile
 from tempfile import TemporaryDirectory
 from typing import Callable
 
+from pydantic_core import to_jsonable_python
+
 from foreman.adapters import Call, CapabilityUnavailable, CliAdapter, Outcome
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
@@ -49,7 +51,7 @@ class CliWorker:
         )
         contract = STAGE_OUTPUTS[node]
         schema = json.dumps(contract.model_json_schema())
-        prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
+        prompt += f"\n\nDelivery state:\n{json.dumps(to_jsonable_python(state))}"
 
         plan = state.get("dispatch_plan")
         plan = DispatchPlan.model_validate(plan) if plan else None
