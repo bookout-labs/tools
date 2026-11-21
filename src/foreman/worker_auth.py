@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from foreman.credentials import (COMMAND_TIMEOUT, CredentialFailure, UNAVAILABLE, command_environment,
-                                 credentials, git_auth, validate_remote)
+                                 credentials, git_auth, normalize_remote_url, validate_remote)
 from foreman.redaction import redact
 
 REPO = "bookout-labs/tools"
@@ -45,8 +45,8 @@ def validate_config(url: str) -> None:
         key, _, value = entry.partition("\n")
         if scope in {"local", "worktree"} and not (
                 re.fullmatch(r"core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)"
-                             r"|remote\.origin\.fetch|branch\..*\.(remote|merge|gh-merge-base)", key.lower()) or
-                (key.lower() == "remote.origin.url" and value == url)):
+                             r"|remote\.origin\.fetch|branch\..*\.(remote|merge|gh-merge-base|t3-merge-base|t3-merge-base-ref)", key.lower()) or
+                (key.lower() == "remote.origin.url" and normalize_remote_url(value) == url)):
             raise CredentialFailure(f"Worker Git refuses repository config key {redact(key, credentials_only=True)}.")
 
 
