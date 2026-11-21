@@ -9,6 +9,7 @@ from typing_extensions import TypedDict
 
 from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
+from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, Readiness, Rules, StatusPages
 from foreman.redaction import redact
 if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
@@ -238,6 +239,7 @@ class Forge(Protocol):
     def pull_request_base(self, repo: str, branch: str) -> str: ...
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt: ...
+    def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation: ...
     def merge_hold(self, repo: str) -> str | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
 
@@ -425,6 +427,64 @@ class LiveForge:
         except ForgeError as exc:
             raise MergeHoldUnreadable(str(exc)) from exc
         return next((variable.value for variable in variables.root if variable.name == MERGE_HOLD_VARIABLE), None)
+
+    def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation:
+        target = self.review_target(repo, issue, branch, sha)
+        endpoint = f"repos/{repo}"
+        pr = self._read(Readiness, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
+        def observed(outcome: Literal["ready", "conflict", "pending", "red", "policy"], recovery: str,
+                     checks: list[CheckEvidence] | None = None) -> Observation:
+            return Observation(repo=repo, pr=pr, checks=checks or [], outcome=outcome, recovery=recovery)
+        if (pr.number != target.number or pr.head.ref != branch or pr.head.sha.lower() != sha.lower() or pr.base.sha != target.baseRefOid
+                or pr.base.ref != target.baseRefName or pr.state != "open" or pr.draft):
+            return observed("pending", "PR changed or is draft. Renew verification and review.")
+        if pr.mergeable is False:
+            return observed("conflict", "Request a merge-base repair round, then renew verification and review.")
+        if pr.mergeable is None or pr.mergeable_state == "unknown":
+            return observed("pending", "Resume when GitHub has computed mergeability.")
+        rules = self._read(Rules, ["gh", "api", f"{endpoint}/rules/branches/{pr.base.ref}"])
+        legacy = self._read(BranchPolicy, ["gh", "api", f"{endpoint}/branches/{pr.base.ref}"])
+        requirements = [check for rule in rules.root if rule.type == "required_status_checks"
+                        for check in rule.parameters.required_status_checks]
+        classic = legacy.protection.required_status_checks
+        if set(classic.contexts) - {check.context for check in classic.checks}:
+            return observed("policy", "Legacy policy lacks required app identity. Restore readable policy.")
+        requirements.extend(classic.checks)
+        if not requirements:
+            return observed("policy", "Effective required-check policy is empty. Restore readable policy.")
+        commits = [pr.head.sha]
+        if pr.merge_commit_sha:
+            merge = self._read(Commit, ["gh", "api", f"{endpoint}/commits/{pr.merge_commit_sha}"])
+            if {parent.sha for parent in merge.parents} == {pr.head.sha, pr.base.sha}:
+                commits.insert(0, pr.merge_commit_sha)
+        evidence: list[CheckEvidence] = []
+        for commit in commits:
+            runs = self._read(CheckPages, ["gh", "api", f"{endpoint}/commits/{commit}/check-runs?filter=latest&per_page=100", "--paginate", "--slurp"])
+            statuses = self._read(StatusPages, ["gh", "api", f"{endpoint}/commits/{commit}/statuses?per_page=100", "--paginate", "--slurp"])
+            for page in runs.root:
+                evidence.extend(CheckEvidence(context=run.name, app=run.app.id, run=run.id,
+                    tested_commit=commit, state=(run.conclusion or "pending") if run.status == "completed" else "pending")
+                    for run in page.check_runs if run.head_sha == commit)
+            evidence.extend(CheckEvidence(context=status.context, app=None, run=status.id,
+                tested_commit=commit, state=status.state) for page in statuses.root for status in page)
+        effective: list[CheckEvidence] = []
+        for required in requirements:
+            candidates = [check for check in evidence if check.context == required.context
+                          and (required.integration_id in (None, -1) or check.app == required.integration_id)]
+            if len({check.app for check in candidates}) > 1:
+                return observed("policy", "Ambiguous required-check app identity. Bind the policy to an app.", evidence)
+            tested = next((commit for commit in commits if any(c.tested_commit == commit for c in candidates)), pr.head.sha)
+            latest = [c for c in candidates if c.tested_commit == tested]
+            effective.append(max(latest, key=lambda c: c.run or 0) if latest else CheckEvidence(
+                context=required.context, app=required.integration_id, run=None, tested_commit=tested, state="missing"))
+        current = self._read(Readiness, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
+        if current != pr:
+            return observed("pending", "PR changed during observation. Resume with fresh evidence.", effective)
+        if any(c.state not in ("success", "pending", "missing") for c in effective):
+            return observed("red", "Repair failing required checks, then resume.", effective)
+        if any(c.state != "success" for c in effective):
+            return observed("pending", "Wait for required checks, then resume.", effective)
+        return observed("ready", "Eligible for merge arming.", effective)
 
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
         try:

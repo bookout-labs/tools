@@ -24,6 +24,7 @@ from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, PullRequest, render_slice_body
 
+from foreman.readiness import Observation, Readiness
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
@@ -169,6 +170,12 @@ class FakeGitHub:
     def post_review(self, repo, target, body, comments, *, marker):
         self.reviews.append((repo, target.number, target.headRefOid, body, comments))
         return {"id": len(self.reviews), "state": "COMMENTED", "commit_id": target.headRefOid}
+    def readiness(self, repo, issue, branch, sha):
+        return Observation(repo=repo, pr=Readiness(number=12, state="open", draft=False,
+            head={"sha": sha, "ref": branch}, base={"sha": self.base, "ref": "main"},
+            mergeable=True, merge_commit_sha=None, mergeable_state="clean"),
+            checks=[], outcome="ready", recovery="Eligible.")
+
     def merge_hold(self, repo):
         self.hold_reads.append(repo)
         return self.hold
@@ -458,6 +465,51 @@ class LiveRunnerTest(unittest.TestCase):
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)), presentation=presentation,
             run=LiveRun(self.github, active, skills=skills),
         )
+
+    def test_readiness_halts_resume_without_repeating_workers(self):
+        for outcome, reason in [("pending", "ci_pending"), ("red", "ci_red"), ("conflict", "pr_conflict")]:
+            self.checkpoint = self.cwd / (outcome + ".sqlite3")
+            observed = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+            observed.outcome = outcome
+            observed.recovery = "Repair or wait, then resume."
+            with patch.object(self.github, "readiness", return_value=observed):
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual(result["stop"], reason)
+            self.assertEqual(run_exit_code(result), 75)
+            count = len(self.calls)
+            resumed = self.walk([])
+            self.assertEqual(resumed["stop"], "verified")
+            self.assertEqual(len(self.calls), count)
+            self.assertEqual(resumed["review_receipt"], result["review_receipt"])
+
+    def test_readiness_is_reconciled_after_arming(self):
+        ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        changed = ready.model_copy(deep=True)
+        changed.pr.base.sha = "c" * 40
+        with patch.object(self.github, "readiness", side_effect=[ready, changed]):
+            result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["stop"], "ci_pending")
+        self.assertEqual(result["merge"], "not_armed")
+        self.assertEqual(run_exit_code(result), 75)
+
+    def test_external_conflict_repair_renews_entire_lifecycle(self):
+        workspace = FakeWorkspace(self.cwd)
+        conflict = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        conflict.outcome = "conflict"
+        with patch.object(self.github, "readiness", return_value=conflict):
+            result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE], workspace=workspace)
+        self.assertEqual(result["stop"], "pr_conflict")
+        repaired = "d" * 40
+        workspace.current = WorktreeState(repaired, True, BRANCH)
+        def commit(message):
+            workspace.current = WorktreeState(repaired, True, BRANCH)
+        with patch.object(workspace, "commit", side_effect=commit):
+            resumed = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
+        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["reviewed_head"], repaired)
+        self.assertEqual(resumed["verified_head"], repaired)
+        self.assertEqual(resumed["review_receipt"]["commit_id"], repaired)
+        self.assertEqual(len(self.github.reviews), 2)
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}

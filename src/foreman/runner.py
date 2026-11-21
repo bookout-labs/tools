@@ -101,12 +101,13 @@ def _checkpoint_before_halt(
     graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult],
     config: RunnableConfig,
     path: list[str],
+    node: str | None = None,
 ) -> StateSnapshot:
     if path and path[-1] == "done":
         path = path[:-1]
     if not path:
         raise ValueError("Cannot resume a run without a halted node.")
-    node = path[-1]
+    node = node or path[-1]
     entry = entry_node(node)
     before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (entry,)), None)
     if before is None:
@@ -259,7 +260,9 @@ def run_live_delivery(
         elif waiting_for_quota:
             invoke(Command(resume=True), saved_values)
         elif saved_values.get("halt") in RESUMABLE_HALTS:
-            before = _checkpoint_before_halt(graph, config, saved_values["path"])
+            repaired = (saved_values.get("halt") in {"pr_conflict", "ci_pending", "ci_red", "readiness_unavailable", "merge_not_armed", "merge_held"}
+                        and run.workspace.inspect().head != saved_values.get("verified_head"))
+            before = _checkpoint_before_halt(graph, config, saved_values["path"], "prepare" if repaired else None)
             require_token_cap(before.values, checkpoint)
             if presentation is not None:
                 presentation.restore(before, saver)

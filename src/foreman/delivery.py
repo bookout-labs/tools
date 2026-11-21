@@ -44,7 +44,7 @@ PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
-MergeHalt = Literal["merge_held", "merge_not_armed"]
+MergeHalt = Literal["merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red", "readiness_unavailable"]
 ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implement_quota", "quota_exhausted", "review_not_posted"]
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
@@ -158,6 +158,7 @@ class DeliveryFields(TypedDict, total=False):
     commands: Annotated[list[list[str]], operator.add]
     head_sha: str | None
     verified_head: str
+    readiness_observation: str
     merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
@@ -959,11 +960,32 @@ def compile_delivery(
                 issue = state.get("issue")
                 if issue is None:
                     return merge_halted("merge_not_armed", "Live merge requires an issue number.")
+                receipt = state.get("review_receipt")
+                past = history({"rounds": state.get("review_findings", [])})
+                if (state.get("reviewed_head") != head or not receipt or receipt["commit_id"] != head
+                        or past.unresolved() or (past.gate and not past.gate.passed)):
+                    return merge_halted("merge_not_armed", "Renew review and its posted receipt at the verified head.")
+                try:
+                    observation = forge.readiness(repo, issue, worktree.branch, head)
+                except ForgeError as exc:
+                    return merge_halted("readiness_unavailable", f"Platform/policy observation unavailable: {exc}")
+                if observation.outcome != "ready":
+                    reasons: dict[str, MergeHalt] = {"conflict": "pr_conflict", "pending": "ci_pending",
+                                                    "red": "ci_red", "policy": "readiness_unavailable"}
+                    reason = reasons[observation.outcome]
+                    return {**merge_halted(reason, observation.model_dump_json()),
+                            "readiness_observation": observation.model_dump_json()}
                 try:
                     forge.arm_auto_merge(repo, issue, worktree.branch, head)
                 except MergeNotArmed as exc:
                     return merge_halted("merge_not_armed", str(exc))
-                return {"merge": "armed", "path": ["merge"]}
+                try:
+                    confirmed = forge.readiness(repo, issue, worktree.branch, head)
+                except ForgeError as exc:
+                    return merge_halted("readiness_unavailable", str(exc))
+                if confirmed.outcome != "ready" or confirmed.pr != observation.pr:
+                    return merge_halted("ci_pending", confirmed.model_dump_json())
+                return {"merge": "armed", "path": ["merge"], "readiness_observation": confirmed.model_dump_json()}
 
     def finish(state: DeliveryState) -> DeliveryUpdate:
         reason = stop_reason(state)

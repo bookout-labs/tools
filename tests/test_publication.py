@@ -99,6 +99,19 @@ class PublicationTest(unittest.TestCase):
             case ["api", "repos/Example/Engine/pulls/12/reviews"]:
                 response = ({"id": 1, "state": "COMMENTED", "commit_id": self.remote_head(), "body": "posted"}
                             if "POST" in command else [[]])
+            case ["api", "repos/Example/Engine/pulls/12"]:
+                response = dict(number=12, state="open", draft=False, mergeable=True, mergeable_state="clean",
+                    merge_commit_sha=None, head=dict(sha=self.remote_head(), ref=self.branch),
+                    base=dict(sha=self.git("rev-parse", self.base), ref=self.base))
+            case ["api", url] if "/rules/branches/" in url:
+                response = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test", integration_id=15368)]))]
+            case ["api", url] if "/branches/" in url:
+                response = dict(protection=dict(required_status_checks=dict(checks=[], contexts=[])))
+            case ["api", url] if "/check-runs" in url:
+                response = [dict(check_runs=[dict(id=1, name="test", head_sha=self.remote_head(),
+                    app=dict(id=15368), status="completed", conclusion="success")])]
+            case ["api", url] if "/statuses" in url:
+                response = [[]]
             case ["pr", "merge"]:
                 self.assertEqual(command[-2:], ["--match-head-commit", self.remote_head()])
                 return subprocess.CompletedProcess(command, 0, "", "")
