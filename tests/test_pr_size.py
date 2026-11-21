@@ -220,7 +220,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.commit()
         stdout, _ = self.invoke()
         self.assertIn("done pr_size_unavailable", stdout)
-        self.assertIn(str(self.root / ".git/info/attributes"), stdout)
+        self.assertIn(".git/info/attributes must be empty", stdout)
         self.assertNotIn("ReviewOutput", self.stages)
 
     def test_core_attributes_file_cannot_exempt_handwritten_lines(self):

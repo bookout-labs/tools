@@ -1,16 +1,32 @@
 """Local checkout operations used by delivery runs."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
 import shlex
 import subprocess
-from typing import Protocol, TypedDict
+from typing import NewType, Protocol, TypedDict
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 ATTRIBUTE_CONFIG = ("-c", "core.attributesFile=/dev/null")
 HUNK = re.compile(rb"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", re.MULTILINE)
+CommitSHA = NewType("CommitSHA", str)
+CheckLog = Callable[[str], None]
+
+
+def commit_sha(value: str) -> CommitSHA | None:
+    return CommitSHA(value) if FULL_SHA.fullmatch(value) else None
+
+
+def head_mismatch_detail(observed: str, verified: str) -> str:
+    return (
+        f"HEAD is {observed}, verification checked {verified}. "
+        "Reset the PR branch to the verified commit.\n"
+        f"  git reset --keep {verified}\n"
+        "Then rerun the same command. New commits need a new run."
+    )
 
 
 class WorktreeInspectionFailed(RuntimeError):
@@ -29,6 +45,7 @@ class PullRequestSize(TypedDict):
     merge_base: str
     lines: int
 
+
 @dataclass(frozen=True)
 class ReviewDiff:
     command: str
@@ -38,10 +55,9 @@ class ReviewDiff:
 class Workspace(Protocol):
     root: Path
 
-    def run(self, command: str) -> int: ...
+    def run(self, command: str, *, log: CheckLog | None = None) -> int: ...
     def inspect(self) -> WorktreeState: ...
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
-
     def review_diff(self, base: str, head: str) -> ReviewDiff: ...
 
 
@@ -49,12 +65,20 @@ class LiveWorkspace:
     def __init__(self, root: Path):
         self.root = root
 
-    def run(self, command: str) -> int:
-        return subprocess.run(command, shell=True, cwd=self.root, stdin=subprocess.DEVNULL).returncode
+    def run(self, command: str, *, log: CheckLog | None = None) -> int:
+        with subprocess.Popen(
+            command, shell=True, cwd=self.root, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+        ) as process:
+            assert process.stdout is not None
+            for line in process.stdout:
+                if log is not None:
+                    log(line)
+            return process.wait()
 
     def inspect(self) -> WorktreeState:
         head = os.fsdecode(self._git("rev-parse", "HEAD")).strip()
-        if not FULL_SHA.fullmatch(head):
+        if commit_sha(head) is None:
             raise WorktreeInspectionFailed("Git did not report a full 40-hex HEAD SHA.")
         status = self._git("status", "--porcelain")
         branch = os.fsdecode(self._git("branch", "--show-current")).strip()
