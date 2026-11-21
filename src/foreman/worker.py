@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 from tempfile import TemporaryDirectory
 from typing import Callable
 
@@ -49,10 +50,16 @@ class CliWorker:
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 
         adapter = ADAPTERS[model.family](model, contract)
-        with TemporaryDirectory(prefix="foreman-worker-", dir=self.cwd.resolve().parent) as directory:
+        checkout = self.cwd.resolve()
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        if temp_root.is_relative_to(checkout):
+            temp_root = checkout.parent
+        with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
+            scratch = Path(directory) / "scratch"
+            scratch.mkdir()
             args = adapter.command(Call(prompt, schema, edit=node == "implement", temp_dir=Path(directory)))
             try:
-                process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": directory})
+                process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch)})
             except FileNotFoundError:
                 return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable")
             return adapter.read(process)

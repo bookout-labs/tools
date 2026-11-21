@@ -307,6 +307,7 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertIn('{"issue": 12}', args[-1])
                     expected_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"} if args[0] == "claude" else {}
                     self.assertEqual(env, {**expected_env, "TMPDIR": env["TMPDIR"]})
+                    self.assertTrue(Path(env["TMPDIR"]).is_dir())
                     self.assertNotIn("Output schema:", args[-1])
                     if args[0] == "codex":
                         self.assertIn("--json", args)
@@ -338,7 +339,12 @@ class CliWorkerTest(unittest.TestCase):
                         scratch = Path(env["TMPDIR"])
                         paths.append(scratch)
                         self.assertTrue(scratch.is_absolute())
-                        self.assertFalse(scratch.is_relative_to(checkout))
+                        self.assertFalse(scratch.resolve().is_relative_to(checkout.resolve()))
+                        self.assertEqual(list(scratch.iterdir()), [])
+                        if args[0] == "codex":
+                            schema_path = Path(args[args.index("--output-schema") + 1])
+                            self.assertFalse(schema_path.resolve().is_relative_to(scratch.resolve()))
+                            self.assertTrue(schema_path.is_file())
                         self.assertNotIn(str(scratch), args[-1])
                         process = run_worker_command([
                             sys.executable, "-c",
@@ -355,6 +361,41 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertFalse(paths[-1].exists())
             self.assertEqual(len(set(paths)), 3)
             self.assertEqual(list(checkout.iterdir()), [])
+
+    def test_inherited_checkout_tmpdir_is_overridden_without_changing_environment(self):
+        script = """
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+from foreman.config import ModelSpec
+from foreman.worker import CliWorker
+
+checkout = Path.cwd().resolve()
+assert Path(tempfile.gettempdir()).resolve().is_relative_to(checkout)
+inherited = dict(os.environ)
+paths = []
+def run(args, cwd, env):
+    scratch = Path(env["TMPDIR"])
+    assert not scratch.resolve().is_relative_to(checkout)
+    assert list(scratch.iterdir()) == []
+    paths.append(scratch)
+    return subprocess.CompletedProcess(args, 1, "", "")
+CliWorker(checkout, run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "Read.")
+assert paths and all(not path.parent.exists() for path in paths)
+assert dict(os.environ) == inherited
+"""
+        with TemporaryDirectory() as root:
+            checkout = Path(root) / "checkout"
+            checkout.mkdir()
+            inherited_temp = checkout / "temp"
+            inherited_temp.mkdir()
+            env = {**os.environ, "TMPDIR": str(inherited_temp),
+                   "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+            process = subprocess.run([sys.executable, "-c", script], cwd=checkout,
+                                     env=env, capture_output=True, text=True)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(list(checkout.iterdir()), [inherited_temp])
 
     def test_subprocess_merges_adapter_environment_with_inherited_environment(self):
         inherited = {"PATH": "/bin", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0"}
@@ -953,9 +994,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
         def quota(args, cwd, env):
             scratch = Path(env["TMPDIR"])
-            self.assertFalse(scratch.is_relative_to(self.cwd))
+            self.assertFalse(scratch.resolve().is_relative_to(self.cwd.resolve()))
             self.assertNotIn(scratch, paths)
-            self.assertFalse((scratch / "scratch.txt").exists())
+            self.assertEqual(list(scratch.iterdir()), [])
+            self.assertTrue(all(not path.exists() for path in paths))
             (scratch / "scratch.txt").write_text("discard on quota")
             paths.append(scratch)
             return fixture_process(args, "quota", 1)
@@ -965,9 +1007,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             dispatcher=CliWorker(self.cwd, quota), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
         )
         self.assertEqual(paused["stop"], "quota_exhausted")
-        self.assertTrue(paths)
         self.assertTrue(all(not path.exists() for path in paths))
         before_resume = len(paths)
+        self.assertGreater(before_resume, 1)
         replies = iter([{"triage": "question"}, {"research": "Only open items."}])
 
         def answer(args, cwd, env):
