@@ -13,6 +13,8 @@ from foreman.config import ModelSpec
 
 
 class Usage(BaseModel):
+    """Token counts with uncached input separate from cache reads and writes."""
+
     model_config = ConfigDict(strict=True, frozen=True)
     input_tokens: int
     output_tokens: int

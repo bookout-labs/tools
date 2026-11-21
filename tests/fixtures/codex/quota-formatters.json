@@ -1,0 +1,47 @@
+[
+  {
+    "formatter": "QuotaExceeded",
+    "message": "Quota exceeded. Check your plan and billing details.",
+    "source": "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L223-L224"
+  },
+  {
+    "formatter": "RateLimitExceeded",
+    "message": "rate limit exceeded: synthetic API limit",
+    "source": "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L135-L136"
+  },
+  {
+    "formatter": "RetryLimitReachedError",
+    "message": "exceeded retry limit, last status: 429 Too Many Requests, request id: synthetic",
+    "source": "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L828-L838"
+  },
+  {
+    "formatter": "UsageLimitReachedError.default",
+    "message": "You’ve hit your usage limit. Try again later.",
+    "source": "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L952-L967"
+  },
+  {
+    "formatter": "UsageLimitReachedError.named",
+    "message": "You’ve hit your usage limit for synthetic-model. Switch to another model now, or try again later.",
+    "source": "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L857-L870"
+  },
+  {
+    "formatter": "UsageLimitReachedError.workspace_owner_credits",
+    "message": "Your workspace is out of credits. Add credits to continue.",
+    "source": "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L875-L879"
+  },
+  {
+    "formatter": "UsageLimitReachedError.workspace_member_credits",
+    "message": "Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+    "source": "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L881-L885"
+  },
+  {
+    "formatter": "UsageLimitReachedError.workspace_owner_cap",
+    "message": "You hit your spend cap set in your workspace. Increase your spend cap to continue.",
+    "source": "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L887-L891"
+  },
+  {
+    "formatter": "UsageLimitReachedError.workspace_member_cap",
+    "message": "You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.",
+    "source": "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L893-L897"
+  }
+]

@@ -1,6 +1,6 @@
 # CLI result fixtures
 
-The recorded calls ran in separate empty temporary directories with a synthetic prompt. The native calls used JSON output, a JSON schema, and high effort. UUIDs, paths, and credential expiry are scrubbed. The Grok reasoning text is redacted. The Codex JSONL recordings retain only synthetic prompts and scrubbed thread IDs.
+The recorded calls ran in separate empty temporary directories with a synthetic prompt. The native calls used JSON output, a JSON schema, and high effort. UUIDs, paths, and credential expiry are scrubbed. The Grok reasoning text is redacted. The Codex JSONL recordings contain lifecycle events, assistant output or error messages, usage totals, and scrubbed thread IDs. They contain no prompt text.
 
 | Fixture | Source |
 | --- | --- |
@@ -107,3 +107,32 @@ documents `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`. Foreman
 sends `commit_id`, `event: COMMENT`, `body`, and a `comments` array
 with `path`, `line`, `side`, and `body` per inline comment. The
 [`RIGHT` side identifies the new file](https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request).
+
+## Codex quota formatter cases
+
+`codex/quota-formatters.json` quotes Codex CLI 0.171.0 formatters with synthetic
+substitution values. Each row links its formatter's source lines. The table test
+wraps each message as `turn.failed.error.message`, matching the
+[terminal JSONL emitter](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L541-L559).
+Both workspace credit variants share one prefix. Near-miss tests keep local
+errors, other HTTP statuses, and `Reconnecting...` retry text as failures.
+
+Codex `input_tokens` includes cached input. The adapter reports non-cached input
+in `Usage.input_tokens` and cache reads in `Usage.cache_read_input_tokens`, so a
+consumer counts each input token once. This follows
+[`TokenUsage::non_cached_input` and `cached_input`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/protocol.rs#L2760-L2765)
+at `rust-v0.171.0`, including their zero clamps. Claude's existing cache fields
+already fit this shape. Missing cached totals leave Codex usage unknown.
+
+`codex/cached-success.jsonl` was captured from `codex-cli 0.171.0`, exit 0,
+with the success argv above plus `-c model_provider=synthetic` and the same
+loopback provider configuration as the quota probe. `CODEX_HOME` was an empty
+temporary directory and `FOREMAN_PROBE_KEY` was synthetic. The loopback Responses
+API returned SSE `response.created`, `response.output_item.added`,
+`response.content_part.added`, `response.output_text.delta`,
+`response.output_item.done`, and `response.completed` events. The completed
+response carried `input_tokens: 120`, `input_tokens_details.cached_tokens: 80`,
+`output_tokens: 29`, `output_tokens_details.reasoning_tokens: 0`, and
+`total_tokens: 149`. Codex emitted the recorded JSONL, including
+`cached_input_tokens: 80`. Only the thread ID was scrubbed. The production parser
+must report 40 non-cached input tokens, 80 cache reads, and 29 output tokens.

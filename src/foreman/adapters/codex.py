@@ -31,7 +31,7 @@ def read_usage(report: object) -> Usage | None:
         return None
     fields = cast(dict[str, object], report)
     try:
-        return Usage.model_validate({
+        usage = Usage.model_validate({
             "input_tokens": fields.get("input_tokens"),
             "output_tokens": fields.get("output_tokens"),
             "cache_read_input_tokens": fields.get("cached_input_tokens"),
@@ -39,6 +39,13 @@ def read_usage(report: object) -> Usage | None:
         })
     except ValidationError:
         return None
+    if usage.cache_read_input_tokens is None:
+        return None
+    cached = max(0, usage.cache_read_input_tokens)
+    return usage.model_copy(update={
+        "input_tokens": max(0, usage.input_tokens - cached),
+        "cache_read_input_tokens": cached,
+    })
 
 
 @dataclass

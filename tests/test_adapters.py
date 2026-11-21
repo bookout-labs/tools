@@ -234,3 +234,50 @@ class CodexAdapterTest(unittest.TestCase):
         outcome = adapter.read(codex_process(events))
         self.assertEqual(outcome.kind, "failed")
         self.assertTrue(outcome.detail.startswith("review:"))
+
+    def test_quota_formatters_as_terminal_failures(self):
+        cases = json.loads((FIXTURES / "codex" / "quota-formatters.json").read_text())
+        for case in cases:
+            with self.subTest(formatter=case["formatter"]):
+                message = case["message"]
+                process = codex_process([{"type": "turn.failed", "error": {"message": message}}], exit_code=1)
+                outcome = self.adapter.read(process)
+                self.assertEqual((outcome.kind, outcome.detail), ("quota", message))
+
+    def test_quota_near_misses_are_failures(self):
+        messages = [
+            "Quota exceeded for a local test budget.",
+            "rate limit exceeded locally",
+            "exceeded retry limit, last status: 503 Service Unavailable",
+            "You’ve hit your usage limiter.",
+            "You’ve hit your usage limit forensics failed.",
+            "Your workspace is out of disk space.",
+            "You hit your spend cap set in your workspace settings file is invalid.",
+            "You hit your spend cap set by the owner of your workspace settings file is invalid.",
+            "Reconnecting... 1/5 (rate limit exceeded: synthetic API limit)",
+        ]
+        for message in messages:
+            with self.subTest(message=message):
+                process = codex_process([{"type": "turn.failed", "error": {"message": message}}], exit_code=1)
+                outcome = self.adapter.read(process)
+                self.assertEqual((outcome.kind, outcome.detail), ("failed", message))
+
+    def test_recorded_cached_usage_counts_input_once(self):
+        outcome = self.adapter.read(fixture_process(["codex"], "cached-success", 0))
+        self.assertEqual(outcome.kind, "ran")
+        assert outcome.usage is not None
+        self.assertEqual(outcome.usage.input_tokens, 40)
+        self.assertEqual(outcome.usage.cache_read_input_tokens, 80)
+        self.assertEqual(outcome.usage.output_tokens, 29)
+
+    def test_cached_usage_clamps_and_missing_totals(self):
+        for input_tokens, cached, expected in ((10, 20, (0, 20)), (10, -5, (10, 0))):
+            with self.subTest(input_tokens=input_tokens, cached=cached):
+                events = codex_events()
+                events[-1]["usage"].update(input_tokens=input_tokens, cached_input_tokens=cached)
+                usage = self.adapter.read(codex_process(events)).usage
+                assert usage is not None
+                self.assertEqual((usage.input_tokens, usage.cache_read_input_tokens), expected)
+        events = codex_events()
+        del events[-1]["usage"]["cached_input_tokens"]
+        self.assertIsNone(self.adapter.read(codex_process(events)).usage)
