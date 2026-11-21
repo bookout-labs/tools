@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from math import isclose
+import json
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal
 
@@ -74,5 +75,18 @@ class ClaudeAdapter(NativeAdapter):
     def command(self, call: Call) -> list[str]:
         effort = ["--effort", self.model.effort] if self.model.effort else []
         budget = ["--max-budget-usd", usd_text(call.budget_usd)] if call.budget_usd is not None else []
-        return ["claude", "--model", self.model.model_id, *effort, "--permission-mode", self.permission_mode(call),
+        allow = [f"Bash({call.check})"] if call.check else []
+        if call.edit:
+            allow += ["Edit", "Write"]
+        settings = {"permissions": {"allow": allow, "deny": [
+            f"Edit(/{root.resolve()}/**)" for root in call.read_roots
+        ]}}
+        directories = [str(root) for root in call.read_roots]
+        if call.edit:
+            directories.append(str(call.temp_dir))
+        scope = [arg for directory in directories for arg in ("--add-dir", directory)]
+        return ["claude", "--model", self.model.model_id, *effort, "--restricted",
+                "--strict-mcp-config", "--permission-mode", "dontAsk",
+                "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else "Read,Glob,Grep,Bash",
+                *scope, "--settings", json.dumps(settings),
                 *budget, "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]

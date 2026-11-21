@@ -1,0 +1,15 @@
+Claude 2.1.329 permission evidence, retrieved 2026-11-21.
+https://code.claude.com/docs/en/permissions
+Summary: dontAsk denies unapproved operations. Edit path rules cover Write too;
+Write(path) rules do not match. Double-slash paths anchor at the filesystem root.
+Bare tool rules match all uses; Bash rules without wildcards match exact commands.
+Wildcards broaden matching. Native compound matching belongs to Claude.
+Additional directories extend file access. Permissions are not an OS sandbox.
+https://code.claude.com/docs/en/cli-reference
+TF-C1: installed help lists acceptEdits, auto, bypassPermissions, manual, dontAsk, plan.
+TF-C2: help lists allowedTools and add-dir; acceptEdits is not a general Bash grant.
+TF-C3: help lists permission-prompts none; noninteractive does not grant tools.
+Installed help documents restricted ignoring inherited settings while applying
+--settings and limiting file tools to working directories plus --add-dir.
+Live envelopes corroborate permission_denials, explicit edit approval, method-root
+denial, git commit denial and the compound command under one exact Bash rule.

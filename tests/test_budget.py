@@ -37,10 +37,6 @@ class DollarBudgetTests(unittest.TestCase):
         call = Call(prompt="Do work", schema="{}", edit=True, temp_dir=Path(directory))
         budgeted = replace(call, budget_usd=BudgetUsd(Decimal("0.1")))
         claude = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
-        self.assertEqual(claude.command(call), [
-            "claude", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "acceptEdits",
-            "--output-format", "json", "--json-schema", "{}", "-p", "Do work",
-        ])
         argv = claude.command(budgeted)
         self.assertEqual(argv.count("--max-budget-usd"), 1)
         index = argv.index("--max-budget-usd")

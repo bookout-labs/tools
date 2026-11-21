@@ -147,13 +147,17 @@ def export_skills(pin: PstackPin, scratch: Path) -> Path:
     return root
 
 
-def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, list[str]]:
+def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, list[str], list[str]]:
     instructions: list[str] = []
     methods: list[str] = []
+    roots: list[str] = []
     for rule in SKILL_RULES:
         if rule.stage != stage or not rule.applies(state):
             continue
         method = rule.skill
+        read_root = str((PACKAGE_SKILLS if isinstance(method, str) else root).resolve())
+        if read_root not in roots:
+            roots.append(read_root)
         if isinstance(method, str):
             path = PACKAGE_SKILLS / f"{method}.md"
             methods.append(f"foreman/skills/{path.name}")
@@ -165,4 +169,4 @@ def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, 
         else:
             methods.append(method.path)
             instructions.append(f"Read {root / method.path} in full and follow it.")
-    return "\n\n".join(instructions), methods
+    return "\n\n".join(instructions), methods, roots
