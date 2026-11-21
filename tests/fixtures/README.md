@@ -84,6 +84,50 @@ The adapter uses the following facts from the captures and Codex tag `rust-v0.17
 - Quota checks use the formatters for `RateLimitExceeded`, `QuotaExceeded`, retry exhaustion with HTTP 429, and the usage-limit, plan, and workspace cap variants of `UsageLimitReachedError`. [Rate limit message](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L132-L136) · [Quota message](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L219-L228) · [Retry and usage-limit messages](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L823-L959)
 - The success events carry no model ID, and the unknown-model probe failed with exit 1. Codex emits a `model rerouted: ` message as a completed `error` item when the server switches models. [Reroute notification](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L486-L511)
 
+## Redaction detector
+
+Foreman pins detect-secrets v1.5.0 and loads its plugins using
+[`default_settings()` and `get_plugins()`][settings]. It uses the full spans of
+each [regex plugin's compiled `denylist`][base]. This runs locally without the
+plugins' network verification. The dependency test checks the expected plugins
+and pattern attributes against the pin.
+
+A local v1.5.0 probe scanned the quoted synthetic leaves `"ghp_" + "z" * 36`
+and `"glpat-" + "z" * 20` in surrounding prose. Both
+[`scan_line()`][scan] and the [README's `SecretsCollection` API][readme]
+returned only `ghp` and `glpat`, respectively. Substituting those returned
+values left the entire synthetic suffix. The [GitHub][github] and
+[GitLab][gitlab] patterns contain captures that the base class returns in
+place of the full match.
+
+The [entropy plugins][entropy] expose their compiled pattern and threshold
+through the plugin instance. Foreman uses their unquoted mode and applies
+their original thresholds. The [keyword plugin][keyword] has no `denylist`
+attribute. In v1.5.0, `analyze_string()` defaults to
+`QUOTES_REQUIRED_DENYLIST_REGEX_TO_GROUP`, a map from compiled patterns to
+secret capture group numbers. Foreman uses that same upstream map and
+`pattern.finditer(line)`, then `match.span(group_number)`, to locate every
+assigned value without masking unrelated occurrences of the same text.
+Foreman also honors the plugin's `keyword_exclude` guard. These attributes and
+the default map are defined in the [pinned plugin source][keyword].
+
+The [JWT plugin][jwt] reports the header and payload, and the
+[private key plugin][key] reports armor headers. Regression tests record both
+gaps. Foreman includes the signature or key block in the corresponding
+replacement. Without a key footer, the replacement stops at the first blank
+line.
+
+[settings]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/settings.py
+[base]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/base.py
+[readme]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/README.md#usage-in-other-python-scripts
+[scan]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/core/scan.py#L109-L137
+[github]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/github_token.py
+[gitlab]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/gitlab_token.py
+[entropy]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/high_entropy_strings.py
+[keyword]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/keyword.py
+[jwt]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/jwt.py
+[key]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/private_key.py
+
 ## Review fixtures
 
 `review.diff` was captured with Git 2.56.0 in a synthetic repository. The base
@@ -136,3 +180,13 @@ response carried `input_tokens: 120`, `input_tokens_details.cached_tokens: 80`,
 `total_tokens: 149`. Codex emitted the recorded JSONL, including
 `cached_input_tokens: 80`. Only the thread ID was scrubbed. The production parser
 must report 40 non-cached input tokens, 80 cache reads, and 29 output tokens.
+
+
+## Ordered check output
+
+Python 3.11's [subprocess documentation](https://docs.python.org/3.11/library/subprocess.html#subprocess.STDOUT)
+defines `stderr=STDOUT` as sending stderr to the same handle as stdout.
+`Popen(stdout=PIPE, stderr=STDOUT, text=True, errors="replace")` gives Foreman
+one text stream. Foreman iterates its lines and passes each to the CLI's
+redacting writer before waiting for the exit code. The writer flushes every
+line. An unterminated final line is emitted at EOF.
