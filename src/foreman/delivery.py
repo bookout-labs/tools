@@ -1,7 +1,7 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from dataclasses import dataclass
-from functools import partial
+from functools import cached_property, partial
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict, Unpack
@@ -11,16 +11,21 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
+from unidiff.errors import UnidiffParseError
+from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.github import MERGE_HOLD_VARIABLE, Forge, MergeHoldUnreadable, MergeNotArmed, merge_command
-from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
-from foreman.stage_output import (
-    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+from foreman.github import (
+    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command,
 )
-from foreman.workspace import Workspace, WorktreeInspectionFailed
+from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
+from foreman.redaction import redact
+from foreman.stage_output import (
+    Contract, HumanQuestionOutput, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+)
+from foreman.workspace import CheckLog, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -34,15 +39,29 @@ CHECK_START_FAILURES = {126: "command is not executable", 127: "command not foun
 
 
 @dataclass(frozen=True)
+class EnvironmentProbe:
+    workspace: Workspace
+    command: str
+    log: CheckLog | None = None
+
+    @cached_property
+    def error(self) -> str | None:
+        return failed_preflight(self.workspace, self.command, log=self.log)
+
+
+@dataclass(frozen=True)
 class LiveRun:
     forge: Forge
     workspace: Workspace
-    environment_error: str | None = None
+    check_log: CheckLog | None = None
+    environment: EnvironmentProbe | None = None
 
 
 @dataclass(frozen=True)
 class DryRun:
-    pass
+    def record_merge(self, repo: str, head: str | None) -> list[str]:
+        revision = (commit_sha(head) or redact(head)) if head else "<sha>"
+        return merge_command(redact(repo), "<number>", revision)
 
 
 class DeliveryState(TypedDict, total=False):
@@ -64,6 +83,7 @@ class DeliveryState(TypedDict, total=False):
     implementation: str
     head_sha: str | None
     verified_head: str
+    merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
     browser_proof: dict[str, object] | None
@@ -72,7 +92,9 @@ class DeliveryState(TypedDict, total=False):
     human_question: str
     human_answers: list[str]
     review: str
-    review_note: str | None
+    findings: list[dict[str, object]]
+    detail: str
+    review_change_kind: Literal["blocking", "nits"] | None
     risk: dict[str, str]
     verify: str
     review_rounds: int
@@ -135,6 +157,11 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
         if output.slice is None:
             raise InvalidOutput("slice: required when a parent triages as implement")
         update["slice"] = clean_slices([output.slice], "slice")[0]
+    if isinstance(output, ReviewOutput):
+        update["review_change_kind"] = None
+        if output.review == "changes":
+            only_nits = all(finding.severity == "nit" for finding in output.findings)
+            update["review_change_kind"] = "nits" if only_nits else "blocking"
     if update.get("review") == "changes" or update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -145,6 +172,27 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
             history = state.get("implement_models", [latest] if latest else [])
             update["implement_models"] = [*history, model]
     return update
+
+
+def review_submission(output: ReviewOutput, diff: ReviewDiff) -> tuple[str, list[ReviewComment]]:
+    try:
+        patch = PatchSet(diff.patch)
+    except UnidiffParseError:
+        patch = PatchSet("")
+    changed = {
+        (file.path, line.target_line_no)
+        for file in patch if not file.is_removed_file
+        for hunk in file for line in hunk if line.is_added
+    }
+    body = [output.detail]
+    comments: list[ReviewComment] = []
+    for finding in output.findings:
+        message = f"[{finding.severity}] {finding.summary}"
+        if (finding.file, finding.line) in changed:
+            comments.append({"path": finding.file, "line": finding.line, "side": "RIGHT", "body": message})
+        else:
+            body.append(f"{finding.file}:{finding.line} {message}")
+    return "\n\n".join(body), comments
 
 
 def stop_reason(state: DeliveryState) -> str:
@@ -165,8 +213,8 @@ def stop_reason(state: DeliveryState) -> str:
     return "stopped"
 
 
-def failed_preflight(workspace: Workspace, command: str) -> str | None:
-    if command and (exit_code := workspace.run(command)):
+def failed_preflight(workspace: Workspace, command: str, *, log: CheckLog | None = None) -> str | None:
+    if command and (exit_code := workspace.run(command, log=log)):
         return f"Preflight {command!r} exited with {exit_code}"
     return None
 
@@ -192,13 +240,12 @@ def compile_delivery(
             if dispatcher is None:
                 return {"path": [name], "halt": "no_dispatcher"}
             current_run = runtime.context or run
-            detail = None
-            if isinstance(current_run, LiveRun):
-                detail = current_run.environment_error
-                if name == "implement" and state.get("issue_kind") == "parent":
-                    detail = failed_preflight(current_run.workspace, state.get("preflight", ""))
-            if detail:
-                return dict(halted(name, "env_unavailable", detail))
+            if name == "implement" and isinstance(current_run, LiveRun):
+                probe = current_run.environment or EnvironmentProbe(
+                    current_run.workspace, state.get("preflight", ""), current_run.check_log,
+                )
+                if detail := probe.error:
+                    return dict(halted(name, "env_unavailable", detail))
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
@@ -213,6 +260,20 @@ def compile_delivery(
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
+            review_context: tuple[Forge, PullRequest, ReviewDiff] | None = None
+            repo = state.get("repo", "")
+            if name == "review" and isinstance(run, LiveRun):
+                head, issue = state.get("verified_head"), state.get("issue")
+                try:
+                    worktree = run.workspace.inspect()
+                    if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
+                        raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
+                    target = run.forge.review_target(repo, issue, worktree.branch, head)
+                    diff = run.workspace.review_diff(target.baseRefOid, head)
+                except (ForgeError, WorktreeInspectionFailed) as exc:
+                    return {"path": [name], "halt": "review_unavailable", "halt_detail": str(exc)}
+                review_context = (run.forge, target, diff)
+                instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
             outcome, model = dispatcher.run(name, models, state, instruction)
             if outcome.kind == "failed":
                 return {"path": [name], "halt": "invalid_output", "halt_detail": f"{model}: {outcome.detail}"}
@@ -223,9 +284,19 @@ def compile_delivery(
                     raise QuotaExhausted(model)
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
-                return stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model)
+                output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                update = stage_update(name, output, state, model)
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
+
+            if review_context is not None and isinstance(output, ReviewOutput):
+                forge, target, diff = review_context
+                body, comments = review_submission(output, diff)
+                try:
+                    forge.post_review(repo, target, body, comments)
+                except ForgeError as exc:
+                    return {**update, "halt": "review_not_posted", "halt_detail": str(exc)}
+            return update
 
         return node
 
@@ -235,9 +306,7 @@ def compile_delivery(
         match runtime.context or run:
             case DryRun():
                 return scripted_verify(state, runtime)
-            case LiveRun(workspace=workspace, environment_error=detail):
-                if detail:
-                    return dict(halted("verify", "env_unavailable", detail))
+            case LiveRun(workspace=workspace, check_log=check_log):
                 try:
                     worktree = workspace.inspect()
                 except WorktreeInspectionFailed as exc:
@@ -245,11 +314,12 @@ def compile_delivery(
                 if not worktree.clean:
                     return {"path": ["verify"], "halt": "dirty_worktree"}
                 command = state["check"]
-                exit_code = workspace.run(command)
+                exit_code = workspace.run(command, log=check_log)
+                detail = None
                 if reason := CHECK_START_FAILURES.get(exit_code):
                     detail = f"Check {command!r} exited with {exit_code} ({reason})"
                 elif exit_code:
-                    detail = failed_preflight(workspace, state.get("preflight", ""))
+                    detail = failed_preflight(workspace, state.get("preflight", ""), log=check_log)
                 if detail:
                     return dict(halted("verify", "env_unavailable", detail, check_exit_code=exit_code))
                 verdict = "pass" if exit_code == 0 else "fail"
@@ -338,7 +408,7 @@ def compile_delivery(
             case DryRun():
                 return {
                     "merge": "skipped", "path": ["merge"],
-                    "merge_command": merge_command(repo, "<number>", state.get("head_sha") or "<sha>"),
+                    "merge_command": run.record_merge(repo, state.get("head_sha")),
                 }
             case LiveRun(forge=forge, workspace=workspace):
                 merge_halted = partial(
@@ -353,13 +423,10 @@ def compile_delivery(
                 if not worktree.clean:
                     return merge_halted("merge_not_armed", "The worktree has changes or Git could not inspect it.")
                 if worktree.head != head:
-                    return merge_halted(
-                        "merge_not_armed",
-                        f"HEAD is {worktree.head}, verification checked {head}. "
-                        "Reset the PR branch to the verified commit.\n"
-                        f"  git reset --keep {head}\n"
-                        "Then rerun the same command. New commits need a new run."
-                    )
+                    return {
+                        **merge_halted("merge_not_armed", head_mismatch_detail(worktree.head, head)),
+                        "merge_observed_head": worktree.head,
+                    }
                 if worktree.branch is None:
                     return merge_halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")
                 try:

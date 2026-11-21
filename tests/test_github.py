@@ -5,10 +5,13 @@ from unittest.mock import call, patch
 
 from pydantic import ValidationError
 
-from foreman.github import CommandFailed, CommandTimedOut, ForgeError, LiveForge, MergeHoldUnreadable, MergeNotArmed
+from foreman.github import (
+    CommandFailed, CommandTimedOut, ForgeError, LiveForge, MergeHoldUnreadable, MergeNotArmed, ReviewComment,
+)
 
 
 HEAD = "a" * 40
+BASE = "b" * 40
 REPO = "Example/Target"
 BRANCH = "8-list-items"
 CLOSING_PR = {
@@ -17,11 +20,11 @@ CLOSING_PR = {
 }
 PR = {
     "number": 12, "state": "OPEN", "headRefOid": HEAD.upper(), "headRefName": "8-list-items",
-    "baseRefName": "main", "autoMergeRequest": None,
+    "baseRefName": "main", "baseRefOid": BASE, "autoMergeRequest": None,
 }
 VIEW_FIELDS = [
     "gh", "pr", "view", "--repo", REPO, "--json",
-    "number,state,headRefOid,headRefName,baseRefName,autoMergeRequest", "--",
+    "number,state,headRefOid,headRefName,baseRefName,baseRefOid,autoMergeRequest", "--",
 ]
 VIEW = [*VIEW_FIELDS, BRANCH]
 CONFIRM = [*VIEW_FIELDS, "12"]
@@ -148,13 +151,58 @@ class LiveForgeTest(unittest.TestCase):
         self.assertNotIsInstance(error.exception, MergeNotArmed)
 
     @patch("foreman.github.subprocess.run")
+    def test_review_write_redacts_synthetic_secrets_before_json_encoding(self, run):
+        synthetic_token = "ghp_" + "a" * 36
+        run.side_effect = [pr_result(), pr_result(), gh_result("")]
+        forge = LiveForge()
+        target = forge.review_target(REPO, 8, BRANCH, HEAD)
+        forge.post_review(REPO, target, f"Synthetic {synthetic_token}", [{
+            "path": f"docs/{synthetic_token}.txt", "line": 2, "side": "RIGHT",
+            "body": f'Synthetic password="abc" and abc {synthetic_token}',
+        }])
+        payload = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(payload["commit_id"], HEAD.upper())
+        self.assertEqual(payload["body"], "Synthetic [redacted:GitHub Token]")
+        self.assertEqual(payload["comments"][0]["path"], "docs/[redacted:GitHub Token].txt")
+        self.assertEqual(payload["comments"][0]["body"],
+                         'Synthetic password="[redacted:Secret Keyword]" and abc [redacted:GitHub Token]')
+
+    @patch("foreman.github.subprocess.run")
+    def test_posts_the_review_and_inline_comments_for_the_verified_head(self, run):
+        moved = {**PR, "baseRefOid": "c" * 40, "headRefOid": "d" * 40}
+        run.side_effect = [pr_result(), pr_result(moved, CONFIRM), gh_result("")]
+        forge = LiveForge()
+        target = forge.review_target(REPO, 8, BRANCH, HEAD)
+        comments: list[ReviewComment] = [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[nit] Use @literal."}]
+        forge.post_review(REPO, target, "Longer review detail.", comments)
+        self.assertEqual(run.call_args.args[0], [
+            "gh", "api", "repos/Example/Target/pulls/12/reviews", "--method", "POST",
+            "-H", "X-GitHub-Api-Version: 2022-11-28", "--input", "-",
+        ])
+        self.assertEqual(json.loads(run.call_args.kwargs["input"]), {
+            "commit_id": HEAD.upper(), "event": "COMMENT", "body": "Longer review detail.", "comments": comments,
+        })
+
+    @patch("foreman.github.subprocess.run")
+    def test_review_does_not_post_if_the_pull_request_closes_or_is_retargeted(self, run):
+        for field, value in (("state", "CLOSED"), ("baseRefName", "release")):
+            with self.subTest(field=field, value=value):
+                run.reset_mock()
+                run.side_effect = [pr_result(), pr_result({**PR, field: value}, CONFIRM)]
+                forge = LiveForge()
+                target = forge.review_target(REPO, 8, BRANCH, HEAD)
+                with self.assertRaisesRegex(ForgeError, "changed during review"):
+                    forge.post_review(REPO, target, "Longer review detail.", [])
+                self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW, CONFIRM])
+
+    @patch("foreman.github.subprocess.run")
     def test_arms_the_checked_pull_request_in_the_requested_repository(self, run):
         run.side_effect = [
             pr_result(),
             subprocess.CompletedProcess(MERGE, 0, "", ""),
         ]
         self.assertIsNone(LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD))
-        options = {"stdin": subprocess.DEVNULL, "capture_output": True, "text": True, "timeout": 30}
+        options = {"stdin": subprocess.DEVNULL, "input": None, "capture_output": True, "text": True, "timeout": 30}
         self.assertEqual(run.call_args_list, [call(command, **options) for command in (VIEW, MERGE)])
 
     @patch("foreman.github.subprocess.run")

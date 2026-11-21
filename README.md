@@ -60,11 +60,15 @@ graph TD;
 
 Generate the diagram with `foreman diagram delivery`. The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. A node does not edit the list, and it does not decide the next node.
 
-Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the builder model is missing or every eligible reviewer is out of quota, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
+Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high.
+
+Foreman fetches the pull request's base and verified head from `origin` and reviews their three-dot diff. Each finding names a file, line, severity (`blocking` or `nit`), and a summary of up to 200 characters. Findings on changed lines in the reviewed commit post inline. Other findings appear with their locations in the GitHub review body alongside `detail`. A changes verdict requires findings and sends them with the detail to the next implementation round. The checkpoint marks a changes verdict with only nit findings as `review_change_kind: nits`.
+
+An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the builder model is missing or every eligible reviewer is out of quota, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
 
 Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs skip preflight and use a scripted verdict.
 
-Use `--preflight <command>` to check environment readiness in the engine checkout. A new or resumed slice checks readiness before dispatching a model. A parent checks readiness when it reaches implement. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
+Use `--preflight <command>` to check environment readiness in the engine checkout. Each new or resumed invocation checks readiness once, just before its first implement dispatch. Routes that never reach implement skip the probe. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
 
 Restore the environment and rerun the same command to resume from the saved checkpoint.
 

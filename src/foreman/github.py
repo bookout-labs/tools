@@ -1,9 +1,14 @@
 """GitHub operations for delivery runs."""
 
+import json
 import subprocess
 from typing import Literal, Protocol, TypedDict, TypeVar
 
 from pydantic import BaseModel, PositiveInt, RootModel, ValidationError
+
+from foreman.redaction import redact
+from foreman.stage_output import Slice
+from foreman.workspace import commit_sha
 
 SQUASH_MERGE_FLAG = "--squash"
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
@@ -46,6 +51,7 @@ class PullRequest(PullRequestStatus):
     headRefOid: str
     headRefName: str
     baseRefName: str
+    baseRefOid: str
     autoMergeRequest: AutoMergeRequest | None
 
 
@@ -103,17 +109,39 @@ class Issue(TypedDict):
     labels: list[str]
 
 
+class ReviewComment(TypedDict):
+    path: str
+    line: int
+    side: Literal["RIGHT"]
+    body: str
+
+
 class Forge(Protocol):
     def load_issue(self, repo: str, number: int) -> Issue: ...
-    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int: ...
+    def create_issue(
+        self, repo: str, title: str, body: str, labels: list[str], *, child: Slice | None = None,
+    ) -> int: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
+    def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
+    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None: ...
     def merge_hold(self, repo: str) -> str | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
 
 
 def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
     return ["gh", "pr", "merge", pull_request, "--repo", repo, SQUASH_MERGE_FLAG, "--auto", "--match-head-commit", sha]
+
+
+def render_slice_body(prose: str, child: Slice) -> str:
+    dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
+    constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
+    return (
+        (f"{prose}\n\n" if prose else "")
+        + f"Acceptance:\n{child.acceptance}\n\nDependencies:\n{dependencies}"
+        + f"\n\nScreen:\n{child.screen or 'None'}\n\nConstraints:\n{constraints}"
+        + f"\n\n```json\n{json.dumps(child.model_dump(), indent=2)}\n```"
+    )
 
 
 class LiveForge:
@@ -123,11 +151,31 @@ class LiveForge:
         )
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
-    def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int:
+    def create_issue(
+        self, repo: str, title: str, body: str, labels: list[str], *, child: Slice | None = None,
+    ) -> int:
+        repo, title, body, *labels = (redact(value) for value in (repo, title, body, *labels))
+        if child is not None:
+            child = self._redact_slice(child)
+            body = render_slice_body(body, child)
         args = ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={body}"]
         for label in labels:
             args.extend(["-f", f"labels[]={label}"])
         return self._read(CreatedIssue, args, timeout=None).number
+
+    @staticmethod
+    def _redact_slice(child: Slice) -> Slice:
+        screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
+        return child.model_copy(update={
+            "title": redact(child.title),
+            "acceptance": redact(child.acceptance),
+            "depends_on": [redact(title) for title in child.depends_on],
+            "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
+            "properties": [
+                prop.model_copy(update={"name": redact(prop.name), "constraint": redact(prop.constraint)})
+                for prop in child.properties
+            ],
+        })
 
     def is_merged(self, repo: str, number: int) -> bool:
         issue = self._read(
@@ -146,7 +194,23 @@ class LiveForge:
         return False
 
     def add_label(self, repo: str, number: int, label: str) -> None:
+        repo, label = (redact(value) for value in (repo, label))
         self._run_command(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
+
+    def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None:
+        current = self._view_pr(repo, str(target.number))
+        if current.state != "OPEN" or current.baseRefName != target.baseRefName:
+            raise ForgeError("The pull request changed during review.")
+        payload = {
+            "commit_id": target.headRefOid, "event": "COMMENT", "body": redact(body),
+            "comments": [{**comment, "body": redact(comment["body"]), "path": redact(comment["path"])} for comment in comments],
+        }
+        repo = redact(repo)
+        self._run_command(
+            ["gh", "api", f"repos/{repo}/pulls/{target.number}/reviews", "--method", "POST",
+             "-H", "X-GitHub-Api-Version: 2022-11-28", "--input", "-"],
+            body=json.dumps(payload),
+        )
 
     def merge_hold(self, repo: str) -> str | None:
         try:
@@ -163,17 +227,24 @@ class LiveForge:
         except ForgeError as exc:
             raise MergeNotArmed(str(exc)) from exc
 
-    def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
+    def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest:
         pr = self._view_pr(repo, branch)
         if pr.state != "OPEN":
-            raise MergeNotArmed("The pull request is not open.")
+            raise ForgeError("The pull request is not open.")
         if pr.headRefOid.lower() != sha.lower():
-            raise MergeNotArmed("The pull request head differs from the verified SHA.")
+            raise ForgeError("The pull request head differs from the verified SHA.")
         if not pr.headRefName.startswith(f"{issue}-"):
-            raise MergeNotArmed(f"The pull request head branch must start with {issue}-.")
+            raise ForgeError(f"The pull request head branch must start with {issue}-.")
         if pr.baseRefName != "main":
-            raise MergeNotArmed("The pull request must target main.")
-        command = merge_command(repo, str(pr.number), sha)
+            raise ForgeError("The pull request must target main.")
+        return pr
+
+    def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
+        head = commit_sha(sha)
+        if head is None:
+            raise MergeNotArmed("Merge arming requires a full 40-hex commit SHA.")
+        pr = self.review_target(repo, issue, branch, head)
+        command = merge_command(redact(repo), str(pr.number), head)
         try:
             self._run_command(command)
         except CommandTimedOut as exc:
@@ -183,22 +254,23 @@ class LiveForge:
                 and confirmed.autoMergeRequest is not None
                 and confirmed.autoMergeRequest.mergeMethod == "SQUASH"
             )
-            same_head = confirmed.number == pr.number and confirmed.headRefOid.lower() == sha.lower()
+            same_head = confirmed.number == pr.number and confirmed.headRefOid.lower() == head.lower()
             if not (same_head and (confirmed.state == "MERGED" or open_squash_request)):
                 raise MergeNotArmed("Merge arming timed out and was not confirmed.") from exc
 
     def _view_pr(self, repo: str, selector: str) -> PullRequest:
         command = [
             "gh", "pr", "view", "--repo", repo,
-            "--json", "number,state,headRefOid,headRefName,baseRefName,autoMergeRequest", "--", selector,
+            "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,autoMergeRequest", "--", selector,
         ]
         return self._read(PullRequest, command)
 
-    def _run_command(self, command: list[str], *, timeout: float | None = 30) -> str:
+    def _run_command(self, command: list[str], *, timeout: float | None = 30, body: str | None = None) -> str:
         operation = " ".join(command[:2] if command[1] == "api" else command[:3])
         try:
             result = subprocess.run(
-                command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+                command, stdin=subprocess.DEVNULL if body is None else None, input=body,
+                capture_output=True, text=True, timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
             raise CommandTimedOut(operation) from exc

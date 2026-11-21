@@ -12,11 +12,16 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, ResumableHalt, compile_delivery, failed_preflight, load_slice
+from foreman.delivery import DeliveryState, EnvironmentProbe, LiveRun, ResumableHalt, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
+from foreman.stage_output import Slice, parse_output
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset({"merge_held", "merge_not_armed", "env_unavailable"})
+
+
+class AnswerError(RuntimeError):
+    """An answer cannot be applied to this checkpoint's question."""
 
 
 def _load_slice(body: str) -> dict[str, object]:
@@ -66,10 +71,8 @@ def run_live_delivery(
             state: DeliveryState,
             invocation_config: RunnableConfig = config,
         ) -> None:
-            detail = None
-            if state.get("issue_kind") == "slice" and not state.get("halt"):
-                detail = failed_preflight(run.workspace, state.get("preflight", ""))
-            graph.invoke(graph_input, invocation_config, context=replace(run, environment_error=detail), durability="sync")
+            environment = EnvironmentProbe(run.workspace, state.get("preflight", ""), run.check_log)
+            graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync")
 
         saved = graph.get_state(config)
         saved_values = cast(DeliveryState, saved.values)
@@ -77,10 +80,15 @@ def run_live_delivery(
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
         if answer is not None:
-            if not saved.interrupts:
-                raise ValueError("This issue has no pending question.")
             if not answer.strip():
-                raise ValueError("The answer must contain text.")
+                raise AnswerError("The answer must contain text.")
+            if not saved.interrupts:
+                answers = saved_values.get("human_answers", [])
+                if not answers:
+                    raise AnswerError("This issue has no pending question.")
+                if answer != answers[-1]:
+                    raise AnswerError("This question was already answered differently. Resume with the recorded answer.")
+        if answer is not None and saved.interrupts:
             invoke(Command(resume=answer), saved_values)
         elif not saved.values:
             loaded = client.load_issue(repo, issue)
@@ -114,13 +122,9 @@ def run_live_delivery(
         if saved.values.get("stop") == "sliced":
             numbers = list(saved.values.get("child_issue_numbers", []))
             for item in saved.values["slices"][len(numbers):]:
-                dependencies = "\n".join(f"- {title}" for title in item["depends_on"]) or "None"
-                constraints = "\n".join(f"- {prop['constraint']}" for prop in item["properties"]) or "None"
-                body = (f"Acceptance:\n{item['acceptance']}\n\nDependencies:\n{dependencies}"
-                        f"\n\nScreen:\n{item['screen'] or 'None'}\n\nConstraints:\n{constraints}"
-                        f"\n\n```json\n{json.dumps(item, indent=2)}\n```")
-                labels = ["slice"] + ([] if item["depends_on"] else ["factory"])
-                numbers.append(client.create_issue(repo, item["title"], body, labels))
+                child = parse_output(Slice, item)
+                labels = ["slice"] + ([] if child.depends_on else ["factory"])
+                numbers.append(client.create_issue(repo, child.title, "", labels, child=child))
                 graph.update_state(config, {"child_issue_numbers": numbers})
             siblings = {item["title"]: number for item, number in zip(saved.values["slices"], numbers)}
             for item, number in zip(saved.values["slices"], numbers):
