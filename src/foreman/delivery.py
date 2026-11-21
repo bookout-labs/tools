@@ -36,7 +36,7 @@ from foreman.stage_output import (
     CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
-from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
+from foreman.workspace import ImplementationCandidate, ImplementationRejected, WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 DEFAULT_TOKEN_CAP = 20_000_000
@@ -45,7 +45,7 @@ REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 MergeHalt = Literal["merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red", "readiness_unavailable"]
-ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implement_quota", "quota_exhausted", "review_not_posted"]
+ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implementation_rejected", "implement_quota", "quota_exhausted", "review_not_posted"]
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
@@ -153,7 +153,7 @@ class DeliveryFields(TypedDict, total=False):
     delivery_branch: str
     delivery_base: str
     attempt_head: str
-    implementation_edits: str
+    implementation_candidate: ImplementationCandidate | None
     partial_edits: str
     commands: Annotated[list[list[str]], operator.add]
     head_sha: str | None
@@ -480,7 +480,7 @@ def compile_delivery(
             if name == "implement" and gate and not gate.passed:
                 instruction += (
                     "\nResolve the tool-facts finding by recording evidence and creating the record and parent directories if absent."
-                    " Fixture IDs are paths relative to the record directory. Commit regular evidence files."
+                    " Fixture IDs are paths relative to the record directory. Write regular evidence files."
                     " Use TOML [fixtures.\"<evidence-file>\"] with tool and version, plus either"
                     " kind = \"captured_run\" and argv = [\"tool\", \"arg\"] for captured output, or"
                     " kind = \"quoted_source\" and sources = [\"https://source\"] for quoted source evidence."
@@ -653,7 +653,7 @@ def compile_delivery(
             base = state.get("delivery_base") or run.forge.default_branch(state["repo"])
             run.workspace.create_branch(branch, base)
             ready = run.workspace.inspect()
-            return {"delivery_branch": branch, "delivery_base": base, "attempt_head": ready.head, "partial_edits": ""}
+            return {"delivery_branch": branch, "delivery_base": base, "attempt_head": ready.head, "partial_edits": "", "implementation_candidate": None}
         except (WorkspaceError, ForgeError) as exc:
             return halted("git_failed", str(exc), "prepare")
 
@@ -676,20 +676,27 @@ def compile_delivery(
                                              outcome="quota", usage=None).record()]}
             if update.get("pending_dispatch"):
                 return update
-            after = run.workspace.inspect()
-            if after.head != state["attempt_head"] or after.branch != state["delivery_branch"]:
-                return {**update, **halted("failed", "The worker changed HEAD or switched branches.", "implement"), "head_sha": after.head}
-            if not update.get("halt") and after.clean:
+            return {**update, "partial_edits": run.workspace.fingerprint() if update.get("halt") == "quota_exhausted" else ""}
+        except WorkspaceError as exc:
+            return {**update, **halted("git_failed", str(exc), "implement")}
+
+    def reconcile(state: DeliveryState) -> DeliveryUpdate:
+        if isinstance(run, DryRun):
+            return {}
+        assert "attempt_head" in state and "delivery_branch" in state
+        try:
+            candidate = run.workspace.reconcile(state["attempt_head"], state["delivery_branch"])
+            if candidate is None:
                 identifiers = [str(f.get("id")) for f in state.get("findings", [])]
                 if (gate := history({"rounds": state.get("review_findings", [])}).gate) and not gate.passed:
                     identifiers.insert(0, "tool-facts")
                 detail = "no changes" + ("; unresolved findings: " + ", ".join(identifiers) if identifiers else "")
-                return {**update, **halted("failed", detail, "implement")}
-            fingerprint = run.workspace.fingerprint()
-            return {**update, "implementation_edits": fingerprint,
-                    "partial_edits": fingerprint if update.get("halt") == "quota_exhausted" else ""}
+                return halted("failed", detail, "reconcile")
+            return {"implementation_candidate": candidate}
+        except ImplementationRejected as exc:
+            return halted("implementation_rejected", str(exc), "reconcile")
         except WorkspaceError as exc:
-            return {**update, **halted("git_failed", str(exc), "implement")}
+            return halted("git_failed", str(exc), "reconcile")
 
     def commit(state: DeliveryState) -> DeliveryUpdate:
         assert "slice" in state
@@ -701,19 +708,28 @@ def compile_delivery(
         message = f"{subject}\n\nCo-Authored-By: {redact(model)} <{COAUTHOR_EMAILS[family(model)]}>"
         if isinstance(run, DryRun):
             return {"commands": commit_commands(message)}
-        assert "delivery_branch" in state and "attempt_head" in state and "implementation_edits" in state
+        assert "delivery_branch" in state and "attempt_head" in state
         try:
             observed = run.workspace.inspect()
             if observed.branch != state["delivery_branch"]:
                 raise WorkspaceError("Restore the delivery branch before committing.")
+            candidate = state.get("implementation_candidate")
+            assert candidate is not None
+            if candidate["disposition"] == "adopted" and observed.head == candidate["head"]:
+                if not observed.clean:
+                    raise WorkspaceError("HEAD differs from the reconciled worker commit.")
+                run.workspace.soft_reset(state["attempt_head"])
+                observed = run.workspace.inspect()
             if observed.head != state["attempt_head"]:
                 if not observed.clean or not run.workspace.committed(state["attempt_head"], message):
                     raise WorkspaceError("HEAD differs from the expected implementation commit.")
+                if candidate["disposition"] == "adopted" and run.workspace.tree(observed.head) != candidate["tree"]:
+                    raise WorkspaceError("Commit differs from the reconciled worker tree.")
             else:
                 if observed.clean:
                     raise WorkspaceError("The checkpointed implementation edits are missing.")
-                if run.workspace.fingerprint() != state["implementation_edits"]:
-                    raise WorkspaceError("Implementation edits changed after the worker checkpoint.")
+                if run.workspace.fingerprint() != candidate["fingerprint"]:
+                    raise WorkspaceError("Implementation edits changed after reconciliation.")
                 run.workspace.commit(message)
                 observed = run.workspace.inspect()
                 if not observed.clean:
@@ -1045,6 +1061,7 @@ def compile_delivery(
         builder.add_node(name, graph_nodes[name] if name in graph_nodes and name != "implement" else bind(name))
         builder.add_node(name + "_call", implement if name == "implement" else call(name))
     builder.add_node("prepare", prepare)
+    builder.add_node("reconcile", reconcile)
     builder.add_node("commit", commit)
     builder.add_node("publish", publish)
     builder.add_node("proof", prove)
@@ -1076,13 +1093,14 @@ def compile_delivery(
         {"triage": "triage", "spec": "spec", "implement": "implement", "done": "done"},
     )
     builder.add_conditional_edges("prepare", after_halt("implement"), {"done": "done", "implement": "implement"})
+    builder.add_conditional_edges("reconcile", after_halt("commit"), {"done": "done", "commit": "commit"})
     builder.add_conditional_edges("commit", after_halt("publish"), {"done": "done", "publish": "publish"})
     builder.add_conditional_edges("publish", after_halt("verify"), {"done": "done", "verify": "verify"})
     builder.add_conditional_edges(
         "quota_wait", _last_stage, {name: name for name in REQUIRED_NODES if name != "verify"},
     )
     add_agent_edges("research", lambda _: "done", {"done": "done"})
-    add_agent_edges("implement", after_halt("commit"), {"commit": "commit", "done": "done"})
+    add_agent_edges("implement", after_halt("reconcile"), {"reconcile": "reconcile", "done": "done"})
     add_agent_edges(
         "review",
         lambda state: after_review(state) if state.get("halt") not in (None, "design_rethink") or oversized_pr(state) else "review_post",
