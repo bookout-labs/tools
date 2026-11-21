@@ -1,13 +1,21 @@
-"""Offline skill sources for graph tests and evals."""
+"""Offline skills, candidates, approvals and checker responses for tests and evals."""
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from foreman.config import Config, PstackPin, load_config
+from foreman.delivery import stage_text
+from foreman.dry_run import CLEAR
+from foreman.spec_check import SpecHistory, accept
+from foreman.stage_output import CandidateSlice, SliceProvenanceRecord, SpecCandidate, SpecAuthor
 from foreman.skill_rules import PstackMethod, SKILL_RULES, export_skills, git
+
+
+AUTHOR = SpecAuthor(stage="spec", model="gpt-author", family="gpt")
+PROVENANCE: SliceProvenanceRecord = {"author": AUTHOR.record(), "revision": "0" * 64}
 
 
 def fixture_pin(root: Path) -> PstackPin:
@@ -46,19 +54,17 @@ class FixtureSkills:
 fixture_skills = FixtureSkills()
 
 
-def stored_slice(item):
-    return {**item, "provenance": {"author": {"stage": "spec", "model": "gpt-author", "family": "gpt"}, "revision": "0" * 64}}
+def stored_slice(item: Mapping[str, object]) -> dict[str, object]:
+    return {**item, "provenance": PROVENANCE}
 
 
-def approved_spec(item, spec=""):
-    from foreman.stage_output import CandidateSlice, SpecCandidate, SpecAuthor, SpecCheckOutput
-    from foreman.spec_check import SpecHistory, accept
+def approved_spec(item: Mapping[str, object], spec: str = "") -> dict[str, object]:
     candidate = SpecCandidate(slices=[CandidateSlice.model_validate(item)], spec=spec, work_kind="feature",
-                              author=SpecAuthor(stage="spec", model="gpt-author", family="gpt"))
-    checked = accept(SpecHistory(), SpecCheckOutput(findings=[], notes=[], resolutions=[]), candidate, max_rounds=3)
+                              author=AUTHOR)
+    checked = accept(SpecHistory(), CLEAR, candidate, max_rounds=3)
     return {**candidate.update(single=True), "spec_history": checked.history.model_dump(mode="json"),
             "spec_approval": checked.approval.model_dump()}
 
 
-def checker_reply(args):
-    return {"findings": [], "notes": [], "resolutions": []} if args[-1].startswith("Check only the supplied candidate") else None
+def checker_reply(args: Sequence[str]) -> dict[str, object] | None:
+    return CLEAR.model_dump() if args[-1].startswith(stage_text("spec_check")) else None

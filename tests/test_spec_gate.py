@@ -9,10 +9,9 @@ from foreman.config import ModelSpec, load_config
 from foreman.delivery import RESUMABLE_HALTS, spec_approved
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from test_delivery import EMPTY_SLICE, SLICES, walk
+from skill_fixture import CLEAR, PROVENANCE
 
 
-PROVENANCE = {"author": {"stage": "spec", "model": "gpt-author", "family": "gpt"}, "revision": "0" * 64}
-CLEAR = {"findings": [], "notes": [], "resolutions": []}
 GAP = {"id": "gap1", "kind": "scope", "slice": EMPTY_SLICE["title"], "section": "slice",
        "summary": "Keep the proof obligation.", "ruling_id": None}
 
@@ -36,7 +35,7 @@ class SpecGateTests(unittest.TestCase):
     def test_all_entry_paths_check_before_build_or_parent_completion(self):
         for item, triage in ((None, "implement"), (None, "spec"), ({**EMPTY_SLICE, "provenance": PROVENANCE}, "implement")):
             with self.subTest(item=item, triage=triage):
-                result = self.run_gate(CLEAR, item=item, triage=triage)
+                result = self.run_gate(CLEAR.model_dump(), item=item, triage=triage)
                 self.assertEqual(len(self.checkers), 1)
                 self.assertTrue(spec_approved(result))
                 self.assertEqual(result["review_rounds"], 0 if triage == "spec" else 1)
@@ -50,7 +49,7 @@ class SpecGateTests(unittest.TestCase):
 
     def test_negative_paths_never_build_and_have_distinct_exit_codes(self):
         for item, triage in ((None, "implement"), (None, "spec"), ({**EMPTY_SLICE, "provenance": PROVENANCE}, "implement")):
-            for output, halt, code in (({**CLEAR, "findings": [GAP]}, "spec_unsettled", 3),
+            for output, halt, code in (({**CLEAR.model_dump(), "findings": [GAP]}, "spec_unsettled", 3),
                                        (Outcome("cli_missing", detail="missing"), "spec_check_unavailable", 1),
                                        (Outcome("quota"), "quota_exhausted", 75),
                                        ({}, "invalid_output", 1)):
@@ -73,12 +72,12 @@ class SpecGateTests(unittest.TestCase):
         self.assertIn("gpt", result["halt_detail"])
         self.assertIn("grok-check", result["halt_detail"])
         config.nodes["review"] = replace(config.nodes["review"], models=(ModelSpec.parse("gpt-only"),))
-        result = self.run_gate(CLEAR, item={**EMPTY_SLICE, "provenance": PROVENANCE}, config=config)
+        result = self.run_gate(CLEAR.model_dump(), item={**EMPTY_SLICE, "provenance": PROVENANCE}, config=config)
         self.assertEqual(self.checkers, [])
         self.assertEqual(result["halt"], "spec_check_unavailable")
 
     def test_legacy_slice_fails_closed_without_inferred_authorship(self):
-        result = self.run_gate(CLEAR, item=EMPTY_SLICE, legacy=True)
+        result = self.run_gate(CLEAR.model_dump(), item=EMPTY_SLICE, legacy=True)
         self.assertEqual(result["halt"], "invalid_output")
         self.assertEqual(self.checkers, [])
         self.assertNotIn("implement", result["path"])
