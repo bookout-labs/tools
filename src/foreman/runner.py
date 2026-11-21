@@ -225,7 +225,7 @@ def run_live_delivery(
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
-        waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == "quota_exhausted"
+        waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == Halt.quota_exhausted
         if answer is not None and early_result is None:
             if waiting_for_quota:
                 raise AnswerError("This issue has no pending question.")
