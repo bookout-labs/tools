@@ -49,6 +49,9 @@ failing variant, or grader output. It receives no `.git`, later objects, remote,
 GitHub token, or App key, and cannot fetch over the network. Export means files
 from the start commit, not a clone or a checkout of current main.
 
+If the isolation boundary is unavailable, #165 reports isolation as incomplete,
+never pass.
+
 Answers and reference metadata load into a separate trusted grader only after
 the worker exits. Keeping them in an ignored directory, on a sibling path, in git
 history, or in a public PR does not satisfy this boundary. #165 must deny probes
