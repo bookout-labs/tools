@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
-from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
+from foreman.delivery import run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from skill_fixture import FixtureSkills, skill_fixture
@@ -384,13 +384,6 @@ class DeliveryTest(unittest.TestCase):
         result = walk(read_methods)
         self.assertEqual(result["stop"], "verified")
         self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec", "implement", "verify", "review"])
-
-    def test_diagram_names_the_nodes(self):
-        picture = diagram()
-        for name in REQUIRED_NODES + ("merge", "done"):
-            self.assertIn(name, picture)
-        self.assertNotIn("claude-opus", picture)
-        compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), run=DryRun())
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 flowchart TD
-  start([New issue]) --> triage["triage<br/>read the issue"]
+  __start__([New issue]) --> triage["triage<br/>read the issue"]
   triage -->|question| research["research<br/>answer the question"]
   research --> done([Done])
   triage -->|needs a plan| spec["spec<br/>write the plan"]
@@ -26,4 +26,4 @@ flowchart TD
   merge -->|head moved: resume same PR branch| prepare
   merge -->|queue rejected: fix on same PR branch| prepare
   merge -->|merged| done
-%% Any step can pause (quota wait, human question, waiting on GitHub) and resumes at that step; review rounds are capped by max_review_rounds.
+  done --> __end__([End])

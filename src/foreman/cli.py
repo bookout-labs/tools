@@ -187,7 +187,11 @@ def main(
             print(f"unknown graph {args.graph}", file=sys.stderr)
             return 2
         if args.write:
-            write_diagrams(Path.cwd())
+            try:
+                write_diagrams(Path.cwd())
+            except (OSError, ValueError) as exc:
+                print(f"cannot write diagrams: {exc}", file=sys.stderr)
+                return 2
         else:
             print(diagram(), end="")
         return 0
