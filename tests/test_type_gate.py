@@ -9,7 +9,6 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-
 class TypeGateTests(unittest.TestCase):
     def test_strict_configuration(self):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -37,10 +36,10 @@ class TypeGateTests(unittest.TestCase):
                     self.assertEqual(value, "error")
 
     def test_no_basic_directives(self):
-        for path in (ROOT / "src").rglob("*"):
-            if not path.is_file() or path.suffix != ".py":
+        for path in (p for root in ("src", "typings") for p in (ROOT / root).rglob("*")):
+            if not path.is_file() or path.suffix not in {".py", ".pyi"}:
                 continue
             for line in path.read_text().splitlines():
-                if re.search(r"#\s*pyright:\s*(?:basic|off|standard)\b", line):
+                if re.search(r"#\s*pyright:", line):
                     with self.subTest(path=path.relative_to(ROOT)):
                         self.fail("Source module weakens strict checking")

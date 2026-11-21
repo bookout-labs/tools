@@ -13,13 +13,23 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DryRun, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
+from foreman.delivery import HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge
-from foreman.stage_output import HumanPrompt, StoredSlice, parse_output
+from foreman.stage_output import StoredSlice, parse_output
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
+
+
+def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
+    if not values:
+        return None
+    normalized = dict(values)
+    if normalized.get("slice") is not None:
+        normalized["slice"] = StoredSlice.model_validate(normalized["slice"]).record()
+    return _CHECKPOINT_STATE.validate_python(normalized, strict=True)
+
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 
@@ -49,7 +59,7 @@ def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice) -> s
 
 
 def _checkpoint_before_halt(
-    graph: CompiledStateGraph[DeliveryState, LiveRun | DryRun, DeliveryState, DeliveryResult],
+    graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult],
     config: RunnableConfig,
     path: list[str],
 ) -> StateSnapshot:
@@ -106,7 +116,7 @@ def run_live_delivery(
             graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync", version="v2")
 
         saved = graph.get_state(config)
-        saved_values = _CHECKPOINT_STATE.validate_python(saved.values, strict=True) if saved.values else None
+        saved_values = checkpoint_state(saved.values)
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
@@ -163,12 +173,15 @@ def run_live_delivery(
             replay = before.config
             if partial := saved_values.get("partial_edits"):
                 replay = graph.update_state(replay, {"partial_edits": partial})
-            invoke(None, _CHECKPOINT_STATE.validate_python(before.values, strict=True), replay)
+            restored = checkpoint_state(before.values)
+            assert restored is not None
+            invoke(None, restored, replay)
         elif saved.next and not saved.interrupts:
             invoke(None, saved_values)
 
         saved = graph.get_state(config)
-        saved_values = _CHECKPOINT_STATE.validate_python(saved.values, strict=True)
+        saved_values = checkpoint_state(saved.values)
+        assert saved_values is not None
         if saved_values.get("stop") == "sliced":
             if "slices" not in saved_values:
                 raise ValueError("Sliced checkpoint has no slice plan.")
@@ -197,9 +210,11 @@ def run_live_delivery(
                         and "factory" not in client.load_issue(repo, number)["labels"]):
                     client.add_label(repo, number, "factory")
             saved = graph.get_state(config)
-            saved_values = _CHECKPOINT_STATE.validate_python(saved.values, strict=True)
+            saved_values = checkpoint_state(saved.values)
+        assert saved_values is not None
         if saved.interrupts:
             if saved_values.get("halt") == "quota_exhausted":
+                parse_output(QuotaPause, saved.interrupts[0].value)
                 return read_delivery_state({**saved_values, "stop": "quota_exhausted"})
             question = parse_output(HumanPrompt, saved.interrupts[0].value).question
             return read_delivery_state({**saved_values, "stop": "needs_human", "halt_detail": question})

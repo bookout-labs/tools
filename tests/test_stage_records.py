@@ -3,6 +3,7 @@ import unittest
 from pydantic import TypeAdapter, ValidationError
 
 from foreman.stage_output import (
+    ConstraintResult, ConstraintResultRecord,
     BrowserProof, BrowserProofRecord, Finding, FindingRecord, FormalProof, FormalProofRecord,
     MergeRisk, MergeRiskRecord, Seam, SeamRecord, Slice, SliceRecord, SliceProperty,
     SlicePropertyRecord, StoredSlice, ToolFact, ToolFactRecord,
@@ -12,9 +13,10 @@ from foreman.stage_output import (
 class StageRecordTests(unittest.TestCase):
     def test_validated_records_round_trip(self):
         cases = (
+            (ConstraintResult, ConstraintResultRecord, {"constraint": "positive", "rejected": True}),
             (BrowserProof, BrowserProofRecord, {"screen": None, "trace": None, "passed": None}),
             (FormalProof, FormalProofRecord, {"ran": True, "constraints": [{"constraint": "positive", "rejected": True}], "typecheck": False}),
-            (Finding, FindingRecord, {"file": "a.py", "line": 1, "severity": "nit", "summary": "Rename."}),
+            (Finding, FindingRecord, {"id": "f1", "kind": "correctness", "fix": "Rename.", "ruling_id": None, "file": "a.py", "line": 1, "severity": "nit", "summary": "Rename."}),
             (MergeRisk, MergeRiskRecord, dict.fromkeys(("alignment", "impact", "verification", "rollback", "error_detection"), "Evidence") | {"level": "low"}),
             (Seam, SeamRecord, {"name": "db", "exists": True, "path": "db.py"}),
             (SliceProperty, SlicePropertyRecord, {"name": "Positive", "constraint": "positive"}),
@@ -23,6 +25,7 @@ class StageRecordTests(unittest.TestCase):
         )
         for model, record, raw in cases:
             with self.subTest(model=model.__name__):
+                self.assertEqual(set(model.model_fields), set(record.__annotations__) - {"depends_on", "blocker_numbers"})
                 value = model.model_validate(raw).record()
                 self.assertEqual(value, raw)
                 self.assertEqual(TypeAdapter(record).validate_python(value, strict=True), raw)
@@ -31,6 +34,8 @@ class StageRecordTests(unittest.TestCase):
                         TypeAdapter(record).validate_python({k: v for k, v in value.items() if k != key}, strict=True)
                 with self.assertRaises(ValidationError):
                     model.model_validate({**raw, "extra": True})
+                with self.assertRaises(ValidationError):
+                    TypeAdapter(record).validate_python({**raw, "extra": True}, strict=True)
 
     def test_nested_boundaries_reject_coercion(self):
         for raw in ({"ran": "true", "constraints": None, "typecheck": None},
@@ -46,6 +51,12 @@ class StageRecordTests(unittest.TestCase):
         self.assertEqual(record["blocker_numbers"], [17])
         self.assertNotIn("work_kind", record)
 
+    def test_legacy_checkpoint_restores_slice_defaults(self):
+        from foreman.runner import checkpoint_state
+        state = checkpoint_state({"repo": "example/repo", "check": "true", "path": [], "slice": {"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []}})
+        self.assertFalse(state["slice"]["stateful"])
+        self.assertEqual(state["slice"]["builds"], [])
+        self.assertEqual(state["slice"]["uses"], [])
 
 class StageOwnershipTests(unittest.TestCase):
     def test_new_stage_requires_update(self):
@@ -68,11 +79,11 @@ class StageOwnershipTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 output = parse_output(contract, handler(stage, None, state, "").output)
                 update = stage_update(stage, output, state, "model")
-                key = "implementation" if stage == "implement" else stage
+                key = {"implement": "implementation", "review": "findings"}.get(stage, stage)
                 self.assertIn(key, update)
                 self.assertEqual(update["path"], [stage])
                 self.assertEqual(update["models_used"][stage], "model")
-                if stage in ("review", "verify"):
+                if stage == "verify":
                     self.assertEqual(update["review_rounds"], 3)
 
     def test_checkpoint_rejects_incomplete_nested_record(self):

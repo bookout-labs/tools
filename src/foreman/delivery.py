@@ -1,14 +1,15 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
+import json
+import operator
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cached_property
 from enum import StrEnum
+from functools import cached_property
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from tomllib import TOMLDecodeError
 from typing import Annotated, Literal, NotRequired, Protocol, get_args
-import operator
 import re
 import textwrap
 
@@ -33,8 +34,9 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, ToolFactRecord, StageOutput, Finding, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
+    Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, ToolFactRecord, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
+from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
@@ -52,6 +54,16 @@ HaltReason = Literal[
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
+
+
+class HumanPrompt(Contract):
+    stage: Literal["triage", "spec", "pr_size"]
+    question: str
+
+
+class QuotaPause(Contract):
+    reason: Literal["quota_exhausted"] = "quota_exhausted"
+    detail: str | None
 
 
 @dataclass(frozen=True)
@@ -107,13 +119,6 @@ class PullRequestSizeDecision(StrEnum):
     OVERRIDE = "override"
 
 
-class PullRequestSplit(TypedDict):
-    plan: str
-    gate: Literal["ready", "needs_human"]
-    question: str | None
-    slices: list[SliceRecord]
-
-
 class DeliveryFields(TypedDict, total=False):
     request: str
     issue: int
@@ -154,6 +159,9 @@ class DeliveryFields(TypedDict, total=False):
     pr_size_override: PullRequestSize
     pr_split: PullRequestSplit
     review: str
+    review_findings: list[dict[str, object]]
+    reviewed_head: str
+    settled_rulings: list[dict[str, object]]
     tool_facts: list[ToolFactRecord]
     findings: list[FindingRecord]
     detail: str
@@ -261,7 +269,7 @@ def load_slice(raw: object) -> DeliveryUpdate:
     return state
 
 
-def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | None) -> ReviewOutput:
+def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | None) -> GraphCheck | None:
     recorded: set[str] = set()
     notes = [output.detail]
     if isinstance(run, LiveRun) and head and any(fact.fixture is not None for fact in output.tool_facts):
@@ -271,25 +279,21 @@ def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | N
             notes.append(f"Could not check {MANIFEST_PATH} at {head}. {exc}")
     unrecorded = [fact for fact in output.tool_facts if fact.fixture not in recorded]
     if not unrecorded:
-        return output
+        return None
     for fact in unrecorded:
         citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
         notes.append(f"Unrecorded outside-tool fact{citation}: {fact.claim}")
-    return output.model_copy(update={
-        "review": "changes", "detail": "\n".join(notes),
-        "findings": [*output.findings, Finding(
-            file=MANIFEST_PATH, line=1, severity="blocking",
-            summary="Record the outside-tool facts listed in the review detail.",
-        )],
-    })
+    return GraphCheck(failing_heads=[head or ""], detail="\n".join(notes[1:]))
 
 
 def stage_update(
     name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None,
 ) -> DeliveryUpdate:
-    update = output.update(state, workspace)
+    slices = clean_slices(output.slices, workspace) if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready" else []
+    context = UpdateContext(state.get("issue_kind"), state.get("work_kind"), bool(oversized_pr(state)), slices)
+    update: DeliveryUpdate = {**output.update(context)}
     update["path"] = [name]
-    if update.get("review") == "changes" or update.get("verify") == "fail":
+    if update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
         used = state.get("models_used", {})
@@ -301,7 +305,7 @@ def stage_update(
     return update
 
 
-def review_submission(output: ReviewOutput, diff: ReviewDiff) -> tuple[str, list[ReviewComment]]:
+def review_submission(output: ReviewOutput | AcceptedReview, diff: ReviewDiff) -> tuple[str, list[ReviewComment]]:
     try:
         patch = PatchSet(diff.patch)
     except UnidiffParseError:
@@ -362,7 +366,7 @@ def oversized_pr(state: DeliveryState) -> PullRequestSize | None:
 
 
 class DeliveryNode(Protocol):
-    def __call__(self, state: DeliveryState, runtime: Runtime[LiveRun | DryRun]) -> DeliveryUpdate: ...
+    def __call__(self, state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate: ...
 
 
 def compile_delivery(
@@ -372,7 +376,7 @@ def compile_delivery(
     run: LiveRun | DryRun,
     scratch: Path | None = None,
     checkpointer: BaseCheckpointSaver[str] | None = None,
-) -> CompiledStateGraph[DeliveryState, LiveRun | DryRun, DeliveryState, DeliveryResult]:
+) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
@@ -381,10 +385,10 @@ def compile_delivery(
     plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
     def bind(name: str) -> DeliveryNode:
-        def node(state: DeliveryState, runtime: Runtime[LiveRun | DryRun]) -> DeliveryUpdate:
+        def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
             if dispatcher is None:
                 return halted("no_dispatcher", "No dispatcher is configured.", name)
-            current_run = runtime.context or run
+            current_run = run if isinstance(run, DryRun) else runtime.context or run
             if name == "implement" and isinstance(current_run, LiveRun):
                 probe = current_run.environment or EnvironmentProbe(
                     current_run.workspace, state.get("preflight", ""), current_run.check_log,
@@ -411,6 +415,12 @@ def compile_delivery(
                     " For a slice issue, describe the split in spec."
                 )
 
+            past = ReviewHistory()
+            if name == "review":
+                try:
+                    past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
+                except InvalidOutput as exc:
+                    return halted("invalid_output", str(exc), name)
             review_context: tuple[Forge, PullRequest, ReviewDiff] | None = None
             repo = state.get("repo", "")
             if name == "review" and isinstance(run, LiveRun):
@@ -425,6 +435,15 @@ def compile_delivery(
                     return halted("review_unavailable", str(exc), name)
                 review_context = (run.forge, target, diff)
                 instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
+            worker_state: DeliveryState = state.copy()
+            if name == "review":
+                scope = "Full PR review."
+                instruction += "\n\n" + scope
+                instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
+                instruction += "\nGraph checks, not yours to resolve:\n" + json.dumps(past.rounds[-1].graph_check.model_dump(mode="json") if past.rounds and past.rounds[-1].graph_check else None)
+                instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
+                for key in ("review_findings", "settled_rulings"):
+                    worker_state.pop(key, None)
             attempts: list[SkillAttempt] = []
 
             def record_attempt(model: str | None, kind: OutcomeKind) -> None:
@@ -433,7 +452,7 @@ def compile_delivery(
                 })
 
             outcome, model = dispatcher.run(
-                name, models, state, instruction, on_attempt=record_attempt if methods_root and name != "verify" else None,
+                name, models, worker_state, instruction, on_attempt=record_attempt if methods_root and name != "verify" else None,
             )
             stopped: DeliveryUpdate = {"path": [name], "skill_attempts": attempts}
             if outcome.kind == "failed":
@@ -447,22 +466,35 @@ def compile_delivery(
                 return {**stopped, **halted(reason, f"{name} quota exhausted: {model}", name)}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                accepted: AcceptedReview | None = None
                 if isinstance(output, ReviewOutput):
-                    output = _check_tool_facts(output, run, state.get("verified_head"))
+                    facts = list(({f.claim: f for r in past.rounds for f in r.tool_facts}
+                                  | {f.claim: f for f in output.tool_facts}).values())
+                    checked = output.model_copy(update={"tool_facts": facts})
+                    head = state.get("verified_head") or state.get("head_sha") or ""
+                    accepted = accept(past, checked, head, _check_tool_facts(checked, run, head))
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
                 update["skill_attempts"] = attempts
+                if accepted is not None:
+                    update.update(review=accepted.review, detail=accepted.detail,
+                                  review_findings=[r.model_dump(mode="json") for r in accepted.history.rounds],
+                                  reviewed_head=accepted.history.rounds[-1].reviewed_head,
+                                  findings=[f.record() for f in accepted.findings],
+                                  review_change_kind=accepted.change_kind,
+                                  review_rounds=state.get("review_rounds", 0) + (accepted.review == "changes"))
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
-                update: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
+                rejected: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
                 if rounds >= config.max_review_rounds:
-                    update.update(halted("spec_cap", str(exc), name))
-                return update
+                    rejected.update(halted("spec_cap", str(exc), name))
+                return rejected
             except InvalidOutput as exc:
                 return {**stopped, **halted("invalid_output", str(exc), name)}
 
             if review_context is not None and isinstance(output, ReviewOutput):
                 forge, target, diff = review_context
-                body, comments = review_submission(output, diff)
+                assert accepted is not None
+                body, comments = review_submission(accepted, diff)
                 try:
                     forge.post_review(repo, target, body, comments)
                 except ForgeError as exc:
@@ -495,7 +527,7 @@ def compile_delivery(
 
     dispatch_implement = bind("implement")
 
-    def implement(state: DeliveryState, runtime: Runtime[LiveRun | DryRun]) -> DeliveryUpdate:
+    def implement(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
         assert "delivery_branch" in state and "attempt_head" in state or isinstance(run, DryRun)
         if isinstance(run, DryRun):
             return dispatch_implement(state, runtime)
@@ -571,8 +603,8 @@ def compile_delivery(
             return halted("publish_failed", str(exc), "publish")
         return {"path": ["publish"]}
 
-    def verify(state: DeliveryState, runtime: Runtime[LiveRun | DryRun]) -> DeliveryUpdate:
-        match runtime.context or run:
+    def verify(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+        match run if isinstance(run, DryRun) else runtime.context or run:
             case DryRun():
                 return scripted_verify(state, runtime)
             case LiveRun(workspace=workspace, check_log=check_log):
@@ -620,11 +652,11 @@ def compile_delivery(
         stage = state["path"][-1]
         split = state.get("pr_split") if stage == "spec" and oversized_pr(state) else None
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
-        answer = interrupt({"stage": stage, "question": question})
+        answer = interrupt(HumanPrompt.model_validate({"stage": stage, "question": question}).model_dump())
         return {"human_answers": [*state.get("human_answers", []), answer]}
 
     def quota_wait(state: DeliveryState) -> DeliveryUpdate:
-        interrupt({"reason": "quota_exhausted", "detail": state.get("halt_detail")})
+        interrupt(QuotaPause(detail=state.get("halt_detail")).model_dump())
         return {"halt": None, "halt_detail": ""}
 
     def decide_pr_size(state: DeliveryState) -> DeliveryUpdate:
@@ -632,14 +664,14 @@ def compile_delivery(
         assert size is not None
         split = state.get("pr_split")
         plan = split["plan"] if split else state.get("spec", "")
-        answer = PullRequestSizeDecision(interrupt({
-            "stage": "pr_size",
-            "question": (
+        answer = PullRequestSizeDecision(interrupt(HumanPrompt(
+            stage="pr_size",
+            question=(
                 f"The pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}.\n"
                 f"{plan}\n"
                 "Use --answer split to accept the split or --answer override to review this diff."
             ),
-        }))
+        ).model_dump()))
         if answer == PullRequestSizeDecision.OVERRIDE:
             return {"pr_size_override": size}
         return {}
@@ -657,7 +689,7 @@ def compile_delivery(
     def moved_before_review(actual: str, verified: str) -> DeliveryUpdate:
         return {**halted("merge_not_armed", moved_head_detail(actual, verified), "review"), "merge": "not_armed"}
 
-    def review(state: DeliveryState, runtime: Runtime[LiveRun | DryRun]) -> DeliveryUpdate:
+    def review(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
         if isinstance(run, DryRun):
             return dispatch_review(state, runtime)
         try:
@@ -811,7 +843,7 @@ def compile_delivery(
             update["halt_detail"] = split["plan"] if split else state.get("spec", "")
         return update
 
-    builder = StateGraph[DeliveryState, LiveRun | DryRun, DeliveryState, DeliveryResult](
+    builder = StateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult](
         DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun,
     )
 
@@ -868,11 +900,11 @@ def compile_delivery(
         "quota_wait", _last_stage, {name: name for name in REQUIRED_NODES if name != "verify"},
     )
     add_agent_edges("research", lambda _: "done", {"done": "done"})
-    add_agent_edges("implement", lambda state: "done" if state.get("halt") else "commit", {"commit": "commit", "done": "done"})
+    add_agent_edges("implement", after_halt("commit"), {"commit": "commit", "done": "done"})
     add_agent_edges(
         "review",
         after_review,
-        {"merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "done": "done"},
+        {"merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges(
         "verify",

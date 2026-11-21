@@ -178,6 +178,18 @@ sends `commit_id`, `event: COMMENT`, `body`, and a `comments` array
 with `path`, `line`, `side`, and `body` per inline comment. The
 [`RIGHT` side identifies the new file](https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request).
 
+## Review interdiff
+
+Git 2.56.0 was exercised by `test_review_diff_fetches_an_unrelated_new_base_commit`.
+The test creates all commits locally from working-tree files and runs
+`git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames <base>..<head> --`.
+The two-commit diff includes a deletion from the diverged base that the
+three-dot PR diff excludes. Equal SHAs return an empty patch. Both variants
+fetch with the already recorded `git fetch --no-tags origin <base> <head>`.
+Review-round test responses are contract-checked through `ReviewOutput` before
+they enter the production parser. They cover explicit resolutions, scoped
+findings, recurrence, settled notes and resume against a SQLite checkpoint.
+
 ## Closing pull request contract
 
 Checked against GitHub GraphQL documentation on 2026-11-20 and GitHub CLI

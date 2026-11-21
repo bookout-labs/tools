@@ -1,0 +1,6 @@
+flowchart TD
+    review -->|changes below cap|implement
+    implement --> verify
+    verify --> review
+    review -->|approve|merge
+    review -->|cap reached|done

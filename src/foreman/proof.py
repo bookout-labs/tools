@@ -16,17 +16,6 @@ def formal_required(slice: SliceRecord) -> bool:
     return bool(slice["properties"])
 
 
-def score_verdict(label: object) -> str:
-    verdicts = {
-        "approve": "pass",
-        "block": "fail",
-        "insufficient_evidence": "insufficient_evidence",
-    }
-    if not isinstance(label, str) or label not in verdicts:
-        raise ProofError(f"unknown score label {label!r}")
-    return verdicts[label]
-
-
 def browser_proof_label(slice: SliceRecord, artifact: BrowserProofRecord | None) -> str | None:
     """Return a failure label, or None when the gate accepts."""
     if not browser_required(slice):
