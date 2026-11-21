@@ -20,6 +20,15 @@ These steps require changes outside the worker worktree. This slice does not per
 
 1. On Studio, install this revision and its dependencies at
    `/Users/booko/.local/share/foreman-worker` with a `.venv` there.
+   Run these commands on Studio, and repeat them on MacBook at step 4.
+   After merge, deploy the approved main revision instead of the slice branch.
+
+   ```sh
+   git clone --branch 129c-worker-launcher https://github.com/bookout-labs/tools /Users/booko/.local/share/foreman-worker
+   python3.12 -m venv /Users/booko/.local/share/foreman-worker/.venv
+   /Users/booko/.local/share/foreman-worker/.venv/bin/python -m pip install /Users/booko/.local/share/foreman-worker
+   ```
+
    Keep that checkout and its parent directories writable only by Joe.
    Keep `~/.config/bookout-foreman` mode 700 and `app.pem` mode 600.
    The App key stays on Studio. No token is copied, saved, or printed.
