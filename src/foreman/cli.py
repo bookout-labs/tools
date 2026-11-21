@@ -113,7 +113,7 @@ def main(
     run.add_argument("--request")
     run.add_argument("--check", default="")
     run.add_argument("--preflight", default="")
-    run.add_argument("--fact-record", type=fact_record_path, default=MANIFEST_PATH)
+    run.add_argument("--fact-record", type=fact_record_path, default=None)
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
 
@@ -174,7 +174,7 @@ def main(
             repo=args.repo,
             request=args.request or f"Issue #{args.issue}",
             check=args.check,
-            fact_record=args.fact_record,
+            fact_record=args.fact_record or MANIFEST_PATH,
         )
         print("pstack pin not checked (dry run)")
     else:

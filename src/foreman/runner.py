@@ -78,9 +78,10 @@ def run_live_delivery(
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
     answer: str | None = None,
-    fact_record: str = MANIFEST_PATH,
+    fact_record: str | None = None,
 ) -> DeliveryResult:
-    fact_record = fact_record_path(fact_record)
+    if fact_record is not None:
+        fact_record = fact_record_path(fact_record)
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(run.workspace.root.resolve())
@@ -101,7 +102,7 @@ def run_live_delivery(
         except SkillMissing as exc:
             return read_delivery_state({**halted("skill_missing", str(exc), "done"), "stop": exc.halt,
                                         "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
-                                        "fact_record": fact_record,
+                                        "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
                                         "repo": repo, "check": check})
         def invoke(
             graph_input: DeliveryState | Command | None,
@@ -113,7 +114,7 @@ def run_live_delivery(
 
         saved = graph.get_state(config)
         saved_values = _CHECKPOINT_STATE.validate_python(saved.values, strict=True) if saved.values else None
-        if saved_values is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
+        if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
             raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
@@ -141,7 +142,7 @@ def run_live_delivery(
             loaded = client.load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
-                "fact_record": fact_record,
+                "fact_record": fact_record or MANIFEST_PATH,
                 "repo": repo,
                 "issue": issue,
                 "workspace": workspace,

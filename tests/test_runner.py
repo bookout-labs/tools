@@ -604,6 +604,20 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn("paused quota_exhausted", stdout.getvalue())
         self.assertIn("triage quota exhausted", stdout.getvalue())
 
+    def test_resume_uses_saved_custom_fact_record_when_omitted(self):
+        run = LiveRun(self.github, FakeWorkspace(self.cwd))
+        first = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", fact_record="evidence/facts.toml",
+            checkpoint=self.checkpoint, run=run,
+            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+        )
+        self.assertEqual(first["fact_record"], "evidence/facts.toml")
+        resumed = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, run=run,
+            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+        )
+        self.assertEqual(resumed["fact_record"], "evidence/facts.toml")
+
     def test_resume_rejects_a_different_fact_record(self):
         self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
         with self.assertRaisesRegex(ValueError, "--fact-record differs"):
