@@ -10,13 +10,12 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, MergeHalt, PullRequestSizeDecision, compile_delivery
+from foreman.delivery import DeliveryState, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.github import Forge
 from foreman.stage_output import StoredSlice, parse_output
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
-RESUMABLE_HALTS: frozenset[MergeHalt] = frozenset({"merge_held", "merge_not_armed", "publish_failed", "git_failed", "implement_quota"})
 
 
 def _load_slice(body: str) -> StoredSlice:
@@ -101,7 +100,7 @@ def run_live_delivery(
                 try:
                     item = _load_slice(loaded["body"])
                 except (InvalidOutput, json.JSONDecodeError) as exc:
-                    initial.update(halt="missing_slice", halt_detail=str(exc))
+                    initial.update(halted("missing_slice", str(exc), None))
                 else:
                     if detail := _blocker_detail(client, repo, issue, item):
                         return {**initial, "path": ["done"], "stop": "blocked", "halt_detail": detail}

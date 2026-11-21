@@ -309,19 +309,43 @@ class PublicationTest(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), RejectAuth)
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        master, slave = pty.openpty()
+        import errno
+        import select
+        import signal
+        import time
+        url = f"http://127.0.0.1:{server.server_port}/synthetic.git"
+        code = (
+            "from pathlib import Path; from foreman.workspace import LiveWorkspace; "
+            f"LiveWorkspace(Path({str(self.checkout)!r}))._git('-c', 'credential.helper=', 'ls-remote', {url!r}, timeout=3)"
+        )
+        pid, master = pty.fork()
+        if pid == 0:
+            os.execv(sys.executable, [sys.executable, "-c", code])
+        output = bytearray()
+        exited = False
         try:
-            url = f"http://127.0.0.1:{server.server_port}/synthetic.git"
-            code = (
-                "from pathlib import Path; from foreman.workspace import LiveWorkspace; "
-                f"LiveWorkspace(Path({str(self.checkout)!r}))._git('-c', 'credential.helper=', 'ls-remote', {url!r}, timeout=3)"
-            )
-            result = run_subprocess([sys.executable, "-c", code], stdin=slave, capture_output=True, text=True, timeout=5)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("terminal prompts disabled", result.stderr)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError as exc:
+                        if exc.errno != errno.EIO:
+                            raise
+                        break
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+            done, status = os.waitpid(pid, os.WNOHANG)
+            exited = done == pid
+            self.assertTrue(exited, "authentication hung under a controlling pseudo-terminal")
+            self.assertNotEqual(os.waitstatus_to_exitcode(status), 0)
+            self.assertIn("terminal prompts disabled", output.decode(errors="replace"))
         finally:
+            if not exited:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
             os.close(master)
-            os.close(slave)
             server.shutdown()
             server.server_close()
             thread.join()
