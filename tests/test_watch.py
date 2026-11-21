@@ -36,7 +36,7 @@ FILING = {
     "no_dispatcher": ("A live run always has a dispatcher", "cli.py"),
     "skill_missing": ("Pinned skills are available before dispatch", "skill_rules.py"),
 }
-SKIPPED = {"no_reviewer", "cli_missing", "merge_held", "merge_not_armed", "budget_exceeded",
+SKIPPED = {"reviewer_unavailable", "no_reviewer", "cli_missing", "merge_held", "merge_not_armed", "budget_exceeded",
            "env_unavailable", "quota_exhausted", "publish_failed", "implement_quota", "failed",
            "design_rethink", "implementation_rejected", "pr_conflict", "ci_pending", "ci_red",
            "readiness_unavailable"}
