@@ -24,6 +24,8 @@ from foreman.workspace import LiveWorkspace
 
 def _print_run(result: DeliveryState) -> None:
     models = result.get("models_used", {})
+    if size := result.get("pr_size"):
+        print(f"pull request lines {size['lines']}")
     for node in result["path"]:
         if node == "verify":
             print(f"verify {result.get('check') or '(no check)'}")

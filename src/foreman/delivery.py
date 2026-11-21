@@ -1,6 +1,7 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict
@@ -15,9 +16,10 @@ from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.github import Forge, MergeNotArmed, merge_command
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+    Contract, HumanQuestionOutput, PULL_REQUEST_LINES, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput,
+    parse_output,
 )
-from foreman.workspace import Workspace, WorktreeInspectionFailed
+from foreman.workspace import PullRequestSize, Workspace, WorktreeInspectionFailed
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -35,6 +37,11 @@ class LiveRun:
 @dataclass(frozen=True)
 class DryRun:
     pass
+
+
+class PullRequestSizeDecision(StrEnum):
+    SPLIT = "split"
+    OVERRIDE = "override"
 
 
 class DeliveryState(TypedDict, total=False):
@@ -62,6 +69,8 @@ class DeliveryState(TypedDict, total=False):
     proof_labels: dict[str, str]
     human_question: str
     human_answers: list[str]
+    pr_size: PullRequestSize
+    pr_size_override: PullRequestSize
     review: str
     review_note: str | None
     risk: dict[str, str]
@@ -143,8 +152,11 @@ def stop_reason(state: DeliveryState) -> str:
         return halt
     if state.get("triage") == "needs_human" or state.get("spec_gate") == "needs_human":
         return "needs_human"
-    if state.get("issue_kind") == "parent" and state.get("spec_gate") == "ready":
-        return "sliced"
+    if state.get("spec_gate") == "ready" and state.get("path", [])[-1:] == ["spec"]:
+        if state.get("issue_kind") == "parent":
+            return "sliced"
+        if oversized_pr(state):
+            return "pr_split_required"
     if state.get("triage") == "question":
         return "answered"
     if state.get("verify") == "fail":
@@ -154,6 +166,13 @@ def stop_reason(state: DeliveryState) -> str:
     if state.get("verify") == "pass":
         return "verified"
     return "stopped"
+
+
+def oversized_pr(state: DeliveryState) -> PullRequestSize | None:
+    size = state.get("pr_size")
+    if size is not None and size["lines"] > PULL_REQUEST_LINES and size != state.get("pr_size_override"):
+        return size
+    return None
 
 
 def compile_delivery(
@@ -186,6 +205,12 @@ def compile_delivery(
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
+            if name == "spec" and (size := oversized_pr(state)):
+                instruction += (
+                    f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."
+                    " Split the work into independently shippable pull requests."
+                    " For a slice issue, describe the split in spec."
+                )
             try:
                 raw, model = dispatcher.run(name, models, state, instruction)
                 return stage_update(name, parse_output(STAGE_OUTPUTS[name], raw), state, model)
@@ -242,6 +267,41 @@ def compile_delivery(
         answer = interrupt({"stage": stage, "question": question})
         return {"human_answers": [*state.get("human_answers", []), answer]}
 
+    def decide_pr_size(state: DeliveryState) -> DeliveryState:
+        size = oversized_pr(state)
+        assert size is not None
+        answer = PullRequestSizeDecision(interrupt({
+            "stage": "pr_size",
+            "question": (
+                f"The pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}.\n"
+                f"{state.get('spec', '')}\n"
+                "Use --answer split to accept the split or --answer override to review this diff."
+            ),
+        }))
+        if answer == PullRequestSizeDecision.OVERRIDE:
+            return {"pr_size_override": size}
+        return {}
+
+    dispatch_review = bind("review")
+
+    def review(state: DeliveryState) -> dict[str, object]:
+        if isinstance(run, DryRun):
+            return dispatch_review(state)
+        try:
+            head = state.get("verified_head")
+            if head is None:
+                raise WorktreeInspectionFailed("The run did not record a verified HEAD.")
+            size = run.workspace.pull_request_size(head)
+            worktree = run.workspace.inspect()
+            if not worktree.clean or worktree.head != head:
+                raise WorktreeInspectionFailed("The worktree changed after verification.")
+        except WorktreeInspectionFailed as exc:
+            return {"halt": "pr_size_unavailable", "halt_detail": str(exc)}
+        measured: DeliveryState = {**state, "pr_size": size}
+        if oversized_pr(measured):
+            return {"pr_size": size}
+        return {**dispatch_review(measured), "pr_size": size}
+
     def after_triage(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
@@ -257,6 +317,8 @@ def compile_delivery(
             return "done"
         if state.get("spec_gate") == "needs_human" and checkpointer is not None:
             return "needs_human"
+        if oversized_pr(state):
+            return "decide_pr_size" if checkpointer is not None else "done"
         if state.get("issue_kind") == "parent":
             return "done"
         return "implement" if state.get("spec_gate") == "ready" else "done"
@@ -264,6 +326,8 @@ def compile_delivery(
     def after_review(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
+        if oversized_pr(state):
+            return "spec"
         if state.get("review") == "approve":
             return "merge"
         if state.get("review_rounds", 0) < config.max_review_rounds:
@@ -324,13 +388,19 @@ def compile_delivery(
                 return {"merge": "armed", "path": ["merge"]}
 
     def finish(state: DeliveryState) -> DeliveryState:
-        return {"stop": stop_reason(state), "path": ["done"]}
+        stop = stop_reason(state)
+        update: DeliveryState = {"stop": stop, "path": ["done"]}
+        if stop == "pr_split_required":
+            update["halt_detail"] = state.get("spec", "")
+        return update
 
     builder = StateGraph(DeliveryState)
+    graph_nodes = {"verify": verify, "review": review}
     for name in REQUIRED_NODES:
-        builder.add_node(name, verify if name == "verify" else bind(name))
+        builder.add_node(name, graph_nodes[name] if name in graph_nodes else bind(name))
     builder.add_node("proof", prove)
     builder.add_node("needs_human", needs_human)
+    builder.add_node("decide_pr_size", decide_pr_size)
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_conditional_edges(
@@ -343,7 +413,11 @@ def compile_delivery(
          "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges(
-        "spec", after_spec, {"implement": "implement", "needs_human": "needs_human", "done": "done"},
+        "spec", after_spec,
+        {"implement": "implement", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
+    )
+    builder.add_conditional_edges(
+        "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify"},
     )
     builder.add_conditional_edges(
         "needs_human", lambda state: state["path"][-1], {"triage": "triage", "spec": "spec"},
@@ -353,7 +427,7 @@ def compile_delivery(
     builder.add_conditional_edges(
         "review",
         after_review,
-        {"merge": "merge", "implement": "implement", "done": "done"},
+        {"merge": "merge", "implement": "implement", "spec": "spec", "done": "done"},
     )
     builder.add_conditional_edges(
         "verify",

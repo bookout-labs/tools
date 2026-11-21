@@ -8,7 +8,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, LiveRun, compile_delivery, load_slice
+from foreman.delivery import DeliveryState, LiveRun, PullRequestSizeDecision, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
@@ -47,6 +47,11 @@ def run_live_delivery(
                 raise ValueError("This issue has no pending question.")
             if not answer.strip():
                 raise ValueError("The answer must contain text.")
+            if saved.interrupts[0].value["stage"] == "pr_size":
+                try:
+                    answer = PullRequestSizeDecision(answer).value
+                except ValueError as exc:
+                    raise ValueError("Answer split or override at the pull request size prompt.") from exc
             graph.invoke(Command(resume=answer), config, durability="sync")
         elif not saved.values:
             loaded = client.load_issue(repo, issue)
