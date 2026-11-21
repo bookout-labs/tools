@@ -33,9 +33,12 @@ class CheckpointBoundaryTests(unittest.TestCase):
                     with patch("foreman.runner.compile_delivery") as compile_graph, \
                          patch("foreman.runner.checkpoint_state") as validate, \
                          patch("foreman.runner.load_config") as config:
-                        with self.assertRaisesRegex(CheckpointVersionError, "schema_version.*Start a new run"):
+                        with self.assertRaisesRegex(CheckpointVersionError, "schema_version.*Start a new run") as raised:
                             run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint,
                                               dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun()))
+                        self.assertIn(str(checkpoint), str(raised.exception))
+                        if version is None:
+                            self.assertIn("schema_version missing", str(raised.exception))
                         compile_graph.assert_not_called()
                         validate.assert_not_called()
                         config.assert_not_called()
@@ -44,7 +47,8 @@ class CheckpointBoundaryTests(unittest.TestCase):
     def test_serializer_only_reconstructs_allowed_domain_types(self):
         from foreman.delivery import HumanPrompt
         serde = checkpoint_serializer()
-        self.assertEqual(serde.loads_typed(serde.dumps_typed(Halt.quota_exhausted)), Halt.quota_exhausted)
+        with self.assertNoLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
+            self.assertIs(serde.loads_typed(serde.dumps_typed(Halt.quota_exhausted)), Halt.quota_exhausted)
         blocked = HumanPrompt(stage="triage", question="Which?")
         with self.assertLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
             restored = serde.loads_typed(serde.dumps_typed(blocked))
@@ -82,7 +86,7 @@ with SqliteSaver.from_conn_string(path) as saver:
         cases = [
             ("triage", "triage_call", {"triage": "needs_human"}),
             ("spec", "spec_call", {"spec_gate": "needs_human"}),
-            ("review", "review_post", {"halt": "design_rethink", "review": "request_changes"}),
+            ("review", "review_post", {"halt": "design_rethink", "review": "changes"}),
             ("pr_size", "spec_call", {"spec_gate": "ready", "pr_size": size}),
             ("quota", "triage_call", {"halt": "quota_exhausted"}),
         ]
@@ -105,6 +109,7 @@ with SqliteSaver.from_conn_string(path) as saver:
                                                   json.dumps(state), predecessor],
                                                  text=True, capture_output=True, env=env, check=False)
                         self.assertEqual(process.returncode, 0, process.stderr)
+                        self.assertEqual(process.stderr, "")
                         outputs.append(json.loads(process.stdout))
                     self.assertEqual(*outputs)
                     if predecessor != "done":

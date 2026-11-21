@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 import operator
+from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -29,17 +30,19 @@ def checkpoint_serializer() -> JsonPlusSerializer:
 class CheckpointVersionError(ValueError):
     """The checkpoint belongs to an incompatible delivery state schema."""
 
-    def __init__(self, version: object):
+    def __init__(self, version: object, checkpoint: Path | None = None):
+        location = f" {checkpoint}" if checkpoint is not None else ""
+        rendered_version = "missing" if version is None else repr(version)
         super().__init__(
-            f"Unsupported checkpoint schema_version {version!r}; expected {SCHEMA_VERSION}. "
+            f"Unsupported checkpoint{location} schema_version {rendered_version}; expected {SCHEMA_VERSION}. "
             "Start a new run with a new checkpoint path."
         )
 
 
-def require_schema_version(values: Mapping[str, object]) -> None:
+def require_schema_version(values: Mapping[str, object], checkpoint: Path | None = None) -> None:
     version = values.get("schema_version")
     if type(version) is not int or version != SCHEMA_VERSION:
-        raise CheckpointVersionError(version)
+        raise CheckpointVersionError(version, checkpoint)
 
 
 class WatchRecord(TypedDict):

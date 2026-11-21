@@ -172,7 +172,7 @@ def run_live_delivery(
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
         if prior is not None:
-            require_schema_version(channels)
+            require_schema_version(channels, checkpoint)
         delivery_config = load_config()
         if prior and "token_cap" in channels and max_tokens is not None and channels["token_cap"] != max_tokens:
             raise ValueError("--max-tokens differs from the stored token cap")
@@ -310,6 +310,7 @@ def run_live_delivery(
                 elif observed is None or observed.outcome not in {"closed", "retargeted"}:
                     repaired = worktree.head != head
             before = _checkpoint_before_halt(graph, config, saved_values["path"], "prepare" if repaired else None)
+            require_schema_version(before.values, checkpoint)
             require_run_limits(before.values, checkpoint, max_budget_usd)
             restored = checkpoint_state(before.values)
             assert restored is not None
