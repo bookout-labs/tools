@@ -755,7 +755,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
 
-    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False):
+    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False):
         root = self.cwd / "checkout"
         root.mkdir()
         subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=root, check=True)
@@ -773,7 +773,8 @@ class LiveRunnerTest(unittest.TestCase):
             )
 
         manifest_path = fixtures / "manifest.toml"
-        manifest_path.write_text(manifest(entry) if entry is not None else "[fixtures]\n")
+        if not (recover or no_changes):
+            manifest_path.write_text(manifest(entry) if entry is not None else "[fixtures]\n")
         subprocess.run(["git", "add", "."], cwd=root, check=True)
         subprocess.run(
             ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgSign=false",
@@ -792,9 +793,20 @@ class LiveRunnerTest(unittest.TestCase):
         }
         replies = iter([{"triage": "implement"}] + [built, review] * 3)
 
+        implementations = 0
+
         def worker(args, cwd, env):
+            nonlocal implementations
             reply = next(replies)
             if "implementation" in reply:
+                implementations += 1
+                if implementations > 1 and (recover or no_changes):
+                    if recover:
+                        self.assertIn("captured_run", args[-1])
+                        self.assertIn("quoted_source", args[-1])
+                        self.assertIn("The CLI accepts --debug.", args[-1])
+                        manifest_path.write_text(manifest("result.txt"))
+                    return worker_reply(args, reply)
                 file = root / "items.txt"
                 file.write_text((file.read_text() if file.exists() else "") + "synthetic edit\n")
             if record_during_review and "review" in reply:
@@ -806,6 +818,16 @@ class LiveRunnerTest(unittest.TestCase):
             dispatcher=FailoverDispatcher(CliWorker(root, worker)),
             run=LiveRun(self.github, FixtureWorkspace(root)),
         )
+
+    def test_missing_manifest_can_be_recorded_by_implement(self):
+        result = self.review_tool_fact("result.txt", recover=True)
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("merge"), "armed")
+        self.assertEqual(result.get("fact_record"), "tests/fixtures/manifest.toml")
+
+    def test_no_changes_names_unresolved_fact_gate(self):
+        result = self.review_tool_fact(None, no_changes=True)
+        self.assertIn("tool-facts", result.get("halt_detail", ""))
 
     def test_approve_with_unrecorded_tool_fact_becomes_changes(self):
         result = self.review_tool_fact("result.txt", record_during_review=True)
