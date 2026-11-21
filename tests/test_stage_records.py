@@ -3,6 +3,7 @@ import unittest
 from pydantic import TypeAdapter, ValidationError
 
 from foreman.stage_output import (
+    CandidateSlice, CandidateSliceRecord, SpecAuthor, SpecAuthorRecord, SpecCandidate, SpecCandidateRecord, SliceProvenance, SliceProvenanceRecord,
     PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, AttemptUsageRecord, ConstraintResult, ConstraintResultRecord,
     BrowserProof, BrowserProofRecord, Finding, FindingRecord, FormalProof, FormalProofRecord,
     MergeRisk, MergeRiskRecord, Seam, SeamRecord, Slice, SliceRecord, SliceProperty,
@@ -12,10 +13,17 @@ from foreman.stage_output import (
 
 class StageRecordTests(unittest.TestCase):
     def test_validated_records_round_trip(self):
+        author = {"stage": "spec", "model": "gpt-test", "family": "gpt"}
+        slice = {"title": "Ship", "stateful": False, "acceptance": "Pass", "builds": [], "uses": [], "screen": "", "properties": [], "depends_on": [], "blocker_numbers": []}
+        candidate = SpecCandidate(slices=[CandidateSlice.model_validate(slice)], spec="Ship", work_kind="feature", author=SpecAuthor.model_validate(author))
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
         cases = (
+            (SpecAuthor, SpecAuthorRecord, author),
+            (SliceProvenance, SliceProvenanceRecord, {"author": author, "revision": candidate.revision}),
+            (CandidateSlice, CandidateSliceRecord, slice),
+            (SpecCandidate, SpecCandidateRecord, candidate.record()),
             (PendingDispatch, PendingDispatchRecord, {"stage": "triage", "index": 0, "quota_model": None}),
-            (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)], "eligible": []}}),
+            (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)]}}),
             (AttemptUsage, AttemptUsageRecord, usage),
             (Attempt, AttemptRecord, {"stage": "triage", "model": None, "commit": "pin", "methods": [], "outcome": "ran", "usage": usage}),
             (ConstraintResult, ConstraintResultRecord, {"constraint": "positive", "rejected": True}),
@@ -31,10 +39,11 @@ class StageRecordTests(unittest.TestCase):
         )
         for model, record, raw in cases:
             with self.subTest(model=model.__name__):
-                self.assertEqual(set(model.model_fields), set(record.__annotations__) - {"depends_on", "blocker_numbers"})
-                value = model.model_validate(raw).record()
+                optional = {"depends_on", "blocker_numbers", "provenance"} if model is Slice else set()
+                self.assertEqual(set(model.model_fields) | set(model.model_computed_fields), set(record.__annotations__) - optional)
+                value = (SpecCandidate.from_record(raw) if model is SpecCandidate else model.model_validate(raw)).record()
                 self.assertEqual(value, raw)
-                self.assertEqual(model.model_validate(value).record(), raw)
+                self.assertEqual((SpecCandidate.from_record(value) if model is SpecCandidate else model.model_validate(value)).record(), raw)
                 self.assertEqual(TypeAdapter(record).validate_python(value, strict=True), raw)
                 for key in record.__required_keys__:
                     with self.assertRaises(ValidationError):
@@ -51,6 +60,14 @@ class StageRecordTests(unittest.TestCase):
             with self.subTest(extra=extra), self.assertRaises(ValidationError):
                 PendingDispatch.model_validate({"stage": "review", "index": 0, "quota_model": None, **extra})
 
+    def test_legacy_review_scope_remains_readable(self):
+        from foreman.workspace import ReviewScope
+        scope = {"command": "diff", "inline": [("a.py", 2)], "eligible": []}
+        plan = DispatchPlan.model_validate({"models": [], "instruction": "review", "methods": [],
+                                           "target": None, "scope": scope})
+        self.assertEqual(TypeAdapter(ReviewScope).validate_python(plan.scope).record(),
+                         {"command": "diff", "inline": [("a.py", 2)]})
+
     def test_attempt_usage_rejects_negative_counts(self):
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
         for key in ("input", "output", "cache_read", "cache_creation"):
@@ -66,6 +83,21 @@ class StageRecordTests(unittest.TestCase):
                     {"ran": True, "constraints": [{"constraint": "positive", "rejected": 1}], "typecheck": None}):
             with self.subTest(raw=raw), self.assertRaises(ValidationError):
                 FormalProof.model_validate(raw)
+
+    def test_candidate_nested_boundaries_reject_coercion(self):
+        from test_spec_candidate import CandidateTests, SLICE
+        candidate = CandidateTests().candidate().record()
+        for model, record, raw in (
+            (SpecAuthor, SpecAuthorRecord, {"stage": "spec", "model": 1, "family": "gpt"}),
+            (SliceProvenance, SliceProvenanceRecord, {"author": {"stage": "spec", "model": 1, "family": "gpt"}, "revision": "0" * 64}),
+            (CandidateSlice, CandidateSliceRecord, {**SLICE, "stateful": "true"}),
+            (SpecCandidate, SpecCandidateRecord, {**candidate, "slices": [{**SLICE, "stateful": "true"}]}),
+        ):
+            with self.subTest(model=model.__name__):
+                with self.assertRaises(ValidationError):
+                    (SpecCandidate.from_record(raw) if model is SpecCandidate else model.model_validate(raw))
+                with self.assertRaises(ValidationError):
+                    TypeAdapter(record).validate_python(raw, strict=True)
 
     def test_stored_slice_keeps_checkpoint_metadata(self):
         raw = {"title": "Ship", "acceptance": "Pass", "screen": "", "properties": [],
@@ -111,6 +143,10 @@ class StageOwnershipTests(unittest.TestCase):
         handler = ScriptHandler(reviews=["changes"], verify="fail")
         for stage, contract in STAGE_OUTPUTS.items():
             with self.subTest(stage=stage):
+                if stage == "spec_check":
+                    with self.assertRaisesRegex(NotImplementedError, "candidate-bound"):
+                        stage_update(stage, parse_output(contract, {"findings": [], "notes": [], "resolutions": []}), state, "model")
+                    continue
                 output = parse_output(contract, handler(stage, None, state, "").output)
                 update = stage_update(stage, output, state, "model")
                 key = {"implement": "implementation", "review": "findings"}.get(stage, stage)
@@ -118,7 +154,14 @@ class StageOwnershipTests(unittest.TestCase):
                 self.assertEqual(update["path"], [stage])
                 self.assertEqual(update["models_used"][stage], "model")
                 if stage == "verify":
-                    self.assertEqual(update["review_rounds"], 3)
+                    self.assertEqual(update["verify_failures"], 3)
+
+    def test_legacy_failure_budget_is_preserved_separately(self):
+        from foreman.delivery import read_delivery_state
+        result = read_delivery_state({"repo": "org/repo", "check": "", "path": [], "stop": "verify_cap", "review_rounds": 2})
+        self.assertEqual(result["review_rounds"], 0)
+        for key in ("verify_failures", "proof_failures", "spec_failures"):
+            self.assertEqual(result[key], 2)
 
     def test_checkpoint_rejects_incomplete_nested_record(self):
         from foreman.delivery import read_delivery_state

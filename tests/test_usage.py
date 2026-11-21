@@ -2,10 +2,13 @@ import json
 from subprocess import CompletedProcess
 import unittest
 
+from pydantic import TypeAdapter, ValidationError
+
+from foreman.adapters import Usage
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.adapters.codex import CodexAdapter
-from foreman.stage_output import Contract, STAGE_OUTPUTS
+from foreman.stage_output import AttemptUsage, AttemptUsageRecord, STAGE_OUTPUTS
 from foreman.config import ModelSpec
 from foreman.delivery import run_tokens, run_delivery
 from foreman.dispatch import FailoverDispatcher
@@ -14,6 +17,64 @@ from tests.test_adapters import fixture_process
 
 
 class UsageTests(unittest.TestCase):
+    def test_claude_invalid_costs_keep_the_token_ledger(self):
+        adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+        recorded = fixture_process(["claude"], "success", 0)
+        for location in ("row", "total"):
+            for invalid in (-1, float("nan"), float("inf"), "NaN", None, "missing", True):
+                with self.subTest(location=location, invalid=invalid):
+                    envelope = json.loads(recorded.stdout)
+                    container = next(iter(envelope["modelUsage"].values())) if location == "row" else envelope
+                    key = "costUSD" if location == "row" else "total_cost_usd"
+                    if invalid == "missing":
+                        container.pop(key)
+                    else:
+                        container[key] = invalid
+                    outcome = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), ""))
+                    self.assertEqual(outcome.kind, "ran")
+                    usage = outcome.usage
+                    self.assertEqual((usage.input_tokens, usage.output_tokens,
+                                      usage.cache_read_input_tokens, usage.cache_creation_input_tokens),
+                                     (1481, 247, 3985, 4086))
+                    self.assertIsNone(usage.total_cost_usd)
+
+    def test_claude_costs_are_corroborated_and_counted_once_including_zero(self):
+        adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+        recorded = fixture_process(["claude"], "success", 0)
+        for delta, expected in ((0, 0.0378867), (0.0000005, 0.0378867), (0.001, None)):
+            with self.subTest(delta=delta):
+                envelope = json.loads(recorded.stdout)
+                envelope["total_cost_usd"] += delta
+                usage = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), "")).usage
+                if expected is None:
+                    self.assertIsNone(usage.total_cost_usd)
+                else:
+                    self.assertAlmostEqual(usage.total_cost_usd, expected, places=12)
+        envelope = json.loads(recorded.stdout)
+        envelope["total_cost_usd"] = 0
+        for row in envelope["modelUsage"].values():
+            row["costUSD"] = 0
+        usage = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), "")).usage
+        self.assertEqual(usage.total_cost_usd, 0.0)
+        self.assertEqual(usage.input_tokens, 1481)
+        envelope["total_cost_usd"] = 1e308
+        for row in envelope["modelUsage"].values():
+            row["costUSD"] = 1e308
+        usage = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), "")).usage
+        self.assertIsNone(usage.total_cost_usd)
+        self.assertEqual(usage.input_tokens, 1481)
+
+    def test_cost_boundaries_reject_negative_and_nonfinite_dollars(self):
+        attempt = {"input": 1, "output": 2, "cache_read": 0, "cache_creation": 0}
+        for cost in (-1, float("inf"), float("-inf"), float("nan")):
+            with self.subTest(cost=cost):
+                with self.assertRaises(ValidationError):
+                    Usage(input_tokens=1, output_tokens=2, total_cost_usd=cost)
+                with self.assertRaises(ValidationError):
+                    AttemptUsage(**attempt, cost_usd=cost)
+                with self.assertRaises(ValidationError):
+                    TypeAdapter(AttemptUsageRecord).validate_python({**attempt, "cost_usd": cost}, strict=True)
+
     def test_captured_totals_and_cost(self):
         for cli, adapter, fixture, total in (
             ("claude", ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high")), "success", 9799),

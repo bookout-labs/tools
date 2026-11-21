@@ -9,6 +9,21 @@
 # A derived fixture records the argv of its original capture.
 # Source quotes link to published evidence without a capture command.
 
+[fixtures."claude/help.txt"]
+tool = "claude"
+version = "2.1.329"
+kind = "captured_run"
+argv = ["claude", "--help"]
+claim_ids = ["claude-max-budget-usd-flag", "tool-fact-2a92f2eddc7bfdf6f61eec3f700b8512cc517afc17977276c8a0000775275e13"]
+
+[fixtures."claude/max_budget.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "quoted_source"
+sources = ["https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz"]
+claim_ids = ["tool-fact-7d1a336df8270445c34c1277e0e173d23ecdaaf1bf67e67eacd343124632d16a"]
+notes = "Fallback source quote, not a captured budget run: the installed 2.1.329 binary's result schema names error_max_budget_usd, and the budget_exhausted branch emits that subtype with is_error true. sNa formats Reached maximum budget ($${e}). The session and usage are synthetic, reused from success.json to test preservation. No exit status is claimed; test both 0 and 1."
+
 [fixtures."claude/is_error.json"]
 tool = "claude"
 version = "2.1.329"
@@ -70,6 +85,7 @@ notes = "The result formatter uses is_error, api_error_status, and api_error_typ
 tool = "claude"
 version = "2.1.329"
 kind = "captured_run"
+claim_ids = ["tool-fact-3142c20a0ada3df91b980473d80bae425e03984b9367f162c8a58597c57959f0"]
 argv = [
   "claude",
   "--model",
@@ -698,5 +714,109 @@ notes = "TypedDict requires typing_extensions below Python 3.12. Strict mode alo
 tool = "langgraph"
 version = "1.2.24"
 kind = "quoted_source"
-sources = ["https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/graph/state.py", "https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py"]
-notes = "Synchronous graph subset declared in typings/langgraph/graph. Signatures cover nodes, compile, invoke v1/v2, state/history/update (including as_node), and diagram output. Runtime graph tests exercise this pinned package."
+sources = ["https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/graph/state.py", "https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py", "https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/types.py"]
+notes = "Synchronous graph subset declared in typings/langgraph/graph. Signatures cover nodes, compile, invoke v1/v2, stream updates v2, state/history/update (including as_node), and diagram output. Runtime graph tests exercise this pinned package."
+
+[fixtures."resume-tool-facts.txt"]
+tool = "langgraph; langgraph-checkpoint-sqlite; pydantic"
+version = "1.2.24; 3.1.3; 2.14.4"
+kind = "captured_run"
+claim_ids = [
+  "tool-fact-ac43324cb20490332f3a15d81f7c90fd7397280a777297818145b58c0ee9f2ca",
+  "tool-fact-5604148226fa3446a03e3620ffb77d33d520518d9f2b2b5e82e732f1656f194b",
+  "tool-fact-f50754b1a9f13d786c260f2dfb928263b6fd2c2be95d35b5757e51b6aaf3b819",
+  "tool-fact-438f3096ba2c49be4467e9ea2b09d24b895fdf77941ea3d2b067753e4ef401be",
+  "tool-fact-3e8f1d7ad11d7b85e92cfe713108c9f12c9df8c1025757f9eb66c65ee29b4b97",
+]
+argv = ["python", "-c", '''
+import inspect
+import operator
+from importlib.metadata import version
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Annotated
+from typing_extensions import TypedDict
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.pregel import _io
+from langgraph.types import Command, UpdatesStreamPart, interrupt
+from pydantic import TypeAdapter, ValidationError
+from foreman.delivery import DeliveryUpdate
+
+for package in ("langgraph", "langgraph-checkpoint-sqlite", "pydantic"):
+    print(package, version(package))
+parameters = inspect.signature(CompiledStateGraph.stream).parameters
+required = ("input", "config", "context", "durability", "stream_mode", "version")
+assert all(name in parameters for name in required)
+print("stream accepts:", ", ".join(required))
+print("UpdatesStreamPart:", UpdatesStreamPart.__module__, UpdatesStreamPart.__name__,
+      sorted(UpdatesStreamPart.__annotations__))
+print("Update metadata source:", next(line.strip() for line in
+      inspect.getsource(_io.map_output_updates).splitlines() if '__metadata__' in line))
+
+class State(TypedDict):
+    path: Annotated[list[str], operator.add]
+
+def implement(state):
+    assert interrupt("Ready?") == "yes"
+    return {"path": ["implement"]}
+
+builder = StateGraph(State)
+builder.add_node("triage", lambda state: {"path": ["triage"]})
+builder.add_node("implement", implement)
+builder.add_edge(START, "triage")
+builder.add_edge("triage", "implement")
+builder.add_edge("implement", END)
+config = {"configurable": {"thread_id": "resume-tool-facts"}}
+with TemporaryDirectory() as directory:
+    database = str(Path(directory) / "checkpoint.sqlite")
+    with SqliteSaver.from_conn_string(database) as saver:
+        graph = builder.compile(checkpointer=saver)
+        parts = list(graph.stream({"path": []}, config, context=None, durability="sync",
+                                  stream_mode="updates", version="v2"))
+        assert parts[0] == {"type": "updates", "ns": (), "data": {"triage": {"path": ["triage"]}}}
+        print("initial update:", parts[0])
+        paused = parts[1]
+        assert paused["type"] == "updates" and paused["ns"] == ()
+        assert list(paused["data"]) == ["__interrupt__"]
+        print("interrupt part:", paused["type"], paused["ns"], list(paused["data"]),
+              paused["data"]["__interrupt__"][0].value)
+        resumed = list(graph.stream(Command(resume="yes"), config, context=None,
+                                    durability="sync", stream_mode="updates", version="v2"))
+        assert resumed == [{"type": "updates", "ns": (), "data": {"implement": {"path": ["implement"]}}}]
+        print("resumed updates:", resumed)
+    with SqliteSaver.from_conn_string(database) as reopened:
+        checkpoint = reopened.get(config)
+        assert isinstance(checkpoint, dict)
+        assert checkpoint["channel_values"]["path"] == ["triage", "implement"]
+        print("SqliteSaver.get after reopening channel_values['path']:", checkpoint["channel_values"]["path"])
+
+adapter = TypeAdapter(DeliveryUpdate)
+validated = adapter.validate_python({"path": ["triage"], "extra": "discarded"}, strict=True)
+assert validated == {"path": ["triage"]}
+print("DeliveryUpdate strict validation with extra key:", validated)
+for bad in ({"path": "triage"}, {"path": [123]}):
+    try:
+        adapter.validate_python(bad, strict=True)
+    except ValidationError as error:
+        print("DeliveryUpdate rejected:", bad, [item["type"] for item in error.errors()])
+    else:
+        raise AssertionError("Strict validation accepted a wrongly typed path")
+''']
+notes = "Synthetic graph, no workers or network. Interrupt IDs and temporary paths are omitted; printed update payloads are unchanged. Reopening SQLite distinguishes persisted reducer state from per-node updates. Rerun argv from the repository root."
+
+[fixtures."engine-check-reviewed-head.json"]
+tool = "GitHub Actions"
+version = "CI run 44875487083, attempt 1"
+kind = "quoted_source"
+sources = ["https://api.github.com/repos/bookout-labs/tools/actions/runs/44875487083/jobs", "https://github.com/bookout-labs/tools/actions/runs/44875487083/job/136759149477"]
+claim_ids = ["tool-fact-5d0a48a906349bd816d597fdf36235e2a3218550ad641948c40bed9821813f96"]
+notes = "Exact API excerpt for reviewed head 17c84143acc975fd2fae0f652bd90b6f146b7838. All three engine check steps completed successfully; this records the historical run, not a new local pass."
+
+[fixtures."spec-check.json"]
+tool = "pydantic"
+version = "2.14.4"
+kind = "captured_run"
+argv = ["python", "-c", "from foreman.stage_output import SpecCheckOutput; print(SpecCheckOutput(findings=[dict(id='f1',kind='contract',slice='Save',section='slice',summary='Keep IDs unique.',ruling_id=None)],notes=[],resolutions=[]).model_dump_json(indent=2))"]
+notes = "Synthetic spec-check contract example serialized by Pydantic. No model or external service was called. test_spec_check.py parses it through the native contract and checks rejection of supplied verdicts."

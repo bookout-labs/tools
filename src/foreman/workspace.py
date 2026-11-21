@@ -9,7 +9,7 @@ import re
 import shlex
 import subprocess
 from typing import Annotated, Literal, NewType, Protocol
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 from pydantic import BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
@@ -89,18 +89,16 @@ ReviewLine = Annotated[tuple[str, int], BeforeValidator(TypeAdapter(tuple[object
 class ReviewScopeRecord(TypedDict):
     command: str
     inline: list[ReviewLine]
-    eligible: list[ReviewLine] | None
+    eligible: NotRequired[list[ReviewLine] | None]
 
 
 @dataclass(frozen=True)
 class ReviewScope:
     command: str
     inline: frozenset[tuple[str, int]]
-    eligible: frozenset[tuple[str, int]] | None = None
 
     def record(self) -> ReviewScopeRecord:
-        return {"command": self.command, "inline": sorted(self.inline),
-                "eligible": sorted(self.eligible) if self.eligible is not None else None}
+        return {"command": self.command, "inline": sorted(self.inline)}
 
 
 def added_lines(patch: str) -> frozenset[tuple[str, int]]:
@@ -363,11 +361,7 @@ class LiveWorkspace:
         if previous is None:
             return ReviewScope(pr.command, inline)
         diff = self.review_diff(previous, head, interdiff=True)
-        try:
-            eligible = added_lines(diff.patch) & inline
-        except UnidiffParseError as exc:
-            raise WorktreeInspectionFailed("Review interdiff could not be parsed.") from exc
-        return ReviewScope(diff.command, inline, eligible)
+        return ReviewScope(diff.command, inline)
 
     def _git(self, *args: str, input_paths: bytes | None = None, timeout: float | None = None) -> bytes:
         operation = f"git {args[0]}"

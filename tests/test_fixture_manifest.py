@@ -9,10 +9,37 @@ from unittest.mock import Mock
 from pydantic import ValidationError
 from foreman.workspace import LiveWorkspace
 
-from foreman.fixture_manifest import FIXTURE_DIR, MANIFEST_PATH, FixtureManifest
+from foreman.fixture_manifest import CapturedRun, QuotedSource, FIXTURE_DIR, MANIFEST_PATH, FixtureManifest
 
 
 class FixtureManifestTest(unittest.TestCase):
+    def test_claude_budget_evidence(self):
+        root = Path(__file__).with_name("fixtures")
+        manifest = FixtureManifest.from_toml((root / "manifest.toml").read_text())
+        help_run = manifest.fixtures["claude/help.txt"]
+        self.assertIsInstance(help_run, CapturedRun)
+        self.assertEqual((help_run.tool, help_run.version, help_run.argv),
+                         ("claude", "2.1.329", ["claude", "--help"]))
+        self.assertIn("claude-max-budget-usd-flag", help_run.claim_ids)
+        self.assertIn("--max-budget-usd <amount>", (root / "claude/help.txt").read_text())
+        budget = manifest.fixtures["claude/max_budget.json"]
+        self.assertEqual((budget.tool, budget.version), ("claude", "2.1.329"))
+        if isinstance(budget, CapturedRun):
+            self.assertIsNotNone(budget.returncode)
+            self.assertIn("--max-budget-usd", budget.argv)
+        else:
+            self.assertIsInstance(budget, QuotedSource)
+            self.assertTrue(budget.sources)
+            self.assertIn("error_max_budget_usd", budget.notes)
+
+    def test_captured_returncode_is_optional_and_strict(self):
+        capture = {"kind": "captured_run", "tool": "example", "version": "1", "argv": ["example"]}
+        self.assertIsNone(CapturedRun.model_validate(capture).returncode)
+        self.assertEqual(CapturedRun.model_validate({**capture, "returncode": 1}).returncode, 1)
+        for invalid in (True, "1", 1.5):
+            with self.subTest(invalid=invalid), self.assertRaises(ValidationError):
+                CapturedRun.model_validate({**capture, "returncode": invalid})
+
     def test_manifest_matches_fixture_inventory(self):
         repo = Path(__file__).resolve().parents[1]
         root = repo / FIXTURE_DIR
@@ -126,6 +153,33 @@ class RecordedEvidenceTest(unittest.TestCase):
         (self.fixtures / "result.txt").unlink()
         state["verified_head"] = self.commit()
         self.assertEqual(_check_tool_facts(output, run, state).passed, False)
+
+    def test_committed_claude_evidence_carries_budget_claim_ids(self):
+        from foreman.fixture_manifest import recorded_evidence
+        from foreman.stage_output import StoredToolFact, ToolFact
+
+        claims = {
+            "claude/help.txt": "Claude Code 2.1.329 accepts `--max-budget-usd <amount>` (only with --print), "
+                               "so the adapter can place it before `-p` in the argv.",
+            "claude/max_budget.json": "When Claude Code 2.1.329 hits its dollar budget it emits a result envelope "
+                                      "with subtype `error_max_budget_usd`, is_error true, and an errors entry "
+                                      "`Reached maximum budget ($<amount>)`; no exit status is claimed.",
+            "claude/success.json": "A Claude JSON result's top-level total_cost_usd equals the sum of the per-model "
+                                   "modelUsage[*].costUSD values. It corroborates the ledger and is not an extra "
+                                   "charge (0.0001657 + 0.037721 = 0.0378867).",
+        }
+        expected = {
+            fixture: [StoredToolFact.from_fact(ToolFact(claim=claim, fixture=fixture)).claim_id]
+            for fixture, claim in claims.items()
+        }
+        expected["claude/help.txt"].insert(0, "claude-max-budget-usd-flag")
+        source = Path(__file__).with_name("fixtures")
+        self.manifest.write_bytes((source / "manifest.toml").read_bytes())
+        for fixture in claims:
+            destination = self.fixtures / fixture
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((source / fixture).read_bytes())
+        self.assertEqual(recorded_evidence(self.workspace, self.commit()), expected)
 
     def test_only_regular_tracked_files_are_recorded(self):
         from foreman.fixture_manifest import recorded_fixtures

@@ -23,6 +23,7 @@ class FixtureSource(Contract):
 class CapturedRun(FixtureSource):
     kind: Literal["captured_run"]
     argv: list[str] = Field(min_length=1)
+    returncode: int | None = None
     derived_from: Text | None = None
 
 
