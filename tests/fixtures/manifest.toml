@@ -583,6 +583,12 @@ kind = "quoted_source"
 sources = ["https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L823-L959"]
 notes = "Synthetic substitutions for source formatter cases; see Codex quota formatter notes above."
 
+[fixtures."review-interdiff.diff"]
+tool = "git"
+version = "git version 2.56.0"
+kind = "captured_run"
+argv = ["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", "HEAD^..HEAD", "--"]
+notes = "Synthetic repository replacing the middle line in items.txt and deleting deleted.txt. Two-dot interdiff capture."
 
 [fixtures."git/origin.txt"]
 tool = "git"
