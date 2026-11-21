@@ -791,6 +791,8 @@ class LiveRunnerTest(unittest.TestCase):
         root = self.cwd / "checkout"
         root.mkdir()
         subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=root, check=True)
+        subprocess.run(["git", "init", "-q", "--bare", str(self.cwd / "remote.git")], check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(self.cwd / "remote.git")], cwd=root, check=True)
         fixtures = (root / record_path).parent
         fixtures.mkdir(parents=True)
         (fixtures / "result.txt").write_text("debug output\n")

@@ -41,7 +41,7 @@ class WorkspaceError(RuntimeError):
 
 
 class ImplementationRejected(WorkspaceError):
-    """Recoverable implementation history or metadata mismatch; keep the checkout."""
+    """Recoverable implementation history mismatch; keep the checkout."""
 
 
 class ImplementationEdits(TypedDict):
@@ -53,6 +53,7 @@ class AdoptedImplementation(TypedDict):
     disposition: Literal["adopted"]
     head: str
     tree: str
+    fingerprint: str
 
 
 ImplementationCandidate = ImplementationEdits | AdoptedImplementation
@@ -115,8 +116,9 @@ class Workspace(Protocol):
     def create_branch(self, branch: str, base: str) -> None: ...
     def commit(self, message: str) -> None: ...
     def committed(self, parent: str, message: str) -> bool: ...
-    def reconcile(self, parent: str, branch: str, attribution: str) -> ImplementationCandidate: ...
+    def reconcile(self, parent: str, branch: str) -> ImplementationCandidate | None: ...
     def tree(self, head: str) -> str: ...
+    def soft_reset(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
     def push(self, branch: str, repo: str) -> None: ...
     def files_at(self, head: str, directory: str) -> set[str]: ...
@@ -200,30 +202,38 @@ class LiveWorkspace:
     def tree(self, head: str) -> str:
         return os.fsdecode(self._git("--no-replace-objects", "rev-parse", f"{head}^{{tree}}")).strip()
 
-    def reconcile(self, parent: str, branch: str, attribution: str) -> ImplementationCandidate:
+    def reconcile(self, parent: str, branch: str) -> ImplementationCandidate | None:
         observed = self.inspect()
+        recovery = f" Checkout preserved. Restore branch {branch} at {parent}, keep the intended edits, then rerun."
         if observed.branch != branch:
-            raise ImplementationRejected("Restore the delivery branch with an attached HEAD; checkout preserved.")
+            raise ImplementationRejected(f"HEAD {observed.head} is not attached to delivery branch {branch}." + recovery)
         if observed.head == parent:
-            return {"disposition": "edits", "fingerprint": self.fingerprint()}
+            return None if observed.clean else {"disposition": "edits", "fingerprint": self.fingerprint()}
         if not observed.clean:
-            raise ImplementationRejected("Moved HEAD has uncommitted edits; checkout preserved.")
-        try:
-            self._git("--no-replace-objects", "merge-base", "--is-ancestor", parent, observed.head)
-            commits = os.fsdecode(self._git("--no-replace-objects", "rev-list", f"{parent}..{observed.head}")).splitlines()
-            for sha in commits:
-                parents = self._git("--no-replace-objects", "show", "-s", "--format=%P", sha).split()
-                trailers = os.fsdecode(self._git("--no-replace-objects", "show", "-s", "--format=%(trailers:only,unfold)", sha)).splitlines()
-                subject = os.fsdecode(self._git("--no-replace-objects", "show", "-s", "--format=%s", sha)).strip()
-                if len(parents) != 1 or self.tree(sha) == self.tree(os.fsdecode(parents[0])):
-                    raise ImplementationRejected("Worker history must be linear and each commit nonempty; checkout preserved.")
-                if not subject or len(subject) > 72 or attribution not in trailers:
-                    raise ImplementationRejected("Worker commit needs a subject of at most 72 characters and " + attribution)
-            if not commits or self.tree(parent) == self.tree(observed.head):
-                raise ImplementationRejected("Worker history has no net tree change; checkout preserved.")
-        except WorktreeInspectionFailed as exc:
-            raise ImplementationRejected(f"Worker history is not an inspectable descendant: {exc}") from exc
-        return {"disposition": "adopted", "head": observed.head, "tree": self.tree(observed.head)}
+            raise ImplementationRejected(f"Moved HEAD {observed.head} has uncommitted edits." + recovery)
+        sha = observed.head
+        while sha != parent:
+            parents = self._git("--no-replace-objects", "show", "-s", "--format=%P", sha).split()
+            if not parents:
+                raise ImplementationRejected(f"Worker HEAD {observed.head} is a non-descendant of {parent}; chain ends at {sha}." + recovery)
+            if len(parents) != 1:
+                raise ImplementationRejected(f"Worker commit {sha} is a merge commit." + recovery)
+            ancestor = os.fsdecode(parents[0])
+            if self.tree(sha) == self.tree(ancestor):
+                raise ImplementationRejected(f"Worker commit {sha} is empty; each commit must be nonempty." + recovery)
+            sha = ancestor
+        tree = self.tree(observed.head)
+        if self.tree(parent) == tree:
+            raise ImplementationRejected(f"Worker HEAD {observed.head} has no net tree change." + recovery)
+        remote = self._git("ls-remote", "origin", f"refs/heads/{branch}").split()
+        if remote and os.fsdecode(remote[0]) != parent:
+            raise ImplementationRejected(f"Delivery branch is already published at {os.fsdecode(remote[0])}; cannot replace worker HEAD {observed.head}." + recovery)
+        diff = self._git("diff", parent, observed.head, "--binary", "--no-ext-diff", "--no-textconv")
+        return {"disposition": "adopted", "head": observed.head, "tree": tree,
+                "fingerprint": hashlib.sha256(diff).hexdigest()}
+
+    def soft_reset(self, parent: str) -> None:
+        self._git("reset", "--soft", parent)
 
     def push(self, branch: str, repo: str) -> None:
         remote = os.fsdecode(self._git("remote", "get-url", "origin")).strip()

@@ -151,7 +151,6 @@ class DeliveryFields(TypedDict, total=False):
     delivery_branch: str
     delivery_base: str
     attempt_head: str
-    implementation_edits: str
     implementation_candidate: ImplementationCandidate | None
     partial_edits: str
     commands: Annotated[list[list[str]], operator.add]
@@ -449,8 +448,6 @@ def compile_delivery(
             except ConfigError as exc:
                 return halted("no_reviewer", str(exc), name)
             instruction = prompts[name]
-            if name == "implement":
-                instruction += "\nForeman owns commits and publishing. Write edits and evidence files; do not commit or publish."
             if isinstance(run, LiveRun) and methods_root is None:
                 raise RuntimeError("Delivery execution requires a compiled skill export.")
             methods_text, methods = stage_methods(name, state, methods_root) if methods_root is not None else ("", [])
@@ -648,9 +645,7 @@ def compile_delivery(
                                              outcome="quota", usage=None).record()]}
             if update.get("pending_dispatch"):
                 return update
-            fingerprint = run.workspace.fingerprint()
-            return {**update, "implementation_edits": fingerprint,
-                    "partial_edits": fingerprint if update.get("halt") == "quota_exhausted" else ""}
+            return {**update, "partial_edits": run.workspace.fingerprint() if update.get("halt") == "quota_exhausted" else ""}
         except WorkspaceError as exc:
             return {**update, **halted("git_failed", str(exc), "implement")}
 
@@ -658,13 +653,9 @@ def compile_delivery(
         if isinstance(run, DryRun):
             return {}
         assert "attempt_head" in state and "delivery_branch" in state
-        model = state.get("models_used", {}).get("implement")
-        if not model:
-            return halted("no_reviewer", "Reconciliation needs the implement model.", "reconcile")
         try:
-            candidate = run.workspace.reconcile(state["attempt_head"], state["delivery_branch"],
-                f"Co-Authored-By: {redact(model)} <{COAUTHOR_EMAILS[family(model)]}>")
-            if candidate["disposition"] == "edits" and run.workspace.inspect().clean:
+            candidate = run.workspace.reconcile(state["attempt_head"], state["delivery_branch"])
+            if candidate is None:
                 identifiers = [str(f.get("id")) for f in state.get("findings", [])]
                 if (gate := history({"rounds": state.get("review_findings", [])}).gate) and not gate.passed:
                     identifiers.insert(0, "tool-facts")
@@ -686,23 +677,28 @@ def compile_delivery(
         message = f"{subject}\n\nCo-Authored-By: {redact(model)} <{COAUTHOR_EMAILS[family(model)]}>"
         if isinstance(run, DryRun):
             return {"commands": commit_commands(message)}
-        assert "delivery_branch" in state and "attempt_head" in state and "implementation_edits" in state
+        assert "delivery_branch" in state and "attempt_head" in state
         try:
             observed = run.workspace.inspect()
             if observed.branch != state["delivery_branch"]:
                 raise WorkspaceError("Restore the delivery branch before committing.")
             candidate = state.get("implementation_candidate")
-            if candidate and candidate["disposition"] == "adopted":
-                if not observed.clean or observed.head != candidate["head"] or run.workspace.tree(observed.head) != candidate["tree"]:
-                    raise WorkspaceError("HEAD or tree differs from the reconciled worker commit.")
-            elif observed.head != state["attempt_head"]:
+            assert candidate is not None
+            if candidate["disposition"] == "adopted" and observed.head == candidate["head"]:
+                if not observed.clean:
+                    raise WorkspaceError("HEAD differs from the reconciled worker commit.")
+                run.workspace.soft_reset(state["attempt_head"])
+                observed = run.workspace.inspect()
+            if observed.head != state["attempt_head"]:
                 if not observed.clean or not run.workspace.committed(state["attempt_head"], message):
                     raise WorkspaceError("HEAD differs from the expected implementation commit.")
+                if candidate["disposition"] == "adopted" and run.workspace.tree(observed.head) != candidate["tree"]:
+                    raise WorkspaceError("Commit differs from the reconciled worker tree.")
             else:
                 if observed.clean:
                     raise WorkspaceError("The checkpointed implementation edits are missing.")
-                if run.workspace.fingerprint() != state["implementation_edits"]:
-                    raise WorkspaceError("Implementation edits changed after the worker checkpoint.")
+                if run.workspace.fingerprint() != candidate["fingerprint"]:
+                    raise WorkspaceError("Implementation edits changed after reconciliation.")
                 run.workspace.commit(message)
                 observed = run.workspace.inspect()
                 if not observed.clean:
