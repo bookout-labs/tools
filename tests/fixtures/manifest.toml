@@ -916,6 +916,95 @@ kind = "captured_run"
 argv = ["gh", "api", "repos/bookout-labs/tools/pulls/97"]
 notes = "API excerpts captured 2026-11-21. Contract source: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request (pull_request GITHUB_SHA identifies the synthetic merge). The JSON records all exact queried URLs. PR base.sha can differ from the current base tip; the synthetic merge parents are validated against branches/{base}.commit.sha. A head-attached check run and its check_suite id identify source-head evidence, not the synthetic tested commit. Capture uses additional gh api GETs for the branch, merge commit and source check runs named in sources in the JSON."
 
+[fixtures."git/grep-lines.z"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+returncode = 0
+claim_ids = ["tool-fact-416aca2b5c431d219d6f7d2c411efca75f9d0cad87cf19bf73c1e85b47be7581", "tool-fact-9b32cb6284cc3690a5cde64203421d5cc230e6a29ceba9ee69297ed040fb621c"]
+notes = "Raw stdout: revision:path NUL count LF records, including a path with spaces and a colon. items.txt has a final line without a newline (count 3). Binary and empty files are omitted. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/grep-no-text.z"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+returncode = 1
+claim_ids = ["tool-fact-eef0eb712a1a44e916168a9537ce67cfb3d7698c15f7b6257e8f3f5bbf4a246e"]
+notes = "Raw stdout is empty. The committed tree contains only an empty file and a NUL-containing binary file. Exit 1 means no matching text lines, not a Git error. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/grep-basic-regexp.json"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "-c", "grep.patternType=fixed", "-c", "grep.extendedRegexp=true", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+returncode = 0
+claim_ids = ["tool-fact-252363c0742309ea3cf1d14f902c2427be74d71c9da813e24017cf797eb5a9f4"]
+notes = "Captured argv, exit statuses, stdout and stderr: fixed patterns without -G match nothing; -G restores exact counts despite grep.patternType=fixed and grep.extendedRegexp=true. An extendedRegexp-only probe gives the same counts; escaped-group probes distinguish basic from extended syntax and confirm -G overrides extendedRegexp. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/grep-attribute-source.json"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null", "--attr-source=HEAD", "grep", "-G", "--no-color", "-c", "-I", "-z", "--no-textconv", "-e", "^", "HEAD", "--"]
+returncode = 0
+claim_ids = ["tool-fact-7eabb45fa52b6b4baab29981370d2c119a0b91f2bc44ac54fde8c0f449f1342d"]
+notes = "Captured inputs, argv, exit statuses, stdout and stderr. Local worktree/index .gitattributes and a user attributes file hide three text paths. --attr-source=HEAD restores the first two; core.attributesFile=/dev/null restores the third. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/name-status-rename.z"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "diff", "--name-status", "-z", "--find-renames", "--no-ext-diff", "--no-textconv", "--no-relative", "HEAD^", "HEAD", "--"]
+returncode = 0
+claim_ids = ["tool-fact-3f776955d5f300759da92b2c60b9710c261d2a0412eb6e98abcd75462b07af1d"]
+notes = "Raw stdout: R100 NUL old name.txt NUL new : name.txt NUL. A rename uses separate status, old-path and new-path fields. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/name-status-types.md"]
+tool = "git"
+version = "2.56.0"
+kind = "quoted_source"
+sources = ["https://github.com/git/git/blob/v2.56.0/Documentation/diff-format.adoc", "https://github.com/git/git/blob/v2.56.0/Documentation/diff-options.adoc", "https://github.com/git/git/blob/v2.56.0/diff.c", "https://github.com/git/git/blob/v2.56.0/tree-diff.c"]
+claim_ids = ["tool-fact-2ead4967f10238c5e4985fe3bdea19202632e5248e06c8323169c3d4f3fd504a"]
+notes = "Versioned documentation and source excerpts with the inference for valid two-commit comparisons. U is an index conflict state; X is suppressed before name-status output."
+
+[fixtures."git/grep-fatal.stderr.txt"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "-c", "grep.patternType=invalid", "grep", "-c", "-I", "-e", "^", "HEAD", "--"]
+returncode = 128
+claim_ids = ["tool-fact-ed56f581f35b98abb08378cc9d638a57c19058aac7ffb7a7e52357447dbe7102"]
+notes = "Raw stderr; stdout is empty. Invalid pattern configuration is a fatal error, distinct from a no-match exit 1. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/fetch-by-sha.json"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "fetch", "origin", "21316f64d74e61197f814606dff72d9d9d493823", "e537eb10fa7f8f3be0e522e4d58f94f6b2e55bc8"]
+returncode = 0
+claim_ids = ["tool-fact-4fffcb45b5d4ba67e4d4916f963692a121e3199e1b0438c1d19027cc35902d04"]
+notes = "Captured argv, return codes, stdout and stderr from an empty receiver with a synthetic file-protocol origin. cat-file probes show both objects absent before fetch and present as commits afterward. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/merge-base.txt"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "merge-base", "21316f64d74e61197f814606dff72d9d9d493823", "e537eb10fa7f8f3be0e522e4d58f94f6b2e55bc8"]
+returncode = 0
+claim_ids = ["tool-fact-edaf4958ff6ea7e0d1ce95ef5cf04b3d608101cc20114b6db9f63a243ada5e40"]
+notes = "Raw stdout is the full 40-hex merge-base SHA followed by LF. Recapture with python tests/capture-review-context.py."
+
+[fixtures."git/ls-tree.z"]
+tool = "git"
+version = "2.56.0"
+kind = "captured_run"
+argv = ["git", "--no-replace-objects", "ls-tree", "-rz", "--name-only", "--full-tree", "21316f64d74e61197f814606dff72d9d9d493823", "--"]
+returncode = 0
+claim_ids = ["tool-fact-6e5c4b4a5e76755f905f8862485478c327eb158fd64bcb3a1033af4224941181"]
+notes = "Raw NUL-terminated stdout lists all six blob paths, including nested, binary, empty and space/colon paths. Recapture with python tests/capture-review-context.py."
+
 [fixtures."github/merge-queue-help.txt"]
 tool = "gh"
 version = "gh version 2.102.0 (2026-09-30)"

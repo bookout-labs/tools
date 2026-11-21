@@ -260,6 +260,21 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(self.forge.merge_calls, [])
         self.assertIn("done verified", self.invoke("--answer", "override")[0])
 
+    def test_hardened_grep_uses_base_attributes_and_basic_patterns(self):
+        self.write("src/items.py", "first\nlast")
+        self.write(".gitattributes", "src/items.py -diff\n")
+        head = self.commit()
+        self.git("config", "grep.patternType", "fixed")
+        self.git("config", "grep.extendedRegexp", "true")
+        self.git("config", "color.grep", "always")
+        self.write("../local-attributes", "src/items.py -diff\n")
+        self.git("config", "core.attributesFile", str(self.root.parent / "local-attributes"))
+        raw = LiveWorkspace(self.root)._inspection_git(
+            self.base, "grep", "-c", "-I", "-z", "--no-textconv", "-e", "^", head,
+            "--", "src/items.py", allowed_returncodes=(0, 1),
+        )
+        self.assertEqual(raw, head.encode() + b":src/items.py\x002\n")
+
     def test_branch_attributes_cannot_exempt_its_own_diff(self):
         self.write(".gitattributes", "src/** linguist-generated -diff\n")
         self.write("src/items.py", "changed\n" * PULL_REQUEST_LINES)

@@ -17,7 +17,6 @@ from unidiff.patch import PatchSet
 from foreman.redaction import redact
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
-ATTRIBUTE_CONFIG = ("-c", "core.attributesFile=/dev/null")
 HUNK = re.compile(rb"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", re.MULTILINE)
 CommitSHA = NewType("CommitSHA", str)
 CheckLog = Callable[[str], None]
@@ -286,17 +285,6 @@ class LiveWorkspace:
         except UnicodeError as exc:
             raise WorktreeInspectionFailed(f"Could not decode {path}: {exc}") from exc
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
-        attributes = Path(os.fsdecode(self._git(
-            "rev-parse", "--path-format=absolute", "--git-path", "info/attributes",
-        )).removesuffix("\n"))
-        try:
-            if attributes.stat().st_size:
-                raise WorktreeInspectionFailed(f"{attributes} must be empty to measure a pull request.")
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise WorktreeInspectionFailed(f"Could not inspect {attributes}: {exc}") from exc
-
         base_ref = f"refs/remotes/origin/{base_branch}"
         self._git(
             "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
@@ -304,11 +292,11 @@ class LiveWorkspace:
         )
         merge_base = os.fsdecode(self._git("merge-base", base_ref, head)).strip()
         diff_options = (
-            *ATTRIBUTE_CONFIG, f"--attr-source={merge_base}", "diff", "--find-renames", "--text",
+            "--find-renames", "--text",
             "--no-ext-diff", "--no-textconv",
         )
-        raw = self._git(
-            *diff_options, "--numstat", "-z", merge_base, head, "--", "src/", "tests/",
+        raw = self._inspection_git(
+            merge_base, "diff", *diff_options, "--numstat", "-z", merge_base, head, "--", "src/", "tests/",
         )
         if not raw:
             return {"head": head, "merge_base": merge_base, "lines": 0}
@@ -320,8 +308,8 @@ class LiveWorkspace:
             before, after = (path, path) if path else (next(records), next(records))
             entries.append((before, after, removed, added))
             paths.update((before, after))
-        attrs = self._git(
-            *ATTRIBUTE_CONFIG, "check-attr", f"--source={merge_base}", "--stdin", "-z", "linguist-generated",
+        attrs = self._inspection_git(
+            merge_base, "check-attr", "--stdin", "-z", "linguist-generated",
             input_paths=b"\0".join(paths) + b"\0",
         )
         fields = attrs.removesuffix(b"\0").split(b"\0")
@@ -336,8 +324,8 @@ class LiveWorkspace:
                 continue
             if added == b"-":
                 # Numstat can report binary even when Git emits a text patch.
-                patch = self._git(
-                    "--literal-pathspecs", *diff_options, "--patch", "--unified=0", "--inter-hunk-context=0",
+                patch = self._inspection_git(
+                    merge_base, "diff", *diff_options, "--patch", "--unified=0", "--inter-hunk-context=0",
                     "--no-color", merge_base, head, "--", os.fsdecode(before), os.fsdecode(after),
                 )
                 hunks = HUNK.findall(patch)
@@ -374,7 +362,27 @@ class LiveWorkspace:
         diff = self.review_diff(previous, head, interdiff=True)
         return ReviewScope(diff.command, inline)
 
-    def _git(self, *args: str, input_paths: bytes | None = None, timeout: float | None = None) -> bytes:
+    def _inspection_git(self, attribute_source: str, command: str, *args: str, input_paths: bytes | None = None,
+                        allowed_returncodes: tuple[int, ...] = (0,)) -> bytes:
+        attributes = Path(os.fsdecode(self._git(
+            "rev-parse", "--path-format=absolute", "--git-path", "info/attributes",
+        )).removesuffix("\n"))
+        try:
+            if attributes.stat().st_size:
+                raise WorktreeInspectionFailed(f"{attributes} must be empty to inspect a pull request.")
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise WorktreeInspectionFailed(f"Could not inspect {attributes}: {exc}") from exc
+        pattern_options = ("-G", "--no-color") if command == "grep" else ()
+        return self._git(
+            "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null",
+            f"--attr-source={attribute_source}", command, *pattern_options, *args, input_paths=input_paths,
+            allowed_returncodes=allowed_returncodes,
+        )
+
+    def _git(self, *args: str, input_paths: bytes | None = None, timeout: float | None = None,
+             allowed_returncodes: tuple[int, ...] = (0,)) -> bytes:
         operation = f"git {args[0]}"
         if timeout is None:
             timeout = 30 if args[0] in {"fetch", "push", "ls-remote", "commit"} else 10
@@ -388,7 +396,7 @@ class LiveWorkspace:
             raise WorktreeInspectionFailed(f"{operation} timed out after {timeout} seconds; rerun to resume.") from exc
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
             raise WorktreeInspectionFailed(f"{operation} failed ({exc}).") from exc
-        if result.returncode:
+        if result.returncode not in allowed_returncodes:
             raise WorktreeInspectionFailed(
                 os.fsdecode(result.stderr).strip() or f"{operation} exited with code {result.returncode}.",
             )
