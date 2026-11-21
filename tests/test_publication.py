@@ -58,7 +58,6 @@ class PublicationTest(unittest.TestCase):
         self.created = []
         self.published_heads = []
         self.create_error = False
-        self.queued = False
         self.fixture.enter_context(patch("foreman.github.subprocess.run", side_effect=self.subprocess))
 
     def git(self, *args):
@@ -97,11 +96,6 @@ class PublicationTest(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 1, "", f'no pull requests found for branch "{self.branch}"')
                 response = {"number": 12, "state": "OPEN", "headRefOid": self.remote_head(), "headRefName": self.branch,
                             "baseRefName": self.base, "baseRefOid": self.git("rev-parse", self.base), "autoMergeRequest": None}
-            case ["api", "graphql"]:
-                response = dict(number=12, state="OPEN", headRefOid=self.remote_head(),
-                    baseRefName=self.base, baseRefOid=self.git("rev-parse", self.base),
-                    isDraft=False, autoMergeRequest=None,
-                    mergeQueueEntry=dict(id="queue-12", state="QUEUED", headCommit=dict(oid=self.remote_head())) if self.queued else None)
             case ["api", "repos/Example/Engine/pulls/12/reviews"]:
                 response = ({"id": 1, "state": "COMMENTED", "commit_id": self.remote_head(), "body": "posted"}
                             if "POST" in command else [[]])
@@ -110,8 +104,7 @@ class PublicationTest(unittest.TestCase):
                     merge_commit_sha=None, head=dict(sha=self.remote_head(), ref=self.branch),
                     base=dict(sha=self.git("rev-parse", self.base), ref=self.base))
             case ["api", url] if "/rules/branches/" in url:
-                response = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test", integration_id=15368)])),
-                            dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))]
+                response = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test", integration_id=15368)]))]
             case ["api", url] if "/branches/" in url:
                 response = dict(protection=dict(required_status_checks=dict(checks=[], contexts=[])))
             case ["api", url] if "/check-runs" in url:
@@ -120,7 +113,6 @@ class PublicationTest(unittest.TestCase):
             case ["api", url] if "/statuses" in url:
                 response = [[]]
             case ["pr", "merge"]:
-                self.queued = True
                 self.assertEqual(command[-2:], ["--match-head-commit", self.remote_head()])
                 return subprocess.CompletedProcess(command, 0, "", "")
             case _:
@@ -406,7 +398,6 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(failed.get("stop"), "publish_failed")
         self.assertEqual(failed.get("head_sha"), self.remote_head())
         self.create_error = False
-        self.queued = False
         result = self.walk(lambda: self.fail("The committed change should be reused"))
         self.assertEqual(result.get("merge"), "armed")
         self.assertEqual(self.created, [failed.get("head_sha")])

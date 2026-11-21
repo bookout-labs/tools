@@ -182,9 +182,6 @@ class FakeGitHub:
 
     def arm_auto_merge(self, repo, issue, branch, sha):
         self.merge_calls.append((repo, issue, branch, sha))
-        from foreman.readiness import MergeReceipt
-        return MergeReceipt(repo=repo, pr=12, source_head=sha, base=self.base,
-                            method="SQUASH", queue_policy={"merge_method": "SQUASH"}, identity="queue-test", status="QUEUED")
 
     def load_issue(self, repo, number) -> Issue:
         if number in self.issue_labels:
@@ -484,24 +481,6 @@ class LiveRunnerTest(unittest.TestCase):
             self.assertEqual(resumed["stop"], "verified")
             self.assertEqual(len(self.calls), count)
             self.assertEqual(resumed["review_receipt"], result["review_receipt"])
-
-    def test_queue_receipt_is_persisted_and_completion_does_not_reobserve(self):
-        result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-        receipt = json.loads(result["merge_receipt"])
-        self.assertEqual((receipt["source_head"], receipt["identity"]), (HEAD, "queue-test"))
-        with patch.object(self.github, "readiness", side_effect=AssertionError("completed run reobserved")):
-            resumed = self.walk([])
-        self.assertEqual(resumed["merge_receipt"], result["merge_receipt"])
-
-    def test_queue_rejection_on_resume_halts_without_repeating_review(self):
-        with patch.object(self.github, "arm_auto_merge", side_effect=MergeNotArmed("Queue rejected")):
-            result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-            count = len(self.calls)
-            resumed = self.walk([])
-        self.assertEqual(resumed["stop"], "merge_not_armed")
-        self.assertEqual(run_exit_code(resumed), 75)
-        self.assertEqual(len(self.calls), count)
-        self.assertEqual(resumed["review_receipt"], result["review_receipt"])
 
     def test_readiness_is_reconciled_after_arming(self):
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
@@ -1501,7 +1480,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(held["merge"], "not_armed")
         self.assertEqual(held["halt_detail"], f"could not read FOREMAN_MERGE_HOLD: {reason}")
         self.assertEqual(held["merge_command"], [
-            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--auto", "--match-head-commit", HEAD,
+            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--squash", "--auto", "--match-head-commit", HEAD,
         ])
         self.assertEqual(self.github.merge_calls, [])
         released = self.walk([])
@@ -1678,7 +1657,7 @@ class LiveRunnerTest(unittest.TestCase):
                         worker_runner=worker, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(code, 0)
         self.assertIn(
-            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --match-head-commit '<sha>'\n"
+            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --squash --auto --match-head-commit '<sha>'\n"
             "tokens 8 of 20000000\ndone verified",
             stdout.getvalue(),
         )
@@ -1774,7 +1753,7 @@ class Forge(FakeGitHub):
     def arm_auto_merge(self, *args):
         with Path("merges.log").open("a") as log:
             log.write("merge\\n")
-        return super().arm_auto_merge(*args)
+        super().arm_auto_merge(*args)
 
 workspace = FakeWorkspace(Path.cwd())
 pin = PstackPin.model_validate_json(sys.argv[2])
@@ -1911,7 +1890,7 @@ class Workspace(FakeWorkspace):
 class Forge(FakeGitHub):
     def arm_auto_merge(self, *args):
         record("merge")
-        return super().arm_auto_merge(*args)
+        super().arm_auto_merge(*args)
 
     def post_review(self, *args, marker):
         record("post_review")
