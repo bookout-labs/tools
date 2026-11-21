@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Command, Overwrite, StateSnapshot
+from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
@@ -163,7 +163,7 @@ def run_live_delivery(
         try:
             graph = compile_delivery(
                 dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver,
-                scratch=None if channels.get("stop") not in (None, "", "blocked") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
+                scratch=None if channels.get("stop") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
             )
         except SkillMissing as exc:
             graph = compile_delivery(dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver)
@@ -239,9 +239,7 @@ def run_live_delivery(
                 except ValueError as exc:
                     raise AnswerError("Answer split or override at the pull request size prompt.") from exc
             invoke(Command(resume=answer), saved_values)
-        elif saved_values is None or saved_values.get("stop") == "blocked":
-            if saved_values is not None:
-                graph.update_state(config, {"path": Overwrite([]), "stop": "", "halt_detail": ""}, as_node="done")
+        elif saved_values is None:
             loaded = client.load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
