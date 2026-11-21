@@ -1,3 +1,6 @@
+from dataclasses import replace
+from unittest.mock import patch
+from skill_fixture import fixture_pin
 import contextlib
 import io
 import json
@@ -17,7 +20,13 @@ from test_runner import APPROVE, BRANCH, EMPTY_SLICE, FakeGitHub, worker_reply
 
 
 class PullRequestSizeTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(cls.enterClassContext(TemporaryDirectory()))
+        cls.config = replace(load_config(), pstack=fixture_pin(root / "fixture"))
+
     def setUp(self):
+        self.enterContext(patch("foreman.runner.load_config", return_value=self.config))
         directory = Path(self.enterContext(TemporaryDirectory()))
         self.root = directory / "checkout"
         self.root.mkdir()
@@ -81,8 +90,9 @@ class PullRequestSizeTest(unittest.TestCase):
     def invoke(self, *flags, expected_code=0):
         if not self.checkpoint.exists():
             with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-                graph = compile_delivery(None, load_config(), run=LiveRun(self.forge, LiveWorkspace(self.root)), checkpointer=saver)
+                graph = compile_delivery(None, self.config, run=LiveRun(self.forge, LiveWorkspace(self.root)), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
+                    "pstack_pin": self.config.pstack.model_dump(),
                     "repo": "Example/Engine", "issue": 8, "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
                     **({"spec": self.original_spec} if self.original_spec else {}),
                     "workspace": str(self.root.resolve()), "check": "exit 0", "head_sha": self.git("rev-parse", "HEAD"),

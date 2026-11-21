@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 from foreman.adapters import Outcome
 from foreman.config import ModelSpec
+from foreman.stage_output import WorkKind
 
 DEFAULT_RISK = {
     "alignment": "The change matches the request.",
@@ -30,8 +31,10 @@ class ScriptHandler:
         research: str = "answer",
         risk: dict | None = None,
         slice: dict | None = None,
+        work_kind: WorkKind = "feature",
     ):
         self.triage = triage
+        self.work_kind = work_kind
         self.spec_gate = spec_gate
         self.reviews = list(reviews if reviews is not None else ["approve"])
         self.verify = verify
@@ -44,6 +47,7 @@ class ScriptHandler:
             "uses": [],
             "screen": "",
             "properties": [],
+            "stateful": False,
         }
         self.implementation = implementation
         self.research = research
@@ -54,7 +58,7 @@ class ScriptHandler:
         self.calls.append({"node": node, "model": model.name if model else None, "instruction": instruction})
         if node == "triage":
             return Outcome("ran", {
-                "triage": self.triage, "human_question": None,
+                "triage": self.triage, "work_kind": self.work_kind, "human_question": None,
                 "slice": self.slice if self.triage == "implement" and state["issue_kind"] == "parent" else None,
             })
         if node == "spec":

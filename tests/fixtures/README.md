@@ -247,7 +247,7 @@ Recovery uses `git for-each-ref --format=%(refname) refs/heads/<branch>` to find
 
 The publication integration fixture substitutes only the recorded `remote get-url` identity and gh responses. Push and ls-remote still execute against its local bare origin. The auth repro uses a local HTTP 401 server under a pseudo-terminal; no GitHub graph write runs in verification.
 
-`git remote get-url --push --all origin` also validates every configured push URL, so a separate push URL cannot redirect publication to another repository. Git 2.56.0 documents that `--push` queries push URLs and `--all` returns every URL. [Versioned remote documentation](https://github.com/git/git/blob/v2.56.0/Documentation/git-remote.adoc). `test_wrong_push_remote_is_rejected_before_network` covers a mismatched push URL.
+`git remote get-url --push --all origin` also validates every configured push URL, so a separate push URL cannot redirect publication to another repository. Git 2.56.0 documents that `--push` queries push URLs and `--all` returns every URL. [Versioned remote documentation](https://github.com/git/git/blob/v2.56.0/Documentation/git-remote.adoc). The wrong push URL row in `test_publication_failures` covers a mismatched push URL.
 ### LangGraph typed invocation
 
 LangGraph 1.2.24 exposes typed graph output through `invoke(..., version="v2").value`. The pinned package's [Pregel.invoke overloads](https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py) return `GraphOutput[OutputT]` for version v2 and an untyped dictionary for v1. `run_delivery` uses the graph's output schema through that API. Existing delivery tests and the README dry run exercise the real installed package.

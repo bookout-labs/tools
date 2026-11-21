@@ -1,4 +1,5 @@
 from contextlib import ExitStack
+from dataclasses import replace
 import json
 from pathlib import Path
 import subprocess
@@ -7,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from foreman.adapters import Outcome
+from foreman.config import load_config
 from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.delivery import LiveRun
@@ -14,6 +16,7 @@ from foreman.redaction import redact
 from foreman.github import LiveForge
 from foreman.runner import run_live_delivery
 from foreman.workspace import LiveWorkspace
+from skill_fixture import fixture_pin
 from test_runner import BRANCH, EMPTY_SLICE, slice_body
 
 REPO = "Example/Engine"
@@ -21,12 +24,18 @@ REF = f"refs/heads/{BRANCH}"
 run_subprocess = subprocess.run
 
 class PublicationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(cls.enterClassContext(TemporaryDirectory()))
+        cls.pin = fixture_pin(root / "fixture")
+
     def setUp(self):
         self.fixture = self.enterContext(ExitStack())
         self.reset_fixture()
 
     def reset_fixture(self):
         self.fixture.close()
+        self.fixture.enter_context(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin)))
         self.base = "main"
         self.branch = BRANCH
         self.ref = REF
@@ -109,7 +118,9 @@ class PublicationTest(unittest.TestCase):
                 self.assertEqual(workspace.inspect().branch, self.branch)
                 if family and model.family != family:
                     return Outcome("cli_missing")
-                (edit or self.edit)()
+                outcome = (edit or self.edit)()
+                if isinstance(outcome, Outcome):
+                    return outcome
             if node == "review":
                 self.published_heads.append(self.remote_head())
             return script(node, model, state, instruction)
@@ -229,14 +240,19 @@ class PublicationTest(unittest.TestCase):
 
     def test_quota_stop_continues_owned_partial_edits(self):
         from foreman.dispatch import QuotaExhausted
-        def stop():
-            (self.checkout / "items.txt").write_text("partial\n")
-            raise QuotaExhausted("synthetic-model")
-        self.assertEqual(self.walk(stop).get("stop"), "implement_quota")
-        def finish():
-            self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
-            (self.checkout / "items.txt").write_text("finished\n")
-        self.assertEqual(self.walk(finish).get("stop"), "verified")
+        for kind, stop_reason in (("exception", "implement_quota"), ("outcome", "quota_exhausted")):
+            with self.subTest(kind=kind):
+                self.reset_fixture()
+                def stop():
+                    (self.checkout / "items.txt").write_text("partial\n")
+                    if kind == "exception":
+                        raise QuotaExhausted("synthetic-model")
+                    return Outcome("quota")
+                self.assertEqual(self.walk(stop).get("stop"), stop_reason)
+                def finish():
+                    self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
+                    (self.checkout / "items.txt").write_text("finished\n")
+                self.assertEqual(self.walk(finish).get("stop"), "verified")
 
     def test_foreign_edits_after_quota_stop_are_rejected(self):
         from foreman.dispatch import QuotaExhausted
