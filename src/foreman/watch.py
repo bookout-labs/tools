@@ -31,6 +31,7 @@ WATCH: dict[HaltReason, Watch | None] = {
     "no_dispatcher": Watch("A live run always has a dispatcher", "The live run had no dispatcher.", "src/foreman/cli.py"),
     "skill_missing": Watch("Pinned skills are available before dispatch", "A required skill was unavailable at the pinned commit.", "src/foreman/skill_rules.py"),
     "no_reviewer": None,
+    "reviewer_unavailable": None,
     "cli_missing": None,
     "merge_held": None,
     "merge_not_armed": None,

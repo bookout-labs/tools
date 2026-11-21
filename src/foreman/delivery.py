@@ -47,7 +47,7 @@ REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 MergeHalt = Literal["merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red", "readiness_unavailable", "queue_rejected"]
-ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implementation_rejected", "implement_quota", "quota_exhausted", "review_not_posted"]
+ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implementation_rejected", "implement_quota", "quota_exhausted", "review_not_posted", "reviewer_unavailable"]
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
@@ -585,22 +585,30 @@ def compile_delivery(
             if run_tokens(attempt_history) >= state["token_cap"]:
                 return {**stopped, **budget_halt(state, attempt_history, name)}
             index = pending["index"] + 1
+            unavailable = ""
+            if name == "review" and outcome.kind in {"quota", "cli_missing"}:
+                prior = state.get("halt_detail", "") + "; " if pending["index"] else ""
+                unavailable = f"{prior}review {model}: {outcome.kind}. {outcome.detail}".strip()
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):
-                return {"attempts": attempts, "pending_dispatch": PendingDispatch(
+                retry: DeliveryUpdate = {"attempts": attempts, "pending_dispatch": PendingDispatch(
                     stage=name, index=index,
                     quota_model=model if outcome.kind == "quota" else pending["quota_model"],
                 ).record()}
+                if unavailable:
+                    retry["halt_detail"] = unavailable
+                return retry
+            if unavailable:
+                return {**stopped, **halted("reviewer_unavailable", unavailable, name)}
             if outcome.kind == "cli_missing" and pending["quota_model"]:
                 outcome, model = Outcome("quota"), pending["quota_model"]
             if outcome.kind == "failed":
-                return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
+                return {**stopped, **halted("invalid_output", f"{name} {model}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
                 return {**stopped, **halted("cli_missing", outcome.detail, name)}
             if outcome.kind == "quota":
-                if name != "review" and isinstance(run, DryRun):
+                if isinstance(run, DryRun):
                     raise QuotaExhausted(model)
-                reason: HaltReason = "no_reviewer" if isinstance(run, DryRun) else "quota_exhausted"
-                return {**stopped, **halted(reason, f"{name} quota exhausted: {model}", name)}
+                return {**stopped, **halted("quota_exhausted", f"{name} quota exhausted: {model}", name)}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
                 accepted: AcceptedReview | None = None
@@ -617,6 +625,8 @@ def compile_delivery(
                                   findings=[f.record() for f in accepted.findings],
                                   review_change_kind=accepted.change_kind,
                                   review_receipt=None)
+                    if "halt_detail" in state:
+                        update["halt_detail"] = ""
                     if accepted.rethink:
                         update.update(halt="design_rethink", halt_detail=accepted.rethink, human_question=accepted.rethink)
             except InvalidSlicePlan as exc:
@@ -626,7 +636,7 @@ def compile_delivery(
                     rejected.update(halted("spec_cap", str(exc), name))
                 return rejected
             except InvalidOutput as exc:
-                return {**stopped, **halted("invalid_output", str(exc), name)}
+                return {**stopped, **halted("invalid_output", f"{name} {model}: {exc}" if name == "review" else str(exc), name)}
 
             return update
 
