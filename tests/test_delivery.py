@@ -82,7 +82,7 @@ class DeliveryTest(unittest.TestCase):
             ["triage", "implement", "publish", "verify", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
-        self.assertEqual(result["risk"]["level"], "low")
+        self.assertEqual(result["review"].risk["level"], "low")
         self.assertEqual(result["merge"].status, "skipped")
         self.assertEqual(result["work"].head_sha, result["checks"].verified_head)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
@@ -228,7 +228,7 @@ class DeliveryTest(unittest.TestCase):
                 handler = ScriptHandler(reviews=["changes", "approve"])
 
                 def switch_builder(node, model, state, instruction):
-                    if node == "implement" and state.get("review") == "changes" and model and model.family == "gpt":
+                    if node == "implement" and state["review"].review == "changes" and model and model.family == "gpt":
                         return Outcome("quota")
                     return handler(node, model, state, instruction)
 

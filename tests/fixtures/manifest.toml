@@ -1320,3 +1320,10 @@ tool = "Foreman checkpoint channels"
 version = "schema 5"
 sources = ["https://github.com/bookout-labs/tools/blob/312f02a7a9cb0feb41e44a4cee174ae35cfdece2/src/foreman/state.py"]
 notes = "Synthetic owner values in the historical stored channel layout; grouped owners are reconstructed as their persisted model types before SQLite serialization."
+
+[fixtures."state/versions/6.json"]
+kind = "quoted_source"
+tool = "Foreman checkpoint channels"
+version = "schema 6"
+sources = ["https://github.com/bookout-labs/tools/blob/3f8cd93a/src/foreman/state.py"]
+notes = "Synthetic owner values in the historical stored channel layout; grouped owners are reconstructed as their persisted model types before SQLite serialization."

@@ -1,5 +1,5 @@
 import tests
-from foreman.state import PlanState, ChecksState, RunState, SCHEMA_VERSION
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION
 from foreman.dry_run import DEFAULT_RISK
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 import unittest
@@ -113,7 +113,7 @@ class StageRecordTests(unittest.TestCase):
 
     def test_current_checkpoint_restores_slice_defaults(self):
         from foreman.runner import checkpoint_state
-        state = checkpoint_state({"schema_version": SCHEMA_VERSION, "run": RunState(token_cap=20_000_000, repo="example/repo"), "checks": ChecksState(check="true"), "path": [], "plan": PlanState(slice={"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []})})
+        state = checkpoint_state({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(token_cap=20_000_000, repo="example/repo"), "checks": ChecksState(check="true"), "path": [], "plan": PlanState(slice={"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []})})
         self.assertFalse(state["plan"].slice["stateful"])
         self.assertEqual(state["plan"].slice["builds"], [])
         self.assertEqual(state["plan"].slice["uses"], [])
@@ -144,7 +144,7 @@ class StageOwnershipTests(unittest.TestCase):
         from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import STAGE_OUTPUTS, parse_output
 
-        state = {"run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "review_rounds": 2, "plan": PlanState(issue_kind="slice")}
+        state = {"review": ReviewState(), "run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "review_rounds": 2, "plan": PlanState(issue_kind="slice")}
         handler = ScriptHandler(reviews=["changes"])
         for stage, contract in STAGE_OUTPUTS.items():
             with self.subTest(stage=stage):
@@ -155,7 +155,7 @@ class StageOwnershipTests(unittest.TestCase):
                 payload = {"verify": "fail"} if stage == "verify" else handler(stage, None, state, "").output
                 output = parse_output(contract, payload, context=SCRIPTED_REVIEW_CONTEXT)
                 update = stage_update(stage, output, state, "model")
-                key = {"implement": "implementation", "review": "findings", "verify": "checks", "triage": "plan", "spec": "plan"}.get(stage, stage)
+                key = {"implement": "implementation", "review": "review", "verify": "checks", "triage": "plan", "spec": "plan"}.get(stage, stage)
                 self.assertIn(key, update)
                 self.assertEqual(update["path"], [stage])
                 self.assertEqual(update["models_used"][stage], "model")
@@ -165,7 +165,7 @@ class StageOwnershipTests(unittest.TestCase):
 
     def test_legacy_failure_budget_is_preserved_separately(self):
         from foreman.delivery import read_delivery_state
-        result = read_delivery_state({"run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "stop": "verify_cap", "review_rounds": 2, "plan": PlanState()})
+        result = read_delivery_state({"review": ReviewState(), "run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "stop": "verify_cap", "review_rounds": 2, "plan": PlanState()})
         self.assertEqual(result["review_rounds"], 0)
         for key in ("verify_failures", "proof_failures", "spec_failures"):
             self.assertEqual(result[key], 2)
@@ -174,4 +174,4 @@ class StageOwnershipTests(unittest.TestCase):
         from foreman.delivery import read_delivery_state
 
         with self.assertRaises(ValidationError):
-            read_delivery_state({"run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "stop": "sliced", "plan": {"slice": {"title": "Incomplete"}}})
+            read_delivery_state({"review": ReviewState(), "run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "stop": "sliced", "plan": {"slice": {"title": "Incomplete"}}})

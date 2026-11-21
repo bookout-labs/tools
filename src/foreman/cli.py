@@ -16,7 +16,7 @@ import yaml
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend
 from foreman.readiness import MergeState
-from foreman.state import ChecksState, RunState, DeliveryResult
+from foreman.state import ReviewState, ChecksState, RunState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.dry_run import ScriptHandler
@@ -46,7 +46,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     rows: list[tuple[str, str | None]] = []
     checks = result["checks"]
     run_state = result["run"]
-    current: DeliveryResult = {"plan": result["plan"], "run": RunState(repo=run_state.repo, max_budget_usd=run_state.max_budget_usd), "checks": ChecksState(check=checks.check), "path": [], "stop": result["stop"]}
+    current: DeliveryResult = {"review": ReviewState(), "plan": result["plan"], "run": RunState(repo=run_state.repo, max_budget_usd=run_state.max_budget_usd), "checks": ChecksState(check=checks.check), "path": [], "stop": result["stop"]}
     for update in presentation.updates:
         current.update(update)
         rows.extend((node, update.get("models_used", {}).get(node)) for node in update.get("path", []))
@@ -126,7 +126,7 @@ def _print_run_rows(
             fields = [node]
             if model:
                 fields.append(model)
-            if node == "review" and (risk := result.get("risk")):
+            if node == "review" and (risk := result["review"].risk):
                 fields.extend(("risk", risk["level"]))
             write(" ".join(fields))
     stop = result.get("stop")

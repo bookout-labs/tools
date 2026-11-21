@@ -31,7 +31,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
-from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
@@ -333,7 +333,7 @@ class CliWorkerTest(unittest.TestCase):
                     return worker_reply(args, {"triage": "implement"})
 
                 result = CliWorker(Path("engine"), run)(
-                    "triage", ModelSpec.parse(model), {"run": RunState(issue=12), "plan": PlanState()}, "Read the issue.",
+                    "triage", ModelSpec.parse(model), {"review": ReviewState(), "run": RunState(issue=12), "plan": PlanState()}, "Read the issue.",
                 )
                 self.assertEqual(result.kind, "ran")
                 self.assertEqual(result.output["triage"], "implement")
@@ -635,7 +635,7 @@ class LiveRunnerTest(unittest.TestCase):
             resumed = self.walk([])
             self.assertEqual(resumed["stop"], "verified")
             self.assertEqual(len(self.calls), count)
-            self.assertEqual(resumed["review_receipt"], result["review_receipt"])
+            self.assertEqual(resumed["review"].review_receipt, result["review"].review_receipt)
 
     def test_resume_rejects_historical_schema_before_missing_usage(self):
         self.github.hold = "Maintenance"
@@ -806,7 +806,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             result = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
         fetch.assert_called_once_with(BRANCH, "d"*40)
         self.assertEqual(result["stop"], "verified", result)
-        self.assertEqual((result["checks"].verified_head, result["reviewed_head"], result["review_receipt"]["commit_id"]), ("d"*40,)*3)
+        self.assertEqual((result["checks"].verified_head, result["review"].reviewed_head, result["review"].review_receipt["commit_id"]), ("d"*40,)*3)
 
     def test_external_conflict_repair_renews_entire_lifecycle(self):
         workspace = FakeWorkspace(self.cwd)
@@ -822,9 +822,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         with patch.object(workspace, "commit", side_effect=commit):
             resumed = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
         self.assertEqual(resumed["stop"], "verified")
-        self.assertEqual(resumed["reviewed_head"], repaired)
+        self.assertEqual(resumed["review"].reviewed_head, repaired)
         self.assertEqual(resumed["checks"].verified_head, repaired)
-        self.assertEqual(resumed["review_receipt"]["commit_id"], repaired)
+        self.assertEqual(resumed["review"].review_receipt["commit_id"], repaired)
         self.assertEqual(len(self.github.reviews), 2)
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
@@ -836,9 +836,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 finding = {**FINDING, "severity": severity}
                 self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, {**APPROVE, "resolutions": [{"id": finding["id"], "status": "resolved"}]}])
                 state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
-                self.assertEqual(state["findings"], [finding])
-                self.assertEqual(state["detail"], ReviewOutput.model_validate(changes, context=SCRIPTED_REVIEW_CONTEXT).risk.render())
-                self.assertEqual(state["review_change_kind"], kind)
+                state["review"] = ReviewState.model_validate(state["review"])
+                self.assertEqual(state["review"].findings, [finding])
+                self.assertEqual(state["review"].detail, ReviewOutput.model_validate(changes, context=SCRIPTED_REVIEW_CONTEXT).risk.render())
+                self.assertEqual(state["review"].review_change_kind, kind)
 
     def test_review_posts_only_changed_lines_inline(self):
         findings = [
@@ -869,7 +870,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual(result.get("stop"), stop)
                 self.assertEqual(result.get("halt_detail"), "Unavailable")
                 if replies:
-                    self.assertEqual(result.get("findings"), [FINDING])
+                    self.assertEqual(result["review"].findings, [FINDING])
                 self.assertEqual(self.github.merge_calls, [])
 
     def test_posting_retry_preserves_round_and_does_not_dispatch(self):
@@ -881,8 +882,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.walk([])
         self.assertEqual(self.calls, calls)
         self.assertEqual(result["review_rounds"], 1)
-        self.assertEqual(len(result["review_findings"]), 1)
-        self.assertEqual(result["review_receipt"]["state"], "COMMENTED")
+        self.assertEqual(len(result["review"].review_findings), 1)
+        self.assertEqual(result["review"].review_receipt["state"], "COMMENTED")
         self.assertEqual(result["merge"].status, "armed")
 
     def test_review_halts_when_git_fetch_times_out(self):
@@ -1026,12 +1027,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             checkpoint=self.checkpoint, run=run,
             dispatcher=lambda *args: Outcome("quota"),
         )
-        self.assertEqual(first["fact_record"], "evidence/facts.toml")
+        self.assertEqual(first["review"].fact_record, "evidence/facts.toml")
         resumed = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, run=run,
             dispatcher=lambda *args: Outcome("quota"),
         )
-        self.assertEqual(resumed["fact_record"], "evidence/facts.toml")
+        self.assertEqual(resumed["review"].fact_record, "evidence/facts.toml")
 
     def test_resume_rejects_a_different_fact_record(self):
         self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
@@ -1332,7 +1333,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 result = self.review_tool_fact(None, recover=True, record_path=record,
                                                worker_commits=committed, residual=residual)
                 self.assertEqual(result["stop"], "review_cap" if residual else "verified")
-                rounds = result["review_findings"]
+                rounds = result["review"].review_findings
                 self.assertFalse(rounds[0]["graph_check"]["passed"])
                 self.assertEqual(rounds[-1]["graph_check"]["passed"], not residual)
                 self.assertIn(rounds[0]["reviewed_head"], rounds[-1]["graph_check"]["failing_heads"])
@@ -1350,7 +1351,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.review_tool_fact("result.txt", recover=True)
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(result.get("merge", MergeState()).status, "armed")
-        self.assertEqual(result.get("fact_record"), "tests/fixtures/manifest.toml")
+        self.assertEqual(result["review"].fact_record, "tests/fixtures/manifest.toml")
         self.assertNotIn("tool_facts", result)
 
     def test_null_claim_resolves_by_id_when_reviewer_paraphrases(self):
@@ -1362,7 +1363,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_custom_fact_record_reaches_approval(self):
         result = self.review_tool_fact("result.txt", recover=True, record_path="evidence/facts.toml")
         self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(result.get("fact_record"), "evidence/facts.toml")
+        self.assertEqual(result["review"].fact_record, "evidence/facts.toml")
 
     def test_no_changes_names_unresolved_fact_gate(self):
         result = self.review_tool_fact(None, no_changes=True)
@@ -1370,30 +1371,30 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_approve_with_unrecorded_tool_fact_becomes_changes(self):
         result = self.review_tool_fact("result.txt", record_during_review=True)
-        self.assertEqual(result.get("review"), "changes")
-        self.assertIn("The CLI accepts --debug.", result.get("detail") or "")
+        self.assertEqual(result["review"].review, "changes")
+        self.assertIn("The CLI accepts --debug.", result["review"].detail or "")
         self.assertEqual(result.get("review_rounds"), 1)
         self.assertEqual(self.github.merge_calls, [])
 
     def test_approve_with_recorded_tool_fact_stays_approve(self):
         result = self.review_tool_fact("result.txt", entry="result.txt")
-        self.assertEqual(result.get("review"), "approve")
-        self.assertEqual(result.get("findings"), [])
+        self.assertEqual(result["review"].review, "approve")
+        self.assertEqual(result["review"].findings, [])
         self.assertEqual(result.get("work", WorkState()).head_sha, result["checks"].verified_head)
         self.assertNotEqual(result["checks"].verified_head, HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, result["checks"].verified_head)])
 
     def test_dangling_tool_fact_citation_blocks_approval(self):
         result = self.review_tool_fact("absent.txt", entry="absent.txt")
-        self.assertEqual(result.get("review"), "changes")
-        self.assertIn("absent.txt", result.get("detail") or "")
+        self.assertEqual(result["review"].review, "changes")
+        self.assertIn("absent.txt", result["review"].detail or "")
         self.assertEqual(result.get("stop"), "review_cap")
         self.assertEqual(self.github.merge_calls, [])
 
     def test_tool_fact_without_citation_blocks_approval(self):
         result = self.review_tool_fact(None, entry="result.txt")
-        self.assertEqual(result.get("review"), "changes")
-        self.assertIn("The CLI accepts --debug.", result.get("detail") or "")
+        self.assertEqual(result["review"].review, "changes")
+        self.assertIn("The CLI accepts --debug.", result["review"].detail or "")
         self.assertEqual(self.github.merge_calls, [])
     def test_cli_redacts_the_check_subprocess_stdout_and_stderr(self):
         check = self.cwd / "verify.sh"
@@ -2513,7 +2514,7 @@ class HaltExitCodeTest(unittest.TestCase):
         detail = "Merge arming requires a full 40-hex commit SHA."
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
-        result = {"checks": ChecksState(), "run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed"), "plan": PlanState()}
+        result = {"review": ReviewState(), "checks": ChecksState(), "run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed"), "plan": PlanState()}
         with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)

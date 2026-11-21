@@ -1,5 +1,5 @@
 import tests
-from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 import json
 import subprocess
 from contextlib import contextmanager
@@ -139,7 +139,7 @@ class ReviewRoundsTest(unittest.TestCase):
                         return Outcome("quota")
                     raw = next(replies)
                     return Outcome("ran", raw, usage=SCRIPTED_USAGE)
-                if crash and state.get("review_findings") and not crashed:
+                if crash and state["review"].review_findings and not crashed:
                     crashed = True
                     raise RuntimeError("process lost")
                 if node == "triage":
@@ -154,7 +154,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 graph = compile_delivery(dispatch, settings, scratch=scratch,
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "example/repo#8"}}
-                state = {"schema_version": SCHEMA_VERSION, "run": RunState(repo="Example/Repo", issue=8, token_cap=20_000_000, max_budget_usd=None), "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE),
+                state = {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="Example/Repo", issue=8, token_cap=20_000_000, max_budget_usd=None), "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE),
                          "checks": ChecksState(check="exit 0"), "pstack_pin": settings.pstack.model_dump(), **(initial or {})}
                 if crash or post_crash or review_crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
@@ -232,9 +232,9 @@ class ReviewRoundsTest(unittest.TestCase):
 
     def test_settled_ruling_disagreement_is_a_note(self):
         result = self.run_rounds([{**APPROVE, "findings": [{**FINDING, "ruling_id": "size"}]}],
-                                 initial={"settled_rulings": [{"id": "size", "text": "Size rule lives in the contract."}]})
+                                 initial={"review": ReviewState(settled_rulings=[{"id": "size", "text": "Size rule lives in the contract."}])})
         self.assertEqual(result["merge"].status, "armed")
-        self.assertIn("Coordinator note f1", result["detail"])
+        self.assertIn("Coordinator note f1", result["review"].detail)
         self.assertIn("Size rule lives in the contract.", self.prompts[-1][2])
 
     def test_resolved_findings_travel_as_settled_rulings(self):
@@ -247,7 +247,7 @@ class ReviewRoundsTest(unittest.TestCase):
         ])
         self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(json.loads(self.prompts[-1][2].split("Settled, don't reopen:\n")[1])[0]["id"], "finding:f1")
-        self.assertEqual(result["review_findings"][-1]["coordinator_notes"][0]["id"], "f3")
+        self.assertEqual(result["review"].review_findings[-1]["coordinator_notes"][0]["id"], "f3")
 
     def test_full_diff_rounds_resume_and_keep_worker_output(self):
         result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
@@ -273,7 +273,7 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(past.rulings(), [])
 
     def test_malformed_history_halts_only_in_review(self):
-        result = self.run_rounds([APPROVE], initial={"review_findings": [{"broken": True}]})
+        result = self.run_rounds([APPROVE], initial={"review": ReviewState(review_findings=[{"broken": True}])})
         self.assertEqual(result["halt"], "invalid_output")
         self.assertIn("implement", result["path"])
     def test_recurrence_pauses_and_counts_accepted_round(self):
@@ -283,7 +283,7 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(result["halt"], "design_rethink")
         self.assertEqual(result["review_rounds"], 2)
         self.assertEqual(len(self.forge.reviews), 2)
-        self.assertEqual(result["review_receipt"]["id"], 2)
+        self.assertEqual(result["review"].review_receipt["id"], 2)
         self.assertEqual(result["path"].count("implement"), 2)
         self.assertEqual([json.loads(line)["id"] for line in result["halt_detail"].splitlines()[1:]], ["f1", "again"])
         self.assertFalse(self.forge.merge_calls)
@@ -294,7 +294,7 @@ class ReviewRoundsTest(unittest.TestCase):
                                   "findings": [{**FINDING, "id": "again"}]},
                                  {**APPROVE, "resolutions": [{"id": "again", "status": "resolved"}]}], answer=True)
         self.assertEqual(result["merge"].status, "armed")
-        self.assertEqual(result["settled_rulings"][0]["text"], "Redesign the ownership.")
+        self.assertEqual(result["review"].settled_rulings[0]["text"], "Redesign the ownership.")
 
         instruction = [p[2] for p in self.prompts if p[0] == "review"][2]
         self.assertEqual(json.loads(instruction.split("Settled, don't reopen:\n")[1])[0]["id"], "design:2")
@@ -333,7 +333,7 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(self.interrupted["review_rounds"], 0)
         self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(result["review_rounds"], 1)
-        self.assertEqual(len(result["review_findings"]), 1)
+        self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(len(self.forge.reviews), 1)
         self.assertEqual([p[0] for p in self.prompts].count("review"), 2)
 
@@ -341,7 +341,7 @@ class ReviewRoundsTest(unittest.TestCase):
         result = self.run_rounds([APPROVE], review_quota=True)
         self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(result["review_rounds"], 1)
-        self.assertEqual(len(result["review_findings"]), 1)
+        self.assertEqual(len(result["review"].review_findings), 1)
         attempts = [a for a in result["attempts"] if a["stage"] == "review"]
         self.assertEqual([a["outcome"] for a in attempts], ["quota", "ran"])
         self.assertNotEqual(attempts[0]["model"], attempts[1]["model"])
@@ -351,7 +351,7 @@ class ReviewRoundsTest(unittest.TestCase):
         result = self.run_rounds([APPROVE], post_crash=True)
         self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(len(self.forge.reviews), 1)
-        self.assertEqual(result["review_receipt"]["id"], 1)
+        self.assertEqual(result["review"].review_receipt["id"], 1)
         self.assertEqual([p[0] for p in self.prompts].count("review"), 1)
 
     def test_interdiff_need_not_parse_for_focused_instruction(self):

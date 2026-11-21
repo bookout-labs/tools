@@ -64,7 +64,7 @@ def _review_fallback() -> str:
         return handler(node, model, state, instruction)
 
     result = _walk(review, slice=FIELD_SLICE)
-    selection = result["review_findings"][-1]["provenance"]
+    selection = result["review"].review_findings[-1]["provenance"]
     return f"{result['stop']} {','.join(offered)} rounds={result['review_rounds']} same_family={selection['same_family']} reason={selection['reason']}"
 
 
@@ -86,7 +86,7 @@ def _settled_review() -> str:
         return reply
 
     result = _walk(review, slice=FIELD_SLICE)
-    return f"{result['stop']} {result.get('merge', MergeState()).status} {result.get('detail')}"
+    return f"{result['stop']} {result.get('merge', MergeState()).status} {result['review'].detail}"
 
 
 def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, object]]) -> dict[str, str]:

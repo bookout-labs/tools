@@ -13,7 +13,7 @@ from foreman.cli import _print_run, main, run_exit_code
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import run_live_delivery
-from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION, CheckpointVersionError
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION, CheckpointVersionError
 from foreman.skill_rules import SkillMissing
 from tests.skill_fixture import skill_fixture
 from test_runner import FakeGitHub, FakeWorkspace
@@ -38,7 +38,7 @@ class TokenCapTests(unittest.TestCase):
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
                     saver.serde = checkpoint_serializer()
                     graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
-                    graph.update_state(invocation, {"run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(check=""), "path": ["triage"],
+                    graph.update_state(invocation, {"review": ReviewState(), "run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(check=""), "path": ["triage"],
                         "plan": PlanState(issue_kind="parent"), "attempts": [{"stage": "spec",
                         "model": "prior", "commit": "a", "methods": [], "outcome": "ran",
                         "usage": {"input": prior, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}, as_node="needs_human")
@@ -69,7 +69,7 @@ class TokenCapTests(unittest.TestCase):
             self.assertIsNone(result["attempts"][0]["usage"])
             self.assertEqual(run_exit_code(result), 1)
             graph = compile_delivery(unknown, config, run=LiveRun(forge=DryRun(), workspace=DryRun()))
-            saved = {**result, "halt": None, "stop": "", "path": [], "run": RunState(token_cap=1), "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
+            saved = {"review": ReviewState(), **result, "halt": None, "stop": "", "path": [], "run": RunState(token_cap=1), "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
             stopped = graph.invoke(saved)
             self.assertEqual(stopped["stop"], "budget_exceeded")
             self.assertEqual(calls, ["triage"])
@@ -98,7 +98,7 @@ class TokenCapTests(unittest.TestCase):
                 with SqliteSaver.from_conn_string(str(legacy)) as saver:
                     saver.serde = checkpoint_serializer()
                     graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
-                    graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {**snapshot, "run": snapshot["run"].model_copy(update={"token_cap": None})})
+                    graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {"review": ReviewState(), **snapshot, "run": snapshot["run"].model_copy(update={"token_cap": None})})
                 with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
                     run_live_delivery(**{**kwargs, "checkpoint": legacy}, dispatcher=quota)
 
@@ -114,7 +114,7 @@ class TokenCapTests(unittest.TestCase):
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
-                                   {**first, "run": first["run"].model_copy(update={"token_cap": None})})
+                                   {"review": ReviewState(), **first, "run": first["run"].model_copy(update={"token_cap": None})})
             with patch("foreman.delivery.export_skills", side_effect=SkillMissing(config.pstack)) as export:
                 with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
                     run_live_delivery(**kwargs, checkpoint=legacy, dispatcher=quota)
@@ -140,9 +140,9 @@ class TokenCapTests(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=live, checkpointer=saver)
-                graph.update_state(invocation, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
+                graph.update_state(invocation, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
                     "plan": PlanState(triage="implement"), "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
-                graph.update_state(invocation, {"run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
+                graph.update_state(invocation, {"review": ReviewState(), "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                                 "path": ["implement", "done"]}, as_node="done")
             with self.assertRaisesRegex(ValueError, "unknown usage history"):
                 run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=live,
@@ -155,7 +155,7 @@ class TokenCapTests(unittest.TestCase):
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
-                                   {"run": RunState(repo="a/b"), "checks": ChecksState(check=""), "path": ["done"], "stop": "answered", "plan": PlanState()}, as_node="done")
+                                   {"review": ReviewState(), "run": RunState(repo="a/b"), "checks": ChecksState(check=""), "path": ["done"], "stop": "answered", "plan": PlanState()}, as_node="done")
             with self.assertRaisesRegex(CheckpointVersionError, "Start a new run"):
                 run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint, dispatcher=ScriptHandler(),
                                   run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))

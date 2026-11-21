@@ -6,7 +6,7 @@ from pathlib import Path
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
-from foreman.stage_output import PlanState, DispatchPlan, MergeRiskRecord, SpecCheckOutput, StoredSlice, WorkKind
+from foreman.stage_output import ReviewState, PlanState, DispatchPlan, MergeRiskRecord, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import PullRequest, Issue, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt, pull_request_command
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
@@ -82,13 +82,14 @@ class ScriptHandler:
         if node == "research":
             return Outcome("ran", {"research": self.research}, usage=SCRIPTED_USAGE)
         if node == "review":
+            review_state = ReviewState.model_validate(state["review"])
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = (
                 [{"id": "check", "kind": "untested-path", "fix": "Add a check.", "ruling_id": None, "file": "items.txt", "line": 1, "severity": "blocking", "summary": "Add a check."}]
-                if verdict == "changes" and not state.get("review") else []
+                if verdict == "changes" and not review_state.review else []
             )
             return Outcome("ran", {
-                "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if state.get("review") else [], "risk": dict(self.risk), "findings": findings, "tool_facts": [],
+                "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if review_state.review else [], "risk": dict(self.risk), "findings": findings, "tool_facts": [],
             }, usage=SCRIPTED_USAGE)
         raise ValueError(f"no script for {node}")
 

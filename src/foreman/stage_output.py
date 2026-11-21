@@ -13,12 +13,13 @@ from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, Po
 
 from pydantic.config import JsonDict
 
+from foreman.fixture_manifest import MANIFEST_PATH
 from foreman.review_context import ReviewContext
 from foreman.contracts import Contract as Contract, Text as Text
 from foreman.config import ModelSpec
 from foreman.adapters import OutcomeKind
 from foreman.usd import CostUsd
-from foreman.github import PullRequest, PullRequestRecord
+from foreman.github import PullRequest, PullRequestRecord, ReviewReceipt
 from foreman.workspace import ReviewScopeRecord
 from foreman.dispatch import InvalidOutput
 
@@ -475,19 +476,32 @@ class PlanState(BaseModel, frozen=True, extra="forbid"):
         return StoredSlice.model_validate(value).record() if value is not None else None
 
 
+class ReviewState(BaseModel, frozen=True, extra="forbid"):
+    review: Literal["", "approve", "changes"] = ""
+    review_findings: list[dict[str, object]] = Field(default_factory=list[dict[str, object]])
+    reviewed_head: str = ""
+    settled_rulings: list[dict[str, object]] = Field(default_factory=list[dict[str, object]])
+    fact_record: str = MANIFEST_PATH
+    findings: list[FindingRecord] = Field(default_factory=list[FindingRecord])
+    detail: str = ""
+    review_change_kind: Literal["blocking", "nits"] | None = None
+    risk: MergeRiskRecord | None = None
+    review_run_id: str = ""
+    review_receipt: ReviewReceipt | None = None
+
+
 class StageUpdate(TypedDict, total=False):
     plan: PlanState
     human_question: str
     research: str
     implementation: str
-    risk: MergeRiskRecord
-    detail: str
-    findings: list[FindingRecord]
+    review: ReviewState
 
 
 @dataclass(frozen=True)
 class UpdateContext:
     plan: PlanState
+    review: ReviewState
     oversized: bool
     slices: list[SliceRecord]
     model: ModelSpec | None = None
@@ -749,8 +763,8 @@ class ReviewOutput(StageOutput):
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        return {"risk": self.risk.record(),
-                "findings": [finding.record() for finding in self.findings]}
+        return {"review": context.review.model_copy(update={"risk": self.risk.record(),
+                "findings": [finding.record() for finding in self.findings]})}
 
 
 class SpecFinding(Contract):

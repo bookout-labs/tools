@@ -18,7 +18,7 @@ from foreman.config import PstackPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
 from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state
 from foreman.readiness import MergeState
-from foreman.state import PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -183,12 +183,12 @@ def run_live_delivery(
             graph = compile_delivery(dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver)
             skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,
                                           "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "pending_dispatch": None,
-                                          "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
                                           "run": run_state if prior else RunState(issue=issue, workspace=workspace, repo=repo,
                                               max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None,
                                               token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
                                           "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
-                                          "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(check=check, preflight=preflight)}
+                                          "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(check=check, preflight=preflight),
+                                          "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState(fact_record=fact_record or MANIFEST_PATH)}
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
             else:
@@ -212,9 +212,10 @@ def run_live_delivery(
         if saved.values:
             require_run_limits(RunState.model_validate(saved.values.get("run", RunState())), checkpoint, max_budget_usd)
         saved_values = checkpoint_state(saved.values)
+        saved_review = saved_values["review"] if saved_values is not None else None
         if presentation is not None and saved.values:
             presentation.restore(saved)
-        if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
+        if saved_review is not None and fact_record is not None and fact_record != saved_review.fact_record:
             raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values["run"].workspace if saved_values else None
         if saved_workspace and saved_workspace != workspace:
@@ -255,7 +256,6 @@ def run_live_delivery(
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
                 "schema_version": SCHEMA_VERSION,
-                "fact_record": fact_record or MANIFEST_PATH,
                 "run": RunState(repo=repo, issue=issue, workspace=workspace, request=text,
                                 token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
                                 max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
@@ -264,6 +264,7 @@ def run_live_delivery(
                 "path": [],
                 "plan": PlanState(issue_kind="slice" if "slice" in loaded["labels"] else "parent"),
                 "review_rounds": 0,
+                "review": ReviewState(fact_record=fact_record or MANIFEST_PATH),
             }
             if initial["plan"].issue_kind == "slice":
                 try:
@@ -315,7 +316,8 @@ def run_live_delivery(
                 work = work.model_copy(update={"partial_edits": partial})
             prior_checks = restored["checks"]
             checks = ChecksState(check=prior_checks.check, preflight=prior_checks.preflight) if reset_work else prior_checks
-            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt), "checks": checks}
+            assert saved_review is not None
+            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": saved_review}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             if retained:

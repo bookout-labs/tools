@@ -144,7 +144,7 @@ with SqliteSaver.from_conn_string(path) as saver:
         cases = [
             ("triage", "triage_call", {}),
             ("spec", "spec_call", {}),
-            ("review", "review_post", {"halt": "design_rethink", "review": "changes"}),
+            ("review", "review_post", {"halt": "design_rethink"}),
             ("pr_size", "spec_call", {"pr_size": size}),
             ("quota", "triage_call", {"halt": "quota_exhausted"}),
         ]
