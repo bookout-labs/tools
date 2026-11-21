@@ -1,9 +1,11 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+import shlex
 import sys
 from tempfile import TemporaryDirectory
 import unittest
@@ -11,33 +13,40 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.cli import main
+from foreman.cli import _write_check_log, main
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK
-from foreman.github import ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest
+from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
-from foreman.workspace import LiveWorkspace, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from test_adapters import fixture_process
 
 
 HEAD = "a" * 40
+SYNTHETIC_QUESTION_TOKEN = "ghp_" + "a" * 36
+
 BASE = "b" * 40
+
 BRANCH = "8-list-items"
 CLEAN_WORKTREE = WorktreeState(HEAD, True, BRANCH)
 SLICE = {
     "title": "List items once",
     "acceptance": "The view lists every item once.",
-    "depends_on": [],
+    "builds": [],
+    "uses": [],
     "screen": "docs/screens/items.md",
     "properties": [{"name": "Unique", "constraint": "unique_item_id"}],
 }
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
 FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}]}
+SEAM = {"name": "item-list", "exists": False, "path": None}
+BUILDER = {**SLICE, "builds": [SEAM]}
+CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "uses": [SEAM]}
 APPROVE = {"resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request."}
 FINDING = {"id": "f1", "kind": "correctness", "fix": "Add a check.", "ruling_id": None, "file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
 DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
@@ -58,6 +67,9 @@ class FakeWorkspace(LiveWorkspace):
         if isinstance(self.last, WorktreeInspectionFailed):
             raise self.last
         return self.last
+
+    def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
+        return {"head": head, "merge_base": "b" * 40, "lines": 1}
 
     def review_diff(self, base, head, *, interdiff=False):
         return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
@@ -81,15 +93,21 @@ class FakeGitHub:
     def __init__(self, labels=None):
         self.labels = labels if labels is not None else ["slice"]
         self.body = slice_body(EMPTY_SLICE) if "slice" in self.labels else "Issue body"
-        self.created = []
+        self.created: list[tuple[str, str, list[str]]] = []
+        self.closed = set()
         self.merged = set()
         self.label_calls = []
-        self.issue_labels = {}
+        self.issue_labels: dict[int, list[str]] = {}
         self.merge_calls = []
+        self.dependencies = {}
+        self.base_branch = "main"
         self.reviews = []
         self.base = BASE
         self.hold = None
         self.hold_reads = []
+
+    def pull_request_base(self, repo: str, branch: str) -> str:
+        return self.base_branch
 
     def review_target(self, repo, issue, branch, sha):
         return PullRequest.model_validate({
@@ -106,13 +124,15 @@ class FakeGitHub:
     def arm_auto_merge(self, repo, issue, branch, sha):
         self.merge_calls.append((repo, issue, branch, sha))
 
-    def load_issue(self, repo, number):
+    def load_issue(self, repo, number) -> Issue:
         if number in self.issue_labels:
             title, body, _ = self.created[number - 101]
             return {"title": title, "body": body, "labels": self.issue_labels[number]}
         return {"title": "Issue title", "body": self.body, "labels": self.labels}
 
-    def create_issue(self, repo, title, body, labels):
+    def create_issue(self, repo, title, body, labels, *, child=None):
+        if child is not None:
+            body = render_slice_body(body, child)
         self.created.append((title, body, labels))
         number = 100 + len(self.created)
         self.issue_labels[number] = list(labels)
@@ -120,6 +140,18 @@ class FakeGitHub:
 
     def is_merged(self, repo, number):
         return number in self.merged
+
+    def add_blocker(self, repo, number, blocker):
+        self.dependencies.setdefault(number, []).append(blocker)
+
+    def blockers(self, repo, number):
+        return [
+            IssueBlocker(number=blocker, title=self.created[blocker - 101][0],
+                         repository_url=f"https://api.github.com/repos/{repo}",
+                         html_url=f"https://github.com/{repo}/issues/{blocker}",
+                         state="closed" if blocker in self.closed or blocker in self.merged else "open")
+            for blocker in self.dependencies.get(number, ())
+        ]
 
     def add_label(self, repo, number, label):
         self.label_calls.append((repo, number, label))
@@ -403,9 +435,9 @@ class LiveRunnerTest(unittest.TestCase):
                 raise subprocess.TimeoutExpired(command, 30)
             self.assertIsNone(timeout)
             key = (command,) if isinstance(command, str) else tuple(command)
-            return subprocess.CompletedProcess(command, 0, outputs[key])
+            return subprocess.CompletedProcess(command, 0, outputs[key].encode())
 
-        with patch("foreman.workspace.subprocess.run", side_effect=run):
+        with patch.object(LiveWorkspace, "pull_request_size", return_value={"head": HEAD, "merge_base": BASE, "lines": 1}), patch("foreman.workspace.subprocess.run", side_effect=run):
             result = self.walk(
                 [{"triage": "implement"}, {"implementation": "Built."}],
                 workspace=LiveWorkspace(self.cwd),
@@ -434,42 +466,119 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_load_parent_and_file_slices_only_once(self):
         self.github = FakeGitHub(["factory"])
-        second = {**SLICE, "title": "Finish items", "depends_on": [SLICE["title"]]}
         result = self.walk([{"triage": "spec"}, {
-            "spec": "Plan", "spec_gate": "ready", "slices": [SLICE, second],
+            "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
         }])
         self.assertEqual(result["issue_kind"], "parent")
         self.assertEqual(result["request"], "Issue title\n\nIssue body")
         self.assertEqual(result["child_issue_numbers"], [101, 102])
-        self.assertEqual([x[0] for x in self.github.created], [SLICE["title"], second["title"]])
+        self.assertEqual([x[0] for x in self.github.created], [BUILDER["title"], CONSUMER["title"]])
         self.assertEqual(self.github.created[0][2], ["slice", "factory"])
         self.assertEqual(self.github.created[1][2], ["slice"])
         for text in (SLICE["acceptance"], SLICE["screen"], "unique_item_id"):
             self.assertIn(text, self.github.created[0][1])
         self.assertIn(SLICE["title"], self.github.created[1][1])
-        for item, (_, body, _) in zip([SLICE, second], self.github.created):
+        child_payload = {**CONSUMER, "depends_on": [BUILDER["title"]], "blocker_numbers": [101]}
+        expected = [{**BUILDER, "depends_on": [], "blocker_numbers": []}, child_payload]
+        for item, (_, body, _) in zip(expected, self.github.created):
             prose, fence, encoded = body.partition("\n\n```json\n")
             self.assertEqual(fence, "\n\n```json\n")
             self.assertEqual(json.loads(encoded.removesuffix("\n```")), item)
             self.assertTrue(prose.startswith("Acceptance:\n" + item["acceptance"]))
+        self.assertEqual(self.github.dependencies, {102: [101]})
         resumed = self.walk([])
+        self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(resumed["child_issue_numbers"], [101, 102])
         self.assertEqual(len(self.github.created), 2)
         self.assertEqual(self.github.label_calls, [])
+        self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "102", "--check", "exit 0"],
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                worker_runner=lambda *_: self.fail("An open blocker must prevent dispatch."),
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "done blocked\nOpen blockers: https://github.com/Example/Engine/issues/101\n")
+        self.github.closed.add(101)
+        self.assertIn("no merged pull request", self.walk([], issue=102)["halt_detail"])
         self.github.merged.add(101)
         self.walk([])
         self.walk([])
+        self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
         child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
-        self.assertEqual(child["slice"], second)
+        self.assertEqual(child["slice"], child_payload)
 
-    def test_unknown_dependency_does_not_label(self):
+    def test_existing_seam_resolves_in_workspace_and_skips_a_dependency(self):
         self.github = FakeGitHub(["factory"])
-        second = {**SLICE, "title": "Finish items", "depends_on": ["Missing"]}
-        with patch("foreman.delivery.clean_slices", return_value=[SLICE, second]):
-            self.walk([{"triage": "spec"}, {"spec": "Plan", "spec_gate": "ready", "slices": [SLICE, second]}])
+        (self.cwd / "seam.py").touch()
+        consumer = {**CONSUMER, "uses": [{"name": "local", "exists": True, "path": "seam.py"}]}
+        result = self.walk([{"triage": "spec"}, {
+            "spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer],
+        }])
+        self.assertEqual(result["stop"], "sliced")
+        self.assertEqual(result["slices"][1]["depends_on"], [])
+        self.assertEqual(self.github.issue_labels[102], ["slice", "factory"])
+
+    def test_self_built_seam_is_not_a_dependency(self):
+        self.github = FakeGitHub(["factory"])
+        builder = {**BUILDER, "uses": [SEAM]}
+        result = self.walk([{"triage": "spec"}, {
+            "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, builder],
+        }])
+        self.assertEqual(result["stop"], "sliced")
+        self.assertEqual(result["slices"][0]["depends_on"], [])
+        self.assertEqual(self.github.dependencies, {102: [101]})
+
+    def test_existing_seam_with_a_builder_is_rejected_before_filing(self):
+        self.github = FakeGitHub(["factory"])
+        (self.cwd / "seam.py").touch()
+        consumer = {**CONSUMER, "uses": [{**SEAM, "exists": True, "path": "seam.py"}]}
+        spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
+        result = self.walk([{"triage": "spec"}, spec, spec, spec])
+        self.assertEqual(result["stop"], "spec_cap")
+        self.assertEqual(result["spec_rejection"]["kind"], "existing_seam_builder")
+        self.assertEqual(self.github.created, [])
+
+    def test_workspace_file_paths_resolve_inside_the_root(self):
+        (self.cwd / "api.py").touch()
+        (self.cwd / "sub").mkdir()
+        workspace = LiveWorkspace(self.cwd)
+        self.assertTrue(workspace.has_file("sub/../api.py"))
+        with TemporaryDirectory() as directory:
+            outside = Path(directory) / "api.py"
+            outside.touch()
+            (self.cwd / "escape.py").symlink_to(outside)
+            for path in (str(outside), os.path.relpath(outside, self.cwd), "escape.py"):
+                with self.subTest(path=path):
+                    self.assertFalse(workspace.has_file(path))
+
+    def test_existing_seam_outside_workspace_reaches_the_cap_without_filing(self):
+        self.github = FakeGitHub(["factory"])
+        with TemporaryDirectory() as directory:
+            outside = Path(directory) / "seam.py"
+            outside.touch()
+            (self.cwd / "escape.py").symlink_to(outside)
+            consumer = {**CONSUMER, "uses": [{"name": "local", "exists": True, "path": "escape.py"}]}
+            spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
+            result = self.walk([{"triage": "spec"}, spec, spec, spec])
+        self.assertEqual(result["stop"], "spec_cap")
+        self.assertEqual(result["review_rounds"], 3)
+        self.assertEqual(result["spec_rejection"]["kind"], "dangling_seam")
+        self.assertEqual(self.github.created, [])
+
+    def test_link_failure_leaves_child_blocked_and_parent_retry_repairs_it(self):
+        self.github = FakeGitHub(["factory"])
+        with patch.object(self.github, "add_blocker", side_effect=CommandTimedOut("gh api")):
+            with self.assertRaises(CommandTimedOut):
+                self.walk([{"triage": "spec"}, {
+                    "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
+                }])
+            self.assertEqual(self.walk([], issue=102)["halt_detail"], "Planned blocker links are missing.")
         self.walk([])
-        self.assertEqual(self.github.label_calls, [])
+        self.assertEqual(len(self.github.created), 2)
+        self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
 
     def test_injected_workers_reach_merge_after_a_real_check_in_the_repo(self):
         (self.cwd / "expected").touch()
@@ -484,6 +593,57 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["head_sha"], "b" * 40)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
+
+    def test_cli_redacts_the_check_subprocess_stdout_and_stderr(self):
+        check = self.cwd / "verify.sh"
+        check.write_text(
+            f"echo 'Check stdout {SYNTHETIC_QUESTION_TOKEN}'\n"
+            f"echo 'Check stderr {SYNTHETIC_QUESTION_TOKEN}' >&2\n"
+        )
+        replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        with (
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "sh verify.sh"],
+                worker_runner=lambda args, cwd, env: worker_reply(args, next(replies)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("done verified\n", stdout.getvalue())
+        self.assertIn("Check stdout [redacted:GitHub Token]\n", stdout.getvalue())
+        self.assertIn("Check stderr [redacted:GitHub Token]\n", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, stdout.getvalue() + stderr.getvalue())
+
+    def test_check_streams_in_write_order_before_the_command_exits(self):
+        check = self.cwd / "stream.py"
+        acknowledgement = self.cwd / "logged"
+        check.write_text(
+            "import os, pathlib, time\n"
+            f"os.write(1, b'First synthetic {SYNTHETIC_QUESTION_TOKEN}\\n')\n"
+            f"ack = pathlib.Path({str(acknowledgement)!r})\n"
+            "deadline = time.monotonic() + 5\n"
+            "while not ack.exists() and time.monotonic() < deadline: time.sleep(0.01)\n"
+            "if not ack.exists(): raise SystemExit(9)\n"
+            f"os.write(2, b'Second synthetic {SYNTHETIC_QUESTION_TOKEN}\\n')\n"
+            "os.write(1, b'Third\\n')\n"
+            "os.write(2, b'Fourth')\n"
+            "raise SystemExit(7)\n"
+        )
+
+        def log(line):
+            _write_check_log(line)
+            acknowledgement.touch()
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = LiveWorkspace(self.cwd).run(shlex.join([sys.executable, str(check)]), log=log)
+        self.assertEqual(code, 7)
+        self.assertEqual(stdout.getvalue(), (
+            "First synthetic [redacted:GitHub Token]\n"
+            "Second synthetic [redacted:GitHub Token]\nThird\nFourth"
+        ))
 
     def test_cli_uses_one_workspace_root_for_the_worker_check_and_checkpoint(self):
         root = self.cwd / "checkout"
@@ -623,13 +783,29 @@ class LiveRunnerTest(unittest.TestCase):
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk(
                     [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
+                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
                 )
                 self.assertEqual(result["check_exit_code"], 0)
                 self.assertEqual(result["merge"], "not_armed")
                 self.assertEqual(result["stop"], "merge_not_armed")
                 self.assertIn(detail, result["halt_detail"])
                 self.assertEqual(self.github.merge_calls, [])
+
+    def test_head_moved_before_review_uses_the_existing_merge_stop(self):
+        moved = WorktreeState("b" * 40, True, BRANCH)
+        for snapshots in ((CLEAN_WORKTREE, moved), (CLEAN_WORKTREE, CLEAN_WORKTREE, moved)):
+            with self.subTest(snapshots=snapshots), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "run.sqlite3"
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}], snapshots=snapshots)
+                self.assertEqual(result.get("stop"), "merge_not_armed")
+                self.assertEqual(result.get("merge"), "not_armed")
+                self.assertIn(f"HEAD is {moved.head}, verification checked {HEAD}.", result.get("halt_detail", ""))
+                self.assertNotIn("review", result.get("models_used", {}))
+                self.assertEqual(self.github.merge_calls, [])
+                resumed = self.walk([APPROVE])
+                self.assertIn("review", resumed.get("models_used", {}))
+                self.assertEqual(resumed.get("merge"), "armed")
+                self.github.merge_calls.clear()
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
@@ -653,7 +829,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_retry_after_worktree_is_cleaned_arms_once(self):
         halted = self.walk(
             [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-            snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
+            snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
         )
         self.assertEqual(halted["stop"], "merge_not_armed")
         self.assertEqual(halted["merge"], "not_armed")
@@ -679,8 +855,9 @@ class LiveRunnerTest(unittest.TestCase):
 
         git("init", "-b", BRANCH)
         git("commit", "--allow-empty", "-m", "Verified commit")
+        git("branch", "main")
+        git("remote", "add", "origin", ".")
         verified_head = git("rev-parse", "HEAD")
-        git("remote", "add", "origin", str(repo))
         self.github.base = verified_head
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
@@ -712,9 +889,9 @@ class LiveRunnerTest(unittest.TestCase):
     def test_live_workspace_reports_head_status_and_branch(self):
         for status, branch in (("", BRANCH + "\n"), ("?? untracked\n", ""), ("", "")):
             with self.subTest(status=status, branch=branch), patch("foreman.workspace.subprocess.run", side_effect=[
-                subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, HEAD + "\n"),
-                subprocess.CompletedProcess(["git", "status", "--porcelain"], 0, status),
-                subprocess.CompletedProcess(["git", "branch", "--show-current"], 0, branch),
+                subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, (HEAD + "\n").encode()),
+                subprocess.CompletedProcess(["git", "status", "--porcelain"], 0, status.encode()),
+                subprocess.CompletedProcess(["git", "branch", "--show-current"], 0, branch.encode()),
             ]) as run:
                 self.assertEqual(LiveWorkspace(self.cwd).inspect(), WorktreeState(HEAD, not status, branch.strip() or None))
                 self.assertEqual([call.args[0] for call in run.call_args_list], [
@@ -763,7 +940,7 @@ class LiveRunnerTest(unittest.TestCase):
         for head in ("", "abc123", "z" * 40):
             with self.subTest(head=head), patch(
                 "foreman.workspace.subprocess.run",
-                return_value=subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, head + "\n", ""),
+                return_value=subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, (head + "\n").encode(), b""),
             ) as run:
                 with self.assertRaisesRegex(WorktreeInspectionFailed, "full 40-hex HEAD SHA"):
                     LiveWorkspace(self.cwd).inspect()
@@ -833,25 +1010,14 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.hold_reads, [repo, repo, repo])
         self.assertEqual(self.github.merge_calls, [(repo, 8, BRANCH, HEAD)])
 
-    def test_completed_legacy_checkpoint_keeps_its_merge_outcome(self):
-        result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-        config = {"configurable": {"thread_id": "example/engine#8"}}
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saved = saver.get_tuple(config)
-            channels = saved.checkpoint["channel_values"]
-            channels["merge_armed"] = channels.pop("merge") == "armed"
-            saver.put(saved.config, saved.checkpoint, saved.metadata, {})
-        self.assertEqual(self.walk([]), result)
-        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
-
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
         script = """
 import json
 from pathlib import Path
 import sys
-from foreman.cli import main
+from foreman.cli import _write_check_log, main
 from foreman.delivery import LiveRun
-from test_runner import APPROVE, HEAD, FakeGitHub, FakeWorkspace, worker_reply
+from test_runner import APPROVE, HEAD, SYNTHETIC_QUESTION_TOKEN, FakeGitHub, FakeWorkspace, worker_reply
 
 def run(args, cwd, env):
     prompt = args[-1]
@@ -867,10 +1033,12 @@ def run(args, cwd, env):
     if schema["title"] == "SpecOutput":
         if not state.get("human_answers"):
             return worker_reply(args, {
-                "spec": "A decision is open", "spec_gate": "needs_human", "human_question": "Which items?"
+                "spec": "A decision is open", "spec_gate": "needs_human",
+                "human_question": f"Which items? {SYNTHETIC_QUESTION_TOKEN}",
             })
         assert state["human_answers"] == ["Only open items"]
         assert state["request"] == "List items"
+        assert state["human_question"] == f"Which items? {SYNTHETIC_QUESTION_TOKEN}"
         return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
     if schema["title"] == "ImplementOutput":
         return worker_reply(args, {"implementation": "built", "head_sha": HEAD})
@@ -890,7 +1058,8 @@ sys.exit(main(
             ).stdout
 
         first = invoke("--request", "List items")
-        self.assertIn("paused needs_human\nWhich items?", first)
+        self.assertIn("paused needs_human\nWhich items? [redacted:GitHub Token]", first)
+        self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, first)
         self.assertEqual(invoke(), first)
         self.assertFalse((self.cwd / "check.log").exists())
         completed = invoke("--answer", "Only open items")

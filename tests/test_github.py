@@ -41,6 +41,12 @@ def pr_result(pr=PR, command=VIEW):
 
 class LiveForgeTest(unittest.TestCase):
     @patch("foreman.github.subprocess.run")
+    def test_pull_request_base_uses_the_forge_base_ref(self, run):
+        run.return_value = pr_result({**PR, "baseRefName": "release/current"})
+        self.assertEqual(LiveForge().pull_request_base(REPO, BRANCH), "release/current")
+        self.assertEqual(run.call_args.args[0], VIEW)
+
+    @patch("foreman.github.subprocess.run")
     def test_merge_hold_reads_the_requested_repository_variable(self, run):
         for stdout, hold in (
             ('[{"name":"REGION","value":"test"},{"name":"FOREMAN_MERGE_HOLD","value":"  Maintenance\\n"}]', "  Maintenance\n"),
@@ -86,13 +92,15 @@ class LiveForgeTest(unittest.TestCase):
 
     @patch("foreman.github.subprocess.run")
     def test_only_closed_issue_with_merged_closing_pull_request_is_merged(self, run):
-        for closed, references, state, expected in (
-            (False, [CLOSING_PR], None, False),
-            (True, [], None, False),
-            (True, [CLOSING_PR], "CLOSED", False),
-            (True, [CLOSING_PR], "MERGED", True),
+        for closed, references, state, base, default, expected in (
+            (False, [CLOSING_PR], None, None, None, False),
+            (True, [], None, None, None, False),
+            (True, [CLOSING_PR], "CLOSED", "main", None, False),
+            (True, [CLOSING_PR], "MERGED", "main", "main", True),
+            (True, [CLOSING_PR], "MERGED", "release", "main", False),
+            (True, [CLOSING_PR], "MERGED", "trunk", "trunk", True),
         ):
-            with self.subTest(closed=closed, state=state):
+            with self.subTest(closed=closed, state=state, base=base, default=default):
                 run.reset_mock()
                 issue = {"closed": closed, "closedByPullRequestsReferences": references}
                 replies = [gh_result(json.dumps(issue))]
@@ -100,8 +108,11 @@ class LiveForgeTest(unittest.TestCase):
                     ["gh", "issue", "view", "1", "--repo", REPO, "--json", "closed,closedByPullRequestsReferences"],
                 ]
                 if state is not None:
-                    replies.append(gh_result(json.dumps({"state": state})))
-                    commands.append(["gh", "pr", "view", "3", "--repo", "Other/Closing", "--json", "state"])
+                    replies.append(gh_result(json.dumps({"state": state, "baseRefName": base})))
+                    commands.append(["gh", "pr", "view", "3", "--repo", "Other/Closing", "--json", "state,baseRefName"])
+                if default is not None:
+                    replies.append(gh_result(json.dumps({"defaultBranchRef": {"name": default}})))
+                    commands.append(["gh", "repo", "view", "Other/Closing", "--json", "defaultBranchRef"])
                 run.side_effect = replies
                 self.assertEqual(LiveForge().is_merged(REPO, 1), expected)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], commands)
@@ -149,6 +160,43 @@ class LiveForgeTest(unittest.TestCase):
         with self.assertRaisesRegex(CommandFailed, "Not Found") as error:
             LiveForge().load_issue(REPO, 8)
         self.assertNotIsInstance(error.exception, MergeNotArmed)
+
+    @patch("foreman.github.subprocess.run")
+    def test_native_blockers_use_github_issue_ids_and_read_every_page(self, run):
+        blocker = {"id": 643, "number": 9, "title": "Build items",
+                   "repository_url": f"https://api.github.com/repos/{REPO}",
+                   "html_url": f"https://github.com/{REPO}/issues/9", "state": "open"}
+        run.side_effect = [gh_result(json.dumps(blocker)), gh_result(json.dumps(blocker)),
+                           gh_result(json.dumps([[blocker], [{**blocker, "id": 644, "number": 10, "state": "closed"}]])),
+                           gh_result(json.dumps([[{**blocker, "state": "unknown"}]]))]
+        forge = LiveForge()
+        forge.add_blocker(REPO, 8, 9)
+        self.assertEqual([(item.number, item.state) for item in forge.blockers(REPO, 8)], [(9, "open"), (10, "closed")])
+        endpoint = f"repos/{REPO}/issues/8/dependencies/blocked_by"
+        self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [
+            ["gh", "api", f"repos/{REPO}/issues/9"],
+            ["gh", "api", endpoint, "--method", "POST", "-F", "issue_id=643"],
+            ["gh", "api", endpoint, "--paginate", "--slurp"],
+        ])
+        with self.assertRaises(ForgeError):
+            forge.blockers(REPO, 8)
+
+    @patch("foreman.github.subprocess.run")
+    def test_review_write_redacts_synthetic_secrets_before_json_encoding(self, run):
+        synthetic_token = "ghp_" + "a" * 36
+        run.side_effect = [pr_result(), pr_result(), gh_result("")]
+        forge = LiveForge()
+        target = forge.review_target(REPO, 8, BRANCH, HEAD)
+        forge.post_review(REPO, target, f"Synthetic {synthetic_token}", [{
+            "path": f"docs/{synthetic_token}.txt", "line": 2, "side": "RIGHT",
+            "body": f'Synthetic password="abc" and abc {synthetic_token}',
+        }])
+        payload = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(payload["commit_id"], HEAD.upper())
+        self.assertEqual(payload["body"], "Synthetic [redacted:GitHub Token]")
+        self.assertEqual(payload["comments"][0]["path"], "docs/[redacted:GitHub Token].txt")
+        self.assertEqual(payload["comments"][0]["body"],
+                         'Synthetic password="[redacted:Secret Keyword]" and abc [redacted:GitHub Token]')
 
     @patch("foreman.github.subprocess.run")
     def test_posts_the_review_and_inline_comments_for_the_verified_head(self, run):
