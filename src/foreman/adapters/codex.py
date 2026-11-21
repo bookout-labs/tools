@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 from subprocess import CompletedProcess
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -27,18 +27,18 @@ QUOTA_PREFIXES = (
 
 
 def read_usage(report: object) -> Usage | None:
-    match report:
-        case {"input_tokens": input_tokens, "output_tokens": output_tokens, **cache}:
-            try:
-                return Usage.model_validate({
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "cache_read_input_tokens": cache.get("cached_input_tokens"),
-                    "cache_creation_input_tokens": cache.get("cache_write_input_tokens"),
-                })
-            except ValidationError:
-                return None
-    return None
+    if not isinstance(report, dict):
+        return None
+    fields = cast(dict[str, object], report)
+    try:
+        return Usage.model_validate({
+            "input_tokens": fields.get("input_tokens"),
+            "output_tokens": fields.get("output_tokens"),
+            "cache_read_input_tokens": fields.get("cached_input_tokens"),
+            "cache_creation_input_tokens": fields.get("cache_write_input_tokens"),
+        })
+    except ValidationError:
+        return None
 
 
 @dataclass
@@ -69,6 +69,8 @@ class CodexTurn:
             case {"type": "turn.completed"}:
                 self.completed = True
                 self.usage = read_usage(event.get("usage"))
+            case _:
+                pass
 
 
 @dataclass(frozen=True)
