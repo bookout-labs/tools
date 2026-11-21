@@ -1296,6 +1296,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         self.assertIn("The CLI accepts --debug.", args[-1])
                         worker_state = json.loads(args[-1].split("Delivery state:\n", 1)[1])
                         self.assertNotIn("tool_facts", worker_state)
+                        worker_state["review"] = ReviewState.model_validate(worker_state["review"])
                         claims = carried_tool_facts(worker_state)
                         self.assertIn("Carried tool facts:\n" + json.dumps([fact.model_dump() for fact in claims]), args[-1])
                         self.assertIn("claim_ids", args[-1])
