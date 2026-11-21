@@ -15,7 +15,7 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
+from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge
@@ -78,7 +78,10 @@ def run_live_delivery(
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
     answer: str | None = None,
+    max_tokens: int | None = None,
 ) -> DeliveryResult:
+    if max_tokens is not None and max_tokens <= 0:
+        raise ValueError("max_tokens must be positive")
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
     workspace = str(run.workspace.root.resolve())
@@ -87,6 +90,10 @@ def run_live_delivery(
         delivery_config = load_config()
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
+        if prior and (channels.get("usage_version") != 1 or "token_cap" not in channels):
+            raise ValueError("Cannot resume a pre-S4 checkpoint with unknown usage history. Start a new run.")
+        if prior and max_tokens is not None and channels["token_cap"] != max_tokens:
+            raise ValueError("--max-tokens differs from the stored token cap")
         saved_pin = channels.get("pstack_pin")
         if prior and not channels.get("stop") and saved_pin is None:
             raise ValueError("Cannot resume a delivery checkpoint without a pstack pin.")
@@ -144,6 +151,7 @@ def run_live_delivery(
             initial: DeliveryState = {
                 "repo": repo,
                 "usage_version": 1,
+                "token_cap": max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
                 "issue": issue,
                 "workspace": workspace,
                 "request": text,
@@ -170,6 +178,8 @@ def run_live_delivery(
             invoke(Command(resume=True), saved_values)
         elif (halt := saved_values.get("halt")) in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
+            if before.values.get("usage_version") != 1 or before.values.get("token_cap") != saved_values.get("token_cap"):
+                raise ValueError("Cannot resume a pre-S4 checkpoint with unknown usage history. Start a new run.")
             if halt == "env_unavailable":
                 invoke(None, _CHECKPOINT_STATE.validate_python(before.values, strict=True), before.config)
             else:

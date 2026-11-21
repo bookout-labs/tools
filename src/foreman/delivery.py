@@ -38,6 +38,7 @@ from foreman.stage_output import (
 from foreman.workspace import CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
+DEFAULT_TOKEN_CAP = 20_000_000
 PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
@@ -46,7 +47,7 @@ ResumableHalt = Literal[MergeHalt, "env_unavailable", "quota_exhausted"]
 HaltReason = Literal[
     ResumableHalt, "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable", "usage_unknown",
+    "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable", "usage_unknown", "budget_exceeded",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
@@ -133,6 +134,7 @@ class DeliveryFields(TypedDict, total=False):
     dispatch_retry: str | None
     dispatch_quota: str | None
     usage_version: int
+    token_cap: int
     request: str
     issue: int
     workspace: str
@@ -222,6 +224,14 @@ def halted(reason: HaltReason, detail: str, path: str | None) -> DeliveryUpdate:
     if not detail.strip():
         raise ValueError(f"{reason} requires a nonempty halt detail")
     return {"halt": reason, "halt_detail": detail, "path": [path] if path else []}
+
+
+def budget_halt(state: DeliveryState, attempts: list[Attempt], stage: str) -> DeliveryUpdate:
+    last = attempts[-1] if attempts else None
+    detail = (f"Run used {run_tokens(attempts)} tokens; cap is {state.get('token_cap', DEFAULT_TOKEN_CAP)}. "
+              f"Last attempt: {last['stage'] if last else stage} {last['model'] if last else None} "
+              f"used {run_tokens([last]) if last else 0}. An in-flight attempt can overshoot the cap.")
+    return halted("budget_exceeded", detail, stage)
 
 
 def stage_text(name: str) -> str:
@@ -498,6 +508,11 @@ def compile_delivery(
                 name, candidates, state, instruction, on_attempt=record_attempt,
             )
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts}
+            history = state.get("attempts", []) + attempts
+            if outcome.kind == "ran" and outcome.usage is None:
+                return {**stopped, **halted("usage_unknown", f"{model} ran {name} without a usage report", name)}
+            if run_tokens(history) >= state.get("token_cap", DEFAULT_TOKEN_CAP):
+                return {**stopped, **budget_halt(state, history, name)}
             if outcome.kind in {"quota", "cli_missing"} and index + 1 < len(models):
                 return {"attempts": attempts, "dispatch_index": index + 1, "dispatch_retry": name,
                         "dispatch_quota": model if outcome.kind == "quota" else state.get("dispatch_quota")}
@@ -790,6 +805,8 @@ def compile_delivery(
         def start(state: DeliveryState) -> DeliveryUpdate:
             if stage == "verify" and isinstance(run, LiveRun):
                 return {"pending_dispatch": None}
+            if run_tokens(state.get("attempts", [])) >= state.get("token_cap", DEFAULT_TOKEN_CAP):
+                return {"pending_dispatch": None, **budget_halt(state, state.get("attempts", []), stage)}
             try:
                 models = order_for(stage, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError:
@@ -803,6 +820,8 @@ def compile_delivery(
 
     def completed(call: Callable[[DeliveryState, Runtime[LiveRun]], DeliveryUpdate]):
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+            if state.get("halt"):
+                return {"pending_dispatch": None}
             return {"pending_dispatch": None, **call(state, runtime)}
         return node
 
@@ -880,10 +899,14 @@ def run_delivery(
     config: Config | None = None,
     slice: dict[str, object] | None = None,
     scratch: Path | None = None,
+    max_tokens: int = DEFAULT_TOKEN_CAP,
 ) -> DeliveryResult:
+    if max_tokens <= 0:
+        raise ValueError("max_tokens must be positive")
     state: DeliveryState = {
         "repo": repo,
         "usage_version": 1,
+        "token_cap": max_tokens,
         "request": request,
         "check": check,
         "issue_kind": "parent" if slice is None else "slice",

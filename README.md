@@ -200,3 +200,14 @@ Before review, Foreman fetches the pull request's base branch from `origin` and 
 uv sync
 uv run python -m unittest discover -s tests
 ```
+
+### Token admission
+
+`foreman run delivery --max-tokens N` stores a positive token allowance, defaulting to
+20,000,000. Resume keeps the stored allowance and rejects a differing flag.
+Each dispatch checks the sum of all attempt input, output, cache read and cache
+creation tokens. The attempt already in flight can overshoot the cap. Once the
+threshold is reached, no subsequent model runs and that attempt's output is not
+applied. `budget_exceeded` and `usage_unknown` exit 1 and cannot resume.
+Interrupted calls with no committed usage halt as unknown rather than being
+retried. Checkpoints from before usage accounting require a new run.

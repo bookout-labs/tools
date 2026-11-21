@@ -14,7 +14,7 @@ from typing import TextIO, assert_never
 import yaml
 
 from foreman.accept import AcceptError, accept_event
-from foreman.delivery import DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery
+from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from foreman.github import ForgeError, LiveForge
@@ -46,6 +46,7 @@ def _print_run(result: DeliveryResult) -> None:
                 print(f"check exit {result['check_exit_code']}")
             for proof, label in result.get("proof_labels", {}).items():
                 _write_run_log(f"{proof} proof {label}")
+            print(f"tokens {run_tokens(result.get('attempts', []))} of {result.get('token_cap', DEFAULT_TOKEN_CAP)}")
             _write_run_log(f"done {result['stop']}")
             if result.get("stop") == "skill_missing":
                 pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
@@ -87,6 +88,13 @@ def _print_run(result: DeliveryResult) -> None:
             _write_run_log(detail)
 
 
+def positive_tokens(raw: str) -> int:
+    value = int(raw)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("--max-tokens must be positive")
+    return value
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -112,6 +120,7 @@ def main(
     run.add_argument("--preflight", default="")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
+    run.add_argument("--max-tokens", type=positive_tokens)
 
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")
     accept.add_argument("path")
@@ -170,6 +179,7 @@ def main(
             repo=args.repo,
             request=args.request or f"Issue #{args.issue}",
             check=args.check,
+            max_tokens=args.max_tokens if args.max_tokens is not None else DEFAULT_TOKEN_CAP,
         )
         print("pstack pin not checked (dry run)")
     else:
@@ -195,6 +205,7 @@ def main(
                 request=args.request,
                 run=live_run,
                 answer=args.answer,
+                max_tokens=args.max_tokens,
             )
         except (AnswerError, ForgeError, OSError, QuotaExhausted, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)

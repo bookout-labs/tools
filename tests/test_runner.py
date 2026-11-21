@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.adapters import Outcome
+from foreman.adapters import Outcome, Usage
 from foreman.cli import _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, halted, run_delivery
@@ -592,7 +592,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
         def exhaust(node, model, state, instruction):
             if node == "triage":
-                return Outcome("ran", {"triage": "implement", "work_kind": "feature", "human_question": None, "slice": None})
+                return Outcome("ran", {"triage": "implement", "work_kind": "feature", "human_question": None, "slice": None}, usage=Usage(input_tokens=1, output_tokens=1))
             return Outcome("quota")
 
         paused = run_live_delivery(
@@ -648,7 +648,7 @@ class LiveRunnerTest(unittest.TestCase):
                 worker_runner=lambda *_: self.fail("An open blocker must prevent dispatch."),
             )
         self.assertEqual(code, 1)
-        self.assertEqual(stdout.getvalue(), "done blocked\nOpen blockers: https://github.com/Example/Engine/issues/101\n")
+        self.assertEqual(stdout.getvalue(), "tokens 0 of 20000000\ndone blocked\nOpen blockers: https://github.com/Example/Engine/issues/101\n")
         self.github.closed.add(101)
         self.assertIn("no merged pull request", self.walk([], issue=102)["halt_detail"])
         self.github.merged.add(101)
@@ -1178,7 +1178,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
         def interrupted_run(node, model, state, instruction):
             if node == "triage":
-                return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None})
+                return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None}, usage=Usage(input_tokens=1, output_tokens=1))
             self.assertEqual(node, "implement")
             raise RuntimeError("worker stopped")
 
@@ -1397,7 +1397,7 @@ class LiveRunnerTest(unittest.TestCase):
             )
         self.assertEqual(code, 75)
         arm.assert_called_once_with("Example/Target", 8, BRANCH, HEAD)
-        self.assertIn(f"merge not armed\ncheck exit 0\ndone merge_not_armed\n{detail}", stdout.getvalue())
+        self.assertIn(f"merge not armed\ncheck exit 0\ntokens 47606 of 20000000\ndone merge_not_armed\n{detail}", stdout.getvalue())
 
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["factory"])
@@ -1420,7 +1420,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(
             "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --squash --auto --match-head-commit '<sha>'\n"
-            "done verified",
+            "tokens 8 of 20000000\ndone verified",
             stdout.getvalue(),
         )
         self.assertIn("pstack pin not checked (dry run)", stdout.getvalue())
@@ -1450,7 +1450,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.merge_calls, [])
         self.github.hold = ""
         armed = invoke()
-        self.assertIn("merge armed\ncheck exit 0\ndone verified", armed)
+        self.assertIn("merge armed\ncheck exit 0\ntokens 47606 of 20000000\ndone verified", armed)
         self.assertEqual(invoke(), armed)
         self.assertEqual(self.github.hold_reads, [repo, repo, repo])
         self.assertEqual(self.github.merge_calls, [(repo, 8, BRANCH, HEAD)])
@@ -1595,7 +1595,7 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_missing_slice_has_no_fake_stage(self):
         result = self.live(body="No JSON")
         self.assert_halt(result, "missing_slice", "slice issue needs a fenced JSON object")
-        self.assertEqual(result[1], "done missing_slice\nslice issue needs a fenced JSON object\n")
+        self.assertEqual(result[1], "tokens 0 of 20000000\ndone missing_slice\nslice issue needs a fenced JSON object\n")
 
     def test_resumable_halts(self):
         replies = [{"triage": "implement"}, {"implementation": "built"}, APPROVE]
