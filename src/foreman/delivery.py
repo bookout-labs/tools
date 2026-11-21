@@ -12,6 +12,7 @@ from langgraph.types import interrupt
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
+from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.github import Forge, ForgeError, MergeNotArmed, PullRequest, ReviewComment, merge_command
@@ -132,7 +133,7 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
         update["slice"] = clean_slices([output.slice], "slice")[0]
     if isinstance(output, ReviewOutput):
         update["review_change_kind"] = None
-        if output.review == "changes" and output.findings:
+        if output.review == "changes":
             only_nits = all(finding.severity == "nit" for finding in output.findings)
             update["review_change_kind"] = "nits" if only_nits else "blocking"
     if update.get("review") == "changes" or update.get("verify") == "fail":
@@ -216,8 +217,7 @@ def compile_delivery(
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
-            target: PullRequest | None = None
-            diff: ReviewDiff | None = None
+            review_context: tuple[Forge, PullRequest, ReviewDiff] | None = None
             repo = state.get("repo", "")
             if name == "review" and isinstance(run, LiveRun):
                 head, issue = state.get("verified_head"), state.get("issue")
@@ -229,22 +229,28 @@ def compile_delivery(
                     diff = run.workspace.review_diff(target.baseRefOid, head)
                 except (ForgeError, WorktreeInspectionFailed) as exc:
                     return {"path": [name], "halt": "review_unavailable", "halt_detail": str(exc)}
+                review_context = (run.forge, target, diff)
                 instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
+            outcome, model = dispatcher.run(name, models, state, instruction)
+            if outcome.kind == "failed":
+                return {"path": [name], "halt": "invalid_output", "halt_detail": f"{model}: {outcome.detail}"}
+            if outcome.kind == "cli_missing":
+                return {"path": [name], "halt": "cli_missing", "halt_detail": outcome.detail}
+            if outcome.kind == "quota":
+                if name != "review":
+                    raise QuotaExhausted(model)
+                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
-                raw, model = dispatcher.run(name, models, state, instruction)
-                output = parse_output(STAGE_OUTPUTS[name], raw)
+                output = parse_output(STAGE_OUTPUTS[name], outcome.output)
                 update = stage_update(name, output, state, model)
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
-            except QuotaExhausted as exc:
-                if name != "review":
-                    raise
-                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {exc}"}
 
-            if isinstance(run, LiveRun) and isinstance(output, ReviewOutput) and target is not None and diff is not None:
+            if review_context is not None and isinstance(output, ReviewOutput):
+                forge, target, diff = review_context
                 body, comments = review_submission(output, diff)
                 try:
-                    run.forge.post_review(repo, target, body, comments)
+                    forge.post_review(repo, target, body, comments)
                 except ForgeError as exc:
                     return {**update, "halt": "review_not_posted", "halt_detail": str(exc)}
             return update
@@ -447,6 +453,10 @@ def run_delivery(
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
     if dispatcher is None:
-        dispatcher = FailoverDispatcher(lambda *args: {"triage": "implement"})
+        dispatcher = FailoverDispatcher(
+            lambda node, model, state, instruction: Outcome(
+                "ran", {"triage": "implement", "slice": None, "human_question": None},
+            ),
+        )
     graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
     return graph.get_graph().draw_mermaid()

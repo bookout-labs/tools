@@ -118,7 +118,8 @@ class LiveForgeTest(unittest.TestCase):
 
     @patch("foreman.github.subprocess.run")
     def test_posts_the_review_and_inline_comments_for_the_verified_head(self, run):
-        run.side_effect = [pr_result(), pr_result(command=CONFIRM), gh_result("")]
+        moved = {**PR, "baseRefOid": "c" * 40, "headRefOid": "d" * 40}
+        run.side_effect = [pr_result(), pr_result(moved, CONFIRM), gh_result("")]
         forge = LiveForge()
         target = forge.review_target(REPO, 8, BRANCH, HEAD)
         comments: list[ReviewComment] = [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[nit] Use @literal."}]
@@ -132,11 +133,11 @@ class LiveForgeTest(unittest.TestCase):
         })
 
     @patch("foreman.github.subprocess.run")
-    def test_review_does_not_post_after_either_pull_request_ref_changes(self, run):
-        for field in ("baseRefOid", "headRefOid"):
-            with self.subTest(field=field):
+    def test_review_does_not_post_if_the_pull_request_closes_or_is_retargeted(self, run):
+        for field, value in (("state", "CLOSED"), ("baseRefName", "release")):
+            with self.subTest(field=field, value=value):
                 run.reset_mock()
-                run.side_effect = [pr_result(), pr_result({**PR, field: "c" * 40}, CONFIRM)]
+                run.side_effect = [pr_result(), pr_result({**PR, field: value}, CONFIRM)]
                 forge = LiveForge()
                 target = forge.review_target(REPO, 8, BRANCH, HEAD)
                 with self.assertRaisesRegex(ForgeError, "changed during review"):

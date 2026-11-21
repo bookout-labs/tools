@@ -142,8 +142,7 @@ class LiveForge:
 
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None:
         current = self._view_pr(repo, str(target.number))
-        if (current.number != target.number or current.state != "OPEN" or current.headRefOid != target.headRefOid
-                or current.baseRefOid != target.baseRefOid or current.baseRefName != target.baseRefName):
+        if current.state != "OPEN" or current.baseRefName != target.baseRefName:
             raise ForgeError("The pull request changed during review.")
         payload = {"commit_id": target.headRefOid, "event": "COMMENT", "body": body, "comments": comments}
         self._run_command(

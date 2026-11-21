@@ -53,6 +53,7 @@ class LiveWorkspace:
     def review_diff(self, base: str, head: str) -> ReviewDiff:
         if not (FULL_SHA.fullmatch(base) and FULL_SHA.fullmatch(head)):
             raise WorktreeInspectionFailed("Review requires full base and head SHAs.")
+        self._git("fetch", "--no-tags", "origin", base, head)
         args = (
             "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
             "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}...{head}", "--",
