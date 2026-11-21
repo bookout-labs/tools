@@ -11,14 +11,16 @@ from unittest.mock import patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.cli import main
-from foreman.delivery import LiveRun
-from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
+from foreman.delivery import LiveRun, run_delivery
+from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK
 from foreman.github import Issue, MergeNotArmed
 from foreman.runner import run_live_delivery
-from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, parse_output
-from foreman.worker import CliWorker
+from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
+from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import LiveWorkspace, PullRequestSize, WorktreeInspectionFailed, WorktreeState
+from test_adapters import fixture_process
 
 
 HEAD = "a" * 40
@@ -34,7 +36,7 @@ SLICE = {
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
 FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}]}
-APPROVE = {"review": "approve", "risk": DEFAULT_RISK}
+APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "review_note": None}
 
 
 def slice_body(item):
@@ -57,16 +59,21 @@ class FakeWorkspace(LiveWorkspace):
         return {"head": head, "merge_base": "b" * 40, "lines": 1}
 
 
-def worker_reply(args, reply, model=None):
-    tool = args[0]
-    flag = "--model" if tool == "claude" else "-m"
-    model = model or args[args.index(flag) + 1]
-    body = json.dumps(reply) if isinstance(reply, dict) else reply
-    if tool == "codex":
-        return subprocess.CompletedProcess(args, 0, body, f"model: {model}\n")
-    field = "result" if tool == "claude" else "text"
-    return subprocess.CompletedProcess(args, 0, json.dumps({field: body, "modelUsage": {model: {}}}), "")
-
+def worker_reply(args, reply):
+    recorded = fixture_process(args, "success", 0)
+    if args[0] == "codex":
+        stdout = json.dumps(reply) if isinstance(reply, dict) else reply
+        return subprocess.CompletedProcess(args, recorded.returncode, stdout, recorded.stderr)
+    if "triage" in reply:
+        reply = {"slice": None, "human_question": None, **reply}
+    if "spec" in reply:
+        reply = {"slices": None, "human_question": None, **reply}
+    if "review" in reply:
+        reply = {"review_note": None, **reply}
+    envelope = json.loads(recorded.stdout)
+    field = "structured_output" if args[0] == "claude" else "structuredOutput"
+    envelope[field] = reply
+    return subprocess.CompletedProcess(args, recorded.returncode, json.dumps(envelope), recorded.stderr)
 
 class FakeGitHub:
     def __init__(self, labels=None):
@@ -102,54 +109,122 @@ class FakeGitHub:
 
 
 class CliWorkerTest(unittest.TestCase):
-    def test_all_three_commands_pin_the_configured_slug_and_parse_the_final_result(self):
+    def test_commands_use_the_configured_models_and_parse_the_final_result(self):
         models = {
-            "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol-high"],
-            "claude-opus-5-5-high": ["claude", "--model", "claude-opus-5-5-high"],
-            "grok-4.7-high": ["grok", "-m", "grok-4.7-high"],
+            "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"],
+            "claude-opus-5-5-high": ["claude", "--model", "claude-opus-5-5", "--effort", "high"],
+            "grok-4.7-high": ["grok", "-m", "grok-4.7", "--reasoning-effort", "high"],
         }
         for model, prefix in models.items():
             with self.subTest(model=model):
-                def run(args, cwd):
+                def run(args, cwd, env):
                     self.assertEqual(args[:len(prefix)], prefix)
                     self.assertEqual(cwd, Path("engine"))
                     self.assertIn('{"issue": 12}', args[-1])
+                    expected_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"} if args[0] == "claude" else {}
+                    self.assertEqual(env, expected_env)
+                    if args[0] == "codex":
+                        self.assertIn("Output schema:", args[-1])
+                    else:
+                        self.assertNotIn("Output schema:", args[-1])
+                        self.assertEqual(json.loads(args[args.index("--json-schema") + 1]),
+                                         STAGE_OUTPUTS["triage"].model_json_schema())
                     return worker_reply(args, {"triage": "implement"})
 
-                result = CliWorker(Path("engine"), run)("triage", model, {"issue": 12}, "Read the issue.")
-                self.assertEqual(result, {"triage": "implement"})
+                result = CliWorker(Path("engine"), run)(
+                    "triage", ModelSpec.parse(model), {"issue": 12}, "Read the issue.",
+                )
+                self.assertEqual(result.kind, "ran")
+                self.assertEqual(result.output["triage"], "implement")
+
+    def test_subprocess_merges_adapter_environment_with_inherited_environment(self):
+        inherited = {"PATH": "/bin", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0"}
+        adapter_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
+        with patch.dict("os.environ", inherited, clear=True), patch("foreman.worker.subprocess.run") as run:
+            run_worker_command(["claude"], Path("engine"), adapter_env)
+        run.assert_called_once_with(
+            ["claude"], cwd=Path("engine"), env={**inherited, **adapter_env},
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        )
+
+    def test_worker_without_a_model_raises_a_config_error(self):
+        worker = CliWorker(Path("."), lambda *_: self.fail("CLI must not run"))
+        with self.assertRaisesRegex(ConfigError, "triage has no model configured"):
+            worker("triage", None, {}, "")
 
     def test_non_object_replies_are_invalid(self):
         replies = ('Here is the result: {"triage": "implement"}', '["implement"]')
         for reply in replies:
-            with self.subTest(reply=reply), self.assertRaises(InvalidOutput):
-                worker = CliWorker(Path("."), lambda args, cwd: worker_reply(args, reply))
-                worker("triage", "gpt-6.1-sol-high", {}, "")
+            with self.subTest(reply=reply):
+                worker = CliWorker(Path("."), lambda args, cwd, env: worker_reply(args, reply))
+                outcome = worker("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
+                self.assertEqual(outcome.kind, "failed")
+                self.assertIn("did not return a JSON object", outcome.detail)
 
-    def test_model_mismatch_and_quota_trigger_failover(self):
+    def walk_triage(self, models, run):
+        config = load_config()
+        config.nodes["triage"] = NodeConfig("coordinator", tuple(ModelSpec.parse(model) for model in models))
+        return run_delivery(FailoverDispatcher(CliWorker(Path("."), run)), repo="Example/Engine",
+                            request="List items", check="exit 0", config=config, slice=EMPTY_SLICE)
+
+    def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
+        for cli, model in (("claude", "claude-opus-5-5-high"), ("grok", "grok-4.7-high")):
+            cases = [("quota", "needs_human"), ("cli_missing", "needs_human"),
+                     ("is_error", "invalid_output"), ("missing_model_usage", "invalid_output")]
+            if cli == "claude":
+                cases.append(("wrong_model", "invalid_output"))
+            for case, stop in cases:
+                with self.subTest(cli=cli, case=case):
+                    calls = []
+
+                    def run(args, cwd, env):
+                        calls.append(args[0])
+                        if args[0] == "codex":
+                            return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
+                        if case == "cli_missing":
+                            raise FileNotFoundError(args[0])
+                        exit_code = 1 if case in {"quota", "is_error"} else 0
+                        return fixture_process(args, case, exit_code)
+
+                    result = self.walk_triage((model, "gpt-6.1-sol-high"), run)
+                    self.assertEqual(result["stop"], stop)
+                    self.assertEqual(calls, [cli, "codex"] if stop == "needs_human" else [cli])
+                    if case == "is_error":
+                        message = "turn_handoff:" if cli == "claude" else "unknown model id"
+                        self.assertIn(message, result["halt_detail"])
+
+    def test_delivery_stops_for_an_incomplete_native_stage_reply(self):
+        def run(args, cwd, env):
+            self.assertEqual(args[0], "claude")
+            recorded = fixture_process(args, "success", 0)
+            envelope = json.loads(recorded.stdout)
+            envelope["structured_output"] = {"triage": "question"}
+            return subprocess.CompletedProcess(args, 0, json.dumps(envelope), recorded.stderr)
+
+        result = self.walk_triage(("claude-opus-5-5-high", "gpt-6.1-sol-high"), run)
+        self.assertEqual(result["stop"], "invalid_output")
+        self.assertIn("Field required", result["halt_detail"])
+
+    def test_delivery_stops_when_every_cli_is_missing(self):
         calls = []
 
-        def run(args, cwd):
+        def run(args, cwd, env):
             calls.append(args[0])
-            if args[0] == "codex":
-                return worker_reply(args, {"triage": "implement"}, "gpt-other")
-            if args[0] == "claude":
-                return subprocess.CompletedProcess(args, 1, "", "API error 429: quota exceeded")
-            return worker_reply(args, {"triage": "implement"})
+            raise FileNotFoundError(args[0])
 
-        dispatcher = FailoverDispatcher(CliWorker(Path("."), run))
-        result, model = dispatcher.run("triage", ["gpt-first", "claude-second", "grok-third"], {}, "")
-        self.assertEqual(calls, ["codex", "claude", "grok"])
-        self.assertEqual((result, model), ({"triage": "implement"}, "grok-third"))
+        result = self.walk_triage(("claude-test", "grok-test", "gpt-test"), run)
+        self.assertEqual(calls, ["claude", "grok", "codex"])
+        self.assertEqual(result["stop"], "cli_missing")
+        self.assertIn("codex executable is unavailable", result["halt_detail"])
 
     def test_codex_reroute_is_rejected_even_with_the_requested_banner(self):
-        def run(args, cwd):
+        def run(args, cwd, env):
             return subprocess.CompletedProcess(
                 args, 0, '{"triage":"implement"}', "model: gpt-first\nmodel rerouted: gpt-first -> gpt-other\n"
             )
 
-        with self.assertRaises(QuotaExhausted):
-            CliWorker(Path("."), run)("triage", "gpt-first", {}, "")
+        outcome = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-first"), {}, "")
+        self.assertEqual(outcome.kind, "quota")
 
 
 class StageOutputTest(unittest.TestCase):
@@ -173,27 +248,38 @@ class StageOutputTest(unittest.TestCase):
             json.loads(json.dumps(schema), object_hook=check)
 
     def test_extra_field_reports_its_nested_path(self):
-        raw = {"implementation": "Done", "browser_proof": {"extra": True}}
+        raw = {
+            "implementation": "Done", "head_sha": None, "formal_proof": None,
+            "browser_proof": {"screen": None, "trace": None, "passed": None, "extra": True},
+        }
         with self.assertRaisesRegex(InvalidOutput, r"^browser_proof\.extra:"):
             parse_output(ImplementOutput, raw)
+
+    def test_screen_rejects_control_characters_and_subdirectories(self):
+        for screen in ("docs/screens/na\x01me.md", "docs/screens/a/b.md"):
+            with self.subTest(screen=screen), self.assertRaisesRegex(InvalidOutput, r"^screen:"):
+                parse_output(Slice, {**SLICE, "screen": screen})
 
     def test_formal_rejection_requires_a_boolean(self):
         for fields in ({}, {"rejected": "true"}, {"rejected": 1}):
             with self.subTest(fields=fields):
                 raw = {
                     "implementation": "Done",
-                    "formal_proof": {"constraints": [{"constraint": "unique_item_id", **fields}]},
+                    "head_sha": None, "browser_proof": None,
+                    "formal_proof": {"ran": None, "typecheck": None,
+                                     "constraints": [{"constraint": "unique_item_id", **fields}]},
                 }
                 with self.assertRaisesRegex(InvalidOutput, r"^formal_proof\.constraints\.0\.rejected:"):
                     parse_output(ImplementOutput, raw)
 
-    def test_sectioned_implementation_becomes_one_document(self):
-        result = parse_output(ImplementOutput, {"implementation": {"Changes": "Built.", "Tests": "Passed."}})
-        self.assertEqual(result.implementation, "Changes\nBuilt.\n\nTests\nPassed.")
-
-    def test_punctuated_changes_without_a_note_keeps_null(self):
-        result = parse_output(ReviewOutput, {**APPROVE, "review": "changes."})
-        self.assertEqual((result.review, result.review_note), ("changes", None))
+    def test_head_sha_requires_a_full_hex_commit_or_null(self):
+        implementation = {"implementation": "Done", "browser_proof": None, "formal_proof": None}
+        for sha in ("", "a" * 39, "z" * 40, " " + HEAD, HEAD + "\n"):
+            with self.subTest(sha=sha), self.assertRaisesRegex(InvalidOutput, r"^head_sha:"):
+                parse_output(ImplementOutput, {**implementation, "head_sha": sha})
+        for sha in (None, HEAD, HEAD.upper()):
+            with self.subTest(sha=sha):
+                self.assertEqual(parse_output(ImplementOutput, {**implementation, "head_sha": sha}).head_sha, sha)
 
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
@@ -203,11 +289,6 @@ class StageOutputTest(unittest.TestCase):
         for verdict in ("Approve.", "Changes. Add a check."):
             with self.subTest(verdict=verdict), self.assertRaisesRegex(InvalidOutput, "^review:"):
                 parse_output(ReviewOutput, {**APPROVE, "review": verdict})
-
-    def test_review_rejects_two_change_notes(self):
-        with self.assertRaisesRegex(InvalidOutput, "inline change note conflicts with review_note"):
-            parse_output(ReviewOutput, {**APPROVE, "review": "changes. Add a check.", "review_note": "Update the docs."})
-
 
 class LiveRunnerTest(unittest.TestCase):
     def setUp(self):
@@ -221,7 +302,7 @@ class LiveRunnerTest(unittest.TestCase):
     def walk(self, replies, *, issue=8, check="exit 0", snapshots=(CLEAN_WORKTREE,)):
         outputs = iter(replies)
 
-        def run(args, cwd):
+        def run(args, cwd, env):
             self.assertEqual(cwd, self.cwd)
             self.calls.append(args[0])
             self.prompts.append(args[-1])
@@ -235,7 +316,7 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_review_note_reaches_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes. Add a check."}
+        changes = {**APPROVE, "review": "changes", "review_note": "Add a check."}
         self.walk([{"triage": "implement"}, built, changes, built, APPROVE])
         prompt = self.prompts[3]
         self.assertIn('"title": "ImplementOutput"', prompt)
@@ -316,7 +397,7 @@ class LiveRunnerTest(unittest.TestCase):
         live_run = LiveRun(self.github, FakeWorkspace(root))
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
-        def worker(args, cwd):
+        def worker(args, cwd, env):
             self.assertEqual(cwd, root)
             return worker_reply(args, next(replies))
 
@@ -486,7 +567,7 @@ class LiveRunnerTest(unittest.TestCase):
         ):
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
-                worker_runner=lambda args, cwd: worker_reply(args, next(replies)),
+                worker_runner=lambda args, cwd, env: worker_reply(args, next(replies)),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
             )
         self.assertEqual(code, 0)
@@ -533,10 +614,13 @@ from foreman.cli import main
 from foreman.delivery import LiveRun
 from test_runner import APPROVE, HEAD, FakeGitHub, FakeWorkspace, worker_reply
 
-def run(args, cwd):
+def run(args, cwd, env):
     prompt = args[-1]
     state = json.loads(prompt.split("Delivery state:\\n")[1])
-    schema = json.loads(prompt.split("Output schema:\\n")[1].split("\\n\\nDelivery state:")[0])
+    if args[0] == "codex":
+        schema = json.loads(prompt.split("Output schema:\\n")[1].split("\\n\\nDelivery state:")[0])
+    else:
+        schema = json.loads(args[args.index("--json-schema") + 1])
     if schema["title"] == "TriageOutput":
         assert not state.get("human_answers")
         assert state["request"] == "List items"

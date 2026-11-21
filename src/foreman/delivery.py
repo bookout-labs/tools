@@ -11,6 +11,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.github import Forge, MergeNotArmed, merge_command
@@ -211,15 +212,19 @@ def compile_delivery(
                     " Split the work into independently shippable pull requests."
                     " For a slice issue, describe the split in spec."
                 )
+            outcome, model = dispatcher.run(name, models, state, instruction)
+            if outcome.kind == "failed":
+                return {"path": [name], "halt": "invalid_output", "halt_detail": f"{model}: {outcome.detail}"}
+            if outcome.kind == "cli_missing":
+                return {"path": [name], "halt": "cli_missing", "halt_detail": outcome.detail}
+            if outcome.kind == "quota":
+                if name != "review":
+                    raise QuotaExhausted(model)
+                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
-                raw, model = dispatcher.run(name, models, state, instruction)
-                return stage_update(name, parse_output(STAGE_OUTPUTS[name], raw), state, model)
+                return stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model)
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
-            except QuotaExhausted as exc:
-                if name != "review":
-                    raise
-                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {exc}"}
 
         return node
 
@@ -468,6 +473,10 @@ def run_delivery(
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
     if dispatcher is None:
-        dispatcher = FailoverDispatcher(lambda *args: {"triage": "implement"})
+        dispatcher = FailoverDispatcher(
+            lambda node, model, state, instruction: Outcome(
+                "ran", {"triage": "implement", "slice": None, "human_question": None},
+            ),
+        )
     graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
     return graph.get_graph().draw_mermaid()
