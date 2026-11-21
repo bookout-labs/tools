@@ -495,7 +495,7 @@ assert dict(os.environ) == inherited
             raise FileNotFoundError(args[0])
 
         result = self.walk_triage(("claude-test", "grok-test", "gpt-test"), run)
-        self.assertEqual(calls, ["claude", "grok", "codex"])
+        self.assertEqual(calls, ["claude", "codex"])
         self.assertEqual(result["stop"], "cli_missing")
         self.assertIn("codex executable is unavailable", result["halt_detail"])
 
@@ -2270,7 +2270,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 else:
                     self.assertIn("paused quota_exhausted", first)
                     self.assertFalse((root / "check.log").exists())
-                    attempts = len(load_config().nodes["implement"].models)
+                    attempts = sum(model.family != "grok" for model in load_config().nodes["implement"].models)
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
                                      ["TriageOutput"] + ["ImplementOutput"] * attempts)
 
