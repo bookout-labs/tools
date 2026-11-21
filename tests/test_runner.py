@@ -1175,7 +1175,7 @@ class LiveRunnerTest(unittest.TestCase):
                     self.assertIn(detail, result.get("halt_detail", ""))
         self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\n")
 
-    def test_resume_at_implement_rechecks_saved_preflight(self):
+    def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
         def interrupted_run(node, model, state, instruction):
             if node == "triage":
                 return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None})
@@ -1192,7 +1192,7 @@ class LiveRunnerTest(unittest.TestCase):
             )
         ready.unlink()
         result = self.walk([])
-        self.assertEqual(result.get("stop"), "env_unavailable")
+        self.assertEqual(result.get("stop"), "usage_unknown")
         self.assertEqual(result.get("review_rounds"), 0)
         self.assertEqual(self.calls, [])
 

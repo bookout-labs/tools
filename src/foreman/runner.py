@@ -60,7 +60,8 @@ def _checkpoint_before_halt(
     if not path:
         raise ValueError("Cannot resume a run without a halted node.")
     node = path[-1]
-    before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (node,)), None)
+    entry = node + "_start" if node in {"triage", "research", "spec", "implement", "review"} else node
+    before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (entry,)), None)
     if before is None:
         raise ValueError(f"Cannot resume a run without a checkpoint before {node}.")
     return before
@@ -112,6 +113,12 @@ def run_live_delivery(
         saved_workspace = saved_values.get("workspace") if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
+        if saved_values is not None and (pending := saved_values.get("pending_dispatch")):
+            stage, model = pending["stage"], pending["model"]
+            graph.update_state(config, {**halted("usage_unknown", f"{model} ran {stage} without a usage report", stage),
+                                       "attempts": [pending], "pending_dispatch": None}, as_node=stage)
+            invoke(None, saved_values)
+            return read_delivery_state(graph.get_state(config).values)
         waiting_for_quota = bool(saved.interrupts) and saved.values.get("halt") == "quota_exhausted"
         if answer is not None:
             if waiting_for_quota:
@@ -136,6 +143,7 @@ def run_live_delivery(
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
                 "repo": repo,
+                "usage_version": 1,
                 "issue": issue,
                 "workspace": workspace,
                 "request": text,

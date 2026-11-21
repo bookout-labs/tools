@@ -46,7 +46,7 @@ ResumableHalt = Literal[MergeHalt, "env_unavailable", "quota_exhausted"]
 HaltReason = Literal[
     ResumableHalt, "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+    "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable", "usage_unknown",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
@@ -128,6 +128,11 @@ class PullRequestSplit(TypedDict):
 
 
 class DeliveryFields(TypedDict, total=False):
+    pending_dispatch: Attempt | None
+    dispatch_index: int
+    dispatch_retry: str | None
+    dispatch_quota: str | None
+    usage_version: int
     request: str
     issue: int
     workspace: str
@@ -487,10 +492,18 @@ def compile_delivery(
                     },
                 })
 
+            index = state.get("dispatch_index", 0)
+            candidates = models[index:index + 1] if models else []
             outcome, model = dispatcher.run(
-                name, models, state, instruction, on_attempt=record_attempt,
+                name, candidates, state, instruction, on_attempt=record_attempt,
             )
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts}
+            if outcome.kind in {"quota", "cli_missing"} and index + 1 < len(models):
+                return {"attempts": attempts, "dispatch_index": index + 1, "dispatch_retry": name,
+                        "dispatch_quota": model if outcome.kind == "quota" else state.get("dispatch_quota")}
+            stopped.update({"dispatch_index": 0, "dispatch_retry": None, "dispatch_quota": None})
+            if outcome.kind == "cli_missing" and state.get("dispatch_quota"):
+                outcome, model = Outcome("quota"), state.get("dispatch_quota")
             if outcome.kind == "failed":
                 return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
@@ -505,7 +518,7 @@ def compile_delivery(
                 if isinstance(output, ReviewOutput):
                     output = _check_tool_facts(output, run, state.get("verified_head"))
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
-                update["attempts"] = attempts
+                update.update({"attempts": attempts, "dispatch_index": 0, "dispatch_retry": None, "dispatch_quota": None})
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
                 update: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
@@ -773,15 +786,42 @@ def compile_delivery(
 
     builder = StateGraph(DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun)
 
+    def begin(stage: str):
+        def start(state: DeliveryState) -> DeliveryUpdate:
+            if stage == "verify" and isinstance(run, LiveRun):
+                return {"pending_dispatch": None}
+            try:
+                models = order_for(stage, config, state.get("models_used") or {}, state.get("implement_models"))
+            except ConfigError:
+                return {"pending_dispatch": None}
+            index = state.get("dispatch_index", 0)
+            model = models[index].name if models else None
+            _, methods = stage_methods(stage, state, methods_root) if methods_root else ("", [])
+            return {"pending_dispatch": {"stage": stage, "model": model, "commit": config.pstack.commit,
+                                         "methods": methods, "outcome": "failed", "usage": None}}
+        return start
+
+    def completed(call: Callable[[DeliveryState, Runtime[LiveRun]], DeliveryUpdate]):
+        def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+            return {"pending_dispatch": None, **call(state, runtime)}
+        return node
+
+    def target(stage: str) -> str:
+        return stage + "_start" if stage in REQUIRED_NODES else stage
+
     def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str]) -> None:
         def next_stage(state: DeliveryState) -> str:
+            if state.get("dispatch_retry") and not state.get("halt"):
+                return stage
             return "quota_wait" if state.get("halt") == "quota_exhausted" else route(state)
 
-        builder.add_conditional_edges(stage, next_stage, {**targets, "quota_wait": "quota_wait"})
+        builder.add_conditional_edges(stage, next_stage, {key: target(value) for key, value in {**targets, stage: stage, "quota_wait": "quota_wait"}.items()})
 
     graph_nodes = {"verify": verify, "review": review}
     for name in REQUIRED_NODES:
-        builder.add_node(name, graph_nodes[name] if name in graph_nodes else bind(name))
+        builder.add_node(name + "_start", begin(name))
+        builder.add_edge(name + "_start", name)
+        builder.add_node(name, completed(graph_nodes[name] if name in graph_nodes else bind(name)))
     builder.add_node("proof", prove)
     builder.add_node("needs_human", needs_human)
     builder.add_node("quota_wait", quota_wait)
@@ -790,7 +830,7 @@ def compile_delivery(
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_conditional_edges(
-        START, lambda state: "done" if state.get("halt") else "triage", {"done": "done", "triage": "triage"},
+        START, lambda state: "done" if state.get("halt") else "triage", {"done": "done", "triage": "triage_start"},
     )
     add_agent_edges(
         "triage",
@@ -803,13 +843,13 @@ def compile_delivery(
         {"spec": "spec", "implement": "implement", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
     )
     builder.add_conditional_edges(
-        "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify"},
+        "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify_start"},
     )
     builder.add_conditional_edges(
-        "needs_human", _last_stage, {"triage": "triage", "spec": "spec"},
+        "needs_human", _last_stage, {"triage": "triage_start", "spec": "spec_start"},
     )
     builder.add_conditional_edges(
-        "quota_wait", lambda state: state["path"][-1], {name: name for name in REQUIRED_NODES if name != "verify"},
+        "quota_wait", lambda state: state["path"][-1], {name: name + "_start" for name in REQUIRED_NODES if name != "verify"},
     )
     add_agent_edges("research", lambda _: "done", {"done": "done"})
     add_agent_edges("implement", after_implement, {"verify": "verify", "done": "done"})
@@ -821,14 +861,14 @@ def compile_delivery(
     builder.add_conditional_edges(
         "verify",
         after_verify,
-        {"proof": "proof", "review": "review", "implement": "implement", "done": "done"},
+        {"proof": "proof", "review": "review_start", "implement": "implement_start", "done": "done"},
     )
     builder.add_conditional_edges(
-        "proof", after_proof, {"review": "review", "implement": "implement", "done": "done"},
+        "proof", after_proof, {"review": "review_start", "implement": "implement_start", "done": "done"},
     )
     builder.add_edge("merge", "done")
     builder.add_edge("done", END)
-    return builder.compile(checkpointer=checkpointer)
+    return builder.compile(checkpointer=checkpointer).with_config({"recursion_limit": 50 * (config.max_review_rounds + 1)})
 
 
 def run_delivery(
@@ -843,6 +883,7 @@ def run_delivery(
 ) -> DeliveryResult:
     state: DeliveryState = {
         "repo": repo,
+        "usage_version": 1,
         "request": request,
         "check": check,
         "issue_kind": "parent" if slice is None else "slice",
