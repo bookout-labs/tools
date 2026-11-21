@@ -1,3 +1,5 @@
+from foreman.dry_run import DEFAULT_RISK
+from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 import unittest
 
 from pydantic import TypeAdapter, ValidationError
@@ -30,7 +32,7 @@ class StageRecordTests(unittest.TestCase):
             (BrowserProof, BrowserProofRecord, {"screen": None, "trace": None, "passed": None}),
             (FormalProof, FormalProofRecord, {"ran": True, "constraints": [{"constraint": "positive", "rejected": True}], "typecheck": False}),
             (Finding, FindingRecord, {"id": "f1", "kind": "correctness", "fix": "Rename.", "ruling_id": None, "file": "a.py", "line": 1, "severity": "nit", "summary": "Rename."}),
-            (MergeRisk, MergeRiskRecord, dict.fromkeys(("alignment", "impact", "verification", "rollback", "error_detection"), "Evidence") | {"level": "low"}),
+            (MergeRisk, MergeRiskRecord, DEFAULT_RISK),
             (Seam, SeamRecord, {"name": "db", "exists": True, "path": "db.py"}),
             (SliceProperty, SlicePropertyRecord, {"name": "Positive", "constraint": "positive"}),
             (ToolFact, ToolFactRecord, {"claim": "Tool accepts JSON.", "fixture": None, "graph_check": None}),
@@ -41,9 +43,9 @@ class StageRecordTests(unittest.TestCase):
             with self.subTest(model=model.__name__):
                 optional = {"depends_on", "blocker_numbers", "provenance"} if model is Slice else set()
                 self.assertEqual(set(model.model_fields) | set(model.model_computed_fields), set(record.__annotations__) - optional)
-                value = (SpecCandidate.from_record(raw) if model is SpecCandidate else model.model_validate(raw)).record()
+                value = (SpecCandidate.from_record(raw) if model is SpecCandidate else model.model_validate(raw, context=SCRIPTED_REVIEW_CONTEXT)).record()
                 self.assertEqual(value, raw)
-                self.assertEqual((SpecCandidate.from_record(value) if model is SpecCandidate else model.model_validate(value)).record(), raw)
+                self.assertEqual((SpecCandidate.from_record(value) if model is SpecCandidate else model.model_validate(value, context=SCRIPTED_REVIEW_CONTEXT)).record(), raw)
                 self.assertEqual(TypeAdapter(record).validate_python(value, strict=True), raw)
                 for key in record.__required_keys__:
                     with self.assertRaises(ValidationError):
@@ -137,6 +139,7 @@ class StageOwnershipTests(unittest.TestCase):
     def test_every_registered_stage_owns_its_update(self):
         from foreman.delivery import stage_update
         from foreman.dry_run import ScriptHandler
+        from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import STAGE_OUTPUTS, parse_output
 
         state = {"repo": "org/repo", "check": "", "path": [], "issue_kind": "slice", "review_rounds": 2}
@@ -147,7 +150,7 @@ class StageOwnershipTests(unittest.TestCase):
                     with self.assertRaisesRegex(NotImplementedError, "candidate-bound"):
                         stage_update(stage, parse_output(contract, {"findings": [], "notes": [], "resolutions": []}), state, "model")
                     continue
-                output = parse_output(contract, handler(stage, None, state, "").output)
+                output = parse_output(contract, handler(stage, None, state, "").output, context=SCRIPTED_REVIEW_CONTEXT)
                 update = stage_update(stage, output, state, "model")
                 key = {"implement": "implementation", "review": "findings"}.get(stage, stage)
                 self.assertIn(key, update)

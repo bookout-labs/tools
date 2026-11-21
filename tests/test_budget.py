@@ -18,7 +18,6 @@ from foreman.config import ModelSpec
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import ScriptHandler
 from foreman.runner import checkpoint_state
-from foreman.stage_output import STAGE_OUTPUTS
 from foreman.usd import BudgetUsd, usd_text
 from tests.skill_fixture import skill_fixture
 from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace
@@ -47,7 +46,7 @@ class DollarBudgetTests(unittest.TestCase):
         index = argv.index("--max-budget-usd")
         self.assertEqual(argv[index + 1], "0.1")
         self.assertEqual(argv[:index] + argv[index + 2:], claude.command(call))
-        for adapter in (CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), STAGE_OUTPUTS["implement"]),
+        for adapter in (CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high")),
                         GrokAdapter(ModelSpec.parse("grok-4.7-high"))):
             with self.subTest(adapter=type(adapter).__name__):
                 self.assertEqual(adapter.command(budgeted), adapter.command(call))

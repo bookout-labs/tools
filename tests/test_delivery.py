@@ -177,15 +177,13 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual(result["stop"], "invalid_output")
                 self.assertTrue(result["halt_detail"])
 
-    def test_review_stops_when_no_other_family_remains(self):
+    def test_review_can_use_the_exact_builder_model(self):
         config = load_config()
-        config.nodes["review"] = replace(config.nodes["review"], models=(ModelSpec.parse("gpt-6.1-terra-high"),))
+        config.nodes["review"] = replace(config.nodes["review"], models=(ModelSpec.parse("gpt-6.1-sol-high"),))
         handler = ScriptHandler()
         result = walk(handler, config=config)
-        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "done"])
-        self.assertEqual(result["stop"], "model_family_exhausted")
-        self.assertIn("gpt family", result["halt_detail"])
-        self.assertNotIn("review", [call["node"] for call in handler.calls])
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["models_used"]["review"], result["models_used"]["implement"])
 
     def test_review_stops_when_the_builder_model_is_missing(self):
         config = load_config()
@@ -221,7 +219,7 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
 
-    def test_review_excludes_every_builder_family(self):
+    def test_review_prefers_models_outside_every_builder_family(self):
         for review_models in (("claude-opus-5-5-high", "gpt-6.1-sol-high", "grok-4.7-high"),
                               ("claude-opus-5-5-high", "gpt-6.1-sol-high")):
             with self.subTest(review_models=tuple(ModelSpec.parse(model) for model in review_models)):
@@ -241,9 +239,8 @@ class DeliveryTest(unittest.TestCase):
                     self.assertEqual(reviewers, ["claude-opus-5-5-high", "grok-4.7-high"])
                     self.assertEqual(result["stop"], "verified")
                 else:
-                    self.assertEqual(reviewers, ["claude-opus-5-5-high"])
-                    self.assertEqual(result["stop"], "model_family_exhausted")
-                    self.assertNotIn("merge", result["path"])
+                    self.assertEqual(reviewers, ["claude-opus-5-5-high"] * 2)
+                    self.assertEqual(result["stop"], "verified")
                 self.assertEqual(result["implement_models"], ["gpt-6.1-sol-high", "claude-opus-5-5-high"])
 
     def test_review_cap_stops_without_arming(self):
@@ -287,7 +284,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "invalid_output")
         self.assertIn("review claude-opus-5-5-high: risk.level:", result["halt_detail"])
 
-    def test_review_quota_never_falls_back_to_the_builder_family(self):
+    def test_review_exhausts_the_whole_configured_list(self):
         handler = ScriptHandler()
         offered = []
 
@@ -300,7 +297,7 @@ class DeliveryTest(unittest.TestCase):
         config = load_config()
         config.nodes["review"] = replace(config.nodes["review"], other_family_from=None)
         result = walk(exhaust_review, config=config)
-        self.assertEqual(offered, ["claude-opus-5-5-high"])
+        self.assertEqual(offered, ["claude-opus-5-5-high", "gpt-6.1-sol-high"])
         self.assertEqual(result["stop"], "reviewer_unavailable")
         self.assertIn("quota", result["halt_detail"])
         self.assertNotIn("merge", result["path"])

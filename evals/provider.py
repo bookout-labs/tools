@@ -48,12 +48,23 @@ def _with_quota_gap() -> str:
         return handler(node, model, state, instruction)
 
     result = _walk(exhaust_claude, slice=FIELD_SLICE)
-    models = result.get("models_used", {})
-    implement = models["implement"]
-    review = models["review"]
-    if implement.split("-", 1)[0] == review.split("-", 1)[0]:
-        return "same-family"
     return result["stop"]
+
+
+def _review_fallback() -> str:
+    handler = ScriptHandler()
+    offered: list[str] = []
+
+    def review(node: str, model: ModelSpec | None, state: DeliveryState, instruction: str) -> Outcome:
+        if node == "review" and model:
+            offered.append(model.name)
+            if model.family == "claude":
+                return Outcome("quota")
+        return handler(node, model, state, instruction)
+
+    result = _walk(review, slice=FIELD_SLICE)
+    selection = result["review_findings"][-1]["provenance"]
+    return f"{result['stop']} {','.join(offered)} rounds={result['review_rounds']} same_family={selection['same_family']} reason={selection['reason']}"
 
 
 def _settled_review() -> str:
@@ -66,7 +77,7 @@ def _settled_review() -> str:
         if node == "review":
             count += 1
             finding = {"id": "check" if count == 1 else "next", "kind": "docs", "fix": "Add a check",
-                       "ruling_id": None, "file": "example.txt", "line": 1, "severity": "nit", "summary": "Add a check"}
+                       "ruling_id": None, "file": "items.txt", "line": 1, "severity": "nit", "summary": "Add a check"}
             if count == 3:
                 finding.update(id="repeat", ruling_id="finding:check")
             return Outcome("ran", {**reply.output, "findings": [finding],
@@ -118,6 +129,8 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
         )
     elif case == "question":
         output = _stop(ScriptHandler(triage="question"), slice=FIELD_SLICE)
+    elif case == "review-fallback":
+        output = _review_fallback()
     elif case == "failover":
         output = _with_quota_gap()
     else:

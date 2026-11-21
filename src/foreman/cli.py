@@ -167,6 +167,7 @@ def main(
     run = commands.add_parser("run", help="walk a graph")
     run.add_argument("graph")
     run.add_argument("--repo", required=True)
+    run.add_argument("--watch-repo", default="bookout-labs/tools")
     run.add_argument("--issue", type=int)
     run.add_argument("--request")
     run.add_argument("--check", default="")
@@ -236,6 +237,8 @@ def main(
     if args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
         return 2
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.watch_repo):
+        run.error("--watch-repo must be OWNER/NAME")
     presentation = RunPresentation()
     if args.dry_run:
         if args.answer is not None:
@@ -252,6 +255,7 @@ def main(
             fact_record=args.fact_record or MANIFEST_PATH,
         )
         print("pstack pin not checked (dry run)")
+        _print_run(result, presentation)
     else:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
             run.error("--repo must be OWNER/NAME")
@@ -278,12 +282,14 @@ def main(
                 answer=args.answer,
                 presentation=presentation,
                 max_tokens=args.max_tokens,
+                watch_repo=args.watch_repo,
+                report=lambda result: _print_run(result, presentation),
+                log=lambda message: _write_run_log(message, file=sys.stderr),
                 max_budget_usd=args.max_budget_usd,
             )
         except (AnswerError, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
-    _print_run(result, presentation)
     return run_exit_code(result)
 
 
