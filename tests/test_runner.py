@@ -1950,7 +1950,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertNotIn("triage", current)
                 if scenario == "held":
                     self.assertEqual(current, "merge armed\ndone verified\n")
-                    expected_workers = ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"]
+                    expected_workers = ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"]
                 else:
                     self.assertIn("restored implement\nrestored paused quota_exhausted", restored)
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
