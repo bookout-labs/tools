@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import Field
 from typing_extensions import override
 
+from foreman.grant import Editing
 from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, build_outcome
 
 # Grok Build 1.0.89 emits these exact quota messages from sampling/error.rs.
@@ -57,5 +58,5 @@ class GrokAdapter(NativeAdapter):
 
     def command(self, call: Call) -> list[str]:
         effort = ["--reasoning-effort", self.model.effort] if self.model.effort else []
-        return ["grok", "-m", self.model.model_id, *effort, "--permission-mode", self.permission_mode(call),
+        return ["grok", "-m", self.model.model_id, *effort, "--permission-mode", ("acceptEdits" if isinstance(call.grant, Editing) else "plan"),
                 "--no-subagents", "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]

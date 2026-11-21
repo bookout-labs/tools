@@ -11,6 +11,7 @@ from typing import ClassVar, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, TypeAdapter, ValidationError, field_validator
 
 from foreman.config import ModelSpec
+from foreman.grant import Grant
 from foreman.usd import BudgetUsd, CostUsd
 
 
@@ -41,7 +42,7 @@ class Outcome:
 class Call:
     prompt: str
     schema: str
-    edit: bool
+    grant: Grant
     temp_dir: Path
     budget_usd: BudgetUsd | None = None
 
@@ -100,10 +101,6 @@ class NativeAdapter:
     model: ModelSpec
     envelope: ClassVar[type[NativeEnvelope]]
     env: ClassVar[Mapping[str, str]] = {}
-
-    @staticmethod
-    def permission_mode(call: Call) -> str:
-        return "acceptEdits" if call.edit else "plan"
 
     def read(self, process: CompletedProcess[str]) -> Outcome:
         try:

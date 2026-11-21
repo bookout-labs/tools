@@ -1,0 +1,14 @@
+PASS A clear change is implemented and the check passes
+PASS An approved spec is implemented
+PASS A small parent issue goes straight to implementation and stops verified
+PASS A parent issue that needs a spec stops sliced
+PASS An open product choice stops for a person
+PASS A question is answered and does not change code
+PASS The verdict stays the same when the first model is exhausted
+PASS An approve score passes
+PASS A block score fails the bar
+PASS A thin transcript is reported separately and does not count as good work
+PASS One run in ten is graded
+PASS A redundant-test score proposes a builder instruction change
+PASS A settled ruling disagreement is a note and permits merge
+13 provider scenarios passed

@@ -70,11 +70,11 @@ class DeliveryTest(unittest.TestCase):
     def test_clear_change_skips_spec(self):
         handler = ScriptHandler()
 
-        def check_review_context(node, model, state, instruction):
+        def check_review_context(node, model, state, instruction, grant):
             if node == "review":
                 self.assertEqual(state["verify"], "pass")
                 self.assertNotIn("head_sha", state)
-            return handler(node, model, state, instruction)
+            return handler(node, model, state, instruction, grant)
 
         result = walk(check_review_context)
         self.assertEqual(
@@ -142,12 +142,12 @@ class DeliveryTest(unittest.TestCase):
             with self.subTest(kind=kind):
                 handler = ScriptHandler(triage="spec", slices=invalid)
 
-                def repair(node, model, state, instruction):
+                def repair(node, model, state, instruction, grant):
                     if rejection := state.get("spec_rejection"):
                         self.assertEqual(rejection["kind"], kind)
                         self.assertIn(BOARD["name"] if kind != "dependency_cycle" else first["title"], rejection["detail"])
                         handler.slices = SLICES
-                    return handler(node, model, state, instruction)
+                    return handler(node, model, state, instruction, grant)
 
                 result = walk(repair, slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "spec", "done"])
@@ -223,10 +223,10 @@ class DeliveryTest(unittest.TestCase):
                 config.nodes["review"] = replace(config.nodes["review"], models=tuple(ModelSpec.parse(model) for model in review_models))
                 handler = ScriptHandler(reviews=["changes", "approve"])
 
-                def switch_builder(node, model, state, instruction):
+                def switch_builder(node, model, state, instruction, grant):
                     if node == "implement" and state.get("review") == "changes" and model and model.family == "gpt":
                         return Outcome("quota")
-                    return handler(node, model, state, instruction)
+                    return handler(node, model, state, instruction, grant)
 
                 result = walk(switch_builder, config=config)
                 reviewers = [call["model"] for call in handler.calls if call["node"] == "review"]
@@ -262,8 +262,8 @@ class DeliveryTest(unittest.TestCase):
     def test_review_without_risk_is_rejected(self):
         handler = ScriptHandler()
 
-        def drop_risk(node, model, state, instruction):
-            raw = handler(node, model, state, instruction)
+        def drop_risk(node, model, state, instruction, grant):
+            raw = handler(node, model, state, instruction, grant)
             if node == "review":
                 raw.output.pop("risk")
             return raw
@@ -285,11 +285,11 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler()
         offered = []
 
-        def exhaust_review(node, model, state, instruction):
+        def exhaust_review(node, model, state, instruction, grant):
             if node == "review":
                 offered.append(model.name)
                 return Outcome("quota")
-            return handler(node, model, state, instruction)
+            return handler(node, model, state, instruction, grant)
 
         config = load_config()
         config.nodes["review"] = replace(config.nodes["review"], other_family_from=None)
@@ -302,10 +302,10 @@ class DeliveryTest(unittest.TestCase):
     def test_quota_uses_the_next_model(self):
         handler = ScriptHandler()
 
-        def exhaust_claude(node, model, state, instruction):
+        def exhaust_claude(node, model, state, instruction, grant):
             if model and model.name == "claude-opus-5-5-high":
                 return Outcome("quota")
-            return handler(node, model, state, instruction)
+            return handler(node, model, state, instruction, grant)
 
         result = walk(exhaust_claude)
         self.assertEqual(result["models_used"]["triage"], "grok-4.7-high")
@@ -320,7 +320,7 @@ class DeliveryTest(unittest.TestCase):
         )
 
     def test_every_model_exhausted_raises(self):
-        def exhaust(node, model, state, instruction):
+        def exhaust(node, model, state, instruction, grant):
             return Outcome("quota")
 
         with self.assertRaises(QuotaExhausted):
@@ -372,7 +372,7 @@ class DeliveryTest(unittest.TestCase):
     def test_worker_gets_absolute_read_only_method_paths(self):
         script = ScriptHandler(triage="spec")
 
-        def read_methods(node, model, state, instruction):
+        def read_methods(node, model, state, instruction, grant):
             paths = re.findall(r"^(?:Read |Use only lines \d+ through \d+ of )(/.*?\.md) ", instruction, re.M)
             if node != "verify":
                 self.assertTrue(paths)
@@ -382,7 +382,7 @@ class DeliveryTest(unittest.TestCase):
                 self.assertTrue(text)
                 if text.startswith("Synthetic method."):
                     self.assertEqual(method.stat().st_mode & 0o222, 0)
-            return script(node, model, state, instruction)
+            return script(node, model, state, instruction, grant)
 
         result = walk(read_methods)
         self.assertEqual(result["stop"], "verified")

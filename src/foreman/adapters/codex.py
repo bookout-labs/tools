@@ -9,6 +9,7 @@ from typing import ClassVar
 from pydantic import TypeAdapter, ValidationError
 
 from foreman._raw import is_dict
+from foreman.grant import Editing
 from foreman.adapters import Call, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.config import ModelSpec
 from foreman.dispatch import InvalidOutput
@@ -91,7 +92,7 @@ class CodexAdapter:
     def command(self, call: Call) -> list[str]:
         schema_path = call.temp_dir / "output-schema.json"
         schema_path.write_text(call.schema, encoding="utf-8")
-        sandbox = "workspace-write" if call.edit else "read-only"
+        sandbox = "workspace-write" if isinstance(call.grant, Editing) else "read-only"
         effort = ["-c", f"model_reasoning_effort={self.model.effort}"] if self.model.effort else []
         return [
             "codex", "exec", "-m", self.model.model_id, *effort, "--ephemeral",

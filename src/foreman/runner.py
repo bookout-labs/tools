@@ -18,6 +18,7 @@ from foreman.config import PstackPin, load_config
 from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
+from foreman.grant import parse_check
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import Forge
 from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
@@ -149,6 +150,7 @@ def run_live_delivery(
     fact_record: str | None = None,
     presentation: RunPresentation | None = None,
 ) -> DeliveryResult:
+    parse_check(check)
     if presentation is not None:
         presentation.restored = None
         presentation.updates.clear()

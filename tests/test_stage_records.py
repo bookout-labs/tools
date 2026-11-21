@@ -137,6 +137,7 @@ class StageOwnershipTests(unittest.TestCase):
     def test_every_registered_stage_owns_its_update(self):
         from foreman.delivery import stage_update
         from foreman.dry_run import ScriptHandler
+        from foreman.grant import ReadOnly
         from foreman.stage_output import STAGE_OUTPUTS, parse_output
 
         state = {"repo": "org/repo", "check": "", "path": [], "issue_kind": "slice", "review_rounds": 2}
@@ -147,7 +148,7 @@ class StageOwnershipTests(unittest.TestCase):
                     with self.assertRaisesRegex(NotImplementedError, "candidate-bound"):
                         stage_update(stage, parse_output(contract, {"findings": [], "notes": [], "resolutions": []}), state, "model")
                     continue
-                output = parse_output(contract, handler(stage, None, state, "").output)
+                output = parse_output(contract, handler(stage, None, state, "", ReadOnly()).output)
                 update = stage_update(stage, output, state, "model")
                 key = {"implement": "implementation", "review": "findings"}.get(stage, stage)
                 self.assertIn(key, update)

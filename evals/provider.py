@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 from foreman.adapters import Outcome  # noqa: E402
 from foreman.config import ModelSpec  # noqa: E402
 from foreman.delivery import DeliveryState, run_delivery  # noqa: E402
+from foreman.grant import Grant  # noqa: E402
 from foreman.dispatch import FailoverDispatcher, Handler  # noqa: E402
 from foreman.dry_run import ScriptHandler  # noqa: E402
 from foreman.measure import grade, propose, selected  # noqa: E402
@@ -43,10 +44,10 @@ def _stop(handler: Handler, *, slice: dict[str, object] | None = None) -> str:
 def _with_quota_gap() -> str:
     handler = ScriptHandler()
 
-    def exhaust_claude(node: str, model: ModelSpec | None, state: DeliveryState, instruction: str) -> Outcome:
+    def exhaust_claude(node: str, model: ModelSpec | None, state: DeliveryState, instruction: str, grant: Grant) -> Outcome:
         if model and model.name == "claude-opus-5-5-high":
             return Outcome("quota")
-        return handler(node, model, state, instruction)
+        return handler(node, model, state, instruction, grant)
 
     result = _walk(exhaust_claude, slice=FIELD_SLICE)
     models = result.get("models_used", {})
@@ -61,9 +62,9 @@ def _settled_review() -> str:
     handler = ScriptHandler(reviews=["changes", "approve", "approve"])
     count = 0
 
-    def review(node, model, state, instruction):
+    def review(node, model, state, instruction, grant):
         nonlocal count
-        reply = handler(node, model, state, instruction)
+        reply = handler(node, model, state, instruction, grant)
         if node == "review":
             count += 1
             finding = {"id": "check" if count == 1 else "next", "kind": "docs", "fix": "Add a check",

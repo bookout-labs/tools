@@ -30,7 +30,8 @@ from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
-from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
+from foreman.grant import Editing, ReadOnly, grant_from_record, parse_check
+from foreman.skill_rules import StageMethods, SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
     CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
@@ -477,9 +478,10 @@ def compile_delivery(
             instruction = prompts[name]
             if isinstance(run, LiveRun) and methods_root is None:
                 raise RuntimeError("Delivery execution requires a compiled skill export.")
-            methods_text, methods = stage_methods(name, state, methods_root) if methods_root is not None else ("", [])
-            if methods_text:
-                instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
+            selected = stage_methods(name, state, methods_root) if methods_root is not None else StageMethods("", [], ())
+            grant = Editing(selected.read_roots, parse_check(state.get("check", ""))) if name == "implement" else ReadOnly(selected.read_roots)
+            if selected.text:
+                instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{selected.text}"
             if name in {"implement", "review"}:
                 instruction += f"\n\nFact record in this checkout: {state.get('fact_record', MANIFEST_PATH)}"
             gate = history({"rounds": state.get("review_findings", [])}).gate if state.get("review") == "changes" else None
@@ -535,7 +537,7 @@ def compile_delivery(
             return {"verify_failures": failure_count(state, "verify_failures"),
                     "proof_failures": failure_count(state, "proof_failures"), "spec_failures": failure_count(state, "spec_failures"),
                     "review_run_id": state.get("review_run_id") or uuid4().hex, "dispatch_plan": DispatchPlan(
-                models=[model.name for model in models], instruction=instruction, methods=methods,
+                models=[model.name for model in models], instruction=instruction, methods=selected.methods, grant=grant.record(),
                 target=review_context[1] if review_context else None,
                 scope=review_context[2].record() if review_context else None,
             ).record(), "pending_dispatch": PendingDispatch(stage=name, index=0, quota_model=None).record()}
@@ -564,8 +566,14 @@ def compile_delivery(
             if name == "review":
                 for key in ("review_findings", "settled_rulings", *(("findings", "detail", "implementation") if history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])}).rounds else ())):
                     worker_state.pop(key, None)
+            if "grant" in plan:
+                grant = grant_from_record(plan["grant"])
+            else:
+                # Legacy checkpoints predate grants; use the current pinned method roots.
+                roots = stage_methods(name, state, methods_root).read_roots if methods_root is not None else ()
+                grant = Editing(roots, parse_check(state.get("check", ""))) if name == "implement" else ReadOnly(roots)
             outcome, accepted_model = dispatcher.run(
-                name, ModelSpec.parse(models[pending["index"]]) if models else None, worker_state, plan["instruction"], on_attempt=record_attempt,
+                name, ModelSpec.parse(models[pending["index"]]) if models else None, worker_state, plan["instruction"], grant, on_attempt=record_attempt,
             )
             model = accepted_model.name if accepted_model else None
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
@@ -1151,7 +1159,7 @@ def run_delivery(
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
     if dispatcher is None:
         dispatcher = FailoverDispatcher(
-            lambda node, model, state, instruction: Outcome(
+            lambda node, model, state, instruction, grant: Outcome(
                 "ran", {"triage": "implement", "slice": None, "human_question": None},
             ),
         )

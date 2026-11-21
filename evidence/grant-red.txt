@@ -1,0 +1,74 @@
+EEEEEEF
+======================================================================
+ERROR: test_both_grants_survive_json_checkpoint_round_trip (tests.test_grant.GrantTest.test_both_grants_survive_json_checkpoint_round_trip)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-c45869e2-768e404e5ae28487/.scratch.anbst87b/tests/test_grant.py", line 44, in test_both_grants_survive_json_checkpoint_round_trip
+    from foreman.grant import Editing, ReadOnly, grant_from_record, parse_check
+ModuleNotFoundError: No module named 'foreman.grant'
+
+======================================================================
+ERROR: test_checks_are_canonical_commands (tests.test_grant.GrantTest.test_checks_are_canonical_commands)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-c45869e2-768e404e5ae28487/.scratch.anbst87b/tests/test_grant.py", line 25, in test_checks_are_canonical_commands
+    from foreman.grant import CheckCommand, parse_check
+ModuleNotFoundError: No module named 'foreman.grant'
+
+======================================================================
+ERROR: test_every_named_method_is_readable_under_an_export_or_package_root (tests.test_grant.GrantTest.test_every_named_method_is_readable_under_an_export_or_package_root) (work_kind='bug_fix')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-c45869e2-768e404e5ae28487/.scratch.anbst87b/tests/test_grant.py", line 77, in test_every_named_method_is_readable_under_an_export_or_package_root
+    paths = [Path(path) for path in re.findall(r"(?:Read |of )(/\S+\.md)", methods.text)]
+                                                                           ^^^^^^^^^^^^
+AttributeError: 'tuple' object has no attribute 'text'
+
+======================================================================
+ERROR: test_every_named_method_is_readable_under_an_export_or_package_root (tests.test_grant.GrantTest.test_every_named_method_is_readable_under_an_export_or_package_root) (work_kind='perf_issue')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-c45869e2-768e404e5ae28487/.scratch.anbst87b/tests/test_grant.py", line 77, in test_every_named_method_is_readable_under_an_export_or_package_root
+    paths = [Path(path) for path in re.findall(r"(?:Read |of )(/\S+\.md)", methods.text)]
+                                                                           ^^^^^^^^^^^^
+AttributeError: 'tuple' object has no attribute 'text'
+
+======================================================================
+ERROR: test_graph_sends_stage_grants_through_review_fix_and_quota_fallback (tests.test_grant.GrantTest.test_graph_sends_stage_grants_through_review_fix_and_quota_fallback)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-c45869e2-768e404e5ae28487/.scratch.anbst87b/tests/test_grant.py", line 86, in test_graph_sends_stage_grants_through_review_fix_and_quota_fallback
+    from foreman.grant import Editing, ReadOnly, parse_check
+ModuleNotFoundError: No module named 'foreman.grant'
+
+======================================================================
+ERROR: test_shell_programs_cannot_be_granted_as_commands (tests.test_grant.GrantTest.test_shell_programs_cannot_be_granted_as_commands)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-c45869e2-768e404e5ae28487/.scratch.anbst87b/tests/test_grant.py", line 36, in test_shell_programs_cannot_be_granted_as_commands
+    from foreman.grant import UngrantableCheck, parse_check
+ModuleNotFoundError: No module named 'foreman.grant'
+
+======================================================================
+FAIL: test_ungrantable_live_check_is_rejected_before_graph_compilation (tests.test_grant.GrantTest.test_ungrantable_live_check_is_rejected_before_graph_compilation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-c45869e2-768e404e5ae28487/.scratch.anbst87b/tests/test_grant.py", line 65, in test_ungrantable_live_check_is_rejected_before_graph_compilation
+    run_live_delivery(repo="a/b", issue=1, check="a; b", checkpoint=root / "run.sqlite",
+  File "/Users/booko/.t3/worktrees/tools-graph/t3-c45869e2-768e404e5ae28487/.scratch.anbst87b/src/foreman/runner.py", line 159, in run_live_delivery
+    graph = compile_delivery(
+            ^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py", line 1139, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py", line 1143, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py", line 1198, in _execute_mock_call
+    raise effect
+AssertionError: graph compiled
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.280s
+
+FAILED (failures=1, errors=6)

@@ -6,6 +6,7 @@ from typing import ClassVar, Literal
 from pydantic import Field, TypeAdapter, ValidationError
 from typing_extensions import override
 
+from foreman.grant import Editing
 from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.usd import CostUsd, usd_text
 
@@ -74,5 +75,5 @@ class ClaudeAdapter(NativeAdapter):
     def command(self, call: Call) -> list[str]:
         effort = ["--effort", self.model.effort] if self.model.effort else []
         budget = ["--max-budget-usd", usd_text(call.budget_usd)] if call.budget_usd is not None else []
-        return ["claude", "--model", self.model.model_id, *effort, "--permission-mode", self.permission_mode(call),
+        return ["claude", "--model", self.model.model_id, *effort, "--permission-mode", ("acceptEdits" if isinstance(call.grant, Editing) else "plan"),
                 *budget, "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]
