@@ -34,8 +34,9 @@ class Requirement(StrictModel):
     integration_id: int | None = Field(default=None, validation_alias=AliasChoices("integration_id", "app_id"))
 
 
-class Parameters(StrictModel):
+class Parameters(StrictModel, extra="allow"):
     required_status_checks: list[Requirement] = Field(default_factory=list[Requirement])
+    merge_method: Literal["MERGE", "REBASE", "SQUASH"] | None = None
 
 
 class Rule(StrictModel):
@@ -129,3 +130,40 @@ class BranchTip(StrictModel):
 class BranchPolicy(StrictModel):
     commit: BranchTip
     protection: Protection
+
+
+class QueueCommit(StrictModel):
+    oid: str
+
+
+class QueueEntry(StrictModel):
+    id: str
+    state: str
+    headCommit: QueueCommit
+
+
+class AutoRequest(StrictModel):
+    enabledAt: str
+    mergeMethod: Literal["MERGE", "REBASE", "SQUASH"]
+
+
+class QueueSnapshot(StrictModel):
+    number: int
+    state: str
+    headRefOid: str
+    baseRefOid: str
+    baseRefName: str
+    isDraft: bool
+    autoMergeRequest: AutoRequest | None
+    mergeQueueEntry: QueueEntry | None
+
+
+class MergeReceipt(StrictModel):
+    repo: str
+    pr: int
+    source_head: str
+    base: str
+    method: Literal["MERGE", "REBASE", "SQUASH"]
+    queue_policy: Parameters
+    identity: str
+    status: str

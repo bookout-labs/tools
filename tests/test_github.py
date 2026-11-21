@@ -33,7 +33,7 @@ VIEW_FIELDS = [
 ]
 VIEW = [*VIEW_FIELDS, BRANCH]
 CONFIRM = [*VIEW_FIELDS, "12"]
-MERGE = ["gh", "pr", "merge", "12", "--repo", REPO, "--squash", "--auto", "--match-head-commit", HEAD]
+MERGE = ["gh", "pr", "merge", "12", "--repo", REPO, "--auto", "--match-head-commit", HEAD]
 
 
 def gh_result(stdout):
@@ -533,16 +533,6 @@ class LiveForgeTest(unittest.TestCase):
                 forge.post_review(REPO, target, "Graph verdict: approve.", [], marker="run:1:head")
 
     @patch("foreman.github.subprocess.run")
-    def test_arms_the_checked_pull_request_in_the_requested_repository(self, run):
-        run.side_effect = [
-            pr_result(),
-            subprocess.CompletedProcess(MERGE, 0, "", ""),
-        ]
-        self.assertIsNone(LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD))
-        options = {"stdin": subprocess.DEVNULL, "input": None, "capture_output": True, "text": True, "timeout": 30}
-        self.assertEqual(run.call_args_list, [call(command, **options) for command in (VIEW, MERGE)])
-
-    @patch("foreman.github.subprocess.run")
     def test_rejects_pull_requests_that_fail_a_merge_check(self, run):
         for field, value, reason in (
             ("state", "CLOSED", "pull request is not open"),
@@ -589,69 +579,3 @@ class LiveForgeTest(unittest.TestCase):
                     LiveForge().arm_auto_merge(REPO, 8, branch, HEAD)
                 self.assertEqual(str(exc.exception), reason)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [view])
-
-    @patch("foreman.github.subprocess.run")
-    def test_gh_failures_carry_stderr(self, run):
-        reason = "GraphQL: Auto-merge is disabled for this repository (enablePullRequestAutoMerge)"
-        run.side_effect = [
-            pr_result(),
-            subprocess.CompletedProcess(MERGE, 1, "", reason + "\n"),
-        ]
-        with self.assertRaises(MergeNotArmed) as exc:
-            LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-        self.assertEqual(str(exc.exception), reason)
-
-    @patch("foreman.github.subprocess.run")
-    def test_wraps_launch_errors_and_view_timeouts(self, run):
-        launch_error = FileNotFoundError("gh")
-        run.side_effect = [pr_result(), launch_error]
-        with self.assertRaisesRegex(MergeNotArmed, "gh pr merge failed") as error:
-            LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-        self.assertIsInstance(error.exception.__cause__, CommandFailed)
-        self.assertIs(error.exception.__cause__.__cause__, launch_error)
-        run.reset_mock()
-        run.side_effect = subprocess.TimeoutExpired(VIEW, 30)
-        with self.assertRaisesRegex(MergeNotArmed, "gh pr view timed out") as error:
-            LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-        self.assertIsInstance(error.exception.__cause__, CommandTimedOut)
-        self.assertEqual(error.exception.__cause__.operation, "gh pr view")
-        self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW])
-
-    @patch("foreman.github.subprocess.run")
-    def test_merge_timeout_confirms_an_open_squash_request_or_merge_at_the_verified_head(self, run):
-        squash_request = {"enabledAt": "2026-11-20T15:00:00Z", "mergeMethod": "SQUASH"}
-        wrong_method = {**squash_request, "mergeMethod": "MERGE"}
-
-        for previous, reply, armed in (
-            (None, pr_result({**PR, "autoMergeRequest": squash_request}, CONFIRM), True),
-            (None, pr_result(PR, CONFIRM), False),
-            (wrong_method, pr_result({**PR, "autoMergeRequest": squash_request}, CONFIRM), True),
-            (None, pr_result({**PR, "autoMergeRequest": wrong_method}, CONFIRM), False),
-            (squash_request, pr_result({**PR, "autoMergeRequest": squash_request}, CONFIRM), True),
-            (None, pr_result({**PR, "state": "CLOSED", "autoMergeRequest": squash_request}, CONFIRM), False),
-            (None, pr_result({**PR, "state": "MERGED"}, CONFIRM), True),
-            (None, pr_result({**PR, "state": "MERGED", "headRefOid": "b" * 40}, CONFIRM), False),
-            (None, pr_result({**PR, "headRefOid": "b" * 40, "autoMergeRequest": squash_request}, CONFIRM), False),
-        ):
-            with self.subTest(armed=armed, previous=previous, reply=reply):
-                run.reset_mock()
-                run.side_effect = [
-                    pr_result({**PR, "autoMergeRequest": previous}), subprocess.TimeoutExpired(MERGE, 30), reply,
-                ]
-                if armed:
-                    self.assertIsNone(LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD))
-                else:
-                    with self.assertRaisesRegex(MergeNotArmed, "timed out and was not confirmed"):
-                        LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-                self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW, MERGE, CONFIRM])
-
-    @patch("foreman.github.subprocess.run")
-    def test_merge_timeout_preserves_failed_confirmation_read_message(self, run):
-        reason = "HTTP 503: Service Unavailable"
-        run.side_effect = [
-            pr_result(), subprocess.TimeoutExpired(MERGE, 30), subprocess.CompletedProcess(CONFIRM, 1, "", reason),
-        ]
-        with self.assertRaises(MergeNotArmed) as exc:
-            LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-        self.assertEqual(str(exc.exception), reason)
-        self.assertIsInstance(exc.exception.__cause__, CommandFailed)

@@ -172,6 +172,7 @@ class DeliveryFields(TypedDict, total=False):
     verified_head: str
     repair_head: str | None
     readiness_observation: dict[str, JsonValue]
+    merge_receipt: dict[str, JsonValue]
     merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
@@ -1004,14 +1005,14 @@ def compile_delivery(
                     return {**merge_halted(READINESS_HALTS[observation.outcome], observation.detail()),
                             "readiness_observation": observation.model_dump(mode="json")}
                 try:
-                    forge.arm_auto_merge(repo, issue, worktree.branch, head)
+                    merge_receipt = forge.arm_auto_merge(repo, issue, worktree.branch, head).model_dump(mode="json")
                 except MergeNotArmed as exc:
                     return merge_halted("merge_not_armed", str(exc))
                 try:
                     confirmed = forge.readiness(repo, issue, worktree.branch, head)
                 except ForgeError as exc:
-                    return {**merge_halted("readiness_unavailable", str(exc)), "merge": "armed"}
-                update: DeliveryUpdate = {"merge": "armed", "path": ["merge"], "readiness_observation": confirmed.model_dump(mode="json")}
+                    return {**merge_halted("readiness_unavailable", str(exc)), "merge": "armed", "merge_receipt": merge_receipt}
+                update: DeliveryUpdate = {"merge": "armed", "merge_receipt": merge_receipt, "path": ["merge"], "readiness_observation": confirmed.model_dump(mode="json")}
                 if confirmed.outcome != "ready":
                     update.update(halted(READINESS_HALTS[confirmed.outcome], confirmed.detail(), "merge"))
                 elif (confirmed.pr.number, confirmed.pr.head.sha, confirmed.pr.base.ref, confirmed.pr.state) != (observation.pr.number, observation.pr.head.sha, observation.pr.base.ref, observation.pr.state):

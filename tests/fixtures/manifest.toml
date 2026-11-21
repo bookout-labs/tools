@@ -915,3 +915,10 @@ version = "2022-11-28"
 kind = "captured_run"
 argv = ["gh", "api", "repos/bookout-labs/tools/pulls/97"]
 notes = "API excerpts captured 2026-11-21. Contract source: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request (pull_request GITHUB_SHA identifies the synthetic merge). The JSON records all exact queried URLs. PR base.sha can differ from the current base tip; the synthetic merge parents are validated against branches/{base}.commit.sha. A head-attached check run and its check_suite id identify source-head evidence, not the synthetic tested commit. Capture uses additional gh api GETs for the branch, merge commit and source check runs named in sources in the JSON."
+
+[fixtures."github/merge-queue-help.txt"]
+tool = "gh"
+version = "gh version 2.102.0 (2026-09-30)"
+kind = "captured_run"
+argv = ["gh", "pr", "merge", "--help"]
+notes = "Exact three-line queue paragraph excerpt. Queue admission needs no strategy flag; required checks determine auto-merge versus immediate queue entry. No bypass flag is used."
