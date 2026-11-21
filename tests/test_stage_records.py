@@ -23,7 +23,7 @@ class StageRecordTests(unittest.TestCase):
             (CandidateSlice, CandidateSliceRecord, slice),
             (SpecCandidate, SpecCandidateRecord, candidate.record()),
             (PendingDispatch, PendingDispatchRecord, {"stage": "triage", "index": 0, "quota_model": None}),
-            (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)]}}),
+            (DispatchPlan, DispatchPlanRecord, {"budget_usd": None, "models": [], "instruction": "test", "methods": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)]}}),
             (AttemptUsage, AttemptUsageRecord, usage),
             (Attempt, AttemptRecord, {"stage": "triage", "model": None, "commit": "pin", "methods": [], "outcome": "ran", "usage": usage}),
             (ConstraintResult, ConstraintResultRecord, {"constraint": "positive", "rejected": True}),
