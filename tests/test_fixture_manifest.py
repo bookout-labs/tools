@@ -176,9 +176,13 @@ class RecordedEvidenceTest(unittest.TestCase):
             for fixture, claim in claims.items()
         }
         expected["claude/help.txt"].insert(0, "claude-max-budget-usd-flag")
+        expected["claude/budget-and-quota-source.txt"] = [
+            "tool-fact-dfcf5e01dec739b4551d7d79c786f8fffdc94b0ee347dc044dc34e6e2c1d13b1",
+            "tool-fact-4aa91dac314f4b136a516da99e5246d6430b90254873b854ec5f99c19212ff2e",
+        ]
         source = Path(__file__).with_name("fixtures")
         self.manifest.write_bytes((source / "manifest.toml").read_bytes())
-        for fixture in claims:
+        for fixture in expected:
             destination = self.fixtures / fixture
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes((source / fixture).read_bytes())

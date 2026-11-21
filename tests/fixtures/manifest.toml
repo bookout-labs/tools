@@ -64,6 +64,14 @@ kind = "captured_run"
 argv = ["claude", "--help"]
 claim_ids = ["claude-max-budget-usd-flag", "tool-fact-2a92f2eddc7bfdf6f61eec3f700b8512cc517afc17977276c8a0000775275e13"]
 
+[fixtures."claude/budget-and-quota-source.txt"]
+tool = "claude"
+version = "2.1.329"
+kind = "quoted_source"
+sources = ["https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz"]
+claim_ids = ["tool-fact-dfcf5e01dec739b4551d7d79c786f8fffdc94b0ee347dc044dc34e6e2c1d13b1", "tool-fact-4aa91dac314f4b136a516da99e5246d6430b90254873b854ec5f99c19212ff2e"]
+notes = "Verbatim installed-binary source for budget parsing and the shared result emitter, with byte offsets and binary hash. Decimal text has no fixed scale; Number conversion is not arbitrary-precision arithmetic. Quota results carry session-ledger cost fields; incomplete ledgers still halt usage_unknown."
+
 [fixtures."claude/max_budget.json"]
 tool = "claude"
 version = "2.1.329"
@@ -1142,3 +1150,10 @@ argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mo
 returncode = 0
 claim_ids = ["tool-fact-2a9a216d957eeb93fab68597f145c04c8bf20d36b3973d9ffb555e3fdb3dd24f"]
 notes = "grok CLI grok 1.0.89 (28be5bb1bf65) [stable] accepts a strict schema containing minItems and exclusiveMinimum. Live probe on 2026-11-21. Strict schema, argv, stdout and stderr are in the fixture. Session IDs, checkout paths and credential expiry are scrubbed. Schema acceptance only; no claim about model enforcement of invalid answers."
+
+[fixtures."review/escaped-smoke.json"]
+kind = "quoted_source"
+tool = "claude"
+version = "2.1.329 / claude-opus-5-5 high"
+sources = ["https://github.com/bookout-labs/foreman-smoke/pull/29"]
+notes = "Exact StructuredOutput tool input from the 2026-11-21 T1 smoke, session 10647253-43b2-4668-8548-6395fadc3dd9. The captured pre-escaped detail is rejected by the current review contract after #142."

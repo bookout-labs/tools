@@ -48,7 +48,17 @@ forge.post_review = post
 script = ScriptHandler()
 queue = iter(json.loads(outcomes))
 calls = []
+before_rejection = None
+posts_before_rejection = None
+def forbidden(*args, **kwargs):
+    raise AssertionError("terminal resume attempted an external effect")
+if legacy == "reject_resume":
+    forge.post_review = forbidden
+    forge.arm_auto_merge = forbidden
 def worker(node, model, state, instruction):
+    global before_rejection, posts_before_rejection
+    if legacy == "reject_resume":
+        forbidden()
     if node == "implement":
         builder = ("claude" if state.get("review") == "changes" else "gpt") if author == "mixed" else author
         if model.family != builder:
@@ -57,6 +67,21 @@ def worker(node, model, state, instruction):
     if node == "review":
         calls.append(model.name)
         kind = next(queue)
+        if kind in {"placeholder", "unresolved", "rejected_failed"}:
+            with SqliteSaver.from_conn_string(str(root / "run.sqlite3")) as saver:
+                before_rejection = saver.get({"configurable": {"thread_id": "example/engine#8"}})["channel_values"]
+            posts_before_rejection = list(posted)
+            usage = Usage(input_tokens=11, output_tokens=7, cache_read_input_tokens=5,
+                          cache_creation_input_tokens=3, total_cost_usd=0.125)
+            if kind == "rejected_failed":
+                return Outcome("failed", detail="review JSON was truncated", usage=usage)
+            if kind == "placeholder":
+                payload = json.loads((Path(sys.path[0]) / "fixtures/review/placeholder-99.json").read_text())
+            else:
+                payload = script(node, model, state, instruction).output
+                payload["resolutions"] = []
+                payload["risk"] = {**payload["risk"], "level": "high"}
+            return Outcome("ran", payload, usage=usage)
         if kind == "interrupt":
             raise RuntimeError("review interrupted")
         if kind in {"quota", "cli_missing", "failed"}:
@@ -103,7 +128,7 @@ with patch("foreman.runner.load_config", return_value=config), patch("foreman.de
         print(json.dumps({"calls": calls}))
         sys.exit(99)
 
-print(json.dumps({"result": result, "calls": calls, "posted": posted, "posts": len(forge.reviews), "merges": len(forge.merge_calls)}))
+print(json.dumps({"result": result, "calls": calls, "posted": posted, "before_rejection": before_rejection, "posts_before_rejection": posts_before_rejection, "posts": len(forge.reviews), "merges": len(forge.merge_calls)}))
 sys.exit(run_exit_code(result))
 '''
 
@@ -187,7 +212,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                     self.assertIn(f"Reviewer {provenance['reviewer']}; implemented by {', '.join(provenance['contributors'])}; same-family fallback: preceding candidates unavailable.", result["posted"][-1]["body"])
                 if code:
                     self.assertEqual(result["result"]["halt"], "invalid_output")
-                    self.assertIn(f"review {models[-1]}:", result["result"]["halt_detail"])
+                    self.assertIn(f"review output from {models[-1]}:", result["result"]["halt_detail"])
                     self.assertEqual(result["result"]["review_rounds"], rounds)
                     self.assertEqual((result["posts"], result["merges"]), (posts, 0))
                     self.assertEqual(self.invoke(Path(directory), author, [], 1)["calls"], [])
@@ -270,3 +295,65 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 if pending:
                     self.assertEqual(result["result"]["halt"], "usage_unknown")
                     self.assertEqual(result["result"]["attempts"][-1]["model"], "grok-4.7-high")
+
+    def test_rejected_reviews_preserve_accepted_state_and_resume_terminally(self):
+        fields = ("review_findings", "review", "review_change_kind", "reviewed_head",
+                  "review_receipt", "risk", "findings", "settled_rulings", "detail")
+        cases = ((["placeholder"], 0), (["changes", "placeholder"], 1),
+                 (["changes", "unresolved"], 1), (["changes", "rejected_failed"], 1),
+                 (["changes", "quota", "placeholder"], 1),
+                 (["changes", "cli_missing", "rejected_failed"], 1))
+        for outcomes, rounds in cases:
+            with self.subTest(outcomes=outcomes), TemporaryDirectory(dir=self.root) as directory:
+                root = Path(directory)
+                first = self.invoke(root, "grok", outcomes, 1)
+                result, before = first["result"], first["before_rejection"]
+                self.assertIsNotNone(before)
+                for field in fields:
+                    self.assertEqual(field in result, field in before, field)
+                    self.assertEqual(result.get(field), before.get(field), field)
+                self.assertEqual(result["models_used"], before["models_used"])
+                self.assertEqual(result["attempts"][:-1], before["attempts"])
+                self.assertEqual(result["path"][-2:], ["review", "done"])
+                self.assertEqual(result["path"].count("implement"), rounds + 1)
+                self.assertEqual(result["path"].count("verify"), rounds + 1)
+                self.assertEqual(result["review_rounds"], rounds)
+                self.assertEqual(len(result.get("review_findings", [])), rounds)
+                self.assertEqual(first["posted"], first["posts_before_rejection"])
+                self.assertEqual((first["posts"], first["merges"]), (rounds, 0))
+                self.assertIsNone(result["pending_dispatch"])
+                self.assertEqual(result["halt"], "invalid_output")
+                attempt = result["attempts"][-1]
+                self.assertEqual(attempt["stage"], "review")
+                self.assertEqual(attempt["outcome"], "failed" if outcomes[-1] == "rejected_failed" else "ran")
+                self.assertEqual(attempt["usage"], {"input": 11, "output": 7, "cache_read": 5,
+                                                   "cache_creation": 3, "cost_usd": 0.125})
+                self.assertNotIn("provenance", attempt)
+                prefix = f"review output from {attempt['model']}: "
+                self.assertTrue(result["halt_detail"].startswith(prefix))
+                if outcomes[-1] == "placeholder":
+                    self.assertIn("risk.alignment", result["halt_detail"][len(prefix):])
+                elif outcomes[-1] == "rejected_failed":
+                    self.assertEqual(result["halt_detail"], prefix + "review JSON was truncated")
+                else:
+                    self.assertIn("resolution", result["halt_detail"][len(prefix):].lower())
+                review_attempts = [a for a in result["attempts"] if a["stage"] == "review"]
+                self.assertEqual(len(review_attempts), len(outcomes))
+                if rounds:
+                    accepted = result["review_findings"][0]
+                    self.assertEqual(result["review"], "changes")
+                    self.assertEqual(result["review_change_kind"], "blocking")
+                    self.assertEqual(accepted["provenance"], review_attempts[0]["provenance"])
+                    self.assertEqual(result["models_used"]["review"], review_attempts[0]["model"])
+                    self.assertIn("Add a check.", first["posted"][0]["body"])
+                    self.assertEqual(result["review_receipt"]["id"], 1)
+                    if len(outcomes) == 3:
+                        self.assertNotEqual(attempt["model"], result["models_used"]["review"])
+                else:
+                    self.assertNotIn("review", result["models_used"])
+                    for field in fields:
+                        self.assertNotIn(field, result)
+                resumed = self.invoke(root, "grok", [], 1, "reject_resume")
+                self.assertEqual(resumed["result"], result)
+                self.assertEqual((resumed["calls"], resumed["posted"], resumed["posts"], resumed["merges"]),
+                                 ([], [], 0, 0))

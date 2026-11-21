@@ -1,5 +1,6 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
+from decimal import Decimal
 import json
 import operator
 from uuid import uuid4
@@ -14,7 +15,6 @@ from typing import Annotated, Literal, NotRequired, Protocol, cast
 import re
 import textwrap
 
-from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -25,6 +25,7 @@ from pydantic import JsonValue, TypeAdapter, ValidationError, PlainValidator
 from typing_extensions import TypedDict
 
 from foreman.adapters import Outcome
+from foreman.budget import CostUnknown, Exhausted, Remaining, claude_spend, dollar_admission
 from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, contributors_for, family, load_config, order_for
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.dispatch import Handler, InvalidOutput, clean_outcome
@@ -241,12 +242,41 @@ def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
     return {"halt": cast(Halt, reason.value), "halt_detail": detail, "watch": None, "path": [path] if path else []}
 
 
-def budget_halt(state: DeliveryState, attempts: list[AttemptRecord], stage: str) -> DeliveryUpdate:
-    last = attempts[-1]
-    detail = (f"Run used {run_tokens(attempts)} tokens; cap is {state['token_cap']}. "
-              f"Last attempt: {last['stage']} {last['model']} used {run_tokens([last])}. "
-              "An in-flight attempt can overshoot the cap.")
-    return halted(Halt.budget_exceeded, detail, stage)
+def dollar_detail(state: DeliveryState, attempts: list[AttemptRecord]) -> str:
+    spend = claude_spend(attempts)
+    detail = f"Run Claude spend: ${spend}." if spend is not None else "Run Claude spend: unknown."
+    if (limit := state.get("max_budget_usd")) is not None:
+        detail += f" Dollar allowance: ${limit}."
+    return detail
+
+
+def dollar_admission_for(state: DeliveryState, attempts: list[AttemptRecord]) -> Remaining | Exhausted | CostUnknown | None:
+    limit = state.get("max_budget_usd")
+    return dollar_admission(BudgetUsd(Decimal(limit)), attempts) if limit is not None else None
+
+
+def admission_stop(
+    state: DeliveryState, attempts: list[AttemptRecord], stage: str,
+    admission: Remaining | Exhausted | CostUnknown | None,
+) -> DeliveryUpdate | None:
+    if run_tokens(attempts) >= state["token_cap"]:
+        last = attempts[-1]
+        detail = (f"Run used {run_tokens(attempts)} tokens; cap is {state['token_cap']}. "
+                  f"Last attempt: {last['stage']} {last['model']} used {run_tokens([last])}. "
+                  "An in-flight attempt can overshoot the cap.")
+        return halted(Halt.budget_exceeded, detail, stage)
+    match admission:
+        case CostUnknown():
+            detail = "A Claude attempt ran without a dollar cost. The allowance cannot be enforced."
+            return halted(Halt.usage_unknown, f"{detail} {dollar_detail(state, attempts)}", stage)
+        case Exhausted():
+            return halted(Halt.budget_exceeded, dollar_detail(state, attempts), stage)
+        case Remaining() | None:
+            return None
+
+
+def dispatch_budget(admission: Remaining | Exhausted | CostUnknown | None) -> str | None:
+    return usd_text(BudgetUsd(admission.usd)) if isinstance(admission, Remaining) else None
 
 
 def stage_text(name: str) -> str:
@@ -442,8 +472,9 @@ def compile_delivery(
 
     def bind(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-            if run_tokens(state.get("attempts", [])) >= state["token_cap"]:
-                return budget_halt(state, state.get("attempts", []), name)
+            admission = dollar_admission_for(state, state.get("attempts", []))
+            if stop := admission_stop(state, state.get("attempts", []), name, admission):
+                return stop
             current_run = runtime.context or run
             if name == "implement":
                 probe = current_run.environment or EnvironmentProbe(
@@ -524,6 +555,7 @@ def compile_delivery(
                     "proof_failures": failure_count(state, "proof_failures"), "spec_failures": failure_count(state, "spec_failures"),
                     "review_run_id": state.get("review_run_id") or uuid4().hex, "dispatch_plan": DispatchPlan(
                 models=[model.name for model in models], instruction=instruction, methods=methods,
+                budget_usd=dispatch_budget(admission),
                 target=review_context[1] if review_context else None,
                 scope=review_context[2].record() if review_context else None,
             ).record(), "pending_dispatch": PendingDispatch(stage=name, index=0, quota_model=None).record()}
@@ -562,20 +594,22 @@ def compile_delivery(
                 ),
             ).record()]
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
-            if outcome.kind == "budget_exhausted":
-                return {**stopped, **halted(Halt.budget_exceeded, f"{name} {model} exhausted its dollar budget. {outcome.detail}".strip(), name)}
             attempt_history = state.get("attempts", []) + attempts
+            if outcome.kind == "budget_exhausted":
+                return {**stopped, **halted(Halt.budget_exceeded, f"{name} {model} exhausted its dollar budget. {dollar_detail(state, attempt_history)} {outcome.detail}".strip(), name)}
             if outcome.kind == "ran" and outcome.usage is None:
                 return {**stopped, **halted(Halt.usage_unknown, unknown_usage(name, model), name)}
-            if run_tokens(attempt_history) >= state["token_cap"]:
-                return {**stopped, **budget_halt(state, attempt_history, name)}
+            admission = dollar_admission_for(state, attempt_history)
+            if stop := admission_stop(state, attempt_history, name, admission):
+                return {**stopped, **stop}
             index = pending["index"] + 1
             unavailable = ""
             if name == "review" and outcome.kind in {"quota", "cli_missing"}:
                 prior = state.get("halt_detail", "") + "; " if pending["index"] else ""
                 unavailable = f"{prior}review {model}: {outcome.kind}. {outcome.detail}".strip()
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):
-                retry: DeliveryUpdate = {"attempts": attempts, "pending_dispatch": PendingDispatch(
+                retry: DeliveryUpdate = {"attempts": attempts,
+                    "dispatch_plan": {**plan, "budget_usd": dispatch_budget(admission)}, "pending_dispatch": PendingDispatch(
                     stage=name, index=index,
                     quota_model=model if outcome.kind == "quota" else pending["quota_model"],
                 ).record()}
@@ -587,7 +621,7 @@ def compile_delivery(
             if outcome.kind == "cli_missing" and pending["quota_model"]:
                 outcome, model = Outcome("quota"), pending["quota_model"]
             if outcome.kind == "failed":
-                return {**stopped, **halted(Halt.invalid_output, f"{name} {model}: {outcome.detail}", name)}
+                return {**stopped, **halted(Halt.invalid_output, f"{name} output from {model or 'no model'}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
                 return {**stopped, **halted(Halt.cli_missing, outcome.detail, name)}
             if outcome.kind == "quota":
@@ -630,7 +664,7 @@ def compile_delivery(
                     rejected.update(halted(Halt.spec_cap, str(exc), name))
                 return rejected
             except InvalidOutput as exc:
-                return {**stopped, **halted(Halt.invalid_output, f"{name} {model}: {exc}" if name == "review" else str(exc), name)}
+                return {**stopped, **halted(Halt.invalid_output, f"{name} output from {model or 'no model'}: {exc}", name)}
 
             return update
 
@@ -1172,9 +1206,9 @@ def run_delivery(
                                     "skill_reason": exc.reason})
     from foreman.runner import snapshot_result
 
-    invocation: RunnableConfig = {"configurable": {"thread_id": uuid4().hex}}
-    graph.invoke(state, invocation, version="v2")
-    return snapshot_result(graph.get_state(invocation), saver)
+    thread_id = uuid4().hex
+    graph.invoke(state, {"configurable": {"thread_id": thread_id}}, version="v2")
+    return snapshot_result(graph.get_state({"configurable": {"thread_id": thread_id}}), saver)
 
 
 def diagram() -> str:

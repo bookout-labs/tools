@@ -6,13 +6,13 @@ from pathlib import Path
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
-from foreman.stage_output import MergeRiskRecord, SpecCheckOutput, StoredSlice, WorkKind
+from foreman.stage_output import DispatchPlan, MergeRiskRecord, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import PullRequest, Issue, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt, pull_request_command
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.workspace import WorktreeState, ReviewDiff, ImplementationCandidate, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope
 
-SCRIPTED_USAGE = Usage(input_tokens=1, output_tokens=1)
+SCRIPTED_USAGE = Usage(input_tokens=1, output_tokens=1, total_cost_usd=0.0)
 CLEAR = SpecCheckOutput(findings=[], notes=[], resolutions=[])
 
 DEFAULT_RISK: MergeRiskRecord = {
@@ -60,7 +60,8 @@ class ScriptHandler:
         self.calls: list[dict[str, str | None]] = []
 
     def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
-        self.calls.append({"node": node, "model": model.name if model else None, "instruction": instruction})
+        self.calls.append({"node": node, "model": model.name if model else None, "instruction": instruction,
+                           "budget_usd": DispatchPlan.model_validate(state["dispatch_plan"]).budget_usd if state.get("dispatch_plan") else None})
         if node == "triage":
             return Outcome("ran", {
                 "triage": self.triage, "work_kind": self.work_kind, "human_question": None,

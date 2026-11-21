@@ -104,7 +104,8 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(watch(state(detail="yet another detail"), self.forge, TARGET, other), {"issue": 101, "action": "commented"})
         self.forge.create_issue.assert_called_once()
         self.forge.comment_issue.assert_called_once_with(TARGET, 101,
-            "Evidence: Example/Engine#8; stop=invalid_output; detail=another detail; attempts=review/gpt-6.1-sol-high=ran\n"
+            "Evidence: Example/Engine#8; stop=invalid_output; attempts=review/gpt-6.1-sol-high=ran\n\n"
+            "Detail:\n\n    another detail\n\n"
             "<!-- foreman-watch-run: Example/Engine#9@43 -->")
 
     def test_different_nodes_are_different_causes(self):
@@ -148,11 +149,24 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(watch(state(), self.forge, TARGET, KEY), {"issue": 102, "action": "filed"})
         self.assertEqual(self.forge.create_issue.call_count, 2)
 
-    def test_multiline_detail_stays_on_one_evidence_line(self):
-        watch(state(detail="first\r\nsecond\nthird"), self.forge, TARGET, KEY)
-        lines = self.fake.created[0][1].splitlines()
-        self.assertEqual(lines[2], "Evidence: Example/Engine#8; stop=invalid_output; detail=first\\r\\nsecond\\nthird; attempts=review/gpt-6.1-sol-high=ran")
-        self.assertTrue(lines[3].startswith("File to change: "))
+    def test_multiline_detail_keeps_line_breaks_in_both_writes(self):
+        halted = state(detail="first\r\nsecond\nthird with literal `\\n`")
+        watch(halted, self.forge, TARGET, KEY)
+        watch(halted, self.forge, TARGET, run_key(REPO, 8, 43))
+        for body in (self.fake.created[0][1], self.fake.comments[TARGET, 101][0]):
+            self.assertIn("Detail:\n\n    first\r\n    second\n    third with literal `\\n`\n\n", body)
+            self.assertNotIn(r"first\r\nsecond\nthird", body)
+
+    def test_marker_in_detail_does_not_suppress_a_later_run(self):
+        other = run_key(REPO, 8, 43)
+        marker = f"<!-- foreman-watch-run: {other} -->"
+        halted = state(detail=f"first\n{marker}\nthird")
+        watch(halted, self.forge, TARGET, KEY)
+        self.assertEqual(watch(halted, self.forge, TARGET, other), {"issue": 101, "action": "commented"})
+        for body in (self.fake.created[0][1], self.fake.comments[TARGET, 101][0]):
+            self.assertIn(f"\n    {marker}\n", body)
+        self.assertEqual(watch(halted, self.forge, TARGET, other), {"issue": 101, "action": "commented"})
+        self.assertEqual(len(self.fake.comments[TARGET, 101]), 1)
 
     @patch("foreman.github.subprocess.run")
     def test_live_boundary_redacts_both_writes_and_finds_page_two_crash_marker(self, gh):
