@@ -154,7 +154,7 @@ def run_live_delivery(
                 else:
                     if detail := _blocker_detail(client, repo, issue, item):
                         return {**initial, "path": ["done"], "stop": "blocked", "halt_detail": detail}
-                    initial["slice"] = item.model_dump(exclude_unset=True)
+                    initial["slice"] = item.record()
                     if item.work_kind is not None:
                         initial["work_kind"] = item.work_kind
             invoke(initial, initial)
