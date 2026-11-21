@@ -555,6 +555,19 @@ def compile_delivery(
             if name == "review":
                 for key in ("review_findings", "settled_rulings", *(("findings", "detail", "implementation") if history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])}).rounds else ())):
                     worker_state.pop(key, None)
+            citation_context = None
+            if name == "review":
+                try:
+                    if isinstance(run, LiveRun):
+                        assert plan["target"] is not None
+                        target = plan["target"]
+                        citation_context = run.workspace.review_context(target["baseRefOid"], target["headRefOid"])
+                    else:
+                        citation_context = run.review_context
+                    if not (citation_context.base.changed or citation_context.head.changed):
+                        raise WorktreeInspectionFailed("Review requires changed paths.")
+                except WorktreeInspectionFailed as exc:
+                    return halted("review_unavailable", str(exc), name)
             accepted_model = ModelSpec.parse(models[pending["index"]]) if models else None
             outcome = clean_outcome(dispatcher(name, accepted_model, worker_state, plan["instruction"]))
             model = accepted_model.name if accepted_model else None
@@ -601,7 +614,7 @@ def compile_delivery(
                     raise QuotaExhausted(model)
                 return {**stopped, **halted("quota_exhausted", f"{name} quota exhausted: {model}", name)}
             try:
-                output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                output = parse_output(STAGE_OUTPUTS[name], outcome.output, context=citation_context)
                 accepted: AcceptedReview | None = None
                 if isinstance(output, ReviewOutput):
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
@@ -627,6 +640,8 @@ def compile_delivery(
                     rejected.update(halted("spec_cap", str(exc), name))
                 return rejected
             except InvalidOutput as exc:
+                if name == "review":
+                    stopped["review_receipt"] = None
                 return {**stopped, **halted("invalid_output", f"{name} {model}: {exc}" if name == "review" else str(exc), name)}
 
             return update

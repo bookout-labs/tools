@@ -66,7 +66,7 @@ def _settled_review() -> str:
         if node == "review":
             count += 1
             finding = {"id": "check" if count == 1 else "next", "kind": "docs", "fix": "Add a check",
-                       "ruling_id": None, "file": "example.txt", "line": 1, "severity": "nit", "summary": "Add a check"}
+                       "ruling_id": None, "file": "items.txt", "line": 1, "severity": "nit", "summary": "Add a check"}
             if count == 3:
                 finding.update(id="repeat", ruling_id="finding:check")
             return Outcome("ran", {**reply.output, "findings": [finding],

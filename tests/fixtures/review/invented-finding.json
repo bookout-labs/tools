@@ -1,0 +1,74 @@
+{
+  "resolutions": [],
+  "risk": {
+    "alignment": {
+      "applies": true,
+      "assessment": "Items are listed once.",
+      "evidence": [
+        {
+          "side": "head",
+          "path": "items.txt",
+          "line": 2
+        }
+      ]
+    },
+    "impact": {
+      "applies": true,
+      "assessment": "Items are listed once.",
+      "evidence": [
+        {
+          "side": "head",
+          "path": "items.txt",
+          "line": 2
+        }
+      ]
+    },
+    "verification": {
+      "applies": true,
+      "assessment": "Items are listed once.",
+      "evidence": [
+        {
+          "side": "head",
+          "path": "items.txt",
+          "line": 2
+        }
+      ]
+    },
+    "rollback": {
+      "applies": true,
+      "assessment": "Items are listed once.",
+      "evidence": [
+        {
+          "side": "head",
+          "path": "items.txt",
+          "line": 2
+        }
+      ]
+    },
+    "error_detection": {
+      "applies": true,
+      "assessment": "Items are listed once.",
+      "evidence": [
+        {
+          "side": "head",
+          "path": "items.txt",
+          "line": 2
+        }
+      ]
+    },
+    "level": "low"
+  },
+  "findings": [
+    {
+      "id": "f1",
+      "kind": "correctness",
+      "fix": "Fix it.",
+      "ruling_id": null,
+      "file": "does-not-exist.py",
+      "line": -2,
+      "severity": "blocking",
+      "summary": "Invalid"
+    }
+  ],
+  "tool_facts": []
+}

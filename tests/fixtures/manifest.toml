@@ -1066,3 +1066,45 @@ version = "GraphQL live schema, 2026-11-21"
 kind = "captured_run"
 argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:119){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
 notes = "Live PR 119 later OPEN with no entry or auto request after the recorded QUEUED/AWAITING_CHECKS states. The source head is unchanged. This captures departure, not a cause or CI conclusion. Source https://docs.github.com/en/graphql/reference/objects#pullrequest."
+
+[fixtures."review/grounded.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/placeholder-99.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/padded.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/unrelated.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/stale.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
+
+[fixtures."review/invented-finding.json"]
+kind = "quoted_source"
+tool = "Foreman ReviewOutput"
+version = "issue 108"
+sources = ["https://github.com/bookout-labs/tools/issues/108"]
+notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
