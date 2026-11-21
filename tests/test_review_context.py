@@ -165,32 +165,59 @@ class WorkspaceReviewContextTest(unittest.TestCase):
             self.workspace.review_context(head, head)
 
     def test_line_counts_ignore_local_grep_pattern_settings(self):
-        self.write("text.txt", b"first\nlast")
-        head = self.commit()
-        self.git("push", "origin", "main")
-        self.git("config", "grep.patternType", "fixed")
-        context = self.workspace.review_context(head, head)
-        self.assertEqual(context.base.lines, {"text.txt": 2})
-        self.assertEqual(context.head.lines, {"text.txt": 2})
-
-    def test_line_counts_use_each_committed_trees_attributes(self):
-        self.write("text.txt", b"first\nlast")
+        self.write("src/text.txt", b"first\nold")
         base = self.commit()
-        self.write(".gitattributes", b"text.txt -diff\n")
-        head = self.commit()
         self.git("push", "origin", "main")
+        self.git("switch", "-c", "pr")
+        self.write("src/text.txt", b"first\nlast")
+        head = self.commit()
+        self.git("push", "origin", "pr")
+        self.git("config", "grep.patternType", "fixed")
+        self.git("config", "grep.extendedRegexp", "true")
+        context = self.workspace.review_context(base, head)
+        self.assertEqual(context.base.lines, {"src/text.txt": 2})
+        self.assertEqual(context.head.lines, {"src/text.txt": 2})
+        self.assertEqual(self.workspace.pull_request_size(head, "main")["lines"], 2)
+
+    def test_inspection_uses_merge_base_attributes_despite_head_and_local_overrides(self):
+        self.write("src/text.txt", b"first\nold")
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("switch", "-c", "pr")
+        self.write("src/text.txt", b"first\nlast")
+        self.write(".gitattributes", b"src/text.txt -diff linguist-generated\n")
+        head = self.commit()
+        self.git("push", "origin", "pr")
         attributes = self.root.parent / "local-attributes"
-        attributes.write_text("text.txt -diff\n")
+        attributes.write_text("src/text.txt -diff linguist-generated\n")
         for source in ("worktree", "attributesFile"):
             with self.subTest(source=source):
                 if source == "worktree":
-                    self.write(".gitattributes", b"# local override\ntext.txt -diff\n")
+                    self.write(".gitattributes", b"# local override\nsrc/text.txt -diff linguist-generated\n")
                 else:
                     (self.root / ".gitattributes").unlink()
                     self.git("config", "core.attributesFile", str(attributes))
                 context = self.workspace.review_context(base, head)
-                self.assertEqual(context.base.lines, {"text.txt": 2})
-                self.assertEqual(context.head.lines, {".gitattributes": 1})
+                self.assertEqual(context.base.lines, {"src/text.txt": 2})
+                self.assertEqual(context.head.lines, {".gitattributes": 1, "src/text.txt": 2})
+                self.assertEqual(self.workspace.pull_request_size(head, "main")["lines"], 2)
+
+    def test_nonempty_info_attributes_stop_both_inspections(self):
+        self.write("src/text.txt", b"first\nold")
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("switch", "-c", "pr")
+        self.write("src/text.txt", b"first\nlast")
+        head = self.commit()
+        self.git("push", "origin", "pr")
+        self.write(".git/info/attributes", b"")
+        self.assertEqual(self.workspace.review_context(base, head).head.lines, {"src/text.txt": 2})
+        self.assertEqual(self.workspace.pull_request_size(head, "main")["lines"], 2)
+        self.write(".git/info/attributes", b"src/text.txt -diff linguist-generated\n")
+        for inspect, args in ((self.workspace.review_context, (base, head)),
+                              (self.workspace.pull_request_size, (head, "main"))):
+            with self.subTest(inspect=inspect.__name__), self.assertRaises(WorktreeInspectionFailed):
+                inspect(*args)
 
     def test_dry_run_default_matches_the_review_diff_and_can_be_overridden(self):
         for path, content in {"README.md": b"unchanged\n", "items.txt": b"first\nold\nlast\n",

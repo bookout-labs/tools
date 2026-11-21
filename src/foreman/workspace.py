@@ -303,29 +303,18 @@ class LiveWorkspace:
         except UnicodeError as exc:
             raise WorktreeInspectionFailed(f"Could not decode {path}: {exc}") from exc
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
-        attributes = Path(os.fsdecode(self._git(
-            "rev-parse", "--path-format=absolute", "--git-path", "info/attributes",
-        )).removesuffix("\n"))
-        try:
-            if attributes.stat().st_size:
-                raise WorktreeInspectionFailed(f"{attributes} must be empty to measure a pull request.")
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise WorktreeInspectionFailed(f"Could not inspect {attributes}: {exc}") from exc
-
         base_ref = f"refs/remotes/origin/{base_branch}"
         self._git(
             "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
             f"+refs/heads/{base_branch}:{base_ref}",
         )
-        merge_base = os.fsdecode(self._git("merge-base", base_ref, head)).strip()
+        merge_base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base_ref, head)).strip()
         diff_options = (
-            *ATTRIBUTE_CONFIG, f"--attr-source={merge_base}", "diff", "--find-renames", "--text",
+            "diff", "--find-renames", "--text",
             "--no-ext-diff", "--no-textconv",
         )
-        raw = self._git(
-            *diff_options, "--numstat", "-z", merge_base, head, "--", "src/", "tests/",
+        raw = self._inspection_git(
+            merge_base, *diff_options, "--numstat", "-z", merge_base, head, "--", "src/", "tests/",
         )
         if not raw:
             return {"head": head, "merge_base": merge_base, "lines": 0}
@@ -337,8 +326,8 @@ class LiveWorkspace:
             before, after = (path, path) if path else (next(records), next(records))
             entries.append((before, after, removed, added))
             paths.update((before, after))
-        attrs = self._git(
-            *ATTRIBUTE_CONFIG, "check-attr", f"--source={merge_base}", "--stdin", "-z", "linguist-generated",
+        attrs = self._inspection_git(
+            merge_base, "check-attr", f"--source={merge_base}", "--stdin", "-z", "linguist-generated",
             input_paths=b"\0".join(paths) + b"\0",
         )
         fields = attrs.removesuffix(b"\0").split(b"\0")
@@ -353,8 +342,8 @@ class LiveWorkspace:
                 continue
             if added == b"-":
                 # Numstat can report binary even when Git emits a text patch.
-                patch = self._git(
-                    "--literal-pathspecs", *diff_options, "--patch", "--unified=0", "--inter-hunk-context=0",
+                patch = self._inspection_git(
+                    merge_base, "--literal-pathspecs", *diff_options, "--patch", "--unified=0", "--inter-hunk-context=0",
                     "--no-color", merge_base, head, "--", os.fsdecode(before), os.fsdecode(after),
                 )
                 hunks = HUNK.findall(patch)
@@ -398,19 +387,18 @@ class LiveWorkspace:
         base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base, head)).strip()
         if not FULL_SHA.fullmatch(base):
             raise WorktreeInspectionFailed("Git did not report a full merge-base SHA.")
-        before, after = changed_paths(self._git(
-            "--no-replace-objects", "diff", "--name-status", "-z", "--find-renames",
+        before, after = changed_paths(self._inspection_git(
+            base, "diff", "--name-status", "-z", "--find-renames",
             "--no-ext-diff", "--no-textconv", "--no-relative", base, head, "--",
         ))
-        return ReviewContext(self._review_side(base, before), self._review_side(head, after))
+        return ReviewContext(self._review_side(base, before, base), self._review_side(head, after, base))
 
-    def _review_side(self, sha: str, changed: frozenset[str]) -> ReviewSide:
-        files = frozenset(os.fsdecode(path) for path in self._git(
-            "--no-replace-objects", "ls-tree", "-rz", "--name-only", "--full-tree", sha, "--",
+    def _review_side(self, sha: str, changed: frozenset[str], attribute_source: str) -> ReviewSide:
+        files = frozenset(os.fsdecode(path) for path in self._inspection_git(
+            attribute_source, "ls-tree", "-rz", "--name-only", "--full-tree", sha, "--",
         ).split(b"\0") if path)
-        raw = self._git(
-            "--no-replace-objects", *ATTRIBUTE_CONFIG, f"--attr-source={sha}",
-            "grep", "-G", "-c", "-I", "-z", "--no-textconv", "-e", "^", sha, "--",
+        raw = self._inspection_git(
+            attribute_source, "grep", "-c", "-I", "-z", "--no-textconv", "-e", "^", sha, "--",
             allowed_returncodes=(0, 1),
         )
         lines: dict[str, int] = {}
@@ -426,6 +414,25 @@ class LiveWorkspace:
         if path:
             raise WorktreeInspectionFailed("Unterminated git grep line-count record.")
         return ReviewSide(sha, files, lines, changed)
+
+    def _inspection_git(self, attribute_source: str, *args: str, input_paths: bytes | None = None,
+                        allowed_returncodes: tuple[int, ...] = (0,)) -> bytes:
+        attributes = Path(os.fsdecode(self._git(
+            "rev-parse", "--path-format=absolute", "--git-path", "info/attributes",
+        )).removesuffix("\n"))
+        try:
+            if attributes.stat().st_size:
+                raise WorktreeInspectionFailed(f"{attributes} must be empty to inspect a pull request.")
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise WorktreeInspectionFailed(f"Could not inspect {attributes}: {exc}") from exc
+        pattern_options = ("-G",) if args[0] == "grep" else ()
+        return self._git(
+            "--no-replace-objects", *ATTRIBUTE_CONFIG, f"--attr-source={attribute_source}",
+            args[0], *pattern_options, *args[1:], input_paths=input_paths,
+            allowed_returncodes=allowed_returncodes,
+        )
 
     def _git(self, *args: str, input_paths: bytes | None = None, timeout: float | None = None,
              allowed_returncodes: tuple[int, ...] = (0,)) -> bytes:

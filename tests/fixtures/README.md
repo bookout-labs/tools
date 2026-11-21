@@ -157,8 +157,9 @@ line.
 ## Review fixtures
 
 `git/grep-lines.z`, `git/grep-no-text.z`, `git/name-status-rename.z`,
-`git/ls-tree.z`, `git/merge-base.txt`, `git/grep-fatal.stderr.txt`, and
-`git/fetch-by-sha.json` record synthetic Git 2.56.0 runs. Recapture from the
+`git/ls-tree.z`, `git/merge-base.txt`, `git/grep-fatal.stderr.txt`,
+`git/fetch-by-sha.json`, `git/grep-basic-regexp.json`, and
+`git/grep-attribute-source.json` record synthetic Git 2.56.0 runs. Recapture from the
 checkout root with `python tests/capture-review-context.py`. The script uses
 temporary repositories and a file-protocol origin, with fixed commit dates.
 The `.z` files contain raw stdout, including NUL delimiters; the fatal fixture
@@ -166,6 +167,8 @@ contains raw stderr. The fetch transcript includes object-availability probes
 before and after fetching two full SHAs into an empty repository. Exit statuses,
 argv, and carried claim IDs are in `manifest.toml`. `git/name-status-types.md`
 records versioned source evidence for the status set.
+The grep transcripts compare configured pattern modes and local attributes
+against the explicit basic-regexp and committed-tree attribute options.
 
 `review.diff` was captured with Git 2.56.0 in a synthetic repository. The base
 had a three-line `items.txt` and a one-line `deleted.txt`. The head replaced

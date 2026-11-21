@@ -1,0 +1,110 @@
+{
+  "fixed_without_G": {
+    "argv": [
+      "git",
+      "-c",
+      "grep.patternType=fixed",
+      "-c",
+      "grep.extendedRegexp=true",
+      "grep",
+      "-c",
+      "-I",
+      "-z",
+      "--no-textconv",
+      "-e",
+      "^",
+      "HEAD",
+      "--"
+    ],
+    "returncode": 1,
+    "stdout": "",
+    "stderr": ""
+  },
+  "fixed_with_G": {
+    "argv": [
+      "git",
+      "-c",
+      "grep.patternType=fixed",
+      "-c",
+      "grep.extendedRegexp=true",
+      "--no-replace-objects",
+      "-c",
+      "core.attributesFile=/dev/null",
+      "--attr-source=HEAD",
+      "grep",
+      "-G",
+      "-c",
+      "-I",
+      "-z",
+      "--no-textconv",
+      "-e",
+      "^",
+      "HEAD",
+      "--"
+    ],
+    "returncode": 0,
+    "stdout": "HEAD:items.txt\u00003\nHEAD:nested/file.txt\u00001\nHEAD:old name.txt\u00001\nHEAD:space : name.txt\u00002\n",
+    "stderr": ""
+  },
+  "extended_with_G": {
+    "argv": [
+      "git",
+      "-c",
+      "grep.extendedRegexp=true",
+      "--no-replace-objects",
+      "-c",
+      "core.attributesFile=/dev/null",
+      "--attr-source=HEAD",
+      "grep",
+      "-G",
+      "-c",
+      "-I",
+      "-z",
+      "--no-textconv",
+      "-e",
+      "^",
+      "HEAD",
+      "--"
+    ],
+    "returncode": 0,
+    "stdout": "HEAD:items.txt\u00003\nHEAD:nested/file.txt\u00001\nHEAD:old name.txt\u00001\nHEAD:space : name.txt\u00002\n",
+    "stderr": ""
+  },
+  "extended_group_without_G": {
+    "argv": [
+      "git",
+      "-c",
+      "grep.extendedRegexp=true",
+      "grep",
+      "-c",
+      "-I",
+      "-z",
+      "-e",
+      "\\(first\\)",
+      "HEAD",
+      "--"
+    ],
+    "returncode": 1,
+    "stdout": "",
+    "stderr": ""
+  },
+  "extended_group_with_G": {
+    "argv": [
+      "git",
+      "-c",
+      "grep.extendedRegexp=true",
+      "grep",
+      "-G",
+      "-c",
+      "-I",
+      "-z",
+      "-e",
+      "\\(first\\)",
+      "HEAD",
+      "--"
+    ],
+    "returncode": 0,
+    "stdout": "HEAD:items.txt\u00001\n",
+    "stderr": ""
+  }
+}
