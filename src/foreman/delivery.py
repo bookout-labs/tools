@@ -2,6 +2,7 @@
 
 import json
 import operator
+from uuid import uuid4
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -26,7 +27,7 @@ from foreman.config import Config, ConfigError, ModelSpec, family, load_config, 
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
-    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command, pull_request_command,
+    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
@@ -44,7 +45,7 @@ REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 MergeHalt = Literal["merge_held", "merge_not_armed"]
-ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implement_quota", "quota_exhausted"]
+ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implement_quota", "quota_exhausted", "review_not_posted"]
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
@@ -179,6 +180,11 @@ class DeliveryFields(TypedDict, total=False):
     risk: MergeRiskRecord
     verify: str
     review_rounds: int
+    verify_failures: int
+    proof_failures: int
+    spec_failures: int
+    review_run_id: str
+    review_receipt: ReviewReceipt | None
     models_used: dict[str, str]
     implement_models: list[str]
     halt: HaltReason | None
@@ -212,8 +218,16 @@ class DeliveryResult(DeliveryFields):
 _DELIVERY_STATE = TypeAdapter(DeliveryResult)
 
 
+def review_count(state: DeliveryFields) -> int:
+    return len(state.get("review_findings", []))
+
+
 def read_delivery_state(raw: object) -> DeliveryResult:
-    return _DELIVERY_STATE.validate_python(raw, strict=True)
+    result = _DELIVERY_STATE.validate_python(raw, strict=True)
+    for key in ("verify_failures", "proof_failures", "spec_failures"):
+        result.setdefault(key, result.get("review_rounds", 0))
+    result["review_rounds"] = review_count(result)
+    return result
 
 
 def _active_slice(state: DeliveryState) -> SliceRecord:
@@ -332,6 +346,11 @@ def _check_tool_facts(
                       detail="\n".join(notes), passed=not unrecorded, tool_facts=outside)
 
 
+def failure_count(state: DeliveryState, key: Literal["verify_failures", "proof_failures", "spec_failures"]) -> int:
+    # Older checkpoints combined failures and reviews. Retain that budget conservatively.
+    return state.get(key, state.get("review_rounds", 0))
+
+
 def stage_update(
     name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None,
 ) -> DeliveryUpdate:
@@ -340,7 +359,7 @@ def stage_update(
     update: DeliveryUpdate = {**output.update(context)}
     update["path"] = [name]
     if update.get("verify") == "fail":
-        update["review_rounds"] = state.get("review_rounds", 0) + 1
+        update["verify_failures"] = failure_count(state, "verify_failures") + 1
     if model:
         used = state.get("models_used", {})
         update["models_used"] = {**used, name: model}
@@ -352,7 +371,7 @@ def stage_update(
 
 
 def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, list[ReviewComment]]:
-    body = [output.detail]
+    body = [f"Graph verdict: {output.review}. Review event: COMMENT (Foreman authors this PR).", output.detail]
     comments: list[ReviewComment] = []
     for finding in output.findings:
         message = f"[{finding.severity}] {finding.summary}"
@@ -506,7 +525,9 @@ def compile_delivery(
                 instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
                 instruction += "\nGraph checks, not yours to resolve:\n" + json.dumps(past.rounds[-1].graph_check.model_dump(mode="json") if past.rounds and past.rounds[-1].graph_check else None)
                 instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
-            return {"dispatch_plan": DispatchPlan(
+            return {"verify_failures": failure_count(state, "verify_failures"),
+                    "proof_failures": failure_count(state, "proof_failures"), "spec_failures": failure_count(state, "spec_failures"),
+                    "review_run_id": state.get("review_run_id") or uuid4().hex, "dispatch_plan": DispatchPlan(
                 models=[model.name for model in models], instruction=instruction, methods=methods,
                 target=review_context[1] if review_context else None,
                 scope=review_context[2].record() if review_context else None,
@@ -520,7 +541,6 @@ def compile_delivery(
             pending, plan = state["pending_dispatch"], state["dispatch_plan"]
             assert pending is not None
             models, methods = plan["models"], plan["methods"]
-            scope = TypeAdapter(ReviewScope).validate_python(plan["scope"]) if plan["scope"] is not None else None
             attempts: list[AttemptRecord] = []
             def record_attempt(model: str | None, outcome: Outcome) -> None:
                 attempts.append(Attempt(
@@ -572,7 +592,7 @@ def compile_delivery(
                 if isinstance(output, ReviewOutput):
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
                     head = state.get("verified_head") or state.get("head_sha") or ""
-                    accepted = accept(past, output, head, _check_tool_facts(output, run, state), scope)
+                    accepted = accept(past, output, head, _check_tool_facts(output, run, state))
                 update = stage_update(name, output, state, model, workspace=plan_workspace, accepted_model=accepted_model)
                 update.update(attempts=attempts, pending_dispatch=None)
                 if accepted is not None:
@@ -581,32 +601,38 @@ def compile_delivery(
                                   reviewed_head=accepted.history.rounds[-1].reviewed_head,
                                   findings=[f.record() for f in accepted.findings],
                                   review_change_kind=accepted.change_kind,
-                                  review_rounds=state.get("review_rounds", 0) + (accepted.review == "changes"))
+                                  review_receipt=None)
                     if accepted.rethink:
-                        update.update(halt="design_rethink", halt_detail=accepted.rethink, human_question=accepted.rethink,
-                                      review_rounds=state.get("review_rounds", 0))
+                        update.update(halt="design_rethink", halt_detail=accepted.rethink, human_question=accepted.rethink)
             except InvalidSlicePlan as exc:
-                rounds = state.get("review_rounds", 0) + 1
-                rejected: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
+                rounds = failure_count(state, "spec_failures") + 1
+                rejected: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "spec_failures": rounds}
                 if rounds >= config.max_review_rounds:
                     rejected.update(halted("spec_cap", str(exc), name))
                 return rejected
             except InvalidOutput as exc:
                 return {**stopped, **halted("invalid_output", str(exc), name)}
 
-            if plan["target"] is not None and isinstance(output, ReviewOutput) and isinstance(run, LiveRun):
-                forge, target = run.forge, PullRequest.model_validate(plan["target"])
-                repo = state["repo"]
-                assert accepted is not None
-                assert scope is not None
-                body, comments = review_submission(accepted, scope)
-                try:
-                    forge.post_review(repo, target, body, comments)
-                except ForgeError as exc:
-                    return {**update, **halted("review_not_posted", str(exc), name)}
             return update
 
         return node
+
+    def post_review(state: DeliveryState) -> DeliveryUpdate:
+        if not isinstance(run, LiveRun):
+            return {}
+        assert "dispatch_plan" in state and "review_findings" in state and "detail" in state and "review_run_id" in state
+        plan = state["dispatch_plan"]
+        assert plan["target"] is not None and plan["scope"] is not None
+        past = history({"rounds": state["review_findings"], "settled": state.get("settled_rulings", [])})
+        accepted = AcceptedReview(history=past, findings=past.unresolved(), detail=state["detail"])
+        body, comments = review_submission(accepted, TypeAdapter(ReviewScope).validate_python(plan["scope"]))
+        target = PullRequest.model_validate(plan["target"])
+        marker = f"{state['review_run_id']}:{len(past.rounds)}:{target.headRefOid}"
+        try:
+            receipt = run.forge.post_review(state["repo"], target, body, comments, marker=marker)
+        except ForgeError as exc:
+            return halted("review_not_posted", str(exc), "review_post")
+        return {"review_receipt": receipt}
 
     scripted_verify = bind("verify")
 
@@ -751,9 +777,9 @@ def compile_delivery(
         if "insufficient_evidence" in labels.values():
             update.update(halted("insufficient_evidence", "Required proof is missing.", "proof"))
         elif "block" in labels.values():
-            update["review_rounds"] = state.get("review_rounds", 0) + 1
-            if update["review_rounds"] >= config.max_review_rounds:
-                detail = f"Proof failed after {update['review_rounds']} rounds: {update['proof_labels']}."
+            update["proof_failures"] = failure_count(state, "proof_failures") + 1
+            if update["proof_failures"] >= config.max_review_rounds:
+                detail = f"Proof failed after {update['proof_failures']} rounds: {update['proof_labels']}."
                 update.update(halted("review_cap", detail, "proof"))
         return update
 
@@ -871,7 +897,7 @@ def compile_delivery(
             return "spec"
         if state.get("review") == "approve":
             return "merge"
-        if state.get("review_rounds", 0) < config.max_review_rounds:
+        if review_count(state) < config.max_review_rounds:
             return "prepare"
         return "done"
 
@@ -883,7 +909,7 @@ def compile_delivery(
             if browser_required(slice) or formal_required(slice):
                 return "proof"
             return "review"
-        if state.get("review_rounds", 0) < config.max_review_rounds:
+        if failure_count(state, "verify_failures") < config.max_review_rounds:
             return "prepare"
         return "done"
 
@@ -942,7 +968,7 @@ def compile_delivery(
     def finish(state: DeliveryState) -> DeliveryUpdate:
         reason = stop_reason(state)
         if not state.get("halt"):
-            rounds = state.get("review_rounds", 0)
+            rounds = failure_count(state, "verify_failures") if reason == "verify_cap" else review_count(state)
             if reason == "verify_cap":
                 detail = f"Verification failed after {rounds} rounds. Check {state.get('check') or '(none)'} failed."
                 return {**halted("verify_cap", detail, "done"), "stop": reason}
@@ -1000,6 +1026,7 @@ def compile_delivery(
     builder.add_node("commit", commit)
     builder.add_node("publish", publish)
     builder.add_node("proof", prove)
+    builder.add_node("review_post", post_review)
     builder.add_node("needs_human", needs_human)
     builder.add_node("quota_wait", quota_wait)
 
@@ -1036,9 +1063,11 @@ def compile_delivery(
     add_agent_edges("implement", after_halt("commit"), {"commit": "commit", "done": "done"})
     add_agent_edges(
         "review",
-        after_review,
-        {"merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"},
+        lambda state: after_review(state) if state.get("halt") not in (None, "design_rethink") or oversized_pr(state) else "review_post",
+        {"review_post": "review_post", "merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"},
     )
+    builder.add_conditional_edges("review_post", after_review,
+        {"merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"})
     add_agent_edges(
         "verify",
         after_verify,

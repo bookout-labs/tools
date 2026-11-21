@@ -6,7 +6,6 @@ from pydantic import Field
 
 from foreman.resolution import ResolutionLedger
 from foreman.stage_output import Contract, Finding, ReviewOutput, ResolutionStatus, SettledRuling, StoredToolFact, parse_output
-from foreman.workspace import ReviewScope
 
 
 class GraphCheck(Contract):
@@ -61,14 +60,13 @@ class AcceptedReview(Contract):
         return "changes" if self.change_kind else "approve"
 
 
-def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphCheck | None, scope: ReviewScope | None = None) -> AcceptedReview:
+def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphCheck | None) -> AcceptedReview:
     accounting = past.accounting()
     resolutions = accounting.account(output.findings, output.resolutions)
     findings: list[Finding] = []
     notes: list[Finding] = []
     for finding in output.findings:
-        outside = scope is not None and scope.eligible is not None and (finding.file, finding.line) not in scope.eligible
-        (notes if finding.ruling_id or outside else findings).append(finding)
+        (notes if finding.ruling_id else findings).append(finding)
     old_gate = past.gate
     if old_gate and not old_gate.passed:
         heads = sorted(set(old_gate.failing_heads).union(gate.failing_heads if gate else []))

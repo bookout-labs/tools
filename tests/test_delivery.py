@@ -151,7 +151,8 @@ class DeliveryTest(unittest.TestCase):
 
                 result = walk(repair, slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "spec", "done"])
-                self.assertEqual(result["review_rounds"], 1)
+                self.assertEqual(result["review_rounds"], 0)
+                self.assertEqual(result["spec_failures"], 1)
                 self.assertEqual(result["stop"], "sliced")
                 self.assertIsNone(result["spec_rejection"])
 

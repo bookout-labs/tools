@@ -2,3 +2,6 @@ gh pr view JSON fields include baseRefOid and headRefOid.
 gh api --input - reads the request body from stdin.
 POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews accepts commit_id, event, body, and comments.
 Each inline comment supplies path, line, side, and body. RIGHT identifies the new file.
+GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews returns reviews in chronological order with page and per_page pagination.
+Review responses include id, state, commit_id, and body. Foreman preserves the first three as its receipt.
+Source checked 2026-11-21: https://docs.github.com/en/rest/pulls/reviews?apiVersion=2022-11-28#list-reviews-for-a-pull-request

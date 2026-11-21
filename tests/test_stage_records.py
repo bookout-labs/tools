@@ -23,7 +23,7 @@ class StageRecordTests(unittest.TestCase):
             (CandidateSlice, CandidateSliceRecord, slice),
             (SpecCandidate, SpecCandidateRecord, candidate.record()),
             (PendingDispatch, PendingDispatchRecord, {"stage": "triage", "index": 0, "quota_model": None}),
-            (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)], "eligible": []}}),
+            (DispatchPlan, DispatchPlanRecord, {"models": [], "instruction": "test", "methods": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)]}}),
             (AttemptUsage, AttemptUsageRecord, usage),
             (Attempt, AttemptRecord, {"stage": "triage", "model": None, "commit": "pin", "methods": [], "outcome": "ran", "usage": usage}),
             (ConstraintResult, ConstraintResultRecord, {"constraint": "positive", "rejected": True}),
@@ -59,6 +59,14 @@ class StageRecordTests(unittest.TestCase):
         for extra in ({"index": -1}, {"model": "worker"}):
             with self.subTest(extra=extra), self.assertRaises(ValidationError):
                 PendingDispatch.model_validate({"stage": "review", "index": 0, "quota_model": None, **extra})
+
+    def test_legacy_review_scope_remains_readable(self):
+        from foreman.workspace import ReviewScope
+        scope = {"command": "diff", "inline": [("a.py", 2)], "eligible": []}
+        plan = DispatchPlan.model_validate({"models": [], "instruction": "review", "methods": [],
+                                           "target": None, "scope": scope})
+        self.assertEqual(TypeAdapter(ReviewScope).validate_python(plan.scope).record(),
+                         {"command": "diff", "inline": [("a.py", 2)]})
 
     def test_attempt_usage_rejects_negative_counts(self):
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
@@ -142,7 +150,14 @@ class StageOwnershipTests(unittest.TestCase):
                 self.assertEqual(update["path"], [stage])
                 self.assertEqual(update["models_used"][stage], "model")
                 if stage == "verify":
-                    self.assertEqual(update["review_rounds"], 3)
+                    self.assertEqual(update["verify_failures"], 3)
+
+    def test_legacy_failure_budget_is_preserved_separately(self):
+        from foreman.delivery import read_delivery_state
+        result = read_delivery_state({"repo": "org/repo", "check": "", "path": [], "stop": "verify_cap", "review_rounds": 2})
+        self.assertEqual(result["review_rounds"], 0)
+        for key in ("verify_failures", "proof_failures", "spec_failures"):
+            self.assertEqual(result[key], 2)
 
     def test_checkpoint_rejects_incomplete_nested_record(self):
         from foreman.delivery import read_delivery_state
