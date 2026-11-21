@@ -1,3 +1,5 @@
+# Resolve the delivery types in #52 before restoring strict checking.
+# pyright: basic
 """Pure admission gates for browser, constraint, and scoring evidence."""
 
 

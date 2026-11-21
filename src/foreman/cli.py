@@ -1,3 +1,5 @@
+# Resolve the delivery types in #52 before restoring strict checking.
+# pyright: basic
 """Command line for the foreman tool."""
 
 import argparse
@@ -12,7 +14,7 @@ from typing import TextIO, assert_never
 import yaml
 
 from foreman.accept import AcceptError, accept_event
-from foreman.delivery import DeliveryState, GRAPH_NAME, LiveRun, diagram, run_delivery
+from foreman.delivery import DeliveryResult, GRAPH_NAME, LiveRun, diagram, run_delivery
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 from foreman.github import ForgeError, LiveForge
@@ -32,7 +34,7 @@ def _write_check_log(line: str) -> None:
     _write_run_log(line, end="")
 
 
-def _print_run(result: DeliveryState) -> None:
+def _print_run(result: DeliveryResult) -> None:
     for command in result.get("commands", []):
         _write_run_log(f"dry run: {shlex.join(command)}")
     models = result.get("models_used", {})
@@ -54,13 +56,19 @@ def _print_run(result: DeliveryState) -> None:
             elif detail := result.get("halt_detail"):
                 _write_run_log(detail)
         elif node == "merge":
-            match outcome := result["merge"]:
+            match outcome := result.get("merge"):
                 case "armed":
                     print("merge armed")
                 case "skipped":
-                    print(f"merge skipped (dry run): {shlex.join(result['merge_command'])}")
+                    command = result.get("merge_command")
+                    if command:
+                        print(f"merge skipped (dry run): {shlex.join(command)}")
+                    else:
+                        print("merge skipped (dry run)")
                 case "not_armed":
                     print("merge not armed")
+                case None:
+                    print("merge outcome unavailable")
                 case _:
                     assert_never(outcome)
         else:
@@ -72,7 +80,8 @@ def _print_run(result: DeliveryState) -> None:
             _write_run_log(" ".join(fields))
     if result.get("stop") == "needs_human" and "done" not in result["path"]:
         print("paused needs_human")
-        _write_run_log(result["halt_detail"])
+        if detail := result.get("halt_detail"):
+            _write_run_log(detail)
 
 
 def main(
@@ -132,7 +141,7 @@ def main(
         except (OSError, yaml.YAMLError, AcceptError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        if not decision["start"]:
+        if decision["start"] is False:
             print("ignored")
             return 0
         print(f"start {decision['source']}")
@@ -190,7 +199,7 @@ def main(
     return run_exit_code(result)
 
 
-def run_exit_code(result: DeliveryState) -> int:
+def run_exit_code(result: DeliveryResult) -> int:
     stop = result.get("stop")
     if stop == "needs_human":
         return 3

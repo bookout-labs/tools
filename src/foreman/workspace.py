@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
-from typing import NewType, Protocol, TypedDict
+from typing import NewType, Protocol
+from typing_extensions import TypedDict
 
 from foreman.redaction import redact
 

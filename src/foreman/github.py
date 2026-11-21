@@ -2,7 +2,8 @@
 
 import json
 import subprocess
-from typing import Literal, Protocol, TypedDict, TypeVar
+from typing import Literal, Protocol, TypeVar
+from typing_extensions import TypedDict
 
 from pydantic import BaseModel, PositiveInt, RootModel, ValidationError
 

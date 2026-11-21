@@ -4,10 +4,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 from subprocess import CompletedProcess
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from pydantic import TypeAdapter, ValidationError
 
+from foreman._raw import is_dict
 from foreman.adapters import Call, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.config import ModelSpec
 from foreman.dispatch import InvalidOutput
@@ -27,15 +28,14 @@ QUOTA_PREFIXES = (
 
 
 def read_usage(report: object) -> Usage | None:
-    if not isinstance(report, dict):
+    if not is_dict(report):
         return None
-    fields = cast(dict[str, object], report)
     try:
         usage = Usage.model_validate({
-            "input_tokens": fields.get("input_tokens"),
-            "output_tokens": fields.get("output_tokens"),
-            "cache_read_input_tokens": fields.get("cached_input_tokens"),
-            "cache_creation_input_tokens": fields.get("cache_write_input_tokens"),
+            "input_tokens": report.get("input_tokens"),
+            "output_tokens": report.get("output_tokens"),
+            "cache_read_input_tokens": report.get("cached_input_tokens"),
+            "cache_creation_input_tokens": report.get("cache_write_input_tokens"),
         })
     except ValidationError:
         return None

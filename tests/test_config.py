@@ -39,6 +39,13 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             order_for("review", config, {"implement": "gpt-6.1-sol-high"})
 
+    def test_unhashable_role_is_a_config_error(self):
+        with self.assertRaisesRegex(ConfigError, "implement has an unknown role"):
+            parse_config({
+                "max_review_rounds": 3,
+                "nodes": {"implement": {"role": [], "models": []}},
+            })
+
     def test_unknown_family_is_rejected(self):
         with self.assertRaises(ConfigError):
             parse_config(
