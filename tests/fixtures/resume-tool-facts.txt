@@ -1,0 +1,13 @@
+langgraph 1.2.24
+langgraph-checkpoint-sqlite 3.1.3
+pydantic 2.14.4
+stream accepts: input, config, context, durability, stream_mode, version
+UpdatesStreamPart: langgraph.types UpdatesStreamPart ['data', 'ns', 'type']
+Update metadata source: grouped["__metadata__"] = {"cached": cached}
+initial update: {'type': 'updates', 'ns': (), 'data': {'triage': {'path': ['triage']}}}
+interrupt part: updates () ['__interrupt__'] Ready?
+resumed updates: [{'type': 'updates', 'ns': (), 'data': {'implement': {'path': ['implement']}}}]
+SqliteSaver.get after reopening channel_values['path']: ['triage', 'implement']
+DeliveryUpdate strict validation with extra key: {'path': ['triage']}
+DeliveryUpdate rejected: {'path': 'triage'} ['list_type']
+DeliveryUpdate rejected: {'path': [123]} ['string_type']

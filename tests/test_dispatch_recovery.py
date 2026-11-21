@@ -19,7 +19,7 @@ from foreman.config import PstackPin, load_config
 from foreman.delivery import LiveRun
 from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
-from foreman.runner import run_live_delivery
+from foreman.runner import RunPresentation, run_live_delivery
 from test_runner import FakeGitHub, FakeWorkspace
 mode, checkpoint, raw_pin = sys.argv[1:]
 script = ScriptHandler()
@@ -29,6 +29,8 @@ def handler(node, model, state, instruction):
     calls += 1
     if mode == "recover":
         raise AssertionError("recovery dispatched a model")
+    if mode == "entry":
+        os._exit(19)
     if mode == "quota-uncommitted":
         return Outcome("quota", usage=Usage(input_tokens=9, output_tokens=1))
     if mode == "quota":
@@ -47,7 +49,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     with patch("foreman.dispatch.FailoverDispatcher.run", new=uncommitted) if mode == "quota-uncommitted" else contextlib.nullcontext():
         with patch("foreman.delivery.stage_update", side_effect=crash) if mode == "success" else contextlib.nullcontext():
             result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=Path(checkpoint),
-                dispatcher=FailoverDispatcher(handler), run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())))
+                dispatcher=FailoverDispatcher(handler), presentation=RunPresentation(), run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())))
 print(json.dumps(result))
 '''
 
@@ -55,7 +57,7 @@ print(json.dumps(result))
 class DispatchRecoveryTests(unittest.TestCase):
     def test_fresh_process_crash_after_success_or_quota_never_replays(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder:
-            for mode in ("success", "quota", "quota-uncommitted"):
+            for mode in ("entry", "success", "quota", "quota-uncommitted"):
                 with self.subTest(mode=mode):
                     checkpoint = Path(folder) / (mode + ".sqlite")
                     bootstrap = f"import sys; sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n"

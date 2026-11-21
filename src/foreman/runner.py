@@ -1,7 +1,7 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 import re
@@ -14,7 +14,7 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
+from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -22,6 +22,36 @@ from foreman.github import Forge
 from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
+_DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
+
+
+@dataclass
+class RunPresentation:
+    """Invocation-local console data, kept outside graph state and return values."""
+
+    restored: DeliveryResult | None = None
+    updates: list[DeliveryUpdate] = field(default_factory=list[DeliveryUpdate])
+
+    def restore(self, snapshot: StateSnapshot, saver: SqliteSaver) -> None:
+        self.restored = snapshot_result(snapshot, saver)
+
+
+def snapshot_result(snapshot: StateSnapshot, saver: SqliteSaver) -> DeliveryResult:
+    values = snapshot.values
+    if snapshot.interrupts:
+        if values.get("halt") == "quota_exhausted":
+            parse_output(QuotaPause, snapshot.interrupts[0].value)
+            return read_delivery_state({**values, "stop": "quota_exhausted"})
+        question = parse_output(HumanPrompt, snapshot.interrupts[0].value).question
+        return read_delivery_state({**values, "stop": "needs_human", "halt_detail": question})
+    result = read_delivery_state({**values, "stop": values.get("stop", "")})
+    if "merge" in result["path"] and "merge" not in result:
+        legacy = saver.get(snapshot.config)
+        if legacy is not None:
+            armed = legacy["channel_values"].get("merge_armed")
+            if isinstance(armed, bool):
+                result["merge"] = "armed" if armed else "not_armed"
+    return result
 
 
 def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
@@ -102,7 +132,11 @@ def run_live_delivery(
     answer: str | None = None,
     max_tokens: int | None = None,
     fact_record: str | None = None,
+    presentation: RunPresentation | None = None,
 ) -> DeliveryResult:
+    if presentation is not None:
+        presentation.restored = None
+        presentation.updates.clear()
     if fact_record is not None:
         fact_record = fact_record_path(fact_record)
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -138,15 +172,26 @@ def run_live_delivery(
             invocation_config: RunnableConfig = config,
         ) -> None:
             environment = EnvironmentProbe(run.workspace, state.get("preflight", ""), run.check_log)
-            graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync", version="v2")
+            for part in graph.stream(
+                graph_input, invocation_config, context=replace(run, environment=environment),
+                durability="sync", stream_mode="updates", version="v2",
+            ):
+                if presentation is not None:
+                    for node, raw in part["data"].items():
+                        if not node.startswith("__") and raw is not None:
+                            presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
         saved = graph.get_state(config)
         if saved.values:
             if not saved.next and not saved.interrupts and saved.values.get("halt") not in RESUMABLE_HALTS:
                 if "token_cap" not in saved.values:
-                    return read_delivery_state(saved.values)
+                    if presentation is not None:
+                        presentation.restore(saved, saver)
+                    return snapshot_result(saved, saver)
             require_token_cap(saved.values, checkpoint)
         saved_values = checkpoint_state(saved.values)
+        if presentation is not None and saved_values is not None:
+            presentation.restore(saved, saver)
         if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
             raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values.get("workspace") if saved_values else None
@@ -162,7 +207,7 @@ def run_live_delivery(
                                                             methods=saved_values["dispatch_plan"]["methods"], outcome="interrupted", usage=None).record()],
                                        "pending_dispatch": None}, as_node=stage + "_call")
             invoke(None, saved_values)
-            return read_delivery_state(graph.get_state(config).values)
+            return snapshot_result(graph.get_state(config), saver)
         waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == "quota_exhausted"
         if answer is not None:
             if waiting_for_quota:
@@ -216,6 +261,8 @@ def run_live_delivery(
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
             require_token_cap(before.values, checkpoint)
+            if presentation is not None:
+                presentation.restore(before, saver)
             replay = before.config
             if partial := saved_values.get("partial_edits"):
                 replay = graph.update_state(replay, {"partial_edits": partial})
@@ -258,17 +305,4 @@ def run_live_delivery(
             saved = graph.get_state(config)
             saved_values = checkpoint_state(saved.values)
         assert saved_values is not None
-        if saved.interrupts:
-            if saved_values.get("halt") == "quota_exhausted":
-                parse_output(QuotaPause, saved.interrupts[0].value)
-                return read_delivery_state({**saved_values, "stop": "quota_exhausted"})
-            question = parse_output(HumanPrompt, saved.interrupts[0].value).question
-            return read_delivery_state({**saved_values, "stop": "needs_human", "halt_detail": question})
-        result = read_delivery_state(saved_values)
-        if "merge" in result["path"] and "merge" not in result:
-            legacy = saver.get(saved.config)
-            if legacy is not None:
-                armed = legacy["channel_values"].get("merge_armed")
-                if isinstance(armed, bool):
-                    result["merge"] = "armed" if armed else "not_armed"
-        return result
+        return snapshot_result(saved, saver)
