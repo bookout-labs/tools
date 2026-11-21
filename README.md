@@ -22,6 +22,7 @@ graph TD;
 	review(review)
 	proof(proof)
 	needs_human(needs_human)
+	quota_wait(quota_wait)
 	decide_pr_size(decide_pr_size)
 	merge(merge)
 	done(done)
@@ -31,6 +32,7 @@ graph TD;
 	decide_pr_size -.-> done;
 	decide_pr_size -.-> verify;
 	implement -.-> done;
+	implement -.-> quota_wait;
 	implement -.-> verify;
 	merge --> done;
 	needs_human -.-> implement;
@@ -39,20 +41,29 @@ graph TD;
 	proof -.-> done;
 	proof -.-> implement;
 	proof -.-> review;
-	research --> done;
+	quota_wait -.-> implement;
+	quota_wait -.-> research;
+	quota_wait -.-> review;
+	quota_wait -.-> spec;
+	quota_wait -.-> triage;
+	research -.-> done;
+	research -.-> quota_wait;
 	review -.-> decide_pr_size;
 	review -.-> done;
 	review -.-> implement;
 	review -.-> merge;
 	review -.-> needs_human;
+	review -.-> quota_wait;
 	review -.-> spec;
 	spec -.-> decide_pr_size;
 	spec -.-> done;
 	spec -.-> implement;
 	spec -.-> needs_human;
+	spec -.-> quota_wait;
 	triage -.-> done;
 	triage -.-> implement;
 	triage -.-> needs_human;
+	triage -.-> quota_wait;
 	triage -.-> research;
 	triage -.-> spec;
 	verify -.-> done;
@@ -71,11 +82,13 @@ Generate the diagram with `foreman diagram delivery`. The model list is `src/for
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high.
 
-Round 1 reviews the full PR diff. Each typed finding has a stable ID, fixed kind, severity (`blocking` or `nit`), file, line, summary and requested fix. The graph derives the verdict. Later rounds receive unresolved findings and the two-commit interdiff since the last reviewed head, read through `Workspace`. Every earlier finding needs a resolved or unresolved status. New findings outside that interdiff become coordinator notes. Findings on changed lines post inline; other locations appear in the review body.
+Round 1 reviews the full PR diff. Later rounds check unresolved findings and added
+interdiff lines also in the PR diff. Out-of-scope findings become coordinator notes. Typed findings have stable IDs, kinds, fixes and
+explicit resolutions. Resolved findings become settled rulings. Disagreements with
+rulings become coordinator notes. The graph owns tool-fact checks separately from
+reviewer findings. Rulings exist only within a run. The failure cap stays unchanged.
 
-The checkpoint records findings by round and the reviewed head. Settled rulings and resolved findings travel under "Settled, don't reopen". A finding referencing a settled ruling becomes a coordinator note. A new blocking finding with an earlier blocking kind pauses as `design_rethink`, lists both findings, and consumes no failure round. Answer with `--answer` after choosing a design-level fix to continue implementation. Nits are fixed in the current PR, verified, and confirmed resolved by the next scoped review before merge arming. The cap stays unchanged.
-
-An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the builder model is missing or every eligible reviewer is out of quota, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
+An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the graph cannot select a reviewer from a different model family, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
 
 Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs skip preflight and use a scripted verdict.
 
@@ -95,13 +108,29 @@ Before arming, Foreman reads the target repository's GitHub Actions variable `FO
 
 If the merge command times out, Foreman checks the same pull request at the verified SHA. An open pull request with a squash auto-merge request or a merged pull request confirms the result. A failed merge check or unconfirmed command pauses the run as `merge_not_armed` and records the reason. Resolve it and rerun the same command to retry. If HEAD moved, run `git reset --keep <verified-sha>` on the PR branch before rerunning. New commits need a new run. A dry run prints `merge skipped (dry run)` with the command template and reports the scripted verification result.
 
-Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
+Stage prompts live in `src/foreman/stages/`. The graph selects worker methods from the rule table and validated delivery state. The code-quality skill supplies the scorer rubric.
+
+Before live dispatch, Foreman exports the pstack skills from the repository and commit pinned in `src/foreman/config.py`. It records that pin in the checkpoint and reuses it on resume. A failed fetch or export stops with `skill_missing` and reports `pin unavailable` with the commit. A missing method in a successful export reports `method missing at pin` with the path and commit. Dry runs print `pstack pin not checked (dry run)`.
 
 A parent or slice goes straight to implement when the behavior is decided and the change fits in one pull request. A parent on this route is its own slice. It carries the same proof obligations as any slice and files no child issues. Changes that need more than one pull request or leave a product choice open go to spec. An informational request goes to spec on a parent and to research on a slice. An open product choice pauses a live run for a person's answer.
 
 A ready parent spec lists the seams each slice builds and uses. Foreman checks existing seam paths in the workspace and orders the slices so builders come first. A cycle, dangling seam, duplicate builder, or seam marked existing that a slice also builds sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children. Single-slice parents skip ordering.
 
-Foreman records the ordered plan and stops the parent as `sliced`. Each child issue carries a fenced JSON record of its slice and native GitHub blocked-by links for its dependencies. A live slice run stops as `missing_slice` if the record is missing or invalid. It reports `blocked` before triage while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request. Run the same slice again after its blockers clear. Rerunning the parent restores missing links and adds the `factory` label when a dependent slice is ready.
+Foreman records the ordered plan and stops the parent as `sliced`. Each child issue carries a fenced JSON record of its slice and the parent's work classification, with native GitHub blocked-by links for its dependencies. A live slice run stops as `missing_slice` if the record is missing or invalid. It reports `blocked` before triage while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request. Run the same slice again after its blockers clear. Rerunning the parent restores missing links and adds the `factory` label when a dependent slice is ready.
+
+```json
+{
+  "title": "Keep the selected item on refresh",
+  "acceptance": "The selected item remains selected after refresh.",
+  "depends_on": [],
+  "screen": "",
+  "properties": [],
+  "stateful": true,
+  "work_kind": "bug_fix"
+}
+```
+
+`stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`.
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 
@@ -184,6 +213,8 @@ foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm r
 
 The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request, check command, and any preflight command.
 
+If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota returns. Foreman retries the same stage and retains its earlier attempt records.
+
 Before review, Foreman fetches the pull request's base branch from `origin` and counts changes in `src/` and `tests/` against the merge base. Use Git 2.43 or later. Files marked `linguist-generated` in the merge base do not count. If Foreman presents a split plan, use `--answer split` to accept it or `--answer override` to continue with that measured diff.
 
 ## Tests
@@ -194,3 +225,6 @@ uv run python -m unittest discover -s tests
 ```
 
 Settled rulings exist only within a run. Resolved findings become rulings for later reviews.
+
+A repeated blocking kind pauses as `design_rethink` without consuming a failure round.
+A design answer resumes implementation and becomes a settled ruling in the next review.

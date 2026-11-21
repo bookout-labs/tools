@@ -7,11 +7,11 @@ class ProofError(ValueError):
     pass
 
 
-def browser_required(slice: dict) -> bool:
+def browser_required(slice: dict[str, object]) -> bool:
     return bool(slice["screen"])
 
 
-def formal_required(slice: dict) -> bool:
+def formal_required(slice: dict[str, object]) -> bool:
     return bool(slice["properties"])
 
 

@@ -7,7 +7,7 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
-from foreman.stage_output import STAGE_OUTPUTS
+from foreman.stage_output import Contract, STAGE_OUTPUTS
 
 FIXTURES = Path(__file__).with_name("fixtures")
 
@@ -148,8 +148,14 @@ def codex_process(events, exit_code=0, stderr=""):
     return CompletedProcess(["codex"], exit_code, "\n".join(json.dumps(event, ensure_ascii=False) for event in events), stderr)
 
 
+class RecordedTriage(Contract):
+    triage: str
+    slice: None
+    human_question: str
+
+
 class CodexAdapterTest(unittest.TestCase):
-    adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), STAGE_OUTPUTS["triage"])
+    adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), RecordedTriage)
 
     def test_recorded_success(self):
         outcome = self.adapter.read(fixture_process(["codex"], "success", 0))

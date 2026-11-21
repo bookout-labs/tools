@@ -47,6 +47,10 @@ def _print_run(result: DeliveryResult) -> None:
             for proof, label in result.get("proof_labels", {}).items():
                 _write_run_log(f"{proof} proof {label}")
             _write_run_log(f"done {result['stop']}")
+            if result.get("stop") == "skill_missing":
+                pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
+                if pin_commit:
+                    print(f"pstack commit {pin_commit}")
             observed = commit_sha(result.get("merge_observed_head", ""))
             verified = commit_sha(result.get("verified_head", ""))
             if observed and verified:
@@ -76,8 +80,9 @@ def _print_run(result: DeliveryResult) -> None:
             if node == "review" and (risk := result.get("risk")):
                 fields.extend(("risk", risk["level"]))
             _write_run_log(" ".join(fields))
-    if result.get("stop") == "needs_human" and "done" not in result["path"]:
-        print("paused needs_human")
+    stop = result.get("stop")
+    if stop in {"needs_human", "quota_exhausted"} and "done" not in result["path"]:
+        print(f"paused {stop}")
         if detail := result.get("halt_detail"):
             _write_run_log(detail)
 
@@ -166,6 +171,7 @@ def main(
             request=args.request or f"Issue #{args.issue}",
             check=args.check,
         )
+        print("pstack pin not checked (dry run)")
     else:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
             run.error("--repo must be OWNER/NAME")

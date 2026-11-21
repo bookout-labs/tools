@@ -6,6 +6,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 from foreman.adapters import Outcome  # noqa: E402
 from foreman.config import ModelSpec  # noqa: E402
@@ -13,6 +14,7 @@ from foreman.delivery import DeliveryState, run_delivery  # noqa: E402
 from foreman.dispatch import FailoverDispatcher, Handler  # noqa: E402
 from foreman.dry_run import ScriptHandler  # noqa: E402
 from foreman.measure import grade, propose, selected  # noqa: E402
+from tests.skill_fixture import skill_fixture  # noqa: E402
 
 
 FIELD_SLICE: dict[str, object] = {
@@ -22,18 +24,20 @@ FIELD_SLICE: dict[str, object] = {
     "uses": [],
     "screen": "",
     "properties": [],
+    "stateful": False,
 }
 
 
+def _walk(handler: Handler, *, slice: dict[str, object] | None = None) -> DeliveryState:
+    with skill_fixture() as (config, scratch):
+        return run_delivery(
+            FailoverDispatcher(handler), repo="DoctorCRE/doctorcre-engine", request="Add a field",
+            check="npm run check", slice=slice, config=config, scratch=scratch,
+        )
+
+
 def _stop(handler: Handler, *, slice: dict[str, object] | None = None) -> str:
-    result = run_delivery(
-        FailoverDispatcher(handler),
-        repo="DoctorCRE/doctorcre-engine",
-        request="Add a field",
-        check="npm run check",
-        slice=slice,
-    )
-    return result["stop"]
+    return _walk(handler, slice=slice)["stop"]
 
 
 def _with_quota_gap() -> str:
@@ -44,13 +48,7 @@ def _with_quota_gap() -> str:
             return Outcome("quota")
         return handler(node, model, state, instruction)
 
-    result = run_delivery(
-        FailoverDispatcher(exhaust_claude),
-        repo="DoctorCRE/doctorcre-engine",
-        request="Add a field",
-        check="npm run check",
-        slice=FIELD_SLICE,
-    )
+    result = _walk(exhaust_claude, slice=FIELD_SLICE)
     models = result.get("models_used", {})
     implement = models["implement"]
     review = models["review"]
@@ -76,8 +74,7 @@ def _settled_review() -> str:
                                    "resolutions": [] if count == 1 else [{"id": "check" if count == 2 else "next", "status": "resolved"}]})
         return reply
 
-    result = run_delivery(FailoverDispatcher(review), repo="Example/Engine", request="Add a field", check="true",
-                          slice=FIELD_SLICE)
+    result = _walk(review, slice=FIELD_SLICE)
     return f"{result['stop']} {result.get('merge')} {result.get('detail')}"
 
 
@@ -106,6 +103,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                         "uses": [],
                         "screen": "docs/screens/deals.md",
                         "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
+                        "stateful": False,
                     },
                     {
                         "title": "Board saves a move",
@@ -114,6 +112,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                         "uses": [{"name": "deals-board", "exists": False, "path": None}],
                         "screen": "",
                         "properties": [],
+                        "stateful": False,
                     },
                 ],
             ),
