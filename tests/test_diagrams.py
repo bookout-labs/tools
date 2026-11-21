@@ -22,10 +22,14 @@ SLICES = frozenset(f"slice_{name}" for name in (
     "1", "2", "3", "4", "5", "6", "7", "8a", "8b", "9", "10a", "10b",
     "11a", "11b", "12", "13", "14a", "14b", "15", "16",
 ))
-SHAPE = r'(?:\["[^"\n]*"\]|\(\[[^\]\n]*\]\)|\([^()\n]*\)|\{\{"[^"\n]*"\}\}|\{"[^"\n]*"\}|\[/"[^"\n]*"/\])'
+SHAPE = (
+    r'(?:\["[^"\n]*"\]|\(\[(?:"[^"\n]*"|(?:(?!--|-\.|==)[^\]\n])*)\]\)'
+    r'|\((?:"[^"\n]*"|(?:(?!--|-\.|==)[^()\n])*)\)'
+    r'|\{\{"[^"\n]*"\}\}|\{"[^"\n]*"\}|\[/"[^"\n]*"/\])'
+)
 NODE = rf'\w+(?:{SHAPE})?(?::{{3}}\w+)?'
 EDGE = re.compile(
-    rf'\s*({NODE})\s*(?:-->(?:\|([^|]+)\|)?|-\.(?:->| &nbsp;(.*?)&nbsp; \.->))'
+    rf'\s*({NODE})\s*(?:-->(?:\|([^|]+)\|)?|-\.(?:->| &nbsp;((?:(?!&nbsp;).)+)&nbsp; \.->))'
     rf'\s*({NODE})\s*;?\s*'
 )
 
@@ -49,7 +53,7 @@ def edges(text):
             connected.update((source, target))
         elif re.fullmatch(rf'\s*{NODE}\s*;?\s*', line):
             declared.add(re.match(r'\s*(\w+)', line)[1])
-        elif not re.fullmatch(
+        elif any(marker in line for marker in ('--', '-.', '==')) or not re.fullmatch(
             r'\s*(?:(?:graph|flowchart) TD;?|classDef \w+ [^;]+;?)\s*', line,
         ):
             raise ValueError(f"Unrecognized Mermaid line: {line}")
@@ -166,8 +170,27 @@ class DiagramTests(unittest.TestCase):
                 self.assertEqual(edges(text), edges(re.sub(r':::\w+', '', text)))
 
     def test_unsupported_syntax_mutation_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "Unrecognized Mermaid line"):
-            edges('a --> b\na ==> c')
+        mutations = [
+            'a --> b\na ==> c',
+            'a -. &nbsp;x&nbsp; .-> b -. &nbsp;y&nbsp; .-> c',
+        ]
+        for marker in ('--', '-.', '=='):
+            mutations.extend((
+                f'a --> b\na(x {marker}> y)',
+                f'a --> b\na([x {marker}> y])',
+                f'a --> b\nclassDef x fill:#fff {marker}> y',
+                f'a --> b(x {marker}> y)',
+            ))
+        for text in mutations:
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "Unrecognized Mermaid line"):
+                edges(text)
+
+    def test_quoted_arrow_markers_are_presentation(self):
+        for shape in ('["--flag"]', '("--flag")', '(["--flag"])',
+                      '{"--flag"}', '{{"--flag"}}', '[/"--flag"/]'):
+            with self.subTest(shape=shape):
+                self.assertEqual(edges(f'a{shape} --> b["x -. y == z"]\nh{shape}'),
+                                 ({('a', 'b', '')}, {'h'}))
 
     def test_order_whitespace_comments_and_style_are_presentation(self):
         self.assertEqual(edges('a["start"] --> b\nb --> c\nh["halt"]'),
