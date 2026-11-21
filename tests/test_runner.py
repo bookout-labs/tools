@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -493,6 +494,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.github.merged.add(101)
         self.walk([])
         self.walk([])
+        self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
         child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
         self.assertEqual(child["slice"], child_payload)
@@ -537,7 +539,7 @@ class LiveRunnerTest(unittest.TestCase):
             outside = Path(directory) / "api.py"
             outside.touch()
             (self.cwd / "escape.py").symlink_to(outside)
-            for path in (str(outside), "../api.py", "escape.py"):
+            for path in (str(outside), os.path.relpath(outside, self.cwd), "escape.py"):
                 with self.subTest(path=path):
                     self.assertFalse(workspace.has_file(path))
 
