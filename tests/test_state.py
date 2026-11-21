@@ -14,7 +14,7 @@ from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import checkpoint_state
-from foreman.state import DeliveryState
+from foreman.state import SCHEMA_VERSION, DeliveryState
 
 
 FIXTURES = Path(__file__).with_name("fixtures") / "state"
@@ -23,22 +23,26 @@ FIXTURES = Path(__file__).with_name("fixtures") / "state"
 class StateTests(unittest.TestCase):
     def test_channels_and_reducers_are_unchanged(self):
         hints = get_type_hints(DeliveryState, include_extras=True)
-        self.assertEqual(sorted(hints), json.loads((FIXTURES / "channels.json").read_text()))
+        self.assertEqual(sorted(set(hints) - {"schema_version"}), json.loads((FIXTURES / "channels.json").read_text()))
         reducers = {key: args[1] for key, hint in hints.items()
                     if get_origin(hint) is Annotated and (args := get_args(hint))}
         self.assertEqual(reducers, {"attempts": operator.add, "path": operator.add})
 
-    def test_checkpoint_from_before_move_loads_and_keeps_reducers(self):
+    def test_current_checkpoint_keeps_reducers(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "checkpoint.sqlite"
-            shutil.copyfile(FIXTURES / "before-move.sqlite", path)
-            with SqliteSaver.from_conn_string(str(path)) as saver:
-                config = {"configurable": {"thread_id": "before-move"}}
-                original = {key: value for key, value in saver.get(config)["channel_values"].items()
+            config = {"configurable": {"thread_id": "before-move"}}
+            fixture_path = Path(directory) / "fixture.sqlite"
+            shutil.copyfile(FIXTURES / "before-move.sqlite", fixture_path)
+            with SqliteSaver.from_conn_string(str(fixture_path)) as fixture:
+                original = {key: value for key, value in fixture.get(config)["channel_values"].items()
                             if key in DeliveryState.__annotations__}
+            original["schema_version"] = SCHEMA_VERSION
+            with SqliteSaver.from_conn_string(str(path)) as saver:
                 graph = compile_delivery(ScriptHandler(), load_config(),
                                          run=LiveRun(forge=DryRun(), workspace=DryRun()),
                                          checkpointer=saver)
+                graph.update_state(config, original, as_node="triage_call")
                 before = graph.get_state(config)
                 self.assertEqual(before.values, original)
                 self.assertIsNotNone(checkpoint_state(before.values))

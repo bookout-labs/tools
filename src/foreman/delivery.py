@@ -37,7 +37,7 @@ from foreman.redaction import redact
 from foreman.stage_output import (
     ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
 )
-from foreman.state import DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult, SpecRejection, SpecRejectionKind
+from foreman.state import SCHEMA_VERSION, checkpoint_serializer, DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult, SpecRejection, SpecRejectionKind
 from foreman.readiness import MergeReceipt
 from foreman.outcomes import Halt, READINESS_HALTS
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
@@ -1075,6 +1075,7 @@ def run_delivery(
 ) -> DeliveryResult:
     dry = DryRun(commands=commands if commands is not None else [])
     state: DeliveryState = {
+        "schema_version": SCHEMA_VERSION,
         "issue": dry.issue_placeholder,
         "repo": repo,
         "token_cap": max_tokens,
@@ -1093,7 +1094,7 @@ def run_delivery(
     if scratch is not None:
         state["pstack_pin"] = config.pstack.model_dump()
     try:
-        saver = InMemorySaver()
+        saver = InMemorySaver(serde=checkpoint_serializer())
         graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills), scratch=scratch, checkpointer=saver)
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,

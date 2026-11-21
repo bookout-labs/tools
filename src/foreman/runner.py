@@ -18,7 +18,7 @@ from pydantic import TypeAdapter
 from foreman.config import PstackPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
 from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state
-from foreman.state import DeliveryResult, DeliveryState, DeliveryUpdate
+from foreman.state import SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -64,6 +64,7 @@ def snapshot_result(snapshot: StateSnapshot, saver: BaseCheckpointSaver[str]) ->
 def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
     if not values:
         return None
+    require_schema_version(values)
     normalized = dict(values)
     if normalized.get("slice") is not None:
         normalized["slice"] = StoredSlice.model_validate(normalized["slice"]).record()
@@ -167,9 +168,12 @@ def run_live_delivery(
     workspace = str(run.workspace.root.resolve())
     client = run.forge
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver, TemporaryDirectory(prefix="foreman-skills-") as scratch:
-        delivery_config = load_config()
+        saver.serde = checkpoint_serializer()
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
+        if prior is not None:
+            require_schema_version(channels, checkpoint)
+        delivery_config = load_config()
         if prior and "token_cap" in channels and max_tokens is not None and channels["token_cap"] != max_tokens:
             raise ValueError("--max-tokens differs from the stored token cap")
         if prior and "max_budget_usd" in channels:
@@ -188,7 +192,7 @@ def run_live_delivery(
             )
         except SkillMissing as exc:
             graph = compile_delivery(dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver)
-            skill_halt: DeliveryUpdate = {**halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,
+            skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,
                                           "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "pending_dispatch": None,
                                           "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
                                           "issue": issue, "workspace": workspace, "repo": repo, "check": check,
@@ -214,13 +218,9 @@ def run_live_delivery(
                             presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
         saved = graph.get_state(config)
-        legacy_terminal = (
-            bool(saved.values) and not saved.next and not saved.interrupts
-            and saved.values.get("halt") not in RESUMABLE_HALTS and ("token_cap" not in saved.values or "max_budget_usd" not in saved.values)
-        )
-        if saved.values and not legacy_terminal:
+        if saved.values:
             require_run_limits(saved.values, checkpoint, max_budget_usd)
-        saved_values = checkpoint_state(saved.values) if not legacy_terminal else None
+        saved_values = checkpoint_state(saved.values)
         if presentation is not None and saved.values:
             presentation.restore(saved, saver)
         if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
@@ -252,8 +252,6 @@ def run_live_delivery(
                                                             methods=saved_values["dispatch_plan"]["methods"], outcome="interrupted", usage=None).record()],
                                        "pending_dispatch": None}, as_node=stage + "_call")
             invoke(None, saved_values)
-        elif legacy_terminal:
-            pass
         elif answer is not None and saved.interrupts and saved_values is not None:
             if parse_output(HumanPrompt, saved.interrupts[0].value).stage == "pr_size":
                 try:
@@ -265,6 +263,7 @@ def run_live_delivery(
             loaded = client.load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
+                "schema_version": SCHEMA_VERSION,
                 "fact_record": fact_record or MANIFEST_PATH,
                 "repo": repo,
                 "token_cap": max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
@@ -311,6 +310,7 @@ def run_live_delivery(
                 elif observed is None or observed.outcome not in {"closed", "retargeted"}:
                     repaired = worktree.head != head
             before = _checkpoint_before_halt(graph, config, saved_values["path"], "prepare" if repaired else None)
+            require_schema_version(before.values, checkpoint)
             require_run_limits(before.values, checkpoint, max_budget_usd)
             restored = checkpoint_state(before.values)
             assert restored is not None

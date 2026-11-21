@@ -1,3 +1,4 @@
+from foreman.state import SCHEMA_VERSION
 import json
 from dataclasses import replace
 import unittest
@@ -98,7 +99,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 graph = compile_delivery(dispatch, settings, scratch=scratch,
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "example/repo#8"}}
-                state = {"repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": EMPTY_SLICE,
+                state = {"schema_version": SCHEMA_VERSION, "repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": EMPTY_SLICE,
                          "check": "exit 0", "token_cap": 20_000_000, "max_budget_usd": None, "pstack_pin": settings.pstack.model_dump(), **(initial or {})}
                 if crash or post_crash or review_crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):

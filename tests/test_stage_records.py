@@ -1,3 +1,4 @@
+from foreman.state import SCHEMA_VERSION
 from foreman.dry_run import DEFAULT_RISK
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 import unittest
@@ -109,9 +110,9 @@ class StageRecordTests(unittest.TestCase):
         self.assertEqual(record["blocker_numbers"], [17])
         self.assertNotIn("work_kind", record)
 
-    def test_legacy_checkpoint_restores_slice_defaults(self):
+    def test_current_checkpoint_restores_slice_defaults(self):
         from foreman.runner import checkpoint_state
-        state = checkpoint_state({"token_cap": 20_000_000, "repo": "example/repo", "check": "true", "path": [], "slice": {"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []}})
+        state = checkpoint_state({"schema_version": SCHEMA_VERSION, "token_cap": 20_000_000, "repo": "example/repo", "check": "true", "path": [], "slice": {"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []}})
         self.assertFalse(state["slice"]["stateful"])
         self.assertEqual(state["slice"]["builds"], [])
         self.assertEqual(state["slice"]["uses"], [])

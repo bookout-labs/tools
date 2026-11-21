@@ -28,6 +28,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
+from foreman.state import CheckpointVersionError
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
@@ -630,6 +631,22 @@ class LiveRunnerTest(unittest.TestCase):
             self.assertEqual(resumed["stop"], "verified")
             self.assertEqual(len(self.calls), count)
             self.assertEqual(resumed["review_receipt"], result["review_receipt"])
+
+    def test_resume_rejects_historical_schema_before_missing_usage(self):
+        self.github.hold = "Maintenance"
+        result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["stop"], "merge_held")
+        config = {"configurable": {"thread_id": "example/engine#8"}}
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            historical = next(item for item in saver.list(config)
+                              if item.checkpoint["channel_values"].get("path", [])[-1:] == ["review"])
+            historical.checkpoint["channel_values"].pop("schema_version")
+            historical.checkpoint["channel_values"].pop("token_cap")
+            saver.put(historical.config, historical.checkpoint, historical.metadata, {})
+        with self.assertRaises(CheckpointVersionError) as raised:
+            self.walk([])
+        self.assertIn(str(self.checkpoint), str(raised.exception))
+        self.assertIn("schema_version missing", str(raised.exception))
 
     def test_queue_receipt_is_persisted_and_completion_does_not_reobserve(self):
         result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
