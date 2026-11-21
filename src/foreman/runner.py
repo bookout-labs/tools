@@ -9,7 +9,6 @@ import re
 from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
@@ -18,6 +17,7 @@ from pydantic import TypeAdapter
 from foreman.config import PstackPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
 from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state
+from foreman.readiness import MergeState
 from foreman.state import SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
@@ -39,11 +39,11 @@ class RunPresentation:
     updates: list[DeliveryUpdate] = field(default_factory=list[DeliveryUpdate])
     commands: list[list[str]] = field(default_factory=list[list[str]])
 
-    def restore(self, snapshot: StateSnapshot, saver: SqliteSaver) -> None:
-        self.restored = snapshot_result(snapshot, saver)
+    def restore(self, snapshot: StateSnapshot) -> None:
+        self.restored = snapshot_result(snapshot)
 
 
-def snapshot_result(snapshot: StateSnapshot, saver: BaseCheckpointSaver[str]) -> DeliveryResult:
+def snapshot_result(snapshot: StateSnapshot) -> DeliveryResult:
     values = snapshot.values
     if snapshot.interrupts:
         if values.get("halt") == Halt.quota_exhausted:
@@ -51,14 +51,7 @@ def snapshot_result(snapshot: StateSnapshot, saver: BaseCheckpointSaver[str]) ->
             return read_delivery_state({**values, "stop": Halt.quota_exhausted.value})
         question = parse_output(HumanPrompt, snapshot.interrupts[0].value).question
         return read_delivery_state({**values, "stop": "needs_human", "halt_detail": question})
-    result = read_delivery_state({**values, "stop": values.get("stop", "")})
-    if "merge" in result["path"] and "merge" not in result:
-        legacy = saver.get(snapshot.config)
-        if legacy is not None:
-            armed = legacy["channel_values"].get("merge_armed")
-            if isinstance(armed, bool):
-                result["merge"] = "armed" if armed else "not_armed"
-    return result
+    return read_delivery_state({**values, "stop": values.get("stop", "")})
 
 
 def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
@@ -222,7 +215,7 @@ def run_live_delivery(
             require_run_limits(saved.values, checkpoint, max_budget_usd)
         saved_values = checkpoint_state(saved.values)
         if presentation is not None and saved.values:
-            presentation.restore(saved, saver)
+            presentation.restore(saved)
         if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
             raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values.get("workspace") if saved_values else None
@@ -298,7 +291,7 @@ def run_live_delivery(
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             repaired = False
             repair_head: str | None = None
-            if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge_receipt") and (head := saved_values.get("verified_head")) and (branch := saved_values.get("delivery_branch")):
+            if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge", MergeState()).receipt and (head := saved_values.get("verified_head")) and (branch := saved_values.get("delivery_branch")):
                 worktree = run.workspace.inspect()
                 try:
                     observed = client.readiness(repo, issue, branch, head)
@@ -319,9 +312,10 @@ def run_live_delivery(
             if attempts[:len(previous_attempts)] != previous_attempts:
                 raise ValueError("Cannot resume a run with non-prefix attempt history.")
             if presentation is not None:
-                presentation.restore(before, saver)
+                presentation.restore(before)
             replay = before.config
-            retained: DeliveryUpdate = {"repair_head": repair_head, "merge_receipt": None if repaired else saved_values.get("merge_receipt")}
+            receipt = None if repaired else saved_values.get("merge", MergeState()).receipt
+            retained: DeliveryUpdate = {"repair_head": repair_head, "merge": MergeState(receipt=receipt)}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             if partial := saved_values.get("partial_edits"):
@@ -335,7 +329,7 @@ def run_live_delivery(
             invoke(None, saved_values)
 
         saved = graph.get_state(config)
-        result = early_result if early_result is not None else snapshot_result(saved, saver)
+        result = early_result if early_result is not None else snapshot_result(saved)
         if result.get("stop") == "sliced":
             saved_values = checkpoint_state(saved.values)
             assert saved_values is not None
@@ -366,7 +360,7 @@ def run_live_delivery(
                         and "factory" not in client.load_issue(repo, number)["labels"]):
                     client.add_label(repo, number, "factory")
             saved = graph.get_state(config)
-            result = snapshot_result(saved, saver)
+            result = snapshot_result(saved)
         report(result)
         if (halt := result.get("halt")) is not None:
             if HALTS[halt].watch is None:

@@ -16,8 +16,9 @@ from unittest.mock import Mock, patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from foreman.readiness import MergeState
 from foreman.adapters import Outcome, Usage
-from foreman.cli import _write_check_log, main, run_exit_code
+from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
@@ -28,7 +29,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
-from foreman.state import CheckpointVersionError
+from foreman.state import checkpoint_serializer, CheckpointVersionError
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
@@ -299,6 +300,18 @@ class FakeGitHub:
 
 
 class CliWorkerTest(unittest.TestCase):
+    def test_merge_state_is_serialized_in_worker_prompt(self):
+        merge = MergeState(status="not_armed", observation={"outcome": "ready"},
+                           receipt={"status": "QUEUED"}, observed_head=HEAD, command=["gh", "pr", "merge"])
+
+        def run(args, cwd, env):
+            state = json.loads(args[-1].split("Delivery state:\n")[1])
+            self.assertEqual(state["merge"], merge.model_dump(mode="json"))
+            return worker_reply(args, {"triage": "implement"})
+
+        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge}, "Read.")
+        self.assertEqual(result.kind, "ran")
+
     def test_commands_use_the_configured_models_and_parse_the_final_result(self):
         models = {
             "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"],
@@ -622,7 +635,7 @@ class LiveRunnerTest(unittest.TestCase):
             with patch.object(self.github, "readiness", return_value=observed):
                 result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
             self.assertEqual(result["stop"], reason)
-            self.assertIsInstance(result["readiness_observation"], dict)
+            self.assertIsInstance(result["merge"].observation, dict)
             self.assertIn("PR #12 head=", result["halt_detail"])
             self.assertIn("base=main@", result["halt_detail"])
             self.assertEqual(run_exit_code(result), 75)
@@ -638,6 +651,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["stop"], "merge_held")
         config = {"configurable": {"thread_id": "example/engine#8"}}
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
             historical = next(item for item in saver.list(config)
                               if item.checkpoint["channel_values"].get("path", [])[-1:] == ["review"])
             historical.checkpoint["channel_values"].pop("schema_version")
@@ -650,11 +664,11 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_queue_receipt_is_persisted_and_completion_does_not_reobserve(self):
         result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-        receipt = result["merge_receipt"]
+        receipt = result["merge"].receipt
         self.assertEqual((receipt["source_head"], receipt["identity"]), (HEAD, "queue-test"))
         with patch.object(self.github, "readiness", side_effect=AssertionError("completed run reobserved")):
             resumed = self.walk([])
-        self.assertEqual(resumed["merge_receipt"], result["merge_receipt"])
+        self.assertEqual(resumed["merge"].receipt, result["merge"].receipt)
 
     def test_saved_receipt_reconciles_before_readiness_without_reenqueue(self):
         for status in ["missing", "merged"]:
@@ -663,7 +677,7 @@ class LiveRunnerTest(unittest.TestCase):
             with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
                 first = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
             count = len(self.calls)
-            receipt = MergeReceipt.model_validate(first["merge_receipt"])
+            receipt = MergeReceipt.model_validate(first["merge"].receipt)
             effect = QueueRejected(f"Queue receipt {receipt.identity} disappeared") if status == "missing" else None
             with patch.object(self.github, "readiness", side_effect=AssertionError("readiness ran before receipt")), patch.object(self.github, "arm_auto_merge", side_effect=AssertionError("re-enqueued")), patch.object(self.github, "reconcile_merge", side_effect=effect, return_value=receipt.model_copy(update={"status": "MERGED"})) as read:
                 result = self.walk([])
@@ -681,7 +695,7 @@ class LiveRunnerTest(unittest.TestCase):
         with patch.object(self.github, "reconcile_merge", side_effect=HandoffChanged("PR head changed; resume to renew proof")):
             result = self.walk([])
         self.assertEqual(result["stop"], "merge_not_armed")
-        self.assertIsNone(result["merge_receipt"])
+        self.assertIsNone(result["merge"].receipt)
         with patch.object(self.github, "reconcile_merge", side_effect=AssertionError("stale receipt resurrected")):
             self.assertEqual(self.walk([])["stop"], "verified")
 
@@ -754,7 +768,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with patch.object(self.github, "readiness", side_effect=[ready, changed]), patch.object(self.github, "arm_auto_merge", wraps=self.github.arm_auto_merge) as arm:
                 result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
             arm.assert_called_once()
-            self.assertEqual((result["stop"], result["merge"], run_exit_code(result)), (halt, "armed", 75))
+            self.assertEqual((result["stop"], result["merge"].status, run_exit_code(result)), (halt, "armed", 75))
         self.checkpoint = self.cwd / "advanced-base.sqlite3"
         changed = ready.model_copy(deep=True)
         changed.pr.base.sha = "c" * 40
@@ -770,7 +784,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with patch.object(self.github, "readiness", side_effect=sequence):
                 result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
             self.assertEqual((result["stop"], run_exit_code(result)), ("readiness_unavailable", 75))
-            self.assertEqual(result["merge"], "armed" if index == 1 else "not_armed")
+            self.assertEqual(result["merge"].status, "armed" if index == 1 else "not_armed")
 
     def test_receipt_and_ledger_guard_prevent_arming(self):
         from foreman.review_round import ReviewHistory
@@ -877,7 +891,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(len(result["review_findings"]), 1)
         self.assertEqual(result["review_receipt"]["state"], "COMMENTED")
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
 
     def test_review_halts_when_git_fetch_times_out(self):
         real_run = subprocess.run
@@ -1055,6 +1069,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertGreater(len(paths), before_resume)
         self.assertTrue(all(not path.exists() for path in paths))
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
             checkpoints = repr(list(saver.list({"configurable": {"thread_id": "example/engine#8"}})))
         for path in paths:
             self.assertNotIn(str(path), checkpoints)
@@ -1216,7 +1231,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["verified_head"], HEAD)
         self.assertEqual(result["head_sha"], HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
 
     def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml", paraphrase: bool = False, worker_commits: bool = False, residual: bool = False):
         root = self.cwd / "checkout"
@@ -1327,14 +1342,14 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_missing_manifest_can_be_recorded_by_implement(self):
         result = self.review_tool_fact("result.txt", recover=True)
         self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(result.get("merge"), "armed")
+        self.assertEqual(result.get("merge", MergeState()).status, "armed")
         self.assertEqual(result.get("fact_record"), "tests/fixtures/manifest.toml")
         self.assertNotIn("tool_facts", result)
 
     def test_null_claim_resolves_by_id_when_reviewer_paraphrases(self):
         result = self.review_tool_fact(None, recover=True, paraphrase=True)
         self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(result.get("merge"), "armed")
+        self.assertEqual(result.get("merge", MergeState()).status, "armed")
         self.assertEqual(result["path"].count("review"), 2)
 
     def test_custom_fact_record_reaches_approval(self):
@@ -1467,7 +1482,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["path"][-5:], ["verify", "proof", "review", "merge", "done"])
         self.assertEqual(result["slice"], SLICE)
         self.assertEqual(result["proof_labels"], {})
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
 
     def test_missing_proof_stops_before_review(self):
@@ -1512,7 +1527,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             "triage", "implement", "publish", "verify", "proof", "implement", "publish", "verify", "proof", "review", "merge", "done",
         ])
         self.assertEqual(result["review_rounds"], 1)
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
 
     def test_formal_block_consumes_the_review_cap(self):
@@ -1792,7 +1807,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
                 )
                 self.assertEqual(result["check_exit_code"], 0)
-                self.assertEqual(result["merge"], "not_armed")
+                self.assertEqual(result["merge"].status, "not_armed")
                 self.assertEqual(result["stop"], "merge_not_armed")
                 self.assertIn(detail, result["halt_detail"])
                 self.assertEqual(self.github.merge_calls, [])
@@ -1804,29 +1819,42 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.checkpoint = Path(directory) / "run.sqlite3"
                 result = self.walk([{"triage": "implement"}, {"implementation": "built"}], snapshots=snapshots)
                 self.assertEqual(result.get("stop"), "merge_not_armed")
-                self.assertEqual(result.get("merge"), "not_armed")
+                self.assertEqual(result.get("merge", MergeState()).status, "not_armed")
                 self.assertIn(f"HEAD is {moved.head}, verification checked {HEAD}.", result.get("halt_detail", ""))
                 self.assertNotIn("review", result.get("models_used", {}))
                 self.assertEqual(self.github.merge_calls, [])
                 resumed = self.walk([APPROVE])
                 self.assertIn("review", resumed.get("models_used", {}))
-                self.assertEqual(resumed.get("merge"), "armed")
+                self.assertEqual(resumed.get("merge", MergeState()).status, "armed")
                 self.github.merge_calls.clear()
+
+    def test_retry_after_head_mismatch_repairs_without_stale_observation(self):
+        moved = WorktreeState("c" * 40, True, BRANCH)
+        halted = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE],
+                          snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, moved))
+        self.assertEqual(halted["merge"].observed_head, moved.head)
+        resumed = self.walk([{"implementation": "built"}, APPROVE], snapshots=(moved,))
+        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["merge"].observed_head, "")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_run(resumed)
+        self.assertNotIn("HEAD is", out.getvalue())
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
         with patch.object(self.github, "merge_hold", side_effect=MergeHoldUnreadable(reason)):
             held = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(held["stop"], "merge_held")
-        self.assertEqual(held["merge"], "not_armed")
+        self.assertEqual(held["merge"].status, "not_armed")
         self.assertEqual(held["halt_detail"], f"could not read FOREMAN_MERGE_HOLD: {reason}")
-        self.assertEqual(held["merge_command"], [
+        self.assertEqual(held["merge"].command, [
             "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--auto", "--squash", "--match-head-commit", HEAD,
         ])
         self.assertEqual(self.github.merge_calls, [])
         released = self.walk([])
         self.assertEqual(released["stop"], "verified")
-        self.assertEqual(released["merge"], "armed")
+        self.assertEqual(released["merge"].status, "armed")
         self.assertEqual(released["path"], held["path"])
         self.assertNotIn("halt_detail", released)
         self.assertEqual(self.walk([]), released)
@@ -1838,12 +1866,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
         )
         self.assertEqual(halted["stop"], "merge_not_armed")
-        self.assertEqual(halted["merge"], "not_armed")
+        self.assertEqual(halted["merge"].status, "not_armed")
         self.assertEqual(self.github.hold_reads, [])
         self.assertEqual(self.github.merge_calls, [])
         released = self.walk([])
         self.assertEqual(released["stop"], "verified")
-        self.assertEqual(released["merge"], "armed")
+        self.assertEqual(released["merge"].status, "armed")
         self.assertEqual(released["path"], halted["path"])
         self.assertEqual(self.walk([]), released)
         self.assertEqual(self.github.hold_reads, ["Example/Engine"])
@@ -1895,9 +1923,24 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertIsNotNone(reset, halted["halt_detail"])
         git(*reset.group().split()[1:])
 
+        self.github.hold = "Maintenance window"
+        held = run_delivery()
+        self.assertEqual(held["stop"], "merge_held")
+        self.assertEqual(held["merge"].observed_head, "")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_run(held)
+        self.assertIn("FOREMAN_MERGE_HOLD is set: Maintenance window", out.getvalue())
+        self.assertNotIn("HEAD is", out.getvalue())
+        self.github.hold = ""
         resumed = run_delivery()
         self.assertEqual(resumed["stop"], "verified")
-        self.assertEqual(resumed["merge"], "armed")
+        self.assertEqual(resumed["merge"].observed_head, "")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_run(run_delivery())
+        self.assertNotIn("HEAD is", out.getvalue())
+        self.assertEqual(resumed["merge"].status, "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, verified_head)])
 
     def test_live_workspace_reports_head_status_and_branch(self):
@@ -1982,7 +2025,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}, {"implementation": "built"}, APPROVE])
         self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "merge", "done"])
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(self.github.created, [])
@@ -2142,23 +2185,18 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                          ["TriageOutput", "SpecOutput", "SpecOutput", "ImplementOutput", "ReviewOutput"])
         self.assertEqual((self.cwd / "merges.log").read_text(), "merge\n")
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
             stored = saver.get({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(stored["channel_values"]["path"],
                          ["triage", "spec", "spec", "implement", "publish", "verify", "review", "merge", "done"])
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
 
-    def test_restored_snapshot_matches_result_for_legacy_merge_and_interrupts(self):
+    def test_restored_snapshot_matches_result_for_merge_and_interrupts(self):
         for replies in ([{"triage": "needs_human", "human_question": "Which items?"}],
                         [{"triage": "implement"}, {"implementation": "built"}, APPROVE]):
             with self.subTest(replies=replies):
                 self.checkpoint = self.cwd / f"{len(replies)}-{type(replies[0]).__name__}.sqlite3"
                 expected = self.walk(replies)
-                if expected["stop"] == "verified":
-                    with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-                        stored = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
-                        stored.checkpoint["channel_values"].pop("merge")
-                        stored.checkpoint["channel_values"]["merge_armed"] = True
-                        saver.put(stored.config, stored.checkpoint, stored.metadata, {})
                 presentation = RunPresentation()
                 self.assertEqual(self.walk([], presentation=presentation), expected)
                 self.assertEqual(presentation.restored, expected)
@@ -2265,6 +2303,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
                 def saved_path():
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                        saver.serde = checkpoint_serializer()
                         saved = saver.get({"configurable": {"thread_id": "example/engine#8"}})
                     return saved["channel_values"]["path"]
 
@@ -2396,7 +2435,7 @@ class HaltExitCodeTest(unittest.TestCase):
         detail = "Merge arming requires a full 40-hex commit SHA."
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
-        result = {**halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
+        result = {**halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed")}
         with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)

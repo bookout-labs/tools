@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+from foreman.readiness import MergeState  # noqa: E402
 from foreman.adapters import Outcome  # noqa: E402
 from foreman.config import ModelSpec  # noqa: E402
 from foreman.delivery import DeliveryState, run_delivery  # noqa: E402
@@ -85,7 +86,7 @@ def _settled_review() -> str:
         return reply
 
     result = _walk(review, slice=FIELD_SLICE)
-    return f"{result['stop']} {result.get('merge')} {result.get('detail')}"
+    return f"{result['stop']} {result.get('merge', MergeState()).status} {result.get('detail')}"
 
 
 def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, object]]) -> dict[str, str]:

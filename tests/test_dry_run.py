@@ -17,8 +17,8 @@ class DryRunTests(unittest.TestCase):
         with patch("foreman.delivery.compile_delivery", wraps=compile_delivery) as compile_graph:
             result = walk(ScriptHandler())
         self.assertIsInstance(compile_graph.call_args.kwargs["checkpointer"], InMemorySaver)
-        self.assertEqual(result["merge"], "skipped")
-        self.assertNotIn("merge_receipt", result)
+        self.assertEqual(result["merge"].status, "skipped")
+        self.assertIsNone(result["merge"].receipt)
         self.assertIn("pr_size", result)
         self.assertNotIn("commands", result)
         graph = compile_delivery(*compile_graph.call_args.args, **{**compile_graph.call_args.kwargs, "scratch": None})

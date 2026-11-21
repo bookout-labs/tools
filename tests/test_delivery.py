@@ -83,7 +83,7 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["risk"]["level"], "low")
-        self.assertEqual(result["merge"], "skipped")
+        self.assertEqual(result["merge"].status, "skipped")
         self.assertEqual(result["head_sha"], result["verified_head"])
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")

@@ -10,6 +10,7 @@ import unittest
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from foreman.state import checkpoint_serializer
 from foreman.config import load_config, order_for
 from skill_fixture import fixture_pin
 
@@ -28,6 +29,7 @@ from foreman.delivery import LiveRun, compile_delivery, halted
 from foreman.github import ForgeError
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from foreman.runner import run_live_delivery
+from foreman.state import checkpoint_serializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.workspace import WorktreeState
 from test_runner import FakeGitHub, FakeWorkspace, BRANCH
@@ -69,6 +71,7 @@ def worker(node, model, state, instruction):
         kind = next(queue)
         if kind in {"placeholder", "unresolved", "rejected_failed"}:
             with SqliteSaver.from_conn_string(str(root / "run.sqlite3")) as saver:
+                saver.serde = checkpoint_serializer()
                 before_rejection = saver.get({"configurable": {"thread_id": "example/engine#8"}})["channel_values"]
             posts_before_rejection = list(posted)
             usage = Usage(input_tokens=11, output_tokens=7, cache_read_input_tokens=5,
@@ -120,6 +123,7 @@ with patch("foreman.runner.load_config", return_value=config), patch("foreman.de
     except RuntimeError:
         assert legacy == "pending"
         with SqliteSaver.from_conn_string(str(root / "run.sqlite3")) as saver:
+            saver.serde = checkpoint_serializer()
             graph = compile_delivery(worker, config, run=run, checkpointer=saver)
             snapshot = graph.get_state({"configurable": {"thread_id": "example/engine#8"}})
             assert snapshot.next == ("review_call",), snapshot.next
@@ -128,7 +132,7 @@ with patch("foreman.runner.load_config", return_value=config), patch("foreman.de
         print(json.dumps({"calls": calls}))
         sys.exit(99)
 
-print(json.dumps({"result": result, "calls": calls, "posted": posted, "before_rejection": before_rejection, "posts_before_rejection": posts_before_rejection, "posts": len(forge.reviews), "merges": len(forge.merge_calls)}))
+print(json.dumps({"result": result, "calls": calls, "posted": posted, "before_rejection": before_rejection, "posts_before_rejection": posts_before_rejection, "posts": len(forge.reviews), "merges": len(forge.merge_calls)}, default=lambda value: value.model_dump(mode="json")))
 sys.exit(run_exit_code(result))
 '''
 
@@ -288,6 +292,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                     self.assertEqual(old["calls"], ["gpt-6.1-sol-high", "grok-4.7-high"])
                     self.assertEqual(old["result"]["stop"], "quota_exhausted")
                     with SqliteSaver.from_conn_string(str(root / "run.sqlite3")) as saver:
+                        saver.serde = checkpoint_serializer()
                         saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
                         self.assertTrue(any(channel == "__interrupt__" for _, channel, _ in saved.pending_writes))
                 result = self.invoke(root, "claude", ["ran"], 1 if pending else 0)

@@ -156,13 +156,13 @@ class CitationGraphTests(unittest.TestCase):
                         self.assertEqual(len([a for a in result['attempts'] if a['stage'] == 'review']), 2)
                 corrected = dict(payload(), resolutions=[{'id': 'f1', 'status': 'resolved'}])
                 result = self.run_rounds([{**payload(), 'findings': [FINDING]}, corrected], trees=trees)
-                self.assertEqual(result['merge'], 'armed')
+                self.assertEqual(result['merge'].status, 'armed')
                 self.assertEqual(len(result['review_findings']), 2)
                 self.assertEqual(result['review_findings'][-1]['resolutions'], {'f1': 'resolved'})
 
     def test_grounded_review_arms_merge(self):
         result = self.run_rounds([payload()])
-        self.assertEqual(result['merge'], 'armed')
+        self.assertEqual(result['merge'].status, 'armed')
         self.assertIn('head items.txt:2', self.forge.reviews[0][3])
 
     def test_context_failure_and_empty_diff_do_not_dispatch_review(self):

@@ -10,6 +10,7 @@ from subprocess import CompletedProcess
 import unittest
 
 from langgraph.checkpoint.memory import InMemorySaver
+from foreman.state import checkpoint_serializer
 from foreman.runner import snapshot_result
 from foreman.adapters import Outcome, Usage
 from foreman.budget import claude_spend
@@ -38,7 +39,7 @@ def configured(stage="triage", models=(CLAUDE, NEXT_CLAUDE)):
 
 
 def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000):
-    saver = InMemorySaver()
+    saver = InMemorySaver(serde=checkpoint_serializer())
     dry = DryRun()
     graph = compile_delivery(handler, config or configured(), run=LiveRun(forge=dry, workspace=dry), checkpointer=saver).with_config({"configurable": {"thread_id": "budget"}})
     graph.invoke({
@@ -46,7 +47,7 @@ def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000):
         "token_cap": token_cap, "max_budget_usd": limit,
         "attempts": [attempt(CLAUDE.name, prior)],
     })
-    return snapshot_result(graph.get_state(graph.config), saver)
+    return snapshot_result(graph.get_state(graph.config))
 
 
 class DispatchBudgetTests(unittest.TestCase):

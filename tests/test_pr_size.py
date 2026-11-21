@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.state import SCHEMA_VERSION
+from foreman.state import checkpoint_serializer, SCHEMA_VERSION
 from foreman.cli import main
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery
 from foreman.config import load_config
@@ -101,6 +101,7 @@ class PullRequestSizeTest(unittest.TestCase):
     def invoke(self, *flags, expected_code=0, from_triage=False):
         if not self.checkpoint.exists() and not from_triage:
             with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+                saver.serde = checkpoint_serializer()
                 graph = compile_delivery(lambda *_: self.fail("unexpected dispatch"), self.config, run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
                     "schema_version": SCHEMA_VERSION, "pstack_pin": self.config.pstack.model_dump(), "token_cap": DEFAULT_TOKEN_CAP, "max_budget_usd": None,
@@ -119,6 +120,7 @@ class PullRequestSizeTest(unittest.TestCase):
 
     def checkpoint_values(self):
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
             saved = saver.get({"configurable": {"thread_id": "example/engine#8"}})
         assert saved is not None
         return saved["channel_values"]

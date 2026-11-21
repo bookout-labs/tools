@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from langgraph.checkpoint.sqlite import SqliteSaver
+from foreman.state import checkpoint_serializer
 from foreman.cli import run_exit_code
 from tests.skill_fixture import skill_fixture
 
@@ -49,7 +50,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=Path(checkpoint),
                 dispatcher=handler, presentation=RunPresentation(),
                 max_budget_usd=BudgetUsd(Decimal(limit)) if limit else None, run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())))
-print(json.dumps(result))
+print(json.dumps(result, default=lambda value: value.model_dump(mode="json")))
 '''
 
 
@@ -67,6 +68,7 @@ class DispatchRecoveryTests(unittest.TestCase):
                     crashed = invoke(mode)
                     self.assertEqual(crashed.returncode, 19, crashed.stderr)
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                        saver.serde = checkpoint_serializer()
                         saved = saver.get({"configurable": {"thread_id": "example/engine#8"}})["channel_values"]
                         self.assertIsNotNone(saved["pending_dispatch"])
                         if mode == "quota":
