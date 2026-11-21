@@ -8,6 +8,8 @@ from pydantic.config import JsonDict
 
 from foreman.dispatch import InvalidOutput
 
+PULL_REQUEST_LINES = 400
+
 Text = Annotated[str, StringConstraints(pattern=r"\S")]
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Sections = TypeAdapter(dict[TrimmedText, TrimmedText])
@@ -31,8 +33,13 @@ class SliceProperty(Contract):
     constraint: TrimmedText = Field(description="Give the exact PostgreSQL constraint name, such as deals_external_id_key.")
 
 
+def _describe_slice(schema: JsonDict) -> None:
+    _require_all_fields(schema)
+    schema["description"] = f"One pull request's outcome, about {PULL_REQUEST_LINES} changed lines or fewer, and its proof obligations."
+
+
 class Slice(Contract):
-    """One pull request's outcome, about 400 changed lines or fewer, and its proof obligations."""
+    model_config = ConfigDict(json_schema_extra=_describe_slice)
 
     title: TrimmedText = Field(description="Name the outcome.")
     acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
@@ -66,7 +73,12 @@ class HumanQuestionOutput(Contract):
 
 
 class TriageOutput(HumanQuestionOutput):
-    triage: Literal["implement", "spec", "question", "needs_human"]
+    triage: Literal["implement", "spec", "question", "needs_human"] = Field(
+        description=(
+            "Use implement when the behavior is decided and the change fits in one pull request "
+            f"of about {PULL_REQUEST_LINES} changed lines or fewer. For other changes, use spec."
+        ),
+    )
     slice: Slice | None = Field(
         default=None,
         description="For a parent issue that triages as implement, return its single slice. Use null otherwise, including for slice issues.",

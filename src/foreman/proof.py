@@ -51,8 +51,7 @@ def formal_proof_label(slice: dict, artifact: dict | None) -> str | None:
         return "block" if artifact.get("typecheck") is not None else "insufficient_evidence"
     missing = False
     for prop in slice["properties"]:
-        rejections = [result["rejected"] for result in results if isinstance(result, dict)
-                      and result.get("constraint") == prop["constraint"]]
+        rejections = [result["rejected"] for result in results if result["constraint"] == prop["constraint"]]
         if not all(rejections):
             return "block"
         if not rejections:
