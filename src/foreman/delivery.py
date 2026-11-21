@@ -47,7 +47,8 @@ from foreman.workspace import ImplementationCandidate, ImplementationRejected, W
 GRAPH_NAME = "delivery"
 DEFAULT_TOKEN_CAP = 20_000_000
 PACKAGE = Path(__file__).parent
-REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
+MODEL_STAGES = ("triage", "research", "spec", "implement", "review")
+REQUIRED_NODES = (*MODEL_STAGES, "verify")
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 
@@ -437,7 +438,7 @@ def compile_delivery(
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     methods_root = run.skills(config.pstack, scratch) if scratch is not None else None
-    prompts = {name: stage_text(name) for name in REQUIRED_NODES if name != "verify"}
+    prompts = {name: stage_text(name) for name in MODEL_STAGES}
     plan_workspace = run.workspace
 
     def bind(name: str) -> DeliveryNode:
@@ -1061,11 +1062,11 @@ def compile_delivery(
         builder.add_conditional_edges(stage, after_setup, mapped)
         builder.add_conditional_edges(stage + "_call", after_setup, mapped)
 
-    graph_nodes: dict[str, DeliveryNode] = {"implement": implement, "verify": verify, "review": review}
-    for name in REQUIRED_NODES:
+    graph_nodes: dict[str, DeliveryNode] = {"implement": implement, "review": review}
+    for name in MODEL_STAGES:
         builder.add_node(name, graph_nodes[name] if name in graph_nodes and name != "implement" else bind(name))
-        if name in prompts:
-            builder.add_node(name + "_call", implement if name == "implement" else call(name))
+        builder.add_node(name + "_call", implement if name == "implement" else call(name))
+    builder.add_node("verify", verify)
     builder.add_node("prepare", prepare)
     builder.add_node("reconcile", reconcile)
     builder.add_node("commit", commit)
@@ -1103,7 +1104,7 @@ def compile_delivery(
     builder.add_conditional_edges("commit", after_halt("publish"), {"done": "done", "publish": "publish"})
     builder.add_conditional_edges("publish", after_halt("verify"), {"done": "done", "verify": "verify"})
     builder.add_conditional_edges(
-        "quota_wait", _last_stage, {name: name for name in REQUIRED_NODES if name != "verify"},
+        "quota_wait", _last_stage, {name: name for name in MODEL_STAGES},
     )
     add_agent_edges("research", lambda _: "done", {"done": "done"})
     add_agent_edges("implement", after_halt("reconcile"), {"reconcile": "reconcile", "done": "done"})

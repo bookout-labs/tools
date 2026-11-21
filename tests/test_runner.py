@@ -2163,7 +2163,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertEqual(current, "merge armed\ndone verified\n")
                     expected_workers = ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"]
                 else:
-                    self.assertIn("restored implement\nrestored paused quota_exhausted", restored)
+                    self.assertRegex(restored, r"restored implement\nrestored tokens \d+ of 20000000\nrestored paused quota_exhausted")
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
                     self.assertEqual(saved_path(), ["triage", "implement", "implement", "publish", "verify", "review", "merge", "done"])
                     expected_workers = (["TriageOutput"] + ["ImplementOutput"] * attempts
