@@ -1,0 +1,20 @@
+flowchart TD
+  e1(["from verify: pass"]):::big --> scr{"Slice names a screen?"}
+  scr -->|yes| bp{"Implement's browser proof"}
+  bp -->|no trace| h1["HALT insufficient_evidence, terminal<br/>required proof is missing"]:::halt
+  bp -->|wrong screen or failed| fail
+  bp -->|passed| frm
+  scr -->|no| frm{"Slice names database properties?"}
+  frm -->|yes| fpf{"Implement's formal proof"}
+  fpf -->|not run| h1
+  fpf -->|a named constraint did not reject a bad write| fail
+  fpf -->|every constraint rejected its bad write| facts
+  frm -->|no| facts{"Tool facts carried from earlier review rounds<br/>are recorded in the fact record at the verified head?"}
+  facts -.-> f1[/"git ls-tree and git show VERIFIED:tests/fixtures/manifest.toml"/]:::file
+  facts -->|yes| x1(["pass<br/>to publish"]):::big
+  facts -->|no| fail{"Fewer than 3 proof failures so far?"}
+  fail -->|yes| x2(["missing facts: resume same PR branch<br/>to prepare"]):::big
+  fail -->|no| h2["HALT, terminal<br/>proof failed 3 times"]:::halt
+  classDef halt fill:#fde2e2,stroke:#b42318,color:#111
+  classDef file fill:#eef2ff,stroke:#4f5bd5,color:#111
+  classDef big fill:#f2f2f2,stroke:#555,color:#111

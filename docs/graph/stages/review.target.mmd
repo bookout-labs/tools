@@ -1,0 +1,26 @@
+flowchart TD
+  e1(["from publish"]):::big --> st{"Checkout clean, on the PR branch, at the verified head?"}
+  st -.-> f1[/"git status --porcelain<br/>git rev-parse HEAD"/]:::file
+  st -->|no| h1["HALT review_unavailable, terminal"]:::halt
+  st -->|yes| tgt{"PR open, its head is the verified head,<br/>branch starts with ISSUE-, base is the default branch, same repo?"}
+  tgt -.-> f2[/"gh pr view BRANCH --repo R<br/>gh repo view R --json defaultBranchRef"/]:::file
+  tgt -->|no| h1
+  tgt -->|yes| scope["Pick the diff<br/>round 1: the full PR diff<br/>later rounds: changes since the last reviewed head, inside the PR diff"]
+  scope -.-> f3[/"git diff BASE...HEAD<br/>git diff LAST_REVIEWED..HEAD"/]:::file
+  scope --> brief["Build the instructions"]
+  brief -.-> f4[/"stages/review.md"/]:::file
+  brief -.-> f5[/"skills, always: principle-boundary-discipline, principle-model-the-domain,<br/>principle-prove-it-works, principle-test-behavior-not-implementation,<br/>Foreman skills/review-quality.md, Foreman skills/merge-risk.md"/]:::file
+  brief -.-> f6[/"added text: the diff command, the fact record path,<br/>the graph's own check result at the verified head,<br/>open findings, graph checks, Settled, don't reopen"/]:::file
+  brief --> cell{{"Dispatch cell<br/>1 claude-opus-5-5-high<br/>2 gpt-6.1-sol-high<br/>try order: models outside every family that built this PR first,<br/>then the builders' families, the builders' own models last<br/>Neon joins this list after #35;146<br/>read-only"}}:::model
+  cell --> out["Output checked against ReviewOutput<br/>resolutions, risk, findings, tool_facts, detail"]
+  out --> acc{"Round accepted?<br/>every earlier open finding resolved exactly once"}
+  acc -.-> f7[/"review_round.py accept"/]:::file
+  acc -->|no| h2["HALT invalid_output, terminal"]:::halt
+  acc -->|yes| facts["Check each tool fact is recorded<br/>findings that cite a settled ruling become coordinator notes"]
+  facts -.-> f8[/"git show VERIFIED:tests/fixtures/manifest.toml"/]:::file
+  facts --> verdict["Verdict comes from the findings<br/>changes if any finding or an unrecorded tool fact, otherwise approve"]
+  verdict --> x1(["to review_post"]):::big
+  classDef halt fill:#fde2e2,stroke:#b42318,color:#111
+  classDef file fill:#eef2ff,stroke:#4f5bd5,color:#111
+  classDef model fill:#e6f4ea,stroke:#1e7a34,color:#111
+  classDef big fill:#f2f2f2,stroke:#555,color:#111
