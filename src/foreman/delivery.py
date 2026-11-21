@@ -858,9 +858,10 @@ def compile_delivery(
     def arm_merge(state: DeliveryState) -> DeliveryUpdate:
         repo = state["repo"]
         head = state.get("verified_head")
-        merge = state.get("merge", MergeState()).model_copy(update={
-            "status": "not_armed", "command": merge_command(repo, "<number>", head or "<sha>"),
-        })
+        merge = MergeState(
+            status="not_armed", receipt=state.get("merge", MergeState()).receipt,
+            command=merge_command(repo, "<number>", head or "<sha>"),
+        )
 
         def merge_halted(halt: Halt, detail: str) -> DeliveryUpdate:
             return {
@@ -1107,7 +1108,7 @@ def run_delivery(
 
     thread_id = uuid4().hex
     graph.invoke(state, {"configurable": {"thread_id": thread_id}}, version="v2")
-    return snapshot_result(graph.get_state({"configurable": {"thread_id": thread_id}}), saver)
+    return snapshot_result(graph.get_state({"configurable": {"thread_id": thread_id}}))
 
 
 def diagram() -> str:

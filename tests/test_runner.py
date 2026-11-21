@@ -18,7 +18,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome, Usage
-from foreman.cli import _write_check_log, main, run_exit_code
+from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
@@ -300,6 +300,18 @@ class FakeGitHub:
 
 
 class CliWorkerTest(unittest.TestCase):
+    def test_merge_state_is_serialized_in_worker_prompt(self):
+        merge = MergeState(status="not_armed", observation={"outcome": "ready"},
+                           receipt={"status": "QUEUED"}, observed_head=HEAD, command=["gh", "pr", "merge"])
+
+        def run(args, cwd, env):
+            state = json.loads(args[-1].split("Delivery state:\n")[1])
+            self.assertEqual(state["merge"], merge.model_dump(mode="json"))
+            return worker_reply(args, {"triage": "implement"})
+
+        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge}, "Read.")
+        self.assertEqual(result.kind, "ran")
+
     def test_commands_use_the_configured_models_and_parse_the_final_result(self):
         models = {
             "gpt-6.1-sol-high": ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"],
@@ -1816,6 +1828,19 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual(resumed.get("merge", MergeState()).status, "armed")
                 self.github.merge_calls.clear()
 
+    def test_retry_after_head_mismatch_repairs_without_stale_observation(self):
+        moved = WorktreeState("c" * 40, True, BRANCH)
+        halted = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE],
+                          snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, moved))
+        self.assertEqual(halted["merge"].observed_head, moved.head)
+        resumed = self.walk([{"implementation": "built"}, APPROVE], snapshots=(moved,))
+        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["merge"].observed_head, "")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_run(resumed)
+        self.assertNotIn("HEAD is", out.getvalue())
+
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
         with patch.object(self.github, "merge_hold", side_effect=MergeHoldUnreadable(reason)):
@@ -1898,8 +1923,23 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertIsNotNone(reset, halted["halt_detail"])
         git(*reset.group().split()[1:])
 
+        self.github.hold = "Maintenance window"
+        held = run_delivery()
+        self.assertEqual(held["stop"], "merge_held")
+        self.assertEqual(held["merge"].observed_head, "")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_run(held)
+        self.assertIn("FOREMAN_MERGE_HOLD is set: Maintenance window", out.getvalue())
+        self.assertNotIn("HEAD is", out.getvalue())
+        self.github.hold = ""
         resumed = run_delivery()
         self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["merge"].observed_head, "")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _print_run(run_delivery())
+        self.assertNotIn("HEAD is", out.getvalue())
         self.assertEqual(resumed["merge"].status, "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, verified_head)])
 

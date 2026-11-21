@@ -9,7 +9,6 @@ import re
 from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
@@ -40,11 +39,11 @@ class RunPresentation:
     updates: list[DeliveryUpdate] = field(default_factory=list[DeliveryUpdate])
     commands: list[list[str]] = field(default_factory=list[list[str]])
 
-    def restore(self, snapshot: StateSnapshot, saver: SqliteSaver) -> None:
-        self.restored = snapshot_result(snapshot, saver)
+    def restore(self, snapshot: StateSnapshot) -> None:
+        self.restored = snapshot_result(snapshot)
 
 
-def snapshot_result(snapshot: StateSnapshot, saver: BaseCheckpointSaver[str]) -> DeliveryResult:
+def snapshot_result(snapshot: StateSnapshot) -> DeliveryResult:
     values = snapshot.values
     if snapshot.interrupts:
         if values.get("halt") == Halt.quota_exhausted:
@@ -216,7 +215,7 @@ def run_live_delivery(
             require_run_limits(saved.values, checkpoint, max_budget_usd)
         saved_values = checkpoint_state(saved.values)
         if presentation is not None and saved.values:
-            presentation.restore(saved, saver)
+            presentation.restore(saved)
         if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
             raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values.get("workspace") if saved_values else None
@@ -313,11 +312,10 @@ def run_live_delivery(
             if attempts[:len(previous_attempts)] != previous_attempts:
                 raise ValueError("Cannot resume a run with non-prefix attempt history.")
             if presentation is not None:
-                presentation.restore(before, saver)
+                presentation.restore(before)
             replay = before.config
-            merge = saved_values.get("merge", MergeState())
-            retained: DeliveryUpdate = {"repair_head": repair_head,
-                                        "merge": merge.model_copy(update={"receipt": None}) if repaired else merge}
+            receipt = None if repaired else saved_values.get("merge", MergeState()).receipt
+            retained: DeliveryUpdate = {"repair_head": repair_head, "merge": MergeState(receipt=receipt)}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             if partial := saved_values.get("partial_edits"):
@@ -331,7 +329,7 @@ def run_live_delivery(
             invoke(None, saved_values)
 
         saved = graph.get_state(config)
-        result = early_result if early_result is not None else snapshot_result(saved, saver)
+        result = early_result if early_result is not None else snapshot_result(saved)
         if result.get("stop") == "sliced":
             saved_values = checkpoint_state(saved.values)
             assert saved_values is not None
@@ -362,7 +360,7 @@ def run_live_delivery(
                         and "factory" not in client.load_issue(repo, number)["labels"]):
                     client.add_label(repo, number, "factory")
             saved = graph.get_state(config)
-            result = snapshot_result(saved, saver)
+            result = snapshot_result(saved)
         report(result)
         if (halt := result.get("halt")) is not None:
             if HALTS[halt].watch is None:

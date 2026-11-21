@@ -186,7 +186,7 @@ class ReviewRoundsTest(unittest.TestCase):
                  "findings": [{**FINDING, "id": "f2", "severity": "nit", "summary": "Adjust wording.", "fix": "Adjust wording."}]},
                 {**APPROVE, "resolutions": [{"id": "f2", "status": "resolved"}]},
             ], trees=trees, review_quota=True, quota_after=1)
-            self.assertEqual(result["merge"], "armed")
+            self.assertEqual(result["merge"].status, "armed")
             self.assertEqual(result["review_rounds"], 3)
             prompts = [p[2] for p in self.prompts if p[0] == "review"]
             self.assertEqual(len(prompts), 4)

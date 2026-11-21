@@ -47,7 +47,7 @@ def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000):
         "token_cap": token_cap, "max_budget_usd": limit,
         "attempts": [attempt(CLAUDE.name, prior)],
     })
-    return snapshot_result(graph.get_state(graph.config), saver)
+    return snapshot_result(graph.get_state(graph.config))
 
 
 class DispatchBudgetTests(unittest.TestCase):
