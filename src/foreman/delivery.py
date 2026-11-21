@@ -15,7 +15,6 @@ from typing import Annotated, Literal, NotRequired, Protocol, cast
 import re
 import textwrap
 
-from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -1250,10 +1249,9 @@ def run_delivery(
                                     "skill_reason": exc.reason})
     from foreman.runner import snapshot_result
 
-    invocation: RunnableConfig = {"configurable": {"thread_id": uuid4().hex}}
-    graph.invoke(state, invocation, version="v2")
-    result = snapshot_result(graph.get_state(invocation), saver)
-    return result
+    thread_id = uuid4().hex
+    graph.invoke(state, {"configurable": {"thread_id": thread_id}}, version="v2")
+    return snapshot_result(graph.get_state({"configurable": {"thread_id": thread_id}}), saver)
 
 
 def diagram() -> str:

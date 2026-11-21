@@ -1,22 +1,12 @@
-import ast
-from pathlib import Path
 from contextlib import redirect_stdout
 from io import StringIO
 import unittest
-from foreman.delivery import compile_delivery
-
-
 from foreman.cli import _print_run_rows
 from foreman.dry_run import ScriptHandler
 from test_delivery import walk
 
 
 class DryRunTests(unittest.TestCase):
-    def test_model_stage_loops_do_not_filter_verify(self):
-        tree = ast.parse(Path(compile_delivery.__code__.co_filename).read_text())
-        comparisons = (node for node in ast.walk(tree) if isinstance(node, ast.Compare))
-        self.assertFalse(any(isinstance(value, ast.Constant) and value.value == "verify" for node in comparisons for value in node.comparators))
-
     def test_paused_dry_transcript_keeps_tokens(self):
         output = StringIO()
         with redirect_stdout(output):

@@ -49,6 +49,11 @@ def edges(text):
 
 
 class DiagramTests(unittest.TestCase):
+    def test_model_stage_loops_do_not_filter_verify(self):
+        tree = ast.parse(Path(compile_delivery.__code__.co_filename).read_text())
+        comparisons = (node for node in ast.walk(tree) if isinstance(node, ast.Compare))
+        self.assertFalse(any(isinstance(value, ast.Constant) and value.value == "verify" for node in comparisons for value in node.comparators))
+
     def test_native_drawings_and_readme_are_exact(self):
         compiled = compile_delivery(ScriptHandler(), load_config(), run=DryRun())
         pictures = drawings()
