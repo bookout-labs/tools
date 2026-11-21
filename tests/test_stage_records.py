@@ -16,7 +16,7 @@ class StageRecordTests(unittest.TestCase):
             (ConstraintResult, ConstraintResultRecord, {"constraint": "positive", "rejected": True}),
             (BrowserProof, BrowserProofRecord, {"screen": None, "trace": None, "passed": None}),
             (FormalProof, FormalProofRecord, {"ran": True, "constraints": [{"constraint": "positive", "rejected": True}], "typecheck": False}),
-            (Finding, FindingRecord, {"file": "a.py", "line": 1, "severity": "nit", "summary": "Rename."}),
+            (Finding, FindingRecord, {"id": "f1", "kind": "correctness", "fix": "Rename.", "ruling_id": None, "file": "a.py", "line": 1, "severity": "nit", "summary": "Rename."}),
             (MergeRisk, MergeRiskRecord, dict.fromkeys(("alignment", "impact", "verification", "rollback", "error_detection"), "Evidence") | {"level": "low"}),
             (Seam, SeamRecord, {"name": "db", "exists": True, "path": "db.py"}),
             (SliceProperty, SlicePropertyRecord, {"name": "Positive", "constraint": "positive"}),

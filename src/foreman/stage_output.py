@@ -82,6 +82,10 @@ class ToolFactRecord(TypedDict):
 
 @with_config(extra="forbid")
 class FindingRecord(TypedDict):
+    id: str
+    kind: Literal["correctness", "contract-unenforced", "duplicate-owner", "hand-built-parsing", "untested-path", "docs"]
+    fix: str
+    ruling_id: str | None
     file: str
     line: int
     severity: Literal["blocking", "nit"]
@@ -209,11 +213,12 @@ class SpecOutput(HumanQuestionOutput):
 
 
 class BrowserProof(RecordContract[BrowserProofRecord]):
+    """For a required screen, report only browser evidence you actually collected."""
+
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[BrowserProofRecord]:
         return TypeAdapter(BrowserProofRecord)
-    """For a required screen, report only browser evidence you actually collected."""
 
     screen: str | None
     trace: str | None
@@ -230,11 +235,12 @@ class ConstraintResult(RecordContract[ConstraintResultRecord]):
 
 
 class FormalProof(RecordContract[FormalProofRecord]):
+    """For required properties, report only formal evidence you actually collected."""
+
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[FormalProofRecord]:
         return TypeAdapter(FormalProofRecord)
-    """For required properties, report only formal evidence you actually collected."""
 
     ran: bool | None
     constraints: list[ConstraintResult] | None
@@ -276,28 +282,36 @@ class Finding(RecordContract[FindingRecord]):
     @override
     def record_adapter(cls) -> TypeAdapter[FindingRecord]:
         return TypeAdapter(FindingRecord)
+    id: TrimmedText = Field(description="Unique finding ID. Never reuse an earlier finding ID.")
+    kind: Literal["correctness", "contract-unenforced", "duplicate-owner", "hand-built-parsing", "untested-path", "docs"]
+    fix: Text = Field(description="State the requested fix.")
+    ruling_id: str | None = Field(description="If this contradicts a settled ruling, give its ID so it becomes a coordinator note. Otherwise null.")
     file: Text = Field(description="Give the path relative to the repository root.")
     line: int = Field(description="Give the line number in the reviewed commit.")
     severity: Literal["blocking", "nit"]
     summary: Text = Field(max_length=200)
 
 
+class FindingResolution(Contract):
+    id: TrimmedText
+    status: Literal["resolved", "unresolved"]
+
+
+class SettledRuling(Contract):
+    id: TrimmedText
+    text: Text
+
+
 class ReviewOutput(Contract):
-    review: Literal["approve", "changes"]
+    resolutions: list[FindingResolution] = Field(description="Mark every earlier unresolved reviewer finding once. The graph resolves tool-fact gate findings. Return an empty list in round 1.")
     risk: MergeRisk
     findings: list[Finding] = Field(
-        description="List each requested fix, including nits. Return one or more findings for changes and an empty list for approve.",
+        description="List each new requested fix, including nits. Return an empty list when there are none.",
     )
     tool_facts: list[ToolFact] = Field(
         description="List every outside-tool fact the diff relies on, including unrecorded facts. Use an empty list if there are none.",
     )
     detail: Text = Field(description="Write the pull request review body, including any longer explanation.")
-
-    @model_validator(mode="after")
-    def verdict_matches_findings(self) -> Self:
-        if (self.review == "changes") != bool(self.findings):
-            raise ValueError("changes requires at least one finding and approve requires an empty findings list")
-        return self
 
 
 class VerifyOutput(Contract):
