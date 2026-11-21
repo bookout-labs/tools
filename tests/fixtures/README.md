@@ -83,3 +83,27 @@ The adapter uses the following facts from the captures and Codex tag `rust-v0.17
 - `turn.failed.error.message` gives the terminal error. `error.message` can precede a retry, so it supplies a diagnostic when a turn fails without a terminal message. Both event shapes omit the upstream error code. [JSONL conversion](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L450-L460) · [Terminal errors](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L528-L560) · [Retry and exit handling](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/lib.rs#L1472-L1491)
 - Quota checks use the formatters for `RateLimitExceeded`, `QuotaExceeded`, retry exhaustion with HTTP 429, and the usage-limit, plan, and workspace cap variants of `UsageLimitReachedError`. [Rate limit message](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L132-L136) · [Quota message](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L219-L228) · [Retry and usage-limit messages](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L823-L959)
 - The success events carry no model ID, and the unknown-model probe failed with exit 1. Codex emits a `model rerouted: ` message as a completed `error` item when the server switches models. [Reroute notification](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L486-L511)
+
+## Review fixtures
+
+`review.diff` was captured with Git 2.56.0 in a synthetic repository. The base
+had a three-line `items.txt` and a one-line `deleted.txt`. The head replaced
+the middle line of `items.txt` and removed `deleted.txt`.
+
+```sh
+git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames HEAD^...HEAD --
+```
+
+The synthetic checkout test runs `git fetch --no-tags origin <base-oid> <head-oid>`
+with Git 2.56.0 and checks that the fetched base commit becomes available.
+
+LiveForge uses gh 2.102.0. The [`gh pr view` manual](https://cli.github.com/manual/gh_pr_view)
+lists `baseRefOid` and `headRefOid` among its JSON fields. The
+[`gh api` manual](https://cli.github.com/manual/gh_api) documents `--input -`
+for sending a request body from stdin.
+
+The [GitHub REST API 2022-11-28 review endpoint](https://docs.github.com/en/rest/pulls/reviews?apiVersion=2022-11-28#create-a-review-for-a-pull-request)
+documents `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`. Foreman
+sends `commit_id`, `event: COMMENT`, `body`, and a `comments` array
+with `path`, `line`, `side`, and `body` per inline comment. The
+[`RIGHT` side identifies the new file](https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request).
