@@ -24,7 +24,8 @@ class ReadinessTest(unittest.TestCase):
 
     def observe(self, *, pr=None, runs=None, rules=None, statuses=None, parents=None, after=None, legacy=None, tip=BASE):
         pr = pr or READINESS
-        def reply(command, **kwargs):
+        def reply(repo, command, **kwargs):
+            self.assertEqual(repo, REPO)
             url = command[2]
             value = (rules if rules is not None else RULES) if "/rules/" in url else (
                 [dict(check_runs=runs or [])] if "/check-runs" in url else (

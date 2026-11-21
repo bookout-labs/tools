@@ -14,7 +14,7 @@ from pydantic import BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
-from foreman.credentials import CredentialFailure, GIT_AUTH, credentials, failure, github_repo
+from foreman.credentials import CredentialFailure, GIT_AUTH, COMMAND_TIMEOUT, credentials, failure
 from foreman.redaction import redact
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
@@ -143,8 +143,10 @@ def push_command(remote: str, branch: str) -> list[str]:
 
 
 class LiveWorkspace:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, repo: str = ""):
         self.root = root
+        self.repo = repo
+        self._urls: list[str] = []
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int:
         with subprocess.Popen(
@@ -259,13 +261,23 @@ class LiveWorkspace:
     def soft_reset(self, parent: str) -> None:
         self._git("reset", "--soft", parent)
 
-    def push(self, branch: str, repo: str) -> None:
+    def _validate_remote(self, repo: str) -> list[str]:
         remote = os.fsdecode(self._git("remote", "get-url", "origin")).strip()
-        expected = repo.lower()
-        urls = (f"https://github.com/{expected}", f"git@github.com:{expected}", f"ssh://git@github.com/{expected}")
         push_urls = os.fsdecode(self._git("remote", "get-url", "--push", "--all", "origin")).splitlines()
-        if not push_urls or any(url.lower().removesuffix(".git").rstrip("/") not in urls for url in [remote, *push_urls]):
-            raise WorkspaceError("origin does not point at the selected GitHub repository.")
+        expected = repo.lower()
+        urls = (f"https://github.com/{expected}",)
+        if not credentials.configured:
+            urls += (f"git@github.com:{expected}", f"ssh://git@github.com/{expected}")
+        if not push_urls or any(url.lower().rstrip("/").removesuffix(".git") not in urls for url in [remote, *push_urls]):
+            raise WorktreeInspectionFailed("origin does not point at the selected GitHub repository using an allowed transport, or a push URL differs.")
+        return [remote, *push_urls]
+
+    def push(self, branch: str, repo: str) -> None:
+        if credentials.configured:
+            if repo != self.repo:
+                raise WorkspaceError("Push repository differs from the authorized run repository.")
+        else:
+            self._validate_remote(repo)
         ref = f"refs/heads/{redact(branch)}"
         observed = self._git("ls-remote", "origin", ref).split()
         head = self._git("rev-parse", ref).strip()
@@ -381,20 +393,17 @@ class LiveWorkspace:
             timeout = 30 if args[0] in {"fetch", "push", "ls-remote", "commit"} else 10
         env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
         auth: tuple[str, ...] = ()
-        if args[0] in {"fetch", "push", "ls-remote"} and (
-                os.environ.get("FOREMAN_APP_ID") or os.environ.get("FOREMAN_INSTALLATION_ID")):
+        if args[0] in {"fetch", "push", "ls-remote"}:
+            if credentials.configured and not self._urls:
+                self._urls = self._validate_remote(self.repo)
             try:
-                # Resolve origin (including pushurl and insteadOf) before supplying credentials.
-                remote = os.fsdecode(self._git("remote", "get-url", "origin")).strip()
-                app_env = credentials.environment(github_repo(remote))
-                if app_env is not None:
-                    urls = os.fsdecode(self._git("remote", "get-url", "--push", "--all", "origin")).splitlines()
-                    if not urls or any(github_repo(url).lower() != github_repo(remote).lower() for url in urls):
-                        raise CredentialFailure("App origin and push URLs must select the same repository.")
-                    auth = (*GIT_AUTH, *(part for url in {remote, *urls} for part in ("-c", f"http.{url}.extraHeader=")))
-                    env = {**app_env, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
+                app_env = credentials.environment(self.repo)
             except CredentialFailure as exc:
                 raise WorktreeInspectionFailed(str(exc)) from None
+            if app_env is not None:
+                timeout = min(timeout, COMMAND_TIMEOUT)
+                auth = (*GIT_AUTH, *(part for url in set(self._urls) for part in ("-c", f"http.{url}.extraHeader=")))
+                env = {**app_env, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": "https"}
         try:
             result = subprocess.run(
                 ["git", *auth, *args], cwd=self.root, capture_output=True, input=input_paths,
@@ -404,14 +413,17 @@ class LiveWorkspace:
         except subprocess.TimeoutExpired as exc:
             raise WorktreeInspectionFailed(f"{operation} timed out after {timeout} seconds; rerun to resume.") from exc
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-            raise WorktreeInspectionFailed(redact(f"{operation} failed ({exc}).")) from None
+            raise WorktreeInspectionFailed(redact(f"{operation} failed ({exc}).", credentials_only=True)) from None
         if result.returncode:
             if auth:
-                credentials.invalidate()
-                status = re.search(r"(?:HTTP |error: )(401|403|429)", os.fsdecode(result.stderr))
-                if status:
-                    raise WorktreeInspectionFailed(str(failure(int(status[1]), b"rate limit" in result.stderr.lower())))
+                detail = os.fsdecode(result.stderr)
+                status = re.search(r"(?:HTTP |error: )(\d{3})", detail)
+                code = 401 if "Authentication failed" in detail else int(status[1]) if status else None
+                if code == 401:
+                    credentials.invalidate()
+                if code is not None:
+                    raise WorktreeInspectionFailed(failure(code, "rate limit" in detail.lower()))
             raise WorktreeInspectionFailed(
-                redact(os.fsdecode(result.stderr).strip()) or f"{operation} exited with code {result.returncode}.",
+                redact(os.fsdecode(result.stderr).strip(), credentials_only=True) or f"{operation} exited with code {result.returncode}.",
             )
         return result.stdout

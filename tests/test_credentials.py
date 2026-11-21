@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+from threading import Event
 import subprocess
 import tempfile
 import unittest
@@ -16,12 +17,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
 
-from langgraph.checkpoint.base import empty_checkpoint
-from langgraph.checkpoint.sqlite import SqliteSaver
-
 from foreman.adapters import Outcome
 from foreman.dispatch import FailoverDispatcher
-from foreman.credentials import AppCredentials, CredentialFailure, GIT_AUTH, github_repo
+from foreman.credentials import AppCredentials, CredentialFailure, GIT_AUTH, TOKEN_MARGIN
 from foreman.github import CommandFailed, LiveForge
 from foreman.redaction import redact
 from foreman.workspace import LiveWorkspace, WorktreeInspectionFailed
@@ -57,15 +55,19 @@ class CredentialsTest(unittest.TestCase):
         self.assertEqual(json.loads(request.data), {'repositories': ['repo']})
         self.assertEqual(jwt.decode(request.headers['Authorization'].split()[1], self.key,
                                     algorithms=['RS256'], options={'verify_exp': False})['iss'], '1')
-        self.clock.return_value = 4541
+        self.clock.return_value = 4601 - TOKEN_MARGIN
         self.owner.environment('org/repo')
         self.owner.environment('org/other')
         self.assertEqual(self.http.call_count, 3)
+        self.assertEqual(json.loads(self.http.call_args.args[0].data), {'repositories': ['other']})
 
     def test_fail_closed_and_sanitize_library_failures(self):
         for error, expected in [(TimeoutError('private material'), 'unavailable'),
                                 (HTTPError('', 401, 'secret', {}, None), 'unauthorized'),
                                 (HTTPError('', 403, 'secret', {}, None), 'permission'),
+                                (HTTPError('', 404, 'secret', {}, None), 'scope'),
+                                (HTTPError('', 422, 'secret', {}, None), 'scope'),
+                                (HTTPError('', 503, 'secret', {}, None), 'unavailable'),
                                 (HTTPError('', 403, 'secret', {'Retry-After': '30'}, None), 'rate limit')]:
             self.http.side_effect = error
             with self.assertRaisesRegex(CredentialFailure, expected) as caught:
@@ -83,49 +85,62 @@ class CredentialsTest(unittest.TestCase):
     def test_gh_command_uses_app_environment_and_preserves_argv(self):
         with patch('foreman.github.credentials', self.owner), patch('foreman.github.subprocess.run') as run:
             run.return_value = subprocess.CompletedProcess([], 0, '{}', '')
-            command = ['gh', 'api', 'repos/org/repo/issues']
-            LiveForge()._run_command(command)
-            self.assertEqual(run.call_args.args[0], command)
-            self.assertTrue(run.call_args.kwargs['env']['GH_TOKEN'].startswith('ghs_'))
+            for command in [['gh', 'api', 'repos/org/repo/issues'], ['gh', 'api', 'graphql'],
+                            ['gh', 'api', '--method', 'GET', '/repos/org/repo']]:
+                LiveForge()._run_command('org/repo', command)
+                self.assertEqual(run.call_args.args[0], command)
+                self.assertTrue(run.call_args.kwargs['env']['GH_TOKEN'].startswith('ghs_'))
             run.return_value = subprocess.CompletedProcess([], 1, '', 'HTTP 401')
             with self.assertRaisesRegex(CommandFailed, 'unauthorized'):
-                LiveForge()._run_command(command)
+                LiveForge()._run_command('org/repo', command)
 
-    def test_git_rejects_other_transport_and_uses_command_helper(self):
-        workspace = LiveWorkspace(Path.cwd())
-        for url in ['git@github.com:org/repo', 'https://user:secret@github.com/org/repo', 'https://evil/org/repo']:
-            with self.assertRaises(CredentialFailure):
-                github_repo(url)
-        self.assertEqual(github_repo('https://github.com/org/repo.git'), 'org/repo')
+    def test_git_rejects_other_transport_and_uses_run_repository(self):
         with patch('foreman.workspace.credentials', self.owner), patch('foreman.workspace.subprocess.run') as run:
-            run.side_effect = [subprocess.CompletedProcess([], 0, b'https://github.com/org/repo\n', b''),
-                               subprocess.CompletedProcess([], 0, b'https://github.com/org/repo\n', b''),
+            for url, push in [('git@github.com:org/repo', 'git@github.com:org/repo'),
+                              ('https://user:secret@github.com/org/repo', 'https://github.com/org/repo'),
+                              ('https://github.com/org/repo', 'https://github.com/org/wrong')]:
+                run.side_effect = [subprocess.CompletedProcess([], 0, value.encode(), b'') for value in (url, push)]
+                with self.assertRaises(WorktreeInspectionFailed):
+                    LiveWorkspace(Path.cwd(), 'org/repo')._git('fetch', 'origin', 'main')
+            run.side_effect = [subprocess.CompletedProcess([], 0, b'https://github.com/org/repo', b'')] * 2
+            run.side_effect = [*run.side_effect, subprocess.CompletedProcess([], 0, b'head', b''),
                                subprocess.CompletedProcess([], 0, b'head', b'')]
+            workspace = LiveWorkspace(Path.cwd(), 'org/repo')
             self.assertEqual(workspace._git('fetch', 'origin', 'main'), b'head')
+            self.assertEqual(workspace._git('ls-remote', 'origin'), b'head')
+            self.assertEqual(run.call_count, 10)
             command = run.call_args.args[0]
             self.assertEqual(command[1:1 + len(GIT_AUTH)], list(GIT_AUTH))
-            self.assertIn('origin', command)
             self.assertNotIn('ghs_', ' '.join(command))
-            run.side_effect = [subprocess.CompletedProcess([], 0, b'https://github.com/org/repo', b''),
-                               subprocess.CompletedProcess([], 0, b'git@github.com:org/repo', b'')]
-            with self.assertRaises(WorktreeInspectionFailed):
-                workspace._git('push', 'origin', 'main')
+            self.assertIn('protocol.allow=never', command)
+            self.assertIn('protocol.https.allow=always', command)
+            self.assertEqual(run.call_args.kwargs['env']['GIT_ALLOW_PROTOCOL'], 'https')
+            self.assertEqual(json.loads(self.http.call_args.args[0].data), {'repositories': ['repo']})
+
+    def test_git_error_classification_and_invalidation(self):
+        with patch('foreman.workspace.credentials', self.owner), patch('foreman.workspace.subprocess.run') as run:
+            workspace = LiveWorkspace(Path.cwd(), 'org/repo')
+            workspace._urls = ['https://github.com/org/repo']
+            with patch.object(self.owner, 'invalidate') as invalidate:
+                for detail, expected in [('Authentication failed', 'unauthorized'), ('The requested URL returned error: 403', 'permission'),
+                                         ('The requested URL returned error: 429', 'rate limit'), ('non-fast-forward', 'non-fast-forward')]:
+                    invalidate.reset_mock()
+                    run.return_value = subprocess.CompletedProcess([], 1, b'', detail.encode())
+                    with self.assertRaisesRegex(WorktreeInspectionFailed, expected):
+                        workspace._git('push', 'origin', 'main')
+                    self.assertEqual(invalidate.call_count, int(expected == 'unauthorized'))
 
     def test_redaction_removes_entire_app_secrets(self):
         secrets = ['ghs_' + 'a' * 36, 'ghs_123_eyJabc.eyJdef.signature_suffix',
                    'eyJabc.eyJdef.signature_suffix', 'Authorization: Basic c3ludGhldGljOnNlY3JldA==',
                    'Authorization: Bearer opaque_suffix', 'https://user:p%40ss@github.com/org/repo',
                    '-----BEGIN PRIVATE KEY-----\nsynthetic suffix\n-----END PRIVATE KEY-----']
-        for secret in secrets:
-            with self.subTest(secret=secret):
+        names = ['legacy installation', 'stateless installation', 'App JWT', 'basic header', 'bearer header', 'encoded HTTPS password', 'PEM']
+        for name, secret in zip(names, secrets):
+            with self.subTest(shape=name):
                 outcome, _ = FailoverDispatcher(lambda *args: Outcome("ran", output={"detail": secret}, detail=secret)).run("review", None, {}, "")
                 self.assertNotIn(secret, json.dumps(outcome.output))
                 self.assertNotIn(secret, outcome.detail)
-                with SqliteSaver.from_conn_string(":memory:") as saver:
-                    checkpoint = empty_checkpoint()
-                    checkpoint["channel_values"] = outcome.output
-                    config = saver.put({"configurable": {"thread_id": "redaction", "checkpoint_ns": ""}}, checkpoint, {}, {})
-                    self.assertNotIn(secret, str(saver.get(config)))
                 clean = redact(secret)
                 self.assertNotIn('suffix', clean)
                 self.assertNotIn('c3lud', clean)
@@ -134,7 +149,7 @@ class CredentialsTest(unittest.TestCase):
                 with patch('foreman.github.credentials', self.owner), patch('foreman.github.subprocess.run') as run:
                     run.return_value = subprocess.CompletedProcess([], 1, '', secret)
                     with self.assertRaises(CommandFailed) as caught:
-                        LiveForge()._run_command(['gh', 'api', 'repos/org/repo/issues'])
+                        LiveForge()._run_command('org/repo', ['gh', 'api', 'repos/org/repo/issues'])
                     self.assertNotIn(secret, str(caught.exception))
 
     def test_helper_overrides_cached_personal_credentials(self):
@@ -144,3 +159,37 @@ class CredentialsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('password=synthetic', result.stdout)
         self.assertNotIn('personal', result.stdout)
+
+    def test_quoted_auth_header_and_nested_strings_preserve_structure(self):
+        text = 'Run: curl -H "Authorization: Bearer abc123" https://api.github.com'
+        output = {'spec': text, 'nested': [text, {'pem': '-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----'}], 'number': 3}
+        outcome, _ = FailoverDispatcher(lambda *args: Outcome('ran', output=output)).run('spec', None, {}, '')
+        self.assertEqual(outcome.output['spec'], 'Run: curl -H "[redacted:Credential]" https://api.github.com')
+        self.assertNotIn('abc123', str(outcome.output))
+        self.assertNotIn('BEGIN PRIVATE KEY', str(outcome.output))
+        self.assertEqual(outcome.output['number'], 3)
+
+    def test_command_stderr_keeps_shas(self):
+        detail = 'expected head 3f786850e387550fdab836ed7e6dc881de23001b got a94a8fe5ccb19ba61c4c0873d391e987982fbbd3'
+        with patch.dict(os.environ, FOREMAN_APP_ID='', FOREMAN_INSTALLATION_ID=''), patch('subprocess.run') as run:
+            for operation in [lambda: LiveForge()._run_command('org/repo', ['gh', 'api', 'repos/org/repo']),
+                              lambda: LiveWorkspace(Path.cwd())._git('ls-remote', 'origin')]:
+                run.return_value = subprocess.CompletedProcess([], 1, '', detail)
+                with self.assertRaisesRegex(RuntimeError, detail):
+                    operation()
+
+    def test_cached_repo_does_not_wait_for_another_repos_mint(self):
+        self.owner.environment('org/repo')
+        entered, release = Event(), Event()
+        def blocked(*args, **kwargs):
+            entered.set()
+            release.wait(2)
+            return self.http.return_value
+        with patch('foreman.credentials.urlopen', side_effect=blocked), ThreadPoolExecutor(max_workers=2) as pool:
+            mint = pool.submit(self.owner.environment, 'org/other')
+            self.assertTrue(entered.wait(1))
+            try:
+                self.assertIsNotNone(pool.submit(self.owner.environment, 'org/repo').result(timeout=1))
+            finally:
+                release.set()
+            mint.result(timeout=1)

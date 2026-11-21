@@ -234,7 +234,8 @@ class RedactionTest(unittest.TestCase):
 
             visit(tree)
         self.assertEqual(references, {
-            ("dispatch.py", "FailoverDispatcher.run"): 2,
+            ("dispatch.py", "FailoverDispatcher.run"): 1,
+            ("dispatch.py", "FailoverDispatcher.run.clean"): 1,
             ("cli.py", "_write_run_log"): 1,
             ("delivery.py", "DryRun.record_merge"): 2,
             ("github.py", "LiveForge._run_command"): 2,

@@ -74,10 +74,8 @@ def _private_key_span(text: str, start: int, header: str) -> tuple[int, int]:
 def _matches(text: str, plugins: list[BasePlugin]) -> Iterator[_Match]:
     for match in re.finditer(r"\b(?:ghs_\d+_[A-Za-z0-9_.-]+|gh[pousr]_[A-Za-z0-9]+)", text):
         yield _Match(*match.span(), "GitHub Token", 0)
-    for pattern in (r"(?i)authorization\s*:\s*(?:bearer|basic)\s+[^\s\"']+",
-                    r"https://[^/\s]*@", r"eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"):
-        for match in re.finditer(pattern, text):
-            yield _Match(*match.span(), "Credential", 1)
+    for match in re.finditer(r"(?i)authorization\s*:\s*(?:bearer|basic)\s+[^\s\"']+", text):
+        yield _Match(*match.span(), "Credential", 1)
     offset = 0
     for raw_line in text.splitlines(keepends=True):
         line = raw_line.rstrip("\r\n")

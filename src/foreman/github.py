@@ -11,7 +11,7 @@ from typing_extensions import TypedDict, NotRequired
 from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
-from foreman.credentials import CredentialFailure, credentials, failure
+from foreman.credentials import CredentialFailure, credentials, failure, COMMAND_TIMEOUT
 from foreman.redaction import redact
 if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
@@ -313,7 +313,7 @@ class LiveForge:
     def default_branch(self, repo: str) -> str:
         if repo not in self._defaults:
             self._defaults[repo] = self._read(
-                RepositoryDefaultBranch, ["gh", "repo", "view", repo, "--json", "defaultBranchRef"],
+                repo, RepositoryDefaultBranch, ["gh", "repo", "view", repo, "--json", "defaultBranchRef"],
             ).defaultBranchRef.name
         return self._defaults[repo]
 
@@ -332,19 +332,19 @@ class LiveForge:
         if exists():
             return
         try:
-            self._run_command(pull_request_command(repo, head, base, title, body))
+            self._run_command(repo, pull_request_command(repo, head, base, title, body))
         except ForgeError:
             if not exists():
                 raise
 
     def load_issue(self, repo: str, number: int) -> Issue:
         issue = self._read(
-            IssueView, ["gh", "issue", "view", str(number), "--repo", repo, "--json", "title,body,labels"],
+            repo, IssueView, ["gh", "issue", "view", str(number), "--repo", repo, "--json", "title,body,labels"],
         )
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
     def open_issues(self, repo: str) -> list[OpenIssue]:
-        pages = self._read(OpenIssuePages, [
+        pages = self._read(repo, OpenIssuePages, [
             "gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate", "--slurp",
         ])
         return [
@@ -353,27 +353,27 @@ class LiveForge:
         ]
 
     def issue_comments(self, repo: str, number: int) -> list[str]:
-        pages = self._read(IssueCommentPages, [
+        pages = self._read(repo, IssueCommentPages, [
             "gh", "api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate", "--slurp",
         ])
         return [comment.body or "" for page in pages.root for comment in page]
 
     def marked_issues(self, repo: str, marker: str) -> list[int]:
-        pages = self._read(OpenIssuePages, [
+        pages = self._read(repo, OpenIssuePages, [
             "gh", "api", f"repos/{repo}/issues?state=all&per_page=100", "--paginate", "--slurp",
         ])
         return [issue.number for page in pages.root for issue in page
                 if "pull_request" not in issue.model_fields_set and marker in (issue.body or "")]
 
     def sub_issues(self, repo: str, number: int) -> list[LinkedIssue]:
-        pages = self._read(LinkedIssuePages, [
+        pages = self._read(repo, LinkedIssuePages, [
             "gh", "api", f"repos/{repo}/issues/{number}/sub_issues?per_page=100", "--paginate", "--slurp",
         ])
         return [issue for page in pages.root for issue in page]
 
     def parent_issue(self, repo: str, number: int) -> LinkedIssue | None:
         try:
-            return self._read(LinkedIssue, ["gh", "api", f"repos/{repo}/issues/{number}/parent"])
+            return self._read(repo, LinkedIssue, ["gh", "api", f"repos/{repo}/issues/{number}/parent"])
         except CommandFailed as exc:
             if str(exc) == "gh: No parent issue found (HTTP 404)":
                 return None
@@ -381,21 +381,21 @@ class LiveForge:
 
     def add_sub_issue(self, repo: str, number: int, child: int) -> None:
         repo = redact(repo)
-        identity = self._read(IssueIdentity, ["gh", "api", f"repos/{repo}/issues/{child}"])
-        self._run_command([
+        identity = self._read(repo, IssueIdentity, ["gh", "api", f"repos/{repo}/issues/{child}"])
+        self._run_command(repo, [
             "gh", "api", f"repos/{repo}/issues/{number}/sub_issues",
             "--method", "POST", "-F", f"sub_issue_id={identity.id}",
         ])
 
     def update_issue_body(self, repo: str, number: int, body: str) -> None:
         repo, body = (redact(value) for value in (repo, body))
-        self._run_command([
+        self._run_command(repo, [
             "gh", "api", f"repos/{repo}/issues/{number}", "--method", "PATCH", "-f", f"body={body}",
         ])
 
     def comment_issue(self, repo: str, number: int, body: str) -> None:
         repo, body = (redact(value) for value in (repo, body))
-        self._run_command([
+        self._run_command(repo, [
             "gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}",
         ])
 
@@ -409,18 +409,18 @@ class LiveForge:
         args = ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={body}"]
         for label in labels:
             args.extend(["-f", f"labels[]={label}"])
-        return self._read(CreatedIssue, args, timeout=None).number
+        return self._read(repo, CreatedIssue, args, timeout=None).number
 
     def add_blocker(self, repo: str, number: int, blocker: int) -> None:
         repo = redact(repo)
-        identity = self._read(IssueIdentity, ["gh", "api", f"repos/{repo}/issues/{blocker}"])
-        self._run_command([
+        identity = self._read(repo, IssueIdentity, ["gh", "api", f"repos/{repo}/issues/{blocker}"])
+        self._run_command(repo, [
             "gh", "api", f"repos/{repo}/issues/{number}/dependencies/blocked_by",
             "--method", "POST", "-F", f"issue_id={identity.id}",
         ])
 
     def blockers(self, repo: str, number: int) -> list[IssueBlocker]:
-        pages = self._read(BlockerPages, [
+        pages = self._read(repo, BlockerPages, [
             "gh", "api", f"repos/{repo}/issues/{number}/dependencies/blocked_by", "--paginate", "--slurp",
         ])
         return [blocker for page in pages.root for blocker in page]
@@ -443,7 +443,7 @@ class LiveForge:
 
     def is_merged(self, repo: str, number: int) -> bool:
         issue = self._read(
-            IssueClosure, ["gh", "issue", "view", str(number), "--repo", repo, "--json",
+            repo, IssueClosure, ["gh", "issue", "view", str(number), "--repo", repo, "--json",
                            "closed,closedByPullRequestsReferences"],
         )
         if not issue.closed:
@@ -451,11 +451,11 @@ class LiveForge:
         for pr in issue.closedByPullRequestsReferences:
             closing_repo = f"{pr.repository.owner.login}/{pr.repository.name}"
             status = self._read(
-                ClosingPullRequestStatus, ["gh", "pr", "view", str(pr.number), "--repo", closing_repo, "--json", "state,baseRefName"],
+                closing_repo, ClosingPullRequestStatus, ["gh", "pr", "view", str(pr.number), "--repo", closing_repo, "--json", "state,baseRefName"],
             )
             if status.state == "MERGED":
                 repository = self._read(
-                    RepositoryDefaultBranch, ["gh", "repo", "view", closing_repo, "--json", "defaultBranchRef"],
+                    closing_repo, RepositoryDefaultBranch, ["gh", "repo", "view", closing_repo, "--json", "defaultBranchRef"],
                 )
                 if status.baseRefName == repository.defaultBranchRef.name:
                     return True
@@ -463,7 +463,7 @@ class LiveForge:
 
     def add_label(self, repo: str, number: int, label: str) -> None:
         repo, label = (redact(value) for value in (repo, label))
-        self._run_command(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
+        self._run_command(repo, ["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
 
     def pull_request_base(self, repo: str, branch: str) -> str:
         return self._view_pr(repo, branch).baseRefName
@@ -475,7 +475,7 @@ class LiveForge:
             raise ForgeError("The pull request changed during review.")
         endpoint = f"repos/{redact(repo)}/pulls/{target.number}/reviews"
         tag = f"<!-- foreman-review:{marker} -->"
-        pages = self._read(ReviewPages, ["gh", "api", endpoint, "--paginate", "--slurp"])
+        pages = self._read(repo, ReviewPages, ["gh", "api", endpoint, "--paginate", "--slurp"])
         for page in pages.root:
             for review in page:
                 if tag in review.body:
@@ -488,7 +488,7 @@ class LiveForge:
             "commit_id": target.headRefOid, "event": "COMMENT", "body": redact(body) + "\n\n" + tag,
             "comments": [{**comment, "body": redact(comment["body"]), "path": redact(comment["path"])} for comment in comments],
         }
-        posted = self._read(PostedReview,
+        posted = self._read(repo, PostedReview,
             ["gh", "api", endpoint, "--method", "POST",
              "-H", "X-GitHub-Api-Version: 2022-11-28", "--input", "-"],
             body=json.dumps(payload),
@@ -497,7 +497,7 @@ class LiveForge:
 
     def merge_hold(self, repo: str) -> str | None:
         try:
-            variables = self._read(ActionsVariables, ["gh", "variable", "list", "--repo", repo, "--json", "name,value"])
+            variables = self._read(repo, ActionsVariables, ["gh", "variable", "list", "--repo", repo, "--json", "name,value"])
         except ForgeError as exc:
             raise MergeHoldUnreadable(str(exc)) from exc
         return next((variable.value for variable in variables.root if variable.name == MERGE_HOLD_VARIABLE), None)
@@ -505,7 +505,7 @@ class LiveForge:
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation:
         target = self._view_pr(repo, branch)
         endpoint = f"repos/{repo}"
-        pr = self._read(PullSnapshot, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
+        pr = self._read(repo, PullSnapshot, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
         queue_policy: QueuePolicy | None = None
         def observed(outcome: Outcome, recovery: str,
                      checks: list[CheckEvidence] | None = None) -> Observation:
@@ -522,14 +522,14 @@ class LiveForge:
             return observed("conflict", "Request a merge-base repair round, then renew verification and review.")
         if not pr.merged and (pr.mergeable is None or pr.mergeable_state == "unknown"):
             return observed("pending", "Resume when GitHub has computed mergeability.")
-        rules = self._read(Rules, ["gh", "api", f"{endpoint}/rules/branches/{pr.base.ref}"])
+        rules = self._read(repo, Rules, ["gh", "api", f"{endpoint}/rules/branches/{pr.base.ref}"])
         policies = [rule.parameters for rule in rules.root if rule.type == "merge_queue"]
         if len(policies) != 1 or policies[0].merge_method is None:
             return observed("policy", "Effective merge queue policy is missing or ambiguous. Restore readable queue policy.")
         queue_policy = QueuePolicy(merge_method=policies[0].merge_method, grouping_strategy=policies[0].grouping_strategy)
         if pr.merged:
             return observed("ready", "Verified head has merged. Reconcile the handoff receipt.")
-        legacy = self._read(BranchPolicy, ["gh", "api", f"{endpoint}/branches/{pr.base.ref}"])
+        legacy = self._read(repo, BranchPolicy, ["gh", "api", f"{endpoint}/branches/{pr.base.ref}"])
         requirements = [check for rule in rules.root if rule.type == "required_status_checks"
                         for check in rule.parameters.required_status_checks]
         classic = legacy.protection.required_status_checks
@@ -540,13 +540,13 @@ class LiveForge:
             return observed("policy", "Effective required-check policy is empty. Restore readable policy.")
         commits = [pr.head.sha]
         if pr.merge_commit_sha:
-            merge = self._read(Commit, ["gh", "api", f"{endpoint}/commits/{pr.merge_commit_sha}"])
+            merge = self._read(repo, Commit, ["gh", "api", f"{endpoint}/commits/{pr.merge_commit_sha}"])
             if {parent.sha for parent in merge.parents} == {pr.head.sha, legacy.commit.sha}:
                 commits.insert(0, pr.merge_commit_sha)
         evidence: list[CheckEvidence] = []
         for commit in commits:
-            runs = self._read(CheckPages, ["gh", "api", f"{endpoint}/commits/{commit}/check-runs?filter=latest&per_page=100", "--paginate", "--slurp"])
-            statuses = self._read(StatusPages, ["gh", "api", f"{endpoint}/commits/{commit}/statuses?per_page=100", "--paginate", "--slurp"])
+            runs = self._read(repo, CheckPages, ["gh", "api", f"{endpoint}/commits/{commit}/check-runs?filter=latest&per_page=100", "--paginate", "--slurp"])
+            statuses = self._read(repo, StatusPages, ["gh", "api", f"{endpoint}/commits/{commit}/statuses?per_page=100", "--paginate", "--slurp"])
             for page in runs.root:
                 evidence.extend(CheckEvidence(context=run.name, app=run.app.id, run=run.id,
                     source_commit=commit, suite=run.check_suite.id, tested_commit=commit if commit != pr.head.sha else None, state=(run.conclusion or "pending") if run.status == "completed" else "pending")
@@ -563,7 +563,7 @@ class LiveForge:
             latest = [c for c in candidates if c.source_commit == tested]
             effective.append(max(latest, key=lambda c: c.run or 0) if latest else CheckEvidence(
                 context=required.context, app=required.integration_id, run=None, source_commit=tested, state="missing"))
-        current = self._read(PullSnapshot, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
+        current = self._read(repo, PullSnapshot, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
         if current != pr:
             return observed("pending", "PR changed during observation. Resume with fresh evidence.", effective)
         if any(c.state not in ("success", "pending", "missing") for c in effective):
@@ -601,7 +601,7 @@ class LiveForge:
             mergeQueueEntry { id state }
           } }
         }"""
-        return self._read(QueueSnapshot, ["gh", "api", "graphql", "-f", f"query={query}",
+        return self._read(repo, QueueSnapshot, ["gh", "api", "graphql", "-f", f"query={query}",
             "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={number}",
             "--jq", ".data.repository.pullRequest"])
 
@@ -629,7 +629,7 @@ class LiveForge:
             return existing
         timeout: CommandTimedOut | None = None
         try:
-            self._run_command(merge_command(redact(repo), str(pr.number), head))
+            self._run_command(repo, merge_command(redact(repo), str(pr.number), head))
         except CommandTimedOut as exc:
             timeout = exc
         confirmed = queue_receipt(self._queue_snapshot(repo, pr.number), repo, pr.number, head, pr.base.ref, policy)
@@ -642,14 +642,14 @@ class LiveForge:
             "gh", "pr", "view", "--repo", repo,
             "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest", "--", selector,
         ]
-        return self._read(PullRequest, command)
+        return self._read(repo, PullRequest, command)
 
-    def _run_command(self, command: list[str], *, timeout: float | None = 30, body: str | None = None) -> str:
+    def _run_command(self, repo: str, command: list[str], *, timeout: float | None = COMMAND_TIMEOUT, body: str | None = None) -> str:
         operation = " ".join(command[:2] if command[1] == "api" else command[:3])
         try:
-            repo = (command[command.index("--repo") + 1] if "--repo" in command else
-                    command[3] if command[1:3] == ["repo", "view"] else "/".join(command[2].split("/")[1:3]))
             env = credentials.environment(repo)
+            if env is not None:
+                timeout = min(timeout or COMMAND_TIMEOUT, COMMAND_TIMEOUT)
         except CredentialFailure as exc:
             raise CommandFailed(str(exc)) from None
         try:
@@ -660,19 +660,19 @@ class LiveForge:
         except subprocess.TimeoutExpired as exc:
             raise CommandTimedOut(operation) from exc
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-            raise CommandFailed(redact(f"{operation} failed ({exc}).")) from None
+            raise CommandFailed(redact(f"{operation} failed ({exc}).", credentials_only=True)) from None
         if result.returncode:
             if env is not None:
-                status = re.search(r"HTTP (401|403|429)", result.stderr)
+                status = re.search(r"HTTP (\d{3})", result.stderr)
                 if status:
                     if status[1] == "401":
                         credentials.invalidate()
-                    raise CommandFailed(str(failure(int(status[1]), "rate limit" in result.stderr.lower())))
-            raise CommandFailed(redact(result.stderr.strip()) or f"{operation} exited with code {result.returncode}.")
+                    raise CommandFailed(failure(int(status[1]), "rate limit" in result.stderr.lower()))
+            raise CommandFailed(redact(result.stderr.strip(), credentials_only=True) or f"{operation} exited with code {result.returncode}.")
         return result.stdout
 
-    def _read(self, model: type[Model], command: list[str], *, timeout: float | None = 30, body: str | None = None) -> Model:
-        output = self._run_command(command, timeout=timeout, body=body)
+    def _read(self, repo: str, model: type[Model], command: list[str], *, timeout: float | None = COMMAND_TIMEOUT, body: str | None = None) -> Model:
+        output = self._run_command(repo, command, timeout=timeout, body=body)
         try:
             return model.model_validate_json(output)
         except ValidationError as exc:

@@ -2,9 +2,9 @@
 
 from collections.abc import Callable
 from dataclasses import replace
-import json
 from typing import TYPE_CHECKING, Protocol
 
+from foreman._raw import is_dict, is_list
 from foreman.adapters import Outcome
 from foreman.config import ModelSpec
 from foreman.redaction import redact
@@ -36,7 +36,15 @@ class FailoverDispatcher:
         *, on_attempt: Callable[[str | None, Outcome], None] | None = None,
     ) -> tuple[Outcome, ModelSpec | None]:
         outcome = self.handler(node, model, state, instruction)
-        outcome = replace(outcome, output=json.loads(redact(json.dumps(outcome.output), credentials_only=True)),
+        def clean(value: object) -> object:
+            if isinstance(value, str):
+                return redact(value, credentials_only=True)
+            if is_dict(value):
+                return {key: clean(item) for key, item in value.items()}
+            if is_list(value):
+                return [clean(item) for item in value]
+            return value
+        outcome = replace(outcome, output={key: clean(value) for key, value in outcome.output.items()},
                           detail=redact(outcome.detail, credentials_only=True))
         name = model.name if model else None
         if on_attempt is not None:

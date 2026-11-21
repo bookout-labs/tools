@@ -608,7 +608,7 @@ class Forge(FakeGitHub):
         return QueueSnapshot(number=12, state="MERGED" if written and sys.argv[3] == "merged" else "OPEN",
             headRefOid=HEAD, baseRefOid=BASE, baseRefName="main", isDraft=False, autoMergeRequest=None,
             mergeQueueEntry={"id": "queue-crash", "state": "QUEUED"} if written else None)
-    def _run_command(self, command):
+    def _run_command(self, repo, command):
         assert command[1:3] == ["pr", "merge"]
         with Path("merges.log").open("a") as log:
             log.write("merge\n")
