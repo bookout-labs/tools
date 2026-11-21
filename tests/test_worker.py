@@ -29,7 +29,7 @@ class WorkerTest(unittest.TestCase):
         with patch('foreman.worker_auth.credentials.environment', return_value=command_environment(token)) as mint:
             with patch('foreman.worker_auth.subprocess.run') as run:
                 run.return_value = subprocess.CompletedProcess([], 0, token, 'Authorization: Bearer other_suffix')
-                code, out, err = self.invoke(['gh', 'api', f'repos/{REPO}'])
+                code, out, err = self.invoke(['gh', 'issue', 'list'])
                 self.assertEqual(code, 0)
                 self.assertNotIn('suffix', out + err)
                 self.assertEqual(run.call_args.kwargs['env']['GH_TOKEN'], token)
@@ -81,7 +81,7 @@ class WorkerTest(unittest.TestCase):
         with patch('foreman.worker_auth.environment') as mint:
             for command in ['status', 'diff', 'log', 'show', 'add', 'commit', 'switch', 'branch', 'rev-parse', 'merge', 'cherry-pick', 'rebase']:
                 self.assertEqual(self.invoke(['git', command])[0], 2)
-            for command in ['alias', 'extension', 'custom-alias', '--help']:
+            for command in ['alias', 'extension', 'custom-alias', '--help', 'api']:
                 self.assertEqual(self.invoke(['gh', command])[0], 2)
             mint.assert_not_called()
 
@@ -110,6 +110,46 @@ class WorkerTest(unittest.TestCase):
             for ref, expected in [('HEAD:branch', 'HEAD:refs/heads/branch'), ('branch', 'refs/heads/branch:refs/heads/branch'),
                                   ('HEAD:refs/heads/topic/a', 'HEAD:refs/heads/topic/a')]:
                 self.assertEqual(git_command(['push', 'origin', ref])[-1], expected)
+
+    def test_real_push_ignores_follow_tags_and_pre_push_hook(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, remote = root / 'repo', root / 'remote.git'
+            repo.mkdir()
+
+            def git(*args):
+                return subprocess.run(['git', *args], cwd=repo, check=True, capture_output=True, text=True)
+
+            git('init')
+            git('init', '--bare', str(remote))
+            git('config', 'user.name', 'Synthetic Worker')
+            git('config', 'user.email', 'worker@example.invalid')
+            git('-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '-m', 'synthetic')
+            git('tag', '-a', 'must-stay-local', '-m', 'synthetic tag')
+            git('remote', 'add', 'origin', str(remote))
+            git('config', 'push.followTags', 'true')
+            hooks = repo / 'hooks'
+            hooks.mkdir()
+            marker = root / 'hook-ran'
+            hook = hooks / 'pre-push'
+            hook.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 1\n')
+            hook.chmod(0o755)
+            git('config', 'core.hooksPath', str(hooks))
+            env = command_environment('synthetic')
+            env['GIT_ALLOW_PROTOCOL'] = 'file'
+            real_run = subprocess.run
+
+            def run(command, **kwargs):
+                return real_run(command, cwd=repo, **kwargs)
+
+            with patch('foreman.worker_auth.validate_remote', return_value=[str(remote)]), \
+                    patch('foreman.worker_auth.environment', return_value=env), \
+                    patch('foreman.worker_auth.subprocess.run', side_effect=run):
+                self.assertEqual(self.invoke(['git', 'push', 'origin', 'HEAD:worker-topic'])[0], 0)
+            self.assertFalse(marker.exists())
+            self.assertEqual(git('--git-dir', str(remote), 'tag', '--list').stdout, '')
+            self.assertEqual(git('--git-dir', str(remote), 'rev-parse', 'refs/heads/worker-topic').stdout,
+                             git('rev-parse', 'HEAD').stdout)
 
     def test_environment_drops_ambient_execution_and_transport_controls(self):
         dangerous = {key: 'evil' for key in ['GIT_SSL_NO_VERIFY', 'GIT_EXEC_PATH', 'GIT_ASKPASS', 'GIT_DIR',
@@ -150,7 +190,7 @@ class WorkerExpiryTest(CredentialFixture):
             for now in [1000, 4601]:
                 self.clock.return_value = now
                 with redirect_stdout(StringIO()):
-                    self.assertEqual(main(['gh', 'api', '--method', 'POST', f'repos/{REPO}/issues']), 0)
+                    self.assertEqual(main(['gh', 'issue', 'create', '--title', 'synthetic', '--body', 'synthetic']), 0)
             self.assertEqual(self.http.call_count, 2)
 
     def test_remote_uses_same_owner_after_one_hour(self):
@@ -166,5 +206,5 @@ class WorkerExpiryTest(CredentialFixture):
                 for now in [1000, 4601]:
                     self.clock.return_value = now
                     with redirect_stdout(StringIO()):
-                        self.assertEqual(main(['--studio', 'foreman-studio', 'gh', 'api', '--method', 'POST', f'repos/{REPO}/issues']), 0)
+                        self.assertEqual(main(['--studio', 'foreman-studio', 'gh', 'issue', 'create', '--title', 'synthetic', '--body', 'synthetic']), 0)
             self.assertEqual(self.http.call_count, 2)

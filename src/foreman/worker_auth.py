@@ -60,7 +60,8 @@ def git_command(args: list[str]) -> list[str]:
             # Fully qualify both ends so a same-named tag cannot supply the source.
             args = ["push", "origin", f"{'HEAD' if args[2].startswith('HEAD:') else 'refs/heads/' + branch}:refs/heads/{branch}"]
         urls = validate_remote(REPO)
-    return ["git", *git_auth(urls), *args]
+    return ["git", *git_auth(urls), "-c", "push.followTags=false", "-c", "core.hooksPath=/dev/null",
+            "-c", "http.proxy=", "-c", "http.sslVerify=true", *args]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,8 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         operation = " ".join(command[:2])
         if command[0] == "git":
             command = git_command(command[1:])
-        elif len(command) < 2 or command[1] not in {"pr", "issue", "api", "run", "repo", "label"}:
-            parser.error("Unsupported gh command. Use pr, issue, api, run, repo or label.")
+        elif len(command) < 2 or command[1] not in {"pr", "issue", "run", "repo", "label"}:
+            parser.error("Unsupported gh command. Use pr, issue, run, repo or label.")
         env = environment(options.studio)
         env["GH_REPO"] = REPO
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=COMMAND_TIMEOUT)

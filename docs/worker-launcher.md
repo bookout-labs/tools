@@ -5,7 +5,7 @@ checkout's `.venv/bin`. On MacBook insert `--studio foreman-studio` before `gh`
 or `git`. Only `bookout-labs/tools` is allowed. Each invocation requests a current
 credential without a worker token file or personal fallback.
 
-The launcher accepts `gh pr`, `issue`, `api`, `run`, `repo`, and `label`.
+The launcher accepts `gh pr`, `issue`, `run`, `repo`, and `label`.
 Aliases and extensions are excluded. Git syntax is `git fetch origin main`,
 `git push origin HEAD:BRANCH`, `git push origin BRANCH`, `git ls-remote origin`,
 or `git clone https://github.com/bookout-labs/tools DIRECTORY`.
