@@ -27,7 +27,7 @@ from foreman.config import Config, ConfigError, ModelSpec, family, load_config, 
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
-    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
+    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
@@ -35,7 +35,7 @@ from foreman.redaction import redact
 from foreman.stage_output import (
     CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
-from foreman.readiness import Outcome as ReadinessOutcome
+from foreman.readiness import MergeReceipt, Outcome as ReadinessOutcome
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import ImplementationCandidate, ImplementationRejected, WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -46,7 +46,7 @@ PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
-MergeHalt = Literal["merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red", "readiness_unavailable"]
+MergeHalt = Literal["merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red", "readiness_unavailable", "queue_rejected"]
 ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implementation_rejected", "implement_quota", "quota_exhausted", "review_not_posted"]
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
@@ -55,7 +55,7 @@ HaltReason = Literal[
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 READINESS_HALTS: dict[ReadinessOutcome, MergeHalt] = {
-    "ready": "merge_not_armed", "conflict": "pr_conflict", "pending": "ci_pending", "red": "ci_red",
+    "queue_rejected": "queue_rejected", "ready": "merge_not_armed", "conflict": "pr_conflict", "pending": "ci_pending", "red": "ci_red",
     "policy": "readiness_unavailable", "head_changed": "merge_not_armed", "closed": "merge_not_armed", "retargeted": "merge_not_armed",
 }
 
@@ -172,7 +172,7 @@ class DeliveryFields(TypedDict, total=False):
     verified_head: str
     repair_head: str | None
     readiness_observation: dict[str, JsonValue]
-    merge_receipt: dict[str, JsonValue]
+    merge_receipt: dict[str, JsonValue] | None
     merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
@@ -997,6 +997,18 @@ def compile_delivery(
                 if (state.get("reviewed_head") != head or not receipt or receipt["commit_id"] != head
                         or past.unresolved() or (past.gate and not past.gate.passed)):
                     return merge_halted("merge_not_armed", "Renew review and its posted receipt at the verified head.")
+                if previous := state.get("merge_receipt"):
+                    saved = MergeReceipt.model_validate(previous)
+                    if saved.source_head == head:
+                        try:
+                            confirmed_receipt = forge.reconcile_merge(saved)
+                        except HandoffChanged as exc:
+                            return {**merge_halted("merge_not_armed", str(exc)), "merge_receipt": None}
+                        except QueueRejected as exc:
+                            return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
+                        except MergeNotArmed as exc:
+                            return merge_halted("merge_not_armed", str(exc))
+                        return {"merge": "armed", "path": ["merge"], "merge_receipt": confirmed_receipt.model_dump(mode="json")}
                 try:
                     observation = forge.readiness(repo, issue, worktree.branch, head)
                 except ForgeError as exc:
@@ -1005,9 +1017,13 @@ def compile_delivery(
                     return {**merge_halted(READINESS_HALTS[observation.outcome], observation.detail()),
                             "readiness_observation": observation.model_dump(mode="json")}
                 try:
-                    merge_receipt = forge.arm_auto_merge(repo, issue, worktree.branch, head).model_dump(mode="json")
+                    merge_receipt = forge.arm_auto_merge(repo, issue, worktree.branch, head, observation).model_dump(mode="json")
+                except QueueRejected as exc:
+                    return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
                 except MergeNotArmed as exc:
                     return merge_halted("merge_not_armed", str(exc))
+                if merge_receipt["status"] == "MERGED":
+                    return {"merge": "armed", "path": ["merge"], "merge_receipt": merge_receipt}
                 try:
                     confirmed = forge.readiness(repo, issue, worktree.branch, head)
                 except ForgeError as exc:

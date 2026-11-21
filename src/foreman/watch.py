@@ -36,6 +36,7 @@ WATCH: dict[HaltReason, Watch | None] = {
     "merge_not_armed": None,
     "pr_conflict": None,
     "ci_pending": None,
+    "queue_rejected": None,
     "ci_red": None,
     "readiness_unavailable": None,
     "budget_exceeded": None,

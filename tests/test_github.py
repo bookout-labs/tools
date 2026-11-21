@@ -544,8 +544,8 @@ class LiveForgeTest(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 run.reset_mock()
                 run.side_effect = [pr_result({**PR, field: value})]
-                with self.assertRaisesRegex(MergeNotArmed, reason):
-                    LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
+                with self.assertRaisesRegex(ForgeError, reason):
+                    LiveForge().review_target(REPO, 8, BRANCH, HEAD)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW])
 
     @patch("foreman.github.subprocess.run")
@@ -557,10 +557,9 @@ class LiveForgeTest(unittest.TestCase):
             with self.subTest(stdout=stdout):
                 run.reset_mock()
                 run.side_effect = [subprocess.CompletedProcess(VIEW, 0, stdout, "")]
-                with self.assertRaisesRegex(MergeNotArmed, "Invalid PullRequest response") as exc:
-                    LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-                self.assertIs(type(exc.exception.__cause__), ForgeError)
-                self.assertIsInstance(exc.exception.__cause__.__cause__, ValidationError)
+                with self.assertRaisesRegex(ForgeError, "Invalid PullRequest response") as exc:
+                    LiveForge().review_target(REPO, 8, BRANCH, HEAD)
+                self.assertIsInstance(exc.exception.__cause__, ValidationError)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW])
 
     @patch("foreman.github.subprocess.run")
@@ -575,7 +574,7 @@ class LiveForgeTest(unittest.TestCase):
                 run.side_effect = [
                     subprocess.CompletedProcess(view, 1, "", reason + "\n"),
                 ]
-                with self.assertRaises(MergeNotArmed) as exc:
-                    LiveForge().arm_auto_merge(REPO, 8, branch, HEAD)
+                with self.assertRaises(ForgeError) as exc:
+                    LiveForge().review_target(REPO, 8, branch, HEAD)
                 self.assertEqual(str(exc.exception), reason)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [view])

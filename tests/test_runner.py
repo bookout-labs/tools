@@ -22,9 +22,9 @@ from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
-from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, PullRequest, render_slice_body
+from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, render_slice_body
 
-from foreman.readiness import Observation, PullSnapshot
+from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
@@ -178,17 +178,19 @@ class FakeGitHub:
         return Observation(repo=repo, pr=PullSnapshot(number=12, state="open", draft=False,
             head={"sha": sha, "ref": branch}, base={"sha": self.base, "ref": "main"},
             mergeable=True, merge_commit_sha=None, mergeable_state="clean"),
-            checks=[], outcome="ready", recovery="Eligible.")
+            checks=[], outcome="ready", recovery="Eligible.", queue_policy={"merge_method": "SQUASH"})
+
+    def reconcile_merge(self, receipt):
+        return receipt
 
     def merge_hold(self, repo):
         self.hold_reads.append(repo)
         return self.hold
 
-    def arm_auto_merge(self, repo, issue, branch, sha):
+    def arm_auto_merge(self, repo, issue, branch, sha, observation):
         self.merge_calls.append((repo, issue, branch, sha))
-        from foreman.readiness import MergeReceipt
         return MergeReceipt(repo=repo, pr=12, source_head=sha, base=self.base,
-                            method="SQUASH", queue_policy={"merge_method": "SQUASH"}, identity="queue-test", status="QUEUED")
+                            base_ref="main", method="SQUASH", queue_policy={"merge_method": "SQUASH"}, identity="queue-test", status="QUEUED")
 
     def load_issue(self, repo, number) -> Issue:
         if number in self.issue_labels:
@@ -550,15 +552,95 @@ class LiveRunnerTest(unittest.TestCase):
             resumed = self.walk([])
         self.assertEqual(resumed["merge_receipt"], result["merge_receipt"])
 
-    def test_queue_rejection_on_resume_halts_without_repeating_review(self):
-        with patch.object(self.github, "arm_auto_merge", side_effect=MergeNotArmed("Queue rejected")):
-            result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+    def test_saved_receipt_reconciles_before_readiness_without_reenqueue(self):
+        for status in ["missing", "merged"]:
+            self.checkpoint = self.cwd / (status + ".sqlite3")
+            ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+            with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
+                first = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
             count = len(self.calls)
-            resumed = self.walk([])
-        self.assertEqual(resumed["stop"], "merge_not_armed")
-        self.assertEqual(run_exit_code(resumed), 75)
-        self.assertEqual(len(self.calls), count)
-        self.assertEqual(resumed["review_receipt"], result["review_receipt"])
+            receipt = MergeReceipt.model_validate(first["merge_receipt"])
+            effect = QueueRejected(f"Queue receipt {receipt.identity} disappeared") if status == "missing" else None
+            with patch.object(self.github, "readiness", side_effect=AssertionError("readiness ran before receipt")), patch.object(self.github, "arm_auto_merge", side_effect=AssertionError("re-enqueued")), patch.object(self.github, "reconcile_merge", side_effect=effect, return_value=receipt.model_copy(update={"status": "MERGED"})) as read:
+                result = self.walk([])
+            read.assert_called_once_with(receipt)
+            self.assertEqual(len(self.calls), count)
+            self.assertEqual(result["stop"], "queue_rejected" if effect else "verified")
+            if effect:
+                self.assertEqual(run_exit_code(result), 75)
+                self.assertIn(receipt.identity, result["halt_detail"])
+
+    def test_changed_saved_handoff_invalidates_receipt_for_renewed_proof(self):
+        ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
+            self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        with patch.object(self.github, "reconcile_merge", side_effect=HandoffChanged("PR head changed; resume to renew proof")):
+            result = self.walk([])
+        self.assertEqual(result["stop"], "merge_not_armed")
+        self.assertIsNone(result["merge_receipt"])
+        with patch.object(self.github, "reconcile_merge", side_effect=AssertionError("stale receipt resurrected")):
+            self.assertEqual(self.walk([])["stop"], "verified")
+
+    def test_fresh_process_reconciles_crash_after_write_or_merge(self):
+        script = r"""
+import json, os, sys
+from pathlib import Path
+from dataclasses import replace
+from unittest.mock import patch
+from foreman.cli import main
+from foreman.config import PstackPin, load_config
+from foreman.delivery import LiveRun
+from foreman.github import LiveForge
+from foreman.readiness import QueueSnapshot
+from test_runner import APPROVE, BASE, BRANCH, HEAD, FakeGitHub, FakeWorkspace, worker_reply
+
+class Forge(FakeGitHub):
+    arm_auto_merge = LiveForge.arm_auto_merge
+    _arm_auto_merge = LiveForge._arm_auto_merge
+    reconcile_merge = LiveForge.reconcile_merge
+    def readiness(self, *args):
+        value = super().readiness(*args)
+        if Path("merges.log").exists() and sys.argv[3] == "merged":
+            value.pr.state, value.pr.merged = "closed", True
+        return value
+    def _queue_snapshot(self, repo, number):
+        written = Path("merges.log").exists()
+        return QueueSnapshot(number=12, state="MERGED" if written and sys.argv[3] == "merged" else "OPEN",
+            headRefOid=HEAD, baseRefOid=BASE, baseRefName="main", isDraft=False, autoMergeRequest=None,
+            mergeQueueEntry={"id": "queue-crash", "state": "QUEUED"} if written else None)
+    def _run_command(self, command):
+        assert command[1:3] == ["pr", "merge"]
+        with Path("merges.log").open("a") as log:
+            log.write("merge\n")
+        os._exit(17)
+
+workspace = FakeWorkspace(Path.cwd())
+def worker(args, cwd, env):
+    schema = json.loads(Path(args[args.index("--output-schema")+1]).read_text()) if args[0] == "codex" else json.loads(args[args.index("--json-schema")+1])
+    with Path("workers.log").open("a") as log:
+        log.write(schema["title"] + "\n")
+    if schema["title"] == "TriageOutput":
+        return worker_reply(args, {"triage": "implement"})
+    if schema["title"] == "ImplementOutput":
+        return workspace.reply(args, {"implementation": "built"})
+    return worker_reply(args, APPROVE)
+pin = PstackPin.model_validate_json(sys.argv[2])
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
+    sys.exit(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                  checkpoint=Path(sys.argv[1]), worker_runner=worker, live_run=LiveRun(Forge(), workspace)))
+"""
+        bootstrap = f"import sys; sys.path[:0] = {[str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]!r}\n"
+        for mode in ["queued", "merged"]:
+            directory = self.cwd / mode
+            directory.mkdir()
+            command = [sys.executable, "-c", bootstrap + script, str(directory / "checkpoint.sqlite3"), self.pin.model_dump_json(), mode]
+            first = subprocess.run(command, cwd=directory, capture_output=True, text=True)
+            self.assertEqual(first.returncode, 17, first.stderr)
+            resumed = subprocess.run(command, cwd=directory, capture_output=True, text=True)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertIn("done verified", resumed.stdout)
+            self.assertEqual((directory / "merges.log").read_text(), "merge\n")
+            self.assertEqual((directory / "workers.log").read_text().splitlines(), ["TriageOutput", "ImplementOutput", "ReviewOutput"])
 
     def test_readiness_is_reconciled_after_arming(self):
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
@@ -1758,7 +1840,7 @@ class LiveRunnerTest(unittest.TestCase):
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 75)
-        arm.assert_called_once_with("Example/Target", 8, BRANCH, HEAD)
+        self.assertEqual(arm.call_args.args[:4], ("Example/Target", 8, BRANCH, HEAD))
         self.assertIn(f"merge not armed\ncheck exit 0\ntokens 47606 of 20000000\ndone merge_not_armed\n{detail}", stdout.getvalue())
 
     def test_parent_arms_its_pull_request_without_filing_slices(self):
@@ -2197,7 +2279,7 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_invalid_merge_sha_halts_with_detail_and_resumable_exit(self):
         detail = "Merge arming requires a full 40-hex commit SHA."
         with self.assertRaisesRegex(MergeNotArmed, detail):
-            LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid")
+            LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
         result = {**halted("merge_not_armed", detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
         with patch("foreman.cli.run_live_delivery", return_value=result), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])

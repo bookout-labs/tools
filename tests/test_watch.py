@@ -39,7 +39,7 @@ FILING = {
 SKIPPED = {"no_reviewer", "cli_missing", "merge_held", "merge_not_armed", "budget_exceeded",
            "env_unavailable", "quota_exhausted", "publish_failed", "implement_quota", "failed",
            "design_rethink", "implementation_rejected", "pr_conflict", "ci_pending", "ci_red",
-           "readiness_unavailable"}
+           "readiness_unavailable", "queue_rejected"}
 
 
 def state(halt="invalid_output", detail="bad output", node="review", model="gpt-6.1-sol-high"):

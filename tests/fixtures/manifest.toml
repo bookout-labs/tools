@@ -922,3 +922,52 @@ version = "gh version 2.102.0 (2026-09-30)"
 kind = "captured_run"
 argv = ["gh", "pr", "merge", "--help"]
 notes = "Exact three-line queue paragraph excerpt. Queue admission needs no strategy flag; required checks determine auto-merge versus immediate queue entry. No bypass flag is used."
+
+[fixtures."github/queue-schema.json"]
+tool = "GitHub API via gh"
+version = "gh version 2.102.0 (2026-09-30)"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {entry:__type(name:\"MergeQueueEntry\"){fields{name description}} states:__type(name:\"MergeQueueEntryState\"){enumValues{name description}}}"]
+notes = "Read-only live schema capture. Contract sources https://docs.github.com/en/graphql/reference/objects#mergequeueentry and https://docs.github.com/en/graphql/reference/enums#mergequeueentrystate and https://docs.github.com/en/graphql/reference/objects#automergerequest. All descriptions are direct API output; shape alone does not establish the source identity of headCommit."
+
+[fixtures."github/queue-pr-schema.json"]
+tool = "GitHub API via gh"
+version = "gh version 2.102.0 (2026-09-30)"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {auto:__type(name:\"AutoMergeRequest\"){fields{name description}} pr:__type(name:\"PullRequest\"){fields{name description}}}", "--jq", "{data:{auto:{fields:[.data.auto.fields[]|select(.name==\"enabledAt\" or .name==\"mergeMethod\")]},pr:{fields:[.data.pr.fields[]|select(.name==\"isDraft\" or .name==\"baseRefOid\" or .name==\"headRefOid\" or .name==\"mergeQueueEntry\" or .name==\"autoMergeRequest\" or .name==\"baseRefName\" or .name==\"state\" or .name==\"number\")]}}}"]
+notes = "Read-only live schema. Sources https://docs.github.com/en/graphql/reference/objects#pullrequest and https://docs.github.com/en/graphql/reference/objects#automergerequest."
+
+[fixtures."github/queue-rules.json"]
+tool = "GitHub API via gh"
+version = "gh version 2.102.0 (2026-09-30)"
+kind = "captured_run"
+argv = ["gh", "api", "repos/bookout-labs/tools/rules/branches/main"]
+notes = "Read-only effective rules from tools/main. Source https://docs.github.com/en/rest/branches/rules#get-rules-for-a-branch. merge_queue.parameters.merge_method is the effective queue method."
+
+[fixtures."github/queue-empty.json"]
+tool = "GitHub API via gh"
+version = "gh version 2.102.0 (2026-09-30)"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:123){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
+notes = "Read-only snapshot of PR 123 before admission. Source https://docs.github.com/en/graphql/reference/objects#pullrequest. Both admission fields are null; no queued or enabled state is claimed."
+
+[fixtures."github/queue-queued.json"]
+tool = "GitHub GraphQL via gh"
+version = "GraphQL live schema, 2026-11-21"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:119){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
+notes = "Live PR 119 after coordinator admission. headCommit is null while QUEUED; autoMergeRequest is null. Sources https://docs.github.com/en/graphql/reference/objects#mergequeueentry and https://docs.github.com/en/graphql/reference/objects#pullrequest. No auto-enabled state is claimed."
+
+[fixtures."github/queue-awaiting.json"]
+tool = "GitHub GraphQL via gh"
+version = "GraphQL live schema, 2026-11-21"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:119){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
+notes = "Live PR 119 AWAITING_CHECKS. Entry headCommit 9bf8198 differs from PR source b53f86b9; therefore it cannot be used as the PR source identity. Source https://docs.github.com/en/graphql/reference/objects#mergequeueentry. autoMergeRequest remains null."
+
+[fixtures."github/queue-dequeued.json"]
+tool = "GitHub GraphQL via gh"
+version = "GraphQL live schema, 2026-11-21"
+kind = "captured_run"
+argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:119){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
+notes = "Live PR 119 later OPEN with no entry or auto request after the recorded QUEUED/AWAITING_CHECKS states. The source head is unchanged. This captures departure, not a cause or CI conclusion. Source https://docs.github.com/en/graphql/reference/objects#pullrequest."
