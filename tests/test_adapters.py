@@ -7,8 +7,7 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
-from foreman.dispatch import InvalidOutput
-from foreman.stage_output import STAGE_OUTPUTS, parse_output
+from foreman.stage_output import STAGE_OUTPUTS
 
 FIXTURES = Path(__file__).with_name("fixtures")
 
@@ -16,7 +15,8 @@ FIXTURES = Path(__file__).with_name("fixtures")
 def fixture_process(args, name, exit_code):
     folder = FIXTURES / args[0]
     stderr = folder / f"{name}.stderr.txt"
-    return CompletedProcess(args, exit_code, (folder / f"{name}.json").read_text(),
+    suffix = "jsonl" if args[0] == "codex" else "json"
+    return CompletedProcess(args, exit_code, (folder / f"{name}.{suffix}").read_text(),
                             stderr.read_text() if stderr.is_file() else "")
 
 
@@ -140,37 +140,144 @@ class NativeAdaptersTest(unittest.TestCase):
         self.assertEqual((outcome.kind, outcome.output), ("ran", {"answer": "ok"}))
 
 
-class CodexCompatibilityTest(unittest.TestCase):
-    def read(self, stage, output):
-        adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), STAGE_OUTPUTS[stage])
-        recorded = fixture_process(["codex"], "success", 0)
-        return adapter.read(CompletedProcess(recorded.args, 0, json.dumps(output), recorded.stderr))
+def codex_events():
+    return [json.loads(line) for line in fixture_process(["codex"], "success", 0).stdout.splitlines()]
 
-    def test_codex_recorded_envelope(self):
-        adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), STAGE_OUTPUTS["triage"])
-        outcome = adapter.read(fixture_process(["codex"], "success", 0))
+
+def codex_process(events, exit_code=0, stderr=""):
+    return CompletedProcess(["codex"], exit_code, "\n".join(json.dumps(event, ensure_ascii=False) for event in events), stderr)
+
+
+class CodexAdapterTest(unittest.TestCase):
+    adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), STAGE_OUTPUTS["triage"])
+
+    def test_recorded_success(self):
+        outcome = self.adapter.read(fixture_process(["codex"], "success", 0))
         self.assertEqual(outcome.kind, "ran")
         self.assertEqual(outcome.output, {"triage": "needs_human", "slice": None, "human_question": "Which items?"})
-        self.assertIsNone(outcome.usage)
+        self.assertEqual(outcome.session_id, "00000000-0000-4000-8000-000000000001")
+        self.assertIsNotNone(outcome.usage)
+        assert outcome.usage is not None
+        self.assertEqual((outcome.usage.input_tokens, outcome.usage.output_tokens), (27979, 29))
+        self.assertEqual((outcome.usage.cache_read_input_tokens, outcome.usage.cache_creation_input_tokens), (0, 0))
+        self.assertIsNone(outcome.usage.total_cost_usd)
 
-    def test_codex_quota_fixtures(self):
-        adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), STAGE_OUTPUTS["triage"])
-        messages = (FIXTURES / "codex" / "quota.stderr.txt").read_text().splitlines()
-        for message in messages:
-            for prefix in ("", "ERROR: "):
-                with self.subTest(message=message, prefix=prefix):
-                    process = CompletedProcess(["codex"], 1, "", f"{prefix}{message}\n")
-                    self.assertEqual(adapter.read(process).kind, "quota")
+    def test_recorded_quota(self):
+        outcome = self.adapter.read(fixture_process(["codex"], "quota", 1))
+        self.assertEqual(outcome.kind, "quota")
+        self.assertIn("Quota exceeded.", outcome.detail)
 
-    def test_combines_sections_and_fills_nested_nullable_fields(self):
-        outcome = self.read("implement", {"implementation": {"Changes": "Built.", "Tests": "Passed."},
-                                          "browser_proof": {"trace": "trace.zip"}})
+    def test_stderr_rate_limit_is_a_failure(self):
+        process = codex_process([], exit_code=1, stderr='Prompt: Explain "rate limit" and HTTP 429.')
+        outcome = self.adapter.read(process)
+        self.assertEqual((outcome.kind, outcome.detail), ("failed", "Codex exited 1"))
+
+    def test_invalid_model_is_a_failure(self):
+        outcome = self.adapter.read(fixture_process(["codex"], "invalid-model", 1))
+        self.assertEqual(outcome.kind, "failed")
+        self.assertIn("is not supported", outcome.detail)
+
+    def test_schema_invalid_final_output_is_a_failure(self):
+        events = codex_events()
+        events[-2]["item"]["text"] = '{"triage":"needs_human","human_question":"Which items?"}'
+        outcome = self.adapter.read(codex_process(events))
+        self.assertEqual((outcome.kind, outcome.detail), ("failed", "slice: Field required"))
+        self.assertIsNotNone(outcome.usage)
+
+    def test_missing_and_zero_usage_are_unknown(self):
+        for report in ({}, {"usage": {"input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0}}):
+            with self.subTest(report=report):
+                events = codex_events()
+                events[-1] = {"type": "turn.completed", **report}
+                outcome = self.adapter.read(codex_process(events))
+                self.assertEqual(outcome.kind, "ran")
+                self.assertIsNone(outcome.usage)
+
+    def test_rerouted_model_is_a_failure(self):
+        events = codex_events()
+        message = "model rerouted: gpt-6.1-sol -> gpt-other (SyntheticReason)"
+        events.insert(2, {"type": "item.completed", "item": {"id": "item_1", "type": "error", "message": message}})
+        outcome = self.adapter.read(codex_process(events))
+        self.assertEqual((outcome.kind, outcome.detail), ("failed", message))
+
+    def test_recovers_from_a_retry_and_reads_the_last_completed_message(self):
+        events = codex_events()
+        events[2:2] = [
+            {"type": "error", "message": "Reconnecting... 1/5"},
+            {"type": "item.completed", "item": {"id": "item_1", "type": "agent_message", "text": "Checking."}},
+        ]
+        question = "Which\u2028items?"
+        events[-2]["item"]["text"] = json.dumps({
+            "triage": "needs_human", "slice": None, "human_question": question,
+        }, ensure_ascii=False)
+        outcome = self.adapter.read(codex_process(events))
         self.assertEqual(outcome.kind, "ran")
-        proof = parse_output(STAGE_OUTPUTS["implement"], outcome.output).model_dump()
-        self.assertEqual(proof["implementation"], "Changes\nBuilt.\n\nTests\nPassed.")
-        self.assertEqual(proof["browser_proof"], {"trace": "trace.zip", "screen": None, "passed": None})
+        self.assertEqual(outcome.output["human_question"], question)
+
+    def test_recovered_quota_error_cannot_override_the_final_result(self):
+        events = codex_events()
+        events.insert(2, {"type": "error", "message": "rate limit exceeded: synthetic API limit"})
+        failed = {"type": "turn.failed", "error": {"message": "Turn interrupted by synthetic test."}}
+        for terminal, detail in ((events[-1], "Codex exited 1"), (failed, "Turn interrupted by synthetic test.")):
+            with self.subTest(terminal=terminal):
+                outcome = self.adapter.read(codex_process([*events[:-1], terminal], exit_code=1))
+                self.assertEqual((outcome.kind, outcome.detail), ("failed", detail))
+
+    def test_agent_message_alone_does_not_complete_the_turn(self):
+        outcome = self.adapter.read(codex_process(codex_events()[:-1]))
+        self.assertEqual((outcome.kind, outcome.detail), ("failed", "Codex did not complete the turn"))
 
     def test_codex_review_uses_the_same_exact_verdict_contract(self):
-        outcome = self.read("review", {"review": "changes. Add a check."})
-        with self.assertRaisesRegex(InvalidOutput, "^review:"):
-            parse_output(STAGE_OUTPUTS["review"], outcome.output)
+        events = codex_events()
+        events[-2]["item"]["text"] = json.dumps({"review": "changes. Add a check."})
+        adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), STAGE_OUTPUTS["review"])
+        outcome = adapter.read(codex_process(events))
+        self.assertEqual(outcome.kind, "failed")
+        self.assertTrue(outcome.detail.startswith("review:"))
+
+    def test_quota_formatters_as_terminal_failures(self):
+        cases = json.loads((FIXTURES / "codex" / "quota-formatters.json").read_text())
+        for case in cases:
+            with self.subTest(formatter=case["formatter"]):
+                message = case["message"]
+                process = codex_process([{"type": "turn.failed", "error": {"message": message}}], exit_code=1)
+                outcome = self.adapter.read(process)
+                self.assertEqual((outcome.kind, outcome.detail), ("quota", message))
+
+    def test_quota_near_misses_are_failures(self):
+        messages = [
+            "Quota exceeded for a local test budget.",
+            "rate limit exceeded locally",
+            "exceeded retry limit, last status: 503 Service Unavailable",
+            "You’ve hit your usage limiter.",
+            "You’ve hit your usage limit forensics failed.",
+            "Your workspace is out of disk space.",
+            "You hit your spend cap set in your workspace settings file is invalid.",
+            "You hit your spend cap set by the owner of your workspace settings file is invalid.",
+            "Reconnecting... 1/5 (rate limit exceeded: synthetic API limit)",
+        ]
+        for message in messages:
+            with self.subTest(message=message):
+                process = codex_process([{"type": "turn.failed", "error": {"message": message}}], exit_code=1)
+                outcome = self.adapter.read(process)
+                self.assertEqual((outcome.kind, outcome.detail), ("failed", message))
+
+    def test_recorded_cached_usage_counts_input_once(self):
+        outcome = self.adapter.read(fixture_process(["codex"], "cached-success", 0))
+        self.assertEqual(outcome.kind, "ran")
+        assert outcome.usage is not None
+        self.assertEqual(outcome.usage.input_tokens, 40)
+        self.assertEqual(outcome.usage.cache_read_input_tokens, 80)
+        self.assertEqual(outcome.usage.output_tokens, 29)
+
+    def test_cached_usage_clamps_and_missing_totals(self):
+        for input_tokens, cached, expected in ((10, 20, (0, 20)), (10, -5, (10, 0))):
+            with self.subTest(input_tokens=input_tokens, cached=cached):
+                events = codex_events()
+                events[-1]["usage"].update(input_tokens=input_tokens, cached_input_tokens=cached)
+                usage = self.adapter.read(codex_process(events)).usage
+                assert usage is not None
+                self.assertEqual((usage.input_tokens, usage.cache_read_input_tokens), expected)
+        events = codex_events()
+        del events[-1]["usage"]["cached_input_tokens"]
+        self.assertIsNone(self.adapter.read(codex_process(events)).usage)

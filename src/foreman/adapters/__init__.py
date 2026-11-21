@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal, Protocol
 
@@ -12,6 +13,8 @@ from foreman.config import ModelSpec
 
 
 class Usage(BaseModel):
+    """Token counts with uncached input separate from cache reads and writes."""
+
     model_config = ConfigDict(strict=True, frozen=True)
     input_tokens: int
     output_tokens: int
@@ -37,6 +40,7 @@ class Call:
     prompt: str
     schema: str
     edit: bool
+    temp_dir: Path
 
 
 class CliAdapter(Protocol):

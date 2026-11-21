@@ -33,3 +33,7 @@ foreman = ["models.toml", "measure.toml", "stages/*.md", "skills/*.md", "roles/*
 [tool.pyright]
 typeCheckingMode = "strict"
 include = ["src"]
+enableTypeIgnoreComments = false
+reportUnnecessaryTypeIgnoreComment = "error"
+reportImplicitOverride = "error"
+pythonVersion = "3.11"

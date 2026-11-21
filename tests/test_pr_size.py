@@ -56,8 +56,8 @@ class PullRequestSizeTest(unittest.TestCase):
 
     def worker(self, args, cwd, env):
         self.assertEqual(cwd, self.root)
-        prompt, state_json = args[-1].rsplit("\n\nDelivery state:\n", 1)
-        schema = prompt.rsplit("\n\nOutput schema:\n", 1)[1] if args[0] == "codex" else args[args.index("--json-schema") + 1]
+        _, state_json = args[-1].rsplit("\n\nDelivery state:\n", 1)
+        schema = Path(args[args.index("--output-schema") + 1]).read_text() if args[0] == "codex" else args[args.index("--json-schema") + 1]
         stage = json.loads(schema)["title"]
         self.stages.append(stage)
         state = json.loads(state_json)
@@ -111,14 +111,14 @@ class PullRequestSizeTest(unittest.TestCase):
     def test_oversized_diff_goes_to_spec_with_the_measured_count(self):
         self.write("tests/test_items.py", "handwritten\n" * (PULL_REQUEST_LINES + 1))
         head = self.commit()
-        stdout, _ = self.invoke()
+        stdout, _ = self.invoke(expected_code=3)
         self.assertEqual(self.stages, ["TriageOutput", "ImplementOutput", "SpecOutput"])
         self.assertEqual(self.spec_state["pr_size"], {
             "head": head, "merge_base": self.base, "lines": PULL_REQUEST_LINES + 1,
         })
         self.assertIn("paused needs_human", stdout)
         self.assertIn(f"{PULL_REQUEST_LINES + 1} changed lines", stdout)
-        self.assertIn("done pr_split_required", self.invoke("--answer", "split")[0])
+        self.assertIn("done pr_split_required", self.invoke("--answer", "split", expected_code=1)[0])
         self.assertEqual(self.stages, ["TriageOutput", "ImplementOutput", "SpecOutput"])
         self.assertEqual(self.forge.merge_calls, [])
 
@@ -136,10 +136,10 @@ class PullRequestSizeTest(unittest.TestCase):
         self.forge.base = self.base
         self.write("src/items.py", "changed\n" * PULL_REQUEST_LINES)
         head = self.commit()
-        stdout, _ = self.invoke()
+        stdout, _ = self.invoke(expected_code=3)
         self.assertIn("paused needs_human", stdout)
         self.assertIn("split or override", self.invoke("--answer", "yes", expected_code=1)[1])
-        self.assertEqual(self.invoke()[0], stdout)
+        self.assertEqual(self.invoke(expected_code=3)[0], stdout)
         stdout, _ = self.invoke("--answer", "override")
         self.assertIn("done verified", stdout)
         self.assertEqual(self.forge.merge_calls, [("Example/Engine", 8, BRANCH, head)])
@@ -154,7 +154,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.forge.base = self.base
         self.write("tests/test_items.py", "handwritten\n" * (PULL_REQUEST_LINES + 1))
         self.commit()
-        self.assertIn("paused needs_human", self.invoke()[0])
+        self.assertIn("paused needs_human", self.invoke(expected_code=3)[0])
         self.assertEqual(self.forge.created, [])
         self.assertIn("done sliced", self.invoke("--answer", "split")[0])
         self.assertEqual([issue[0] for issue in self.forge.created], [EMPTY_SLICE["title"], "Sort items"])
@@ -163,10 +163,10 @@ class PullRequestSizeTest(unittest.TestCase):
     def test_override_cannot_approve_a_different_head_with_the_same_count(self):
         self.write("src/items.py", "changed\n" * PULL_REQUEST_LINES)
         self.commit()
-        self.invoke()
+        self.invoke(expected_code=3)
         self.write("src/items.py", "new change\n" * PULL_REQUEST_LINES)
         new_head = self.commit()
-        stdout, _ = self.invoke("--answer", "override")
+        stdout, _ = self.invoke("--answer", "override", expected_code=3)
         self.assertIn("paused needs_human", stdout)
         values = self.checkpoint_values()
         self.assertEqual(values["pr_size"]["head"], new_head)
@@ -179,7 +179,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.write("tests/test_items.py", "handwritten\n" * 500)
         old_head = self.commit()
         self.git("push", "origin", BRANCH)
-        self.assertIn("500 changed lines", self.invoke()[0])
+        self.assertIn("500 changed lines", self.invoke(expected_code=3)[0])
         values = self.checkpoint_values()
         self.assertEqual(values["spec"], self.original_spec)
         self.assertEqual(values["pr_split"]["plan"], "Ship the list first, then add sorting.")
@@ -187,7 +187,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.write("tests/test_items.py", "handwritten\n" * 501)
         new_head = self.commit()
         self.git("push", "origin", BRANCH)
-        stdout, _ = self.invoke("--answer", "override")
+        stdout, _ = self.invoke("--answer", "override", expected_code=3)
         self.assertIn("501 changed lines", stdout)
         self.assertIn("paused needs_human", stdout)
         values = self.checkpoint_values()
@@ -202,14 +202,14 @@ class PullRequestSizeTest(unittest.TestCase):
         self.write(".gitattributes", "src/** linguist-generated -diff\n")
         self.write("src/items.py", "changed\n" * PULL_REQUEST_LINES)
         self.commit()
-        stdout, _ = self.invoke()
+        stdout, _ = self.invoke(expected_code=3)
         self.assertIn("paused needs_human", stdout)
         self.assertEqual(self.spec_state["pr_size"]["lines"], PULL_REQUEST_LINES + 1)
 
     def test_missing_base_stops_before_review(self):
         self.forge.base_branch = "missing"
         self.git("update-ref", "refs/remotes/origin/missing", self.base)
-        stdout, _ = self.invoke()
+        stdout, _ = self.invoke(expected_code=1)
         self.assertIn("done pr_size_unavailable", stdout)
         self.assertNotIn("ReviewOutput", self.stages)
         self.assertEqual(self.forge.merge_calls, [])
@@ -218,7 +218,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.write(".git/info/attributes", "src/** linguist-generated\n")
         self.write("src/items-extra.py", "handwritten\n" * 500)
         self.commit()
-        stdout, _ = self.invoke()
+        stdout, _ = self.invoke(expected_code=1)
         self.assertIn("done pr_size_unavailable", stdout)
         self.assertIn(".git/info/attributes must be empty", stdout)
         self.assertNotIn("ReviewOutput", self.stages)
@@ -228,13 +228,13 @@ class PullRequestSizeTest(unittest.TestCase):
         self.git("config", "core.attributesFile", str(self.root.parent / "local-attributes"))
         self.write("src/items-extra.py", "handwritten\n" * 500)
         self.commit()
-        self.assertIn("500 changed lines", self.invoke()[0])
+        self.assertIn("500 changed lines", self.invoke(expected_code=3)[0])
         self.assertNotIn("ReviewOutput", self.stages)
 
     def test_nul_bearing_file_counts_all_500_lines(self):
         self.write("src/items.dat", "\0item\n" * 500)
         self.commit()
-        self.assertIn("500 changed lines", self.invoke()[0])
+        self.assertIn("500 changed lines", self.invoke(expected_code=3)[0])
         self.assertNotIn("ReviewOutput", self.stages)
 
     def test_literal_true_is_generated_and_false_is_counted(self):

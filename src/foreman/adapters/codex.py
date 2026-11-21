@@ -1,42 +1,83 @@
-"""Legacy Codex command and result parsing, to be replaced in S3."""
+"""Run one Codex turn and read its JSONL result."""
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 import json
-import re
 from subprocess import CompletedProcess
-from typing import ClassVar, cast, get_args
+from typing import ClassVar
 
 from pydantic import TypeAdapter, ValidationError
 
-from foreman.adapters import Call, Outcome
+from foreman._raw import is_dict
+from foreman.adapters import Call, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.config import ModelSpec
-from foreman.stage_output import Contract, TrimmedText
+from foreman.dispatch import InvalidOutput
+from foreman.stage_output import Contract, parse_output
 
-SECTIONS = TypeAdapter(dict[TrimmedText, TrimmedText])
-QUOTA = re.compile(
-    r"quota|rate.limit|usage limit|hit your limit|resource_exhausted|too many requests|\b429\b",
-    re.IGNORECASE,
+EVENT = TypeAdapter(dict[str, object])
+QUOTA_PREFIXES = (
+    "Quota exceeded. Check your plan and billing details.",
+    "rate limit exceeded: ",
+    "exceeded retry limit, last status: 429 Too Many Requests",
+    "You’ve hit your usage limit.",
+    "You’ve hit your usage limit for ",
+    "Your workspace is out of credits.",
+    "You hit your spend cap set in your workspace.",
+    "You hit your spend cap set by the owner of your workspace.",
 )
 
 
-def fill_nullable_fields(contract: type[Contract], output: dict[str, object]) -> None:
-    for name, field in contract.model_fields.items():
-        annotation: object = field.annotation
-        alternatives: tuple[object, ...] = get_args(annotation)
-        if type(None) in alternatives:
-            output.setdefault(name, None)
-            annotation = next(arg for arg in alternatives if arg is not type(None))
-        value = output.get(name)
-        if isinstance(annotation, type) and issubclass(annotation, Contract) and isinstance(value, dict):
-            fill_nullable_fields(annotation, cast(dict[str, object], value))
+def read_usage(report: object) -> Usage | None:
+    if not is_dict(report):
+        return None
+    try:
+        usage = Usage.model_validate({
+            "input_tokens": report.get("input_tokens"),
+            "output_tokens": report.get("output_tokens"),
+            "cache_read_input_tokens": report.get("cached_input_tokens"),
+            "cache_creation_input_tokens": report.get("cache_write_input_tokens"),
+        })
+    except ValidationError:
+        return None
+    if usage.cache_read_input_tokens is None:
+        return None
+    cached = max(0, usage.cache_read_input_tokens)
+    return usage.model_copy(update={
+        "input_tokens": max(0, usage.input_tokens - cached),
+        "cache_read_input_tokens": cached,
+    })
 
 
-def normalize_output(contract: type[Contract], output: dict[str, object]) -> None:
-    fill_nullable_fields(contract, output)
-    if isinstance(sections := output.get("implementation"), dict):
-        sections = SECTIONS.validate_python(sections, strict=True)
-        output["implementation"] = "\n\n".join(f"{title}\n{body}" for title, body in sections.items())
+@dataclass
+class CodexTurn:
+    session_id: str | None = None
+    message: str | None = None
+    completed: bool = False
+    usage: Usage | None = None
+    failure: str | None = None
+    stream_error: str | None = None
+    reroute: str | None = None
+
+    def record(self, event: dict[str, object]) -> None:
+        match event:
+            case {"type": "thread.started", "thread_id": str(session_id)}:
+                self.session_id = session_id
+            case {"type": "item.completed", "item": {"type": "agent_message", "text": str(text)}}:
+                self.message = text
+            case {"type": "item.completed", "item": {"type": "error", "message": str(message)}}:
+                if message.startswith("model rerouted: "):
+                    self.reroute = message
+            case {"type": "error", "message": str(message)}:
+                self.stream_error = message
+            case {"type": "turn.failed", "error": {"message": str(message)}}:
+                self.failure = message or "Codex turn failed"
+            case {"type": "turn.failed"}:
+                self.failure = "Codex turn failed"
+            case {"type": "turn.completed"}:
+                self.completed = True
+                self.usage = read_usage(event.get("usage"))
+            case _:
+                pass
 
 
 @dataclass(frozen=True)
@@ -46,29 +87,45 @@ class CodexAdapter:
     env: ClassVar[Mapping[str, str]] = {}
 
     def command(self, call: Call) -> list[str]:
+        schema_path = call.temp_dir / "output-schema.json"
+        schema_path.write_text(call.schema, encoding="utf-8")
         sandbox = "workspace-write" if call.edit else "read-only"
         effort = ["-c", f"model_reasoning_effort={self.model.effort}"] if self.model.effort else []
-        return ["codex", "exec", "-m", self.model.model_id, *effort, "--color", "never", "-s", sandbox, call.prompt]
+        return [
+            "codex", "exec", "-m", self.model.model_id, *effort, "--ephemeral",
+            "--json", "--output-schema", str(schema_path), "--color", "never", "-s", sandbox, call.prompt,
+        ]
 
     def read(self, process: CompletedProcess[str]) -> Outcome:
-        if process.returncode:
-            if match := QUOTA.search(f"{process.stderr}\n{process.stdout}"):
-                return Outcome("quota", detail=match[0])
-            return Outcome("failed", detail=f"Codex exited {process.returncode}")
+        turn = CodexTurn()
+        try:
+            for line in process.stdout.split("\n"):
+                if line.strip():
+                    turn.record(EVENT.validate_json(line))
+        except ValidationError:
+            return Outcome("failed", session_id=turn.session_id, detail="Codex emitted invalid JSONL")
 
-        reported = re.findall(r"^model:[ \t]*(\S+)[ \t]*$", process.stderr, re.MULTILINE)
-        # Keep treating legacy Codex reroutes as quota until S3 replaces this path.
-        if reported != [self.model.model_id] or re.search(r"^model rerouted:", process.stderr, re.MULTILINE):
-            return Outcome("quota", detail="Codex did not confirm the requested model")
+        kind, output, detail = self._result(process.returncode, turn)
+        return build_outcome(
+            kind, output=output, usage=turn.usage, total_cost_usd=None,
+            session_id=turn.session_id, detail=detail,
+        )
+
+    def _result(self, returncode: int, turn: CodexTurn) -> tuple[OutcomeKind, dict[str, object] | None, str]:
+        if turn.reroute:
+            return "failed", None, turn.reroute
+        if returncode or turn.failure or not turn.completed:
+            error = turn.failure or (turn.stream_error if not turn.completed else None)
+            if error and error.startswith(QUOTA_PREFIXES):
+                return "quota", None, error
+            detail = error or (f"Codex exited {returncode}" if returncode else "Codex did not complete the turn")
+            return "failed", None, detail
+        if turn.message is None:
+            return "failed", None, "Codex did not return a final agent message"
         try:
-            value: object = json.loads(process.stdout)
-        except ValueError:
-            return Outcome("failed", detail="worker did not return a JSON object")
-        if not isinstance(value, dict):
-            return Outcome("failed", detail="worker did not return a JSON object")
-        output = cast(dict[str, object], value)
-        try:
-            normalize_output(self.contract, output)
-        except ValidationError as exc:
-            return Outcome("failed", detail=f"implementation: {exc.errors(include_input=False)[0]['msg']}")
-        return Outcome("ran", output)
+            output = parse_output(self.contract, json.loads(turn.message)).model_dump()
+        except json.JSONDecodeError:
+            return "failed", None, "Codex did not return valid JSON"
+        except InvalidOutput as exc:
+            return "failed", None, str(exc)
+        return "ran", output, ""

@@ -141,6 +141,13 @@ class MergeRisk(Contract):
     level: Literal["low", "medium", "high"]
 
 
+class ToolFact(Contract):
+    claim: TrimmedText = Field(description="State the outside-tool behavior the diff relies on.")
+    fixture: TrimmedText | None = Field(
+        description="Give the exact entry ID in tests/fixtures/manifest.toml. Use null when the claim has no recorded evidence.",
+    )
+
+
 class Finding(Contract):
     file: Text = Field(description="Give the path relative to the repository root.")
     line: int = Field(description="Give the line number in the reviewed commit.")
@@ -153,6 +160,9 @@ class ReviewOutput(Contract):
     risk: MergeRisk
     findings: list[Finding] = Field(
         description="List each requested fix, including nits. Return one or more findings for changes and an empty list for approve.",
+    )
+    tool_facts: list[ToolFact] = Field(
+        description="List every outside-tool fact the diff relies on, including unrecorded facts. Use an empty list if there are none.",
     )
     detail: Text = Field(description="Write the pull request review body, including any longer explanation.")
 
