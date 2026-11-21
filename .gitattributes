@@ -1,0 +1,5 @@
+tests/fixtures/** linguist-generated
+tests/stage-schemas.json linguist-generated
+*.lock linguist-generated
+package-lock.json linguist-generated
+pnpm-lock.yaml linguist-generated
