@@ -1,4 +1,6 @@
-"""Keep the source type gate strict while PR B removes its six exceptions."""
+"""Keep every source module under the strict type gate."""
+
+import tests
 
 from pathlib import Path
 import re
@@ -7,11 +9,6 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BASIC_MODULES = {
-    "foreman/delivery.py",
-    "foreman/runner.py",
-    "foreman/cli.py",
-}
 
 
 class TypeGateTests(unittest.TestCase):
@@ -20,7 +17,7 @@ class TypeGateTests(unittest.TestCase):
         config = project["tool"]["pyright"]
         required = {
             "typeCheckingMode": "strict",
-            "include": ["src"],
+            "include": ["src", "typings"],
             "enableTypeIgnoreComments": False,
             "reportUnnecessaryTypeIgnoreComment": "error",
             "reportImplicitOverride": "error",
@@ -31,6 +28,7 @@ class TypeGateTests(unittest.TestCase):
                 self.assertEqual(config.get(key), value)
         self.assertEqual(project["project"]["requires-python"], ">=3.11")
         self.assertIn("pyright==1.1.414", project["project"]["optional-dependencies"]["dev"])
+        self.assertIn("typing-extensions>=4.6.1,<5", project["project"]["dependencies"])
         self.assertFalse(config.get("exclude"))
         self.assertFalse(config.get("ignore"))
         self.assertFalse(config.get("executionEnvironments"))
@@ -39,12 +37,11 @@ class TypeGateTests(unittest.TestCase):
                 with self.subTest(diagnostic=key):
                     self.assertEqual(value, "error")
 
-    def test_basic_directives_are_limited_to_pr_b(self):
-        for path in (ROOT / "src").rglob("*"):
-            if not path.is_file() or path.suffix != ".py":
+    def test_no_basic_directives(self):
+        for path in (p for root in ("src", "typings") for p in (ROOT / root).rglob("*")):
+            if not path.is_file() or path.suffix not in {".py", ".pyi"}:
                 continue
             for line in path.read_text().splitlines():
-                if re.search(r"#\s*pyright:\s*(?:basic|off|standard)\b", line):
+                if re.search(r"#\s*pyright:", line):
                     with self.subTest(path=path.relative_to(ROOT)):
-                        self.assertIn(path.relative_to(ROOT / "src").as_posix(), BASIC_MODULES)
-                        self.assertRegex(line, r"#\s*pyright:\s*basic\s*$")
+                        self.fail("Source module weakens strict checking")

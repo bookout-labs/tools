@@ -1,3 +1,5 @@
+import tests
+
 import unittest
 
 from foreman.config import ConfigError, load_config, order_for, parse_config

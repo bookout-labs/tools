@@ -1,5 +1,3 @@
-# Resolve the delivery types in #52 before restoring strict checking.
-# pyright: basic
 """Run one delivery issue against its SQLite checkpoint."""
 
 from collections.abc import Mapping
@@ -16,7 +14,7 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DEFAULT_TOKEN_CAP, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
+from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -54,7 +52,7 @@ def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice) -> s
     if open_urls := [blocker.html_url for blocker in blockers if blocker.state == "open"]:
         return "Open blockers: " + ", ".join(open_urls)
     local = {blocker.number: blocker for blocker in blockers if blocker.in_repo(repo)}
-    planned = item.blocker_numbers or []
+    planned = item.blocker_numbers
     if len(planned) != len(item.depends_on) or not set(planned) <= local.keys():
         return "Planned blocker links are missing."
     if unmerged := [number for number in planned if not forge.is_merged(repo, number)]:
@@ -128,12 +126,12 @@ def run_live_delivery(
                                         "repo": repo, "check": check,
                                         "token_cap": channels["token_cap"] if prior else (max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)})
         def invoke(
-            graph_input: DeliveryState | Command | None,
+            graph_input: DeliveryState | Command[str] | None,
             state: DeliveryState,
             invocation_config: RunnableConfig = config,
         ) -> None:
             environment = EnvironmentProbe(run.workspace, state.get("preflight", ""), run.check_log)
-            graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync")
+            graph.invoke(graph_input, invocation_config, context=replace(run, environment=environment), durability="sync", version="v2")
 
         saved = graph.get_state(config)
         if saved.values:
@@ -156,7 +154,7 @@ def run_live_delivery(
                                        "pending_dispatch": None}, as_node=stage + "_call")
             invoke(None, saved_values)
             return read_delivery_state(graph.get_state(config).values)
-        waiting_for_quota = bool(saved.interrupts) and saved.values.get("halt") == "quota_exhausted"
+        waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == "quota_exhausted"
         if answer is not None:
             if waiting_for_quota:
                 raise AnswerError("This issue has no pending question.")
@@ -169,7 +167,7 @@ def run_live_delivery(
                 if answer != answers[-1]:
                     raise AnswerError("This question was already answered differently. Resume with the recorded answer.")
         if answer is not None and saved.interrupts and saved_values is not None:
-            if saved.interrupts[0].value["stage"] == "pr_size":
+            if parse_output(HumanPrompt, saved.interrupts[0].value).stage == "pr_size":
                 try:
                     answer = PullRequestSizeDecision(answer).value
                 except ValueError as exc:
@@ -212,15 +210,21 @@ def run_live_delivery(
             replay = before.config
             if partial := saved_values.get("partial_edits"):
                 replay = graph.update_state(replay, {"partial_edits": partial})
-            invoke(None, _CHECKPOINT_STATE.validate_python(before.values, strict=True), replay)
+            restored = checkpoint_state(before.values)
+            assert restored is not None
+            invoke(None, restored, replay)
         elif saved.next and not saved.interrupts:
             invoke(None, saved_values)
 
         saved = graph.get_state(config)
-        if saved.values.get("stop") == "sliced":
-            numbers = list(saved.values.get("child_issue_numbers", []))
-            work_kind = saved.values.get("work_kind")
-            plan = [parse_output(StoredSlice, {**raw, "work_kind": work_kind}) for raw in saved.values["slices"]]
+        saved_values = checkpoint_state(saved.values)
+        assert saved_values is not None
+        if saved_values.get("stop") == "sliced":
+            if "slices" not in saved_values:
+                raise ValueError("Sliced checkpoint has no slice plan.")
+            numbers = list(saved_values.get("child_issue_numbers", []))
+            work_kind = saved_values.get("work_kind")
+            plan = [parse_output(StoredSlice, {**raw, "work_kind": work_kind}) for raw in saved_values["slices"]]
             siblings = {item.title: number for item, number in zip(plan, numbers)}
             for item in plan[len(numbers):]:
                 child = item.model_copy(update={"blocker_numbers": [siblings[title] for title in item.depends_on]})
@@ -243,12 +247,15 @@ def run_live_delivery(
                         and "factory" not in client.load_issue(repo, number)["labels"]):
                     client.add_label(repo, number, "factory")
             saved = graph.get_state(config)
+            saved_values = checkpoint_state(saved.values)
+        assert saved_values is not None
         if saved.interrupts:
-            if saved.values.get("halt") == "quota_exhausted":
-                return read_delivery_state({**saved.values, "stop": "quota_exhausted"})
-            question: object = saved.interrupts[0].value["question"]
-            return read_delivery_state({**saved.values, "stop": "needs_human", "halt_detail": question})
-        result = read_delivery_state(saved.values)
+            if saved_values.get("halt") == "quota_exhausted":
+                parse_output(QuotaPause, saved.interrupts[0].value)
+                return read_delivery_state({**saved_values, "stop": "quota_exhausted"})
+            question = parse_output(HumanPrompt, saved.interrupts[0].value).question
+            return read_delivery_state({**saved_values, "stop": "needs_human", "halt_detail": question})
+        result = read_delivery_state(saved_values)
         if "merge" in result["path"] and "merge" not in result:
             legacy = saver.get(saved.config)
             if legacy is not None:

@@ -1,0 +1,13 @@
+LangGraph 1.2.24 synchronous subset.
+StateGraph takes state_schema, input_schema, output_schema, context_schema.
+add_node accepts a state callable, optionally taking runtime.
+compile accepts checkpointer; invoke accepts input, config, context, durability, version.
+invoke v1 returns output values; v2 returns GraphOutput with value.
+get_state, get_state_history and update_state accept RunnableConfig.
+update_state accepts values and as_node. get_graph supports draw_mermaid.
+Declarations are in typings/langgraph/graph. Real-library graph tests exercise them.
+https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/graph/state.py
+https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py
+CompiledStateGraph.with_config(config: RunnableConfig | None) returns Self.
+get_graph returns langchain_core.runnables.graph.Graph with typed nodes and Edge values.
+The installed 1.2.24 with_config copies the graph with merged config; diagram tests exercise node/edge collapse.

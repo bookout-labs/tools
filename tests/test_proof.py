@@ -1,3 +1,5 @@
+import tests
+
 import unittest
 
 from foreman.proof import (
@@ -27,7 +29,6 @@ class ProofTest(unittest.TestCase):
         self.assertTrue(formal_required(self.slice))
         self.assertFalse(browser_required({"screen": ""}))
         self.assertFalse(formal_required({"properties": []}))
-
 
 
 class ProofLabelTest(unittest.TestCase):

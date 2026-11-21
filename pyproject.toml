@@ -10,7 +10,7 @@ dependencies = [
   "langgraph-checkpoint-sqlite>=3.0.1,<4",
   "pydantic>=2.9,<3",
   "pyyaml>=6.0.2,<7",
-  "typing-extensions>=4.6.1",
+  "typing-extensions>=4.6.1,<5",
   "unidiff==1.0.1",
 ]
 
@@ -32,7 +32,7 @@ foreman = ["models.toml", "measure.toml", "stages/*.md", "skills/*.md", "roles/*
 
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["src"]
+include = ["src", "typings"]
 enableTypeIgnoreComments = false
 reportUnnecessaryTypeIgnoreComment = "error"
 reportImplicitOverride = "error"
