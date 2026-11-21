@@ -5,6 +5,7 @@ from io import StringIO
 import os
 from pathlib import Path
 import subprocess
+import socket
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -191,6 +192,7 @@ class WorkerTest(unittest.TestCase):
             good = f'https://github.com/{REPO}'
             git('remote', 'set-url', 'origin', good, cwd=root / 'clone')
             git('worktree', 'add', '-b', 'topic', str(root / 'linked'), cwd=root / 'clone')
+            git('config', 'branch.topic.gh-merge-base', 'main', cwd=root / 'linked')
             for checkout in [root / 'clone', root / 'linked']:
                 with self.subTest(checkout=checkout):
                     def run(command, **kwargs):
@@ -239,6 +241,67 @@ class WorkerTest(unittest.TestCase):
             self.assertEqual(git('--git-dir', str(remote), 'tag', '--list').stdout, '')
             self.assertEqual(git('--git-dir', str(remote), 'rev-parse', 'refs/heads/worker-topic').stdout,
                              git('rev-parse', 'HEAD').stdout)
+
+    def test_fetch_does_not_recurse_into_hostile_submodule_config(self):
+        with tempfile.TemporaryDirectory() as directory, socket.socket() as listener:
+            root = Path(directory).resolve()
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            listener.setblocking(False)
+            real_run = subprocess.run
+            env = command_environment('synthetic')
+            env['GIT_ALLOW_PROTOCOL'] = 'file:https'
+
+            def git(*args, cwd=root, check=True):
+                return real_run(['git', *args], cwd=cwd, env=env, check=check, capture_output=True, text=True)
+
+            def commit(repo):
+                git('-c', 'user.name=Synthetic', '-c', 'user.email=worker@example.invalid',
+                    'commit', '--allow-empty', '-am', 'synthetic', cwd=repo)
+                return git('rev-parse', 'HEAD', cwd=repo).stdout.strip()
+
+            child, parent = root / 'child', root / 'parent'
+            workers = [root / name for name in ['uploadpack-worker', 'proxy-worker']]
+            git('init', '--initial-branch=main', str(child))
+            commit(child)
+            git('init', '--initial-branch=main', str(parent))
+            git('submodule', 'add', str(child), 'sub', cwd=parent)
+            commit(parent)
+            for worker in workers:
+                git('clone', str(parent), str(worker))
+                git('submodule', 'update', '--init', cwd=worker)
+            new_child = commit(child)
+            git('fetch', 'origin', cwd=parent / 'sub')
+            git('checkout', new_child, cwd=parent / 'sub')
+            new_parent = commit(parent)
+            marker = root / 'executed'
+            uploadpack = root / 'uploadpack'
+            uploadpack.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 1\n')
+            uploadpack.chmod(0o755)
+            for worker in workers:
+                config = worker / '.git' / 'modules' / 'sub' / 'config'
+                if worker == workers[0]:
+                    git('config', '--file', str(config), 'remote.origin.uploadpack', str(uploadpack))
+                else:
+                    git('config', '--file', str(config), 'remote.origin.url', f'https://github.com/{REPO}')
+                    git('config', '--file', str(config), 'http.https://github.com/.proxy',
+                        f'http://127.0.0.1:{listener.getsockname()[1]}')
+
+                def run(command, **kwargs):
+                    return real_run(command, cwd=worker, **kwargs)
+
+                with patch('foreman.worker_auth.validate_config'), \
+                        patch('foreman.worker_auth.validate_remote', return_value=[str(parent)]), \
+                        patch('foreman.worker_auth.environment', return_value=env), \
+                        patch('foreman.worker_auth.subprocess.run', side_effect=run):
+                    code, out, err = self.invoke(['git', 'fetch', 'origin'])
+                self.assertEqual(code, 0, err)
+                self.assertNotIn('synthetic', out + err)
+                self.assertEqual(git('rev-parse', 'origin/main', cwd=worker).stdout.strip(), new_parent)
+                self.assertNotEqual(git('cat-file', '-e', new_child, cwd=worker / 'sub', check=False).returncode, 0)
+                self.assertFalse(marker.exists())
+                with self.assertRaises(BlockingIOError):
+                    listener.accept()
 
     def test_environment_drops_ambient_execution_and_transport_controls(self):
         dangerous = {key: 'evil' for key in ['GIT_SSL_NO_VERIFY', 'GIT_EXEC_PATH', 'GIT_ASKPASS', 'GIT_DIR',
