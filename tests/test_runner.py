@@ -97,8 +97,8 @@ class FakeWorkspace(LiveWorkspace):
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": "b" * 40, "lines": 1}
 
-    def review_diff(self, base, head):
-        return ReviewDiff(f"git diff {base}...{head}", DIFF)
+    def review_diff(self, base, head, *, interdiff=False):
+        return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
 
 
 def worker_reply(args, reply):
@@ -127,8 +127,8 @@ class FixtureWorkspace(LiveWorkspace):
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": BASE, "lines": 1}
 
-    def review_diff(self, base, head):
-        return ReviewDiff(f"git diff {base}...{head}", DIFF)
+    def review_diff(self, base, head, *, interdiff=False):
+        return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
 
 
 class FakeGitHub:
@@ -1456,6 +1456,10 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn(f"{base}...{head}", reviewed.command)
         self.assertIn("-old\n+new\n", reviewed.patch)
         self.assertNotIn("main.txt", reviewed.patch)
+        interdiff = LiveWorkspace(checkout).review_diff(base, head, interdiff=True)
+        self.assertIn(f"{base}..{head}", interdiff.command)
+        self.assertIn("main.txt", interdiff.patch)
+        self.assertEqual(LiveWorkspace(checkout).review_diff(head, head, interdiff=True).patch, "")
 
     def test_live_workspace_rejects_invalid_head_before_the_remaining_inspection(self):
         for head in ("", "abc123", "z" * 40):
