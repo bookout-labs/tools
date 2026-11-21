@@ -1,10 +1,9 @@
 """Worker output contracts shared by the CLI prompts and delivery graph."""
 
 import re
-from typing import Annotated, Literal, TypeVar, cast
+from typing import Annotated, Literal, TypeVar, get_args
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, field_validator, model_validator
-from pydantic.config import JsonDict
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, field_validator, model_validator
 
 from foreman.dispatch import InvalidOutput
 
@@ -14,16 +13,17 @@ Sections = TypeAdapter(dict[TrimmedText, TrimmedText])
 Output = TypeVar("Output", bound=BaseModel)
 
 
-# CLIs without schema enforcement may omit nullable fields until S2/S3.
-def _require_all_fields(schema: JsonDict) -> None:
-    properties = cast(dict[str, JsonDict], schema["properties"])
-    schema["required"] = list(properties)
-    for field in properties.values():
-        field.pop("default", None)
-
-
 class Contract(BaseModel):
-    model_config = ConfigDict(strict=True, extra="forbid", json_schema_extra=_require_all_fields)
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_nullable_fields(cls, value: object, info: ValidationInfo) -> object:
+        if info.context == "legacy" and isinstance(value, dict):
+            omitted = {name: None for name, field in cls.model_fields.items()
+                       if name not in value and type(None) in get_args(field.annotation)}
+            return {**omitted, **value}
+        return value
 
 
 class SliceProperty(Contract):
@@ -32,7 +32,7 @@ class SliceProperty(Contract):
 
 
 class Slice(Contract):
-    """Preserve the proof obligations. Implementers should report only evidence they collect."""
+    """Preserve the proof obligations."""
 
     title: TrimmedText
     acceptance: TrimmedText
@@ -41,21 +41,15 @@ class Slice(Contract):
     )
     screen: str = Field(
         description="Use docs/screens/<file>.md without '..', or an empty string.",
-        pattern=r"^(docs/screens/[^/\\]+\.md)?$",
+        pattern=r"^(docs/screens/(?:[^./\\\x00-\x1f]|\.[^./\\\x00-\x1f])+\.md)?$",
     )
     properties: list[SliceProperty]
 
-    @field_validator("screen")
-    @classmethod
-    def screen_path(cls, value: str) -> str:
-        if ".." in value or re.search(r"[\x00-\x1f]", value):
-            raise ValueError("must be empty or a docs/screens/<file>.md path without '..'")
-        return value
 
 
 class SlicePlanningOutput(Contract):
-    slice: Slice | None = None  # CLIs without schema enforcement may omit this.
-    human_question: str | None = None  # CLIs without schema enforcement may omit this.
+    slice: Slice | None
+    human_question: str | None
 
 
 class TriageOutput(SlicePlanningOutput):
@@ -69,15 +63,15 @@ class ResearchOutput(Contract):
 class SpecOutput(SlicePlanningOutput):
     spec: Text
     spec_gate: Literal["ready", "needs_human"]
-    slices: list[Slice] | None = None  # CLIs without schema enforcement may omit this.
+    slices: list[Slice] | None
 
 
 class BrowserProof(Contract):
     """For a required screen, report only browser evidence you actually collected."""
 
-    screen: str | None = None  # CLIs without schema enforcement may omit this.
-    trace: str | None = None  # CLIs without schema enforcement may omit this.
-    passed: bool | None = None  # CLIs without schema enforcement may omit this.
+    screen: str | None
+    trace: str | None
+    passed: bool | None
 
 
 class ConstraintResult(Contract):
@@ -88,23 +82,21 @@ class ConstraintResult(Contract):
 class FormalProof(Contract):
     """For required properties, report only formal evidence you actually collected."""
 
-    ran: bool | None = None  # CLIs without schema enforcement may omit this.
-    constraints: list[ConstraintResult] | None = None  # CLIs without schema enforcement may omit this.
-    typecheck: str | bool | None = None  # CLIs without schema enforcement may omit this.
+    ran: bool | None
+    constraints: list[ConstraintResult] | None
+    typecheck: str | bool | None
 
 
 class ImplementOutput(Contract):
     implementation: Text
-    # CLIs without schema enforcement may omit the head SHA.
-    head_sha: Annotated[str | None, AfterValidator(lambda sha: (sha or "").strip() or None)] = None
-    browser_proof: BrowserProof | None = None  # CLIs without schema enforcement may omit this.
-    formal_proof: FormalProof | None = None  # CLIs without schema enforcement may omit this.
+    head_sha: Annotated[str | None, AfterValidator(lambda sha: (sha or "").strip() or None)]
+    browser_proof: BrowserProof | None
+    formal_proof: FormalProof | None
 
-    # CLIs without schema enforcement can return sections until S2/S3.
     @field_validator("implementation", mode="before")
     @classmethod
-    def join_sections(cls, value: object) -> object:
-        if isinstance(value, dict):
+    def join_sections(cls, value: object, info: ValidationInfo) -> object:
+        if info.context == "legacy" and isinstance(value, dict):
             sections = Sections.validate_python(value, strict=True)
             return "\n\n".join(f"{title}\n{body}" for title, body in sections.items())
         return value
@@ -123,15 +115,13 @@ class ReviewOutput(Contract):
     review: Literal["approve", "changes"]
     risk: MergeRisk
     review_note: str | None = Field(
-        default=None,
         description="Put the reviewer's requested changes here and keep the verdict in review. Use null when there is no note.",
     )
 
-    # CLIs without schema enforcement can punctuate verdicts until S2/S3.
     @model_validator(mode="before")
     @classmethod
-    def split_verdict(cls, value: object) -> object:
-        if isinstance(value, dict) and isinstance(verdict := value.get("review"), str):
+    def split_verdict(cls, value: object, info: ValidationInfo) -> object:
+        if info.context == "legacy" and isinstance(value, dict) and isinstance(verdict := value.get("review"), str):
             verdict = verdict.strip()
             if verdict in {"approve", "approve."}:
                 return {**value, "review": "approve"}
@@ -158,9 +148,9 @@ STAGE_OUTPUTS: dict[str, type[Contract]] = {
 }
 
 
-def parse_output(contract: type[Output], raw: object) -> Output:
+def parse_output(contract: type[Output], raw: object, *, native: bool = False) -> Output:
     try:
-        return contract.model_validate(raw)
+        return contract.model_validate(raw, context=None if native else "legacy")
     except ValidationError as exc:
         error = exc.errors(include_input=False)[0]
         path = ".".join(map(str, error["loc"])) or "$"

@@ -9,6 +9,8 @@ import unittest
 from unittest.mock import patch
 
 from foreman.cli import main
+from foreman.config import NodeConfig, load_config
+from foreman.delivery import run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.dry_run import DEFAULT_RISK
 from foreman.runner import run_live_delivery
@@ -50,8 +52,14 @@ def worker_reply(args, reply, model=None):
     body = json.dumps(reply) if isinstance(reply, dict) else reply
     if tool == "codex":
         return subprocess.CompletedProcess(args, 0, body, f"model: {model}\n")
-    field = "result" if tool == "claude" else "text"
-    return subprocess.CompletedProcess(args, 0, json.dumps({field: body, "modelUsage": {model: {}}}), "")
+    if "triage" in reply or "spec" in reply:
+        reply = {"slice": None, "human_question": None, **reply}
+    if "spec" in reply:
+        reply = {"slices": None, **reply}
+    if "review" in reply:
+        reply = {"review_note": None, **reply}
+    field = "structured_output" if tool == "claude" else "structuredOutput"
+    return subprocess.CompletedProcess(args, 0, json.dumps({field: reply, "modelUsage": {model: {}}}), "")
 
 
 class FakeGitHub:
@@ -96,10 +104,14 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertEqual(args[:len(prefix)], prefix)
                     self.assertEqual(cwd, Path("engine"))
                     self.assertIn('{"issue": 12}', args[-1])
+                    if args[0] != "codex":
+                        self.assertEqual(json.loads(args[args.index("--json-schema") + 1]),
+                                         STAGE_OUTPUTS["triage"].model_json_schema())
                     return worker_reply(args, {"triage": "implement"})
 
                 result = CliWorker(Path("engine"), run)("triage", model, {"issue": 12}, "Read the issue.")
-                self.assertEqual(result, {"triage": "implement"})
+                output = result if isinstance(result, dict) else result.output
+                self.assertEqual(output["triage"], "implement")
 
     def test_non_object_replies_are_invalid(self):
         replies = ('Here is the result: {"triage": "implement"}', '["implement"]')
@@ -108,21 +120,61 @@ class CliWorkerTest(unittest.TestCase):
                 worker = CliWorker(Path("."), lambda args, cwd: worker_reply(args, reply))
                 worker("triage", "gpt-6.1-sol-high", {}, "")
 
-    def test_model_mismatch_and_quota_trigger_failover(self):
-        calls = []
+    def test_native_envelopes(self):
+        output = {"triage": "question", "slice": None, "human_question": None}
+        for tool, field, session, error in (
+            ("claude", "structured_output", "session_id", {"is_error": True, "result": "Unsupported model: test"}),
+            ("grok", "structuredOutput", "sessionId", {"type": "error", "message": "Unsupported model: test"}),
+        ):
+            model = f"{tool}-test"
+            usage = {"input_tokens": 4, "output_tokens": 2}
+            success = {field: output, session: "sample", "usage": usage, "modelUsage": {model: {}}}
+            for envelope, kind, tokens in (
+                (success, "ran", 4),
+                (error, "failed", None),
+                ({key: value for key, value in success.items() if key != "modelUsage"}, "ran", 4),
+                ({field: output}, "ran", None),
+                ({**success, "modelUsage": {"other": {}}}, "failed", 4),
+                ({**success, "usage": {"input_tokens": 0, "output_tokens": 0}}, "ran", 0),
+            ):
+                with self.subTest(tool=tool, envelope=envelope):
+                    result = CliWorker(Path("."), lambda args, _: subprocess.CompletedProcess(
+                        args, 0, json.dumps(envelope), "",
+                    ))("triage", model, {}, "")
+                    self.assertEqual(result.kind, kind)
+                    self.assertEqual(result.usage.input_tokens if result.usage else None, tokens)
+                    if envelope == success:
+                        self.assertEqual((result.output, result.session_id), (output, "sample"))
 
-        def run(args, cwd):
-            calls.append(args[0])
-            if args[0] == "codex":
-                return worker_reply(args, {"triage": "implement"}, "gpt-other")
-            if args[0] == "claude":
-                return subprocess.CompletedProcess(args, 1, "", "API error 429: quota exceeded")
-            return worker_reply(args, {"triage": "implement"})
+    def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
+        for tool, field, error in (
+            ("claude", "structured_output", {"is_error": True, "result": "You've hit your limit"}),
+            ("grok", "structuredOutput", {"type": "error", "message": "You’ve hit the rate limit for your plan."}),
+        ):
+            failed = {**error, "result": "Unknown model: quota", "message": "Unknown model: quota"}
+            for case in ("quota", "cli_missing", "failed", "incomplete"):
+                stops = case in {"failed", "incomplete"}
+                with self.subTest(tool=tool, case=case):
+                    calls = []
 
-        dispatcher = FailoverDispatcher(CliWorker(Path("."), run))
-        result, model = dispatcher.run("triage", ["gpt-first", "claude-second", "grok-third"], {}, "")
-        self.assertEqual(calls, ["codex", "claude", "grok"])
-        self.assertEqual((result, model), ({"triage": "implement"}, "grok-third"))
+                    def run(args, cwd):
+                        calls.append(args[0])
+                        if len(calls) > 1:
+                            return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
+                        if case == "cli_missing":
+                            raise FileNotFoundError(args[0])
+                        envelope = {"quota": error, "failed": failed, "incomplete": {field: {"triage": "question"}}}[case]
+                        return subprocess.CompletedProcess(args, int(tool == "grok" and case != "incomplete"),
+                                                           json.dumps(envelope), "")
+
+                    config = load_config()
+                    config.nodes["triage"] = NodeConfig("coordinator", (f"{tool}-test", "gpt-test"))
+                    result = run_delivery(FailoverDispatcher(CliWorker(Path("."), run)),
+                                          repo="Example/Engine", request="List items", check="exit 0", config=config)
+                    self.assertEqual(result["stop"], "invalid_output" if stops else "needs_human")
+                    self.assertEqual(calls, [tool] if stops else [tool, "codex"])
+                    if case == "failed":
+                        self.assertIn("Unknown model: quota", result["halt_detail"])
 
     def test_codex_reroute_is_rejected_even_with_the_requested_banner(self):
         def run(args, cwd):
@@ -203,7 +255,7 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_review_note_reaches_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes. Add a check."}
+        changes = {**APPROVE, "review": "changes", "review_note": "Add a check."}
         self.walk([{"triage": "implement"}, built, changes, built, APPROVE], run_gh=lambda _: 0)
         prompt = self.prompts[3]
         self.assertIn('"title": "ImplementOutput"', prompt)

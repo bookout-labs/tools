@@ -10,8 +10,9 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
-from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.dispatch import CliMissing, FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.proof import browser_proof_label, formal_proof_label
 from foreman.stage_output import Contract, STAGE_OUTPUTS, Slice, SlicePlanningOutput, SpecOutput, VerifyOutput, parse_output
 
@@ -173,12 +174,16 @@ def compile_delivery(
                 instruction = f"{instruction}\n\nCommand: {command}"
             try:
                 raw, model = dispatcher.run(name, models, state, instruction)
-                update = stage_update(name, parse_output(STAGE_OUTPUTS[name], raw), state, model)
+                native = isinstance(raw, Outcome)
+                output = parse_output(STAGE_OUTPUTS[name], raw.output if native else raw, native=native)
+                update = stage_update(name, output, state, model)
                 if name == "implement" and inspect_worktree is not None:
                     update.update(head_sha=None, head_checked=False)
                 return update
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
+            except CliMissing as exc:
+                return {"path": [name], "halt": "cli_missing", "halt_detail": str(exc)}
             except QuotaExhausted as exc:
                 if name != "review":
                     raise
