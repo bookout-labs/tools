@@ -4,9 +4,9 @@ from typing import Literal
 
 from pydantic import Field
 
-from foreman.workspace import ReviewScope
 from foreman.dispatch import InvalidOutput
 from foreman.stage_output import Contract, Finding, ReviewOutput, SettledRuling, ToolFact, parse_output
+from foreman.workspace import ReviewScope
 
 
 class GraphCheck(Contract):
