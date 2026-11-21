@@ -17,7 +17,8 @@ casts or suppressed diagnostics.
 
 The signatures follow langgraph/graph/state.py and langgraph/pregel/main.py in
 the installed distribution. They cover dictionary state updates, dataclass run
-contexts, string channel versions for SQLite, and version v2 invocation results.
+contexts, string channel versions for SQLite, and version v1 and v2 invocation results.
+The update_state declaration includes as_node for dispatch recovery in #64.
 They deliberately expose only the used API. Add declarations from upstream when
 adding another graph operation. Recheck these signatures when upgrading LangGraph.
 
