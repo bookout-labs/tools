@@ -41,7 +41,8 @@ class ScriptHandler:
         self.slice = slice if slice is not None else {
             "title": "Implement the requested change",
             "acceptance": "The requested change passes verification.",
-            "depends_on": [],
+            "builds": [],
+            "uses": [],
             "screen": "",
             "properties": [],
         }
