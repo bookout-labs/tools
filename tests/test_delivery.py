@@ -12,7 +12,7 @@ from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
 from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
-from skill_fixture import FixtureSkills, skill_fixture
+from skill_fixture import FixtureSkills, skill_fixture, stored_slice
 
 
 BOARD = {"name": "deals-board", "exists": False, "path": None}
@@ -40,11 +40,11 @@ SLICES = [
 EMPTY_SLICE = {**SLICES[1], "builds": [], "uses": []}
 
 
-def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
+def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, legacy=False):
     with skill_fixture(config) as (fixture_config, scratch):
         return run_delivery(
             FailoverDispatcher(handler), repo="DoctorCRE/doctorcre-engine", request="Add a field",
-            check=check, slice=slice, config=fixture_config, scratch=scratch,
+            check=check, slice=stored_slice(slice) if slice is not None and not legacy else slice, config=fixture_config, scratch=scratch,
         )
 
 
@@ -64,7 +64,7 @@ class DeliveryTest(unittest.TestCase):
     def test_passing_a_slice_starts_a_slice_run(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[1])
         self.assertEqual(result["issue_kind"], "slice")
-        self.assertEqual(result["slice"], SLICES[1])
+        self.assertEqual(result["slice"], stored_slice(SLICES[1]))
         self.assertEqual(result["stop"], "verified")
 
     def test_clear_change_skips_spec(self):
@@ -79,7 +79,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "implement", "publish", "verify", "review", "merge", "done"],
+            ["triage", "spec_check", "implement", "publish", "verify", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["risk"]["level"], "low")
@@ -93,13 +93,13 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="spec", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec", "implement", "publish", "verify", "review", "merge", "done"],
+            ["triage", "spec", "spec_check", "implement", "publish", "verify", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
     def test_ready_spec_keeps_the_loaded_slice_proof_obligations(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec", "implement", "publish", "verify", "proof", "done"])
+        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "implement", "publish", "verify", "proof", "done"])
         self.assertEqual(result["stop"], "insufficient_evidence")
 
     def test_worker_cannot_declare_depends_on(self):
@@ -117,7 +117,7 @@ class DeliveryTest(unittest.TestCase):
         for triage in ("spec", "question"):
             with self.subTest(triage=triage):
                 result = walk(ScriptHandler(triage=triage, slices=SLICES[::-1]), slice=None)
-                self.assertEqual(result["path"], ["triage", "spec", "done"])
+                self.assertEqual(result["path"], ["triage", "spec", "spec_check", "done"])
                 self.assertEqual(result["stop"], "sliced")
                 self.assertEqual(result["slices"], [
                     {**SLICES[0], "depends_on": [], "blocker_numbers": [], "provenance": {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]}},
@@ -150,7 +150,7 @@ class DeliveryTest(unittest.TestCase):
                     return handler(node, model, state, instruction)
 
                 result = walk(repair, slice=None)
-                self.assertEqual(result["path"], ["triage", "spec", "spec", "done"])
+                self.assertEqual(result["path"], ["triage", "spec", "spec", "spec_check", "done"])
                 self.assertEqual(result["review_rounds"], 0)
                 self.assertEqual(result["spec_failures"], 1)
                 self.assertEqual(result["stop"], "sliced")
@@ -181,8 +181,8 @@ class DeliveryTest(unittest.TestCase):
         config = load_config()
         config.nodes["review"] = replace(config.nodes["review"], models=(ModelSpec.parse("gpt-6.1-terra-high"),))
         handler = ScriptHandler()
-        result = walk(handler, config=config)
-        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "done"])
+        result = walk(handler, config=config, slice=None)
+        self.assertEqual(result["path"], ["triage", "spec_check", "implement", "publish", "verify", "review", "done"])
         self.assertEqual(result["stop"], "no_reviewer")
         self.assertIn("gpt family", result["halt_detail"])
         self.assertNotIn("review", [call["node"] for call in handler.calls])
@@ -211,7 +211,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "implement", "publish", "verify", "review", "implement", "publish", "verify", "review", "merge", "done"],
+            ["triage", "spec_check", "implement", "publish", "verify", "review", "implement", "publish", "verify", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
@@ -386,7 +386,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(read_methods)
         self.assertEqual(result["stop"], "verified")
-        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec", "implement", "verify", "review"])
+        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec", "spec_check", "implement", "verify", "review"])
 
     def test_diagram_names_the_nodes(self):
         picture = diagram()

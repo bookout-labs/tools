@@ -14,7 +14,7 @@ from foreman.delivery import DeliveryState, run_delivery  # noqa: E402
 from foreman.dispatch import FailoverDispatcher, Handler  # noqa: E402
 from foreman.dry_run import ScriptHandler  # noqa: E402
 from foreman.measure import grade, propose, selected  # noqa: E402
-from tests.skill_fixture import skill_fixture  # noqa: E402
+from tests.skill_fixture import skill_fixture, stored_slice  # noqa: E402
 
 
 FIELD_SLICE: dict[str, object] = {
@@ -32,7 +32,7 @@ def _walk(handler: Handler, *, slice: dict[str, object] | None = None) -> Delive
     with skill_fixture() as (config, scratch):
         return run_delivery(
             FailoverDispatcher(handler), repo="DoctorCRE/doctorcre-engine", request="Add a field",
-            check="npm run check", slice=slice, config=config, scratch=scratch,
+            check="npm run check", slice=stored_slice(slice) if slice is not None else None, config=config, scratch=scratch,
         )
 
 

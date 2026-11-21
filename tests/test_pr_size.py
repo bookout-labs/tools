@@ -1,7 +1,7 @@
 import tests
 
 from dataclasses import replace
-from skill_fixture import fixture_pin, fixture_skills
+from skill_fixture import approved_spec, checker_reply, fixture_pin, fixture_skills
 import contextlib
 import io
 import json
@@ -72,6 +72,8 @@ class PullRequestSizeTest(unittest.TestCase):
         stage = json.loads(schema)["title"]
         self.stages.append(stage)
         state = json.loads(state_json)
+        if (clear := checker_reply(args)) is not None:
+            return worker_reply(args, clear)
         replies = {
             "TriageOutput": {"triage": "implement", "slice": EMPTY_SLICE},
             "ImplementOutput": {"implementation": "Built."},
@@ -95,9 +97,9 @@ class PullRequestSizeTest(unittest.TestCase):
                 graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
                     "pstack_pin": self.config.pstack.model_dump(), "token_cap": DEFAULT_TOKEN_CAP,
                     "repo": "Example/Engine", "issue": 8, "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
-                    **({"spec": self.original_spec} if self.original_spec else {}),
+                    **approved_spec(EMPTY_SLICE, self.original_spec or ""),
                     "workspace": str(self.root.resolve()), "check": "exit 0", "head_sha": self.git("rev-parse", "HEAD"),
-                    "models_used": {"implement": "gpt-6.1-sol-high"}, "path": ["triage", "implement", "publish"],
+                    "models_used": {"implement": "gpt-6.1-sol-high"}, "path": ["triage", "spec_check", "implement", "publish"],
                 }, as_node="publish")
         with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
             code = main(
@@ -218,7 +220,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(candidate.author.model, values["models_used"]["spec"])
         self.assertEqual((candidate.spec, candidate.work_kind), (before.spec, before.work_kind))
         self.assertEqual(values["child_issue_numbers"], [101, 102])
-        self.assertEqual(self.stages, ["TriageOutput", "ImplementOutput", "SpecOutput"])
+        self.assertEqual(self.stages, ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "SpecOutput", "SpecCheckOutput"])
         self.assertIn("done sliced", self.invoke()[0])
         self.assertEqual(len(self.forge.created), 2)
 

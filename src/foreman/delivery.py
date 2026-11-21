@@ -4,7 +4,7 @@ import json
 import operator
 from uuid import uuid4
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from graphlib import CycleError, TopologicalSorter
@@ -33,8 +33,9 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
+    CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SpecCheckOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
+from foreman.spec_check import SpecApproval, SpecHistory, accept as accept_spec
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.workspace import ImplementationCandidate, ImplementationRejected, WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
@@ -49,7 +50,7 @@ ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_fai
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "budget_exceeded", "usage_unknown", "design_rethink", "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+    "budget_exceeded", "usage_unknown", "design_rethink", "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable", "spec_unsettled", "spec_check_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
@@ -57,7 +58,7 @@ CHECK_START_FAILURES = {126: "command is not executable", 127: "command not foun
 
 
 class HumanPrompt(Contract):
-    stage: Literal["triage", "spec", "pr_size", "review"]
+    stage: Literal["triage", "spec", "spec_check", "pr_size", "review"]
     question: str
 
 
@@ -138,6 +139,8 @@ class DeliveryFields(TypedDict, total=False):
     triage: str
     spec: str
     spec_gate: str
+    spec_history: dict[str, object]
+    spec_approval: dict[str, object] | None
     spec_candidate: SpecCandidateRecord
     spec_rejection: SpecRejection | None
     slices: list[SliceRecord]
@@ -228,6 +231,35 @@ def read_delivery_state(raw: object) -> DeliveryResult:
         result.setdefault(key, result.get("review_rounds", 0))
     result["review_rounds"] = review_count(result)
     return result
+
+
+def spec_candidate(state: DeliveryFields) -> SpecCandidate:
+    if "spec_candidate" in state:
+        candidate = SpecCandidate.from_record(state["spec_candidate"])
+        if family(candidate.author.model) != candidate.author.family:
+            raise InvalidOutput("Spec author family differs from its model.")
+        return candidate
+    item = StoredSlice.model_validate(state.get("slice"))
+    if item.provenance is None:
+        raise InvalidOutput("Spec candidate requires author provenance; regenerate the slice.")
+    if family(item.provenance.author.model) != item.provenance.author.family:
+        raise InvalidOutput("Spec author family differs from its model.")
+    return SpecCandidate(slices=[CandidateSlice.model_validate(item.model_dump(exclude={"provenance", "work_kind"}))],
+                         spec=state.get("spec", ""), work_kind=state.get("work_kind", "feature"), author=item.provenance.author)
+
+
+def spec_approved(state: DeliveryFields) -> bool:
+    approval = state.get("spec_approval")
+    if not approval:
+        return False
+    candidate = spec_candidate(state)
+    past = SpecHistory.model_validate(state.get("spec_history", {}))
+    checked = SpecApproval.model_validate(approval)
+    return bool(past.rounds and checked.round == len(past.rounds) and not past.accounting().unresolved()
+                and checked.matches(candidate) and past.rounds[-1].candidate == candidate.record()
+                and state.get("spec", "") == candidate.spec and state.get("work_kind", "feature") == candidate.work_kind
+                and ("slices" not in state or state["slices"] == candidate.update(single=False).get("slices"))
+                and ("slice" not in state or CandidateSlice.model_validate({k: v for k, v in state["slice"].items() if k != "provenance"}) == candidate.slices[0]))
 
 
 def _active_slice(state: DeliveryState) -> SliceRecord:
@@ -384,7 +416,7 @@ def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, 
 
 def stop_reason(state: DeliveryState) -> str:
     if halt := state.get("halt"):
-        return halt
+        return "needs_human" if halt == "spec_unsettled" else halt
     if oversized_pr(state):
         split = state.get("pr_split")
         gate = split["gate"] if split else state.get("spec_gate")
@@ -394,7 +426,7 @@ def stop_reason(state: DeliveryState) -> str:
             return "needs_human"
     if state.get("triage") == "needs_human" or state.get("spec_gate") == "needs_human":
         return "needs_human"
-    if state.get("spec_gate") == "ready" and state.get("path", [])[-1:] == ["spec"]:
+    if state.get("spec_gate") == "ready" and state.get("path", [])[-1:] in (["spec"], ["spec_check"]):
         if state.get("issue_kind") == "parent":
             return "sliced"
     if state.get("triage") == "question":
@@ -436,8 +468,10 @@ def compile_delivery(
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
+    config = replace(config, nodes={**config.nodes, "spec_check": replace(config.nodes["review"], other_family_from="spec_author")})
     methods_root = run.skills(config.pstack, scratch) if scratch is not None else None
-    prompts = {name: stage_text(name) for name in REQUIRED_NODES}
+    agents = (*REQUIRED_NODES, "spec_check")
+    prompts = {name: stage_text(name) for name in agents}
     plan_workspace = run.workspace if isinstance(run, LiveRun) else None
 
     def bind(name: str) -> DeliveryNode:
@@ -463,11 +497,29 @@ def compile_delivery(
                         return halted("dirty_worktree", "Edits changed after the quota stop; restore the run's partial edits.", "implement")
                 except WorkspaceError as exc:
                     return halted("git_failed", str(exc), name)
+            candidate_update: DeliveryUpdate = {}
             try:
-                models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
+                if name == "spec_check":
+                    candidate = spec_candidate(state)
+                    if oversized_pr(state) and (split := state.get("pr_split")):
+                        model = state.get("models_used", {})["spec"]
+                        candidate = SpecCandidate(slices=[CandidateSlice.model_validate(item) for item in split["slices"]],
+                            spec=candidate.spec, work_kind=candidate.work_kind,
+                            author=SpecAuthor(stage="spec", model=model, family=family(model)))
+                        candidate_update = {**candidate.update(single="slice" in state)}
+                    candidate_update = {**candidate_update, "spec_candidate": candidate.record()}
+                    models = order_for("spec_check", config, {"spec_author": candidate.author.model})
+                else:
+                    models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
-                return halted("no_reviewer", str(exc), name)
+                detail = f"{exc}; attempted models []" if name == "spec_check" else str(exc)
+                return halted("spec_check_unavailable" if name == "spec_check" else "no_reviewer", detail, name)
+            except (InvalidOutput, ValueError) as exc:
+                return halted("invalid_output", str(exc), name)
             instruction = prompts[name]
+            if name == "spec_check":
+                instruction += "\nCandidate to check:\n" + json.dumps(candidate_update.get("spec_candidate"))
+                instruction += "\nSpec history and settled rulings:\n" + json.dumps(state.get("spec_history", {}))
             if isinstance(run, LiveRun) and methods_root is None:
                 raise RuntimeError("Delivery execution requires a compiled skill export.")
             methods_text, methods = stage_methods(name, state, methods_root) if methods_root is not None else ("", [])
@@ -525,7 +577,7 @@ def compile_delivery(
                 instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
                 instruction += "\nGraph checks, not yours to resolve:\n" + json.dumps(past.rounds[-1].graph_check.model_dump(mode="json") if past.rounds and past.rounds[-1].graph_check else None)
                 instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
-            return {"verify_failures": failure_count(state, "verify_failures"),
+            return {**candidate_update, "verify_failures": failure_count(state, "verify_failures"),
                     "proof_failures": failure_count(state, "proof_failures"), "spec_failures": failure_count(state, "spec_failures"),
                     "review_run_id": state.get("review_run_id") or uuid4().hex, "dispatch_plan": DispatchPlan(
                 models=[model.name for model in models], instruction=instruction, methods=methods,
@@ -580,14 +632,25 @@ def compile_delivery(
             if outcome.kind == "failed":
                 return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
-                return {**stopped, **halted("cli_missing", outcome.detail, name)}
+                return {**stopped, **halted("spec_check_unavailable" if name == "spec_check" else "cli_missing",
+                    f"Excluded author family {spec_candidate(state).author.family}; attempted models {models}. {outcome.detail}" if name == "spec_check" else outcome.detail, name)}
             if outcome.kind == "quota":
-                if name != "review" and isinstance(run, DryRun):
+                if name not in {"review", "spec_check"} and isinstance(run, DryRun):
                     raise QuotaExhausted(model)
-                reason: HaltReason = "no_reviewer" if isinstance(run, DryRun) else "quota_exhausted"
+                reason: HaltReason = "no_reviewer" if isinstance(run, DryRun) and name != "spec_check" else "quota_exhausted"
                 return {**stopped, **halted(reason, f"{name} quota exhausted: {model}", name)}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                if isinstance(output, SpecCheckOutput):
+                    checked = accept_spec(SpecHistory.model_validate(state.get("spec_history", {})), output,
+                                          spec_candidate(state), max_rounds=config.max_review_rounds)
+                    result: DeliveryUpdate = {**stopped, "spec_history": checked.history.model_dump(mode="json"),
+                        "spec_approval": checked.approval.model_dump() if checked.approval else None}
+                    if checked.verdict == "gaps":
+                        detail = checked.unsettled or "Spec findings require repair: " + ", ".join(f.id for f in checked.history.accounting().unresolved())
+                        result.update(halted("spec_unsettled", detail, name))
+                        result["human_question"] = detail
+                    return result
                 accepted: AcceptedReview | None = None
                 if isinstance(output, ReviewOutput):
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
@@ -637,6 +700,8 @@ def compile_delivery(
     scripted_verify = bind("verify")
 
     def prepare(state: DeliveryState) -> DeliveryUpdate:
+        if not spec_approved(state):
+            return halted("invalid_output", "Implementation requires approval of the exact spec candidate.", "prepare")
         assert "slice" in state and "repo" in state
         title = redact(str(state["slice"]["title"]))
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
@@ -801,6 +866,9 @@ def compile_delivery(
 
     def needs_human(state: DeliveryState) -> DeliveryUpdate:
         stage = state["path"][-1]
+        if stage == "spec_check":
+            interrupt(HumanPrompt(stage="spec_check", question=state.get("halt_detail", "Spec requires repair.")).model_dump())
+            return {}
         split = state.get("pr_split") if stage == "spec" and oversized_pr(state) else None
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
         answer = interrupt(HumanPrompt.model_validate({"stage": stage, "question": question}).model_dump())
@@ -882,7 +950,7 @@ def compile_delivery(
             return "needs_human" if checkpointer is not None else "done"
         if decision == "question":
             return "spec" if state.get("issue_kind") == "parent" else "research"
-        return "prepare" if decision == "implement" else decision or "done"
+        return "spec_check" if decision == "implement" else decision or "done"
 
     def after_spec(state: DeliveryState) -> str:
         if state.get("halt"):
@@ -898,9 +966,12 @@ def compile_delivery(
             return "decide_pr_size"
         if state.get("spec_gate") == "needs_human" and checkpointer is not None:
             return "needs_human"
-        if state.get("issue_kind") == "parent":
-            return "done"
-        return "prepare" if state.get("spec_gate") == "ready" else "done"
+        return "spec_check" if state.get("spec_gate") == "ready" else "done"
+
+    def after_spec_check(state: DeliveryState) -> str:
+        if state.get("halt"):
+            return "needs_human" if state.get("halt") == "spec_unsettled" and checkpointer is not None else "done"
+        return "done" if oversized_pr(state) or (state.get("issue_kind") == "parent" and "slice" not in state) else "prepare"
 
     def after_review(state: DeliveryState) -> str:
         if state.get("halt") == "design_rethink" and checkpointer is not None:
@@ -996,18 +1067,6 @@ def compile_delivery(
                         state.get("human_question") or "What should Foreman know to continue?"}
         update: DeliveryUpdate = {"stop": reason, "path": ["done"]}
         split = state.get("pr_split")
-        if reason == "sliced" and split:
-            if "spec_candidate" in state:
-                previous = SpecCandidate.from_record(state["spec_candidate"])
-                model = state.get("models_used", {})["spec"]
-                candidate = SpecCandidate(
-                    slices=[CandidateSlice.model_validate(item) for item in split["slices"]],
-                    spec=previous.spec, work_kind=previous.work_kind,
-                    author=SpecAuthor(stage="spec", model=model, family=family(model)),
-                )
-                update = {**update, **candidate.update(single="slice" in state)}
-            else:
-                update["slices"] = split["slices"]
         if reason == "pr_split_required":
             update["halt_detail"] = split["plan"] if split else state.get("spec", "")
         return update
@@ -1022,11 +1081,11 @@ def compile_delivery(
         return route
 
     def after_size(state: DeliveryState) -> str:
-        return "done" if oversized_pr(state) else "verify"
+        return ("spec_check" if state.get("pr_split", {}).get("slices") else "done") if oversized_pr(state) else "verify"
 
     def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str]) -> None:
         def next_stage(state: DeliveryState) -> str:
-            return "quota_wait" if state.get("halt") == "quota_exhausted" else route(state)
+            return "quota_wait" if state.get("halt") == "quota_exhausted" and checkpointer is not None else route(state)
 
         def after_setup(state: DeliveryState) -> str:
             return "call" if state.get("pending_dispatch") and not state.get("halt") else next_stage(state)
@@ -1035,7 +1094,7 @@ def compile_delivery(
         builder.add_conditional_edges(stage + "_call", after_setup, mapped)
 
     graph_nodes: dict[str, DeliveryNode] = {"implement": implement, "verify": verify, "review": review}
-    for name in REQUIRED_NODES:
+    for name in agents:
         builder.add_node(name, graph_nodes[name] if name in graph_nodes and name != "implement" else bind(name))
         builder.add_node(name + "_call", implement if name == "implement" else call(name))
     builder.add_node("prepare", prepare)
@@ -1056,15 +1115,16 @@ def compile_delivery(
     add_agent_edges(
         "triage",
         after_triage,
-        {"prepare": "prepare", "spec": "spec", "research": "research",
+        {"spec_check": "spec_check", "spec": "spec", "research": "research",
          "needs_human": "needs_human", "done": "done"},
     )
     add_agent_edges(
         "spec", after_spec,
-        {"spec": "spec", "prepare": "prepare", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
+        {"spec": "spec", "spec_check": "spec_check", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
     )
+    add_agent_edges("spec_check", after_spec_check, {"prepare": "prepare", "needs_human": "needs_human", "done": "done"})
     builder.add_conditional_edges(
-        "decide_pr_size", after_size, {"done": "done", "verify": "verify"},
+        "decide_pr_size", after_size, {"done": "done", "spec_check": "spec_check", "verify": "verify"},
     )
     builder.add_conditional_edges(
         "needs_human", lambda state: "done" if state.get("halt") else "implement" if _last_stage(state) == "review" else _last_stage(state),
@@ -1075,7 +1135,7 @@ def compile_delivery(
     builder.add_conditional_edges("commit", after_halt("publish"), {"done": "done", "publish": "publish"})
     builder.add_conditional_edges("publish", after_halt("verify"), {"done": "done", "verify": "verify"})
     builder.add_conditional_edges(
-        "quota_wait", _last_stage, {name: name for name in REQUIRED_NODES if name != "verify"},
+        "quota_wait", _last_stage, {name: name for name in agents if name != "verify"},
     )
     add_agent_edges("research", lambda _: "done", {"done": "done"})
     add_agent_edges("implement", after_halt("reconcile"), {"reconcile": "reconcile", "done": "done"})
@@ -1098,7 +1158,7 @@ def compile_delivery(
     builder.add_edge("done", END)
     # Each round visits at most all stages, each with one setup and every configured candidate,
     # plus prepare/commit/publish, proof, prompts, merge and done.
-    steps = sum(1 + max(1, len(config.nodes[name].models)) for name in REQUIRED_NODES) + 12
+    steps = sum(1 + max(1, len(config.nodes[name].models)) for name in agents) + 12
     return builder.compile(checkpointer=checkpointer).with_config({"recursion_limit": steps * (config.max_review_rounds + 1)})
 
 

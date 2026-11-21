@@ -176,7 +176,7 @@ class PublicationTest(unittest.TestCase):
         result = self.walk(lambda: None)
         self.assertEqual(result.get("stop"), "failed")
         self.assertEqual(result.get("halt_detail"), "no changes")
-        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement"])
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check", "implement"])
         self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
         self.assertEqual(self.created, [])
 
@@ -187,7 +187,7 @@ class PublicationTest(unittest.TestCase):
         result = self.walk(commit)
         self.assertEqual(result.get("stop"), "implementation_rejected")
         self.assertIn("nonempty", result.get("halt_detail", ""))
-        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement"])
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check", "implement"])
         self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
         self.assertEqual(self.created, [])
 
@@ -353,7 +353,7 @@ class PublicationTest(unittest.TestCase):
         recovered = self.walk(self.no_worker)
         self.assertEqual(recovered["stop"], "verified")
         self.assertEqual(recovered["implementation_candidate"]["disposition"], "edits")
-        self.assertEqual(recovered["attempts"][:2], rejected["attempts"])
+        self.assertEqual(recovered["attempts"][:len(rejected["attempts"])], rejected["attempts"])
 
     def test_reconcile_git_errors_remain_git_failed(self):
         for operation in ("show", "merge-base"):

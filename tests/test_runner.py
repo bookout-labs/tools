@@ -19,7 +19,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.adapters import Outcome, Usage
 from foreman.cli import _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
-from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
+from foreman.delivery import compile_delivery, LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, PullRequest, render_slice_body
@@ -29,7 +29,7 @@ from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
-from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
+from skill_fixture import checker_reply, stored_slice, FixtureSkills, fixture_pin, fixture_skills, skill_fixture
 from test_adapters import codex_events, fixture_process
 
 
@@ -61,6 +61,7 @@ DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
 
 def slice_body(item):
+    item = stored_slice(item)
     return "Issue body\n\n```json\n" + json.dumps(item) + "\n```"
 
 
@@ -120,6 +121,13 @@ def worker_reply(args, reply):
     field = "structured_output" if args[0] == "claude" else "structuredOutput"
     envelope[field] = reply
     return subprocess.CompletedProcess(args, recorded.returncode, json.dumps(envelope), recorded.stderr)
+
+
+def scripted_worker(workspace, replies):
+    def run(args, cwd, env=None):
+        clear = checker_reply(args)
+        return worker_reply(args, clear) if clear is not None else workspace.reply(args, next(replies))
+    return run
 
 
 class FixtureWorkspace(LiveWorkspace):
@@ -448,6 +456,8 @@ class LiveRunnerTest(unittest.TestCase):
 
         def run(args, cwd, env):
             self.assertEqual(cwd, self.cwd)
+            if (clear := checker_reply(args)) is not None:
+                return worker_reply(args, clear)
             self.calls.append(args[0])
             self.prompts.append(args[-1])
             reply = next(outputs)
@@ -532,11 +542,25 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.reviews, [])
         self.assertEqual(self.github.merge_calls, [])
 
+    def test_pending_legacy_checkpoint_cannot_dispatch_implementation(self):
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            graph = compile_delivery(None, replace(load_config(), pstack=self.pin),
+                                     run=LiveRun(self.github, FakeWorkspace(self.cwd)), checkpointer=saver)
+            graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
+                "repo": "Example/Engine", "check": "exit 0", "path": ["triage"],
+                "token_cap": 20000000, "pstack_pin": self.pin.model_dump(),
+                "slice": EMPTY_SLICE, "issue_kind": "slice",
+            }, as_node="prepare")
+        with self.assertRaisesRegex(ValueError, "without exact spec approval"):
+            self.walk([])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.github.created, [])
+
     def test_load_slice_issue(self):
         result = self.walk([{"triage": "question"}, {"research": "answer"}])
         self.assertEqual(result["request"], "Issue title\n\n" + slice_body(EMPTY_SLICE))
         self.assertEqual(result["issue_kind"], "slice")
-        self.assertEqual(result["slice"], EMPTY_SLICE)
+        self.assertEqual(result["slice"], stored_slice(EMPTY_SLICE))
 
     def test_missing_or_invalid_slice_stops_before_triage(self):
         for body in ("Issue body", "Issue body\n\n```json\n{\n```", slice_body({"screen": ""})):
@@ -660,7 +684,7 @@ class LiveRunnerTest(unittest.TestCase):
         def exhaust(node, model, state, instruction):
             if node == "triage":
                 return Outcome("ran", {"triage": "implement", "work_kind": "feature", "human_question": None, "slice": None}, usage=Usage(input_tokens=1, output_tokens=1))
-            return Outcome("quota")
+            return ScriptHandler()(node, model, state, instruction) if node == "spec_check" else Outcome("quota")
 
         paused = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
@@ -671,8 +695,8 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertNotIn("done", paused["path"])
         self.assertEqual(paused["pstack_pin"], self.pin.model_dump())
         attempts = paused["attempts"]
-        self.assertEqual([a["outcome"] for a in attempts], ["ran"] + ["quota"] * 4)
-        self.assertTrue(all(a["stage"] == "implement" and a["commit"] == self.pin.commit for a in attempts[1:]))
+        self.assertEqual([a["outcome"] for a in attempts], ["ran", "ran"] + ["quota"] * 4)
+        self.assertTrue(all(a["stage"] == "implement" and a["commit"] == self.pin.commit for a in attempts[2:]))
 
         resumed = self.walk([{"implementation": "built"}, APPROVE])
         self.assertEqual(resumed["stop"], "verified")
@@ -808,7 +832,7 @@ class LiveRunnerTest(unittest.TestCase):
             check="test -f expected",
         )
         self.assertEqual(self.calls, ["claude", "codex", "claude"])
-        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "implement", "publish", "verify", "review", "merge", "done"])
         self.assertEqual(result["check_exit_code"], 0)
         self.assertEqual(result["verified_head"], HEAD)
         self.assertEqual(result["head_sha"], HEAD)
@@ -859,6 +883,8 @@ class LiveRunnerTest(unittest.TestCase):
 
         def worker(args, cwd, env):
             nonlocal implementations
+            if (clear := checker_reply(args)) is not None:
+                return worker_reply(args, clear)
             reply = next(replies)
             if "implementation" in reply:
                 implementations += 1
@@ -983,7 +1009,7 @@ class LiveRunnerTest(unittest.TestCase):
         ):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "sh verify.sh"],
-                worker_runner=lambda args, cwd, env: fake.reply(args, next(replies)),
+                worker_runner=scripted_worker(fake, replies),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 0)
@@ -1030,7 +1056,7 @@ class LiveRunnerTest(unittest.TestCase):
 
         def worker(args, cwd, env):
             self.assertEqual(cwd, root)
-            return live_run.workspace.reply(args, next(replies))
+            return scripted_worker(live_run.workspace, replies)(args, cwd, env)
 
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
             code = main(
@@ -1061,7 +1087,7 @@ class LiveRunnerTest(unittest.TestCase):
             APPROVE,
         ])
         self.assertEqual(result["path"][-5:], ["verify", "proof", "review", "merge", "done"])
-        self.assertEqual(result["slice"], SLICE)
+        self.assertEqual(result["slice"], stored_slice(SLICE))
         self.assertEqual(result["proof_labels"], {})
         self.assertEqual(result["merge"], "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
@@ -1081,7 +1107,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_parent_stops_before_review_when_its_proof_is_missing(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "proof", "done"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "implement", "publish", "verify", "proof", "done"])
         self.assertEqual(result["stop"], "insufficient_evidence")
         self.assertEqual(result["proof_labels"], {"browser": "insufficient_evidence", "formal": "insufficient_evidence"})
 
@@ -1105,7 +1131,7 @@ class LiveRunnerTest(unittest.TestCase):
         fixed = {**blocked, "browser_proof": BROWSER}
         result = self.walk([{"triage": "implement"}, blocked, fixed, APPROVE])
         self.assertEqual(result["path"], [
-            "triage", "implement", "publish", "verify", "proof", "implement", "publish", "verify", "proof", "review", "merge", "done",
+            "triage", "spec_check", "implement", "publish", "verify", "proof", "implement", "publish", "verify", "proof", "review", "merge", "done",
         ])
         self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(result["merge"], "armed")
@@ -1143,7 +1169,7 @@ class LiveRunnerTest(unittest.TestCase):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
                  "--check", "touch checked", "--preflight", preflight],
-                worker_runner=lambda args, cwd, env: worker_reply(args, {"triage": "implement"}),
+                worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "implement"}),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(root)),
             )
         self.assertEqual(code, 75)
@@ -1160,7 +1186,7 @@ class LiveRunnerTest(unittest.TestCase):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
                  "--check", "exit 0", "--preflight", preflight],
-                worker_runner=lambda args, cwd, env: worker_reply(args, {"triage": "implement"}),
+                worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "implement"}),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
             )
         self.assertEqual(code, 75)
@@ -1187,7 +1213,7 @@ class LiveRunnerTest(unittest.TestCase):
         halted = self.walk([{"triage": "implement"}], preflight=preflight)
         self.assertEqual(halted.get("stop"), "env_unavailable")
         self.assertEqual(halted.get("review_rounds"), 0)
-        self.assertEqual(halted.get("path"), ["triage", "implement", "done"])
+        self.assertEqual(halted.get("path"), ["triage", "spec_check", "implement", "done"])
         self.assertEqual(self.calls, ["claude"])
 
         (self.cwd / "ready").touch()
@@ -1198,7 +1224,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(result.get("review_rounds"), 1)
         self.assertNotIn("halt_detail", result)
-        self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "review", "merge", "done"])
+        self.assertEqual(result.get("path"), ["triage", "spec_check", "implement", "publish", "verify", "review", "merge", "done"])
 
     def test_answer_resume_is_idempotent_after_environment_halt(self):
         preflight = "test -f ready"
@@ -1257,7 +1283,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}], preflight="exit 9")
         self.assertEqual(result.get("stop"), "env_unavailable")
-        self.assertEqual(result.get("path"), ["triage", "implement", "done"])
+        self.assertEqual(result.get("path"), ["triage", "spec_check", "implement", "done"])
         self.assertEqual(self.calls, ["claude"])
 
     def test_parent_stops_sliced_without_running_preflight(self):
@@ -1290,7 +1316,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result.get("check_exit_code"), 1)
         self.assertIn("test -f ready", result.get("halt_detail", ""))
         self.assertIn("exited with 1", result.get("halt_detail", ""))
-        self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "done"])
+        self.assertEqual(result.get("path"), ["triage", "spec_check", "implement", "publish", "verify", "done"])
 
         (self.cwd / "ready").touch()
         resumed = self.walk([APPROVE])
@@ -1350,6 +1376,8 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
         def interrupted_run(node, model, state, instruction):
+            if node == "spec_check":
+                return ScriptHandler()(node, model, state, instruction)
             if node == "triage":
                 return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None}, usage=Usage(input_tokens=1, output_tokens=1))
             self.assertEqual(node, "implement")
@@ -1378,7 +1406,7 @@ class LiveRunnerTest(unittest.TestCase):
                     check="touch ran", snapshots=(snapshot,),
                 )
                 self.assertEqual(result["stop"], "dirty_worktree")
-                self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "done"])
+                self.assertEqual(result["path"], ["triage", "spec_check", "implement", "publish", "verify", "done"])
                 self.assertFalse((self.cwd / "ran").exists())
                 self.assertNotIn("check_exit_code", result)
                 self.assertEqual(self.github.merge_calls, [])
@@ -1479,6 +1507,8 @@ class LiveRunnerTest(unittest.TestCase):
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
         def run_worker(args, cwd, env=None):
+            if (clear := checker_reply(args)) is not None:
+                return worker_reply(args, clear)
             reply = next(replies)
             if "implementation" in reply:
                 (repo / "items.txt").write_text("synthetic edits")
@@ -1578,17 +1608,17 @@ class LiveRunnerTest(unittest.TestCase):
         ):
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
-                worker_runner=lambda args, cwd, env: fake.reply(args, next(replies)),
+                worker_runner=scripted_worker(fake, replies),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 75)
         arm.assert_called_once_with("Example/Target", 8, BRANCH, HEAD)
-        self.assertIn(f"merge not armed\ncheck exit 0\ntokens 47606 of 20000000\ndone merge_not_armed\n{detail}", stdout.getvalue())
+        self.assertIn(f"merge not armed\ncheck exit 0\ntokens 57405 of 20000000\ndone merge_not_armed\n{detail}", stdout.getvalue())
 
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "implement", "publish", "verify", "review", "merge", "done"])
         self.assertEqual(result["merge"], "armed")
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
@@ -1606,7 +1636,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(
             "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --squash --auto --match-head-commit '<sha>'\n"
-            "tokens 8 of 20000000\ndone verified",
+            "tokens 10 of 20000000\ndone verified",
             stdout.getvalue(),
         )
         self.assertIn("pstack pin not checked (dry run)", stdout.getvalue())
@@ -1625,7 +1655,7 @@ class LiveRunnerTest(unittest.TestCase):
             with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
                 code = main(
                     ["run", "delivery", "--repo", repo, "--issue", "8", "--check", "exit 0"],
-                    worker_runner=lambda args, cwd, env=None: live_run.workspace.reply(args, next(replies)),
+                    worker_runner=scripted_worker(live_run.workspace, replies),
                     checkpoint=self.checkpoint, live_run=live_run,
                 )
             self.assertEqual(code, 75 if self.github.hold else 0)
@@ -1640,7 +1670,7 @@ class LiveRunnerTest(unittest.TestCase):
         armed = invoke()
         self.assertIn("merge armed\ndone verified", armed)
         terminal = invoke()
-        self.assertIn("restored tokens 47606 of 20000000", terminal)
+        self.assertIn("restored tokens 57405 of 20000000", terminal)
         self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
         self.assertEqual(self.github.hold_reads, [repo, repo, repo])
         self.assertEqual(self.github.merge_calls, [(repo, 8, BRANCH, HEAD)])
@@ -1652,7 +1682,7 @@ class LiveRunnerTest(unittest.TestCase):
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
-                worker_runner=lambda args, cwd, env=None: workspace.reply(args, next(replies)),
+                worker_runner=scripted_worker(workspace, replies),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace),
             )
         self.assertEqual(code, 75)
@@ -1693,6 +1723,8 @@ def run(args, cwd, env):
         assert state["request"] == "List items"
         assert state["human_question"] == f"Which items? {SYNTHETIC_QUESTION_TOKEN}"
         return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
+    if schema["title"] == "SpecCheckOutput":
+        return worker_reply(args, {"findings": [], "notes": [], "resolutions": []})
     if schema["title"] == "ImplementOutput":
         return workspace.reply(args, {"implementation": "built"})
     return worker_reply(args, APPROVE)
@@ -1746,12 +1778,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertIn("restored check exit 0", terminal)
         self.assertIn("this invocation: no nodes executed", terminal)
         self.assertEqual((self.cwd / "workers.log").read_text().splitlines(),
-                         ["TriageOutput", "SpecOutput", "SpecOutput", "ImplementOutput", "ReviewOutput"])
+                         ["TriageOutput", "SpecOutput", "SpecOutput", "SpecCheckOutput", "ImplementOutput", "ReviewOutput"])
         self.assertEqual((self.cwd / "merges.log").read_text(), "merge\n")
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             stored = saver.get({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(stored["channel_values"]["path"],
-                         ["triage", "spec", "spec", "implement", "publish", "verify", "review", "merge", "done"])
+                         ["triage", "spec", "spec", "spec_check", "implement", "publish", "verify", "review", "merge", "done"])
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
 
     def test_restored_snapshot_matches_result_for_legacy_merge_and_interrupts(self):
@@ -1853,6 +1885,8 @@ def worker(args, cwd, env):
     record(stage)
     if stage == "TriageOutput":
         return worker_reply(args, {"triage": "implement"})
+    if stage == "SpecCheckOutput":
+        return worker_reply(args, {"findings": [], "notes": [], "resolutions": []})
     if stage == "ImplementOutput":
         if phase == "quota":
             return fixture_process(args, "quota", 1)
@@ -1902,14 +1936,14 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertIn("risk low", restored)
                     self.assertEqual(current, "merge not armed\ndone merge_held\nFOREMAN_MERGE_HOLD is set: Maintenance\n")
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
-                                     ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review"])
+                                     ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review"])
                     self.assertEqual((root / "check.log").read_text(), "checked\n")
                 else:
                     self.assertIn("paused quota_exhausted", first)
                     self.assertFalse((root / "check.log").exists())
                     attempts = len(load_config().nodes["implement"].models)
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
-                                     ["TriageOutput"] + ["ImplementOutput"] * attempts)
+                                     ["TriageOutput", "SpecCheckOutput"] + ["ImplementOutput"] * attempts)
 
                 resumed = invoke("ready", 0)
                 restored, current = resumed.split("this invocation:\n")
@@ -1920,8 +1954,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 else:
                     self.assertIn("restored implement\nrestored paused quota_exhausted", restored)
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
-                    self.assertEqual(saved_path(), ["triage", "implement", "implement", "publish", "verify", "review", "merge", "done"])
-                    expected_workers = (["TriageOutput"] + ["ImplementOutput"] * attempts
+                    self.assertEqual(saved_path(), ["triage", "spec_check", "implement", "implement", "publish", "verify", "review", "merge", "done"])
+                    expected_workers = (["TriageOutput", "SpecCheckOutput"] + ["ImplementOutput"] * attempts
                                         + ["ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"])
                 terminal = invoke("ready", 0)
                 self.assertIn("restored merge armed", terminal)
@@ -1945,7 +1979,7 @@ class HaltExitCodeTest(unittest.TestCase):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", check, "--preflight", preflight],
                 checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace, skills=fixture_skills),
-                worker_runner=(lambda args, cwd, env: workspace.reply(args, next(outputs))) if dispatcher else None,
+                worker_runner=scripted_worker(workspace, outputs) if dispatcher else None,
             )
         return code, output.getvalue()
 

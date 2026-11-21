@@ -13,7 +13,7 @@ from foreman.dispatch import FailoverDispatcher
 from foreman.adapters import Outcome
 from foreman.dry_run import SCRIPTED_USAGE
 from foreman.stage_output import ReviewOutput, parse_output
-from skill_fixture import skill_fixture
+from skill_fixture import stored_slice, skill_fixture
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
@@ -67,6 +67,8 @@ class ReviewRoundsTest(unittest.TestCase):
             def dispatch(node, model, state, instruction):
                 nonlocal crashed, implementations, quota_returned
                 self.prompts.append((node, state, instruction))
+                if node == "spec_check":
+                    return Outcome("ran", {"findings": [], "notes": [], "resolutions": []}, usage=SCRIPTED_USAGE)
                 if node == "review":
                     if review_crash and not crashed:
                         crashed = True
@@ -90,7 +92,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 graph = compile_delivery(FailoverDispatcher(dispatch), settings, scratch=scratch,
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "rounds"}}
-                state = {"repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": EMPTY_SLICE,
+                state = {"repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": stored_slice(EMPTY_SLICE),
                          "check": "exit 0", "token_cap": 20_000_000, **(initial or {})}
                 if crash or post_crash or review_crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):

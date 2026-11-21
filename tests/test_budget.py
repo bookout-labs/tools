@@ -21,7 +21,7 @@ from foreman.dry_run import ScriptHandler
 from foreman.runner import checkpoint_state
 from foreman.stage_output import STAGE_OUTPUTS
 from foreman.usd import BudgetUsd, usd_text
-from tests.skill_fixture import skill_fixture
+from tests.skill_fixture import stored_slice, skill_fixture
 from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
@@ -80,7 +80,7 @@ class DollarBudgetTests(unittest.TestCase):
                         graph = compile_delivery(FailoverDispatcher(handler), config, run=LiveRun(forge, workspace),
                                                  scratch=scratch, checkpointer=saver)
                         graph.invoke({"repo": "a/b", "issue": 8, "check": "exit 0", "path": [],
-                                      "token_cap": 100, "request": "x", "issue_kind": "slice", "slice": EMPTY_SLICE},
+                                      "token_cap": 100, "request": "x", "issue_kind": "slice", "slice": stored_slice(EMPTY_SLICE)},
                                      invocation, durability="sync")
                         snapshot = graph.get_state(invocation)
                         state = checkpoint_state(snapshot.values)
@@ -88,7 +88,7 @@ class DollarBudgetTests(unittest.TestCase):
                     commit.assert_not_called()
                     push.assert_not_called()
                     publish.assert_not_called()
-                self.assertEqual([node for node, _ in calls], ["triage"] if stage == "triage" else ["triage", "implement"])
+                self.assertEqual([node for node, _ in calls], ["triage"] if stage == "triage" else ["triage", "spec_check", "implement"])
                 self.assertEqual(calls[-1][1], config.nodes[stage].models[0].name)
                 attempts = [attempt for attempt in state["attempts"] if attempt["stage"] == stage]
                 self.assertEqual(len(attempts), 1)

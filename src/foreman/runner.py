@@ -14,7 +14,7 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
+from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state, spec_approved
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -65,6 +65,12 @@ def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
         candidate = SpecCandidate.from_record(state["spec_candidate"])
         expected = candidate.update(single="slice" in state)
         for key in ("slice", "slices", "spec", "work_kind"):
+            if key == "slice" and "slices" not in state:
+                item = StoredSlice.model_validate(state.get("slice"))
+                wanted = StoredSlice.model_validate(expected.get("slice"))
+                if item != wanted.model_copy(update={"provenance": item.provenance}):
+                    raise ValueError("slice differs from candidate")
+                continue
             if key in state and state.get(key) != expected.get(key):
                 raise ValueError(f"{key} differs from candidate")
     return state
@@ -190,6 +196,10 @@ def run_live_delivery(
                     return snapshot_result(saved, saver)
             require_token_cap(saved.values, checkpoint)
         saved_values = checkpoint_state(saved.values)
+        if saved_values is not None and (saved.next or saved.interrupts or saved_values.get("halt") in RESUMABLE_HALTS):
+            protected = {"prepare", "implement", "implement_call", "reconcile", "commit", "publish", "verify", "verify_call", "proof", "review", "review_call", "review_post", "merge"}
+            if (set(saved.next) & protected or set(saved_values["path"]) & protected or saved_values.get("stop") == "sliced") and not spec_approved(saved_values):
+                raise ValueError("Cannot resume pending checkpoint without exact spec approval; start a new run.")
         if presentation is not None and saved_values is not None:
             presentation.restore(saved, saver)
         if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
@@ -276,6 +286,8 @@ def run_live_delivery(
         saved_values = checkpoint_state(saved.values)
         assert saved_values is not None
         if saved_values.get("stop") == "sliced":
+            if not spec_approved(saved_values):
+                raise ValueError("Cannot publish children without exact spec approval.")
             if "slices" not in saved_values:
                 raise ValueError("Sliced checkpoint has no slice plan.")
             numbers = list(saved_values.get("child_issue_numbers", []))

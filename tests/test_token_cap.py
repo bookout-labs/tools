@@ -14,8 +14,8 @@ from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
 from foreman.runner import run_live_delivery
 from foreman.skill_rules import SkillMissing
-from tests.skill_fixture import skill_fixture
-from test_runner import FakeGitHub, FakeWorkspace
+from tests.skill_fixture import approved_spec, skill_fixture
+from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
 class TokenCapTests(unittest.TestCase):
@@ -136,7 +136,7 @@ class TokenCapTests(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 graph = compile_delivery(FailoverDispatcher(ScriptHandler()), config, run=live, checkpointer=saver)
                 graph.update_state(invocation, {"repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"],
-                    "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
+                    "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump(), **approved_spec(EMPTY_SLICE)}, as_node="prepare")
                 graph.update_state(invocation, {"token_cap": 100, "halt": "env_unavailable", "stop": "env_unavailable",
                                                 "path": ["implement", "done"]}, as_node="done")
             with self.assertRaisesRegex(ValueError, "unknown usage history"):

@@ -91,7 +91,7 @@ class CandidateTests(unittest.TestCase):
                 result = run_delivery(FailoverDispatcher(ScriptHandler(triage=triage)), repo="org/repo", request="Save",
                                       slice={**SLICE, "provenance": provenance}, config=config, scratch=scratch)
             self.assertEqual(result["slice"]["provenance"], provenance)
-            self.assertNotIn("spec_candidate", result)
+            self.assertEqual(result["spec_candidate"]["author"], provenance["author"])
 
     def test_checkpoint_rejects_divergent_candidate_copies(self):
         candidate = self.candidate()
