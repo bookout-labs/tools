@@ -1150,3 +1150,10 @@ argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mo
 returncode = 0
 claim_ids = ["tool-fact-2a9a216d957eeb93fab68597f145c04c8bf20d36b3973d9ffb555e3fdb3dd24f"]
 notes = "grok CLI grok 1.0.89 (28be5bb1bf65) [stable] accepts a strict schema containing minItems and exclusiveMinimum. Live probe on 2026-11-21. Strict schema, argv, stdout and stderr are in the fixture. Session IDs, checkout paths and credential expiry are scrubbed. Schema acceptance only; no claim about model enforcement of invalid answers."
+
+[fixtures."review/escaped-smoke.json"]
+kind = "quoted_source"
+tool = "claude"
+version = "2.1.329 / claude-opus-5-5 high"
+sources = ["https://github.com/bookout-labs/foreman-smoke/pull/29"]
+notes = "Exact StructuredOutput tool input from the 2026-11-21 T1 smoke, session 10647253-43b2-4668-8548-6395fadc3dd9. The captured pre-escaped detail is rejected by the current review contract after #142."
