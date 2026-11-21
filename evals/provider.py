@@ -57,10 +57,33 @@ def _with_quota_gap() -> str:
     return result["stop"]
 
 
+def _settled_review() -> str:
+    handler = ScriptHandler(reviews=["changes", "approve", "approve"])
+    count = 0
+
+    def review(node, model, state, instruction):
+        nonlocal count
+        reply = handler(node, model, state, instruction)
+        if node == "review":
+            count += 1
+            finding = {"id": "check" if count == 1 else "next", "kind": "docs", "fix": "Add a check",
+                       "ruling_id": None, "file": "example.txt", "line": 1, "severity": "nit", "summary": "Add a check"}
+            if count == 3:
+                finding.update(id="repeat", ruling_id="finding:check")
+            return Outcome("ran", {**reply.output, "findings": [finding],
+                                   "resolutions": [] if count == 1 else [{"id": "check" if count == 2 else "next", "status": "resolved"}]})
+        return reply
+
+    result = _walk(review, slice=FIELD_SLICE)
+    return f"{result['stop']} {result.get('merge')} {result.get('detail')}"
+
+
 def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, object]]) -> dict[str, str]:
     case = (context.get("vars") or {}).get("case") or prompt
     if case == "clear":
         output = _stop(ScriptHandler(triage="implement"), slice=FIELD_SLICE)
+    elif case == "review-converges":
+        output = _settled_review()
     elif case == "spec-ready":
         output = _stop(ScriptHandler(triage="spec", spec_gate="ready"), slice=FIELD_SLICE)
     elif case == "spec-gate":

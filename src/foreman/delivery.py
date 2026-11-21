@@ -20,8 +20,6 @@ from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 from pydantic import TypeAdapter, ValidationError
 from typing_extensions import TypedDict
-from unidiff.errors import UnidiffParseError
-from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome, OutcomeKind
 from foreman.config import Config, ConfigError, family, load_config, order_for
@@ -37,7 +35,7 @@ from foreman.stage_output import (
     Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, ToolFactRecord, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
-from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
+from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -49,7 +47,7 @@ ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_fai
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+    "skill_missing", "design_rethink", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
@@ -57,7 +55,7 @@ CHECK_START_FAILURES = {126: "command is not executable", 127: "command not foun
 
 
 class HumanPrompt(Contract):
-    stage: Literal["triage", "spec", "pr_size"]
+    stage: Literal["triage", "spec", "pr_size", "review"]
     question: str
 
 
@@ -305,21 +303,12 @@ def stage_update(
     return update
 
 
-def review_submission(output: ReviewOutput | AcceptedReview, diff: ReviewDiff) -> tuple[str, list[ReviewComment]]:
-    try:
-        patch = PatchSet(diff.patch)
-    except UnidiffParseError:
-        patch = PatchSet("")
-    changed = {
-        (file.path, line.target_line_no)
-        for file in patch if not file.is_removed_file
-        for hunk in file for line in hunk if line.is_added
-    }
+def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, list[ReviewComment]]:
     body = [output.detail]
     comments: list[ReviewComment] = []
     for finding in output.findings:
         message = f"[{finding.severity}] {finding.summary}"
-        if (finding.file, finding.line) in changed:
+        if (finding.file, finding.line) in scope.inline:
             comments.append({"path": finding.file, "line": finding.line, "side": "RIGHT", "body": message})
         else:
             body.append(f"{finding.file}:{finding.line} {message}")
@@ -421,7 +410,7 @@ def compile_delivery(
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
                 except InvalidOutput as exc:
                     return halted("invalid_output", str(exc), name)
-            review_context: tuple[Forge, PullRequest, ReviewDiff] | None = None
+            review_context: tuple[Forge, PullRequest, ReviewScope] | None = None
             repo = state.get("repo", "")
             if name == "review" and isinstance(run, LiveRun):
                 head, issue = state.get("verified_head"), state.get("issue")
@@ -430,19 +419,19 @@ def compile_delivery(
                     if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
                         raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
                     target = run.forge.review_target(repo, issue, worktree.branch, head)
-                    diff = run.workspace.review_diff(target.baseRefOid, head)
+                    diff = run.workspace.review_scope(target.baseRefOid, head, past.rounds[-1].reviewed_head if past.rounds else None)
                 except (ForgeError, WorktreeInspectionFailed) as exc:
                     return halted("review_unavailable", str(exc), name)
                 review_context = (run.forge, target, diff)
                 instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
             worker_state: DeliveryState = state.copy()
             if name == "review":
-                scope = "Full PR review."
+                scope = "Full PR review." if not past.rounds else "Check unresolved findings and added interdiff lines also in the PR diff."
                 instruction += "\n\n" + scope
                 instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
                 instruction += "\nGraph checks, not yours to resolve:\n" + json.dumps(past.rounds[-1].graph_check.model_dump(mode="json") if past.rounds and past.rounds[-1].graph_check else None)
                 instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
-                for key in ("review_findings", "settled_rulings"):
+                for key in ("review_findings", "settled_rulings", *( ("findings", "detail", "implementation") if past.rounds else ())):
                     worker_state.pop(key, None)
             attempts: list[SkillAttempt] = []
 
@@ -472,7 +461,7 @@ def compile_delivery(
                                   | {f.claim: f for f in output.tool_facts}).values())
                     checked = output.model_copy(update={"tool_facts": facts})
                     head = state.get("verified_head") or state.get("head_sha") or ""
-                    accepted = accept(past, checked, head, _check_tool_facts(checked, run, head))
+                    accepted = accept(past, checked, head, _check_tool_facts(checked, run, head), review_context[2] if review_context else None)
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
                 update["skill_attempts"] = attempts
                 if accepted is not None:
@@ -482,6 +471,9 @@ def compile_delivery(
                                   findings=[f.record() for f in accepted.findings],
                                   review_change_kind=accepted.change_kind,
                                   review_rounds=state.get("review_rounds", 0) + (accepted.review == "changes"))
+                    if accepted.rethink:
+                        update.update(halt="design_rethink", halt_detail=accepted.rethink, human_question=accepted.rethink,
+                                      review_rounds=state.get("review_rounds", 0))
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
                 rejected: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
@@ -653,7 +645,13 @@ def compile_delivery(
         split = state.get("pr_split") if stage == "spec" and oversized_pr(state) else None
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
         answer = interrupt(HumanPrompt.model_validate({"stage": stage, "question": question}).model_dump())
-        return {"human_answers": [*state.get("human_answers", []), answer]}
+        update: DeliveryUpdate = {"human_answers": [*state.get("human_answers", []), answer]}
+        if stage == "review":
+            past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
+            update.update(halt=None, halt_detail="", settled_rulings=[r.model_dump() for r in past.settled] +
+                          [{"id": f"design:{len(past.rounds)}", "text": answer}])
+            update.update(prepare(state))
+        return update
 
     def quota_wait(state: DeliveryState) -> DeliveryUpdate:
         interrupt(QuotaPause(detail=state.get("halt_detail")).model_dump())
@@ -746,6 +744,8 @@ def compile_delivery(
         return "prepare" if state.get("spec_gate") == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
+        if state.get("halt") == "design_rethink" and checkpointer is not None:
+            return "needs_human"
         if state.get("halt"):
             return "done"
         if oversized_pr(state):
@@ -891,7 +891,8 @@ def compile_delivery(
         "decide_pr_size", after_size, {"done": "done", "verify": "verify"},
     )
     builder.add_conditional_edges(
-        "needs_human", _last_stage, {"triage": "triage", "spec": "spec"},
+        "needs_human", lambda state: "done" if state.get("halt") else "implement" if _last_stage(state) == "review" else _last_stage(state),
+        {"triage": "triage", "spec": "spec", "implement": "implement", "done": "done"},
     )
     builder.add_conditional_edges("prepare", after_halt("implement"), {"done": "done", "implement": "implement"})
     builder.add_conditional_edges("commit", after_halt("publish"), {"done": "done", "publish": "publish"})

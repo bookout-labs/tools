@@ -77,6 +77,5 @@ class ProofLabelTest(unittest.TestCase):
         two_properties = {"properties": [*slice["properties"], {"name": "Owner is required", "constraint": "owner_required"}]}
         self.assertEqual(formal_proof_label(two_properties, rejected_amount), "insufficient_evidence")
 
-
 if __name__ == "__main__":
     unittest.main()

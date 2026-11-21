@@ -50,7 +50,7 @@ def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice) -> s
     if open_urls := [blocker.html_url for blocker in blockers if blocker.state == "open"]:
         return "Open blockers: " + ", ".join(open_urls)
     local = {blocker.number: blocker for blocker in blockers if blocker.in_repo(repo)}
-    planned = item.blocker_numbers or []
+    planned = item.blocker_numbers
     if len(planned) != len(item.depends_on) or not set(planned) <= local.keys():
         return "Planned blocker links are missing."
     if unmerged := [number for number in planned if not forge.is_merged(repo, number)]:
