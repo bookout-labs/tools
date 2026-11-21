@@ -18,7 +18,7 @@ from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import Forge
-from foreman.stage_output import StoredSlice, parse_output
+from foreman.stage_output import SpecCandidate, StoredSlice, parse_output
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 
@@ -29,6 +29,8 @@ def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
     normalized = dict(values)
     if normalized.get("slice") is not None:
         normalized["slice"] = StoredSlice.model_validate(normalized["slice"]).record()
+    if normalized.get("spec_candidate") is not None:
+        normalized["spec_candidate"] = SpecCandidate.model_validate(normalized["spec_candidate"]).record()
     return _CHECKPOINT_STATE.validate_python(normalized, strict=True)
 
 

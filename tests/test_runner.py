@@ -674,7 +674,9 @@ class LiveRunnerTest(unittest.TestCase):
         for item, (_, body, _) in zip(expected, self.github.created):
             prose, fence, encoded = body.partition("\n\n```json\n")
             self.assertEqual(fence, "\n\n```json\n")
-            self.assertEqual(json.loads(encoded.removesuffix("\n```")), {**item, "work_kind": "bug_fix"})
+            stored = json.loads(encoded.removesuffix("\n```"))
+            self.assertEqual(stored.pop("provenance"), {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]})
+            self.assertEqual(stored, {**item, "work_kind": "bug_fix"})
             self.assertTrue(prose.startswith("Acceptance:\n" + item["acceptance"]))
         self.assertEqual(self.github.dependencies, {102: [101]})
         resumed = self.walk([])
@@ -699,7 +701,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
         child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
-        self.assertEqual(child["slice"], child_payload)
+        self.assertEqual(child["slice"], {**child_payload, "provenance": {"author": result["spec_candidate"]["author"], "revision": result["spec_candidate"]["revision"]}})
         self.assertEqual(child["work_kind"], "bug_fix")
         self.assertIn("why/SKILL.md", self.prompts[-1])
 
@@ -999,7 +1001,7 @@ class LiveRunnerTest(unittest.TestCase):
             APPROVE,
         ])
         self.assertEqual(result["path"][-5:], ["verify", "proof", "review", "merge", "done"])
-        self.assertEqual(result["slice"], SLICE)
+        self.assertEqual({k: v for k, v in result["slice"].items() if k != "provenance"}, SLICE)
         self.assertEqual(result["proof_labels"], {})
         self.assertEqual(result["merge"], "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])

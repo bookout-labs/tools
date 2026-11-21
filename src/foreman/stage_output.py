@@ -1,5 +1,6 @@
 """Worker output contracts shared by the CLI prompts and delivery graph."""
 
+import json
 from hashlib import sha256
 from typing import Annotated, Generic, Literal, Self, TypeVar
 
@@ -36,6 +37,19 @@ class SeamRecord(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class SpecAuthorRecord(TypedDict):
+    stage: Literal["triage", "spec"]
+    model: str
+    family: str
+
+
+@with_config(ConfigDict(extra="forbid"))
+class SliceProvenanceRecord(TypedDict):
+    author: SpecAuthorRecord
+    revision: str
+
+
+@with_config(ConfigDict(extra="forbid"))
 class SliceRecord(TypedDict):
     title: str
     stateful: bool
@@ -46,6 +60,7 @@ class SliceRecord(TypedDict):
     properties: list[SlicePropertyRecord]
     depends_on: NotRequired[list[str]]
     blocker_numbers: NotRequired[list[int]]
+    provenance: NotRequired[SliceProvenanceRecord | None]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -118,7 +133,7 @@ class RecordContract(Contract, Generic[Record]):
         raise NotImplementedError
 
     def record(self) -> Record:
-        excluded = {key for key in ("depends_on", "blocker_numbers") if key not in self.model_fields_set}
+        excluded = {key for key in ("depends_on", "blocker_numbers", "provenance") if key not in self.model_fields_set}
         return self.record_adapter().validate_python(self.model_dump(exclude=excluded), strict=True)
 
 
@@ -182,13 +197,74 @@ class Slice(RecordContract[SliceRecord]):
         return value
 
 
-class StoredSlice(Slice):
-    stateful: bool = False
-    work_kind: WorkKind | None = Field(default=None, exclude=True)
-    builds: list[Seam] = Field(default_factory=list[Seam])
-    uses: list[Seam] = Field(default_factory=list[Seam])
+class SpecAuthor(RecordContract[SpecAuthorRecord]):
+    stage: Literal["triage", "spec"]
+    model: TrimmedText
+    family: TrimmedText
+
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SpecAuthorRecord]:
+        return TypeAdapter(SpecAuthorRecord)
+
+
+class SliceProvenance(RecordContract[SliceProvenanceRecord]):
+    author: SpecAuthor
+    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SliceProvenanceRecord]:
+        return TypeAdapter(SliceProvenanceRecord)
+
+
+class CandidateSlice(Slice):
     depends_on: list[TrimmedText] = Field(default_factory=list[str])
     blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
+
+
+@with_config(ConfigDict(extra="forbid"))
+class SpecCandidateRecord(TypedDict):
+    slices: list[SliceRecord]
+    spec: str
+    work_kind: WorkKind
+    author: SpecAuthorRecord
+    revision: str
+
+
+class SpecCandidate(RecordContract[SpecCandidateRecord]):
+    slices: list[CandidateSlice] = Field(min_length=1)
+    spec: str
+    work_kind: WorkKind
+    author: SpecAuthor
+    revision: str = ""
+
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SpecCandidateRecord]:
+        return TypeAdapter(SpecCandidateRecord)
+
+    @override
+    def record(self) -> SpecCandidateRecord:
+        type(self).model_validate(self.model_dump())
+        return super().record()
+
+    @model_validator(mode="after")
+    def bind_revision(self) -> Self:
+        content = json.dumps(self.model_dump(exclude={"revision"}), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        revision = sha256(content.encode("utf-8")).hexdigest()
+        if self.revision and self.revision != revision:
+            raise ValueError("candidate revision does not match its content")
+        self.revision = revision
+        return self
+
+
+class StoredSlice(CandidateSlice):
+    stateful: bool = False
+    work_kind: WorkKind | None = Field(default=None, exclude=True)
+    provenance: SliceProvenance | None = None
+    builds: list[Seam] = Field(default_factory=list[Seam])
+    uses: list[Seam] = Field(default_factory=list[Seam])
 
 
 class PullRequestSplit(TypedDict):

@@ -26,7 +26,7 @@ class StageRecordTests(unittest.TestCase):
         )
         for model, record, raw in cases:
             with self.subTest(model=model.__name__):
-                self.assertEqual(set(model.model_fields), set(record.__annotations__) - {"depends_on", "blocker_numbers"})
+                self.assertEqual(set(model.model_fields), set(record.__annotations__) - {"depends_on", "blocker_numbers", "provenance"})
                 value = model.model_validate(raw).record()
                 self.assertEqual(value, raw)
                 self.assertEqual(TypeAdapter(record).validate_python(value, strict=True), raw)
