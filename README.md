@@ -15,6 +15,55 @@ entry's `claim_ids` list to resolve it independently of later reviewer wording.
 A typed exact restatement of the graph's verified check result needs no fixture.
 
 
+<!-- graph:start -->
+### Blueprint
+
+```mermaid
+flowchart TD
+  __start__([New issue]) --> triage["triage<br/>read the issue"]
+  triage -->|question| research["research<br/>answer the question"]
+  research --> done([Done])
+  triage -->|needs a plan| spec["spec<br/>write the plan"]
+  triage -->|one slice| spec_check
+  spec --> spec_check["spec_check<br/>the other model family checks the plan"]
+  spec_check -->|gaps: repair the plan| spec
+  spec_check -->|parent plan| file_slices["file_slices<br/>file the child issues"]
+  file_slices --> done
+  spec_check -->|approved slice| prepare["prepare<br/>create or reuse the PR branch and worktree"]
+  prepare --> implement["implement<br/>a worker writes the change"]
+  implement --> reconcile["reconcile<br/>adopt the tree, reject scratch"]
+  reconcile --> size["size<br/>count every changed line"]
+  size -->|too big: re-plan| spec
+  size -->|fits| commit["commit"]
+  commit --> verify["verify<br/>run the repo's checks"]
+  verify -->|fail: resume same PR branch| prepare
+  verify -->|pass| proof["proof<br/>tool facts are recorded"]
+  proof -->|missing facts: resume same PR branch| prepare
+  proof -->|pass| publish["publish<br/>push and open the PR"]
+  publish --> review["review<br/>the other model family reviews"]
+  review --> review_post["review_post<br/>post the review"]
+  review_post -->|changes: resume same PR branch| prepare
+  review_post -->|approve| merge["merge<br/>check readiness, arm the merge"]
+  merge -->|head moved: resume same PR branch| prepare
+  merge -->|queue rejected: fix on same PR branch| prepare
+  merge -->|merged| done
+  done --> __end__([End])
+```
+
+Any step can pause (quota wait, human question, waiting on GitHub) and resumes at that step; review rounds are capped by max_review_rounds.
+
+```mermaid
+flowchart TD
+  __start__([Dispatch]) --> plan
+  plan["plan<br/>pick the next eligible model, check the budget, save the attempt"] --> call["call<br/>run one model"]
+  call -->|quota or CLI missing: next model| plan
+  call -->|no eligible model now| wait["wait<br/>pause until a model is available"]
+  wait -->|resume| plan
+  call -->|result| __end__([back to the assembly line])
+```
+
+### Today's code
+
 ```mermaid
 ---
 config:
@@ -24,15 +73,23 @@ config:
 graph TD;
 	__start__([<p>__start__</p>]):::first
 	triage(triage)
+	triage_call(triage_call)
 	research(research)
+	research_call(research_call)
 	spec(spec)
+	spec_call(spec_call)
 	implement(implement)
+	implement_call(implement_call)
 	verify(verify)
+	verify_call(verify_call)
 	review(review)
+	review_call(review_call)
 	prepare(prepare)
+	reconcile(reconcile)
 	commit(commit)
 	publish(publish)
 	proof(proof)
+	review_post(review_post)
 	needs_human(needs_human)
 	quota_wait(quota_wait)
 	decide_pr_size(decide_pr_size)
@@ -45,9 +102,13 @@ graph TD;
 	commit -.-> publish;
 	decide_pr_size -.-> done;
 	decide_pr_size -.-> verify;
-	implement -.-> commit;
 	implement -.-> done;
+	implement -. &nbsp;call&nbsp; .-> implement_call;
 	implement -.-> quota_wait;
+	implement -.-> reconcile;
+	implement_call -.-> done;
+	implement_call -.-> quota_wait;
+	implement_call -.-> reconcile;
 	merge --> done;
 	needs_human -.-> done;
 	needs_human -.-> implement;
@@ -65,39 +126,92 @@ graph TD;
 	quota_wait -.-> review;
 	quota_wait -.-> spec;
 	quota_wait -.-> triage;
+	reconcile -.-> commit;
+	reconcile -.-> done;
 	research -.-> done;
 	research -.-> quota_wait;
+	research -. &nbsp;call&nbsp; .-> research_call;
+	research_call -.-> done;
+	research_call -.-> quota_wait;
 	review -.-> decide_pr_size;
 	review -.-> done;
 	review -.-> merge;
 	review -.-> needs_human;
 	review -.-> prepare;
 	review -.-> quota_wait;
+	review -. &nbsp;call&nbsp; .-> review_call;
+	review -.-> review_post;
 	review -.-> spec;
+	review_call -.-> decide_pr_size;
+	review_call -.-> done;
+	review_call -.-> merge;
+	review_call -.-> needs_human;
+	review_call -.-> prepare;
+	review_call -.-> quota_wait;
+	review_call -.-> review_post;
+	review_call -.-> spec;
+	review_post -.-> decide_pr_size;
+	review_post -.-> done;
+	review_post -.-> merge;
+	review_post -.-> needs_human;
+	review_post -.-> prepare;
+	review_post -.-> spec;
 	spec -.-> decide_pr_size;
 	spec -.-> done;
 	spec -.-> needs_human;
 	spec -.-> prepare;
 	spec -.-> quota_wait;
+	spec -. &nbsp;call&nbsp; .-> spec_call;
+	spec_call -.-> decide_pr_size;
+	spec_call -.-> done;
+	spec_call -.-> needs_human;
+	spec_call -.-> prepare;
+	spec_call -.-> quota_wait;
+	spec_call -.-> spec;
 	triage -.-> done;
 	triage -.-> needs_human;
 	triage -.-> prepare;
 	triage -.-> quota_wait;
 	triage -.-> research;
 	triage -.-> spec;
+	triage -. &nbsp;call&nbsp; .-> triage_call;
+	triage_call -.-> done;
+	triage_call -.-> needs_human;
+	triage_call -.-> prepare;
+	triage_call -.-> quota_wait;
+	triage_call -.-> research;
+	triage_call -.-> spec;
 	verify -.-> done;
 	verify -.-> prepare;
 	verify -.-> proof;
+	verify -.-> quota_wait;
 	verify -.-> review;
+	verify -. &nbsp;call&nbsp; .-> verify_call;
+	verify_call -.-> done;
+	verify_call -.-> prepare;
+	verify_call -.-> proof;
+	verify_call -.-> quota_wait;
+	verify_call -.-> review;
 	done --> __end__;
+	implement_call -. &nbsp;call&nbsp; .-> implement_call;
+	research_call -. &nbsp;call&nbsp; .-> research_call;
+	review_call -. &nbsp;call&nbsp; .-> review_call;
 	spec -.-> spec;
+	spec_call -. &nbsp;call&nbsp; .-> spec_call;
+	triage_call -. &nbsp;call&nbsp; .-> triage_call;
+	verify_call -. &nbsp;call&nbsp; .-> verify_call;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
-
 ```
+<!-- graph:end -->
 
-Generate the diagram with `foreman diagram delivery`. The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. Review uses only Opus and Sol, filtered by implementation family. Grok remains in the other model orders. A node does not edit the list, and it does not decide the next node.
+Regenerate the native drawings and this README with `foreman diagram --write`.
+The approved blueprint is in `docs/graph/target.mmd`; `gaps.toml` records each topology difference and its closing slice.
+The dispatch drawing stays empty until slice 13 builds the dispatch cell.
+Changes to `docs/graph/` require Joe's written approval on the PR before merge.
+
+The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. Review uses only Opus and Sol, filtered by implementation family. Grok remains in the other model orders. A node does not edit the list, and it does not decide the next node.
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high.
 

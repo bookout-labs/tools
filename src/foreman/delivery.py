@@ -24,6 +24,7 @@ from typing_extensions import TypedDict
 
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, ModelSpec, family, load_config, order_for
+from foreman.dry_run import ScriptHandler
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
@@ -1205,19 +1206,6 @@ def run_delivery(
     return read_delivery_state(graph.invoke(state, version="v2").value)
 
 
-def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
-    if dispatcher is None:
-        dispatcher = FailoverDispatcher(
-            lambda node, model, state, instruction: Outcome(
-                "ran", {"triage": "implement", "slice": None, "human_question": None},
-            ),
-        )
-    graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
-    drawing = graph.get_graph()
-    for name in REQUIRED_NODES:
-        drawing.nodes.pop(name + "_call")
-    drawing.edges = list(dict.fromkeys(
-        edge._replace(source=edge.source.removesuffix("_call"), target=edge.target.removesuffix("_call"))
-        for edge in drawing.edges if edge.data != "call"
-    ))
-    return drawing.draw_mermaid()
+def diagram() -> str:
+    graph = compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), run=DryRun())
+    return graph.get_graph().draw_mermaid()
