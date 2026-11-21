@@ -65,6 +65,50 @@ codex exec -m gpt-6.1-sol -c model_reasoning_effort=high --color never \
   -s read-only "$codex_prompt_with_schema"
 ```
 
+## Redaction detector
+
+Foreman pins detect-secrets v1.5.0 and loads its plugins using
+[`default_settings()` and `get_plugins()`][settings]. It uses the full spans of
+each [regex plugin's compiled `denylist`][base]. This runs locally without the
+plugins' network verification. The dependency test checks the expected plugins
+and pattern attributes against the pin.
+
+A local v1.5.0 probe scanned the quoted synthetic leaves `"ghp_" + "z" * 36`
+and `"glpat-" + "z" * 20` in surrounding prose. Both
+[`scan_line()`][scan] and the [README's `SecretsCollection` API][readme]
+returned only `ghp` and `glpat`, respectively. Substituting those returned
+values left the entire synthetic suffix. The [GitHub][github] and
+[GitLab][gitlab] patterns contain captures that the base class returns in
+place of the full match.
+
+The [entropy plugins][entropy] expose their compiled pattern and threshold
+through the plugin instance. Foreman uses their unquoted mode and applies
+their original thresholds. The [keyword plugin][keyword] has no `denylist`
+attribute. In v1.5.0, `analyze_string()` defaults to
+`QUOTES_REQUIRED_DENYLIST_REGEX_TO_GROUP`, a map from compiled patterns to
+secret capture group numbers. Foreman uses that same upstream map and
+`pattern.finditer(line)`, then `match.span(group_number)`, to locate every
+assigned value without masking unrelated occurrences of the same text.
+Foreman also honors the plugin's `keyword_exclude` guard. These attributes and
+the default map are defined in the [pinned plugin source][keyword].
+
+The [JWT plugin][jwt] reports the header and payload, and the
+[private key plugin][key] reports armor headers. Regression tests record both
+gaps. Foreman includes the signature or key block in the corresponding
+replacement. Without a key footer, the replacement stops at the first blank
+line.
+
+[settings]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/settings.py
+[base]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/base.py
+[readme]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/README.md#usage-in-other-python-scripts
+[scan]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/core/scan.py#L109-L137
+[github]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/github_token.py
+[gitlab]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/gitlab_token.py
+[entropy]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/high_entropy_strings.py
+[keyword]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/keyword.py
+[jwt]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/jwt.py
+[key]: https://github.com/Yelp/detect-secrets/blob/v1.5.0/detect_secrets/plugins/private_key.py
+
 ## Review fixtures
 
 `review.diff` was captured with Git 2.56.0 in a synthetic repository. The base
@@ -88,3 +132,13 @@ documents `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`. Foreman
 sends `commit_id`, `event: COMMENT`, `body`, and a `comments` array
 with `path`, `line`, `side`, and `body` per inline comment. The
 [`RIGHT` side identifies the new file](https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request).
+
+
+## Ordered check output
+
+Python 3.11's [subprocess documentation](https://docs.python.org/3.11/library/subprocess.html#subprocess.STDOUT)
+defines `stderr=STDOUT` as sending stderr to the same handle as stdout.
+`Popen(stdout=PIPE, stderr=STDOUT, text=True, errors="replace")` gives Foreman
+one text stream. Foreman iterates its lines and passes each to the CLI's
+redacting writer before waiting for the exit code. The writer flushes every
+line. An unterminated final line is emitted at EOF.

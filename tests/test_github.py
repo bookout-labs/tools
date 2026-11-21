@@ -151,6 +151,23 @@ class LiveForgeTest(unittest.TestCase):
         self.assertNotIsInstance(error.exception, MergeNotArmed)
 
     @patch("foreman.github.subprocess.run")
+    def test_review_write_redacts_synthetic_secrets_before_json_encoding(self, run):
+        synthetic_token = "ghp_" + "a" * 36
+        run.side_effect = [pr_result(), pr_result(), gh_result("")]
+        forge = LiveForge()
+        target = forge.review_target(REPO, 8, BRANCH, HEAD)
+        forge.post_review(REPO, target, f"Synthetic {synthetic_token}", [{
+            "path": f"docs/{synthetic_token}.txt", "line": 2, "side": "RIGHT",
+            "body": f'Synthetic password="abc" and abc {synthetic_token}',
+        }])
+        payload = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(payload["commit_id"], HEAD.upper())
+        self.assertEqual(payload["body"], "Synthetic [redacted:GitHub Token]")
+        self.assertEqual(payload["comments"][0]["path"], "docs/[redacted:GitHub Token].txt")
+        self.assertEqual(payload["comments"][0]["body"],
+                         'Synthetic password="[redacted:Secret Keyword]" and abc [redacted:GitHub Token]')
+
+    @patch("foreman.github.subprocess.run")
     def test_posts_the_review_and_inline_comments_for_the_verified_head(self, run):
         moved = {**PR, "baseRefOid": "c" * 40, "headRefOid": "d" * 40}
         run.side_effect = [pr_result(), pr_result(moved, CONFIRM), gh_result("")]
