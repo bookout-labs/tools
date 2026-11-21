@@ -26,6 +26,7 @@ from foreman.github import Forge, ForgeError
 from foreman.watch import run_key, watch
 from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
 from foreman.usd import BudgetUsd, usd_text
+from foreman.workspace import WorkState
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
@@ -291,7 +292,7 @@ def run_live_delivery(
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             repaired = False
             repair_head: str | None = None
-            if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge", MergeState()).receipt and (head := saved_values.get("verified_head")) and (branch := saved_values.get("delivery_branch")):
+            if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge", MergeState()).receipt and (head := saved_values.get("verified_head")) and (branch := saved_values.get("work", WorkState()).branch):
                 worktree = run.workspace.inspect()
                 try:
                     observed = client.readiness(repo, issue, branch, head)
@@ -315,11 +316,15 @@ def run_live_delivery(
                 presentation.restore(before)
             replay = before.config
             receipt = None if repaired else saved_values.get("merge", MergeState()).receipt
-            retained: DeliveryUpdate = {"repair_head": repair_head, "merge": MergeState(receipt=receipt)}
+            prior_work = restored.get("work", WorkState())
+            reset_work = repaired or before.next == ("prepare",)
+            work = (WorkState(branch=prior_work.branch, base=prior_work.base, repair_head=repair_head)
+                    if reset_work else prior_work.model_copy(update={"repair_head": None}))
+            if not reset_work and (partial := saved_values.get("work", WorkState()).partial_edits):
+                work = work.model_copy(update={"partial_edits": partial})
+            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt)}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
-            if partial := saved_values.get("partial_edits"):
-                retained["partial_edits"] = partial
             if retained:
                 replay = graph.update_state(replay, retained)
                 restored = checkpoint_state(graph.get_state(replay).values)

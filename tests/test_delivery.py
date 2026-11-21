@@ -73,7 +73,7 @@ class DeliveryTest(unittest.TestCase):
         def check_review_context(node, model, state, instruction):
             if node == "review":
                 self.assertEqual(state["verify"], "pass")
-                self.assertEqual(state["head_sha"], state["verified_head"])
+                self.assertEqual(state["work"].head_sha, state["verified_head"])
             return handler(node, model, state, instruction)
 
         result = walk(check_review_context)
@@ -84,7 +84,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["risk"]["level"], "low")
         self.assertEqual(result["merge"].status, "skipped")
-        self.assertEqual(result["head_sha"], result["verified_head"])
+        self.assertEqual(result["work"].head_sha, result["verified_head"])
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
         self.assertNotIn("verify", result["models_used"])

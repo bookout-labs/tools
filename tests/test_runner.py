@@ -33,7 +33,7 @@ from foreman.state import checkpoint_serializer, CheckpointVersionError
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
-from foreman.workspace import LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
 from test_adapters import codex_events, fixture_process
 
@@ -300,16 +300,21 @@ class FakeGitHub:
 
 
 class CliWorkerTest(unittest.TestCase):
-    def test_merge_state_is_serialized_in_worker_prompt(self):
+    def test_owner_states_are_serialized_in_worker_prompt(self):
         merge = MergeState(status="not_armed", observation={"outcome": "ready"},
                            receipt={"status": "QUEUED"}, observed_head=HEAD, command=["gh", "pr", "merge"])
 
+        work = WorkState(branch=BRANCH, base="main", attempt_head=HEAD,
+                         candidate={"disposition": "edits", "fingerprint": "tree"},
+                         partial_edits="partial", head_sha=HEAD, repair_head="b" * 40)
+
         def run(args, cwd, env):
             state = json.loads(args[-1].split("Delivery state:\n")[1])
+            self.assertEqual(state["work"], work.model_dump(mode="json"))
             self.assertEqual(state["merge"], merge.model_dump(mode="json"))
             return worker_reply(args, {"triage": "implement"})
 
-        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge}, "Read.")
+        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge, "work": work}, "Read.")
         self.assertEqual(result.kind, "ran")
 
     def test_commands_use_the_configured_models_and_parse_the_final_result(self):
@@ -1229,7 +1234,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "merge", "done"])
         self.assertEqual(result["check_exit_code"], 0)
         self.assertEqual(result["verified_head"], HEAD)
-        self.assertEqual(result["head_sha"], HEAD)
+        self.assertEqual(result["work"].head_sha, HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"].status, "armed")
 
@@ -1337,7 +1342,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertEqual(result["pr_size"]["head"], result["verified_head"])
                     self.assertEqual(rounds[-1]["reviewed_head"], result["verified_head"])
                     self.assertEqual(self.github.merge_calls[-1][-1], result["verified_head"])
-                    self.assertEqual(result["implementation_candidate"]["disposition"], "adopted" if committed else "edits")
+                    self.assertEqual(result["work"].candidate["disposition"], "adopted" if committed else "edits")
 
     def test_missing_manifest_can_be_recorded_by_implement(self):
         result = self.review_tool_fact("result.txt", recover=True)
@@ -1372,7 +1377,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.review_tool_fact("result.txt", entry="result.txt")
         self.assertEqual(result.get("review"), "approve")
         self.assertEqual(result.get("findings"), [])
-        self.assertEqual(result.get("head_sha"), result.get("verified_head"))
+        self.assertEqual(result.get("work", WorkState()).head_sha, result.get("verified_head"))
         self.assertNotEqual(result.get("verified_head"), HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, result.get("verified_head"))])
 
@@ -1836,10 +1841,42 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         resumed = self.walk([{"implementation": "built"}, APPROVE], snapshots=(moved,))
         self.assertEqual(resumed["stop"], "verified")
         self.assertEqual(resumed["merge"].observed_head, "")
+        repair_prompt = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
+        self.assertEqual(repair_prompt["work"], WorkState(branch=BRANCH, base="main", attempt_head=HEAD).model_dump(mode="json"))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             _print_run(resumed)
         self.assertNotIn("HEAD is", out.getvalue())
+
+    def test_multi_round_repair_prepare_halt_clears_attempt_observations(self):
+        workspace = FakeWorkspace(self.cwd)
+        heads = iter(("1" * 40, "2" * 40))
+
+        def commit(message):
+            workspace.current = WorktreeState(next(heads), True, BRANCH)
+
+        changes = {**APPROVE, "findings": [FINDING]}
+        resolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}
+        ready = self.github.readiness("Example/Engine", 8, BRANCH, "2" * 40)
+        with patch.object(workspace, "commit", side_effect=commit), patch.object(
+            self.github, "readiness", return_value=ready.model_copy(update={"outcome": "conflict"}),
+        ):
+            halted = self.walk([{"triage": "implement"}, {"implementation": "first"}, changes,
+                                {"implementation": "second"}, resolved], workspace=workspace)
+        self.assertEqual(halted["stop"], "pr_conflict")
+        self.assertEqual(halted["work"].head_sha, "2" * 40)
+        remote = ready.model_copy(deep=True)
+        remote.outcome, remote.pr.head.sha = "head_changed", "3" * 40
+        workspace.current = WorktreeState("2" * 40, False, BRANCH)
+        with patch.object(self.github, "readiness", return_value=remote):
+            resumed = self.walk([], workspace=workspace)
+        self.assertEqual(resumed["stop"], "dirty_worktree")
+        expected = WorkState(branch=BRANCH, base="main", repair_head="3" * 40)
+        self.assertEqual(resumed["work"], expected)
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
+        self.assertEqual(saved.checkpoint["channel_values"]["work"], expected)
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"

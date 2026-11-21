@@ -13,7 +13,7 @@ import tarfile
 from tempfile import TemporaryDirectory
 from typing import Annotated, Literal, NewType, Protocol
 from typing_extensions import NotRequired, TypedDict
-from pydantic import BeforeValidator, ConfigDict, TypeAdapter, with_config
+from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
@@ -62,6 +62,16 @@ class AdoptedImplementation(TypedDict):
 
 
 ImplementationCandidate = ImplementationEdits | AdoptedImplementation
+
+
+class WorkState(BaseModel, frozen=True, extra="forbid"):
+    branch: str = ""
+    base: str = ""
+    attempt_head: str = ""
+    candidate: ImplementationCandidate | None = None
+    partial_edits: str = ""
+    head_sha: str | None = None
+    repair_head: str | None = None
 
 
 class WorktreeInspectionFailed(WorkspaceError):

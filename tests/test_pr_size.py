@@ -18,7 +18,7 @@ from foreman.cli import main
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery
 from foreman.config import load_config
 from foreman.stage_output import PULL_REQUEST_LINES, SpecCandidate
-from foreman.workspace import LiveWorkspace
+from foreman.workspace import WorkState, LiveWorkspace
 from test_runner import APPROVE, BRANCH, EMPTY_SLICE, FakeGitHub, worker_reply
 
 
@@ -107,7 +107,7 @@ class PullRequestSizeTest(unittest.TestCase):
                     "schema_version": SCHEMA_VERSION, "pstack_pin": self.config.pstack.model_dump(), "token_cap": DEFAULT_TOKEN_CAP, "max_budget_usd": None,
                     "repo": "Example/Engine", "issue": 8, "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
                     **({"spec": self.original_spec} if self.original_spec else {}),
-                    "workspace": str(self.root.resolve()), "check": "exit 0", "head_sha": self.git("rev-parse", "HEAD"),
+                    "workspace": str(self.root.resolve()), "check": "exit 0", "work": WorkState(head_sha=self.git("rev-parse", "HEAD")),
                     "models_used": {"implement": "gpt-6.1-sol-high"}, "path": ["triage", "implement", "publish"],
                 }, as_node="publish")
         with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
