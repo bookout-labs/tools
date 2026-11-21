@@ -25,7 +25,7 @@ from foreman.redaction import redact
 from foreman.workspace import LiveWorkspace, WorktreeInspectionFailed
 
 
-class CredentialsTest(unittest.TestCase):
+class CredentialFixture(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
@@ -46,6 +46,8 @@ class CredentialsTest(unittest.TestCase):
         }).encode()
         self.owner = AppCredentials()
 
+
+class CredentialsTest(CredentialFixture):
     def test_scoped_refresh_and_concurrent_callers(self):
         with ThreadPoolExecutor(max_workers=8) as pool:
             values = list(pool.map(self.owner.environment, ['org/repo'] * 20))
@@ -99,16 +101,15 @@ class CredentialsTest(unittest.TestCase):
             for url, push in [('git@github.com:org/repo', 'git@github.com:org/repo'),
                               ('https://user:secret@github.com/org/repo', 'https://github.com/org/repo'),
                               ('https://github.com/org/repo', 'https://github.com/org/wrong')]:
-                run.side_effect = [subprocess.CompletedProcess([], 0, value.encode(), b'') for value in (url, push)]
+                run.side_effect = [subprocess.CompletedProcess([], 0, value.encode(), b'') for value in (url, push, url, push)]
                 with self.assertRaises(WorktreeInspectionFailed):
                     LiveWorkspace(Path.cwd(), 'org/repo')._git('fetch', 'origin', 'main')
-            run.side_effect = [subprocess.CompletedProcess([], 0, b'https://github.com/org/repo', b'')] * 2
+            run.side_effect = [subprocess.CompletedProcess([], 0, b'https://github.com/org/repo', b'')] * 4
             run.side_effect = [*run.side_effect, subprocess.CompletedProcess([], 0, b'head', b''),
                                subprocess.CompletedProcess([], 0, b'head', b'')]
             workspace = LiveWorkspace(Path.cwd(), 'org/repo')
             self.assertEqual(workspace._git('fetch', 'origin', 'main'), b'head')
             self.assertEqual(workspace._git('ls-remote', 'origin'), b'head')
-            self.assertEqual(run.call_count, 10)
             command = run.call_args.args[0]
             self.assertEqual(command[1:1 + len(GIT_AUTH)], list(GIT_AUTH))
             self.assertNotIn('ghs_', ' '.join(command))

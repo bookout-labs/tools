@@ -734,7 +734,7 @@ class PublicationTest(unittest.TestCase):
         self.assertIn("Unowned edits", result["halt_detail"])
 
     def test_publication_failures(self):
-        cases = (("rejected push", "rejected"), ("missing remote", "origin"), ("wrong push URL", "origin does not point"))
+        cases = (("rejected push", "rejected"), ("missing remote", "origin"), ("wrong push URL", "Transport requires"))
         for case, detail in cases:
             with self.subTest(case=case):
                 self.reset_fixture()

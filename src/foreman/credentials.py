@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 from threading import Lock
 import time
 from urllib.error import HTTPError
@@ -93,13 +94,53 @@ class AppCredentials:
                     raise CredentialFailure(failure(exc.code, exc.headers.get("X-RateLimit-Remaining") == "0" or bool(exc.headers.get("Retry-After")))) from None
                 except Exception:
                     raise CredentialFailure(UNAVAILABLE) from None
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_TRACE", "GIT_CURL_VERBOSE", "GH_DEBUG"))}
-        env.update(GH_TOKEN=token.token.get_secret_value(), GH_HOST="github.com", GH_PROMPT_DISABLED="1")
-        return env
+        return command_environment(token.token.get_secret_value())
 
 
 credentials = AppCredentials()
 
 
-GIT_AUTH = ("-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "credential.helper=", "-c", 'credential.helper=!f() { if [ "$1" = get ]; then printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; fi; }; f',
+GIT_AUTH = ("-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "credential.helper=", "-c", 'credential.https://github.com.helper=!f() { if [ "$1" = get ]; then printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; fi; }; f',
             "-c", "http.extraHeader=", "-c", "http.https://github.com/.extraHeader=", "-c", "http.followRedirects=false", "-c", "core.askPass=")
+
+
+def command_environment(token: str | None = None) -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items()
+           if k in {"PATH", "HOME", "LANG", "TMPDIR"} or k.startswith("LC_")}
+    env.update(GH_HOST="github.com", GH_PROMPT_DISABLED="1",
+               GH_PAGER="cat", PAGER="cat", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_TERMINAL_PROMPT="0", GIT_ALLOW_PROTOCOL="https", GIT_ATTR_NOSYSTEM="1")
+    if token is not None:
+        env["GH_TOKEN"] = token
+    return env
+
+
+def normalize_remote_url(url: str) -> str:
+    return url.removesuffix(".git")
+
+
+def validate_remote(repo: str, cwd: Path | None = None, *, app: bool = True,
+                    urls: list[str] | None = None) -> list[str]:
+    env = command_environment() if app else None
+    expected = {f"https://github.com/{repo}"}
+    if not app:
+        expected.update({f"git@github.com:{repo}", f"ssh://git@github.com/{repo}"})
+    if urls is None:
+        urls = []
+        for options in ([], ["--push"]):
+            result = subprocess.run(["git", "remote", "get-url", *options, "--all", "origin"],
+                                    cwd=cwd, env=env, capture_output=True, text=True, timeout=10)
+            candidates = os.fsdecode(result.stdout).splitlines()
+            if result.returncode or not candidates:
+                raise CredentialFailure("Cannot inspect origin. Configure the allowed GitHub repository.")
+            urls.extend(candidates)
+    for candidate in urls:
+        resolved = subprocess.run(["git", "ls-remote", "--get-url", candidate], cwd=cwd,
+                                  env=env, capture_output=True, text=True, timeout=10)
+        if resolved.returncode or normalize_remote_url(os.fsdecode(resolved.stdout).strip()) not in expected:
+            raise CredentialFailure("Transport requires the selected token-free GitHub repository.")
+    return urls
+
+
+def git_auth(urls: list[str]) -> tuple[str, ...]:
+    return (*GIT_AUTH, *(part for url in sorted(set(urls)) for part in ("-c", f"http.{url}.extraHeader=")))
