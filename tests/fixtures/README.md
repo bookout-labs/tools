@@ -80,6 +80,19 @@ to record the actual interpreter and package version on every run.
 126 and 127 cases through `/bin/sh` on that runner. The POSIX section above
 specifies 127 when command search fails and 126 when the found command cannot
 execute.
+## Pull request size
+
+Git 2.56.0 reported a binary numstat row for a synthetic 500-line file with one NUL byte per line. The corresponding text patch reported a 500-line hunk. The review gate reads the text hunk ranges when numstat supplies dashes.
+
+```text
+$ git show --format= --numstat --text
+-	-	x
+$ git show --format= --text --patch --unified=0 --inter-hunk-context=0 --no-color
+...
+@@ -0,0 +1,500 @@
+```
+
+[Git 2.43 fetch refspecs](https://git-scm.com/docs/git-fetch/2.43.0) document the exact base ref fetch. [Git 2.43 rev-parse](https://git-scm.com/docs/git-rev-parse/2.43.0) documents resolving the repository's attributes path with `--git-path`. [Git's diff format](https://git-scm.com/docs/diff-format/2.43.0) defines the hunk ranges.
 
 ## Redaction detector
 

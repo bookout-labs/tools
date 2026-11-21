@@ -12,7 +12,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 
 from foreman.config import load_config
-from foreman.delivery import DeliveryState, EnvironmentProbe, LiveRun, ResumableHalt, compile_delivery, load_slice
+from foreman.delivery import DeliveryState, EnvironmentProbe, LiveRun, ResumableHalt, PullRequestSizeDecision, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.stage_output import Slice, parse_output
 
@@ -89,6 +89,11 @@ def run_live_delivery(
                 if answer != answers[-1]:
                     raise AnswerError("This question was already answered differently. Resume with the recorded answer.")
         if answer is not None and saved.interrupts:
+            if saved.interrupts[0].value["stage"] == "pr_size":
+                try:
+                    answer = PullRequestSizeDecision(answer).value
+                except ValueError as exc:
+                    raise AnswerError("Answer split or override at the pull request size prompt.") from exc
             invoke(Command(resume=answer), saved_values)
         elif not saved.values:
             loaded = client.load_issue(repo, issue)
