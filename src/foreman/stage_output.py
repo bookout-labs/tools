@@ -27,23 +27,25 @@ class Contract(BaseModel):
 
 
 class SliceProperty(Contract):
-    name: TrimmedText
-    constraint: TrimmedText
+    name: TrimmedText = Field(description="State the database rule in plain words.")
+    constraint: TrimmedText = Field(description="Give the exact PostgreSQL constraint name, such as deals_external_id_key.")
 
 
 class Slice(Contract):
     """Preserve the proof obligations. Implementers should report only evidence they collect."""
 
-    title: TrimmedText
-    acceptance: TrimmedText
+    title: TrimmedText = Field(description="Name the outcome.")
+    acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
     depends_on: list[TrimmedText] = Field(
-        description="Titles of other slices in this spec that must land first; empty for a single slice.",
+        description="List the titles of other slices in this spec that must land first. Use an empty list if none must land first or if this is a single slice.",
     )
     screen: str = Field(
-        description="Use docs/screens/<file>.md without '..', or an empty string.",
+        description="For browser proof, use a Markdown file directly under docs/screens/ without '..'. Use an empty string for work without a screen.",
         pattern=r"^(docs/screens/[^/\\]+\.md)?$",
     )
-    properties: list[SliceProperty]
+    properties: list[SliceProperty] = Field(
+        description="List only named PostgreSQL CHECK, UNIQUE, FOREIGN KEY, EXCLUSION, or NOT NULL constraints. Use an empty list when the slice adds no database rule.",
+    )
 
     @field_validator("screen")
     @classmethod

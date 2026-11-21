@@ -49,8 +49,6 @@ class CliWorker:
             f"{instruction}\n\nReturn exactly one JSON object that matches the output schema. "
             "Use null for inapplicable nullable fields. Do not arm a merge."
         )
-        if node in {"triage", "spec"} and state.get("issue_kind") == "slice" and "slice" not in state:
-            prompt += " For a ready slice, include slice. For needs_human, include human_question."
         prompt += f"\n\nOutput schema:\n{json.dumps(STAGE_OUTPUTS[node].model_json_schema())}"
         prompt += f"\n\nDelivery state:\n{json.dumps(state)}"
 

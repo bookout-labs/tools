@@ -53,7 +53,16 @@ def call_api(prompt, options, context):
     elif case == "spec-gate":
         output = _stop(ScriptHandler(triage="spec", spec_gate="needs_human"))
     elif case == "parent":
-        output = _stop(ScriptHandler(triage="implement"), issue_kind="parent")
+        output = _stop(
+            ScriptHandler(triage="implement", slice={
+                "title": "Add a field",
+                "acceptance": "The response includes the new field.",
+                "depends_on": [],
+                "screen": "",
+                "properties": [],
+            }),
+            issue_kind="parent",
+        )
     elif case == "parent-spec":
         output = _stop(
             ScriptHandler(

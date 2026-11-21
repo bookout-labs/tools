@@ -13,7 +13,9 @@ from langgraph.types import interrupt
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.proof import browser_proof_label, formal_proof_label
-from foreman.stage_output import Contract, STAGE_OUTPUTS, Slice, SlicePlanningOutput, SpecOutput, VerifyOutput, parse_output
+from foreman.stage_output import (
+    Contract, STAGE_OUTPUTS, Slice, SlicePlanningOutput, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+)
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -106,11 +108,15 @@ def stage_update(name: str, output: Contract, state: DeliveryState, model: str |
         update["slices"] = clean_slices(output.slices, "slices")
     if isinstance(output, SlicePlanningOutput):
         update["human_question"] = output.human_question or ""
-        ready = update.get("triage") == "implement" or (
-            state.get("issue_kind") == "slice" and update.get("spec_gate") == "ready"
-        )
-        if ready and "slice" not in state and output.slice is not None:
-            update["slice"] = clean_slices([output.slice], "slice")[0]
+        if "slice" not in state:
+            triage_implement = isinstance(output, TriageOutput) and output.triage == "implement"
+            if triage_implement and output.slice is None:
+                raise InvalidOutput("slice: required for implement when no slice is loaded")
+            ready_slice_spec = (
+                isinstance(output, SpecOutput) and output.spec_gate == "ready" and state.get("issue_kind") == "slice"
+            )
+            if (triage_implement or ready_slice_spec) and output.slice is not None:
+                update["slice"] = clean_slices([output.slice], "slice")[0]
     if update.get("review") == "changes" or update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:

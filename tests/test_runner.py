@@ -148,7 +148,11 @@ class StageOutputTest(unittest.TestCase):
             return schema
 
         for model in STAGE_OUTPUTS.values():
-            json.loads(json.dumps(model.model_json_schema()), object_hook=check)
+            schema = model.model_json_schema()
+            self.assertEqual(schema["type"], "object")
+            self.assertNotIn("anyOf", schema)
+            self.assertNotIn("oneOf", schema)
+            json.loads(json.dumps(schema), object_hook=check)
 
     def test_extra_field_reports_its_nested_path(self):
         raw = {"implementation": "Done", "browser_proof": {"extra": True}}
@@ -323,6 +327,21 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["path"], ["triage", "implement", "verify", "proof", "done"])
         self.assertEqual(result["stop"], "insufficient_evidence")
         self.assertEqual(result["proof_labels"], {"browser": "insufficient_evidence", "formal": "insufficient_evidence"})
+
+    def test_parent_cannot_implement_without_a_slice(self):
+        self.github = FakeGitHub(["factory"])
+        for triage in ({"triage": "implement"}, {"triage": "implement", "slice": None}):
+            with self.subTest(triage=triage), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "run.sqlite3"
+                self.calls.clear()
+                merge_calls = []
+                result = self.walk([triage, {"implementation": "built"}, APPROVE], run_gh=merge_calls.append)
+                self.assertEqual(result["path"], ["triage", "done"])
+                self.assertEqual(result["stop"], "invalid_output")
+                self.assertTrue(result["halt_detail"].startswith("slice:"))
+                self.assertEqual(len(self.calls), 1)
+                self.assertEqual(merge_calls, [])
+                self.assertEqual(self.github.created, [])
 
     def test_browser_block_rebuilds_and_rechecks_before_review(self):
         self.github.body = slice_body(SLICE)

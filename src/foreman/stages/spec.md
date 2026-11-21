@@ -1,14 +1,9 @@
 Write the spec. Cover the behavior, the product decisions, and the technical design.
-Reply ready when a person could implement from the spec.
-Reply needs_human when a product choice is still open.
-On a parent issue, return one slice per pull request. Keep each pull request to about 400 changed lines or fewer.
-Each slice has exactly these keys.
+Set `spec_gate` to `ready` when a person could implement from the spec.
+If a product choice is still open, set `spec_gate` to `needs_human` and put the question in `human_question`.
 
-- `title` names the outcome.
-- `acceptance` states how to check the outcome, including response checks and other behavior checks.
-- `depends_on` lists other slice titles that must land first. Use an empty list when independent.
-- `screen` gives the proof obligation as a path like `docs/screens/deals.md`. Use an empty string for work without a screen. Use a Markdown file directly under `docs/screens/` and omit any `..` from the path.
-- `properties` lists named PostgreSQL `CHECK`, `UNIQUE`, `FOREIGN KEY`, `EXCLUSION`, or `NOT NULL` constraints. Set `name` to the rule in plain words and `constraint` to the exact PostgreSQL constraint name, such as `deals_external_id_key`. Use an empty list when the slice adds no database rule.
+When a parent spec is ready, return `slices` with one entry per pull request. Keep each pull request to about 400 changed lines or fewer.
+When a spec for a slice issue is ready and the delivery state has no `slice`, return `slice`.
 
 The graph records the slices and stops the parent run.
 

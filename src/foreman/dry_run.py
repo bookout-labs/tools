@@ -23,6 +23,7 @@ class ScriptHandler:
         research: str = "answer",
         risk: dict | None = None,
         head_sha: str | None = None,
+        slice: dict | None = None,
     ):
         self.triage = triage
         self.spec_gate = spec_gate
@@ -30,6 +31,13 @@ class ScriptHandler:
         self.verify = verify
         self.spec = spec
         self.slices = slices
+        self.slice = slice if slice is not None else {
+            "title": "Implement the requested change",
+            "acceptance": "The requested change passes verification.",
+            "depends_on": [],
+            "screen": "",
+            "properties": [],
+        }
         self.implementation = implementation
         self.head_sha = head_sha
         self.research = research
@@ -39,6 +47,8 @@ class ScriptHandler:
     def __call__(self, node: str, model: str | None, state: dict, instruction: str) -> dict:
         self.calls.append({"node": node, "model": model, "instruction": instruction})
         if node == "triage":
+            if self.triage == "implement":
+                return {"triage": self.triage, "slice": self.slice}
             return {"triage": self.triage}
         if node == "spec":
             payload = {"spec": self.spec, "spec_gate": self.spec_gate}
