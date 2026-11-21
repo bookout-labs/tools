@@ -21,7 +21,7 @@ from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
 from foreman.github import ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
-from foreman.outcomes import exit_code
+from foreman.outcomes import Halt, exit_code
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
@@ -53,7 +53,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     current["stop"] = result["stop"]
     current["max_budget_usd"] = result.get("max_budget_usd")
     current["attempts"] = result.get("attempts", [])
-    if result["stop"] in {"needs_human", "quota_exhausted"}:
+    if result["stop"] in {"needs_human", Halt.quota_exhausted}:
         current["halt_detail"] = result.get("halt_detail", "")
     _write_run_log("this invocation:")
     _print_run_rows(current, rows=rows)
@@ -90,7 +90,7 @@ def _print_run_rows(
             if "token_cap" in result:
                 write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {result['token_cap']}")
             write(f"done {result['stop']}")
-            if result.get("stop") == "skill_missing":
+            if result.get("stop") == Halt.skill_missing:
                 pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
                 if pin_commit:
                     write_literal(f"pstack commit {pin_commit}")
@@ -124,7 +124,7 @@ def _print_run_rows(
                 fields.extend(("risk", risk["level"]))
             write(" ".join(fields))
     stop = result.get("stop")
-    if stop in {"needs_human", "quota_exhausted"} and "done" not in result["path"]:
+    if stop in {"needs_human", Halt.quota_exhausted} and "done" not in result["path"]:
         write_literal(f"paused {stop}")
         if detail := result.get("halt_detail"):
             write(detail)

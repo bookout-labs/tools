@@ -2,21 +2,45 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import StrEnum, auto
 from typing import Final, Literal
 
 from foreman.readiness import Outcome as ReadinessOutcome
 
 
-Halt = StrEnum(
-    "Halt",
-    "invalid_output verify_cap review_cap spec_cap dirty_worktree insufficient_evidence missing_slice "
-    "review_unavailable review_not_posted pr_size_unavailable git_failed usage_unknown skill_missing "
-    "reviewer_unavailable cli_missing merge_held merge_not_armed pr_conflict ci_pending queue_rejected ci_red "
-    "readiness_unavailable budget_exceeded env_unavailable quota_exhausted publish_failed "
-    "implementation_rejected failed design_rethink model_dependency_missing model_family_exhausted "
-    "publication_model_missing"
-)
+class Halt(StrEnum):
+    invalid_output = auto()
+    verify_cap = auto()
+    review_cap = auto()
+    spec_cap = auto()
+    dirty_worktree = auto()
+    insufficient_evidence = auto()
+    missing_slice = auto()
+    review_unavailable = auto()
+    review_not_posted = auto()
+    pr_size_unavailable = auto()
+    git_failed = auto()
+    usage_unknown = auto()
+    skill_missing = auto()
+    reviewer_unavailable = auto()
+    cli_missing = auto()
+    merge_held = auto()
+    merge_not_armed = auto()
+    pr_conflict = auto()
+    ci_pending = auto()
+    queue_rejected = auto()
+    ci_red = auto()
+    readiness_unavailable = auto()
+    budget_exceeded = auto()
+    env_unavailable = auto()
+    quota_exhausted = auto()
+    publish_failed = auto()
+    implementation_rejected = auto()
+    failed = auto()
+    design_rethink = auto()
+    model_dependency_missing = auto()
+    model_family_exhausted = auto()
+    publication_model_missing = auto()
 
 
 @dataclass(frozen=True)
