@@ -8,6 +8,8 @@ from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
 from foreman.stage_output import WorkKind
 
+SCRIPTED_USAGE = Usage(input_tokens=1, output_tokens=1)
+
 DEFAULT_RISK = {
     "alignment": "The change matches the request.",
     "impact": "The change is limited to the requested surface.",
@@ -30,7 +32,6 @@ class ScriptHandler:
         implementation: str = "diff",
         research: str = "answer",
         risk: dict | None = None,
-        head_sha: str | None = None,
         slice: dict | None = None,
         work_kind: WorkKind = "feature",
     ):
@@ -51,7 +52,6 @@ class ScriptHandler:
             "stateful": False,
         }
         self.implementation = implementation
-        self.head_sha = head_sha
         self.research = research
         self.risk = dict(DEFAULT_RISK if risk is None else risk)
         self.calls: list[dict[str, str | None]] = []
@@ -62,19 +62,19 @@ class ScriptHandler:
             return Outcome("ran", {
                 "triage": self.triage, "work_kind": self.work_kind, "human_question": None,
                 "slice": self.slice if self.triage == "implement" and state["issue_kind"] == "parent" else None,
-            }, usage=Usage(input_tokens=1, output_tokens=1))
+            }, usage=SCRIPTED_USAGE)
         if node == "spec":
             return Outcome("ran", {
                 "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices,
                 "human_question": None,
-            }, usage=Usage(input_tokens=1, output_tokens=1))
+            }, usage=SCRIPTED_USAGE)
         if node == "implement":
             return Outcome("ran", {
-                "implementation": self.implementation, "head_sha": self.head_sha,
+                "implementation": self.implementation,
                 "browser_proof": None, "formal_proof": None,
-            }, usage=Usage(input_tokens=1, output_tokens=1))
+            }, usage=SCRIPTED_USAGE)
         if node == "research":
-            return Outcome("ran", {"research": self.research}, usage=Usage(input_tokens=1, output_tokens=1))
+            return Outcome("ran", {"research": self.research}, usage=SCRIPTED_USAGE)
         if node == "review":
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = (
@@ -83,7 +83,7 @@ class ScriptHandler:
             )
             return Outcome("ran", {
                 "review": verdict, "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.", "tool_facts": [],
-            }, usage=Usage(input_tokens=1, output_tokens=1))
+            }, usage=SCRIPTED_USAGE)
         if node == "verify":
-            return Outcome("ran", {"verify": self.verify}, usage=Usage(input_tokens=1, output_tokens=1))
+            return Outcome("ran", {"verify": self.verify}, usage=SCRIPTED_USAGE)
         raise ValueError(f"no script for {node}")

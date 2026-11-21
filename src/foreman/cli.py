@@ -35,6 +35,8 @@ def _write_check_log(line: str) -> None:
 
 
 def _print_run(result: DeliveryResult) -> None:
+    for command in result.get("commands", []):
+        _write_run_log(f"dry run: {shlex.join(command)}")
     models = result.get("models_used", {})
     if size := result.get("pr_size"):
         print(f"pull request lines {size['lines']}")

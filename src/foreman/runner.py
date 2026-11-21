@@ -15,7 +15,7 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, halted, read_delivery_state
+from foreman.delivery import DeliveryResult, DeliveryState, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge
@@ -60,7 +60,7 @@ def _checkpoint_before_halt(
     if not path:
         raise ValueError("Cannot resume a run without a halted node.")
     node = path[-1]
-    entry = node + "_start" if node in {"triage", "research", "spec", "implement", "review"} else node
+    entry = entry_node(node)
     before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (entry,)), None)
     if before is None:
         raise ValueError(f"Cannot resume a run without a checkpoint before {node}.")
@@ -114,9 +114,12 @@ def run_live_delivery(
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
         if saved_values is not None and (pending := saved_values.get("pending_dispatch")):
+            assert "dispatch_plan" in saved_values
             stage, model = pending["stage"], pending["model"]
-            graph.update_state(config, {**halted("usage_unknown", f"{model} ran {stage} without a usage report", stage),
-                                       "attempts": [pending], "pending_dispatch": None}, as_node=stage)
+            graph.update_state(config, {**halted("usage_unknown", unknown_usage(stage, model), stage),
+                                       "attempts": [{"stage": stage, "model": model, "commit": pin.commit,
+                                                     "methods": saved_values["dispatch_plan"]["methods"], "outcome": "interrupted", "usage": None}],
+                                       "pending_dispatch": None}, as_node=stage + "_call")
             invoke(None, saved_values)
             return read_delivery_state(graph.get_state(config).values)
         waiting_for_quota = bool(saved.interrupts) and saved.values.get("halt") == "quota_exhausted"
@@ -168,12 +171,12 @@ def run_live_delivery(
             invoke(initial, initial)
         elif waiting_for_quota:
             invoke(Command(resume=True), saved_values)
-        elif (halt := saved_values.get("halt")) in RESUMABLE_HALTS:
+        elif saved_values.get("halt") in RESUMABLE_HALTS:
             before = _checkpoint_before_halt(graph, config, saved_values["path"])
-            if halt == "env_unavailable":
-                invoke(None, _CHECKPOINT_STATE.validate_python(before.values, strict=True), before.config)
-            else:
-                graph.invoke(None, before.config, durability="sync")
+            replay = before.config
+            if partial := saved_values.get("partial_edits"):
+                replay = graph.update_state(replay, {"partial_edits": partial})
+            invoke(None, _CHECKPOINT_STATE.validate_python(before.values, strict=True), replay)
         elif saved.next and not saved.interrupts:
             invoke(None, saved_values)
 

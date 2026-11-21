@@ -2,7 +2,7 @@
 # pyright: basic
 """The delivery graph. Edges live here. Models live in models.toml."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 from functools import cached_property
 from enum import StrEnum
@@ -11,6 +11,8 @@ from pathlib import Path
 from tomllib import TOMLDecodeError
 from typing import Annotated, Literal, NotRequired, get_args
 import operator
+import re
+import textwrap
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -23,11 +25,11 @@ from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome, OutcomeKind
-from foreman.config import Config, ConfigError, load_config, order_for
+from foreman.config import Config, ConfigError, ModelSpec, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, recorded_fixtures
 from foreman.github import (
-    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command,
+    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command, pull_request_command,
 )
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
@@ -35,18 +37,19 @@ from foreman.redaction import redact
 from foreman.stage_output import (
     Contract, Finding, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
 )
-from foreman.workspace import CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
+from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
 REQUIRED_NODES = ("triage", "research", "spec", "implement", "verify", "review")
 STAGE_ORDER = REQUIRED_NODES + ("merge",)
+COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 MergeHalt = Literal["merge_held", "merge_not_armed"]
-ResumableHalt = Literal[MergeHalt, "env_unavailable", "quota_exhausted"]
+ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_failed", "implement_quota", "quota_exhausted"]
 HaltReason = Literal[
-    ResumableHalt, "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
+    ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable", "usage_unknown",
+    "usage_unknown", "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
@@ -82,8 +85,8 @@ class DryRun:
 class AttemptUsage(TypedDict):
     input: int
     output: int
-    cache_read: NotRequired[int]
-    cache_creation: NotRequired[int]
+    cache_read: int
+    cache_creation: int
     cost_usd: float | None
 
 
@@ -92,12 +95,35 @@ class Attempt(TypedDict):
     model: str | None
     commit: str
     methods: list[str]
-    outcome: OutcomeKind
+    outcome: OutcomeKind | Literal["interrupted"]
     usage: AttemptUsage | None
 
 
+class PendingDispatch(TypedDict):
+    stage: str
+    index: int
+    model: str | None
+    quota_model: str | None
+
+
+class DispatchPlan(TypedDict):
+    models: list[str]
+    instruction: str
+    methods: list[str]
+    target: dict[str, object] | None
+    patch: str
+
+
+def entry_node(name: str) -> str:
+    return name
+
+
+def unknown_usage(stage: str, model: str | None) -> str:
+    return f"{model} ran {stage} without a usage report"
+
+
 def run_tokens(attempts: list[Attempt]) -> int:
-    return sum(usage["input"] + usage["output"] + usage.get("cache_read", 0) + usage.get("cache_creation", 0)
+    return sum(usage["input"] + usage["output"] + usage["cache_read"] + usage["cache_creation"]
                for attempt in attempts if (usage := attempt["usage"]) is not None)
 
 
@@ -128,10 +154,8 @@ class PullRequestSplit(TypedDict):
 
 
 class DeliveryFields(TypedDict, total=False):
-    pending_dispatch: Attempt | None
-    dispatch_index: int
-    dispatch_retry: str | None
-    dispatch_quota: str | None
+    pending_dispatch: PendingDispatch | None
+    dispatch_plan: DispatchPlan
     usage_version: int
     request: str
     issue: int
@@ -152,6 +176,12 @@ class DeliveryFields(TypedDict, total=False):
     attempts: Annotated[list[Attempt], operator.add]
     research: str
     implementation: str
+    delivery_branch: str
+    delivery_base: str
+    attempt_head: str
+    implementation_edits: str
+    partial_edits: str
+    commands: Annotated[list[list[str]], operator.add]
     head_sha: str | None
     verified_head: str
     merge_observed_head: str
@@ -308,7 +338,7 @@ def stage_update(
         update.update(spec=output.spec, spec_gate=output.spec_gate)
     elif isinstance(output, ImplementOutput):
         update.update(
-            implementation=output.implementation, head_sha=output.head_sha,
+            implementation=output.implementation,
             browser_proof=output.browser_proof.model_dump() if output.browser_proof else None,
             formal_proof=output.formal_proof.model_dump() if output.formal_proof else None,
         )
@@ -445,6 +475,16 @@ def compile_delivery(
                 )
                 if detail := probe.error:
                     return halted("env_unavailable", detail, name)
+                try:
+                    before = current_run.workspace.inspect()
+                    branch, parent = state.get("delivery_branch"), state.get("attempt_head")
+                    if before.branch != branch or before.head != parent:
+                        return halted("dirty_worktree", "Restore the attempt's branch and starting HEAD before resuming edits.", "implement")
+                    partial = state.get("partial_edits")
+                    if not before.clean and partial and current_run.workspace.fingerprint() != partial:
+                        return halted("dirty_worktree", "Edits changed after the quota stop; restore the run's partial edits.", "implement")
+                except WorkspaceError as exc:
+                    return halted("git_failed", str(exc), name)
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
@@ -479,8 +519,21 @@ def compile_delivery(
                     return halted("review_unavailable", str(exc), name)
                 review_context = (run.forge, target, diff)
                 instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
-            attempts: list[Attempt] = []
+            return {"dispatch_plan": {
+                "models": [model.name for model in models], "instruction": instruction, "methods": methods,
+                "target": review_context[1].model_dump() if review_context else None,
+                "patch": review_context[2].patch if review_context else "",
+            }, "pending_dispatch": {"stage": name, "index": 0, "model": models[0].name if models else None, "quota_model": None}}
+        return node
 
+    def call(name: str):
+        def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+            assert dispatcher is not None
+            assert "pending_dispatch" in state and "dispatch_plan" in state
+            pending, plan = state["pending_dispatch"], state["dispatch_plan"]
+            assert pending is not None
+            models, methods = plan["models"], plan["methods"]
+            attempts: list[Attempt] = []
             def record_attempt(model: str | None, outcome: Outcome) -> None:
                 attempts.append({
                     "stage": name, "model": model, "commit": config.pstack.commit, "methods": methods, "outcome": outcome.kind,
@@ -492,18 +545,18 @@ def compile_delivery(
                     },
                 })
 
-            index = state.get("dispatch_index", 0)
-            candidates = models[index:index + 1] if models else []
             outcome, model = dispatcher.run(
-                name, candidates, state, instruction, on_attempt=record_attempt,
+                name, ModelSpec.parse(pending["model"]) if pending["model"] else None, state, plan["instruction"], on_attempt=record_attempt,
             )
-            stopped: DeliveryUpdate = {"path": [name], "attempts": attempts}
-            if outcome.kind in {"quota", "cli_missing"} and index + 1 < len(models):
-                return {"attempts": attempts, "dispatch_index": index + 1, "dispatch_retry": name,
-                        "dispatch_quota": model if outcome.kind == "quota" else state.get("dispatch_quota")}
-            stopped.update({"dispatch_index": 0, "dispatch_retry": None, "dispatch_quota": None})
-            if outcome.kind == "cli_missing" and state.get("dispatch_quota"):
-                outcome, model = Outcome("quota"), state.get("dispatch_quota")
+            stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
+            index = pending["index"] + 1
+            if outcome.kind in {"quota", "cli_missing"} and index < len(models):
+                return {"attempts": attempts, "pending_dispatch": {
+                    "stage": name, "index": index, "model": models[index],
+                    "quota_model": model if outcome.kind == "quota" else pending["quota_model"],
+                }}
+            if outcome.kind == "cli_missing" and pending["quota_model"]:
+                outcome, model = Outcome("quota"), pending["quota_model"]
             if outcome.kind == "failed":
                 return {**stopped, **halted("invalid_output", f"{model}: {outcome.detail}", name)}
             if outcome.kind == "cli_missing":
@@ -518,7 +571,7 @@ def compile_delivery(
                 if isinstance(output, ReviewOutput):
                     output = _check_tool_facts(output, run, state.get("verified_head"))
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
-                update.update({"attempts": attempts, "dispatch_index": 0, "dispatch_retry": None, "dispatch_quota": None})
+                update.update(attempts=attempts, pending_dispatch=None)
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
                 update: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
@@ -528,9 +581,10 @@ def compile_delivery(
             except InvalidOutput as exc:
                 return {**stopped, **halted("invalid_output", str(exc), name)}
 
-            if review_context is not None and isinstance(output, ReviewOutput):
-                forge, target, diff = review_context
-                body, comments = review_submission(output, diff)
+            if plan["target"] is not None and isinstance(output, ReviewOutput) and isinstance(run, LiveRun):
+                forge, target = run.forge, PullRequest.model_validate(plan["target"])
+                repo = state["repo"]
+                body, comments = review_submission(output, ReviewDiff("", plan["patch"]))
                 try:
                     forge.post_review(repo, target, body, comments)
                 except ForgeError as exc:
@@ -540,6 +594,104 @@ def compile_delivery(
         return node
 
     scripted_verify = bind("verify")
+
+    def prepare(state: DeliveryState) -> DeliveryUpdate:
+        assert "slice" in state and "repo" in state
+        title = redact(str(state["slice"]["title"]))
+        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
+        branch = state.get("delivery_branch") or f"{state.get('issue', '<issue>')}-{slug}"
+        if isinstance(run, DryRun):
+            base = state.get("delivery_base", "<default-branch>")
+            commands = [] if "delivery_branch" in state else [branch_command(branch, base)]
+            return {"delivery_branch": branch, "delivery_base": base, "commands": commands}
+        try:
+            before = run.workspace.inspect()
+            if not before.clean:
+                return halted("dirty_worktree", "Unowned edits exist before this attempt; save them before rerunning.", "prepare")
+            base = state.get("delivery_base") or run.forge.default_branch(state["repo"])
+            run.workspace.create_branch(branch, base)
+            ready = run.workspace.inspect()
+            return {"delivery_branch": branch, "delivery_base": base, "attempt_head": ready.head, "partial_edits": ""}
+        except (WorkspaceError, ForgeError) as exc:
+            return halted("git_failed", str(exc), "prepare")
+
+    dispatch_implement = call("implement")
+
+    def implement(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+        if isinstance(run, DryRun):
+            return dispatch_implement(state, runtime)
+        assert "delivery_branch" in state and "attempt_head" in state
+        assert "pending_dispatch" in state and state["pending_dispatch"] is not None and "dispatch_plan" in state
+        update: DeliveryUpdate = {}
+        try:
+            try:
+                update = dispatch_implement(state, runtime)
+            except QuotaExhausted as exc:
+                return {**halted("implement_quota", f"Implement quota exhausted for {exc.model}; rerun to continue partial edits.", "implement"),
+                        "partial_edits": run.workspace.fingerprint(), "pending_dispatch": None,
+                        "attempts": [{"stage": "implement", "model": state["pending_dispatch"]["model"],
+                                      "commit": config.pstack.commit, "methods": state["dispatch_plan"]["methods"],
+                                      "outcome": "quota", "usage": None}]}
+            if update.get("pending_dispatch"):
+                return update
+            after = run.workspace.inspect()
+            if after.head != state["attempt_head"] or after.branch != state["delivery_branch"]:
+                return {**update, **halted("failed", "The worker changed HEAD or switched branches.", "implement"), "head_sha": after.head}
+            if not update.get("halt") and after.clean:
+                return {**update, **halted("failed", "no changes", "implement")}
+            fingerprint = run.workspace.fingerprint()
+            return {**update, "implementation_edits": fingerprint,
+                    "partial_edits": fingerprint if update.get("halt") == "quota_exhausted" else ""}
+        except WorkspaceError as exc:
+            return {**update, **halted("git_failed", str(exc), "implement")}
+
+    def commit(state: DeliveryState) -> DeliveryUpdate:
+        assert "slice" in state
+        subject = f"{state.get('issue', '<issue>')}: {' '.join(redact(str(state['slice']['title'])).split())}"
+        subject = textwrap.shorten(subject, width=72, placeholder="")
+        model = state.get("models_used", {}).get("implement")
+        if not model:
+            return halted("no_reviewer", "Publication needs the implement model.", None)
+        message = f"{subject}\n\nCo-Authored-By: {redact(model)} <{COAUTHOR_EMAILS[family(model)]}>"
+        if isinstance(run, DryRun):
+            return {"commands": commit_commands(message)}
+        assert "delivery_branch" in state and "attempt_head" in state and "implementation_edits" in state
+        try:
+            observed = run.workspace.inspect()
+            if observed.branch != state["delivery_branch"]:
+                raise WorkspaceError("Restore the delivery branch before committing.")
+            if observed.head != state["attempt_head"]:
+                if not observed.clean or not run.workspace.committed(state["attempt_head"], message):
+                    raise WorkspaceError("HEAD differs from the expected implementation commit.")
+            else:
+                if observed.clean:
+                    raise WorkspaceError("The checkpointed implementation edits are missing.")
+                if run.workspace.fingerprint() != state["implementation_edits"]:
+                    raise WorkspaceError("Implementation edits changed after the worker checkpoint.")
+                run.workspace.commit(message)
+                observed = run.workspace.inspect()
+                if not observed.clean:
+                    raise WorkspaceError("The commit left uncommitted edits; restore the implementation tree.")
+            return {"head_sha": observed.head}
+        except WorkspaceError as exc:
+            return halted("git_failed", str(exc), "commit")
+
+    def publish(state: DeliveryState) -> DeliveryUpdate:
+        assert "delivery_branch" in state and "delivery_base" in state and "repo" in state and "slice" in state
+        branch, base, repo = state["delivery_branch"], state["delivery_base"], state["repo"]
+        title = " ".join(redact(str(state["slice"]["title"])).split())
+        body = f"Closes #{state.get('issue', '<issue>')}"
+        if isinstance(run, DryRun):
+            return {"path": ["publish"], "commands": [push_command("origin", branch), pull_request_command(repo, branch, base, title, body)]}
+        try:
+            observed = run.workspace.inspect()
+            if not observed.clean or observed.branch != branch or observed.head != state.get("head_sha"):
+                raise WorkspaceError("Restore the clean delivery branch at its implementation commit before publishing.")
+            run.workspace.push(branch, repo)
+            run.forge.open_pull_request(repo, branch, base, title, body)
+        except (WorkspaceError, ForgeError) as exc:
+            return halted("publish_failed", str(exc), "publish")
+        return {"path": ["publish"]}
 
     def verify(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
         match runtime.context or run:
@@ -663,7 +815,7 @@ def compile_delivery(
             return "needs_human" if checkpointer is not None else "done"
         if decision == "question":
             return "spec" if state.get("issue_kind") == "parent" else "research"
-        return decision or "done"
+        return "prepare" if decision == "implement" else decision or "done"
 
     def after_spec(state: DeliveryState) -> str:
         if state.get("halt"):
@@ -681,7 +833,7 @@ def compile_delivery(
             return "needs_human"
         if state.get("issue_kind") == "parent":
             return "done"
-        return "implement" if state.get("spec_gate") == "ready" else "done"
+        return "prepare" if state.get("spec_gate") == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
         if state.get("halt"):
@@ -693,7 +845,7 @@ def compile_delivery(
         if state.get("review") == "approve":
             return "merge"
         if state.get("review_rounds", 0) < config.max_review_rounds:
-            return "implement"
+            return "prepare"
         return "done"
 
     def after_verify(state: DeliveryState) -> str:
@@ -705,16 +857,13 @@ def compile_delivery(
                 return "proof"
             return "review"
         if state.get("review_rounds", 0) < config.max_review_rounds:
-            return "implement"
+            return "prepare"
         return "done"
 
     def after_proof(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
-        return "implement" if state.get("proof_labels") else "review"
-
-    def after_implement(state: DeliveryState) -> str:
-        return "done" if state.get("halt") else "verify"
+        return "prepare" if state.get("proof_labels") else "review"
 
     def arm_merge(state: DeliveryState) -> DeliveryUpdate:
         repo = state["repo"]
@@ -786,42 +935,23 @@ def compile_delivery(
 
     builder = StateGraph(DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun)
 
-    def begin(stage: str):
-        def start(state: DeliveryState) -> DeliveryUpdate:
-            if stage == "verify" and isinstance(run, LiveRun):
-                return {"pending_dispatch": None}
-            try:
-                models = order_for(stage, config, state.get("models_used") or {}, state.get("implement_models"))
-            except ConfigError:
-                return {"pending_dispatch": None}
-            index = state.get("dispatch_index", 0)
-            model = models[index].name if models else None
-            _, methods = stage_methods(stage, state, methods_root) if methods_root else ("", [])
-            return {"pending_dispatch": {"stage": stage, "model": model, "commit": config.pstack.commit,
-                                         "methods": methods, "outcome": "failed", "usage": None}}
-        return start
-
-    def completed(call: Callable[[DeliveryState, Runtime[LiveRun]], DeliveryUpdate]):
-        def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-            return {"pending_dispatch": None, **call(state, runtime)}
-        return node
-
-    def target(stage: str) -> str:
-        return stage + "_start" if stage in REQUIRED_NODES else stage
-
     def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str]) -> None:
         def next_stage(state: DeliveryState) -> str:
-            if state.get("dispatch_retry") and not state.get("halt"):
-                return stage
             return "quota_wait" if state.get("halt") == "quota_exhausted" else route(state)
 
-        builder.add_conditional_edges(stage, next_stage, {key: target(value) for key, value in {**targets, stage: stage, "quota_wait": "quota_wait"}.items()})
+        def after_setup(state: DeliveryState) -> str:
+            return "call" if state.get("pending_dispatch") and not state.get("halt") else next_stage(state)
+        mapped: dict[Hashable, str] = {**targets, "quota_wait": "quota_wait", "call": stage + "_call"}
+        builder.add_conditional_edges(stage, after_setup, mapped)
+        builder.add_conditional_edges(stage + "_call", after_setup, mapped)
 
-    graph_nodes = {"verify": verify, "review": review}
+    graph_nodes = {"implement": implement, "verify": verify, "review": review}
     for name in REQUIRED_NODES:
-        builder.add_node(name + "_start", begin(name))
-        builder.add_edge(name + "_start", name)
-        builder.add_node(name, completed(graph_nodes[name] if name in graph_nodes else bind(name)))
+        builder.add_node(name, graph_nodes[name] if name in graph_nodes and name != "implement" else bind(name))
+        builder.add_node(name + "_call", implement if name == "implement" else call(name))
+    builder.add_node("prepare", prepare)
+    builder.add_node("commit", commit)
+    builder.add_node("publish", publish)
     builder.add_node("proof", prove)
     builder.add_node("needs_human", needs_human)
     builder.add_node("quota_wait", quota_wait)
@@ -830,45 +960,51 @@ def compile_delivery(
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_conditional_edges(
-        START, lambda state: "done" if state.get("halt") else "triage", {"done": "done", "triage": "triage_start"},
+        START, lambda state: "done" if state.get("halt") else "triage", {"done": "done", "triage": "triage"},
     )
     add_agent_edges(
         "triage",
         after_triage,
-        {"implement": "implement", "spec": "spec", "research": "research",
+        {"prepare": "prepare", "spec": "spec", "research": "research",
          "needs_human": "needs_human", "done": "done"},
     )
     add_agent_edges(
         "spec", after_spec,
-        {"spec": "spec", "implement": "implement", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
+        {"spec": "spec", "prepare": "prepare", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
     )
     builder.add_conditional_edges(
-        "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify_start"},
+        "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify"},
     )
     builder.add_conditional_edges(
-        "needs_human", _last_stage, {"triage": "triage_start", "spec": "spec_start"},
+        "needs_human", _last_stage, {"triage": "triage", "spec": "spec"},
     )
+    builder.add_conditional_edges("prepare", lambda state: "done" if state.get("halt") else "implement", {"done": "done", "implement": "implement"})
+    builder.add_conditional_edges("commit", lambda state: "done" if state.get("halt") else "publish", {"done": "done", "publish": "publish"})
+    builder.add_conditional_edges("publish", lambda state: "done" if state.get("halt") else "verify", {"done": "done", "verify": "verify"})
     builder.add_conditional_edges(
-        "quota_wait", lambda state: state["path"][-1], {name: name + "_start" for name in REQUIRED_NODES if name != "verify"},
+        "quota_wait", lambda state: state["path"][-1], {name: name for name in REQUIRED_NODES if name != "verify"},
     )
     add_agent_edges("research", lambda _: "done", {"done": "done"})
-    add_agent_edges("implement", after_implement, {"verify": "verify", "done": "done"})
+    add_agent_edges("implement", lambda state: "done" if state.get("halt") else "commit", {"commit": "commit", "done": "done"})
     add_agent_edges(
         "review",
         after_review,
-        {"merge": "merge", "implement": "implement", "spec": "spec", "decide_pr_size": "decide_pr_size", "done": "done"},
+        {"merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "done": "done"},
     )
-    builder.add_conditional_edges(
+    add_agent_edges(
         "verify",
         after_verify,
-        {"proof": "proof", "review": "review_start", "implement": "implement_start", "done": "done"},
+        {"proof": "proof", "review": "review", "prepare": "prepare", "done": "done"},
     )
     builder.add_conditional_edges(
-        "proof", after_proof, {"review": "review_start", "implement": "implement_start", "done": "done"},
+        "proof", after_proof, {"review": "review", "prepare": "prepare", "done": "done"},
     )
     builder.add_edge("merge", "done")
     builder.add_edge("done", END)
-    return builder.compile(checkpointer=checkpointer).with_config({"recursion_limit": 50 * (config.max_review_rounds + 1)})
+    # Each round visits at most all stages, each with one setup and every configured candidate,
+    # plus prepare/commit/publish, proof, prompts, merge and done.
+    steps = sum(1 + max(1, len(config.nodes[name].models)) for name in REQUIRED_NODES) + 12
+    return builder.compile(checkpointer=checkpointer).with_config({"recursion_limit": steps * (config.max_review_rounds + 1)})
 
 
 def run_delivery(
@@ -912,4 +1048,11 @@ def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None 
             ),
         )
     graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
-    return graph.get_graph().draw_mermaid()
+    drawing = graph.get_graph()
+    for name in REQUIRED_NODES:
+        drawing.nodes.pop(name + "_call")
+    drawing.edges = list(dict.fromkeys(
+        edge._replace(source=edge.source.removesuffix("_call"), target=edge.target.removesuffix("_call"))
+        for edge in drawing.edges if edge.data != "call"
+    ))
+    return drawing.draw_mermaid()

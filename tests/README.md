@@ -24,4 +24,3 @@ text without fetching from the network during tests.
 FOREMAN_PINNED_SKILL_REPO=/path/to/cursor/plugins \
   python -m unittest discover -s tests -p test_skill_rules.py
 ```
-

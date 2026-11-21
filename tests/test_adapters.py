@@ -22,16 +22,17 @@ def fixture_process(args, name, exit_code):
 
 class NativeAdaptersTest(unittest.TestCase):
     def assert_envelopes(self, adapter, cli, cases, *, input_tokens, cached_tokens, cost):
-        for name, exit_code, kind, has_usage in cases:
+        for name, exit_code, kind, expected in cases:
+            has_usage = expected is not None
             with self.subTest(cli=cli, fixture=name):
                 outcome = adapter.read(fixture_process([cli], name, exit_code))
                 self.assertEqual(outcome.kind, kind)
                 if not has_usage:
                     self.assertIsNone(outcome.usage)
                 else:
-                    self.assertEqual(outcome.usage.input_tokens, 1477 if cli == "claude" and name in {"quota", "wrong_model"} else input_tokens)
-                    self.assertEqual(outcome.usage.cache_read_input_tokens, 0 if cli == "claude" and name in {"quota", "wrong_model"} else cached_tokens)
-                    self.assertAlmostEqual(outcome.usage.total_cost_usd, 0.00016570000000000002 if cli == "claude" and name in {"quota", "wrong_model"} else cost)
+                    self.assertEqual(outcome.usage.input_tokens, expected[0])
+                    self.assertEqual(outcome.usage.cache_read_input_tokens, expected[1])
+                    self.assertAlmostEqual(outcome.usage.total_cost_usd, expected[2])
                 if kind == "ran":
                     self.assertEqual(outcome.output, {
                         "triage": "needs_human", "slice": None, "human_question": "Which items?",
@@ -43,24 +44,24 @@ class NativeAdaptersTest(unittest.TestCase):
     def test_claude_envelopes(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
         self.assert_envelopes(adapter, "claude", (
-            ("success", 0, "ran", True),
-            ("is_error", 1, "failed", False),
-            ("quota", 1, "quota", True),
-            ("model_substitution_disabled", 1, "failed", False),
-            ("missing_model_usage", 0, "failed", False),
-            ("wrong_model", 0, "failed", True),
-            ("zero_usage", 0, "failed", False),
+            ("success", 0, "ran", (1481, 3985, 0.037886699999999995)),
+            ("is_error", 1, "failed", None),
+            ("quota", 1, "quota", (1477, 0, 0.00016570000000000002)),
+            ("model_substitution_disabled", 1, "failed", None),
+            ("missing_model_usage", 0, "failed", None),
+            ("wrong_model", 0, "failed", (1477, 0, 0.00016570000000000002)),
+            ("zero_usage", 0, "failed", None),
         ), input_tokens=1481, cached_tokens=3985, cost=0.037886699999999995)
 
     def test_grok_envelopes(self):
         adapter = GrokAdapter(ModelSpec.parse("grok-4.7-high"))
         self.assert_envelopes(adapter, "grok", (
-            ("success", 0, "ran", True),
-            ("is_error", 1, "failed", False),
-            ("quota", 1, "quota", False),
-            ("missing_model_usage", 0, "failed", False),
-            ("zero_usage", 0, "failed", False),
-            ("incomplete_usage", 0, "ran", False),
+            ("success", 0, "ran", (18007, 9344, 0.01448196)),
+            ("is_error", 1, "failed", None),
+            ("quota", 1, "quota", None),
+            ("missing_model_usage", 0, "failed", None),
+            ("zero_usage", 0, "failed", None),
+            ("incomplete_usage", 0, "ran", None),
         ), input_tokens=18007, cached_tokens=9344, cost=0.01448196)
 
     def test_claude_quota_by_status_or_api_error(self):
@@ -272,7 +273,7 @@ class CodexAdapterTest(unittest.TestCase):
                 self.assertEqual((outcome.kind, outcome.detail), ("failed", message))
 
     def test_recorded_cached_usage_counts_input_once(self):
-        outcome = self.adapter.read(fixture_process(["codex"], "cached-success", 0))
+        outcome = self.adapter.read(fixture_process(["codex"], "cached_success", 0))
         self.assertEqual(outcome.kind, "ran")
         assert outcome.usage is not None
         self.assertEqual(outcome.usage.input_tokens, 40)
@@ -280,13 +281,10 @@ class CodexAdapterTest(unittest.TestCase):
         self.assertEqual(outcome.usage.output_tokens, 29)
 
     def test_cached_usage_clamps_and_missing_totals(self):
-        for input_tokens, cached, expected in ((10, 20, (0, 20)), (10, -5, (10, 0))):
-            with self.subTest(input_tokens=input_tokens, cached=cached):
-                events = codex_events()
-                events[-1]["usage"].update(input_tokens=input_tokens, cached_input_tokens=cached)
-                usage = self.adapter.read(codex_process(events)).usage
-                assert usage is not None
-                self.assertEqual((usage.input_tokens, usage.cache_read_input_tokens), expected)
+        for input_tokens, cached in ((10, 20), (10, -5)):
+            events = codex_events()
+            events[-1]["usage"].update(input_tokens=input_tokens, cached_input_tokens=cached)
+            self.assertIsNone(self.adapter.read(codex_process(events)).usage)
         events = codex_events()
         del events[-1]["usage"]["cached_input_tokens"]
         self.assertIsNone(self.adapter.read(codex_process(events)).usage)

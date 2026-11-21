@@ -64,6 +64,7 @@ class PullRequest(PullRequestStatus):
     headRefOid: str
     headRefName: str
     baseRefName: str
+    isCrossRepository: bool = False
     baseRefOid: str
     autoMergeRequest: AutoMergeRequest | None
 
@@ -149,6 +150,8 @@ class ReviewComment(TypedDict):
 
 
 class Forge(Protocol):
+    def default_branch(self, repo: str) -> str: ...
+    def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
     def load_issue(self, repo: str, number: int) -> Issue: ...
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None,
@@ -162,6 +165,11 @@ class Forge(Protocol):
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment]) -> None: ...
     def merge_hold(self, repo: str) -> str | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
+
+
+def pull_request_command(repo: str, head: str, base: str, title: str, body: str) -> list[str]:
+    return ["gh", "pr", "create", "--repo", redact(repo), "--base", redact(base), "--head", redact(head),
+            "--title", redact(" ".join(title.split())), "--body", redact(body)]
 
 
 def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
@@ -183,6 +191,36 @@ def render_slice_body(prose: str, child: StoredSlice) -> str:
 
 
 class LiveForge:
+    def __init__(self):
+        self._defaults: dict[str, str] = {}
+
+    def default_branch(self, repo: str) -> str:
+        if repo not in self._defaults:
+            self._defaults[repo] = self._read(
+                RepositoryDefaultBranch, ["gh", "repo", "view", repo, "--json", "defaultBranchRef"],
+            ).defaultBranchRef.name
+        return self._defaults[repo]
+
+    def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None:
+        def exists() -> bool:
+            try:
+                pr = self._view_pr(repo, head)
+            except CommandFailed as exc:
+                if "no pull requests found for branch" in str(exc):
+                    return False
+                raise
+            if pr.state != "OPEN" or pr.headRefName != head or pr.baseRefName != base or pr.isCrossRepository:
+                raise ForgeError("The branch pull request must be open on the selected base in this repository.")
+            return True
+
+        if exists():
+            return
+        try:
+            self._run_command(pull_request_command(repo, head, base, title, body))
+        except ForgeError:
+            if not exists():
+                raise
+
     def load_issue(self, repo: str, number: int) -> Issue:
         issue = self._read(
             IssueView, ["gh", "issue", "view", str(number), "--repo", repo, "--json", "title,body,labels"],
@@ -296,8 +334,8 @@ class LiveForge:
             raise ForgeError("The pull request head differs from the verified SHA.")
         if not pr.headRefName.startswith(f"{issue}-"):
             raise ForgeError(f"The pull request head branch must start with {issue}-.")
-        if pr.baseRefName != "main":
-            raise ForgeError("The pull request must target main.")
+        if pr.baseRefName != self.default_branch(repo) or pr.isCrossRepository:
+            raise ForgeError("The pull request must target the repository default branch.")
         return pr
 
     def _arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
@@ -322,7 +360,7 @@ class LiveForge:
     def _view_pr(self, repo: str, selector: str) -> PullRequest:
         command = [
             "gh", "pr", "view", "--repo", repo,
-            "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,autoMergeRequest", "--", selector,
+            "--json", "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest", "--", selector,
         ]
         return self._read(PullRequest, command)
 

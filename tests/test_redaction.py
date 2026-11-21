@@ -175,7 +175,9 @@ class RedactionTest(unittest.TestCase):
             ), ""),
             subprocess.CompletedProcess([], 0, "", ""),
         ]
-        LiveForge().arm_auto_merge("Example/Target", 8, "8-sample", SYNTHETIC_SHA)
+        forge = LiveForge()
+        forge._defaults["Example/Target"] = "main"
+        forge.arm_auto_merge("Example/Target", 8, "8-sample", SYNTHETIC_SHA)
         self.assertEqual(gh.call_args.args[0][-2:], ["--match-head-commit", SYNTHETIC_SHA])
         self.assertEqual(DryRun().record_merge("Example/Target", SYNTHETIC_SHA)[-1], SYNTHETIC_SHA)
         gh.side_effect = None
@@ -236,4 +238,14 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge.add_blocker"): 1,
             ("github.py", "LiveForge.create_issue"): 1,
             ("github.py", "LiveForge.post_review"): 4,
+            ("github.py", "pull_request_command"): 5,
+            ("delivery.py", "compile_delivery.prepare"): 1,
+            ("delivery.py", "compile_delivery.commit"): 2,
+            ("delivery.py", "compile_delivery.publish"): 1,
+            ("workspace.py", "branch_command"): 1,
+            ("workspace.py", "commit_commands"): 1,
+            ("workspace.py", "push_command"): 1,
+            ("workspace.py", "LiveWorkspace.create_branch"): 1,
+            ("workspace.py", "LiveWorkspace.committed"): 1,
+            ("workspace.py", "LiveWorkspace.push"): 1,
         })
