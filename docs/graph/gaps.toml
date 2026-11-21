@@ -92,12 +92,6 @@ triage = [["spec_check", "one slice"]]
 spec = [["size", "override: keep this PR"]]
 size = [["spec", "too big: re-plan"]]
 
-
-
-[stages.commit]
-difference_sha256 = "d966505bb7250aff3d4a16d3d289de2dcfa310ab494c172082c65036446c45d6"
-slice_9 = ["No generated stage page or execution-owned resource metadata yet (D1-D7, #137).", "commit goes to publish before verify (closes in slice 9)."]
-
 [dispatch.missing.slice_13]
 __start__ = [["plan", ""]]
 run = [["__end__", "result"], ["plan", "quota or CLI missing: next model"], ["wait", "no eligible model now"]]
