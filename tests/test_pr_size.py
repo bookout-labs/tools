@@ -23,14 +23,19 @@ class PullRequestSizeTest(unittest.TestCase):
         self.checkpoint = directory / "run.sqlite3"
         self.forge = FakeGitHub()
         self.stages = []
+        self.original_spec = None
+        remote = directory / "origin.git"
+        self.git("init", "--bare", str(remote))
         self.git("init", "-b", "main")
+        self.git("remote", "add", "origin", str(remote))
         self.git("config", "user.name", "Synthetic Test")
         self.git("config", "user.email", "synthetic@example.invalid")
         self.write(".gitattributes", (Path(__file__).resolve().parents[1] / ".gitattributes").read_text())
         self.write("src/items.py", "old item\n")
         self.base = self.commit()
         self.write("src/main-only.py", "main\n" * (PULL_REQUEST_LINES + 1))
-        self.git("update-ref", "refs/remotes/origin/main", self.commit())
+        self.commit()
+        self.git("push", "origin", "main")
         self.git("switch", "-c", BRANCH, self.base)
 
     def git(self, *args):
@@ -48,19 +53,25 @@ class PullRequestSizeTest(unittest.TestCase):
         self.git("-c", "commit.gpgsign=false", "commit", "-m", "Synthetic change")
         return self.git("rev-parse", "HEAD")
 
-    def worker(self, args, cwd):
+    def worker(self, args, cwd, env):
         self.assertEqual(cwd, self.root)
         prompt, state_json = args[-1].rsplit("\n\nDelivery state:\n", 1)
-        stage = json.loads(prompt.rsplit("\n\nOutput schema:\n", 1)[1])["title"]
+        schema = prompt.rsplit("\n\nOutput schema:\n", 1)[1] if args[0] == "codex" else args[args.index("--json-schema") + 1]
+        stage = json.loads(schema)["title"]
         self.stages.append(stage)
+        state = json.loads(state_json)
         replies = {
             "TriageOutput": {"triage": "implement", "slice": EMPTY_SLICE},
             "ImplementOutput": {"implementation": "Built."},
             "SpecOutput": {"spec": "Ship the list first, then add sorting.", "spec_gate": "ready"},
             "ReviewOutput": APPROVE,
         }
+        if stage == "TriageOutput" and self.original_spec:
+            return worker_reply(args, {"triage": "spec"})
         if stage == "SpecOutput":
-            self.spec_state = json.loads(state_json)
+            if self.original_spec and "pr_size" not in state:
+                return worker_reply(args, {"spec": self.original_spec, "spec_gate": "ready"})
+            self.spec_state = state
             if "slice" not in self.forge.labels:
                 replies[stage]["slices"] = [EMPTY_SLICE, {**EMPTY_SLICE, "title": "Sort items"}]
         return worker_reply(args, replies[stage])
@@ -73,6 +84,12 @@ class PullRequestSizeTest(unittest.TestCase):
             )
         self.assertEqual(code, expected_code, stderr.getvalue())
         return stdout.getvalue(), stderr.getvalue()
+
+    def checkpoint_values(self):
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saved = saver.get({"configurable": {"thread_id": "example/engine#8"}})
+        assert saved is not None
+        return saved["channel_values"]
 
     def test_under_limit_diff_reaches_review(self):
         self.write("src/items.py", "changed\n" * (PULL_REQUEST_LINES - 2))
@@ -126,10 +143,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(self.forge.merge_calls, [("Example/Engine", 8, BRANCH, head)])
         self.assertEqual(self.forge.created, [])
         self.assertEqual(self.invoke()[0], stdout)
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saved = saver.get({"configurable": {"thread_id": "example/engine#8"}})
-        assert saved is not None
-        self.assertEqual(saved["channel_values"]["pr_size_override"], {
+        self.assertEqual(self.checkpoint_values()["pr_size_override"], {
             "head": head, "merge_base": self.base, "lines": PULL_REQUEST_LINES + 1,
         })
 
@@ -151,10 +165,35 @@ class PullRequestSizeTest(unittest.TestCase):
         new_head = self.commit()
         stdout, _ = self.invoke("--answer", "override")
         self.assertIn("paused needs_human", stdout)
-        self.assertEqual(self.spec_state["pr_size"]["head"], new_head)
-        self.assertEqual(self.spec_state["pr_size_override"]["lines"], self.spec_state["pr_size"]["lines"])
+        values = self.checkpoint_values()
+        self.assertEqual(values["pr_size"]["head"], new_head)
+        self.assertEqual(values["pr_size_override"]["lines"], values["pr_size"]["lines"])
         self.assertNotIn("ReviewOutput", self.stages)
         self.assertEqual(self.forge.merge_calls, [])
+
+    def test_split_preserves_spec_and_new_push_prompts_with_new_count(self):
+        self.original_spec = "List open items without changing their order."
+        self.write("tests/test_items.py", "handwritten\n" * 500)
+        old_head = self.commit()
+        self.git("push", "origin", BRANCH)
+        self.assertIn("500 changed lines", self.invoke()[0])
+        values = self.checkpoint_values()
+        self.assertEqual(values["spec"], self.original_spec)
+        self.assertEqual(values["pr_split"]["plan"], "Ship the list first, then add sorting.")
+
+        self.write("tests/test_items.py", "handwritten\n" * 501)
+        new_head = self.commit()
+        self.git("push", "origin", BRANCH)
+        stdout, _ = self.invoke("--answer", "override")
+        self.assertIn("501 changed lines", stdout)
+        self.assertIn("paused needs_human", stdout)
+        values = self.checkpoint_values()
+        self.assertEqual(values["spec"], self.original_spec)
+        self.assertEqual(values["pr_size_override"]["head"], old_head)
+        self.assertEqual(values["pr_size"]["head"], new_head)
+        self.assertEqual(self.stages, ["TriageOutput", "SpecOutput", "ImplementOutput", "SpecOutput"])
+        self.assertEqual(self.forge.merge_calls, [])
+        self.assertIn("done verified", self.invoke("--answer", "override")[0])
 
     def test_branch_attributes_cannot_exempt_its_own_diff(self):
         self.write(".gitattributes", "src/** linguist-generated -diff\n")
@@ -165,8 +204,62 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(self.spec_state["pr_size"]["lines"], PULL_REQUEST_LINES + 1)
 
     def test_missing_base_stops_before_review(self):
-        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.forge.base_branch = "missing"
+        self.git("update-ref", "refs/remotes/origin/missing", self.base)
         stdout, _ = self.invoke()
         self.assertIn("done pr_size_unavailable", stdout)
         self.assertNotIn("ReviewOutput", self.stages)
         self.assertEqual(self.forge.merge_calls, [])
+
+    def test_repository_info_attributes_stop_the_run_and_name_the_file(self):
+        self.write(".git/info/attributes", "src/** linguist-generated\n")
+        self.write("src/items-extra.py", "handwritten\n" * 500)
+        self.commit()
+        stdout, _ = self.invoke()
+        self.assertIn("done pr_size_unavailable", stdout)
+        self.assertIn(str(self.root / ".git/info/attributes"), stdout)
+        self.assertNotIn("ReviewOutput", self.stages)
+
+    def test_core_attributes_file_cannot_exempt_handwritten_lines(self):
+        self.write("../local-attributes", "src/** linguist-generated\n")
+        self.git("config", "core.attributesFile", str(self.root.parent / "local-attributes"))
+        self.write("src/items-extra.py", "handwritten\n" * 500)
+        self.commit()
+        self.assertIn("500 changed lines", self.invoke()[0])
+        self.assertNotIn("ReviewOutput", self.stages)
+
+    def test_nul_bearing_file_counts_all_500_lines(self):
+        self.write("src/items.dat", "\0item\n" * 500)
+        self.commit()
+        self.assertIn("500 changed lines", self.invoke()[0])
+        self.assertNotIn("ReviewOutput", self.stages)
+
+    def test_literal_true_is_generated_and_false_is_counted(self):
+        self.git("switch", "main")
+        self.write(".gitattributes", "src/generated.py linguist-generated=true\nsrc/handwritten.py linguist-generated=false\n")
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("switch", "-C", BRANCH, base)
+        self.write("src/generated.py", "generated\n" * 500)
+        self.write("src/handwritten.py", "handwritten\n" * 12)
+        self.commit()
+        stdout, _ = self.invoke()
+        self.assertIn("pull request lines 12\n", stdout)
+        self.assertIn("done verified", stdout)
+
+    def test_fetch_refreshes_the_actual_pr_base_before_measurement(self):
+        self.forge.base_branch = "release/current"
+        self.git("switch", "-c", self.forge.base_branch, self.base)
+        self.git("push", "origin", self.forge.base_branch)
+        self.write("src/release.py", "existing on release\n" * 500)
+        release_tip = self.commit()
+        self.git("push", "origin", self.forge.base_branch)
+        tracking_ref = f"refs/remotes/origin/{self.forge.base_branch}"
+        self.git("update-ref", tracking_ref, self.base)
+        self.git("switch", "-C", BRANCH, release_tip)
+        self.write("src/items.py", "new item\n")
+        self.commit()
+        stdout, _ = self.invoke()
+        self.assertIn("pull request lines 2\n", stdout)
+        self.assertIn("done verified", stdout)
+        self.assertEqual(self.git("rev-parse", tracking_ref), release_tip)

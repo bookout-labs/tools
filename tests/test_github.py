@@ -38,6 +38,12 @@ def pr_result(pr=PR, command=VIEW):
 
 class LiveForgeTest(unittest.TestCase):
     @patch("foreman.github.subprocess.run")
+    def test_pull_request_base_uses_the_forge_base_ref(self, run):
+        run.return_value = pr_result({**PR, "baseRefName": "release/current"})
+        self.assertEqual(LiveForge().pull_request_base(REPO, BRANCH), "release/current")
+        self.assertEqual(run.call_args.args[0], VIEW)
+
+    @patch("foreman.github.subprocess.run")
     def test_load_issue_validates_labels_and_normalizes_an_empty_body(self, run):
         run.side_effect = [
             gh_result('{"title":"Track items","body":null,"labels":[{"name":"slice","color":"eeeeee"}]}'),

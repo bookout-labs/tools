@@ -90,6 +90,7 @@ class Forge(Protocol):
     def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> int: ...
     def is_merged(self, repo: str, number: int) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
+    def pull_request_base(self, repo: str, branch: str) -> str: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
 
 
@@ -128,6 +129,9 @@ class LiveForge:
 
     def add_label(self, repo: str, number: int, label: str) -> None:
         self._run_command(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
+
+    def pull_request_base(self, repo: str, branch: str) -> str:
+        return self._view_pr(repo, branch).baseRefName
 
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
         try:

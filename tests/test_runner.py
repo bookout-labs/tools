@@ -55,7 +55,7 @@ class FakeWorkspace(LiveWorkspace):
             raise self.last
         return self.last
 
-    def pull_request_size(self, head: str) -> PullRequestSize:
+    def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": "b" * 40, "lines": 1}
 
 
@@ -84,6 +84,10 @@ class FakeGitHub:
         self.label_calls = []
         self.issue_labels = {}
         self.merge_calls = []
+        self.base_branch = "main"
+
+    def pull_request_base(self, repo: str, branch: str) -> str:
+        return self.base_branch
 
     def arm_auto_merge(self, repo, issue, branch, sha):
         self.merge_calls.append((repo, issue, branch, sha))
@@ -526,12 +530,24 @@ class LiveRunnerTest(unittest.TestCase):
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk(
                     [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
-                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
+                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
                 )
                 self.assertEqual(result["check_exit_code"], 0)
                 self.assertEqual(result["merge"], "not_armed")
                 self.assertEqual(result["stop"], "merge_not_armed")
                 self.assertIn(detail, result["halt_detail"])
+                self.assertEqual(self.github.merge_calls, [])
+
+    def test_head_moved_before_review_uses_the_existing_merge_stop(self):
+        moved = WorktreeState("b" * 40, True, BRANCH)
+        for snapshots in ((CLEAN_WORKTREE, moved), (CLEAN_WORKTREE, CLEAN_WORKTREE, moved)):
+            with self.subTest(snapshots=snapshots), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "run.sqlite3"
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}], snapshots=snapshots)
+                self.assertEqual(result["stop"], "merge_not_armed")
+                self.assertEqual(result["merge"], "not_armed")
+                self.assertIn(f"HEAD is {moved.head}, verification checked {HEAD}.", result["halt_detail"])
+                self.assertNotIn("review", result["path"])
                 self.assertEqual(self.github.merge_calls, [])
 
     def test_live_workspace_reports_head_status_and_branch(self):
