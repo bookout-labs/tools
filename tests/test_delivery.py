@@ -59,7 +59,7 @@ class DeliveryTest(unittest.TestCase):
             )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(source.pins, [PSTACK_PIN])
-        self.assertTrue(result["skill_attempts"])
+        self.assertTrue(result["attempts"])
 
     def test_passing_a_slice_starts_a_slice_run(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[1])
