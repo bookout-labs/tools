@@ -4,9 +4,10 @@ from collections.abc import Mapping
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
-from foreman.stage_output import MergeRiskRecord, WorkKind
+from foreman.stage_output import MergeRiskRecord, SpecCheckOutput, WorkKind
 
 SCRIPTED_USAGE = Usage(input_tokens=1, output_tokens=1)
+CLEAR = SpecCheckOutput(findings=[], notes=[], resolutions=[])
 
 DEFAULT_RISK: MergeRiskRecord = {
     "alignment": "The change matches the request.",
@@ -67,7 +68,7 @@ class ScriptHandler:
                 "human_question": None,
             }, usage=SCRIPTED_USAGE)
         if node == "spec_check":
-            return Outcome("ran", {"findings": [], "notes": [], "resolutions": []}, usage=SCRIPTED_USAGE)
+            return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
         if node == "implement":
             return Outcome("ran", {
                 "implementation": self.implementation,
