@@ -92,6 +92,21 @@ FOREMAN_PINNED_SKILL_REPO=/path/to/cursor/plugins \
   python -m unittest discover -s tests -p test_skill_rules.py
 ```
 
+## GitHub issue dependency contract
+
+Foreman calls the GitHub REST API through `gh api`.
+
+- `GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` returns issue objects. Foreman reads `number`, `title`, `repository_url`, `html_url`, and `state` from each page. [GitHub REST API 2026-03-10](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#list-dependencies-an-issue-is-blocked-by)
+- `POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` takes the blocker's numeric `issue_id`. Foreman gets that ID from `GET /repos/{owner}/{repo}/issues/{issue_number}`. [Add a dependency](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#add-a-dependency-an-issue-is-blocked-by), [Get an issue](https://docs.github.com/en/rest/issues/issues?apiVersion=2026-03-10#get-an-issue)
+- `gh api --paginate --slurp` returns an array of pages. `-F issue_id=<id>` sends the ID as a JSON integer. [GitHub CLI 2.102.0](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go)
+
+Read-only reachability check with `gh 2.102.0`:
+
+```sh
+gh api --method GET 'repos/bookout-labs/tools/issues/43/dependencies/blocked_by' --paginate --slurp
+# [[]]
+```
+
 ## Pull request size
 
 Git 2.56.0 reported a binary numstat row for a synthetic 500-line file with one NUL byte per line. The corresponding text patch reported a 500-line hunk. The review gate reads the text hunk ranges when numstat supplies dashes.
@@ -173,6 +188,24 @@ documents `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`. Foreman
 sends `commit_id`, `event: COMMENT`, `body`, and a `comments` array
 with `path`, `line`, `side`, and `body` per inline comment. The
 [`RIGHT` side identifies the new file](https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request).
+
+## Closing pull request contract
+
+Checked against GitHub GraphQL documentation on 2026-11-20 and GitHub CLI
+v2.102.0 [query builder](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L78-L95).
+The CLI requests closing references without a base-branch filter. The
+[Issue field](https://docs.github.com/en/graphql/reference/issues#issue)
+also admits manually linked PRs by default. A closed issue and a merged
+referenced PR therefore do not establish that the work reached the default branch.
+Foreman checks the closing repository's default branch, including for cross-repository references.
+
+CLI v2.102.0 exposes `state` and `baseRefName` in `gh pr view --json`
+and `defaultBranchRef { name }` in `gh repo view --json`.
+[PR fields](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L353-L357),
+[repository field](https://github.com/cli/cli/blob/v2.102.0/api/query_builder.go#L603-L604).
+The tests feed those documented shapes through the production Pydantic parsers.
+A merged PR targeting `release` with default branch `main` must return false;
+a merged PR targeting default branch `trunk` must return true.
 
 
 ## Ordered check output

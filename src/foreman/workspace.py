@@ -57,6 +57,7 @@ class Workspace(Protocol):
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int: ...
     def inspect(self) -> WorktreeState: ...
+    def has_file(self, path: str) -> bool: ...
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str) -> ReviewDiff: ...
 
@@ -75,6 +76,14 @@ class LiveWorkspace:
                 if log is not None:
                     log(line)
             return process.wait()
+
+    def has_file(self, path: str) -> bool:
+        root = self.root.resolve()
+        try:
+            file = (root / path).resolve()
+            return file.is_relative_to(root) and file.is_file()
+        except (OSError, RuntimeError, ValueError):
+            return False
 
     def inspect(self) -> WorktreeState:
         head = os.fsdecode(self._git("rev-parse", "HEAD")).strip()

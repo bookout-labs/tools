@@ -73,7 +73,7 @@ def _print_run(result: DeliveryState) -> None:
                 fields.extend(("risk", risk["level"]))
             _write_run_log(" ".join(fields))
     stop = result.get("stop")
-    if stop in {"needs_human", "quota_exhausted"} and "done" not in result["path"]:
+    if stop in {"needs_human", "quota_exhausted"} and "done" not in result.get("path", []):
         print(f"paused {stop}")
         _write_run_log(result["halt_detail"])
 
