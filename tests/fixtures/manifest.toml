@@ -388,6 +388,27 @@ kind = "quoted_source"
 sources = ["https://cli.github.com/manual/gh_pr_view", "https://cli.github.com/manual/gh_api", "https://docs.github.com/en/rest/pulls/reviews?apiVersion=2022-11-28#create-a-review-for-a-pull-request", "https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request"]
 notes = "Published evidence for the PR fields, stdin request body, review endpoint, and inline comment side used by LiveForge."
 
+[fixtures."github/open-issues.json"]
+tool = "gh and GitHub REST API"
+version = "GitHub REST API 2022-11-28"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/issues?apiVersion=2022-11-28#list-repository-issues", "https://cli.github.com/manual/gh_api"]
+notes = 'Reduced response example with synthetic pagination and a nullable body. GitHub: "You can identify pull requests by the pull_request key." gh --paginate --slurp wraps all pages in an outer array.'
+
+[fixtures."github/issue-comments.json"]
+tool = "gh and GitHub REST API"
+version = "GitHub REST API 2022-11-28"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/comments?apiVersion=2022-11-28#list-issue-comments", "https://cli.github.com/manual/gh_api"]
+notes = 'Reduced response example quoting "Me too", with synthetic second-page marker and nullable body; gh --paginate --slurp preserves every page.'
+
+[fixtures."github/created-comment.json"]
+tool = "GitHub REST API"
+version = "2022-11-28"
+kind = "quoted_source"
+sources = ["https://docs.github.com/en/rest/issues/comments?apiVersion=2022-11-28#create-an-issue-comment"]
+notes = 'Reduced 201 response example. POST /repos/{owner}/{repo}/issues/{issue_number}/comments requires body: "The contents of the comment."'
+
 # ## Pull request size
 #
 # Git 2.56.0 reported a binary numstat row for a synthetic 500-line file with one NUL byte per line. The corresponding text patch reported a 500-line hunk. The review gate reads the text hunk ranges when numstat supplies dashes.

@@ -7,7 +7,7 @@ import subprocess
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict
 
-from pydantic import BaseModel, ConfigDict, PositiveInt, RootModel, ValidationError, with_config
+from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.redaction import redact
 if TYPE_CHECKING:
@@ -124,6 +124,28 @@ class CreatedIssue(BaseModel, strict=True):
     number: PositiveInt
 
 
+class OpenIssue(BaseModel, strict=True):
+    number: PositiveInt
+    body: str
+
+
+class IssueComment(BaseModel, strict=True):
+    body: str | None
+
+
+class RepositoryIssue(IssueComment):
+    number: PositiveInt
+    pull_request: JsonValue = None
+
+
+class OpenIssuePages(RootModel[list[list[RepositoryIssue]]], strict=True):
+    pass
+
+
+class IssueCommentPages(RootModel[list[list[IssueComment]]], strict=True):
+    pass
+
+
 class ActionsVariable(BaseModel, strict=True):
     name: str
     value: str
@@ -173,6 +195,9 @@ class Forge(Protocol):
     def default_branch(self, repo: str) -> str: ...
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
     def load_issue(self, repo: str, number: int) -> Issue: ...
+    def open_issues(self, repo: str) -> list[OpenIssue]: ...
+    def issue_comments(self, repo: str, number: int) -> list[str]: ...
+    def comment_issue(self, repo: str, number: int, body: str) -> None: ...
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None,
     ) -> int: ...
@@ -246,6 +271,33 @@ class LiveForge:
             IssueView, ["gh", "issue", "view", str(number), "--repo", repo, "--json", "title,body,labels"],
         )
         return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
+
+    def open_issues(self, repo: str) -> list[OpenIssue]:
+        pages = self._read(OpenIssuePages, [
+            "gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate", "--slurp",
+        ])
+        issues = [
+            OpenIssue(number=issue.number, body=issue.body or "")
+            for page in pages.root for issue in page if "pull_request" not in issue.model_fields_set
+        ]
+        if not issues:
+            raise ForgeError("No open issues returned.")
+        return issues
+
+    def issue_comments(self, repo: str, number: int) -> list[str]:
+        pages = self._read(IssueCommentPages, [
+            "gh", "api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate", "--slurp",
+        ])
+        comments = [comment.body or "" for page in pages.root for comment in page]
+        if not comments:
+            raise ForgeError("No issue comments returned.")
+        return comments
+
+    def comment_issue(self, repo: str, number: int, body: str) -> None:
+        repo, body = (redact(value) for value in (repo, body))
+        self._run_command([
+            "gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}",
+        ])
 
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None,

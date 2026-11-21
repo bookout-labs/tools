@@ -22,7 +22,7 @@ from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
-from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
+from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, PullRequest, render_slice_body
 
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.skill_rules import export_skills, git
@@ -138,6 +138,7 @@ class FakeGitHub:
         self.labels = labels if labels is not None else ["slice"]
         self.body = slice_body(EMPTY_SLICE) if "slice" in self.labels else "Issue body"
         self.created: list[tuple[str, str, list[str]]] = []
+        self.comments: dict[tuple[str, int], list[str]] = {}
         self.closed = set()
         self.merged = set()
         self.label_calls = []
@@ -179,6 +180,21 @@ class FakeGitHub:
             title, body, _ = self.created[number - 101]
             return {"title": title, "body": body, "labels": self.issue_labels[number]}
         return {"title": "Issue title", "body": self.body, "labels": self.labels}
+
+    def open_issues(self, repo) -> list[OpenIssue]:
+        issues = [OpenIssue(number=number, body=self.load_issue(repo, number)["body"])
+                  for number in self.issue_labels if number not in self.closed and number not in self.merged]
+        if not issues:
+            raise ForgeError("No open issues returned.")
+        return issues
+
+    def issue_comments(self, repo, number) -> list[str]:
+        if not self.comments.get((repo, number)):
+            raise ForgeError("No issue comments returned.")
+        return list(self.comments[repo, number])
+
+    def comment_issue(self, repo, number, body):
+        self.comments.setdefault((repo, number), []).append(body)
 
     def create_issue(self, repo, title, body, labels, *, child=None):
         if child is not None:
