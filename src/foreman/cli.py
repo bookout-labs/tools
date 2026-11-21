@@ -3,6 +3,7 @@
 import argparse
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
+from importlib.resources import files
 import os
 from pathlib import Path
 import re
@@ -154,6 +155,8 @@ def main(
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    commands.add_parser("coordinator", help="start an interactive Claude coordinator session")
+
     draw = commands.add_parser("diagram", help="print the graph")
     draw.add_argument("graph", nargs="?", default=GRAPH_NAME)
     draw.add_argument("--write", action="store_true", help="update docs/graph and README in the current checkout")
@@ -178,6 +181,21 @@ def main(
     accept.add_argument("path")
 
     args = parser.parse_args(argv)
+    if args.command == "coordinator":
+        try:
+            instruction = files("foreman").joinpath("roles/coordinator.md").read_text(encoding="utf-8")
+            if not instruction.strip():
+                raise ValueError("empty role")
+        except (OSError, UnicodeError, ValueError):
+            print("cannot start coordinator: installed roles/coordinator.md is missing, unreadable, or empty; "
+                  "reinstall the selected bookout-tools revision", file=sys.stderr)
+            return 1
+        try:
+            os.execvp("claude", ["claude", "--append-system-prompt", instruction])
+        except OSError as exc:
+            detail = exc.strerror or str(exc)
+            print(f"cannot start coordinator: failed to run claude: {detail}", file=sys.stderr)
+            return 1
     if args.command == "diagram":
         if args.graph != GRAPH_NAME:
             print(f"unknown graph {args.graph}", file=sys.stderr)
