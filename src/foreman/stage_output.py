@@ -139,12 +139,26 @@ class MergeRisk(Contract):
     level: Literal["low", "medium", "high"]
 
 
+class Finding(Contract):
+    file: Text = Field(description="Give the path relative to the repository root.")
+    line: int = Field(description="Give the line number in the reviewed commit.")
+    severity: Literal["blocking", "nit"]
+    summary: Text = Field(max_length=200)
+
+
 class ReviewOutput(Contract):
     review: Literal["approve", "changes"]
     risk: MergeRisk
-    review_note: str | None = Field(
-        description="Put the reviewer's requested changes here and keep the verdict in review. Use null when there is no note.",
+    findings: list[Finding] = Field(
+        description="List each requested fix, including nits. Return one or more findings for changes and an empty list for approve.",
     )
+    detail: Text = Field(description="Write the pull request review body, including any longer explanation.")
+
+    @model_validator(mode="after")
+    def verdict_matches_findings(self) -> Self:
+        if (self.review == "changes") != bool(self.findings):
+            raise ValueError("changes requires at least one finding and approve requires an empty findings list")
+        return self
 
 
 class VerifyOutput(Contract):
