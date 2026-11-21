@@ -259,6 +259,12 @@ applied. `budget_exceeded` and `usage_unknown` exit 1 and cannot resume.
 Interrupted calls with no committed usage halt as unknown rather than being
 retried. Checkpoints from before usage accounting require a new run.
 
+Claude's `error_max_budget_usd` result also halts as `budget_exceeded`, retaining
+the attempt's usage without applying its output or trying the next model.
+Claude dollar costs are known only when every model ledger cost is finite and
+nonnegative and their sum agrees with the envelope total within floating-point
+tolerance; invalid costs leave token accounting intact.
+
 Settled rulings exist only within a run. Resolved findings become rulings for later reviews.
 
 A repeated blocking kind pauses as `design_rethink` without consuming a failure round.
