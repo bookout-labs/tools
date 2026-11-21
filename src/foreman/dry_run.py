@@ -1,5 +1,10 @@
 """A handler that walks the graph without calling a model."""
 
+from collections.abc import Mapping
+
+from foreman.adapters import Outcome
+from foreman.config import ModelSpec
+
 DEFAULT_RISK = {
     "alignment": "The change matches the request.",
     "impact": "The change is limited to the requested surface.",
@@ -23,6 +28,7 @@ class ScriptHandler:
         research: str = "answer",
         risk: dict | None = None,
         head_sha: str | None = None,
+        slice: dict | None = None,
     ):
         self.triage = triage
         self.spec_gate = spec_gate
@@ -30,28 +36,41 @@ class ScriptHandler:
         self.verify = verify
         self.spec = spec
         self.slices = slices
+        self.slice = slice if slice is not None else {
+            "title": "Implement the requested change",
+            "acceptance": "The requested change passes verification.",
+            "depends_on": [],
+            "screen": "",
+            "properties": [],
+        }
         self.implementation = implementation
         self.head_sha = head_sha
         self.research = research
         self.risk = dict(DEFAULT_RISK if risk is None else risk)
         self.calls: list[dict[str, str | None]] = []
 
-    def __call__(self, node: str, model: str | None, state: dict, instruction: str) -> dict:
-        self.calls.append({"node": node, "model": model, "instruction": instruction})
+    def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
+        self.calls.append({"node": node, "model": model.name if model else None, "instruction": instruction})
         if node == "triage":
-            return {"triage": self.triage}
+            return Outcome("ran", {
+                "triage": self.triage, "human_question": None,
+                "slice": self.slice if self.triage == "implement" and state["issue_kind"] == "parent" else None,
+            })
         if node == "spec":
-            payload = {"spec": self.spec, "spec_gate": self.spec_gate}
-            if self.slices is not None:
-                payload["slices"] = self.slices
-            return payload
+            return Outcome("ran", {
+                "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices,
+                "human_question": None,
+            })
         if node == "implement":
-            return {"implementation": self.implementation, "head_sha": self.head_sha}
+            return Outcome("ran", {
+                "implementation": self.implementation, "head_sha": self.head_sha,
+                "browser_proof": None, "formal_proof": None,
+            })
         if node == "research":
-            return {"research": self.research}
+            return Outcome("ran", {"research": self.research})
         if node == "review":
             verdict = self.reviews.pop(0) if self.reviews else "changes"
-            return {"review": verdict, "risk": dict(self.risk)}
+            return Outcome("ran", {"review": verdict, "risk": dict(self.risk), "review_note": None})
         if node == "verify":
-            return {"verify": self.verify}
+            return Outcome("ran", {"verify": self.verify})
         raise ValueError(f"no script for {node}")

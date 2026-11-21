@@ -1,9 +1,11 @@
 import unittest
 
 from dataclasses import replace
+from pathlib import Path
 
-from foreman.config import NodeConfig, load_config
-from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
+from foreman.adapters import Outcome
+from foreman.config import ModelSpec, NodeConfig, load_config
+from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
 
@@ -14,7 +16,7 @@ SLICES = [
         "acceptance": "The board shows the deals.",
         "depends_on": [],
         "screen": "docs/screens/deals.md",
-        "properties": [{"name": "Visibility", "constraint": "Every open deal appears once."}],
+        "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
     },
     {
         "title": "Board saves a move",
@@ -24,23 +26,30 @@ SLICES = [
         "properties": [],
     },
 ]
+EMPTY_SLICE = {**SLICES[1], "depends_on": []}
 
 
 HEAD_SHA = "a" * 40
 
 
-def walk(handler, check="npm run check", issue_kind="slice", config=None):
+def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
     return run_delivery(
         FailoverDispatcher(handler),
         repo="DoctorCRE/doctorcre-engine",
         request="Add a field",
         check=check,
-        issue_kind=issue_kind,
+        slice=slice,
         config=config,
     )
 
 
 class DeliveryTest(unittest.TestCase):
+    def test_passing_a_slice_starts_a_slice_run(self):
+        result = walk(ScriptHandler(triage="spec"), slice=SLICES[1])
+        self.assertEqual(result["issue_kind"], "slice")
+        self.assertEqual(result["slice"], SLICES[1])
+        self.assertEqual(result["stop"], "verified")
+
     def test_clear_change_skips_spec(self):
         handler = ScriptHandler(head_sha=HEAD_SHA)
 
@@ -57,7 +66,7 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["risk"]["level"], "low")
-        self.assertTrue(result["merge_armed"])
+        self.assertEqual(result["merge"], "skipped")
         self.assertEqual(result["head_sha"], HEAD_SHA)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
@@ -71,16 +80,26 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
 
+    def test_ready_spec_keeps_the_loaded_slice_proof_obligations(self):
+        result = walk(ScriptHandler(triage="spec"), slice=SLICES[0])
+        self.assertEqual(result["path"], ["triage", "spec", "implement", "verify", "proof", "done"])
+        self.assertEqual(result["stop"], "insufficient_evidence")
+
     def test_triage_slice_rejects_a_dependency(self):
-        result = walk(lambda *_: {"triage": "implement", "slice": {**SLICES[0], "depends_on": ["Other"]}})
+        result = walk(
+            lambda *_: Outcome("ran", {
+                "triage": "implement", "human_question": None, "slice": {**SLICES[0], "depends_on": ["Other"]},
+            }),
+            slice=None,
+        )
         self.assertEqual(result["path"], ["triage", "done"])
         self.assertEqual(result["stop"], "invalid_output")
         self.assertEqual(result["halt_detail"], "slice.depends_on.0: unknown dependency Other")
 
-    def test_a_parent_routes_to_spec_even_when_triage_says_implement(self):
-        for triage in ("implement", "spec"):
+    def test_a_parent_routes_spec_and_question_to_spec(self):
+        for triage in ("spec", "question"):
             with self.subTest(triage=triage):
-                result = walk(ScriptHandler(triage=triage, slices=SLICES), issue_kind="parent")
+                result = walk(ScriptHandler(triage=triage, slices=SLICES), slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "sliced")
                 self.assertEqual(result["slices"], SLICES)
@@ -98,19 +117,19 @@ class DeliveryTest(unittest.TestCase):
             "double dot": [{**first, "screen": "docs/screens/deals..draft.md"}],
             "backslash": [{**first, "screen": r"docs/screens/other\deals.md"}],
             "nested screen": [{**first, "screen": "docs/screens/sub/deals.md"}],
-            "blank constraint": [{**first, "properties": [{"name": "Visibility", "constraint": " "}]}],
-            "missing name": [{**first, "properties": [{"constraint": "Every deal appears once."}]}],
+            "blank constraint": [{**first, "properties": [{"name": "Deal external IDs are unique", "constraint": " "}]}],
+            "missing name": [{**first, "properties": [{"constraint": "deals_external_id_key"}]}],
         }
         for case, slices in cases.items():
             with self.subTest(case=case):
-                result = walk(ScriptHandler(slices=slices), issue_kind="parent")
+                result = walk(ScriptHandler(triage="spec", slices=slices), slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "invalid_output")
                 self.assertTrue(result["halt_detail"])
 
     def test_review_stops_when_no_other_family_remains(self):
         config = load_config()
-        config.nodes["review"] = replace(config.nodes["review"], models=("gpt-6.1-terra-high",))
+        config.nodes["review"] = replace(config.nodes["review"], models=(ModelSpec.parse("gpt-6.1-terra-high"),))
         handler = ScriptHandler()
         result = walk(handler, config=config)
         self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "done"])
@@ -149,14 +168,14 @@ class DeliveryTest(unittest.TestCase):
     def test_review_excludes_every_builder_family(self):
         for review_models in (("claude-opus-5-5-high", "gpt-6.1-sol-high", "grok-4.7-high"),
                               ("claude-opus-5-5-high", "gpt-6.1-sol-high")):
-            with self.subTest(review_models=review_models):
+            with self.subTest(review_models=tuple(ModelSpec.parse(model) for model in review_models)):
                 config = load_config()
-                config.nodes["review"] = replace(config.nodes["review"], models=review_models)
+                config.nodes["review"] = replace(config.nodes["review"], models=tuple(ModelSpec.parse(model) for model in review_models))
                 handler = ScriptHandler(reviews=["changes", "approve"], head_sha=HEAD_SHA)
 
                 def switch_builder(node, model, state, instruction):
-                    if node == "implement" and state.get("review") == "changes" and model.startswith("gpt-"):
-                        raise QuotaExhausted(model)
+                    if node == "implement" and state.get("review") == "changes" and model and model.family == "gpt":
+                        return Outcome("quota")
                     return handler(node, model, state, instruction)
 
                 result = walk(switch_builder, config=config)
@@ -191,12 +210,12 @@ class DeliveryTest(unittest.TestCase):
         def drop_second_head(node, model, state, instruction):
             output = handler(node, model, state, instruction)
             if node == "implement" and state.get("review") == "changes":
-                output.pop("head_sha")
+                output.output["head_sha"] = None
             return output
 
         result = walk(drop_second_head)
         self.assertIn("merge", result["path"])
-        self.assertFalse(result["merge_armed"])
+        self.assertEqual(result["merge"], "skipped")
         self.assertIsNone(result["head_sha"])
 
     def test_needs_human_stops_at_triage(self):
@@ -210,7 +229,7 @@ class DeliveryTest(unittest.TestCase):
         def drop_risk(node, model, state, instruction):
             raw = handler(node, model, state, instruction)
             if node == "review":
-                raw = {"review": raw["review"]}
+                raw.output.pop("risk")
             return raw
 
         result = walk(drop_risk)
@@ -232,8 +251,8 @@ class DeliveryTest(unittest.TestCase):
 
         def exhaust_review(node, model, state, instruction):
             if node == "review":
-                offered.append(model)
-                raise QuotaExhausted(model)
+                offered.append(model.name)
+                return Outcome("quota")
             return handler(node, model, state, instruction)
 
         config = load_config()
@@ -248,8 +267,8 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler()
 
         def exhaust_claude(node, model, state, instruction):
-            if model == "claude-opus-5-5-high":
-                raise QuotaExhausted(model)
+            if model and model.name == "claude-opus-5-5-high":
+                return Outcome("quota")
             return handler(node, model, state, instruction)
 
         result = walk(exhaust_claude)
@@ -262,7 +281,7 @@ class DeliveryTest(unittest.TestCase):
 
     def test_every_model_exhausted_raises(self):
         def exhaust(node, model, state, instruction):
-            raise QuotaExhausted(model)
+            return Outcome("quota")
 
         with self.assertRaises(QuotaExhausted):
             walk(exhaust)
@@ -285,7 +304,7 @@ class DeliveryTest(unittest.TestCase):
         for name in REQUIRED_NODES + ("merge", "done"):
             self.assertIn(name, picture)
         self.assertNotIn("claude-opus", picture)
-        compile_delivery(FailoverDispatcher(ScriptHandler()), load_config())
+        compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), run=DryRun())
 
 
 if __name__ == "__main__":

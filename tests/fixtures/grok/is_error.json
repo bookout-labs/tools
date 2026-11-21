@@ -1,0 +1,5 @@
+{
+  "type": "error",
+  "message": "Couldn't set model 'grok-foreman-fixture-invalid': Invalid params: \"unknown model id\". Run 'grok models' to see available models.",
+  "cwd": "/repo"
+}

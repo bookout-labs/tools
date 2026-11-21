@@ -1,21 +1,26 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from dataclasses import dataclass
+from functools import partial
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from typing import Annotated, Callable, Literal, TypedDict
+from typing import Annotated, Literal, TypedDict, Unpack
 import operator
-import re
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 
+from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.proof import browser_proof_label, formal_proof_label
-from foreman.stage_output import Contract, STAGE_OUTPUTS, Slice, SlicePlanningOutput, SpecOutput, VerifyOutput, parse_output
+from foreman.github import MERGE_HOLD_VARIABLE, Forge, MergeHoldUnreadable, MergeNotArmed, merge_command
+from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
+from foreman.stage_output import (
+    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+)
+from foreman.workspace import Workspace, WorktreeInspectionFailed
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -24,13 +29,20 @@ STAGE_ORDER = REQUIRED_NODES + ("merge",)
 SKILLS_FOR = {
     "review": ("review-quality", "merge-risk"),
 }
-FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+ResumableHalt = Literal["merge_held", "merge_not_armed", "env_unavailable"]
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 
 
 @dataclass(frozen=True)
-class DeliveryContext:
+class LiveRun:
+    forge: Forge
+    workspace: Workspace
     environment_error: str | None = None
+
+
+@dataclass(frozen=True)
+class DryRun:
+    pass
 
 
 class DeliveryState(TypedDict, total=False):
@@ -51,9 +63,9 @@ class DeliveryState(TypedDict, total=False):
     research: str
     implementation: str
     head_sha: str | None
-    head_checked: bool
-    merge_armed: bool
-    merge_args: list[str]
+    verified_head: str
+    merge: Literal["armed", "skipped", "not_armed"]
+    merge_command: list[str]
     browser_proof: dict[str, object] | None
     formal_proof: dict[str, object] | None
     proof_labels: dict[str, str]
@@ -108,16 +120,21 @@ def clean_slices(
     return [item.model_dump() for item in raw]
 
 
+def load_slice(raw: object) -> dict[str, object]:
+    return clean_slices([parse_output(Slice, raw)], "slice", allow_external_dependencies=True)[0]
+
+
 def stage_update(name: str, output: Contract, state: DeliveryState, model: str | None = None) -> dict[str, object]:
     update: dict[str, object] = output.model_dump(exclude={"slice", "slices"})
     update["path"] = [name]
     if isinstance(output, SpecOutput) and state.get("issue_kind") == "parent" and output.spec_gate == "ready":
         update["slices"] = clean_slices(output.slices, "slices")
-    if isinstance(output, SlicePlanningOutput):
+    if isinstance(output, HumanQuestionOutput):
         update["human_question"] = output.human_question or ""
-        ready = update.get("triage") == "implement" or update.get("spec_gate") == "ready"
-        if ready and state.get("issue_kind") == "slice" and "slice" not in state and output.slice is not None:
-            update["slice"] = clean_slices([output.slice], "slice")[0]
+    if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
+        if output.slice is None:
+            raise InvalidOutput("slice: required when a parent triages as implement")
+        update["slice"] = clean_slices([output.slice], "slice")[0]
     if update.get("review") == "changes" or update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -148,95 +165,101 @@ def stop_reason(state: DeliveryState) -> str:
     return "stopped"
 
 
-def failed_preflight(command: str, run_command: Callable[[str], int]) -> str | None:
-    if command and (exit_code := run_command(command)):
+def failed_preflight(workspace: Workspace, command: str) -> str | None:
+    if command and (exit_code := workspace.run(command)):
         return f"Preflight {command!r} exited with {exit_code}"
     return None
 
 
+def halted(node: str, reason: ResumableHalt, detail: str, /, **update: Unpack[DeliveryState]) -> DeliveryState:
+    return {**update, "path": [node], "halt": reason, "halt_detail": detail}
+
+
 def compile_delivery(
     dispatcher: FailoverDispatcher | None,
-    config: Config | None = None,
+    config: Config,
     *,
+    run: LiveRun | DryRun,
     checkpointer: BaseCheckpointSaver | None = None,
-    run_check: Callable[[str], int] | None = None,
-    run_gh: Callable[[list[str]], int] | None = None,
-    inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
 ):
-    config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     prompts = {name: stage_text(name) for name in REQUIRED_NODES}
 
     def bind(name: str):
-        def node(state: DeliveryState, runtime: Runtime[DeliveryContext]) -> dict[str, object]:
+        def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> dict[str, object]:
             if dispatcher is None:
                 return {"path": [name], "halt": "no_dispatcher"}
-            context = runtime.context
-            detail = context.environment_error if context else None
-            if name == "implement" and state.get("issue_kind") == "parent" and run_check is not None:
-                detail = failed_preflight(state.get("preflight", ""), run_check)
+            current_run = runtime.context or run
+            detail = None
+            if isinstance(current_run, LiveRun):
+                detail = current_run.environment_error
+                if name == "implement" and state.get("issue_kind") == "parent":
+                    detail = failed_preflight(current_run.workspace, state.get("preflight", ""))
             if detail:
-                return {"path": [name], "halt": "env_unavailable", "halt_detail": detail}
+                return dict(halted(name, "env_unavailable", detail))
             try:
                 models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
             except ConfigError as exc:
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": str(exc)}
             instruction = prompts[name]
-            if name == "implement" and (slice := state.get("slice")):
-                for field, skill in (("screen", "browser-proof"), ("properties", "formal-proof")):
-                    if slice[field]:
+            if name == "implement":
+                slice = state["slice"]
+                for required, skill in ((browser_required, "browser-proof"), (formal_required, "formal-proof")):
+                    if required(slice):
                         proof = (PACKAGE / "skills" / f"{skill}.md").read_text().strip()
                         instruction = f"{instruction}\n\n{proof}"
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
+            outcome, model = dispatcher.run(name, models, state, instruction)
+            if outcome.kind == "failed":
+                return {"path": [name], "halt": "invalid_output", "halt_detail": f"{model}: {outcome.detail}"}
+            if outcome.kind == "cli_missing":
+                return {"path": [name], "halt": "cli_missing", "halt_detail": outcome.detail}
+            if outcome.kind == "quota":
+                if name != "review":
+                    raise QuotaExhausted(model)
+                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
-                raw, model = dispatcher.run(name, models, state, instruction)
-                update = stage_update(name, parse_output(STAGE_OUTPUTS[name], raw), state, model)
-                if name == "implement" and inspect_worktree is not None:
-                    update.update(head_sha=None, head_checked=False)
-                return update
+                return stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model)
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
-            except QuotaExhausted as exc:
-                if name != "review":
-                    raise
-                return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {exc}"}
 
         return node
 
-    def verify(state: DeliveryState, runtime: Runtime[DeliveryContext]) -> dict[str, object]:
-        assert run_check is not None
-        if (context := runtime.context) and (detail := context.environment_error):
-            return {"path": ["verify"], "halt": "env_unavailable", "halt_detail": detail}
-        checked = {}
-        if inspect_worktree is not None:
-            head, clean = inspect_worktree()
-            if not clean or not FULL_SHA.fullmatch(head):
-                return {"path": ["verify"], "halt": "dirty_worktree"}
-            checked = {"head_sha": head, "head_checked": True}
-        command = state["check"]
-        exit_code = run_check(command)
-        if reason := CHECK_START_FAILURES.get(exit_code):
-            detail = f"Check {command!r} exited with {exit_code} ({reason})"
-        elif exit_code:
-            detail = failed_preflight(state.get("preflight", ""), run_check)
-        else:
-            detail = None
-        if detail:
-            return {
-                "path": ["verify"], "check_exit_code": exit_code,
-                "halt": "env_unavailable", "halt_detail": detail,
-            }
-        verdict = "pass" if exit_code == 0 else "fail"
-        return {
-            **stage_update("verify", VerifyOutput(verify=verdict), state),
-            "check_exit_code": exit_code,
-            "proof_labels": {},
-            **(checked if exit_code == 0 else {}),
-        }
+    scripted_verify = bind("verify")
+
+    def verify(state: DeliveryState, runtime: Runtime[LiveRun]) -> dict[str, object]:
+        match runtime.context or run:
+            case DryRun():
+                return scripted_verify(state, runtime)
+            case LiveRun(workspace=workspace, environment_error=detail):
+                if detail:
+                    return dict(halted("verify", "env_unavailable", detail))
+                try:
+                    worktree = workspace.inspect()
+                except WorktreeInspectionFailed as exc:
+                    return {"path": ["verify"], "halt": "dirty_worktree", "halt_detail": str(exc)}
+                if not worktree.clean:
+                    return {"path": ["verify"], "halt": "dirty_worktree"}
+                command = state["check"]
+                exit_code = workspace.run(command)
+                if reason := CHECK_START_FAILURES.get(exit_code):
+                    detail = f"Check {command!r} exited with {exit_code} ({reason})"
+                elif exit_code:
+                    detail = failed_preflight(workspace, state.get("preflight", ""))
+                if detail:
+                    return dict(halted("verify", "env_unavailable", detail, check_exit_code=exit_code))
+                verdict = "pass" if exit_code == 0 else "fail"
+                checked = {"verified_head": worktree.head} if exit_code == 0 else {}
+                return {
+                    **stage_update("verify", VerifyOutput(verify=verdict), state),
+                    "check_exit_code": exit_code,
+                    "proof_labels": {},
+                    **checked,
+                }
 
     def prove(state: DeliveryState) -> DeliveryState:
         slice = state["slice"]
@@ -265,10 +288,8 @@ def compile_delivery(
         decision = state.get("triage")
         if decision == "needs_human":
             return "needs_human" if checkpointer is not None else "done"
-        if state.get("issue_kind") == "parent":
-            return "spec"
         if decision == "question":
-            return "research"
+            return "spec" if state.get("issue_kind") == "parent" else "research"
         return decision or "done"
 
     def after_spec(state: DeliveryState) -> str:
@@ -293,8 +314,8 @@ def compile_delivery(
         if state.get("halt"):
             return "done"
         if state.get("verify") == "pass":
-            slice = state.get("slice")
-            if slice and (slice["screen"] or slice["properties"]):
+            slice = state["slice"]
+            if browser_required(slice) or formal_required(slice):
                 return "proof"
             return "review"
         if state.get("review_rounds", 0) < config.max_review_rounds:
@@ -310,23 +331,55 @@ def compile_delivery(
         return "done" if state.get("halt") else "verify"
 
     def arm_merge(state: DeliveryState) -> DeliveryState:
-        head = state.get("head_sha")
-        if not head or not FULL_SHA.fullmatch(head):
-            return {"merge_armed": False, "path": ["merge"]}
-        args = ["gh", "pr", "merge", "--auto", "--match-head-commit", head]
-        if inspect_worktree is not None:
-            current, clean = inspect_worktree()
-            if not state.get("head_checked") or not clean or current != head:
-                return {"merge_armed": False, "merge_args": args, "path": ["merge"]}
-        armed = run_gh(args) == 0 if run_gh is not None else run_check is None
-        return {"merge_armed": armed, "merge_args": args, "path": ["merge"]}
+        repo = state["repo"]
+        head = state.get("verified_head")
+
+        match run:
+            case DryRun():
+                return {
+                    "merge": "skipped", "path": ["merge"],
+                    "merge_command": merge_command(repo, "<number>", state.get("head_sha") or "<sha>"),
+                }
+            case LiveRun(forge=forge, workspace=workspace):
+                merge_halted = partial(
+                    halted, "merge", merge="not_armed", merge_command=merge_command(repo, "<number>", head or "<sha>"),
+                )
+                if head is None:
+                    return merge_halted("merge_not_armed", "The run did not record a verified HEAD.")
+                try:
+                    worktree = workspace.inspect()
+                except WorktreeInspectionFailed as exc:
+                    return merge_halted("merge_not_armed", str(exc))
+                if not worktree.clean:
+                    return merge_halted("merge_not_armed", "The worktree has changes or Git could not inspect it.")
+                if worktree.head != head:
+                    return merge_halted(
+                        "merge_not_armed",
+                        f"HEAD is {worktree.head}, verification checked {head}. "
+                        "Reset the PR branch to the verified commit.\n"
+                        f"  git reset --keep {head}\n"
+                        "Then rerun the same command. New commits need a new run."
+                    )
+                if worktree.branch is None:
+                    return merge_halted("merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.")
+                try:
+                    hold = forge.merge_hold(repo)
+                except MergeHoldUnreadable as exc:
+                    return merge_halted("merge_held", f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
+                if hold:
+                    return merge_halted("merge_held", hold)
+                try:
+                    forge.arm_auto_merge(repo, state["issue"], worktree.branch, head)
+                except MergeNotArmed as exc:
+                    return merge_halted("merge_not_armed", str(exc))
+                return {"merge": "armed", "path": ["merge"]}
 
     def finish(state: DeliveryState) -> DeliveryState:
         return {"stop": stop_reason(state), "path": ["done"]}
 
-    builder = StateGraph(DeliveryState, context_schema=DeliveryContext)
+    builder = StateGraph(DeliveryState, context_schema=LiveRun)
     for name in REQUIRED_NODES:
-        builder.add_node(name, verify if name == "verify" and run_check is not None else bind(name))
+        builder.add_node(name, verify if name == "verify" else bind(name))
     builder.add_node("proof", prove)
     builder.add_node("needs_human", needs_human)
     builder.add_node("merge", arm_merge)
@@ -373,26 +426,29 @@ def run_delivery(
     request: str,
     check: str = "",
     config: Config | None = None,
-    issue_kind: str = "slice",
+    slice: dict[str, object] | None = None,
 ) -> DeliveryState:
-    if issue_kind not in {"parent", "slice"}:
-        raise ValueError(f"unknown issue kind {issue_kind}")
-    graph = compile_delivery(dispatcher, config)
-    return graph.invoke(
-        {
-            "repo": repo,
-            "request": request,
-            "check": check,
-            "issue_kind": issue_kind,
-            "review_rounds": 0,
-            "models_used": {},
-            "path": [],
-        }
-    )
+    state: DeliveryState = {
+        "repo": repo,
+        "request": request,
+        "check": check,
+        "issue_kind": "parent" if slice is None else "slice",
+        "review_rounds": 0,
+        "models_used": {},
+        "path": [],
+    }
+    if slice is not None:
+        state["slice"] = load_slice(slice)
+    graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
+    return graph.invoke(state)
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
     if dispatcher is None:
-        dispatcher = FailoverDispatcher(lambda *args: {"triage": "implement"})
-    graph = compile_delivery(dispatcher, config)
+        dispatcher = FailoverDispatcher(
+            lambda node, model, state, instruction: Outcome(
+                "ran", {"triage": "implement", "slice": None, "human_question": None},
+            ),
+        )
+    graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
     return graph.get_graph().draw_mermaid()

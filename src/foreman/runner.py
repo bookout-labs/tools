@@ -1,34 +1,45 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import re
-import subprocess
-from typing import Callable
+from typing import cast
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.types import Command
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command, StateSnapshot
 
-from foreman.delivery import DeliveryContext, DeliveryState, clean_slices, compile_delivery, failed_preflight
+from foreman.config import load_config
+from foreman.delivery import DeliveryState, LiveRun, ResumableHalt, compile_delivery, failed_preflight, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
-from foreman.github import GhClient, GitHub
-from foreman.stage_output import Slice, parse_output
 
-WorktreeInspector = Callable[[Path], tuple[str, bool]]
 SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
+RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset({"merge_held", "merge_not_armed", "env_unavailable"})
 
 
 def _load_slice(body: str) -> dict[str, object]:
     blocks = SLICE_FENCE.findall(body)
     if not blocks:
         raise InvalidOutput("slice issue needs a fenced JSON object")
-    return clean_slices([parse_output(Slice, json.loads(blocks[-1]))], "slice", allow_external_dependencies=True)[0]
+    return load_slice(json.loads(blocks[-1]))
 
 
-def _inspect_worktree(cwd: Path) -> tuple[str, bool]:
-    head = subprocess.run(["git", "rev-parse", "HEAD"], shell=False, cwd=cwd, capture_output=True, text=True)
-    status = subprocess.run(["git", "status", "--porcelain"], shell=False, cwd=cwd, capture_output=True, text=True)
-    return head.stdout.strip(), head.returncode == status.returncode == 0 and not status.stdout
+def _checkpoint_before_halt(
+    graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryState],
+    config: RunnableConfig,
+    path: list[str],
+) -> StateSnapshot:
+    if path and path[-1] == "done":
+        path = path[:-1]
+    if not path:
+        raise ValueError("Cannot resume a run without a halted node.")
+    node = path[-1]
+    before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (node,)), None)
+    if before is None:
+        raise ValueError(f"Cannot resume a run without a checkpoint before {node}.")
+    return before
 
 
 def run_live_delivery(
@@ -36,36 +47,32 @@ def run_live_delivery(
     repo: str,
     issue: int,
     check: str,
-    cwd: Path,
     checkpoint: Path,
+    run: LiveRun,
     preflight: str = "",
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
-    github: GitHub | None = None,
     answer: str | None = None,
-    run_gh: Callable[[list[str]], int] | None = None,
-    inspect_worktree: WorktreeInspector | None = None,
-) -> dict:
-    def run_command(command: str) -> int:
-        return subprocess.run(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL).returncode
-
+) -> DeliveryState:
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    config = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
-    workspace = str(cwd.resolve())
-    inspect = inspect_worktree or _inspect_worktree
+    config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
+    workspace = str(run.workspace.root.resolve())
+    client = run.forge
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-        graph = compile_delivery(
-            dispatcher, checkpointer=saver, run_check=run_command, run_gh=run_gh,
-            inspect_worktree=lambda: inspect(cwd),
-        )
+        graph = compile_delivery(dispatcher, load_config(), run=run, checkpointer=saver)
 
-        def invoke(graph_input: DeliveryState | Command | None, state: DeliveryState) -> None:
+        def invoke(
+            graph_input: DeliveryState | Command | None,
+            state: DeliveryState,
+            invocation_config: RunnableConfig = config,
+        ) -> None:
             detail = None
-            if state.get("issue_kind") != "parent" and not state.get("halt"):
-                detail = failed_preflight(state.get("preflight", ""), run_command)
-            graph.invoke(graph_input, config, context=DeliveryContext(environment_error=detail), durability="sync")
+            if state.get("issue_kind") == "slice" and not state.get("halt"):
+                detail = failed_preflight(run.workspace, state.get("preflight", ""))
+            graph.invoke(graph_input, invocation_config, context=replace(run, environment_error=detail), durability="sync")
 
         saved = graph.get_state(config)
+        saved_values = cast(DeliveryState, saved.values)
         saved_workspace = saved.values.get("workspace")
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
@@ -74,9 +81,9 @@ def run_live_delivery(
                 raise ValueError("This issue has no pending question.")
             if not answer.strip():
                 raise ValueError("The answer must contain text.")
-            invoke(Command(resume=answer), saved.values)
+            invoke(Command(resume=answer), saved_values)
         elif not saved.values:
-            loaded = (github or GhClient()).load_issue(repo, issue)
+            loaded = client.load_issue(repo, issue)
             text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
             initial: DeliveryState = {
                 "repo": repo,
@@ -94,12 +101,17 @@ def run_live_delivery(
                 except (InvalidOutput, json.JSONDecodeError) as exc:
                     initial.update(halt="missing_slice", halt_detail=str(exc))
             invoke(initial, initial)
+        elif saved.values.get("halt") in RESUMABLE_HALTS:
+            before = _checkpoint_before_halt(graph, config, saved.values.get("path", []))
+            if saved.values["halt"] == "env_unavailable":
+                invoke(None, cast(DeliveryState, before.values), before.config)
+            else:
+                graph.invoke(None, before.config, durability="sync")
         elif saved.next and not saved.interrupts:
-            invoke(None, saved.values)
+            invoke(None, saved_values)
 
         saved = graph.get_state(config)
         if saved.values.get("stop") == "sliced":
-            client = github or GhClient()
             numbers = list(saved.values.get("child_issue_numbers", []))
             for item in saved.values["slices"][len(numbers):]:
                 dependencies = "\n".join(f"- {title}" for title in item["depends_on"]) or "None"
@@ -120,4 +132,11 @@ def run_live_delivery(
         if saved.interrupts:
             question = saved.interrupts[0].value["question"]
             return {**saved.values, "stop": "needs_human", "halt_detail": question}
-        return dict(saved.values)
+        result: DeliveryState = dict(saved.values)
+        if "merge" in result.get("path", []) and "merge" not in result:
+            legacy = saver.get(saved.config)
+            if legacy is not None:
+                armed = legacy["channel_values"].get("merge_armed")
+                if isinstance(armed, bool):
+                    result["merge"] = "armed" if armed else "not_armed"
+        return result

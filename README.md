@@ -7,53 +7,84 @@ Shared tools for the engine repositories. This repo lives in the bookout-labs or
 ## Delivery graph
 
 ```mermaid
-flowchart TD
-  __start__([start]) --> triage
-  __start__ -->|missing or invalid live slice| done
-  triage -->|clear change| implement
-  triage -->|parent, larger change, or open choice| spec
-  triage -->|question| research
-  triage -->|needs a person| needs_human
-  triage -->|halt| done
-  needs_human -->|answer to triage| triage
-  needs_human -->|answer to spec| spec
-  spec -->|slice ready| implement
-  spec -->|needs a person| needs_human
-  spec -->|parent sliced or halt| done
-  research --> done
-  implement --> verify
-  implement -->|halt| done
-  verify -->|pass with proof obligations| proof
-  verify -->|pass without proof obligations| review
-  proof -->|accepted| review
-  proof -->|blocked, under the cap| implement
-  proof -->|missing evidence or cap reached| done
-  verify -->|fail, under the cap| implement
-  verify -->|dirty worktree, invalid HEAD, environment unavailable, or cap reached| done
-  review -->|approve| merge
-  review -->|changes, under the cap| implement
-  review -->|cap reached or halt| done
-  merge --> done
-  done --> __end__([end])
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	triage(triage)
+	research(research)
+	spec(spec)
+	implement(implement)
+	verify(verify)
+	review(review)
+	proof(proof)
+	needs_human(needs_human)
+	merge(merge)
+	done(done)
+	__end__([<p>__end__</p>]):::last
+	__start__ -.-> done;
+	__start__ -.-> triage;
+	implement -.-> done;
+	implement -.-> verify;
+	merge --> done;
+	needs_human -.-> spec;
+	needs_human -.-> triage;
+	proof -.-> done;
+	proof -.-> implement;
+	proof -.-> review;
+	research --> done;
+	review -.-> done;
+	review -.-> implement;
+	review -.-> merge;
+	spec -.-> done;
+	spec -.-> implement;
+	spec -.-> needs_human;
+	triage -.-> done;
+	triage -.-> implement;
+	triage -.-> needs_human;
+	triage -.-> research;
+	triage -.-> spec;
+	verify -.-> done;
+	verify -.-> implement;
+	verify -.-> proof;
+	verify -.-> review;
+	done --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+
 ```
 
-The edges are code. The model list is `src/foreman/models.toml`. Quota exhaustion tries the next model in that list. A node does not edit the list, and it does not decide the next node.
+Generate the diagram with `foreman diagram delivery`. The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. A node does not edit the list, and it does not decide the next node.
 
-Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If the builder model is missing or every eligible reviewer is unavailable, the run stops with `no_reviewer`. The record includes `halt_detail` for both stops.
+Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the builder model is missing or every eligible reviewer is out of quota, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
 
 Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs skip preflight and use a scripted verdict.
 
 Use `--preflight <command>` to check environment readiness in the engine checkout. A new or resumed slice checks readiness before dispatching a model. A parent checks readiness when it reaches implement. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
 
+Restore the environment and rerun the same command to resume from the saved checkpoint.
+
 When the check passes, the graph evaluates the browser and formal evidence required by the slice. Missing evidence stops the run. A failed proof consumes a round and sends the slice back to implement while rounds remain.
 
 The cap is three failures across verify, proof, and review. It is config. A node cannot raise it.
 
-After approval, the live merge node records `gh pr merge --auto --match-head-commit <sha>` with the SHA from verify. The worktree must still be clean and at that SHA for the command to run. The CLI also requires an open pull request at that SHA with a head branch starting with the issue number and a hyphen and a base branch of `main`.
+After approval, Foreman looks up the pull request for the checked-out branch and arms it with `gh pr merge <pull-request> --repo <repo> --squash --auto --match-head-commit <sha>`. The worktree and pull request must still be at the verified SHA, the worktree must be clean, and the open pull request must target `main` from a branch starting with the issue number and a hyphen.
+
+Foreman looks up the local branch by name. If the pull request uses a differently named upstream branch, the lookup fails and Foreman leaves the merge unarmed.
+
+Before arming, Foreman reads the target repository's GitHub Actions variable `FOREMAN_MERGE_HOLD`. A non-empty value or a read error pauses the run as `merge_held` and records the value or error. An unset or empty value permits arming. Clear the hold or resolve the read error, then rerun the same command to retry the merge.
+
+If the merge command times out, Foreman checks the same pull request at the verified SHA. An open pull request with a squash auto-merge request or a merged pull request confirms the result. A failed merge check or unconfirmed command pauses the run as `merge_not_armed` and records the reason. Resolve it and rerun the same command to retry. If HEAD moved, run `git reset --keep <verified-sha>` on the PR branch before rerunning. New commits need a new run. A dry run prints `merge skipped (dry run)` with the command template and reports the scripted verification result.
 
 Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 
-A clear change on a slice goes straight to implement. Parent issues and changes that need more than one pull request route to spec even when the decisions are settled. A ready parent spec records its slices and stops as `sliced`. Each child issue includes a fenced JSON object with its title, acceptance, dependency titles, screen path or empty string, and named property constraints. Live runs load that object as the slice for the run. A `slice`-labelled issue with a missing or invalid object stops at `missing_slice`. An open product choice pauses a live run for a person's answer. An informational request routes to research.
+A parent or slice goes straight to implement when the behavior is decided and the change fits in one pull request. A parent on this route is its own slice. It carries the same proof obligations as any slice and files no child issues. Changes that need more than one pull request or leave a product choice open go to spec. An informational request goes to spec on a parent and to research on a slice. An open product choice pauses a live run for a person's answer.
+
+A ready parent spec records its slices and stops as `sliced`. Each child issue includes a fenced JSON object with its title, acceptance, dependency titles, screen path or empty string, and any named PostgreSQL constraints. Live runs load that object as the slice for the run. A `slice`-labelled issue with a missing or invalid object stops at `missing_slice`.
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 

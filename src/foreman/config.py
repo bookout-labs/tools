@@ -3,10 +3,19 @@
 from dataclasses import dataclass
 from pathlib import Path
 import tomllib
+from typing import cast
 
 DEFAULT_PATH = Path(__file__).with_name("models.toml")
 ROLES = {"coordinator", "builder", "verifier", "check"}
 FAMILIES = {"claude", "gpt", "grok"}
+EFFORTS = {
+    # Claude Code 2.1.329 --help, --effort.
+    "claude": {"low", "medium", "high", "xhigh", "max"},
+    # Grok Build 1.0.89 binary, "invalid reasoning effort" diagnostic.
+    "grok": {"none", "minimal", "low", "medium", "high", "xhigh", "max"},
+    # Codex 0.171.0, protocol/src/openai_models.rs, ReasoningEffort.
+    "gpt": {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent"},
+}
 
 
 class ConfigError(ValueError):
@@ -14,9 +23,25 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class ModelSpec:
+    name: str
+    family: str
+    model_id: str
+    effort: str | None
+
+    @classmethod
+    def parse(cls, model: str) -> "ModelSpec":
+        provider = family(model)
+        base, _, suffix = model.rpartition("-")
+        if suffix in EFFORTS[provider]:
+            return cls(model, provider, base, suffix)
+        return cls(model, provider, model, None)
+
+
+@dataclass(frozen=True)
 class NodeConfig:
     role: str
-    models: tuple[str, ...]
+    models: tuple[ModelSpec, ...]
     other_family_from: str | None = None
 
 
@@ -57,11 +82,11 @@ def parse_config(data: dict) -> Config:
             raise ConfigError(f"{name} is a check and takes no model")
         if role != "check" and not models:
             raise ConfigError(f"{name} needs at least one model")
-        for model in models:
-            family(model)
         if other is not None and not isinstance(other, str):
             raise ConfigError(f"{name} other_family_from must be a node name")
-        nodes[name] = NodeConfig(role=role, models=tuple(models), other_family_from=other)
+        nodes[name] = NodeConfig(
+            role=role, models=tuple(ModelSpec.parse(model) for model in cast(list[str], models)), other_family_from=other,
+        )
     for name, node in nodes.items():
         if node.other_family_from and node.other_family_from not in nodes:
             raise ConfigError(f"{name} refers to a missing node {node.other_family_from}")
@@ -76,7 +101,7 @@ def load_config(path: Path | None = None) -> Config:
 
 def order_for(
     node: str, config: Config, models_used: dict[str, str], implement_models: list[str] | None = None,
-) -> list[str]:
+) -> list[ModelSpec]:
     spec = config.nodes[node]
     models = list(spec.models)
     source = "implement" if node == "review" else spec.other_family_from
@@ -87,7 +112,7 @@ def order_for(
     if not used:
         raise ConfigError(f"{node} needs the {source} model")
     excluded = {family(model) for model in used}
-    others = [model for model in models if family(model) not in excluded]
+    others = [model for model in models if model.family not in excluded]
     if not others:
         names = ", ".join(sorted(excluded))
         group = "family" if len(excluded) == 1 else "families"
