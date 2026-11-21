@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, Po
 from pydantic.config import JsonDict
 
 from foreman.adapters import OutcomeKind
+from foreman.usd import CostUsd
 from foreman.github import PullRequest, PullRequestRecord
 from foreman.workspace import ReviewScopeRecord
 from foreman.dispatch import InvalidOutput
@@ -133,7 +134,7 @@ class AttemptUsageRecord(TypedDict):
     output: NonNegativeInt
     cache_read: NonNegativeInt
     cache_creation: NonNegativeInt
-    cost_usd: float | None
+    cost_usd: CostUsd | None
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -156,7 +157,7 @@ class AttemptUsage(RecordContract[AttemptUsageRecord]):
     output: NonNegativeInt
     cache_read: NonNegativeInt
     cache_creation: NonNegativeInt
-    cost_usd: float | None
+    cost_usd: CostUsd | None
 
 
 class Attempt(RecordContract[AttemptRecord]):

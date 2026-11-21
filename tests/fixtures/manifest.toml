@@ -9,6 +9,21 @@
 # A derived fixture records the argv of its original capture.
 # Source quotes link to published evidence without a capture command.
 
+[fixtures."claude/help.txt"]
+tool = "claude"
+version = "2.1.329"
+kind = "captured_run"
+argv = ["claude", "--help"]
+returncode = 0
+claim_ids = ["claude-max-budget-usd-flag"]
+
+[fixtures."claude/max_budget.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "quoted_source"
+sources = ["https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz"]
+notes = "Fallback source quote, not a captured budget run: the installed 2.1.329 binary's result schema names error_max_budget_usd, and the budget_exhausted branch emits that subtype with is_error true. sNa formats Reached maximum budget ($${e}). The session and usage are synthetic, reused from success.json to test preservation. No exit status is claimed; test both 0 and 1."
+
 [fixtures."claude/is_error.json"]
 tool = "claude"
 version = "2.1.329"

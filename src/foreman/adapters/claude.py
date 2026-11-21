@@ -1,11 +1,13 @@
 from collections.abc import Mapping
+from math import isclose
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal
 
-from pydantic import Field
+from pydantic import Field, TypeAdapter, ValidationError
 from typing_extensions import override
 
-from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, build_outcome
+from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
+from foreman.usd import CostUsd, usd_text
 
 
 QUOTA_ERRORS = {"usage_limit_reached", "model_requires_usage_credits"}
@@ -21,12 +23,30 @@ class ClaudeEnvelope(NativeEnvelope):
     errors: list[str] = Field(default_factory=list)
     structured_output: dict[str, object] | None = None
     session_id: str | None = None
+    total_cost_usd: object = None
+
+    @override
+    def read_usage(self) -> Usage | None:
+        usage = super().read_usage()
+        if usage is None or usage.total_cost_usd is None:
+            return usage
+        try:
+            total = TypeAdapter(CostUsd).validate_python(self.total_cost_usd, strict=True)
+        except ValidationError:
+            total = None
+        # The envelope total corroborates the ledger; it is not an extra charge.
+        if total is None or not isclose(usage.total_cost_usd, total, rel_tol=1e-6, abs_tol=1e-6):
+            return usage.model_copy(update={"total_cost_usd": None})
+        return usage
 
     @override
     def outcome(self, process: CompletedProcess[str], model_id: str) -> Outcome:
         kind: OutcomeKind = "ran"
         detail = "\n".join(self.errors) or self.result or process.stderr.strip()
-        if self.is_error and (self.api_error_status == 429 or self.api_error in QUOTA_ERRORS):
+        if self.subtype == "error_max_budget_usd":
+            kind = "budget_exhausted"
+            detail = detail or "Claude exhausted its dollar budget"
+        elif self.is_error and (self.api_error_status == 429 or self.api_error in QUOTA_ERRORS):
             kind = "quota"
             detail = detail or self.api_error or "Claude API status 429"
         elif process.returncode or self.is_error or self.api_error or self.subtype != "success":
@@ -53,5 +73,6 @@ class ClaudeAdapter(NativeAdapter):
 
     def command(self, call: Call) -> list[str]:
         effort = ["--effort", self.model.effort] if self.model.effort else []
+        budget = ["--max-budget-usd", usd_text(call.budget_usd)] if call.budget_usd is not None else []
         return ["claude", "--model", self.model.model_id, *effort, "--permission-mode", self.permission_mode(call),
-                "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]
+                *budget, "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]

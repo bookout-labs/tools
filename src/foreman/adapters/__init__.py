@@ -3,13 +3,15 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from math import isfinite
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, TypeAdapter, ValidationError, field_validator
 
 from foreman.config import ModelSpec
+from foreman.usd import BudgetUsd, CostUsd
 
 
 class Usage(BaseModel):
@@ -20,10 +22,10 @@ class Usage(BaseModel):
     output_tokens: NonNegativeInt
     cache_read_input_tokens: NonNegativeInt | None = None
     cache_creation_input_tokens: NonNegativeInt | None = None
-    total_cost_usd: float | None = None
+    total_cost_usd: CostUsd | None = None
 
 
-OutcomeKind = Literal["ran", "quota", "cli_missing", "failed"]
+OutcomeKind = Literal["ran", "quota", "cli_missing", "failed", "budget_exhausted"]
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ class Call:
     schema: str
     edit: bool
     temp_dir: Path
+    budget_usd: BudgetUsd | None = None
 
 
 class CliAdapter(Protocol):
@@ -56,7 +59,15 @@ class ModelUsage(BaseModel):
     output: int = Field(alias="outputTokens", ge=0)
     cache_read: int = Field(default=0, alias="cacheReadInputTokens", ge=0)
     cache_creation: int = Field(default=0, alias="cacheCreationInputTokens", ge=0)
-    cost: float | None = Field(default=None, alias="costUSD")
+    cost: CostUsd | None = Field(default=None, alias="costUSD")
+
+    @field_validator("cost", mode="before")
+    @classmethod
+    def valid_cost(cls, value: object) -> float | None:
+        try:
+            return TypeAdapter(CostUsd).validate_python(value, strict=True)
+        except ValidationError:
+            return None
 
 
 class NativeEnvelope(BaseModel, ABC):
@@ -72,11 +83,12 @@ class NativeEnvelope(BaseModel, ABC):
         if not rows:
             return None
         costs = [row.cost for row in rows if row.cost is not None]
+        cost = sum(costs) if len(costs) == len(rows) else None
         return Usage(
             input_tokens=sum(row.input for row in rows), output_tokens=sum(row.output for row in rows),
             cache_read_input_tokens=sum(row.cache_read for row in rows),
             cache_creation_input_tokens=sum(row.cache_creation for row in rows),
-            total_cost_usd=sum(costs) if len(costs) == len(rows) else None,
+            total_cost_usd=cost if cost is not None and isfinite(cost) else None,
         )
 
     @abstractmethod

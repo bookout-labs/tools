@@ -9,6 +9,7 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
+from foreman.fixture_manifest import CapturedRun, FixtureManifest
 from foreman.stage_output import Contract, STAGE_OUTPUTS
 
 FIXTURES = Path(__file__).with_name("fixtures")
@@ -23,6 +24,26 @@ def fixture_process(args, name, exit_code):
 
 
 class NativeAdaptersTest(unittest.TestCase):
+    def test_claude_budget_stop_takes_precedence_and_keeps_usage(self):
+        adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+        source = FixtureManifest.from_toml((FIXTURES / "manifest.toml").read_text()).fixtures["claude/max_budget.json"]
+        codes = [source.returncode] if isinstance(source, CapturedRun) else [0, 1]
+        for code in codes:
+            recorded = fixture_process(["claude"], "max_budget", code)
+            original = json.loads(recorded.stdout)
+            for changes in ({}, {"is_error": False}, {"api_error": "usage_limit_reached", "api_error_status": 429},
+                            {"api_error": "other_error"}, {"structured_output": {"triage": "implement"}},
+                            {"errors": []}):
+                with self.subTest(code=code, changes=changes):
+                    process = CompletedProcess(recorded.args, code, json.dumps({**original, **changes}), "")
+                    outcome = adapter.read(process)
+                    self.assertEqual(outcome.kind, "budget_exhausted")
+                    self.assertEqual(outcome.session_id, "4d8f5dbc-5b69-4be1-a541-402e6f92cafe")
+                    self.assertTrue(outcome.detail)
+                    self.assertEqual(outcome.output, {})
+                    self.assertEqual((outcome.usage.input_tokens, outcome.usage.output_tokens), (1481, 247))
+                    self.assertAlmostEqual(outcome.usage.total_cost_usd, 0.0378867)
+
     def assert_envelopes(self, adapter, cli, cases):
         for name, exit_code, kind, expected in cases:
             has_usage = expected is not None
@@ -34,7 +55,10 @@ class NativeAdaptersTest(unittest.TestCase):
                 else:
                     self.assertEqual(outcome.usage.input_tokens, expected[0])
                     self.assertEqual(outcome.usage.cache_read_input_tokens, expected[1])
-                    self.assertAlmostEqual(outcome.usage.total_cost_usd, expected[2])
+                    if expected[2] is None:
+                        self.assertIsNone(outcome.usage.total_cost_usd)
+                    else:
+                        self.assertAlmostEqual(outcome.usage.total_cost_usd, expected[2])
                 if kind == "ran":
                     self.assertEqual(outcome.output, {
                         "triage": "needs_human", "slice": None, "human_question": "Which items?",
@@ -48,10 +72,10 @@ class NativeAdaptersTest(unittest.TestCase):
         self.assert_envelopes(adapter, "claude", (
             ("success", 0, "ran", (1481, 3985, 0.037886699999999995)),
             ("is_error", 1, "failed", None),
-            ("quota", 1, "quota", (1477, 0, 0.00016570000000000002)),
+            ("quota", 1, "quota", (1477, 0, None)),
             ("model_substitution_disabled", 1, "failed", None),
             ("missing_model_usage", 0, "failed", None),
-            ("wrong_model", 0, "failed", (1477, 0, 0.00016570000000000002)),
+            ("wrong_model", 0, "failed", (1477, 0, None)),
             ("zero_usage", 0, "failed", None),
         ))
 

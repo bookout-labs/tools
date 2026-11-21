@@ -9,10 +9,37 @@ from unittest.mock import Mock
 from pydantic import ValidationError
 from foreman.workspace import LiveWorkspace
 
-from foreman.fixture_manifest import FIXTURE_DIR, MANIFEST_PATH, FixtureManifest
+from foreman.fixture_manifest import CapturedRun, QuotedSource, FIXTURE_DIR, MANIFEST_PATH, FixtureManifest
 
 
 class FixtureManifestTest(unittest.TestCase):
+    def test_claude_budget_evidence(self):
+        root = Path(__file__).with_name("fixtures")
+        manifest = FixtureManifest.from_toml((root / "manifest.toml").read_text())
+        help_run = manifest.fixtures["claude/help.txt"]
+        self.assertIsInstance(help_run, CapturedRun)
+        self.assertEqual((help_run.tool, help_run.version, help_run.argv, help_run.returncode),
+                         ("claude", "2.1.329", ["claude", "--help"], 0))
+        self.assertEqual(help_run.claim_ids, ["claude-max-budget-usd-flag"])
+        self.assertIn("--max-budget-usd <amount>", (root / "claude/help.txt").read_text())
+        budget = manifest.fixtures["claude/max_budget.json"]
+        self.assertEqual((budget.tool, budget.version), ("claude", "2.1.329"))
+        if isinstance(budget, CapturedRun):
+            self.assertIsNotNone(budget.returncode)
+            self.assertIn("--max-budget-usd", budget.argv)
+        else:
+            self.assertIsInstance(budget, QuotedSource)
+            self.assertTrue(budget.sources)
+            self.assertIn("error_max_budget_usd", budget.notes)
+
+    def test_captured_returncode_is_optional_and_strict(self):
+        capture = {"kind": "captured_run", "tool": "example", "version": "1", "argv": ["example"]}
+        self.assertIsNone(CapturedRun.model_validate(capture).returncode)
+        self.assertEqual(CapturedRun.model_validate({**capture, "returncode": 1}).returncode, 1)
+        for invalid in (True, "1", 1.5):
+            with self.subTest(invalid=invalid), self.assertRaises(ValidationError):
+                CapturedRun.model_validate({**capture, "returncode": invalid})
+
     def test_manifest_matches_fixture_inventory(self):
         repo = Path(__file__).resolve().parents[1]
         root = repo / FIXTURE_DIR

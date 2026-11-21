@@ -540,6 +540,8 @@ def compile_delivery(
                 name, ModelSpec.parse(models[pending["index"]]) if models else None, worker_state, plan["instruction"], on_attempt=record_attempt,
             )
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
+            if outcome.kind == "budget_exhausted":
+                return {**stopped, **halted("budget_exceeded", f"{name} {model} exhausted its dollar budget. {outcome.detail}".strip(), name)}
             attempt_history = state.get("attempts", []) + attempts
             if outcome.kind == "ran" and outcome.usage is None:
                 return {**stopped, **halted("usage_unknown", unknown_usage(name, model), name)}
