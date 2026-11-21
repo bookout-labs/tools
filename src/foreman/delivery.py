@@ -691,9 +691,10 @@ def compile_delivery(
     def reconcile(state: DeliveryState) -> DeliveryUpdate:
         if isinstance(run, DryRun):
             return {}
-        assert "attempt_head" in state and "delivery_branch" in state
+        assert "attempt_head" in state and "delivery_branch" in state and "delivery_base" in state
         try:
-            candidate = run.workspace.reconcile(state["attempt_head"], state["delivery_branch"])
+            candidate = run.workspace.reconcile(state["attempt_head"], state["delivery_branch"],
+                                                state["delivery_base"], state.get("fact_record", MANIFEST_PATH))
             if candidate is None:
                 identifiers = [str(f.get("id")) for f in state.get("findings", [])]
                 if (gate := history({"rounds": state.get("review_findings", [])}).gate) and not gate.passed:
