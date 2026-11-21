@@ -22,7 +22,7 @@ from foreman.runner import run_live_delivery
 from foreman.state import DeliveryState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
 from foreman.config import ModelSpec, load_config
 from foreman.worker import CliWorker
-from owner_contract import OWNERS, assert_channels
+from owner_contract import OWNERS, assert_channels, historical_channels
 from test_runner import worker_reply
 
 
@@ -31,23 +31,14 @@ class CheckpointBoundaryTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "old.sqlite"
             shutil.copyfile(Path(__file__).parent / "fixtures/state/before-move.sqlite", checkpoint)
-            for version in (None, *range(SCHEMA_VERSION), SCHEMA_VERSION + 1, True, "1"):
+            for version in (None, *range(SCHEMA_VERSION), SCHEMA_VERSION + 1, True, "1", str(SCHEMA_VERSION)):
                 with self.subTest(version=version):
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                         saver.serde = checkpoint_serializer()
                         saved = saver.get_tuple({"configurable": {"thread_id": "before-move"}})
                         values = saved.checkpoint["channel_values"]
-                        fixture = Path(__file__).parent / "fixtures/state/versions" / f"{version if version is not None else 'missing'}.json"
                         values.clear()
-                        if version is None or type(version) is int and 0 <= version < SCHEMA_VERSION:
-                            self.assertTrue(fixture.exists(), fixture)
-                        if fixture.exists():
-                            values.update(json.loads(fixture.read_text()))
-                            for owner in OWNERS:
-                                if isinstance(values.get(owner.name), dict):
-                                    values[owner.name] = type(owner.value).model_validate(values[owner.name])
-                        else:
-                            values.update(json.loads(fixture.with_name("1.json").read_text()), schema_version=version)
+                        values.update(historical_channels(version))
                         saver.put({"configurable": {"thread_id": "a/b#8", "checkpoint_ns": ""}}, saved.checkpoint, saved.metadata, {})
                     before = checkpoint.read_bytes()
                     with patch("foreman.runner.compile_delivery") as compile_graph, \
@@ -62,6 +53,9 @@ class CheckpointBoundaryTests(unittest.TestCase):
                             self.assertIn("schema_version missing", str(raised.exception))
                         refuse.assert_called_once()
                         self.assertEqual(refuse.call_args.args[0], values)
+                        stored_version = refuse.call_args.args[0].get("schema_version")
+                        self.assertEqual(stored_version, version)
+                        self.assertIs(type(stored_version), type(version))
                         compile_graph.assert_not_called()
                         validate.assert_not_called()
                         config.assert_not_called()
@@ -73,12 +67,14 @@ class CheckpointBoundaryTests(unittest.TestCase):
         self.assertEqual({owner.name for owner in OWNERS}, model_channels)
         serde = checkpoint_serializer()
         values = {owner.name: owner.value for owner in OWNERS}
-        for owner in OWNERS:
-            with self.subTest(owner=owner.name):
-                self.assertEqual(owner.value.model_fields_set, set(type(owner.value).model_fields))
-                self.assertEqual(serde.loads_typed(serde.dumps_typed(owner.value)), owner.value)
         from foreman.delivery import HumanPrompt
         with self.assertNoLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
+            for owner in OWNERS:
+                with self.subTest(owner=owner.name):
+                    defaults = type(owner.value)()
+                    for field in type(owner.value).model_fields:
+                        self.assertNotEqual(getattr(owner.value, field), getattr(defaults, field), field)
+                    self.assertEqual(serde.loads_typed(serde.dumps_typed(owner.value)), owner.value)
             self.assertIs(serde.loads_typed(serde.dumps_typed(Halt.quota_exhausted)), Halt.quota_exhausted)
         with self.assertLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
             self.assertNotIsInstance(serde.loads_typed(serde.dumps_typed(HumanPrompt(stage="triage", question="Which?"))), HumanPrompt)
@@ -98,7 +94,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                 prompt = json.loads(args[-1].split("Delivery state:\n")[1])
                 for owner in OWNERS:
                     with self.subTest(owner=owner.name):
-                        self.assertEqual(type(owner.value).model_validate(prompt[owner.name]), owner.value)
+                        self.assertEqual(prompt[owner.name], owner.value.model_dump(mode="json"))
                 return worker_reply(args, {"triage": "implement"})
 
             result = CliWorker(Path(directory), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), restored, "Read.")
