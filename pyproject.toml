@@ -16,7 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pyright==1.1.414"]
+dev = ["pyright==1.1.414", "setuptools>=75"]
+
+[dependency-groups]
+dev = ["pyright==1.1.414", "setuptools>=75"]
 
 [project.scripts]
 foreman = "foreman.cli:main"

@@ -269,7 +269,23 @@ Foreman records the ordered plan and stops the parent as `sliced`. Each child is
 
 `stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`.
 
-A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
+Start the human-facing coordinator with `foreman coordinator` from the engine's
+working directory. It starts interactive Claude Code with the installed package's
+`roles/coordinator.md` appended to its system prompt. Terminal input and output
+stay attached. The session files the parent issue and explains the run. It does
+not slice, build, or arm a merge. Graph workers keep their stage instructions.
+
+Install Claude Code and authenticate it first. The operator supplies the selected
+tools installation, for example by installing `bookout-tools` from the exact Git
+commit named by the engine's tools pointer into a dedicated virtual environment.
+Invoke that environment's `foreman coordinator`. This command does not resolve or
+install the pointer's ref, and a global `foreman` may belong to a different revision.
+A missing, unreadable, or empty packaged role stops startup with an error before
+Claude launches.
+
+The factory label is the delivery trigger contract. A host integration must still
+route GitHub label events through `foreman accept` and launch accepted runs;
+`foreman coordinator` does not install a webhook or start a polling loop.
 
 `foreman run` exits 0 for successful stops (`done verified`, `done sliced`, or `done answered`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a resumable halt (`merge_held`, `merge_not_armed`, `env_unavailable`, or `reviewer_unavailable`), and 1 for every other halt.
 
@@ -341,6 +357,8 @@ The runner uses the pinned model slugs from `models.toml` with the installed Cod
 If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota returns. Foreman retries the same stage and retains its earlier attempt records. Review instead prints `done reviewer_unavailable` (exit 75) when all eligible reviewers are unavailable. Rerun after restoring quota or the missing CLI; review reselects from the current model table.
 
 Before review, Foreman fetches the pull request's base branch from `origin` and counts added and deleted lines across every path against the merge base, including root files, docs, and logs. Use Git 2.43 or later.
+
+Reconciliation and size use the merge base with fetched `refs/remotes/origin/<base>`. Reconciliation rejects added or modified deliverable paths matching that base's `.gitignore` files, including staged files and worker commits. Ignored untracked files stay outside the delta; deleting tracked scratch is allowed. Here, `evidence/` declares disposable worker output. The default and configured fact records and their named regular captures remain deliverables, without exempting adjacent files. `implementation_rejected` names rejected paths and preserves the checkout. Remove the scratch and rerun to reconcile again without repeating the implement call.
 
 Files marked `linguist-generated` by [`.gitattributes`](.gitattributes) at the merge base do not count. Here, that means fixtures, generated schemas, and lockfiles. Candidate attribute changes cannot exempt their own lines.
 
