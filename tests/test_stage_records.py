@@ -155,11 +155,12 @@ class StageOwnershipTests(unittest.TestCase):
                 payload = {"verify": "fail"} if stage == "verify" else handler(stage, None, state, "").output
                 output = parse_output(contract, payload, context=SCRIPTED_REVIEW_CONTEXT)
                 update = stage_update(stage, output, state, "model")
-                key = {"implement": "implementation", "review": "findings"}.get(stage, stage)
+                key = {"implement": "implementation", "review": "findings", "verify": "checks"}.get(stage, stage)
                 self.assertIn(key, update)
                 self.assertEqual(update["path"], [stage])
                 self.assertEqual(update["models_used"][stage], "model")
                 if stage == "verify":
+                    self.assertEqual(update["checks"].verify, "fail")
                     self.assertEqual(update["verify_failures"], 3)
 
     def test_legacy_failure_budget_is_preserved_separately(self):
