@@ -558,9 +558,9 @@ def compile_delivery(
                     else:
                         citation_context = run.review_context
                 except WorktreeInspectionFailed as exc:
-                    return {"pending_dispatch": None, **halted("review_unavailable", str(exc), name)}
+                    return {"pending_dispatch": None, **halted(Halt.review_unavailable, str(exc), name)}
                 if not (citation_context.base.changed or citation_context.head.changed):
-                    return {"pending_dispatch": None, **halted("review_unavailable", "Review requires changed paths.", name)}
+                    return {"pending_dispatch": None, **halted(Halt.review_unavailable, "Review requires changed paths.", name)}
             accepted_model = ModelSpec.parse(models[pending["index"]]) if models else None
             outcome = clean_outcome(dispatcher(name, accepted_model, worker_state, plan["instruction"]))
             model = accepted_model.name if accepted_model else None

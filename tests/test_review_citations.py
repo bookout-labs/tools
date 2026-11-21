@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from foreman.dispatch import InvalidOutput
+from foreman.outcomes import Halt
 from foreman.review_context import ReviewContext, ReviewSide, SCRIPTED_REVIEW_CONTEXT
 from foreman.stage_output import ReviewOutput, parse_output
 from foreman.workspace import WorktreeInspectionFailed
@@ -11,7 +12,6 @@ import test_review_rounds
 from test_runner import FakeWorkspace, FINDING
 
 FIXTURES = Path(__file__).with_name('fixtures') / 'review'
-
 
 def payload(name='grounded'):
     return json.loads((FIXTURES / f'{name}.json').read_text())
@@ -89,7 +89,7 @@ class CitationGraphTests(unittest.TestCase):
 
     def test_placeholder_rejected_before_post_or_merge(self):
         result = self.run_rounds([payload('placeholder-99')])
-        self.assertEqual(result['halt'], 'invalid_output')
+        self.assertEqual(result['halt'], Halt.invalid_output)
         self.assertIn('review claude-opus-5-5-high:', result['halt_detail'])
         self.assertFalse(result.get('review_findings'))
         self.assertFalse(result.get('review_receipt'))
@@ -99,7 +99,7 @@ class CitationGraphTests(unittest.TestCase):
 
     def test_later_rejection_keeps_only_prior_accepted_round(self):
         result = self.run_rounds([{**payload(), 'findings': [FINDING]}, payload('stale')])
-        self.assertEqual(result['halt'], 'invalid_output')
+        self.assertEqual(result['halt'], Halt.invalid_output)
         self.assertEqual(len(result['review_findings']), 1)
         self.assertEqual(len(self.forge.reviews), 1)
         self.assertEqual(result['review_receipt'], {'id': 1, 'state': 'COMMENTED', 'commit_id': result['review_findings'][0]['reviewed_head']})
@@ -115,7 +115,7 @@ class CitationGraphTests(unittest.TestCase):
         for value in [WorktreeInspectionFailed('unreadable'), ReviewContext(empty, empty)]:
             with self.subTest(value=value), patch.object(FakeWorkspace, 'review_context', side_effect=value if isinstance(value, Exception) else None, return_value=value):
                 result = self.run_rounds([], rerun=True)
-                self.assertEqual(result['halt'], 'review_unavailable')
+                self.assertEqual(result['halt'], Halt.review_unavailable)
                 self.assertIsNone(result.get('pending_dispatch'))
                 self.assertFalse([a for a in result['attempts'] if a['stage'] == 'review'])
                 self.assertFalse(self.forge.reviews)
