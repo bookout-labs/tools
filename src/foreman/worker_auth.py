@@ -43,10 +43,10 @@ def validate_config(url: str) -> None:
     entries = config.stdout.split("\0")
     for scope, entry in zip(entries[::2], entries[1::2]):
         key, _, value = entry.partition("\n")
-        if scope in {"local", "worktree"} and (
-                key.lower().startswith("http.") or
-                re.fullmatch(r"remote\..*\.proxy|url\..*\.(insteadof|pushinsteadof)", key, re.I | re.S) or
-                (re.fullmatch(r"remote\..*\.(url|pushurl)", key, re.I | re.S) and value != url)):
+        if scope in {"local", "worktree"} and not (
+                re.fullmatch(r"core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)"
+                             r"|remote\.origin\.fetch|branch\..*\.(remote|merge)", key.lower()) or
+                (key.lower() == "remote.origin.url" and value == url)):
             raise CredentialFailure(f"Worker Git refuses repository config key {redact(key, credentials_only=True)}.")
 
 
@@ -76,7 +76,7 @@ def git_command(args: list[str]) -> list[str]:
     validate_config(url)
     urls = validate_remote(REPO, urls=[url] if args[0] == "clone" else None)
     return ["git", *git_auth(urls), "-c", "push.followTags=false", "-c", "core.hooksPath=/dev/null",
-            "-c", "http.proxy=", "-c", "http.sslVerify=true", *args]
+            "-c", "http.proxy=", "-c", "http.sslVerify=true", "-c", "core.fsmonitor=false", *args]
 
 
 def main(argv: list[str] | None = None) -> int:

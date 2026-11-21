@@ -117,6 +117,8 @@ class WorkerTest(unittest.TestCase):
     def test_repository_transport_config_is_refused_before_mint(self):
         good = f'https://github.com/{REPO}'
         probes = [
+            [('core.fsmonitor', 'probe')],
+            [('core.sshCommand', 'probe')],
             [('http.https://github.com/.proxy', 'http://127.0.0.1:9')],
             [('http.https://github.com/.sslVerify', 'false')],
             [('remote.origin.proxy', 'http://127.0.0.1:9')],
@@ -138,14 +140,16 @@ class WorkerTest(unittest.TestCase):
 
                     git('init')
                     git('remote', 'add', 'origin', good)
-                    git('config', 'remote.origin.pushurl', good)
                     config = root / '.git' / 'config'
+                    rejected = settings[0][0]
                     if mode in {'include', 'includeIf'}:
                         config = root / 'included.config'
                         key = 'include.path' if mode == 'include' else f'includeIf.gitdir:{root}/.git.path'
                         git('config', key, str(config))
+                        rejected = key
                     elif mode == 'worktree':
                         git('config', 'extensions.worktreeConfig', 'true')
+                        rejected = 'extensions.worktreeconfig'
                         config = root / '.git' / 'config.worktree'
 
                     def run(command, **kwargs):
@@ -153,16 +157,47 @@ class WorkerTest(unittest.TestCase):
                         self.assertNotIn('GH_TOKEN', kwargs['env'])
                         return real_run(command, cwd=root, **kwargs)
 
+                    probe = root / 'probe'
+                    marker = root / 'executed'
+                    probe.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+                    probe.chmod(0o755)
                     with patch('foreman.worker_auth.subprocess.run', side_effect=run), \
-                            patch('foreman.worker_auth.environment') as mint:
-                        validate_config(good)
+                            patch('foreman.worker_auth.environment', return_value=command_environment('synthetic')) as mint:
+                        if mode == 'local':
+                            validate_config(good)
                         for key, value in settings:
-                            git('config', '--file', str(config), key, value)
+                            git('config', '--file', str(config), key, str(probe) if value == 'probe' else value)
                         code, out, err = self.invoke(['git', 'ls-remote', 'origin'])
                         self.assertEqual(code, 1)
                         self.assertEqual(out, '')
-                        self.assertIn(settings[0][0].lower(), err.lower())
+                        self.assertIn(rejected.lower(), err.lower())
+                        self.assertFalse(marker.exists())
                         mint.assert_not_called()
+
+    def test_fresh_clone_and_linked_worktree_pass_config_guard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            real_run = subprocess.run
+            env = command_environment()
+            env['GIT_ALLOW_PROTOCOL'] = 'file'
+
+            def git(*args, cwd=root):
+                return real_run(['git', *args], cwd=cwd, env=env, check=True, capture_output=True, text=True)
+
+            git('init', '--initial-branch=main', 'source')
+            git('-c', 'user.name=Synthetic', '-c', 'user.email=worker@example.invalid',
+                'commit', '--allow-empty', '-m', 'synthetic', cwd=root / 'source')
+            git('clone', str(root / 'source'), 'clone')
+            good = f'https://github.com/{REPO}'
+            git('remote', 'set-url', 'origin', good, cwd=root / 'clone')
+            git('worktree', 'add', '-b', 'topic', str(root / 'linked'), cwd=root / 'clone')
+            for checkout in [root / 'clone', root / 'linked']:
+                with self.subTest(checkout=checkout):
+                    def run(command, **kwargs):
+                        return real_run(command, cwd=checkout, **kwargs)
+
+                    with patch('foreman.worker_auth.subprocess.run', side_effect=run):
+                        validate_config(good)
 
     def test_real_push_ignores_follow_tags_and_pre_push_hook(self):
         with tempfile.TemporaryDirectory() as directory:
