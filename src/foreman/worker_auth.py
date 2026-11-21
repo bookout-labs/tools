@@ -35,6 +35,21 @@ def environment(studio: str | None) -> dict[str, str]:
     return command_environment(result.stdout.removeprefix("password=").strip())
 
 
+def validate_config(url: str) -> None:
+    config = subprocess.run(["git", "config", "--list", "--includes", "--show-scope", "--null"],
+                            env=command_environment(), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
+    if config.returncode:
+        raise CredentialFailure("Cannot inspect repository Git config.")
+    entries = config.stdout.split("\0")
+    for scope, entry in zip(entries[::2], entries[1::2]):
+        key, _, value = entry.partition("\n")
+        if scope in {"local", "worktree"} and (
+                key.lower().startswith("http.") or
+                re.fullmatch(r"remote\..*\.proxy|url\..*\.(insteadof|pushinsteadof)", key, re.I | re.S) or
+                (re.fullmatch(r"remote\..*\.(url|pushurl)", key, re.I | re.S) and value != url)):
+            raise CredentialFailure(f"Worker Git refuses repository config key {redact(key, credentials_only=True)}.")
+
+
 def git_command(args: list[str]) -> list[str]:
     if not args or args[0] not in {"fetch", "push", "ls-remote", "clone"}:
         raise argparse.ArgumentTypeError("Use the launcher only for git fetch, push, ls-remote or clone. Run local git directly.")
@@ -44,7 +59,6 @@ def git_command(args: list[str]) -> list[str]:
     if args[0] == "clone":
         if len(args) not in {2, 3} or args[1] != url:
             raise argparse.ArgumentTypeError(f"Use git clone {url} [DIRECTORY].")
-        urls = validate_remote(REPO, urls=[url])
     else:
         if args[1] != "origin":
             raise argparse.ArgumentTypeError("Worker network commands require origin.")
@@ -59,7 +73,8 @@ def git_command(args: list[str]) -> list[str]:
                 raise argparse.ArgumentTypeError("Push requires a non-main branch under refs/heads, without force, deletion or tags.")
             # Fully qualify both ends so a same-named tag cannot supply the source.
             args = ["push", "origin", f"{'HEAD' if args[2].startswith('HEAD:') else 'refs/heads/' + branch}:refs/heads/{branch}"]
-        urls = validate_remote(REPO)
+    validate_config(url)
+    urls = validate_remote(REPO, urls=[url] if args[0] == "clone" else None)
     return ["git", *git_auth(urls), "-c", "push.followTags=false", "-c", "core.hooksPath=/dev/null",
             "-c", "http.proxy=", "-c", "http.sslVerify=true", *args]
 

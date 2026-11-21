@@ -239,6 +239,7 @@ class RedactionTest(unittest.TestCase):
             ("cli.py", "_write_run_log"): 1,
             ("worker_auth.py", "main"): 1,
             ("worker_auth.py", "environment"): 1,
+            ("worker_auth.py", "validate_config"): 1,
             ("delivery.py", "DryRun.record_merge"): 2,
             ("github.py", "LiveForge._run_command"): 2,
             ("workspace.py", "LiveWorkspace._git"): 2,

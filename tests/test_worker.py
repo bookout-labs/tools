@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from foreman.credentials import CredentialFailure, command_environment, GIT_AUTH, validate_remote
-from foreman.worker_auth import environment, git_command, main, REPO
+from foreman.worker_auth import environment, git_command, main, REPO, validate_config
 from tests.test_credentials import CredentialFixture
 
 
@@ -93,7 +93,9 @@ class WorkerTest(unittest.TestCase):
                          ['clone', 'https://example.invalid/other'], ['clone', good, '-dir']]:
                 self.assertEqual(self.invoke(['git', *args])[0], 2)
             mint.assert_not_called()
-        with patch('foreman.worker_auth.subprocess.run', return_value=subprocess.CompletedProcess([], 0, 'https://evil.invalid/repo', '')):
+        with patch('foreman.worker_auth.subprocess.run', side_effect=[
+                subprocess.CompletedProcess([], 0, '', ''),
+                subprocess.CompletedProcess([], 0, 'https://evil.invalid/repo', '')]):
             with self.assertRaisesRegex(CredentialFailure, 'Transport requires'):
                 git_command(['clone', good])
 
@@ -106,10 +108,61 @@ class WorkerTest(unittest.TestCase):
             for extra in [['--force', 'HEAD:branch'], ['--delete', 'branch'], ['--tags'], [], ['a', 'b']]:
                 self.assertEqual(self.invoke(['git', 'push', 'origin', *extra])[0], 2)
             mint.assert_not_called()
-        with patch('foreman.worker_auth.validate_remote', return_value=[f'https://github.com/{REPO}']):
+        with patch('foreman.worker_auth.validate_remote', return_value=[f'https://github.com/{REPO}']), \
+                patch('foreman.worker_auth.validate_config'):
             for ref, expected in [('HEAD:branch', 'HEAD:refs/heads/branch'), ('branch', 'refs/heads/branch:refs/heads/branch'),
                                   ('HEAD:refs/heads/topic/a', 'HEAD:refs/heads/topic/a')]:
                 self.assertEqual(git_command(['push', 'origin', ref])[-1], expected)
+
+    def test_repository_transport_config_is_refused_before_mint(self):
+        good = f'https://github.com/{REPO}'
+        probes = [
+            [('http.https://github.com/.proxy', 'http://127.0.0.1:9')],
+            [('http.https://github.com/.sslVerify', 'false')],
+            [('remote.origin.proxy', 'http://127.0.0.1:9')],
+            [('http.sslCAInfo', '/synthetic/ca.pem'), ('http.curloptResolve', 'github.com:443:127.0.0.1')],
+            [('http.curloptResolve', 'github.com:443:127.0.0.1')],
+            [('remote.other.url', good + '-other')],
+            [('remote.origin.pushurl', good + '.git')],
+            [('url.http://127.0.0.1:9/.insteadOf', good)],
+            [('url.http://127.0.0.1:9/.pushInsteadOf', good)],
+        ]
+        for mode in ['local', 'include', 'includeIf', 'worktree']:
+            for settings in probes:
+                with self.subTest(mode=mode, key=settings[0][0]), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory).resolve()
+                    real_run = subprocess.run
+
+                    def git(*args):
+                        return real_run(['git', *args], cwd=root, check=True, capture_output=True, text=True)
+
+                    git('init')
+                    git('remote', 'add', 'origin', good)
+                    git('config', 'remote.origin.pushurl', good)
+                    config = root / '.git' / 'config'
+                    if mode in {'include', 'includeIf'}:
+                        config = root / 'included.config'
+                        key = 'include.path' if mode == 'include' else f'includeIf.gitdir:{root}/.git.path'
+                        git('config', key, str(config))
+                    elif mode == 'worktree':
+                        git('config', 'extensions.worktreeConfig', 'true')
+                        config = root / '.git' / 'config.worktree'
+
+                    def run(command, **kwargs):
+                        self.assertEqual(command[:2], ['git', 'config'])
+                        self.assertNotIn('GH_TOKEN', kwargs['env'])
+                        return real_run(command, cwd=root, **kwargs)
+
+                    with patch('foreman.worker_auth.subprocess.run', side_effect=run), \
+                            patch('foreman.worker_auth.environment') as mint:
+                        validate_config(good)
+                        for key, value in settings:
+                            git('config', '--file', str(config), key, value)
+                        code, out, err = self.invoke(['git', 'ls-remote', 'origin'])
+                        self.assertEqual(code, 1)
+                        self.assertEqual(out, '')
+                        self.assertIn(settings[0][0].lower(), err.lower())
+                        mint.assert_not_called()
 
     def test_real_push_ignores_follow_tags_and_pre_push_hook(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -142,7 +195,8 @@ class WorkerTest(unittest.TestCase):
             def run(command, **kwargs):
                 return real_run(command, cwd=repo, **kwargs)
 
-            with patch('foreman.worker_auth.validate_remote', return_value=[str(remote)]), \
+            with patch('foreman.worker_auth.validate_config'), \
+                    patch('foreman.worker_auth.validate_remote', return_value=[str(remote)]), \
                     patch('foreman.worker_auth.environment', return_value=env), \
                     patch('foreman.worker_auth.subprocess.run', side_effect=run):
                 self.assertEqual(self.invoke(['git', 'push', 'origin', 'HEAD:worker-topic'])[0], 0)
