@@ -211,6 +211,20 @@ class LiveWorkspace:
             return None if observed.clean else {"disposition": "edits", "fingerprint": self.fingerprint()}
         if not observed.clean:
             raise ImplementationRejected(f"Moved HEAD {observed.head} has uncommitted edits." + recovery)
+        try:
+            ancestry = subprocess.run(
+                ["git", "--no-replace-objects", "merge-base", "--is-ancestor", parent, "HEAD"],
+                cwd=self.root, capture_output=True, stdin=subprocess.DEVNULL, timeout=10,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+        except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+            raise WorktreeInspectionFailed(f"git merge-base failed ({exc}).") from exc
+        if ancestry.returncode == 1:
+            raise ImplementationRejected(f"Worker HEAD {observed.head} is a non-descendant of {parent}." + recovery)
+        if ancestry.returncode:
+            raise WorktreeInspectionFailed(
+                os.fsdecode(ancestry.stderr).strip() or f"git merge-base exited with code {ancestry.returncode}.",
+            )
         sha = observed.head
         while sha != parent:
             parents = self._git("--no-replace-objects", "show", "-s", "--format=%P", sha).split()

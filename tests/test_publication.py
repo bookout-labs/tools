@@ -296,6 +296,34 @@ class PublicationTest(unittest.TestCase):
                     self.assertEqual([a for a in recovered["attempts"] if a["stage"] == "implement"],
                                      [a for a in result["attempts"] if a["stage"] == "implement"])
 
+    def test_non_descendant_history_is_rejected_before_merge_inspection(self):
+        for kind in ("rewind", "unrelated"):
+            with self.subTest(kind=kind):
+                self.reset_fixture()
+                self.git("switch", "-c", "side")
+                (self.checkout / "side.txt").write_text("side")
+                self.worker_commit()
+                self.git("switch", "main")
+                self.git("merge", "--no-ff", "side", "-m", "Merge into main")
+                main = self.git("rev-parse", "HEAD")
+                self.git("commit", "--allow-empty", "-m", "Attempt base")
+                parent = self.git("rev-parse", "HEAD")
+
+                def edit():
+                    if kind == "rewind":
+                        self.git("reset", "--keep", main)
+                    else:
+                        self.git("switch", "--orphan", "unrelated")
+                        self.git("commit", "--allow-empty", "-m", "Unrelated root")
+                        self.git("branch", "-f", self.branch, "HEAD")
+                        self.git("switch", self.branch)
+
+                result = self.walk(edit)
+                head = self.git("rev-parse", "HEAD")
+                self.assertEqual(result["stop"], "implementation_rejected")
+                self.assertIn(f"Worker HEAD {head} is a non-descendant of {parent}", result["halt_detail"])
+                self.assertNotIn("merge commit", result["halt_detail"])
+
     def test_reconciled_candidate_mutation_is_rejected_before_publication(self):
         original = LiveWorkspace.reconcile
         def mutate(workspace, *args):
@@ -327,17 +355,18 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(recovered["attempts"][:2], rejected["attempts"])
 
     def test_reconcile_git_errors_remain_git_failed(self):
-        for detail in ("timed out", "index.lock"):
-            with self.subTest(detail=detail):
-                self.check_reconcile_git_error(detail)
+        for operation in ("show", "merge-base"):
+            for detail in ("timed out", "index.lock"):
+                with self.subTest(operation=operation, detail=detail):
+                    self.check_reconcile_git_error(detail, operation)
 
-    def check_reconcile_git_error(self, detail):
+    def check_reconcile_git_error(self, detail, operation):
         self.reset_fixture()
         original = self.subprocess
         def fail(command, **kwargs):
-            if command[:4] == ["git", "--no-replace-objects", "show", "-s"]:
+            if command[:3] == ["git", "--no-replace-objects", operation]:
                 if detail == "timed out":
-                    raise subprocess.TimeoutExpired("git show", 10)
+                    raise subprocess.TimeoutExpired(f"git {operation}", 10)
                 return subprocess.CompletedProcess(command, 128, b"", b"index.lock exists")
             return original(command, **kwargs)
         def edit():
