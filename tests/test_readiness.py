@@ -5,7 +5,7 @@ import unittest
 from typing import get_args
 from unittest.mock import patch
 
-from foreman.delivery import READINESS_HALTS
+from foreman.outcomes import READINESS_HALTS
 from foreman.readiness import Outcome
 from foreman.github import ForgeError, LiveForge, PullRequest
 from test_github import PR, HEAD, BASE, BRANCH, REPO

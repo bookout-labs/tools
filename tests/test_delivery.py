@@ -190,9 +190,15 @@ class DeliveryTest(unittest.TestCase):
         config.nodes["implement"] = NodeConfig(role="check", models=())
         handler = ScriptHandler()
         result = walk(handler, config=config)
-        self.assertEqual(result["stop"], "no_reviewer")
+        self.assertEqual(result["stop"], "publication_model_missing")
         self.assertIn("implement model", result["halt_detail"])
         self.assertNotIn("review", [call["node"] for call in handler.calls])
+
+    def test_model_selection_stops_when_its_dependency_is_missing(self):
+        config = load_config()
+        config.nodes["research"] = replace(config.nodes["research"], other_family_from="implement")
+        result = walk(ScriptHandler(triage="question"), config=config)
+        self.assertEqual(result["stop"], "model_dependency_missing")
 
     def test_open_spec_stops_for_a_person(self):
         result = walk(ScriptHandler(triage="spec", spec_gate="needs_human"))

@@ -19,6 +19,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.adapters import Outcome, Usage
 from foreman.cli import _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
+from foreman.outcomes import Halt
 from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
@@ -1676,7 +1677,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(held["merge"], "not_armed")
         self.assertEqual(held["halt_detail"], f"could not read FOREMAN_MERGE_HOLD: {reason}")
         self.assertEqual(held["merge_command"], [
-            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--auto", "--match-head-commit", HEAD,
+            "gh", "pr", "merge", "<number>", "--repo", "Example/Engine", "--auto", "--squash", "--match-head-commit", HEAD,
         ])
         self.assertEqual(self.github.merge_calls, [])
         released = self.walk([])
@@ -1853,7 +1854,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         worker_runner=worker, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(code, 0)
         self.assertIn(
-            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --match-head-commit '<sha>'\n"
+            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --squash --match-head-commit '<sha>'\n"
             "tokens 8 of 20000000\ndone verified",
             stdout.getvalue(),
         )
@@ -2251,7 +2252,7 @@ class HaltExitCodeTest(unittest.TestCase):
         detail = "Merge arming requires a full 40-hex commit SHA."
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
-        result = {**halted("merge_not_armed", detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
+        result = {**halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": "not_armed"}
         with patch("foreman.cli.run_live_delivery", return_value=result), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
@@ -2264,7 +2265,7 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_empty_details_are_rejected(self):
         for detail in ("", " ", "\n"):
             with self.subTest(detail=detail), self.assertRaisesRegex(ValueError, "requires a nonempty halt detail"):
-                halted("failed", detail, "triage")
+                halted(Halt.failed, detail, "triage")
 
     def test_dry_run_success_and_human_stops(self):
         for handler, stop, expected in (

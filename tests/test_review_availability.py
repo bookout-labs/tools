@@ -23,6 +23,7 @@ from unittest.mock import patch
 from foreman.adapters import Outcome, Usage
 from foreman.cli import run_exit_code
 from foreman.config import ModelSpec, PstackPin, load_config, order_for
+from foreman.outcomes import Halt
 from foreman.delivery import LiveRun, compile_delivery, halted
 from foreman.github import ForgeError
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
@@ -85,7 +86,7 @@ def legacy_order(node, config, used, implement_models=None):
     models = order_for(node, config, used, implement_models)
     return [m for m in models if m.family != author] if node == "review" and legacy in {"pause", "pending"} else models
 def legacy_halt(reason, detail, stage):
-    return halted("quota_exhausted" if reason == "reviewer_unavailable" else reason, detail, stage)
+    return halted(Halt.quota_exhausted if reason == "reviewer_unavailable" else Halt(reason), detail, stage)
 run = LiveRun(forge, workspace)
 with patch("foreman.runner.load_config", return_value=config), patch("foreman.delivery.order_for", legacy_order), patch("foreman.delivery.halted", legacy_halt if legacy == "pause" else halted):
     try:
