@@ -30,6 +30,7 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual(result["merge"], "skipped")
         self.assertNotIn("merge_receipt", result)
         self.assertIn("pr_size", result)
+        self.assertNotIn("commands", result)
         graph = compile_delivery(*compile_graph.call_args.args, **{**compile_graph.call_args.kwargs, "scratch": None})
         self.assertNotIn("verify_call", graph.get_graph().nodes)
         with self.assertRaisesRegex(ValueError, "thread_id"):
@@ -47,9 +48,10 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "triage claude-opus-5-5-high\ntokens 2 of 20000000\ndone needs_human\nWhat should Foreman know to continue?\n")
 
     def test_transcript_records_commands_without_running_them(self):
+        commands = []
         output = StringIO()
         with redirect_stdout(output):
-            _print_run_rows(walk(ScriptHandler()))
+            _print_run_rows(walk(ScriptHandler(), commands=commands), commands=commands, dry_run=True)
         self.assertEqual(output.getvalue(), """dry run: git switch -c '<issue>-board-saves-a-move' 'refs/heads/<default-branch>'
 dry run: git add --all
 dry run: git commit -m '<issue>: Board saves a move

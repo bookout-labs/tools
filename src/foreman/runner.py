@@ -36,6 +36,7 @@ class RunPresentation:
 
     restored: DeliveryResult | None = None
     updates: list[DeliveryUpdate] = field(default_factory=list[DeliveryUpdate])
+    commands: list[list[str]] = field(default_factory=list[list[str]])
 
     def restore(self, snapshot: StateSnapshot, saver: SqliteSaver) -> None:
         self.restored = snapshot_result(snapshot, saver)

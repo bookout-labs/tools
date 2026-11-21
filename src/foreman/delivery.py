@@ -145,7 +145,6 @@ class DeliveryFields(TypedDict, total=False):
     attempt_head: str
     implementation_candidate: ImplementationCandidate | None
     partial_edits: str
-    commands: Annotated[list[list[str]], operator.add]
     head_sha: str | None
     verified_head: str
     repair_head: str | None
@@ -1144,8 +1143,9 @@ def run_delivery(
     max_budget_usd: BudgetUsd | None = None,
     skills: SkillSource = export_skills,
     fact_record: str = MANIFEST_PATH,
+    commands: list[list[str]] | None = None,
 ) -> DeliveryResult:
-    dry = DryRun()
+    dry = DryRun(commands=commands if commands is not None else [])
     state: DeliveryState = {
         "issue": dry.issue_placeholder,
         "repo": repo,
@@ -1174,9 +1174,7 @@ def run_delivery(
 
     invocation: RunnableConfig = {"configurable": {"thread_id": uuid4().hex}}
     graph.invoke(state, invocation, version="v2")
-    result = snapshot_result(graph.get_state(invocation), saver)
-    result["commands"] = dry.commands
-    return result
+    return snapshot_result(graph.get_state(invocation), saver)
 
 
 def diagram() -> str:
