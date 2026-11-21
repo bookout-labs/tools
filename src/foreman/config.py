@@ -113,11 +113,7 @@ def parse_config(data: object) -> Config:
         if node.other_family_from and node.other_family_from not in nodes:
             raise ConfigError(f"{name} refers to a missing node {node.other_family_from}")
     pin = PstackPin.model_validate(data["pstack"]) if "pstack" in data else PSTACK_PIN
-    config = Config(max_review_rounds=rounds, nodes=nodes, pstack=pin)
-    if "implement" in nodes and "review" in nodes:
-        for builder in nodes["implement"].models:
-            order_for("review", config, {}, [builder.name])
-    return config
+    return Config(max_review_rounds=rounds, nodes=nodes, pstack=pin)
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -138,10 +134,7 @@ def order_for(
     used = (implement_models if node == "review" else None) or ([latest] if latest else [])
     if not used:
         raise ConfigError(f"{node} needs the {source} model")
-    excluded = {family(model) for model in used}
-    others = [model for model in models if model.family not in excluded]
-    if not others:
-        names = ", ".join(sorted(excluded))
-        group = "family" if len(excluded) == 1 else "families"
-        raise ConfigError(f"no {node} model outside the {names} {group}")
-    return others
+    contributing = {family(model) for model in used}
+    return [model for model in models if model.family not in contributing] + [
+        model for model in models if model.family in contributing
+    ]

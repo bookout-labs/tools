@@ -35,7 +35,7 @@ from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, e
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
 from foreman.stage_output import (
-    CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
+    ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.readiness import MergeReceipt, Outcome as ReadinessOutcome
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
@@ -385,6 +385,9 @@ def stage_update(
 
 def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, list[ReviewComment]]:
     body = [f"Graph verdict: {output.review}. Review event: COMMENT (Foreman authors this PR).", output.detail]
+    provenance = output.history.rounds[-1].provenance if output.history.rounds else None
+    if provenance is not None:
+        body.append("Graph review selection: " + provenance.model_dump_json())
     comments: list[ReviewComment] = []
     for finding in output.findings:
         message = f"[{finding.severity}] {finding.summary}"
@@ -607,6 +610,18 @@ def compile_delivery(
                     past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
                     head = state.get("verified_head") or state.get("head_sha") or ""
                     accepted = accept(past, output, head, _check_tool_facts(output, run, state))
+                if accepted is not None and accepted_model is not None:
+                    assert "models_used" in state
+                    contributors = list(dict.fromkeys(state.get("implement_models") or [state["models_used"]["implement"]]))
+                    families = {family(contributor) for contributor in contributors}
+                    same_family = accepted_model.family in families
+                    other_configured = any(ModelSpec.parse(candidate).family not in families for candidate in models)
+                    provenance = ReviewSelection(
+                        reviewer=accepted_model.name, contributors=contributors, same_family=same_family,
+                        reason=("preceding_candidates_unavailable" if other_configured else "no_other_family_configured") if same_family else None,
+                    )
+                    accepted.history.rounds[-1].provenance = provenance
+                    attempts[0]["provenance"] = provenance.record()
                 update = stage_update(name, output, state, model, workspace=plan_workspace, accepted_model=accepted_model)
                 update.update(attempts=attempts, pending_dispatch=None)
                 if accepted is not None:

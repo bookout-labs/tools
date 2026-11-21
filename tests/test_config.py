@@ -20,33 +20,41 @@ class ConfigTest(unittest.TestCase):
                         review=["claude-opus-5-5-high", "gpt-6.1-sol-high"], verify=[])
         self.assertEqual({name: [m.name for m in node.models] for name, node in config.nodes.items()}, expected)
 
-    def test_review_uses_the_other_family(self):
+    def test_review_prefers_the_other_family(self):
         config = load_config()
         gpt_first = order_for("review", config, {"implement": "gpt-6.1-sol-high"})
         claude_first = order_for("review", config, {"implement": "claude-opus-5-5-high"})
-        self.assertEqual([model.family for model in gpt_first], ["claude"])
-        self.assertEqual([model.family for model in claude_first], ["gpt"])
+        self.assertEqual([model.family for model in gpt_first], ["claude", "gpt"])
+        self.assertEqual([model.family for model in claude_first], ["gpt", "claude"])
 
     def test_review_without_a_builder_stops(self):
         config = load_config()
         with self.assertRaises(ConfigError):
             order_for("review", config, {})
 
-    def test_review_refuses_the_builder_family(self):
-        with self.assertRaisesRegex(ConfigError, "no review model outside the gpt family"):
-            parse_config(
-                {
-                    "max_review_rounds": 3,
-                    "nodes": {
-                        "implement": {"role": "builder", "models": ["gpt-6.1-sol-high"]},
-                        "review": {
-                            "role": "verifier",
-                            "other_family_from": "implement",
-                            "models": ["gpt-6.1-terra-high"],
-                        },
-                    },
-                }
-            )
+    def test_single_model_and_single_family_load_and_select(self):
+        for names in (["gpt-6.1-sol-high"], ["gpt-6.1-sol-high", "gpt-6.1-sol-max"]):
+            config = parse_config({"max_review_rounds": 3, "nodes": {
+                "implement": {"role": "builder", "models": [names[0]]},
+                "review": {"role": "verifier", "models": names},
+            }})
+            self.assertEqual([m.name for m in order_for("review", config, {}, [names[0]])], names)
+
+    def test_stable_partition_uses_all_contributors_and_only_the_configured_list(self):
+        names = ["gpt-6.1-sol-high", "claude-opus-5-5-high", "gpt-6.1-sol-max", "claude-opus-5-5-max"]
+        config = parse_config({"max_review_rounds": 3, "nodes": {
+            "implement": {"role": "builder", "models": ["grok-4.7-high"]},
+            "review": {"role": "verifier", "models": names},
+            "spec": {"role": "builder", "models": ["claude-opus-5-5-high"]},
+            "spec_check": {"role": "verifier", "models": names, "other_family_from": "spec"},
+        }})
+        for authors, expected in ((["gpt-model"], names[1::2] + names[::2]),
+                                  (["claude-model"], names[::2] + names[1::2]),
+                                  (["gpt-model", "claude-model"], names)):
+            self.assertEqual([m.name for m in order_for("review", config, {}, authors)], expected)
+        # A future checker uses its actual author's model, not implementation history.
+        selected = order_for("spec_check", config, {"spec": "claude-model", "implement": "gpt-model"}, ["gpt-model"])
+        self.assertEqual([m.name for m in selected], names[::2] + names[1::2])
 
     def test_unhashable_role_is_a_config_error(self):
         with self.assertRaisesRegex(ConfigError, "implement has an unknown role"):

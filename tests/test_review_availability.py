@@ -20,10 +20,11 @@ from dataclasses import replace
 from pathlib import Path
 import sys
 from unittest.mock import patch
-from foreman.adapters import Outcome
+from foreman.adapters import Outcome, Usage
 from foreman.cli import run_exit_code
-from foreman.config import ModelSpec, PstackPin, load_config
+from foreman.config import ModelSpec, PstackPin, load_config, order_for
 from foreman.delivery import LiveRun, compile_delivery, halted
+from foreman.github import ForgeError
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from foreman.runner import run_live_delivery
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -35,6 +36,14 @@ root = Path(root)
 workspace = FakeWorkspace(root)
 workspace.current = WorktreeState(workspace.current.head, True, BRANCH)
 forge = FakeGitHub()
+posted = []
+original_post = forge.post_review
+def post(*args, marker):
+    posted.append({"body": args[2], "marker": marker})
+    if legacy == "post_failure":
+        raise ForgeError("post unavailable")
+    return original_post(*args, marker=marker)
+forge.post_review = post
 script = ScriptHandler()
 queue = iter(json.loads(outcomes))
 calls = []
@@ -51,23 +60,34 @@ def worker(node, model, state, instruction):
             raise RuntimeError("review interrupted")
         if kind in {"quota", "cli_missing", "failed"}:
             return Outcome(kind, detail="review fixture")
-        if kind == "changes":
-            script.reviews = ["changes"]
+        if kind == "quota_budget":
+            return Outcome("quota", usage=Usage(input_tokens=20_000_000, output_tokens=0))
+        if kind == "unknown":
+            return Outcome("ran", {})
+        if kind in {"changes", "ran"}:
+            script.reviews = ["changes" if kind == "changes" else "approve"]
         if kind == "invalid":
             return Outcome("ran", {}, usage=SCRIPTED_USAGE)
     return script(node, model, state, instruction)
 config = replace(load_config(), pstack=PstackPin.model_validate_json(pin))
-if legacy != "current":
+if legacy == "single":
+    for name, node in config.nodes.items():
+        if node.models:
+            config.nodes[name] = replace(node, models=(ModelSpec.parse("gpt-6.1-sol-high"),))
+if legacy in {"pause", "pending"}:
     names = [m.name for m in config.nodes["review"].models]
     if legacy == "pending":
         # An older custom table puts Grok at the third eligible position.
         names.append("gpt-6.1-terra-high")
     names.append("grok-4.7-high")
     config.nodes["review"] = replace(config.nodes["review"], models=tuple(ModelSpec.parse(m) for m in names))
+def legacy_order(node, config, used, implement_models=None):
+    models = order_for(node, config, used, implement_models)
+    return [m for m in models if m.family != author] if node == "review" and legacy in {"pause", "pending"} else models
 def legacy_halt(reason, detail, stage):
     return halted("quota_exhausted" if reason == "reviewer_unavailable" else reason, detail, stage)
 run = LiveRun(forge, workspace)
-with patch("foreman.runner.load_config", return_value=config), patch("foreman.delivery.halted", legacy_halt if legacy == "pause" else halted):
+with patch("foreman.runner.load_config", return_value=config), patch("foreman.delivery.order_for", legacy_order), patch("foreman.delivery.halted", legacy_halt if legacy == "pause" else halted):
     try:
         result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
             checkpoint=root / "run.sqlite3", run=run, dispatcher=worker)
@@ -82,7 +102,7 @@ with patch("foreman.runner.load_config", return_value=config), patch("foreman.de
         print(json.dumps({"calls": calls}))
         sys.exit(99)
 
-print(json.dumps({"result": result, "calls": calls, "posts": len(forge.reviews), "merges": len(forge.merge_calls)}))
+print(json.dumps({"result": result, "calls": calls, "posted": posted, "posts": len(forge.reviews), "merges": len(forge.merge_calls)}))
 sys.exit(run_exit_code(result))
 '''
 
@@ -103,14 +123,16 @@ class ReviewerAvailabilityTest(unittest.TestCase):
 
     def test_selection_matrix_and_full_history(self):
         config = load_config()
-        for authors, expected in ((["claude"], ["gpt"]), (["gpt"], ["claude"]),
-                                  (["grok"], ["claude", "gpt"]), (["gpt", "grok"], ["claude"])):
+        for authors, expected in ((["claude"], ["gpt", "claude"]), (["gpt"], ["claude", "gpt"]),
+                                  (["grok"], ["claude", "gpt"]), (["gpt", "grok"], ["claude", "gpt"]),
+                                  (["gpt", "claude"], ["claude", "gpt"])):
             with self.subTest(authors=authors):
                 selected = order_for("review", config, {}, [f"{family}-model" for family in authors])
                 self.assertEqual([m.family for m in selected], expected)
 
     def test_fresh_process_availability_and_recovery(self):
-        for author, outcomes in (("claude", ["quota"]), ("claude", ["cli_missing"]),
+        for author, outcomes in (("claude", ["quota", "quota"]), ("claude", ["cli_missing", "cli_missing"]),
+                                 ("claude", ["quota", "cli_missing"]), ("claude", ["cli_missing", "quota"]),
                                  ("grok", ["cli_missing", "cli_missing"]),
                                  ("grok", ["quota", "cli_missing"]),
                                  ("grok", ["cli_missing", "quota"])):
@@ -119,7 +141,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 first = self.invoke(root, author, outcomes, 75)
                 self.assertEqual(first["result"]["halt"], "reviewer_unavailable")
                 self.assertEqual([a["outcome"] for a in first["result"]["attempts"] if a["stage"] == "review"], outcomes)
-                expected = ["gpt-6.1-sol-high"] if author == "claude" else ["claude-opus-5-5-high", "gpt-6.1-sol-high"]
+                expected = ["gpt-6.1-sol-high", "claude-opus-5-5-high"] if author == "claude" else ["claude-opus-5-5-high", "gpt-6.1-sol-high"]
                 self.assertEqual(first["calls"], expected)
                 for model, kind in zip(expected, outcomes):
                     self.assertIn(f"review {model}: {kind}. review fixture", first["result"]["halt_detail"])
@@ -136,8 +158,8 @@ class ReviewerAvailabilityTest(unittest.TestCase):
 
     def test_failover_recovers_but_invalid_or_failed_reviews_are_terminal(self):
         for author, outcomes, code, rounds, posts, models in (
-            ("grok", ["cli_missing", "ran"], 0, 1, 1, ["claude-opus-5-5-high", "gpt-6.1-sol-high"]),
-            ("grok", ["quota", "ran"], 0, 1, 1, ["claude-opus-5-5-high", "gpt-6.1-sol-high"]),
+            ("gpt", ["cli_missing", "ran"], 0, 1, 1, ["claude-opus-5-5-high", "gpt-6.1-sol-high"]),
+            ("gpt", ["quota", "ran"], 0, 1, 1, ["claude-opus-5-5-high", "gpt-6.1-sol-high"]),
             ("claude", ["failed"], 1, 0, 0, ["gpt-6.1-sol-high"]),
             ("claude", ["invalid"], 1, 0, 0, ["gpt-6.1-sol-high"]),
             ("grok", ["quota", "failed"], 1, 0, 0, ["claude-opus-5-5-high", "gpt-6.1-sol-high"]),
@@ -156,6 +178,12 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 self.assertEqual(result["posts"], posts)
                 if not code:
                     self.assertEqual(result["result"]["halt_detail"], "")
+                    provenance = result["result"]["review_findings"][-1]["provenance"]
+                    self.assertEqual(provenance, attempts[-1]["provenance"])
+                    self.assertEqual(provenance["reviewer"], models[-1])
+                    self.assertTrue(provenance["same_family"])
+                    self.assertEqual(provenance["reason"], "preceding_candidates_unavailable")
+                    self.assertIn(json.dumps(provenance, separators=(",", ":")), result["posted"][-1]["body"])
                 if code:
                     self.assertEqual(result["result"]["halt"], "invalid_output")
                     self.assertIn(f"review {models[-1]}:", result["result"]["halt_detail"])
@@ -163,14 +191,52 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                     self.assertEqual((result["posts"], result["merges"]), (posts, 0))
                     self.assertEqual(self.invoke(Path(directory), author, [], 1)["calls"], [])
 
-    def test_empty_eligibility_is_terminal_and_names_all_excluded_families(self):
+    def test_mixed_history_completes_and_single_family_can_run(self):
+        for author, outcomes, mode, calls, rounds in (
+            ("mixed", ["changes", "ran"], "current", ["claude-opus-5-5-high"] * 2, 2),
+            ("gpt", ["ran"], "single", ["gpt-6.1-sol-high"], 1),
+        ):
+            with self.subTest(author=author), TemporaryDirectory(dir=self.root) as directory:
+                result = self.invoke(Path(directory), author, outcomes, 0, mode)
+                self.assertEqual(result["calls"], calls)
+                self.assertEqual(result["result"]["review_rounds"], rounds)
+                self.assertEqual((result["posts"], result["merges"]), (rounds, 1))
+                provenance = result["result"]["review_findings"][-1]["provenance"]
+                self.assertTrue(provenance["same_family"])
+                self.assertEqual(provenance["reason"], "no_other_family_configured")
+                self.assertIn(json.dumps(provenance, separators=(",", ":")), result["posted"][-1]["body"])
+
+    def test_budget_and_indeterminate_usage_stop_before_same_family_call(self):
+        for outcome, halt in (("quota_budget", "budget_exceeded"), ("unknown", "usage_unknown")):
+            with self.subTest(outcome=outcome), TemporaryDirectory(dir=self.root) as directory:
+                result = self.invoke(Path(directory), "gpt", [outcome], 1)
+                self.assertEqual(result["calls"], ["claude-opus-5-5-high"])
+                self.assertEqual(result["result"]["halt"], halt)
+                self.assertEqual(result["result"]["review_rounds"], 0)
+                self.assertEqual((result["posts"], result["merges"]), (0, 0))
+                attempts = [a for a in result["result"]["attempts"] if a["stage"] == "review"]
+                self.assertEqual(len(attempts), 1)
+
+    def test_later_cross_family_round_does_not_inherit_fallback(self):
         with TemporaryDirectory(dir=self.root) as directory:
-            result = self.invoke(Path(directory), "mixed", ["changes"], 1)
-            self.assertEqual(result["result"]["halt"], "no_reviewer")
-            self.assertIn("claude, gpt families", result["result"]["halt_detail"])
-            self.assertEqual(result["calls"], ["claude-opus-5-5-high"])
-            self.assertEqual((result["posts"], result["merges"]), (1, 0))
-            self.assertEqual(self.invoke(Path(directory), "mixed", [], 1)["calls"], [])
+            result = self.invoke(Path(directory), "gpt", ["quota", "changes", "ran"], 0)
+            first, second = result["result"]["review_findings"]
+            self.assertTrue(first["provenance"]["same_family"])
+            self.assertFalse(second["provenance"]["same_family"])
+            self.assertIsNone(second["provenance"]["reason"])
+            self.assertEqual(second["provenance"]["contributors"], ["gpt-6.1-sol-high"])
+            self.assertIn(json.dumps(second["provenance"], separators=(",", ":")), result["posted"][-1]["body"])
+
+    def test_post_retry_keeps_provenance_and_marker_without_another_call(self):
+        with TemporaryDirectory(dir=self.root) as directory:
+            root = Path(directory)
+            first = self.invoke(root, "gpt", ["quota", "ran"], 75, "post_failure")
+            self.assertEqual(first["result"]["halt"], "review_not_posted")
+            ready = self.invoke(root, "gpt", [], 0)
+            self.assertEqual(ready["calls"], [])
+            self.assertEqual(first["posted"], ready["posted"])
+            self.assertEqual(first["result"]["review_findings"], ready["result"]["review_findings"])
+            self.assertEqual(first["result"]["attempts"], ready["result"]["attempts"])
 
     def test_resume_preserves_accepted_rounds_and_failure_counters(self):
         with TemporaryDirectory(dir=self.root) as directory:
