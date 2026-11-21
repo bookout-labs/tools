@@ -655,6 +655,33 @@ class ReviewOutput(StageOutput):
                 "findings": [finding.record() for finding in self.findings]}
 
 
+class SpecFinding(Contract):
+    id: TrimmedText
+    kind: Literal["proof-obligation", "seam", "failure-path", "contract", "scope"]
+    slice: TrimmedText
+    section: Literal["slice", "spec", "work_kind"]
+    summary: TrimmedText = Field(max_length=200)
+    ruling_id: TrimmedText | None
+
+    @property
+    def severity(self) -> Literal["blocking"]:
+        return "blocking"
+
+
+class SpecCheckOutput(StageOutput):
+    findings: list[SpecFinding] = Field(description="New blocking gaps only. Use resolutions for earlier IDs.")
+    notes: list[SpecFinding] = Field(description="Nonblocking observations, separate from requested fixes.")
+    resolutions: list[FindingResolution]
+
+    @property
+    def verdict(self) -> Literal["clear", "gaps"]:
+        return "gaps" if self.findings else "clear"
+
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        raise InvalidOutput("spec_check: use candidate-bound spec_check.accept")
+
+
 class VerifyOutput(StageOutput):
     verify: Literal["pass", "fail"]
 
@@ -667,6 +694,7 @@ STAGE_OUTPUTS: dict[str, type[StageOutput]] = {
     "triage": TriageOutput,
     "research": ResearchOutput,
     "spec": SpecOutput,
+    "spec_check": SpecCheckOutput,
     "implement": ImplementOutput,
     "review": ReviewOutput,
     "verify": VerifyOutput,

@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "id": "f1",
+      "kind": "contract",
+      "slice": "Save",
+      "section": "slice",
+      "summary": "Keep IDs unique.",
+      "ruling_id": null
+    }
+  ],
+  "notes": [],
+  "resolutions": []
+}

@@ -375,6 +375,130 @@
     "title": "SpecOutput",
     "type": "object"
   },
+  "spec_check": {
+    "$defs": {
+      "FindingResolution": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "resolved",
+              "unresolved"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "FindingResolution",
+        "type": "object"
+      },
+      "SpecFinding": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "proof-obligation",
+              "seam",
+              "failure-path",
+              "contract",
+              "scope"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "slice": {
+            "pattern": "\\S",
+            "title": "Slice",
+            "type": "string"
+          },
+          "section": {
+            "enum": [
+              "slice",
+              "spec",
+              "work_kind"
+            ],
+            "title": "Section",
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 200,
+            "pattern": "\\S",
+            "title": "Summary",
+            "type": "string"
+          },
+          "ruling_id": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ruling Id"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "slice",
+          "section",
+          "summary",
+          "ruling_id"
+        ],
+        "title": "SpecFinding",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "findings": {
+        "description": "New blocking gaps only. Use resolutions for earlier IDs.",
+        "items": {
+          "$ref": "#/$defs/SpecFinding"
+        },
+        "title": "Findings",
+        "type": "array"
+      },
+      "notes": {
+        "description": "Nonblocking observations, separate from requested fixes.",
+        "items": {
+          "$ref": "#/$defs/SpecFinding"
+        },
+        "title": "Notes",
+        "type": "array"
+      },
+      "resolutions": {
+        "items": {
+          "$ref": "#/$defs/FindingResolution"
+        },
+        "title": "Resolutions",
+        "type": "array"
+      }
+    },
+    "required": [
+      "findings",
+      "notes",
+      "resolutions"
+    ],
+    "title": "SpecCheckOutput",
+    "type": "object"
+  },
   "implement": {
     "$defs": {
       "BrowserProof": {

@@ -700,3 +700,10 @@ version = "1.2.24"
 kind = "quoted_source"
 sources = ["https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/graph/state.py", "https://github.com/langchain-ai/langgraph/blob/1.2.24/libs/langgraph/langgraph/pregel/main.py"]
 notes = "Synchronous graph subset declared in typings/langgraph/graph. Signatures cover nodes, compile, invoke v1/v2, state/history/update (including as_node), and diagram output. Runtime graph tests exercise this pinned package."
+
+[fixtures."spec-check.json"]
+tool = "pydantic"
+version = "2.14.4"
+kind = "captured_run"
+argv = ["python", "-c", "from foreman.stage_output import SpecCheckOutput; print(SpecCheckOutput(findings=[dict(id='f1',kind='contract',slice='Save',section='slice',summary='Keep IDs unique.',ruling_id=None)],notes=[],resolutions=[]).model_dump_json(indent=2))"]
+notes = "Synthetic spec-check contract example serialized by Pydantic. No model or external service was called. test_spec_check.py parses it through the native contract and checks rejection of supplied verdicts."
