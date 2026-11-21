@@ -44,7 +44,7 @@ def _with_quota_gap() -> str:
     handler = ScriptHandler()
 
     def exhaust_claude(node: str, model: ModelSpec | None, state: DeliveryState, instruction: str) -> Outcome:
-        if model and model.name == "claude-opus-5-5-high":
+        if node == "triage" and model and model.name == "claude-opus-5-5-high":
             return Outcome("quota")
         return handler(node, model, state, instruction)
 
