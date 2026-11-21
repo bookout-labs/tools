@@ -2,15 +2,16 @@
 # pyright: basic
 """The delivery graph. Edges live here. Models live in models.toml."""
 
+import json
+import operator
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cached_property
 from enum import StrEnum
+from functools import cached_property
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from tomllib import TOMLDecodeError
 from typing import Annotated, Literal, NotRequired, get_args
-import operator
 import re
 import textwrap
 
@@ -21,13 +22,11 @@ from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 from pydantic import TypeAdapter, ValidationError
 from typing_extensions import TypedDict
-from unidiff.errors import UnidiffParseError
-from unidiff.patch import PatchSet
 
 from foreman.adapters import Outcome, OutcomeKind
 from foreman.config import Config, ConfigError, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.fixture_manifest import MANIFEST_PATH, recorded_fixtures
+from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command, pull_request_command,
 )
@@ -35,9 +34,10 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, Finding, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
+    BrowserProofRecord, FormalProofRecord, SliceRecord, Finding, Contract, StoredToolFact, GraphCheck as GraphEvidence, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
 )
-from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
+from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
+from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
@@ -49,7 +49,7 @@ ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_fai
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+    "skill_missing", "design_rethink", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
@@ -116,7 +116,7 @@ class PullRequestSplit(TypedDict):
     plan: str
     gate: Literal["ready", "needs_human"]
     question: str | None
-    slices: list[dict[str, object]]
+    slices: list[SliceRecord]
 
 
 class DeliveryFields(TypedDict, total=False):
@@ -129,9 +129,9 @@ class DeliveryFields(TypedDict, total=False):
     spec: str
     spec_gate: str
     spec_rejection: SpecRejection | None
-    slices: list[dict[str, object]]
+    slices: list[SliceRecord]
     child_issue_numbers: list[int]
-    slice: dict[str, object]
+    slice: SliceRecord
     issue_kind: str
     work_kind: WorkKind
     pstack_pin: dict[str, str]
@@ -150,8 +150,8 @@ class DeliveryFields(TypedDict, total=False):
     merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
-    browser_proof: dict[str, object] | None
-    formal_proof: dict[str, object] | None
+    browser_proof: BrowserProofRecord | None
+    formal_proof: FormalProofRecord | None
     proof_labels: dict[str, str]
     human_question: str
     human_answers: list[str]
@@ -159,7 +159,10 @@ class DeliveryFields(TypedDict, total=False):
     pr_size_override: PullRequestSize
     pr_split: PullRequestSplit
     review: str
-    tool_facts: list[dict[str, str | None]]
+    review_findings: list[dict[str, object]]
+    reviewed_head: str
+    settled_rulings: list[dict[str, object]]
+    fact_record: str
     findings: list[dict[str, object]]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
@@ -200,7 +203,7 @@ def read_delivery_state(raw: object) -> DeliveryResult:
     return _DELIVERY_STATE.validate_python(raw, strict=True)
 
 
-def _active_slice(state: DeliveryState) -> dict[str, object]:
+def _active_slice(state: DeliveryState) -> SliceRecord:
     slice = state.get("slice")
     if slice is None:
         raise InvalidOutput("implementation requires an active slice")
@@ -224,11 +227,11 @@ def stage_text(name: str) -> str:
 def clean_slices(
     raw: list[Slice] | None,
     workspace: Workspace | None,
-) -> list[dict[str, object]]:
+) -> list[SliceRecord]:
     if not raw:
         raise InvalidOutput("slices: ready parent spec needs at least one slice")
     if len(raw) == 1:
-        return [{**raw[0].model_dump(), "depends_on": []}]
+        return [{**raw[0].record(), "depends_on": []}]
     slices = {item.title: item for item in raw}
     if len(slices) != len(raw):
         raise InvalidSlicePlan("duplicate_title", "Slice titles must be unique.")
@@ -255,38 +258,57 @@ def clean_slices(
         ordered = list(TopologicalSorter(graph).static_order())
     except CycleError as exc:
         raise InvalidSlicePlan("dependency_cycle", "Dependency cycle: " + " -> ".join(exc.args[1])) from exc
-    return [{**slices[title].model_dump(), "depends_on": list(graph[title])} for title in ordered]
+    return [{**slices[title].record(), "depends_on": list(graph[title])} for title in ordered]
 
 
 def load_slice(raw: object) -> DeliveryUpdate:
     stored = parse_output(StoredSlice, raw)
-    state: DeliveryUpdate = {"slice": stored.model_dump(exclude_unset=True)}
+    state: DeliveryUpdate = {"slice": stored.record()}
     if stored.work_kind is not None:
         state["work_kind"] = stored.work_kind
     return state
 
 
-def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | None) -> ReviewOutput:
-    recorded: set[str] = set()
-    notes = [output.detail]
-    if isinstance(run, LiveRun) and head and any(fact.fixture is not None for fact in output.tool_facts):
+def graph_check(state: DeliveryState) -> GraphEvidence | None:
+    head, command, code = state.get("verified_head"), state.get("check"), state.get("check_exit_code")
+    if head and command and code == 0 and state.get("verify") == "pass":
+        return GraphEvidence(head=head, command=command, exit_code=code)
+    return None
+
+
+def carried_tool_facts(state: DeliveryFields) -> list[StoredToolFact]:
+    gate = history({"rounds": state.get("review_findings", [])}).gate
+    return gate.tool_facts if gate else []
+
+
+def _check_tool_facts(
+    output: ReviewOutput, run: LiveRun | DryRun, state: DeliveryState,
+) -> GraphCheck | None:
+    head = state.get("verified_head")
+    manifest_path = state.get("fact_record", MANIFEST_PATH)
+    facts = {fact.claim: fact for fact in carried_tool_facts(state)}
+    for fact in output.tool_facts:
+        facts.setdefault(fact.claim, StoredToolFact.from_fact(fact))
+    proven = graph_check(state)
+    outside = [fact for fact in facts.values() if not (
+        proven is not None and fact.graph_check == proven and fact.claim == proven.claim
+    )]
+    recorded: dict[str, list[str]] = {}
+    notes: list[str] = []
+    if isinstance(run, LiveRun) and head and outside:
         try:
-            recorded = recorded_fixtures(run.workspace, head)
+            recorded = recorded_evidence(run.workspace, head, manifest_path)
         except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
-            notes.append(f"Could not check {MANIFEST_PATH} at {head}. {exc}")
-    unrecorded = [fact for fact in output.tool_facts if fact.fixture not in recorded]
-    if not unrecorded:
-        return output
+            notes.append(f"Could not check {manifest_path} at {head}. {exc}")
+    claim_ids = {claim_id for ids in recorded.values() for claim_id in ids}
+    unrecorded = [fact for fact in outside if fact.fixture not in recorded and fact.claim_id not in claim_ids]
+    if not outside:
+        return None
     for fact in unrecorded:
         citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
-        notes.append(f"Unrecorded outside-tool fact{citation}: {fact.claim}")
-    return output.model_copy(update={
-        "review": "changes", "detail": "\n".join(notes),
-        "findings": [*output.findings, Finding(
-            file=MANIFEST_PATH, line=1, severity="blocking",
-            summary="Record the outside-tool facts listed in the review detail.",
-        )],
-    })
+        notes.append(f"Unrecorded outside-tool fact {fact.claim_id}{citation}: {fact.claim}")
+    return GraphCheck(failing_heads=[head or ""] if unrecorded else [],
+                      detail="\n".join(notes), passed=not unrecorded, tool_facts=outside)
 
 
 def stage_update(
@@ -302,14 +324,13 @@ def stage_update(
     elif isinstance(output, ImplementOutput):
         update.update(
             implementation=output.implementation,
-            browser_proof=output.browser_proof.model_dump() if output.browser_proof else None,
-            formal_proof=output.formal_proof.model_dump() if output.formal_proof else None,
+            browser_proof=output.browser_proof.record() if output.browser_proof else None,
+            formal_proof=output.formal_proof.record() if output.formal_proof else None,
         )
     elif isinstance(output, ReviewOutput):
         update.update(
-            review=output.review, risk=output.risk.model_dump(), detail=output.detail,
+            risk=output.risk.model_dump(), detail=output.detail,
             findings=[finding.model_dump() for finding in output.findings],
-            tool_facts=[fact.model_dump() for fact in output.tool_facts],
         )
     elif isinstance(output, VerifyOutput):
         update["verify"] = output.verify
@@ -334,13 +355,8 @@ def stage_update(
     if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
         if output.slice is None:
             raise InvalidOutput("slice: required when a parent triages as implement")
-        update["slice"] = output.slice.model_dump()
-    if isinstance(output, ReviewOutput):
-        update["review_change_kind"] = None
-        if output.review == "changes":
-            only_nits = all(finding.severity == "nit" for finding in output.findings)
-            update["review_change_kind"] = "nits" if only_nits else "blocking"
-    if update.get("review") == "changes" or update.get("verify") == "fail":
+        update["slice"] = output.slice.record()
+    if update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
         used = state.get("models_used", {})
@@ -352,21 +368,12 @@ def stage_update(
     return update
 
 
-def review_submission(output: ReviewOutput, diff: ReviewDiff) -> tuple[str, list[ReviewComment]]:
-    try:
-        patch = PatchSet(diff.patch)
-    except UnidiffParseError:
-        patch = PatchSet("")
-    changed = {
-        (file.path, line.target_line_no)
-        for file in patch if not file.is_removed_file
-        for hunk in file for line in hunk if line.is_added
-    }
+def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, list[ReviewComment]]:
     body = [output.detail]
     comments: list[ReviewComment] = []
     for finding in output.findings:
         message = f"[{finding.severity}] {finding.summary}"
-        if (finding.file, finding.line) in changed:
+        if (finding.file, finding.line) in scope.inline:
             comments.append({"path": finding.file, "line": finding.line, "side": "RIGHT", "body": message})
         else:
             body.append(f"{finding.file}:{finding.line} {message}")
@@ -448,6 +455,22 @@ def compile_delivery(
             methods_text, methods = stage_methods(name, state, methods_root) if methods_root is not None else ("", [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
+            if name in {"implement", "review"}:
+                instruction += f"\n\nFact record in this checkout: {state.get('fact_record', MANIFEST_PATH)}"
+            gate = history({"rounds": state.get("review_findings", [])}).gate if state.get("review") == "changes" else None
+            if name == "implement" and gate and not gate.passed:
+                instruction += (
+                    "\nResolve the tool-facts finding by recording evidence and creating the record and parent directories if absent."
+                    " Fixture IDs are paths relative to the record directory. Commit regular evidence files."
+                    " Use TOML [fixtures.\"<evidence-file>\"] with tool and version, plus either"
+                    " kind = \"captured_run\" and argv = [\"tool\", \"arg\"] for captured output, or"
+                    " kind = \"quoted_source\" and sources = [\"https://source\"] for quoted source evidence."
+                    ' Add claim_ids = ["<claim_id>"] to the evidence entry for each carried claim.'
+                    " Support each carried tool fact; the graph rechecks the published verified head."
+                )
+                instruction += "\nCarried tool facts:\n" + json.dumps([fact.model_dump() for fact in carried_tool_facts(state)])
+            if name == "review" and (proven := graph_check(state)) is not None:
+                instruction += f"\nGraph fact: {proven.claim}\nGraph check evidence: {proven.model_dump_json()}"
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
@@ -458,7 +481,13 @@ def compile_delivery(
                     " For a slice issue, describe the split in spec."
                 )
 
-            review_context: tuple[Forge, PullRequest, ReviewDiff] | None = None
+            past = ReviewHistory()
+            if name == "review":
+                try:
+                    past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
+                except InvalidOutput as exc:
+                    return halted("invalid_output", str(exc), name)
+            review_context: tuple[Forge, PullRequest, ReviewScope] | None = None
             repo = state.get("repo", "")
             if name == "review" and isinstance(run, LiveRun):
                 head, issue = state.get("verified_head"), state.get("issue")
@@ -467,11 +496,20 @@ def compile_delivery(
                     if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
                         raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
                     target = run.forge.review_target(repo, issue, worktree.branch, head)
-                    diff = run.workspace.review_diff(target.baseRefOid, head)
+                    diff = run.workspace.review_scope(target.baseRefOid, head, past.rounds[-1].reviewed_head if past.rounds else None)
                 except (ForgeError, WorktreeInspectionFailed) as exc:
                     return halted("review_unavailable", str(exc), name)
                 review_context = (run.forge, target, diff)
                 instruction = f"{instruction}\n\nRead the reviewed diff with this command in the checkout:\n{diff.command}"
+            worker_state: DeliveryState = state.copy()
+            if name == "review":
+                scope = "Full PR review." if not past.rounds else "Check unresolved findings and added interdiff lines also in the PR diff."
+                instruction += "\n\n" + scope
+                instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
+                instruction += "\nGraph checks, not yours to resolve:\n" + json.dumps(past.rounds[-1].graph_check.model_dump(mode="json") if past.rounds and past.rounds[-1].graph_check else None)
+                instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
+                for key in ("review_findings", "settled_rulings", *( ("findings", "detail", "implementation") if past.rounds else ())):
+                    worker_state.pop(key, None)
             attempts: list[SkillAttempt] = []
 
             def record_attempt(model: str | None, kind: OutcomeKind) -> None:
@@ -480,7 +518,7 @@ def compile_delivery(
                 })
 
             outcome, model = dispatcher.run(
-                name, models, state, instruction, on_attempt=record_attempt if methods_root and name != "verify" else None,
+                name, models, worker_state, instruction, on_attempt=record_attempt if methods_root and name != "verify" else None,
             )
             stopped: DeliveryUpdate = {"path": [name], "skill_attempts": attempts}
             if outcome.kind == "failed":
@@ -494,22 +532,35 @@ def compile_delivery(
                 return {**stopped, **halted(reason, f"{name} quota exhausted: {model}", name)}
             try:
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                accepted: AcceptedReview | None = None
                 if isinstance(output, ReviewOutput):
-                    output = _check_tool_facts(output, run, state.get("verified_head"))
+                    head = state.get("verified_head") or state.get("head_sha") or ""
+                    accepted = accept(past, output, head, _check_tool_facts(output, run, state), review_context[2] if review_context else None)
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
                 update["skill_attempts"] = attempts
+                if accepted is not None:
+                    update.update(review=accepted.review, detail=accepted.detail,
+                                  review_findings=[r.model_dump(mode="json") for r in accepted.history.rounds],
+                                  reviewed_head=accepted.history.rounds[-1].reviewed_head,
+                                  findings=[f.model_dump() for f in accepted.findings],
+                                  review_change_kind=accepted.change_kind,
+                                  review_rounds=state.get("review_rounds", 0) + (accepted.review == "changes"))
+                    if accepted.rethink:
+                        update.update(halt="design_rethink", halt_detail=accepted.rethink, human_question=accepted.rethink,
+                                      review_rounds=state.get("review_rounds", 0))
             except InvalidSlicePlan as exc:
                 rounds = state.get("review_rounds", 0) + 1
-                update: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
+                rejected: DeliveryUpdate = {**stopped, "spec_rejection": exc.reason, "review_rounds": rounds}
                 if rounds >= config.max_review_rounds:
-                    update.update(halted("spec_cap", str(exc), name))
-                return update
+                    rejected.update(halted("spec_cap", str(exc), name))
+                return rejected
             except InvalidOutput as exc:
                 return {**stopped, **halted("invalid_output", str(exc), name)}
 
             if review_context is not None and isinstance(output, ReviewOutput):
                 forge, target, diff = review_context
-                body, comments = review_submission(output, diff)
+                assert accepted is not None
+                body, comments = review_submission(accepted, diff)
                 try:
                     forge.post_review(repo, target, body, comments)
                 except ForgeError as exc:
@@ -563,7 +614,11 @@ def compile_delivery(
             if after.head != before.head or after.branch != before.branch:
                 return {**halted("failed", "The worker changed HEAD or switched branches.", "implement"), "head_sha": after.head}
             if not update.get("halt") and after.clean:
-                return halted("failed", "no changes", "implement")
+                identifiers = [str(f.get("id")) for f in state.get("findings", [])]
+                if (gate := history({"rounds": state.get("review_findings", [])}).gate) and not gate.passed:
+                    identifiers.insert(0, "tool-facts")
+                detail = "no changes" + ("; unresolved findings: " + ", ".join(identifiers) if identifiers else "")
+                return halted("failed", detail, "implement")
             fingerprint = run.workspace.fingerprint()
             return {**update, "implementation_edits": fingerprint,
                     "partial_edits": fingerprint if update.get("halt") == "quota_exhausted" else ""}
@@ -668,7 +723,13 @@ def compile_delivery(
         split = state.get("pr_split") if stage == "spec" and oversized_pr(state) else None
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
         answer = interrupt({"stage": stage, "question": question})
-        return {"human_answers": [*state.get("human_answers", []), answer]}
+        update: DeliveryUpdate = {"human_answers": [*state.get("human_answers", []), answer]}
+        if stage == "review":
+            past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
+            update.update(halt=None, halt_detail="", settled_rulings=[r.model_dump() for r in past.settled] +
+                          [{"id": f"design:{len(past.rounds)}", "text": answer}])
+            update.update(prepare(state))
+        return update
 
     def quota_wait(state: DeliveryState) -> DeliveryUpdate:
         interrupt({"reason": "quota_exhausted", "detail": state.get("halt_detail")})
@@ -761,6 +822,8 @@ def compile_delivery(
         return "prepare" if state.get("spec_gate") == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
+        if state.get("halt") == "design_rethink" and checkpointer is not None:
+            return "needs_human"
         if state.get("halt"):
             return "done"
         if oversized_pr(state):
@@ -896,7 +959,8 @@ def compile_delivery(
         "decide_pr_size", lambda state: "done" if oversized_pr(state) else "verify", {"done": "done", "verify": "verify"},
     )
     builder.add_conditional_edges(
-        "needs_human", _last_stage, {"triage": "triage", "spec": "spec"},
+        "needs_human", lambda state: "done" if state.get("halt") else "implement" if _last_stage(state) == "review" else _last_stage(state),
+        {"triage": "triage", "spec": "spec", "implement": "implement", "done": "done"},
     )
     builder.add_conditional_edges("prepare", lambda state: "done" if state.get("halt") else "implement", {"done": "done", "implement": "implement"})
     builder.add_conditional_edges("commit", lambda state: "done" if state.get("halt") else "publish", {"done": "done", "publish": "publish"})
@@ -909,7 +973,7 @@ def compile_delivery(
     add_agent_edges(
         "review",
         after_review,
-        {"merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "done": "done"},
+        {"merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges(
         "verify",
@@ -931,12 +995,14 @@ def run_delivery(
     request: str,
     check: str = "",
     config: Config | None = None,
-    slice: dict[str, object] | None = None,
+    slice: object = None,
     scratch: Path | None = None,
     skills: SkillSource = export_skills,
+    fact_record: str = MANIFEST_PATH,
 ) -> DeliveryResult:
     state: DeliveryState = {
         "repo": repo,
+        "fact_record": fact_record_path(fact_record),
         "request": request,
         "check": check,
         "issue_kind": "parent" if slice is None else "slice",

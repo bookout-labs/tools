@@ -19,7 +19,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.adapters import Outcome
 from foreman.cli import _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
-from foreman.delivery import LiveRun, halted, run_delivery
+from foreman.delivery import LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, PullRequest, render_slice_body
@@ -55,8 +55,8 @@ FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejecte
 SEAM = {"name": "item-list", "exists": False, "path": None}
 BUILDER = {**SLICE, "builds": [SEAM]}
 CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "uses": [SEAM]}
-APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request.", "tool_facts": []}
-FINDING = {"file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
+APPROVE = {"resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "The changes meet the request.", "tool_facts": []}
+FINDING = {"id": "f1", "kind": "correctness", "fix": "Add a check.", "ruling_id": None, "file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
 DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
 
@@ -99,8 +99,8 @@ class FakeWorkspace(LiveWorkspace):
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": "b" * 40, "lines": 1}
 
-    def review_diff(self, base, head):
-        return ReviewDiff(f"git diff {base}...{head}", DIFF)
+    def review_diff(self, base, head, *, interdiff=False):
+        return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
 
 
 def worker_reply(args, reply):
@@ -129,8 +129,8 @@ class FixtureWorkspace(LiveWorkspace):
     def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
         return {"head": head, "merge_base": BASE, "lines": 1}
 
-    def review_diff(self, base, head):
-        return ReviewDiff(f"git diff {base}...{head}", DIFF)
+    def review_diff(self, base, head, *, interdiff=False):
+        return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
 
 
 class FakeGitHub:
@@ -346,6 +346,11 @@ class CliWorkerTest(unittest.TestCase):
 
 
 class StageOutputTest(unittest.TestCase):
+    def test_cli_rejects_invalid_fact_record_before_running(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            main(["run", "delivery", "--repo", "Example/Engine", "--fact-record", "../facts.toml"])
+        self.assertEqual(raised.exception.code, 2)
+
     def test_schema_snapshot(self):
         snapshot = Path(__file__).with_name("stage-schemas.json").read_text()
         schemas = {name: model.model_json_schema() for name, model in STAGE_OUTPUTS.items()}
@@ -405,17 +410,9 @@ class StageOutputTest(unittest.TestCase):
 
     def test_review_summary_is_limited_to_200_characters(self):
         self.assertEqual(ReviewOutput.model_json_schema()["$defs"]["Finding"]["properties"]["summary"]["maxLength"], 200)
-        raw = {**APPROVE, "review": "changes", "findings": [{**FINDING, "summary": "a" * 201}]}
+        raw = {**APPROVE, "findings": [{**FINDING, "summary": "a" * 201}]}
         with self.assertRaisesRegex(InvalidOutput, r"^findings\.0\.summary:"):
             parse_output(ReviewOutput, raw)
-
-    def test_review_verdict_requires_matching_findings(self):
-        for raw in (
-            {**APPROVE, "review": "changes"},
-            {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
-        ):
-            with self.subTest(raw=raw), self.assertRaisesRegex(InvalidOutput, "changes requires at least one finding"):
-                parse_output(ReviewOutput, raw)
 
 
 class LiveRunnerTest(unittest.TestCase):
@@ -452,12 +449,12 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes", "detail": "Check the bounds."}
+        changes = {**APPROVE, "detail": "Check the bounds."}
         for severity, kind in (("nit", "nits"), ("blocking", "blocking")):
             with self.subTest(severity=severity):
                 self.checkpoint = self.cwd / f"{severity}.sqlite3"
                 finding = {**FINDING, "severity": severity}
-                self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, APPROVE])
+                self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, {**APPROVE, "resolutions": [{"id": finding["id"], "status": "resolved"}]}])
                 state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
                 self.assertEqual(state["findings"], [finding])
                 self.assertEqual(state["detail"], changes["detail"])
@@ -466,12 +463,12 @@ class LiveRunnerTest(unittest.TestCase):
     def test_review_posts_only_changed_lines_inline(self):
         findings = [
             FINDING,
-            {**FINDING, "line": 1, "summary": "Untouched context."},
-            {**FINDING, "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
+            {**FINDING, "id": "f2", "line": 1, "summary": "Untouched context."},
+            {**FINDING, "id": "f3", "file": "deleted.txt", "line": 1, "summary": "Deleted file."},
         ]
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "review": "changes", "findings": findings, "detail": "Check the bounds."}
-        self.walk([{"triage": "implement"}, built, changes, built, APPROVE])
+        changes = {**APPROVE, "findings": findings, "detail": "Check the bounds."}
+        self.walk([{"triage": "implement"}, built, changes, built, {**APPROVE, "resolutions": [{"id": f["id"], "status": "resolved"} for f in findings]}])
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
         self.assertEqual(self.github.reviews, [(
             "Example/Engine", 12, HEAD,
@@ -480,7 +477,7 @@ class LiveRunnerTest(unittest.TestCase):
         ), ("Example/Engine", 12, HEAD, APPROVE["detail"], [])])
 
     def test_review_failures_halt_without_merging(self):
-        changes = {**APPROVE, "review": "changes", "findings": [FINDING]}
+        changes = {**APPROVE, "findings": [FINDING]}
         for method, stop, replies in (
             ("review_target", "review_unavailable", []),
             ("post_review", "review_not_posted", [changes]),
@@ -611,6 +608,28 @@ class LiveRunnerTest(unittest.TestCase):
                                 answer="Only open items", skills=source)
         self.assertEqual(resumed["stop"], "answered")
         self.assertEqual(source.pins, [self.pin, self.pin])
+
+    def test_resume_uses_saved_custom_fact_record_when_omitted(self):
+        run = LiveRun(self.github, FakeWorkspace(self.cwd))
+        first = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", fact_record="evidence/facts.toml",
+            checkpoint=self.checkpoint, run=run,
+            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+        )
+        self.assertEqual(first["fact_record"], "evidence/facts.toml")
+        resumed = run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, run=run,
+            dispatcher=FailoverDispatcher(lambda *args: Outcome("quota")),
+        )
+        self.assertEqual(resumed["fact_record"], "evidence/facts.toml")
+
+    def test_resume_rejects_a_different_fact_record(self):
+        self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        with self.assertRaisesRegex(ValueError, "--fact-record differs"):
+            run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
+                              fact_record="evidence/other.toml", checkpoint=self.checkpoint,
+                              run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+        self.assertEqual(self.walk([])["stop"], "verified")
 
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
         def exhaust(node, model, state, instruction):
@@ -768,11 +787,11 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
 
-    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False):
+    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml", paraphrase: bool = False):
         root = self.cwd / "checkout"
         root.mkdir()
         subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=root, check=True)
-        fixtures = root / "tests/fixtures"
+        fixtures = (root / record_path).parent
         fixtures.mkdir(parents=True)
         (fixtures / "result.txt").write_text("debug output\n")
 
@@ -785,8 +804,9 @@ class LiveRunnerTest(unittest.TestCase):
                 'argv = ["example", "--debug"]\n'
             )
 
-        manifest_path = fixtures / "manifest.toml"
-        manifest_path.write_text(manifest(entry) if entry is not None else "[fixtures]\n")
+        manifest_path = root / record_path
+        if not (recover or no_changes):
+            manifest_path.write_text(manifest(entry) if entry is not None else "[fixtures]\n")
         subprocess.run(["git", "add", "."], cwd=root, check=True)
         subprocess.run(
             ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgSign=false",
@@ -805,20 +825,60 @@ class LiveRunnerTest(unittest.TestCase):
         }
         replies = iter([{"triage": "implement"}] + [built, review] * 3)
 
+        implementations = 0
+
         def worker(args, cwd, env):
+            nonlocal implementations
             reply = next(replies)
             if "implementation" in reply:
+                implementations += 1
+                if implementations > 1 and (recover or no_changes):
+                    if recover:
+                        self.assertIn("captured_run", args[-1])
+                        self.assertIn("quoted_source", args[-1])
+                        self.assertIn("The CLI accepts --debug.", args[-1])
+                        worker_state = json.loads(args[-1].split("Delivery state:\n", 1)[1])
+                        self.assertNotIn("tool_facts", worker_state)
+                        claims = carried_tool_facts(worker_state)
+                        self.assertIn("Carried tool facts:\n" + json.dumps([fact.model_dump() for fact in claims]), args[-1])
+                        self.assertIn("claim_ids", args[-1])
+                        manifest_path.write_text(manifest("result.txt") + f'claim_ids = {json.dumps([f.claim_id for f in claims])}\n')
+                    return worker_reply(args, reply)
                 file = root / "items.txt"
                 file.write_text((file.read_text() if file.exists() else "") + "synthetic edit\n")
-            if record_during_review and "review" in reply:
+            if paraphrase and implementations > 1 and "tool_facts" in reply:
+                reply = {**reply, "tool_facts": [{"claim": "The debug flag is accepted.", "fixture": "result.txt"}]}
+            if record_during_review and "tool_facts" in reply:
                 manifest_path.write_text(manifest("result.txt"))
             return worker_reply(args, reply)
 
         return run_live_delivery(
-            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, fact_record=record_path,
             dispatcher=FailoverDispatcher(CliWorker(root, worker)),
             run=LiveRun(self.github, FixtureWorkspace(root)),
         )
+
+    def test_missing_manifest_can_be_recorded_by_implement(self):
+        result = self.review_tool_fact("result.txt", recover=True)
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("merge"), "armed")
+        self.assertEqual(result.get("fact_record"), "tests/fixtures/manifest.toml")
+        self.assertNotIn("tool_facts", result)
+
+    def test_null_claim_resolves_by_id_when_reviewer_paraphrases(self):
+        result = self.review_tool_fact(None, recover=True, paraphrase=True)
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("merge"), "armed")
+        self.assertEqual(result["path"].count("review"), 2)
+
+    def test_custom_fact_record_reaches_approval(self):
+        result = self.review_tool_fact("result.txt", recover=True, record_path="evidence/facts.toml")
+        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("fact_record"), "evidence/facts.toml")
+
+    def test_no_changes_names_unresolved_fact_gate(self):
+        result = self.review_tool_fact(None, no_changes=True)
+        self.assertIn("tool-facts", result.get("halt_detail", ""))
 
     def test_approve_with_unrecorded_tool_fact_becomes_changes(self):
         result = self.review_tool_fact("result.txt", record_during_review=True)
@@ -1413,6 +1473,10 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn(f"{base}...{head}", reviewed.command)
         self.assertIn("-old\n+new\n", reviewed.patch)
         self.assertNotIn("main.txt", reviewed.patch)
+        interdiff = LiveWorkspace(checkout).review_diff(base, head, interdiff=True)
+        self.assertIn(f"{base}..{head}", interdiff.command)
+        self.assertIn("main.txt", interdiff.patch)
+        self.assertEqual(LiveWorkspace(checkout).review_diff(head, head, interdiff=True).patch, "")
 
     def test_live_workspace_rejects_invalid_head_before_the_remaining_inspection(self):
         for head in ("", "abc123", "z" * 40):
@@ -1635,9 +1699,11 @@ class HaltExitCodeTest(unittest.TestCase):
         ), "verify_cap", "Verification failed after 3 rounds. Check exit 7 failed.")
 
     def test_review_cap(self):
-        changes = {**APPROVE, "review": "changes", "findings": [FINDING], "detail": "Add a boundary check."}
+        changes = {**APPROVE, "findings": [FINDING], "detail": "Add a boundary check."}
+        unresolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "unresolved"}], "detail": "Add a boundary check."}
         self.assert_halt(self.live(
-            [{"triage": "implement"}] + [{"implementation": "built"}, changes] * 3,
+            [{"triage": "implement"}] + [{"implementation": "built"}, changes]
+            + [{"implementation": "built"}, unresolved] * 2,
         ), "review_cap", "Review requested changes after 3 rounds. Last review: Add a boundary check.")
 
     def test_missing_slice_has_no_fake_stage(self):

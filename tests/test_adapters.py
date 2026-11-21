@@ -235,13 +235,13 @@ class CodexAdapterTest(unittest.TestCase):
         outcome = self.adapter.read(codex_process(codex_events()[:-1]))
         self.assertEqual((outcome.kind, outcome.detail), ("failed", "Codex did not complete the turn"))
 
-    def test_codex_review_uses_the_same_exact_verdict_contract(self):
+    def test_codex_review_rejects_the_obsolete_verdict_contract(self):
         events = codex_events()
         events[-2]["item"]["text"] = json.dumps({"review": "changes. Add a check."})
         adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"), STAGE_OUTPUTS["review"])
         outcome = adapter.read(codex_process(events))
         self.assertEqual(outcome.kind, "failed")
-        self.assertTrue(outcome.detail.startswith("review:"))
+        self.assertTrue(outcome.detail.startswith("resolutions:"))
 
     def test_quota_formatters_as_terminal_failures(self):
         cases = json.loads((FIXTURES / "codex" / "quota-formatters.json").read_text())

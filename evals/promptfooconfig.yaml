@@ -85,3 +85,11 @@ tests:
         value: does not change models.toml or max_review_rounds
       - type: contains
         value: A person opens the pull request.
+  - description: A settled ruling disagreement is a note and permits merge
+    vars:
+      case: review-converges
+    assert:
+      - type: contains
+        value: verified skipped
+      - type: contains
+        value: Coordinator note repeat

@@ -1,14 +1,12 @@
-# Resolve the delivery types in #52 before restoring strict checking.
-# pyright: basic
 """A handler that walks the graph without calling a model."""
 
 from collections.abc import Mapping
 
 from foreman.adapters import Outcome
 from foreman.config import ModelSpec
-from foreman.stage_output import WorkKind
+from foreman.stage_output import MergeRiskRecord, WorkKind
 
-DEFAULT_RISK = {
+DEFAULT_RISK: MergeRiskRecord = {
     "alignment": "The change matches the request.",
     "impact": "The change is limited to the requested surface.",
     "verification": "The engine check covers this change.",
@@ -26,11 +24,11 @@ class ScriptHandler:
         reviews: list[str] | None = None,
         verify: str = "pass",
         spec: str = "Behavior, decisions, and technical design.",
-        slices: list | None = None,
+        slices: list[object] | None = None,
         implementation: str = "diff",
         research: str = "answer",
-        risk: dict | None = None,
-        slice: dict | None = None,
+        risk: Mapping[str, object] | None = None,
+        slice: Mapping[str, object] | None = None,
         work_kind: WorkKind = "feature",
     ):
         self.triage = triage
@@ -40,7 +38,7 @@ class ScriptHandler:
         self.verify = verify
         self.spec = spec
         self.slices = slices
-        self.slice = slice if slice is not None else {
+        self.slice: Mapping[str, object] = slice if slice is not None else {
             "title": "Implement the requested change",
             "acceptance": "The requested change passes verification.",
             "builds": [],
@@ -76,11 +74,11 @@ class ScriptHandler:
         if node == "review":
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = (
-                [{"file": "example.txt", "line": 1, "severity": "blocking", "summary": "Add a check."}]
-                if verdict == "changes" else []
+                [{"id": "check", "kind": "untested-path", "fix": "Add a check.", "ruling_id": None, "file": "example.txt", "line": 1, "severity": "blocking", "summary": "Add a check."}]
+                if verdict == "changes" and not state.get("review") else []
             )
             return Outcome("ran", {
-                "review": verdict, "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.", "tool_facts": [],
+                "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if state.get("review") else [], "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.", "tool_facts": [],
             })
         if node == "verify":
             return Outcome("ran", {"verify": self.verify})

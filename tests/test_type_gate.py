@@ -10,12 +10,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BASIC_MODULES = {
-    "foreman/stage_output.py",
     "foreman/delivery.py",
-    "foreman/dry_run.py",
     "foreman/runner.py",
     "foreman/cli.py",
-    "foreman/proof.py",
 }
 
 

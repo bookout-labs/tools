@@ -6,6 +6,15 @@ Shared tools for the engine repositories. This repo lives in the bookout-labs or
 
 ## Delivery graph
 
+Outside-tool facts cited by review need recorded evidence at the verified head.
+`foreman run delivery --fact-record evidence/facts.toml` selects a repository-relative
+TOML record. The default is `tests/fixtures/manifest.toml`. On resume, omit the flag to use the saved path. An explicit path that differs from the saved path is an error. Fixture IDs name regular tracked files relative to the record.
+When evidence is missing, implement receives the claims and recording schema and
+can create the record. Unresolved claims carry stable IDs across reviews. Add each claim ID to the evidence
+entry's `claim_ids` list to resolve it independently of later reviewer wording.
+A typed exact restatement of the graph's verified check result needs no fixture.
+
+
 ```mermaid
 ---
 config:
@@ -20,42 +29,68 @@ graph TD;
 	implement(implement)
 	verify(verify)
 	review(review)
+	prepare(prepare)
+	commit(commit)
 	publish(publish)
 	proof(proof)
 	needs_human(needs_human)
+	quota_wait(quota_wait)
+	decide_pr_size(decide_pr_size)
 	merge(merge)
 	done(done)
 	__end__([<p>__end__</p>]):::last
 	__start__ -.-> done;
 	__start__ -.-> triage;
+	commit -.-> done;
+	commit -.-> publish;
+	decide_pr_size -.-> done;
+	decide_pr_size -.-> verify;
+	implement -.-> commit;
 	implement -.-> done;
-	implement -.-> publish;
+	implement -.-> quota_wait;
 	merge --> done;
+	needs_human -.-> done;
+	needs_human -.-> implement;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
+	prepare -.-> done;
+	prepare -.-> implement;
 	proof -.-> done;
-	proof -.-> implement;
+	proof -.-> prepare;
 	proof -.-> review;
 	publish -.-> done;
 	publish -.-> verify;
-	research --> done;
+	quota_wait -.-> implement;
+	quota_wait -.-> research;
+	quota_wait -.-> review;
+	quota_wait -.-> spec;
+	quota_wait -.-> triage;
+	research -.-> done;
+	research -.-> quota_wait;
+	review -.-> decide_pr_size;
 	review -.-> done;
-	review -.-> implement;
 	review -.-> merge;
+	review -.-> needs_human;
+	review -.-> prepare;
+	review -.-> quota_wait;
+	review -.-> spec;
+	spec -.-> decide_pr_size;
 	spec -.-> done;
-	spec -.-> implement;
 	spec -.-> needs_human;
+	spec -.-> prepare;
+	spec -.-> quota_wait;
 	triage -.-> done;
-	triage -.-> implement;
 	triage -.-> needs_human;
+	triage -.-> prepare;
+	triage -.-> quota_wait;
 	triage -.-> research;
 	triage -.-> spec;
-	spec -.-> spec;
 	verify -.-> done;
-	verify -.-> implement;
+	verify -.-> prepare;
 	verify -.-> proof;
 	verify -.-> review;
 	done --> __end__;
+	spec -.-> spec;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
@@ -66,7 +101,11 @@ Generate the diagram with `foreman diagram delivery`. The model list is `src/for
 
 Review excludes every model family that implemented any round of the change. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high.
 
-Foreman fetches the pull request's base and verified head from `origin` and reviews their three-dot diff. Each finding names a file, line, severity (`blocking` or `nit`), and a summary of up to 200 characters. Findings on changed lines in the reviewed commit post inline. Other findings appear with their locations in the GitHub review body alongside `detail`. A changes verdict requires findings and sends them with the detail to the next implementation round. The checkpoint marks a changes verdict with only nit findings as `review_change_kind: nits`.
+Round 1 reviews the full PR diff. Later rounds check unresolved findings and added
+interdiff lines also in the PR diff. Out-of-scope findings become coordinator notes. Typed findings have stable IDs, kinds, fixes and
+explicit resolutions. Resolved findings become settled rulings. Disagreements with
+rulings become coordinator notes. The graph owns tool-fact checks separately from
+reviewer findings. Rulings exist only within a run. The failure cap stays unchanged.
 
 An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every eligible CLI is missing, the run stops with `cli_missing`. If the graph cannot select a reviewer from a different model family, the run stops with `no_reviewer`. The record includes `halt_detail` for these stops.
 
@@ -201,9 +240,15 @@ If the live command prints `paused quota_exhausted`, run it again from the same 
 
 Before review, Foreman fetches the pull request's base branch from `origin` and counts changes in `src/` and `tests/` against the merge base. Use Git 2.43 or later. Files marked `linguist-generated` in the merge base do not count. If Foreman presents a split plan, use `--answer split` to accept it or `--answer override` to continue with that measured diff.
 
+
 ## Tests
 
 ```sh
 uv sync
 uv run python -m unittest discover -s tests
 ```
+
+Settled rulings exist only within a run. Resolved findings become rulings for later reviews.
+
+A repeated blocking kind pauses as `design_rethink` without consuming a failure round.
+A design answer resumes implementation and becomes a settled ruling in the next review.
