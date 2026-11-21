@@ -1,0 +1,362 @@
+# Entry IDs are paths relative to tests/fixtures.
+# Captured probes used synthetic prompts in empty temporary directories.
+# UUIDs, paths, and credential expiry are scrubbed. Grok reasoning is redacted.
+# A derived fixture records the argv of its original capture.
+# Source quotes have empty argv because no capture command produced them.
+
+[fixtures."claude/is_error.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "quoted_source"
+argv = []
+sources = [
+  "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz",
+]
+notes = "The c6 result constructor uses subtype \"error_during_execution\". The fixture quotes the turn_handoff error literal."
+
+[fixtures."claude/missing_model_usage.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "captured_run"
+argv = [
+  "claude",
+  "--model",
+  "claude-opus-5-5",
+  "--effort",
+  "high",
+  "--permission-mode",
+  "dontAsk",
+  "--tools",
+  "WebFetch",
+  "--allowedTools",
+  "WebFetch",
+  "--strict-mcp-config",
+  "--setting-sources",
+  "",
+  "--no-session-persistence",
+  "--output-format",
+  "json",
+  "--json-schema",
+  "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}",
+  "-p",
+  "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\"",
+]
+notes = "Omit modelUsage."
+derived_from = "claude/success.json"
+
+[fixtures."claude/model_substitution_disabled.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "quoted_source"
+argv = []
+sources = [
+  "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz",
+]
+notes = "The Claude binary selects model_substitution_disabled or no_allowed_fallback and contains the fixture's fallback error literal."
+
+[fixtures."claude/quota.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "quoted_source"
+argv = []
+sources = [
+  "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.329.tgz",
+]
+notes = "The result formatter uses is_error, api_error_status, and api_error_type. The binary names rate_limit_error, usage_limit_reached, and model_requires_usage_credits and contains the quota text in this fixture. Synthetic modelUsage omits Opus to check quota precedence."
+
+[fixtures."claude/success.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "captured_run"
+argv = [
+  "claude",
+  "--model",
+  "claude-opus-5-5",
+  "--effort",
+  "high",
+  "--permission-mode",
+  "dontAsk",
+  "--tools",
+  "WebFetch",
+  "--allowedTools",
+  "WebFetch",
+  "--strict-mcp-config",
+  "--setting-sources",
+  "",
+  "--no-session-persistence",
+  "--output-format",
+  "json",
+  "--json-schema",
+  "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}",
+  "-p",
+  "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\"",
+]
+notes = "Exit 0. modelUsage includes claude-haiku-5-5 and claude-opus-5-5. A companion probe with the same schema and permissions exited 0 and confirmed the WebFetch call with --output-format stream-json --verbose."
+
+[fixtures."claude/wrong_model.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "captured_run"
+argv = [
+  "claude",
+  "--model",
+  "claude-opus-5-5",
+  "--effort",
+  "high",
+  "--permission-mode",
+  "dontAsk",
+  "--tools",
+  "WebFetch",
+  "--allowedTools",
+  "WebFetch",
+  "--strict-mcp-config",
+  "--setting-sources",
+  "",
+  "--no-session-persistence",
+  "--output-format",
+  "json",
+  "--json-schema",
+  "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}",
+  "-p",
+  "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\"",
+]
+notes = "Replace the requested model in modelUsage."
+derived_from = "claude/success.json"
+
+[fixtures."claude/zero_usage.json"]
+tool = "claude"
+version = "2.1.329"
+kind = "captured_run"
+argv = [
+  "claude",
+  "--model",
+  "claude-opus-5-5",
+  "--effort",
+  "high",
+  "--permission-mode",
+  "dontAsk",
+  "--tools",
+  "WebFetch",
+  "--allowedTools",
+  "WebFetch",
+  "--strict-mcp-config",
+  "--setting-sources",
+  "",
+  "--no-session-persistence",
+  "--output-format",
+  "json",
+  "--json-schema",
+  "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}",
+  "-p",
+  "Use WebFetch on https://example.com/ and ask it to extract the page heading. Then return the schema object with triage needs_human, slice null, and human_question set to \"Which items?\"",
+]
+notes = "Zero the top-level and per-model usage and cost."
+derived_from = "claude/success.json"
+
+[fixtures."codex/quota.stderr.txt"]
+tool = "codex"
+version = "0.171.0"
+kind = "quoted_source"
+argv = []
+sources = [
+  "https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/error.rs#L822-L977",
+]
+notes = "Three rendered retry and quota messages with synthetic substitutions and no reset time."
+
+[fixtures."codex/success.json"]
+tool = "codex"
+version = "0.171.0"
+kind = "captured_run"
+argv = [
+  "codex",
+  "exec",
+  "-m",
+  "gpt-6.1-sol",
+  "-c",
+  "model_reasoning_effort=high",
+  "-c",
+  "approval_policy=never",
+  "-c",
+  "mcp_servers={}",
+  "--ephemeral",
+  "--skip-git-repo-check",
+  "--color",
+  "never",
+  "-s",
+  "read-only",
+  "Do not use tools or read files. Reply with just this JSON: {\"triage\":\"needs_human\",\"slice\":null,\"human_question\":\"Which items?\"}",
+]
+notes = "Exit 0. Final stdout from the ephemeral probe."
+
+[fixtures."codex/success.stderr.txt"]
+tool = "codex"
+version = "0.171.0"
+kind = "captured_run"
+argv = [
+  "codex",
+  "exec",
+  "-m",
+  "gpt-6.1-sol",
+  "-c",
+  "model_reasoning_effort=high",
+  "-c",
+  "approval_policy=never",
+  "-c",
+  "mcp_servers={}",
+  "--ephemeral",
+  "--skip-git-repo-check",
+  "--color",
+  "never",
+  "-s",
+  "read-only",
+  "Do not use tools or read files. Reply with just this JSON: {\"triage\":\"needs_human\",\"slice\":null,\"human_question\":\"Which items?\"}",
+]
+notes = "Exit 0. Relevant banner lines from stderr report the requested model and effort separately."
+
+[fixtures."grok/catalog_alias.json"]
+tool = "grok"
+version = "1.0.89 (28be5bb1bf65)"
+kind = "captured_run"
+argv = [
+  "grok",
+  "-m",
+  "grok-4.7",
+  "--reasoning-effort",
+  "high",
+  "--permission-mode",
+  "plan",
+  "--no-subagents",
+  "--output-format",
+  "json",
+  "--json-schema",
+  "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\",\"enum\":[\"ok\"]}},\"required\":[\"answer\"],\"additionalProperties\":false}",
+  "-p",
+  "Do not use tools or read files. Return the answer \"ok\" using the supplied schema.",
+]
+notes = "Exit 0. stopReason is end_turn and modelUsage has only grok-4.7-build."
+
+[fixtures."grok/incomplete_usage.json"]
+tool = "grok"
+version = "1.0.89 (28be5bb1bf65)"
+kind = "captured_run"
+argv = [
+  "grok",
+  "-m",
+  "grok-4.7",
+  "--reasoning-effort",
+  "high",
+  "--permission-mode",
+  "plan",
+  "--no-subagents",
+  "--output-format",
+  "json",
+  "--json-schema",
+  "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}",
+  "-p",
+  "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema.",
+]
+notes = "Omit part of the token usage data."
+derived_from = "grok/success.json"
+
+[fixtures."grok/is_error.json"]
+tool = "grok"
+version = "1.0.89 (28be5bb1bf65)"
+kind = "captured_run"
+argv = [
+  "grok",
+  "-m",
+  "grok-foreman-fixture-invalid",
+  "--reasoning-effort",
+  "high",
+  "--permission-mode",
+  "plan",
+  "--no-subagents",
+  "--output-format",
+  "json",
+  "--json-schema",
+  "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}",
+  "-p",
+  "Return triage needs_human, slice null and human_question \"Which items?\" per the schema.",
+]
+notes = "Exit 1 with a synthetic invalid model ID."
+
+[fixtures."grok/missing_model_usage.json"]
+tool = "grok"
+version = "1.0.89 (28be5bb1bf65)"
+kind = "captured_run"
+argv = [
+  "grok",
+  "-m",
+  "grok-4.7",
+  "--reasoning-effort",
+  "high",
+  "--permission-mode",
+  "plan",
+  "--no-subagents",
+  "--output-format",
+  "json",
+  "--json-schema",
+  "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}",
+  "-p",
+  "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema.",
+]
+notes = "Omit modelUsage."
+derived_from = "grok/success.json"
+
+[fixtures."grok/quota.json"]
+tool = "grok"
+version = "1.0.89 (28be5bb1bf65)"
+kind = "quoted_source"
+argv = []
+sources = [
+  "https://registry.npmjs.org/@xai-official/grok-darwin-arm64/-/grok-darwin-arm64-1.0.89.tgz",
+  "https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/sampling/error.rs#L17-L64",
+  "https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/src/headless.rs#L351-L359",
+  "https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md#exit-codes",
+]
+notes = "The fixture quotes RATE_LIMITED_USER_MESSAGE_OAUTH. The binary also contains the API key and free-usage messages used in tests. The headless docs specify exit 1 for errors."
+
+[fixtures."grok/success.json"]
+tool = "grok"
+version = "1.0.89 (28be5bb1bf65)"
+kind = "captured_run"
+argv = [
+  "grok",
+  "-m",
+  "grok-4.7",
+  "--reasoning-effort",
+  "high",
+  "--permission-mode",
+  "plan",
+  "--no-subagents",
+  "--output-format",
+  "json",
+  "--json-schema",
+  "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}",
+  "-p",
+  "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema.",
+]
+notes = "Exit 0. modelUsage reports grok-4.7-build."
+
+[fixtures."grok/zero_usage.json"]
+tool = "grok"
+version = "1.0.89 (28be5bb1bf65)"
+kind = "captured_run"
+argv = [
+  "grok",
+  "-m",
+  "grok-4.7",
+  "--reasoning-effort",
+  "high",
+  "--permission-mode",
+  "plan",
+  "--no-subagents",
+  "--output-format",
+  "json",
+  "--json-schema",
+  "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}",
+  "-p",
+  "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema.",
+]
+notes = "Zero the top-level token usage."
+derived_from = "grok/success.json"
