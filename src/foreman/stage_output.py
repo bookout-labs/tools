@@ -335,11 +335,9 @@ class SpecCandidate(RecordContract[SpecCandidateRecord]):
     def update(self, *, single: bool) -> "StageUpdate":
         provenance: SliceProvenanceRecord = {"author": self.author.record(), "revision": self.revision}
         slices: list[SliceRecord] = [{**item, "provenance": provenance} for item in self.record()["slices"]]
-        update: StageUpdate = {"spec_candidate": self.record(), "spec": self.spec, "work_kind": self.work_kind}
+        update: StageUpdate = {"spec_candidate": self.record(), "spec": self.spec, "work_kind": self.work_kind, "slices": slices}
         if single:
             update["slice"] = slices[0]
-        else:
-            update["slices"] = slices
         return update
 
 

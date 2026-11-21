@@ -32,7 +32,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    SpecCandidateRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
+    CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -889,7 +889,17 @@ def compile_delivery(
         update: DeliveryUpdate = {"stop": reason, "path": ["done"]}
         split = state.get("pr_split")
         if reason == "sliced" and split:
-            update["slices"] = split["slices"]
+            if "spec_candidate" in state:
+                previous = SpecCandidate.from_record(state["spec_candidate"])
+                model = state.get("models_used", {})["spec"]
+                candidate = SpecCandidate(
+                    slices=[CandidateSlice.model_validate(item) for item in split["slices"]],
+                    spec=previous.spec, work_kind=previous.work_kind,
+                    author=SpecAuthor(stage="spec", model=model, family=family(model)),
+                )
+                update = {**update, **candidate.update(single="slice" in state)}
+            else:
+                update["slices"] = split["slices"]
         if reason == "pr_split_required":
             update["halt_detail"] = split["plan"] if split else state.get("spec", "")
         return update
