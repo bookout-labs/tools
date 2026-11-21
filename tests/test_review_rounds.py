@@ -1,4 +1,4 @@
-from foreman.state import SCHEMA_VERSION
+from foreman.state import checkpoint_serializer, SCHEMA_VERSION
 import json
 from dataclasses import replace
 import unittest
@@ -96,6 +96,7 @@ class ReviewRoundsTest(unittest.TestCase):
                                        "browser_proof": None, "formal_proof": None}, usage=SCRIPTED_USAGE)
 
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint")) as saver:
+                saver.serde = checkpoint_serializer()
                 graph = compile_delivery(dispatch, settings, scratch=scratch,
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "example/repo#8"}}
@@ -136,7 +137,7 @@ class ReviewRoundsTest(unittest.TestCase):
     def test_settled_ruling_disagreement_is_a_note(self):
         result = self.run_rounds([{**APPROVE, "findings": [{**FINDING, "ruling_id": "size"}]}],
                                  initial={"settled_rulings": [{"id": "size", "text": "Size rule lives in the contract."}]})
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertIn("Coordinator note f1", result["detail"])
         self.assertIn("Size rule lives in the contract.", self.prompts[-1][2])
 
@@ -148,14 +149,14 @@ class ReviewRoundsTest(unittest.TestCase):
             {**APPROVE, "resolutions": [{"id": "f2", "status": "resolved"}],
              "findings": [{**nit, "id": "f3", "ruling_id": "finding:f1"}]},
         ])
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(json.loads(self.prompts[-1][2].split("Settled, don't reopen:\n")[1])[0]["id"], "finding:f1")
         self.assertEqual(result["review_findings"][-1]["coordinator_notes"][0]["id"], "f3")
 
     def test_full_diff_rounds_resume_and_keep_worker_output(self):
         result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
                                  {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}], crash=True)
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(self.diffs, [(BASE, HEAD, False), (BASE, HEAD, False), (HEAD, HEAD, True)])
         raw = parse_output(ReviewOutput, {**APPROVE, "findings": [FINDING]}, context=SCRIPTED_REVIEW_CONTEXT)
         before = raw.model_dump()
@@ -196,7 +197,7 @@ class ReviewRoundsTest(unittest.TestCase):
                                  {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
                                   "findings": [{**FINDING, "id": "again"}]},
                                  {**APPROVE, "resolutions": [{"id": "again", "status": "resolved"}]}], answer=True)
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(result["settled_rulings"][0]["text"], "Redesign the ownership.")
 
         instruction = [p[2] for p in self.prompts if p[0] == "review"][2]
@@ -227,14 +228,14 @@ class ReviewRoundsTest(unittest.TestCase):
             {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}],
             advance_head=True, gate_heads=["2" * 40, "3" * 40])
         self.assertEqual(result["review_rounds"], 3)
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertIn("Graph verdict: changes", self.forge.reviews[0][3])
 
     def test_review_dispatch_crash_resumes_with_one_accepted_round(self):
         result = self.run_rounds([APPROVE], review_crash=True)
         self.assertEqual(self.interrupted["pending_dispatch"]["stage"], "review")
         self.assertEqual(self.interrupted["review_rounds"], 0)
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(len(result["review_findings"]), 1)
         self.assertEqual(len(self.forge.reviews), 1)
@@ -242,7 +243,7 @@ class ReviewRoundsTest(unittest.TestCase):
 
     def test_review_quota_failover_accepts_one_round(self):
         result = self.run_rounds([APPROVE], review_quota=True)
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(result["review_rounds"], 1)
         self.assertEqual(len(result["review_findings"]), 1)
         attempts = [a for a in result["attempts"] if a["stage"] == "review"]
@@ -260,12 +261,12 @@ class ReviewRoundsTest(unittest.TestCase):
     def test_interdiff_need_not_parse_for_focused_instruction(self):
         result = self.run_rounds([{**APPROVE, "findings": [FINDING]},
             {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}], bad_interdiff=True)
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         self.assertIn((HEAD, HEAD, True), self.diffs)
 
     def test_diff_parse_failure_is_tolerated_first_and_unavailable_later(self):
         result = self.run_rounds([APPROVE], bad_diff=True)
-        self.assertEqual(result["merge"], "armed")
+        self.assertEqual(result["merge"].status, "armed")
         result = self.run_rounds([{**APPROVE, "findings": [FINDING]}, APPROVE], bad_diff=True)
         self.assertEqual(result["halt"], "review_unavailable")
 

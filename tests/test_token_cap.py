@@ -13,7 +13,7 @@ from foreman.cli import _print_run, main, run_exit_code
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import ScriptHandler
 from foreman.runner import run_live_delivery
-from foreman.state import SCHEMA_VERSION, CheckpointVersionError
+from foreman.state import checkpoint_serializer, SCHEMA_VERSION, CheckpointVersionError
 from foreman.skill_rules import SkillMissing
 from tests.skill_fixture import skill_fixture
 from test_runner import FakeGitHub, FakeWorkspace
@@ -36,12 +36,14 @@ class TokenCapTests(unittest.TestCase):
                                           "human_question": "Which?"}, usage=Usage(input_tokens=tokens, output_tokens=0))
                 dispatch = handler
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
+                    saver.serde = checkpoint_serializer()
                     graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                     graph.update_state(invocation, {"repo": "a/b", "check": "", "path": ["triage"], "request": "x",
                         "issue_kind": "parent", "token_cap": 100, "attempts": [{"stage": "spec",
                         "model": "prior", "commit": "a", "methods": [], "outcome": "ran",
                         "usage": {"input": prior, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}, as_node="needs_human")
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
+                    saver.serde = checkpoint_serializer()
                     graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                     graph.invoke(None, invocation, durability="sync")
                     result = graph.get_state(invocation).values
@@ -95,6 +97,7 @@ class TokenCapTests(unittest.TestCase):
                                ("env_unavailable", "git_failed", "publish_failed"))):
                 legacy = checkpoint.with_name(str(snapshot["stop"]) + ".sqlite")
                 with SqliteSaver.from_conn_string(str(legacy)) as saver:
+                    saver.serde = checkpoint_serializer()
                     graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                     graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {key: value for key, value in snapshot.items() if key != "token_cap"})
                 with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
@@ -109,6 +112,7 @@ class TokenCapTests(unittest.TestCase):
             first = run_live_delivery(**kwargs, checkpoint=Path(folder) / "a.sqlite", dispatcher=quota)
             legacy = Path(folder) / "legacy.sqlite"
             with SqliteSaver.from_conn_string(str(legacy)) as saver:
+                saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
                                    {key: value for key, value in first.items() if key != "token_cap"})
@@ -135,6 +139,7 @@ class TokenCapTests(unittest.TestCase):
             invocation = {"configurable": {"thread_id": "a/b#8"}}
             live = LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)))
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=live, checkpointer=saver)
                 graph.update_state(invocation, {"schema_version": SCHEMA_VERSION, "repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"],
                     "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
@@ -148,6 +153,7 @@ class TokenCapTests(unittest.TestCase):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
             checkpoint = Path(folder) / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
                                    {"repo": "a/b", "check": "", "path": ["done"], "stop": "answered"}, as_node="done")

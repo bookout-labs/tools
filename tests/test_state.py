@@ -14,14 +14,14 @@ from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import checkpoint_state
-from foreman.state import SCHEMA_VERSION, DeliveryState
+from foreman.state import SCHEMA_VERSION, DeliveryState, checkpoint_serializer
 
 
 FIXTURES = Path(__file__).with_name("fixtures") / "state"
 
 
 class StateTests(unittest.TestCase):
-    def test_channels_and_reducers_are_unchanged(self):
+    def test_owner_channels_and_reducers(self):
         hints = get_type_hints(DeliveryState, include_extras=True)
         self.assertEqual(sorted(set(hints) - {"schema_version"}), json.loads((FIXTURES / "channels.json").read_text()))
         reducers = {key: args[1] for key, hint in hints.items()
@@ -39,6 +39,7 @@ class StateTests(unittest.TestCase):
                             if key in DeliveryState.__annotations__}
             original["schema_version"] = SCHEMA_VERSION
             with SqliteSaver.from_conn_string(str(path)) as saver:
+                saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), load_config(),
                                          run=LiveRun(forge=DryRun(), workspace=DryRun()),
                                          checkpointer=saver)

@@ -114,7 +114,7 @@ class CitationGraphTests(unittest.TestCase):
 
     def test_grounded_review_arms_merge(self):
         result = self.run_rounds([payload()])
-        self.assertEqual(result['merge'], 'armed')
+        self.assertEqual(result['merge'].status, 'armed')
         self.assertIn('head items.txt:2', self.forge.reviews[0][3])
 
     def test_context_failure_and_empty_diff_do_not_dispatch_review(self):

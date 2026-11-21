@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Literal
-from pydantic import BaseModel as PydanticModel, Field, RootModel, AliasChoices
+from pydantic import BaseModel as PydanticModel, Field, RootModel, AliasChoices, JsonValue
 
 
 MergeMethod = Literal["MERGE", "REBASE", "SQUASH"]
@@ -176,3 +176,11 @@ class MergeReceipt(StrictModel):
     queue_policy: QueuePolicy
     identity: str
     status: Literal[MergeQueueEntryState, "AUTO_MERGE_ENABLED", "MERGED"]
+
+
+class MergeState(PydanticModel, frozen=True, extra="forbid"):
+    status: Literal["armed", "skipped", "not_armed"] | None = None
+    observation: dict[str, JsonValue] | None = None
+    receipt: dict[str, JsonValue] | None = None
+    observed_head: str = ""
+    command: list[str] = Field(default_factory=list[str])

@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from foreman.state import checkpoint_serializer
 from foreman.adapters import Outcome, Usage
 from foreman.cli import main
 from foreman.config import load_config
@@ -40,6 +41,7 @@ class LiveWatchTest(unittest.TestCase):
 
     def stored(self):
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
             return saver.get({'configurable': {'thread_id': 'example/engine#8'}})['channel_values']
 
     def test_reopen_records_once_and_reports_before_filing(self):
@@ -223,6 +225,7 @@ class LiveWatchTest(unittest.TestCase):
             else:
                 self.invoke()
             with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+                saver.serde = checkpoint_serializer()
                 graph = compile_delivery(lambda *args: Outcome('failed', detail='bad output'), load_config(), run=self.run, checkpointer=saver)
                 graph.update_state({'configurable': {'thread_id': 'example/engine#8'}},
                                    {'stop': stop, 'watch': None}, as_node='done')

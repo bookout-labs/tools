@@ -22,9 +22,10 @@ class CheckpointBoundaryTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "old.sqlite"
             shutil.copyfile(Path(__file__).parent / "fixtures/state/before-move.sqlite", checkpoint)
-            for version in (None, 0, SCHEMA_VERSION + 1, True, "1"):
+            for version in (None, 0, SCHEMA_VERSION - 1, SCHEMA_VERSION + 1, True, "1"):
                 with self.subTest(version=version):
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                        saver.serde = checkpoint_serializer()
                         saved = saver.get_tuple({"configurable": {"thread_id": "before-move"}})
                         if version is not None:
                             saved.checkpoint["channel_values"]["schema_version"] = version
@@ -65,6 +66,7 @@ from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import checkpoint_state, snapshot_result
 from foreman.state import checkpoint_serializer
+from foreman.readiness import MergeState
 
 path, phase, state_json, predecessor = sys.argv[1:]
 config = {"configurable": {"thread_id": "pause"}}
@@ -73,14 +75,17 @@ with SqliteSaver.from_conn_string(path) as saver:
     graph = compile_delivery(ScriptHandler(), load_config(),
                              run=LiveRun(DryRun(), DryRun()), checkpointer=saver)
     if phase == "write":
-        graph.update_state(config, json.loads(state_json), as_node=predecessor)
+        graph.update_state(config, {**json.loads(state_json), "merge": MergeState(status="not_armed", receipt={"status": "QUEUED"}, observed_head="c" * 40)}, as_node=predecessor)
         if predecessor != "done":
             graph.invoke(None, config, durability="sync")
     saved = graph.get_state(config)
     assert checkpoint_state(saved.values) is not None
+    assert isinstance(saved.values["merge"], MergeState)
+    assert saved.values["merge"].receipt == {"status": "QUEUED"}
+    assert saved.values["merge"].observed_head == "c" * 40
     print(json.dumps({"values": saved.values, "next": saved.next,
                       "interrupts": [item.value for item in saved.interrupts],
-                      "result": snapshot_result(saved, saver)}, sort_keys=True))
+                      "result": snapshot_result(saved, saver)}, sort_keys=True, default=lambda value: value.model_dump(mode="json")))
 '''
         size = {"head": "a" * 40, "merge_base": "b" * 40, "lines": 401}
         cases = [

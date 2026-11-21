@@ -1,6 +1,6 @@
 import tests
 
-from foreman.state import SCHEMA_VERSION
+from foreman.state import checkpoint_serializer, SCHEMA_VERSION
 
 from dataclasses import replace
 from decimal import Decimal
@@ -69,6 +69,7 @@ class DollarBudgetTests(unittest.TestCase):
                      patch.object(workspace, "push", wraps=workspace.push) as push, \
                      patch.object(forge, "open_pull_request", wraps=forge.open_pull_request) as publish:
                     with SqliteSaver.from_conn_string(str(root / "budget.sqlite")) as saver:
+                        saver.serde = checkpoint_serializer()
                         invocation = {"configurable": {"thread_id": stage}}
                         graph = compile_delivery(handler, config, run=LiveRun(forge, workspace),
                                                  scratch=scratch, checkpointer=saver)

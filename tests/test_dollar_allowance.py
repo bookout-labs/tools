@@ -1,4 +1,4 @@
-from foreman.state import SCHEMA_VERSION
+from foreman.state import checkpoint_serializer, SCHEMA_VERSION
 from foreman.dry_run import DryRun
 import contextlib
 from decimal import Decimal
@@ -115,6 +115,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
                     def saved():
                         with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                            saver.serde = checkpoint_serializer()
                             return saver.get(THREAD)["channel_values"]
 
                     initial_flags = ("--max-budget-usd", "1.50") if stored else ()
@@ -232,6 +233,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 with self.subTest(stop=snapshot["stop"]):
                     legacy = root / f"{snapshot['stop']}.sqlite"
                     with SqliteSaver.from_conn_string(str(legacy)) as saver:
+                        saver.serde = checkpoint_serializer()
                         graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {key: value for key, value in snapshot.items() if key != "max_budget_usd"})
                     with self.assertRaisesRegex(ValueError, "unknown usage history for --max-budget-usd.*new run"):
@@ -240,6 +242,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
             historical = root / "historical.sqlite"
             with SqliteSaver.from_conn_string(str(historical)) as saver:
+                saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
                 graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "repo": "a/b", "check": "exit 0", "request": "x", "path": ["triage"], "token_cap": 100,
                     "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
@@ -251,6 +254,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
             finished = root / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(finished)) as saver:
+                saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "repo": "a/b", "check": "", "path": ["done"], "stop": "answered",
                                             "token_cap": 100, "max_budget_usd": None}, as_node="done")
@@ -294,6 +298,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 dispatched = len(calls)
                 if case == "non_prefix":
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                        saver.serde = checkpoint_serializer()
                         graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {"attempts": Overwrite(implement)}, as_node="done")
                     with self.assertRaisesRegex(ValueError, "non-prefix attempt history"):

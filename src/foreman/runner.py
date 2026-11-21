@@ -18,6 +18,7 @@ from pydantic import TypeAdapter
 from foreman.config import PstackPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
 from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state
+from foreman.readiness import MergeState
 from foreman.state import SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
@@ -51,14 +52,7 @@ def snapshot_result(snapshot: StateSnapshot, saver: BaseCheckpointSaver[str]) ->
             return read_delivery_state({**values, "stop": Halt.quota_exhausted.value})
         question = parse_output(HumanPrompt, snapshot.interrupts[0].value).question
         return read_delivery_state({**values, "stop": "needs_human", "halt_detail": question})
-    result = read_delivery_state({**values, "stop": values.get("stop", "")})
-    if "merge" in result["path"] and "merge" not in result:
-        legacy = saver.get(snapshot.config)
-        if legacy is not None:
-            armed = legacy["channel_values"].get("merge_armed")
-            if isinstance(armed, bool):
-                result["merge"] = "armed" if armed else "not_armed"
-    return result
+    return read_delivery_state({**values, "stop": values.get("stop", "")})
 
 
 def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
@@ -298,7 +292,7 @@ def run_live_delivery(
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             repaired = False
             repair_head: str | None = None
-            if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge_receipt") and (head := saved_values.get("verified_head")) and (branch := saved_values.get("delivery_branch")):
+            if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge", MergeState()).receipt and (head := saved_values.get("verified_head")) and (branch := saved_values.get("delivery_branch")):
                 worktree = run.workspace.inspect()
                 try:
                     observed = client.readiness(repo, issue, branch, head)
@@ -321,7 +315,9 @@ def run_live_delivery(
             if presentation is not None:
                 presentation.restore(before, saver)
             replay = before.config
-            retained: DeliveryUpdate = {"repair_head": repair_head, "merge_receipt": None if repaired else saved_values.get("merge_receipt")}
+            merge = saved_values.get("merge", MergeState())
+            retained: DeliveryUpdate = {"repair_head": repair_head,
+                                        "merge": merge.model_copy(update={"receipt": None}) if repaired else merge}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             if partial := saved_values.get("partial_edits"):

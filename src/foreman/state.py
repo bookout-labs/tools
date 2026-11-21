@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-from pydantic import JsonValue, PlainValidator
+from pydantic import PlainValidator
 from typing_extensions import TypedDict
 
 from foreman.github import ReviewReceipt
 from foreman.outcomes import Halt
+from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
     AttemptRecord, BrowserProofRecord, DispatchPlanRecord, FindingRecord,
@@ -20,11 +21,11 @@ from foreman.stage_output import (
 from foreman.workspace import ImplementationCandidate, PullRequestSize
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=[Halt])
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState])
 
 
 class CheckpointVersionError(ValueError):
@@ -91,11 +92,7 @@ class DeliveryFields(TypedDict, total=False):
     head_sha: str | None
     verified_head: str
     repair_head: str | None
-    readiness_observation: dict[str, JsonValue]
-    merge_receipt: dict[str, JsonValue] | None
-    merge_observed_head: str
-    merge: Literal["armed", "skipped", "not_armed"]
-    merge_command: list[str]
+    merge: MergeState
     browser_proof: BrowserProofRecord | None
     formal_proof: FormalProofRecord | None
     proof_labels: dict[str, str]

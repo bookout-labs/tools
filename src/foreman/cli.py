@@ -15,6 +15,7 @@ import yaml
 
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend
+from foreman.readiness import MergeState
 from foreman.state import DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
@@ -96,18 +97,18 @@ def _print_run_rows(
                 pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
                 if pin_commit:
                     write_literal(f"pstack commit {pin_commit}")
-            observed = commit_sha(result.get("merge_observed_head", ""))
+            observed = commit_sha(result.get("merge", MergeState()).observed_head)
             verified = commit_sha(result.get("verified_head", ""))
             if observed and verified:
                 write_literal(head_mismatch_detail(observed, verified))
             elif detail := result.get("halt_detail"):
                 write(detail)
         elif node == "merge":
-            match outcome := result.get("merge"):
+            match outcome := result.get("merge", MergeState()).status:
                 case "armed":
                     write_literal("merge armed")
                 case "skipped":
-                    command = result.get("merge_command")
+                    command = result.get("merge", MergeState()).command
                     if command:
                         write_literal(f"merge skipped (dry run): {shlex.join(command)}")
                     else:

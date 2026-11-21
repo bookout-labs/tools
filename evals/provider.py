@@ -85,7 +85,7 @@ def _settled_review() -> str:
         return reply
 
     result = _walk(review, slice=FIELD_SLICE)
-    return f"{result['stop']} {result.get('merge')} {result.get('detail')}"
+    return f"{result['stop']} {result['merge'].status} {result.get('detail')}"
 
 
 def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, object]]) -> dict[str, str]:

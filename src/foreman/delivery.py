@@ -38,7 +38,7 @@ from foreman.stage_output import (
     ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
 )
 from foreman.state import SCHEMA_VERSION, checkpoint_serializer, DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult, SpecRejection, SpecRejectionKind
-from foreman.readiness import MergeReceipt
+from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.usd import BudgetUsd, usd_text
@@ -769,7 +769,7 @@ def compile_delivery(
         )
 
     def moved_before_review(actual: str, verified: str) -> DeliveryUpdate:
-        return {**halted(Halt.merge_not_armed, moved_head_detail(actual, verified), "review"), "merge": "not_armed"}
+        return {**halted(Halt.merge_not_armed, moved_head_detail(actual, verified), "review"), "merge": MergeState(status="not_armed")}
 
     def review(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
         try:
@@ -858,11 +858,14 @@ def compile_delivery(
     def arm_merge(state: DeliveryState) -> DeliveryUpdate:
         repo = state["repo"]
         head = state.get("verified_head")
+        merge = state.get("merge", MergeState()).model_copy(update={
+            "status": "not_armed", "command": merge_command(repo, "<number>", head or "<sha>"),
+        })
 
         def merge_halted(halt: Halt, detail: str) -> DeliveryUpdate:
             return {
-                **halted(halt, detail, "merge"), "merge": "not_armed",
-                "merge_command": merge_command(repo, "<number>", head or "<sha>"),
+                **halted(halt, detail, "merge"),
+                "merge": merge,
             }
 
         forge, workspace = run.forge, run.workspace
@@ -875,10 +878,8 @@ def compile_delivery(
         if not worktree.clean:
             return merge_halted(Halt.merge_not_armed, "The worktree has changes or Git could not inspect it.")
         if worktree.head != head:
-            return {
-                **merge_halted(Halt.merge_not_armed, head_mismatch_detail(worktree.head, head)),
-                "merge_observed_head": worktree.head,
-            }
+            merge = merge.model_copy(update={"observed_head": worktree.head})
+            return merge_halted(Halt.merge_not_armed, head_mismatch_detail(worktree.head, head))
         if worktree.branch is None:
             return merge_halted(Halt.merge_not_armed, "HEAD is detached. Merge requires a checked-out branch.")
         try:
@@ -895,41 +896,44 @@ def compile_delivery(
         if (state.get("reviewed_head") != head or not receipt or receipt["commit_id"] != head
                 or past.unresolved() or (past.gate and not past.gate.passed)):
             return merge_halted(Halt.merge_not_armed, "Renew review and its posted receipt at the verified head.")
-        if previous := state.get("merge_receipt"):
+        if previous := merge.receipt:
             saved = MergeReceipt.model_validate(previous)
             if saved.source_head == head:
                 try:
                     confirmed_receipt = forge.reconcile_merge(saved)
                 except HandoffChanged as exc:
-                    return {**merge_halted(Halt.merge_not_armed, str(exc)), "merge_receipt": None}
+                    merge = merge.model_copy(update={"receipt": None})
+                    return merge_halted(Halt.merge_not_armed, str(exc))
                 except QueueRejected as exc:
                     return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
                 except MergeNotArmed as exc:
                     return merge_halted(Halt.merge_not_armed, str(exc))
-                return {"merge": "armed", "path": ["merge"], "merge_receipt": confirmed_receipt.model_dump(mode="json")}
+                return {"merge": merge.model_copy(update={"status": "armed", "receipt": confirmed_receipt.model_dump(mode="json")}), "path": ["merge"]}
         try:
             observation = forge.readiness(repo, issue, worktree.branch, head)
         except ForgeError as exc:
             return merge_halted(Halt.readiness_unavailable, f"Platform/policy observation unavailable: {exc}")
         if observation.outcome != "ready":
-            return {**merge_halted(READINESS_HALTS[observation.outcome], observation.detail()),
-                    "readiness_observation": observation.model_dump(mode="json")}
+            merge = merge.model_copy(update={"observation": observation.model_dump(mode="json")})
+            return merge_halted(READINESS_HALTS[observation.outcome], observation.detail())
         try:
             receipt = forge.arm_auto_merge(repo, issue, worktree.branch, head, observation)
             if receipt is None:
-                return {"merge": "skipped", "path": ["merge"], "merge_command": merge_command(repo, "<number>", head)}
+                return {"merge": merge.model_copy(update={"status": "skipped", "command": merge_command(repo, "<number>", head)}), "path": ["merge"]}
             merge_receipt = receipt.model_dump(mode="json")
         except QueueRejected as exc:
             return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
         except MergeNotArmed as exc:
             return merge_halted(Halt.merge_not_armed, str(exc))
         if merge_receipt["status"] == "MERGED":
-            return {"merge": "armed", "path": ["merge"], "merge_receipt": merge_receipt}
+            return {"merge": merge.model_copy(update={"status": "armed", "receipt": merge_receipt}), "path": ["merge"]}
         try:
             confirmed = forge.readiness(repo, issue, worktree.branch, head)
         except ForgeError as exc:
-            return {**merge_halted(Halt.readiness_unavailable, str(exc)), "merge": "armed", "merge_receipt": merge_receipt}
-        update: DeliveryUpdate = {"merge": "armed", "merge_receipt": merge_receipt, "path": ["merge"], "readiness_observation": confirmed.model_dump(mode="json")}
+            return {**merge_halted(Halt.readiness_unavailable, str(exc)), "merge": merge.model_copy(update={"status": "armed", "receipt": merge_receipt})}
+        update: DeliveryUpdate = {"merge": merge.model_copy(update={
+            "status": "armed", "receipt": merge_receipt, "observation": confirmed.model_dump(mode="json"),
+        }), "path": ["merge"]}
         if confirmed.outcome != "ready":
             update.update(halted(READINESS_HALTS[confirmed.outcome], confirmed.detail(), "merge"))
         elif (confirmed.pr.number, confirmed.pr.head.sha, confirmed.pr.base.ref, confirmed.pr.state) != (observation.pr.number, observation.pr.head.sha, observation.pr.base.ref, observation.pr.state):

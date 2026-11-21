@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+from foreman.readiness import MergeState
 from foreman.adapters import Outcome
 from foreman.config import load_config
 from foreman.dry_run import ScriptHandler
@@ -184,7 +185,7 @@ class PublicationTest(unittest.TestCase):
                 self.git("switch", "-c", "unrelated")
                 self.git("commit", "--allow-empty", "-m", "Unrelated change")
                 result = self.walk(family=family)
-                self.assertEqual(result.get("merge"), "armed")
+                self.assertEqual(result.get("merge", MergeState()).status, "armed")
                 self.assertEqual(self.remote_head(), result.get("head_sha"))
                 self.assertEqual(result.get("verified_head"), self.remote_head())
                 self.assertEqual(self.created, [self.remote_head()])
@@ -197,7 +198,7 @@ class PublicationTest(unittest.TestCase):
     def test_second_attempt_adds_a_commit_to_the_same_pull_request(self):
         edits = iter(("one\n", "two\n"))
         result = self.walk(lambda: (self.checkout / "items.txt").write_text(next(edits)), ["changes", "approve"])
-        self.assertEqual(result.get("merge"), "armed")
+        self.assertEqual(result.get("merge", MergeState()).status, "armed")
         first, second = self.published_heads
         self.assertEqual(self.created, [first])
         self.assertEqual(second, self.remote_head())
@@ -651,7 +652,7 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(failed.get("head_sha"), self.remote_head())
         self.create_error = False
         result = self.walk(lambda: self.fail("The committed change should be reused"))
-        self.assertEqual(result.get("merge"), "armed")
+        self.assertEqual(result.get("merge", MergeState()).status, "armed")
         self.assertEqual(self.created, [failed.get("head_sha")])
 
     def test_crash_windows_resume_without_duplicate_completed_work(self):
