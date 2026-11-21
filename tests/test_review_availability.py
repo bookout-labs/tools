@@ -80,6 +80,7 @@ def worker(node, model, state, instruction):
             else:
                 payload = script(node, model, state, instruction).output
                 payload["resolutions"] = []
+                payload["risk"] = {**payload["risk"], "level": "high"}
             return Outcome("ran", payload, usage=usage)
         if kind == "interrupt":
             raise RuntimeError("review interrupted")
