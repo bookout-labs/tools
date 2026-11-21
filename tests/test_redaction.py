@@ -234,8 +234,12 @@ class RedactionTest(unittest.TestCase):
 
             visit(tree)
         self.assertEqual(references, {
+            ("dispatch.py", "clean_outcome"): 1,
+            ("dispatch.py", "clean_outcome.clean"): 1,
             ("cli.py", "_write_run_log"): 1,
             ("delivery.py", "DryRun.record_merge"): 2,
+            ("github.py", "LiveForge._run_command"): 2,
+            ("workspace.py", "LiveWorkspace._git"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,
             ("github.py", "LiveForge._redact_slice"): 10,
             ("github.py", "LiveForge.add_label"): 1,

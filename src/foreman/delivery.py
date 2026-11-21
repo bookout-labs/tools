@@ -25,7 +25,7 @@ from typing_extensions import TypedDict
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, ModelSpec, family, load_config, order_for
 from foreman.dry_run import ScriptHandler
-from foreman.dispatch import Handler, InvalidOutput, QuotaExhausted
+from foreman.dispatch import Handler, InvalidOutput, QuotaExhausted, clean_outcome
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, ReviewReceipt, merge_command, pull_request_command,
@@ -556,7 +556,7 @@ def compile_delivery(
                 for key in ("review_findings", "settled_rulings", *(("findings", "detail", "implementation") if history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])}).rounds else ())):
                     worker_state.pop(key, None)
             accepted_model = ModelSpec.parse(models[pending["index"]]) if models else None
-            outcome = dispatcher(name, accepted_model, worker_state, plan["instruction"])
+            outcome = clean_outcome(dispatcher(name, accepted_model, worker_state, plan["instruction"]))
             model = accepted_model.name if accepted_model else None
             attempts = [Attempt(
                 stage=name, model=model, commit=config.pstack.commit, methods=methods, outcome=outcome.kind,
