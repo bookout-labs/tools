@@ -348,7 +348,7 @@ class CliWorkerTest(unittest.TestCase):
     def test_non_object_replies_are_invalid(self):
         replies = (
             ('Here is the result: {"triage": "implement"}', "did not return valid JSON"),
-            ('["implement"]', "valid dictionary"),
+            ('["implement"]', "JSON object"),
         )
         for reply, detail in replies:
             with self.subTest(reply=reply):
