@@ -46,8 +46,8 @@ class DeliveryState(TypedDict, total=False):
     implementation: str
     head_sha: str | None
     head_checked: bool
-    merge_armed: bool
-    merge_skipped: bool
+    merge: Literal["armed", "skipped", "not_armed"]
+    merge_command: list[str]
     browser_proof: dict[str, object] | None
     formal_proof: dict[str, object] | None
     proof_labels: dict[str, str]
@@ -151,13 +151,12 @@ def compile_delivery(
     dispatcher: FailoverDispatcher | None,
     config: Config | None = None,
     *,
+    forge: Forge,
+    dry_run: bool = False,
     checkpointer: BaseCheckpointSaver | None = None,
     run_check: Callable[[str], int] | None = None,
-    forge: Forge | None = None,
     inspect_worktree: Callable[[], tuple[str, bool]] | None = None,
 ):
-    if forge is None or (run_check is not None and isinstance(forge, DryRunForge)):
-        raise ValueError("Delivery requires a forge, and live checks require a live forge.")
     config = config or load_config()
     missing = [name for name in REQUIRED_NODES if name not in config.nodes]
     if missing:
@@ -284,32 +283,30 @@ def compile_delivery(
         return "done" if state.get("halt") else "verify"
 
     def arm_merge(state: DeliveryState) -> DeliveryState:
-        if isinstance(forge, DryRunForge):
-            forge.arm_auto_merge(state["repo"], state.get("issue"), state.get("head_sha"))
-            return {"merge_armed": False, "merge_skipped": True, "path": ["merge"]}
-
         def halted(detail: str) -> DeliveryState:
-            return {"merge_armed": False, "halt": "merge_not_armed", "halt_detail": detail, "path": ["merge"]}
+            return {"merge": "not_armed", "halt": "merge_not_armed", "halt_detail": detail, "path": ["merge"]}
 
         head = state.get("head_sha")
-        if not head or not FULL_SHA.fullmatch(head):
-            return halted("Merge requires a full head SHA from verification.")
-        if not state.get("head_checked") or inspect_worktree is None:
-            return halted("Verification did not check HEAD in the worktree.")
-        current, clean = inspect_worktree()
-        if not clean:
-            return halted("The worktree has changes or Git could not inspect it.")
-        if current != head:
-            return halted(
-                f"HEAD changed after verification. Check out {head} and rerun the same command. "
-                "New commits need a new run."
-            )
-        repo, issue = state["repo"], state["issue"]
+        if not dry_run:
+            if not head or not FULL_SHA.fullmatch(head):
+                return halted("Merge requires a full head SHA from verification.")
+            if not state.get("head_checked") or inspect_worktree is None:
+                return halted("Verification did not check HEAD in the worktree.")
+            current, clean = inspect_worktree()
+            if not clean:
+                return halted("The worktree has changes or Git could not inspect it.")
+            if current != head:
+                return halted(
+                    f"HEAD is {current}, verification checked {head}. "
+                    "This run is finished and the merge was not armed."
+                )
         try:
-            forge.arm_auto_merge(repo, issue, head)
+            outcome = forge.arm_auto_merge(state["repo"], state.get("issue"), head)
         except MergeNotArmed as exc:
             return halted(str(exc))
-        return {"merge_armed": True, "path": ["merge"]}
+        if outcome == "skipped" and not dry_run:
+            return halted("The forge skipped a live merge.")
+        return {"merge": outcome, "path": ["merge"]}
 
     def finish(state: DeliveryState) -> DeliveryState:
         return {"stop": stop_reason(state), "path": ["done"]}
@@ -376,12 +373,16 @@ def run_delivery(
     }
     if slice is not None:
         state["slice"] = load_slice(slice)
-    graph = compile_delivery(dispatcher, config, forge=DryRunForge())
-    return graph.invoke(state)
+    forge = DryRunForge()
+    graph = compile_delivery(dispatcher, config, forge=forge, dry_run=True)
+    result = graph.invoke(state)
+    if forge.merge_commands:
+        result["merge_command"] = forge.merge_commands[-1]
+    return result
 
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
     if dispatcher is None:
         dispatcher = FailoverDispatcher(lambda *args: {"triage": "implement"})
-    graph = compile_delivery(dispatcher, config, forge=DryRunForge())
+    graph = compile_delivery(dispatcher, config, forge=DryRunForge(), dry_run=True)
     return graph.get_graph().draw_mermaid()

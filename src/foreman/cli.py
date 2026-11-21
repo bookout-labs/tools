@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 
 import yaml
@@ -33,12 +34,14 @@ def _print_run(result: dict) -> None:
             if detail := result.get("halt_detail"):
                 print(detail)
         elif node == "merge":
-            if result["merge_armed"]:
+            if result.get("merge") == "armed":
                 print("merge armed")
-            elif result.get("merge_skipped"):
-                print("merge skipped (dry run)")
-            else:
+            elif result.get("merge") == "skipped":
+                print(f"merge skipped (dry run): {shlex.join(result['merge_command'])}")
+            elif result.get("merge") == "not_armed":
                 print("merge not armed")
+            else:
+                print("merge outcome unavailable")
         else:
             fields = [node]
             if model := models.get(node):

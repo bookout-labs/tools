@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock
 
 from dataclasses import replace
 from pathlib import Path
@@ -7,7 +8,7 @@ from foreman.config import NodeConfig, load_config
 from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
-from foreman.github import DryRunForge
+from foreman.github import DryRunForge, Forge
 
 
 SLICES = [
@@ -66,8 +67,7 @@ class DeliveryTest(unittest.TestCase):
         )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["risk"]["level"], "low")
-        self.assertFalse(result["merge_armed"])
-        self.assertTrue(result["merge_skipped"])
+        self.assertEqual(result["merge"], "skipped")
         self.assertEqual(result["head_sha"], HEAD_SHA)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
@@ -214,7 +214,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(drop_second_head)
         self.assertIn("merge", result["path"])
-        self.assertFalse(result["merge_armed"])
+        self.assertEqual(result["merge"], "skipped")
         self.assertIsNone(result["head_sha"])
 
     def test_needs_human_stops_at_triage(self):
@@ -305,10 +305,16 @@ class DeliveryTest(unittest.TestCase):
         self.assertNotIn("claude-opus", picture)
         compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), forge=DryRunForge())
 
-    def test_live_checks_require_a_live_forge(self):
-        for forge in (None, DryRunForge()):
-            with self.subTest(forge=forge), self.assertRaisesRegex(ValueError, "require a live forge"):
-                compile_delivery(None, forge=forge, run_check=lambda command: 0)
+    def test_live_merge_requires_a_full_sha_checked_in_the_worktree(self):
+        for head, reason in ((None, "requires a full head SHA"), (HEAD_SHA, "Verification did not check HEAD")):
+            with self.subTest(head=head):
+                forge = Mock(spec=Forge)
+                graph = compile_delivery(FailoverDispatcher(ScriptHandler(head_sha=head)), forge=forge)
+                result = graph.invoke({"repo": "Example/Target", "issue": 8, "issue_kind": "slice"})
+                self.assertEqual(result["merge"], "not_armed")
+                self.assertEqual(result["stop"], "merge_not_armed")
+                self.assertIn(reason, result["halt_detail"])
+                forge.arm_auto_merge.assert_not_called()
 
     def test_readme_diagram_matches_the_generated_graph(self):
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()

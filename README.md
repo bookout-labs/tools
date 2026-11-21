@@ -66,9 +66,9 @@ Live verify stops with `dirty_worktree` if the checkout has changes or Git canno
 
 The cap is three failures across verify, proof, and review. It is config. A node cannot raise it.
 
-After approval, Foreman arms the checked pull request with `gh pr merge <pull-request> --repo <repo> --auto --match-head-commit <sha>`. The worktree and pull request must still be at the verified SHA, the worktree must be clean, and the open pull request must target `main` from a branch starting with the issue number and a hyphen.
+After approval, Foreman looks up the pull request for the checked-out branch and arms it with `gh pr merge <pull-request> --repo <repo> --squash --auto --match-head-commit <sha>`. The worktree and pull request must still be at the verified SHA, the worktree must be clean, and the open pull request must target `main` from a branch starting with the issue number and a hyphen.
 
-A failed merge check or command stops the run as `merge_not_armed` and records the reason. If HEAD moved, check out the verified SHA and rerun the same command once retry support is available. New commits need a new run. A dry run prints `merge skipped (dry run)` and reports the scripted verification result.
+If the merge command times out, Foreman checks the same pull request for an auto-merge request at the verified SHA. A failed merge check or unconfirmed command finishes the run as `merge_not_armed` and records the reason. If HEAD moved, the reason includes the current and verified SHAs. A dry run prints `merge skipped (dry run)` with the command template and reports the scripted verification result.
 
 Stage prompts live in `src/foreman/stages/`. The code-quality skill supplies the scorer rubric. The merge-risk skill is attached to review. A node reads those files. It does not invent the loop.
 

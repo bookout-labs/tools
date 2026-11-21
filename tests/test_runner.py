@@ -62,6 +62,7 @@ class FakeGitHub:
 
     def arm_auto_merge(self, repo, issue, sha):
         self.merge_calls.append((repo, issue, sha))
+        return "armed"
 
     def load_issue(self, repo, number):
         if number in self.issue_labels:
@@ -289,7 +290,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["check_exit_code"], 0)
         self.assertEqual(result["head_sha"], HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, HEAD)])
-        self.assertTrue(result["merge_armed"])
+        self.assertEqual(result["merge"], "armed")
 
     def test_nonzero_check_exit_consumes_the_cap_without_dispatched_verify_or_review(self):
         result = self.walk([{"triage": "implement"}] + [{"implementation": "built"}] * 3, check="exit 17")
@@ -309,7 +310,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["path"][-5:], ["verify", "proof", "review", "merge", "done"])
         self.assertEqual(result["slice"], SLICE)
         self.assertEqual(result["proof_labels"], {})
-        self.assertTrue(result["merge_armed"])
+        self.assertEqual(result["merge"], "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, HEAD)])
 
     def test_missing_proof_stops_before_review(self):
@@ -355,7 +356,7 @@ class LiveRunnerTest(unittest.TestCase):
             "triage", "implement", "verify", "proof", "implement", "verify", "proof", "review", "merge", "done",
         ])
         self.assertEqual(result["review_rounds"], 1)
-        self.assertTrue(result["merge_armed"])
+        self.assertEqual(result["merge"], "armed")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, HEAD)])
 
     def test_formal_block_consumes_the_review_cap(self):
@@ -397,7 +398,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_worktree_changes_after_check_leave_the_command_unarmed(self):
         for snapshot, detail in (
             ((HEAD, False), "worktree has changes"),
-            (("b" * 40, True), f"Check out {HEAD} and rerun the same command. New commits need a new run."),
+            (("b" * 40, True), f"HEAD is {'b' * 40}, verification checked {HEAD}. This run is finished"),
         ):
             with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd) as directory:
                 self.checkpoint = Path(directory) / "runs.sqlite3"
@@ -407,7 +408,7 @@ class LiveRunnerTest(unittest.TestCase):
                     inspect_worktree=lambda cwd: next(snapshots),
                 )
                 self.assertEqual(result["check_exit_code"], 0)
-                self.assertFalse(result["merge_armed"])
+                self.assertEqual(result["merge"], "not_armed")
                 self.assertEqual(result["stop"], "merge_not_armed")
                 self.assertIn(detail, result["halt_detail"])
                 self.assertEqual(self.github.merge_calls, [])
@@ -457,7 +458,11 @@ class LiveRunnerTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as stdout, patch("foreman.github.subprocess.run") as run:
             code = main(["run", "delivery", "--repo", "Example/Target", "--request", "List items", "--dry-run"])
         self.assertEqual(code, 0)
-        self.assertIn("merge skipped (dry run)\ndone verified", stdout.getvalue())
+        self.assertIn(
+            "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --squash --auto --match-head-commit '<sha>'\n"
+            "done verified",
+            stdout.getvalue(),
+        )
         run.assert_not_called()
 
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
