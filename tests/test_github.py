@@ -1,17 +1,20 @@
 import json
-from datetime import UTC, datetime
 import subprocess
 import unittest
 from unittest.mock import call, patch
 
 from pydantic import ValidationError
 
-from foreman.github import CommandTimedOut, ForgeError, LiveForge, MergeNotArmed
+from foreman.github import CommandFailed, CommandTimedOut, ForgeError, LiveForge, MergeNotArmed
 
 
 HEAD = "a" * 40
 REPO = "Example/Target"
 BRANCH = "8-list-items"
+CLOSING_PR = {
+    "id": "PR_synthetic", "number": 3, "repository": {"name": "Closing", "owner": {"login": "Other"}},
+    "url": "https://github.com/Other/Closing/pull/3",
+}
 PR = {
     "number": 12, "state": "OPEN", "headRefOid": HEAD.upper(), "headRefName": "8-list-items",
     "baseRefName": "main", "autoMergeRequest": None,
@@ -48,31 +51,35 @@ class LiveForgeTest(unittest.TestCase):
 
     @patch("foreman.github.subprocess.run")
     def test_only_closed_issue_with_merged_closing_pull_request_is_merged(self, run):
-        client = LiveForge()
-        for closed, refs, expected in (
-            (False, [{"number": 3, "state": "MERGED"}], False),
-            (True, [], False),
-            (True, [{"number": 3, "state": "CLOSED"}], False),
-            (True, [{"number": 3, "state": "MERGED"}], True),
+        for closed, references, state, expected in (
+            (False, [CLOSING_PR], None, False),
+            (True, [], None, False),
+            (True, [CLOSING_PR], "CLOSED", False),
+            (True, [CLOSING_PR], "MERGED", True),
         ):
-            with self.subTest(closed=closed, refs=refs):
-                run.return_value = gh_result(json.dumps({"closed": closed, "closedByPullRequestsReferences": refs}))
-                self.assertEqual(client.is_merged("Example/Engine", 1), expected)
-        run.side_effect = [
-            gh_result('{"closed":true,"closedByPullRequestsReferences":[{"number":3}]}'),
-            gh_result('{"state":"MERGED"}'),
-        ]
-        self.assertTrue(client.is_merged("Example/Engine", 1))
-        self.assertEqual(run.call_args.args[0], ["gh", "pr", "view", "3", "--repo", "Example/Engine", "--json", "state"])
+            with self.subTest(closed=closed, state=state):
+                run.reset_mock()
+                issue = {"closed": closed, "closedByPullRequestsReferences": references}
+                replies = [gh_result(json.dumps(issue))]
+                commands = [
+                    ["gh", "issue", "view", "1", "--repo", REPO, "--json", "closed,closedByPullRequestsReferences"],
+                ]
+                if state is not None:
+                    replies.append(gh_result(json.dumps({"state": state})))
+                    commands.append(["gh", "pr", "view", "3", "--repo", "Other/Closing", "--json", "state"])
+                run.side_effect = replies
+                self.assertEqual(LiveForge().is_merged(REPO, 1), expected)
+                self.assertEqual([invocation.args[0] for invocation in run.call_args_list], commands)
 
     @patch("foreman.github.subprocess.run")
     def test_is_merged_rejects_invalid_issue_and_pr_responses(self, run):
         run.side_effect = [
             gh_result('{"closed":"true","closedByPullRequestsReferences":[]}'),
             gh_result('{"closed":true,"closedByPullRequestsReferences":[{"number":3}]}'),
+            gh_result(json.dumps({"closed": True, "closedByPullRequestsReferences": [CLOSING_PR]})),
             gh_result('{"state":"COMPLETED"}'),
         ]
-        for _ in range(2):
+        for _ in range(3):
             with self.assertRaises(ForgeError) as exc:
                 LiveForge().is_merged(REPO, 8)
             self.assertIsInstance(exc.exception.__cause__, ValidationError)
@@ -95,14 +102,16 @@ class LiveForgeTest(unittest.TestCase):
             "gh", "api", "repos/Example/Target/issues", "--method", "POST", "-f", "title=Plan {repo}",
             "-f", "body=@draft", "-f", "labels[]=slice", "-f", "labels[]=factory",
         ])
+        self.assertIsNone(run.call_args.kwargs["timeout"])
         with self.assertRaises(ForgeError):
             forge.create_issue(REPO, "Plan", "", [])
+        self.assertIsNone(run.call_args.kwargs["timeout"])
 
     @patch("foreman.github.subprocess.run")
     def test_issue_transport_errors_leave_the_boundary_as_forge_errors(self, run):
         stderr = "gh: Not Found (HTTP 404)"
         run.return_value = subprocess.CompletedProcess([], 1, "", stderr)
-        with self.assertRaisesRegex(ForgeError, "Not Found") as error:
+        with self.assertRaisesRegex(CommandFailed, "Not Found") as error:
             LiveForge().load_issue(REPO, 8)
         self.assertNotIsInstance(error.exception, MergeNotArmed)
 
@@ -179,19 +188,19 @@ class LiveForgeTest(unittest.TestCase):
         run.side_effect = [pr_result(), launch_error]
         with self.assertRaisesRegex(MergeNotArmed, "gh pr merge failed") as error:
             LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-        self.assertIs(error.exception.__cause__, launch_error)
+        self.assertIsInstance(error.exception.__cause__, CommandFailed)
+        self.assertIs(error.exception.__cause__.__cause__, launch_error)
         run.reset_mock()
         run.side_effect = subprocess.TimeoutExpired(VIEW, 30)
-        with self.assertRaises(CommandTimedOut) as error:
+        with self.assertRaisesRegex(MergeNotArmed, "gh pr view timed out") as error:
             LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
-        self.assertEqual(error.exception.operation, "gh pr view")
+        self.assertIsInstance(error.exception.__cause__, CommandTimedOut)
+        self.assertEqual(error.exception.__cause__.operation, "gh pr view")
         self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW])
 
     @patch("foreman.github.subprocess.run")
-    def test_merge_timeout_requires_a_new_squash_request_at_the_verified_head(self, run):
-        started_at = datetime(2026, 11, 20, 15, tzinfo=UTC)
+    def test_merge_timeout_requires_a_new_squash_request_or_a_merge_at_the_verified_head(self, run):
         new_request = {"enabledAt": "2026-11-20T15:00:00Z", "mergeMethod": "SQUASH"}
-        older_request = {**new_request, "enabledAt": "2026-11-20T14:59:59Z"}
         wrong_method = {**new_request, "mergeMethod": "MERGE"}
 
         for previous, reply, armed in (
@@ -199,7 +208,9 @@ class LiveForgeTest(unittest.TestCase):
             (None, pr_result(PR, CONFIRM), False),
             (wrong_method, pr_result({**PR, "autoMergeRequest": new_request}, CONFIRM), False),
             (None, pr_result({**PR, "autoMergeRequest": wrong_method}, CONFIRM), False),
-            (None, pr_result({**PR, "autoMergeRequest": older_request}, CONFIRM), False),
+            (new_request, pr_result({**PR, "autoMergeRequest": new_request}, CONFIRM), False),
+            (None, pr_result({**PR, "state": "MERGED"}, CONFIRM), True),
+            (None, pr_result({**PR, "state": "MERGED", "headRefOid": "b" * 40}, CONFIRM), False),
             (None, pr_result({**PR, "headRefOid": "b" * 40, "autoMergeRequest": new_request}, CONFIRM), False),
             (None, subprocess.CompletedProcess(CONFIRM, 1, "", "HTTP 503: Service Unavailable"), False),
         ):
@@ -208,11 +219,9 @@ class LiveForgeTest(unittest.TestCase):
                 run.side_effect = [
                     pr_result({**PR, "autoMergeRequest": previous}), subprocess.TimeoutExpired(MERGE, 30), reply,
                 ]
-                with patch("foreman.github.datetime", wraps=datetime) as clock:
-                    clock.now.return_value = started_at
-                    if armed:
-                        self.assertIsNone(LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD))
-                    else:
-                        with self.assertRaisesRegex(MergeNotArmed, "timed out and was not confirmed"):
-                            LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
+                if armed:
+                    self.assertIsNone(LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD))
+                else:
+                    with self.assertRaisesRegex(MergeNotArmed, "timed out and was not confirmed"):
+                        LiveForge().arm_auto_merge(REPO, 8, BRANCH, HEAD)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], [VIEW, MERGE, CONFIRM])

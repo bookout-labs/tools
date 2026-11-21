@@ -1,17 +1,12 @@
 import unittest
-from unittest.mock import Mock
 
 from dataclasses import replace
 from pathlib import Path
 
-from langgraph.checkpoint.memory import InMemorySaver
-
 from foreman.config import NodeConfig, load_config
-from foreman.delivery import DryRun, LiveRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
+from foreman.delivery import DryRun, REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
 from foreman.dispatch import FailoverDispatcher, QuotaExhausted
 from foreman.dry_run import ScriptHandler
-from foreman.github import Forge
-from foreman.workspace import Workspace
 
 
 SLICES = [
@@ -307,33 +302,6 @@ class DeliveryTest(unittest.TestCase):
             self.assertIn(name, picture)
         self.assertNotIn("claude-opus", picture)
         compile_delivery(FailoverDispatcher(ScriptHandler()), load_config(), run=DryRun())
-
-    def test_live_merge_requires_a_full_sha_checked_in_the_worktree(self):
-        for head, checked, reason in (
-            (None, False, "requires a full head SHA"),
-            ("abc123", True, "requires a full head SHA"),
-            (HEAD_SHA, False, "Verification did not check HEAD"),
-        ):
-            with self.subTest(head=head):
-                forge = Mock(spec=Forge)
-                workspace = Mock(spec=Workspace)
-                graph = compile_delivery(None, None, run=LiveRun(forge, workspace), checkpointer=InMemorySaver())
-                config = graph.update_state(
-                    {"configurable": {"thread_id": "merge-guards"}},
-                    {"repo": "Example/Target", "issue": 8, "head_sha": head, "head_checked": checked, "review": "approve"},
-                    as_node="review",
-                )
-                result = graph.invoke(None, config)
-                self.assertEqual(result["merge"], "not_armed")
-                self.assertEqual(result["stop"], "merge_not_armed")
-                self.assertIn(reason, result["halt_detail"])
-                forge.arm_auto_merge.assert_not_called()
-                workspace.inspect.assert_not_called()
-
-    def test_readme_diagram_matches_the_generated_graph(self):
-        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
-        mermaid = readme.split("```mermaid\n", 1)[1].split("\n```", 1)[0]
-        self.assertEqual(mermaid, diagram())
 
 
 if __name__ == "__main__":

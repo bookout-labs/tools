@@ -148,18 +148,18 @@ def main(
         if checkpoint is None:
             state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
-        cwd = Path.cwd()
-        dispatcher = FailoverDispatcher(CliWorker(cwd, worker_runner)) if worker_runner else None
+        if live_run is None:
+            live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd()))
+        dispatcher = FailoverDispatcher(CliWorker(live_run.workspace.root, worker_runner)) if worker_runner else None
         try:
             result = run_live_delivery(
                 repo=args.repo,
                 issue=args.issue,
                 check=args.check,
-                cwd=cwd,
                 checkpoint=checkpoint,
                 dispatcher=dispatcher,
                 request=args.request,
-                run=live_run if live_run is not None else LiveRun(LiveForge(), LiveWorkspace(cwd)),
+                run=live_run,
                 answer=args.answer,
             )
         except (ForgeError, OSError, QuotaExhausted, ValueError) as exc:

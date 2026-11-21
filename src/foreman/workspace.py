@@ -2,8 +2,15 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import subprocess
 from typing import Protocol
+
+FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+
+
+class WorktreeInspectionFailed(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -14,25 +21,35 @@ class WorktreeState:
 
 
 class Workspace(Protocol):
+    root: Path
+
     def run(self, command: str) -> int: ...
     def inspect(self) -> WorktreeState: ...
 
 
 class LiveWorkspace:
-    def __init__(self, cwd: Path):
-        self.cwd = cwd
+    def __init__(self, root: Path):
+        self.root = root
 
     def run(self, command: str) -> int:
-        return subprocess.run(command, shell=True, cwd=self.cwd, stdin=subprocess.DEVNULL).returncode
+        return subprocess.run(command, shell=True, cwd=self.root, stdin=subprocess.DEVNULL).returncode
 
     def inspect(self) -> WorktreeState:
-        head = self._git("rev-parse", "HEAD")
+        head = self._git("rev-parse", "HEAD").strip()
+        if not FULL_SHA.fullmatch(head):
+            raise WorktreeInspectionFailed("Git did not report a full 40-hex HEAD SHA.")
         status = self._git("status", "--porcelain")
-        branch = self._git("branch", "--show-current")
-        clean = head.returncode == status.returncode == branch.returncode == 0 and not status.stdout
-        return WorktreeState(head.stdout.strip(), clean, branch.stdout.strip() or None)
+        branch = self._git("branch", "--show-current").strip()
+        return WorktreeState(head, not status, branch or None)
 
-    def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args], cwd=self.cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
-        )
+    def _git(self, *args: str) -> str:
+        operation = " ".join(("git", *args))
+        try:
+            result = subprocess.run(
+                ["git", *args], cwd=self.root, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+            raise WorktreeInspectionFailed(f"{operation} failed ({exc}).") from exc
+        if result.returncode:
+            raise WorktreeInspectionFailed(result.stderr.strip() or f"{operation} exited with code {result.returncode}.")
+        return result.stdout

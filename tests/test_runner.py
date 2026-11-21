@@ -18,7 +18,7 @@ from foreman.github import MergeNotArmed
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, parse_output
 from foreman.worker import CliWorker
-from foreman.workspace import LiveWorkspace, WorktreeState
+from foreman.workspace import LiveWorkspace, WorktreeInspectionFailed, WorktreeState
 
 
 HEAD = "a" * 40
@@ -49,6 +49,8 @@ class FakeWorkspace(LiveWorkspace):
 
     def inspect(self):
         self.last = next(self.snapshots, self.last)
+        if isinstance(self.last, WorktreeInspectionFailed):
+            raise self.last
         return self.last
 
 
@@ -223,7 +225,7 @@ class LiveRunnerTest(unittest.TestCase):
             return worker_reply(args, next(outputs))
 
         return run_live_delivery(
-            repo="Example/Engine", issue=issue, check=check, cwd=self.cwd,
+            repo="Example/Engine", issue=issue, check=check,
             checkpoint=self.checkpoint, dispatcher=FailoverDispatcher(CliWorker(self.cwd, run)),
             run=LiveRun(self.github, FakeWorkspace(self.cwd, snapshots)),
         )
@@ -300,9 +302,33 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(self.calls, ["claude", "codex", "claude"])
         self.assertEqual(result["path"], ["triage", "implement", "verify", "review", "merge", "done"])
         self.assertEqual(result["check_exit_code"], 0)
-        self.assertEqual(result["head_sha"], HEAD)
+        self.assertEqual(result["verified_head"], HEAD)
+        self.assertEqual(result["head_sha"], "b" * 40)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
+
+    def test_cli_uses_one_workspace_root_for_the_worker_check_and_checkpoint(self):
+        root = self.cwd / "checkout"
+        root.mkdir()
+        live_run = LiveRun(self.github, FakeWorkspace(root))
+        replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+
+        def worker(args, cwd):
+            self.assertEqual(cwd, root)
+            return worker_reply(args, next(replies))
+
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "touch checked"],
+                worker_runner=worker, checkpoint=self.checkpoint, live_run=live_run,
+            )
+        self.assertEqual(code, 0)
+        self.assertTrue((root / "checked").exists())
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
+        rerun = {"repo": "Example/Engine", "issue": 8, "check": "exit 0", "checkpoint": self.checkpoint}
+        self.assertEqual(run_live_delivery(**rerun, run=live_run)["workspace"], str(root.resolve()))
+        with self.assertRaisesRegex(ValueError, "Run this issue from"):
+            run_live_delivery(**rerun, run=LiveRun(self.github, FakeWorkspace(self.cwd)))
 
     def test_nonzero_check_exit_consumes_the_cap_without_dispatched_verify_or_review(self):
         result = self.walk([{"triage": "implement"}] + [{"implementation": "built"}] * 3, check="exit 17")
@@ -393,12 +419,12 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertFalse((self.cwd / "ran").exists())
 
     def test_dirty_or_invalid_worktree_skips_the_check(self):
-        for head, clean in ((HEAD, False), ("", True), ("abc123", True), ("z" * 40, True)):
-            with self.subTest(head=head, clean=clean), TemporaryDirectory(dir=self.cwd) as directory:
+        for snapshot in (WorktreeState(HEAD, False, BRANCH), WorktreeInspectionFailed("Invalid HEAD")):
+            with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd) as directory:
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk(
                     [{"triage": "implement"}, {"implementation": "built", "head_sha": HEAD}],
-                    check="touch ran", snapshots=(WorktreeState(head, clean, BRANCH),),
+                    check="touch ran", snapshots=(snapshot,),
                 )
                 self.assertEqual(result["stop"], "dirty_worktree")
                 self.assertEqual(result["path"], ["triage", "implement", "verify", "done"])
@@ -436,6 +462,16 @@ class LiveRunnerTest(unittest.TestCase):
                     ["git", "rev-parse", "HEAD"], ["git", "status", "--porcelain"], ["git", "branch", "--show-current"],
                 ])
                 self.assertTrue(all(call.kwargs["cwd"] == self.cwd for call in run.call_args_list))
+
+    def test_live_workspace_rejects_invalid_head_before_the_remaining_inspection(self):
+        for head in ("", "abc123", "z" * 40):
+            with self.subTest(head=head), patch(
+                "foreman.workspace.subprocess.run",
+                return_value=subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 0, head + "\n", ""),
+            ) as run:
+                with self.assertRaisesRegex(WorktreeInspectionFailed, "full 40-hex HEAD SHA"):
+                    LiveWorkspace(self.cwd).inspect()
+                run.assert_called_once()
 
     def test_main_displays_the_forge_failure(self):
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])

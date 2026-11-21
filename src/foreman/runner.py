@@ -7,6 +7,7 @@ import re
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
+from foreman.config import load_config
 from foreman.delivery import DeliveryState, LiveRun, compile_delivery, load_slice
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 
@@ -25,19 +26,18 @@ def run_live_delivery(
     repo: str,
     issue: int,
     check: str,
-    cwd: Path,
     checkpoint: Path,
     run: LiveRun,
     dispatcher: FailoverDispatcher | None = None,
     request: str | None = None,
     answer: str | None = None,
-) -> dict:
+) -> DeliveryState:
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     config = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
-    workspace = str(cwd.resolve())
+    workspace = str(run.workspace.root.resolve())
     client = run.forge
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-        graph = compile_delivery(dispatcher, None, run=run, checkpointer=saver)
+        graph = compile_delivery(dispatcher, load_config(), run=run, checkpointer=saver)
         saved = graph.get_state(config)
         saved_workspace = saved.values.get("workspace")
         if saved_workspace and saved_workspace != workspace:
@@ -90,7 +90,7 @@ def run_live_delivery(
         if saved.interrupts:
             question = saved.interrupts[0].value["question"]
             return {**saved.values, "stop": "needs_human", "halt_detail": question}
-        result = dict(saved.values)
+        result: DeliveryState = dict(saved.values)
         if "merge" in result.get("path", []) and "merge" not in result:
             legacy = saver.get(saved.config)
             if legacy is not None:
