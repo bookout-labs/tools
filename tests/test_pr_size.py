@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.state import checkpoint_serializer, SCHEMA_VERSION
+from foreman.state import RunState, checkpoint_serializer, SCHEMA_VERSION
 from foreman.cli import main
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery
 from foreman.config import load_config
@@ -104,10 +104,10 @@ class PullRequestSizeTest(unittest.TestCase):
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(lambda *_: self.fail("unexpected dispatch"), self.config, run=LiveRun(self.forge, LiveWorkspace(self.root), skills=fixture_skills), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {
-                    "schema_version": SCHEMA_VERSION, "pstack_pin": self.config.pstack.model_dump(), "token_cap": DEFAULT_TOKEN_CAP, "max_budget_usd": None,
-                    "repo": "Example/Engine", "issue": 8, "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
+                    "schema_version": SCHEMA_VERSION, "pstack_pin": self.config.pstack.model_dump(), "run": RunState(token_cap=DEFAULT_TOKEN_CAP, max_budget_usd=None, repo="Example/Engine", issue=8, workspace=str(self.root.resolve())),
+                      "issue_kind": "slice" if "slice" in self.forge.labels else "parent", "slice": EMPTY_SLICE,
                     **({"spec": self.original_spec} if self.original_spec else {}),
-                    "workspace": str(self.root.resolve()), "check": "exit 0", "work": WorkState(head_sha=self.git("rev-parse", "HEAD")),
+                     "check": "exit 0", "work": WorkState(head_sha=self.git("rev-parse", "HEAD")),
                     "models_used": {"implement": "gpt-6.1-sol-high"}, "path": ["triage", "implement", "publish"],
                 }, as_node="publish")
         with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:

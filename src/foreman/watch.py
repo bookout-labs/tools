@@ -41,7 +41,8 @@ def watch(state: DeliveryResult, forge: Forge, repo: str, run_key: RunKey) -> Wa
             return {"issue": issue.number, "action": "commented"}
     detail = indent(state.get("halt_detail", ""), "    ")
     attempts = ", ".join(f"{a['stage']}/{a['model']}={a['outcome']}" for a in state.get("attempts", []))
-    evidence = f"Evidence: {state['repo']}#{state.get('issue', '<issue>')}; stop={halt}; attempts={attempts}\n\nDetail:\n\n{detail}\n"
+    run_state = state["run"]
+    evidence = f"Evidence: {run_state.repo}#{run_state.issue or '<issue>'}; stop={halt}; attempts={attempts}\n\nDetail:\n\n{detail}\n"
     if matches:
         number = matches[0].number
         forge.comment_issue(repo, number, f"{evidence}\n{run_marker}")

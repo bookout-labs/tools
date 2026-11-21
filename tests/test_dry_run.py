@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from langgraph.checkpoint.memory import InMemorySaver
+from foreman.state import RunState
 from foreman.cli import _print_run_rows
 from foreman.delivery import compile_delivery
 from foreman.dry_run import ScriptHandler
@@ -24,7 +25,7 @@ class DryRunTests(unittest.TestCase):
         graph = compile_delivery(*compile_graph.call_args.args, **{**compile_graph.call_args.kwargs, "scratch": None})
         self.assertNotIn("verify_call", graph.get_graph().nodes)
         with self.assertRaisesRegex(ValueError, "thread_id"):
-            graph.invoke({"repo": "org/repo", "check": "", "path": []})
+            graph.invoke({"run": RunState(repo="org/repo"), "check": "", "path": []})
         root = Path(__file__).resolve().parents[1] / "src/foreman"
         for path in root.rglob("*.py"):
             for node in ast.walk(ast.parse(path.read_text())):

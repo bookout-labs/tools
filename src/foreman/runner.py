@@ -1,6 +1,6 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 import json
@@ -18,7 +18,7 @@ from foreman.config import PstackPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
 from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state
 from foreman.readiness import MergeState
-from foreman.state import SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
+from foreman.state import RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
@@ -116,21 +116,15 @@ def _checkpoint_before_halt(
     return before
 
 
-def require_token_cap(values: Mapping[str, object], checkpoint: Path) -> None:
-    if "token_cap" not in values:
-        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run with a new checkpoint path.")
-
-
-def require_same_budget(stored: object, max_budget_usd: BudgetUsd | None) -> None:
-    if max_budget_usd is not None and (stored is None or Decimal(str(stored)) != max_budget_usd.amount):
+def require_same_budget(stored: str | None, max_budget_usd: BudgetUsd | None) -> None:
+    if max_budget_usd is not None and (stored is None or Decimal(stored) != max_budget_usd.amount):
         raise ValueError("--max-budget-usd differs from the stored dollar allowance")
 
 
-def require_run_limits(values: Mapping[str, object], checkpoint: Path, max_budget_usd: BudgetUsd | None) -> None:
-    require_token_cap(values, checkpoint)
-    if "max_budget_usd" not in values:
-        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history for --max-budget-usd. Start a new run with a new checkpoint path.")
-    require_same_budget(values["max_budget_usd"], max_budget_usd)
+def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: BudgetUsd | None) -> None:
+    if run_state.token_cap is None:
+        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run with a new checkpoint path.")
+    require_same_budget(run_state.max_budget_usd, max_budget_usd)
 
 
 def run_live_delivery(
@@ -168,12 +162,15 @@ def run_live_delivery(
         if prior is not None:
             require_schema_version(channels, checkpoint)
         delivery_config = load_config()
-        if prior and "token_cap" in channels and max_tokens is not None and channels["token_cap"] != max_tokens:
-            raise ValueError("--max-tokens differs from the stored token cap")
-        if prior and "max_budget_usd" in channels:
-            require_same_budget(channels["max_budget_usd"], max_budget_usd)
-        if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
-            require_run_limits(channels, checkpoint, max_budget_usd)
+        run_state = RunState()
+        if prior is not None:
+            run_state = RunState.model_validate(channels["run"])
+            if run_state.token_cap is not None and max_tokens is not None and run_state.token_cap != max_tokens:
+                raise ValueError("--max-tokens differs from the stored token cap")
+            if not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS:
+                require_run_limits(run_state, checkpoint, max_budget_usd)
+            else:
+                require_same_budget(run_state.max_budget_usd, max_budget_usd)
         saved_pin = channels.get("pstack_pin")
         if prior and not channels.get("stop") and saved_pin is None:
             raise ValueError("Cannot resume a delivery checkpoint without a pstack pin.")
@@ -189,9 +186,10 @@ def run_live_delivery(
             skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,
                                           "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "pending_dispatch": None,
                                           "fact_record": fact_record or channels.get("fact_record", MANIFEST_PATH),
-                                          "issue": issue, "workspace": workspace, "repo": repo, "check": check,
-                                          "max_budget_usd": channels.get("max_budget_usd") if prior else (usd_text(max_budget_usd) if max_budget_usd is not None else None),
-                                          "token_cap": channels.get("token_cap", max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP)}
+                                          "run": run_state if prior else RunState(issue=issue, workspace=workspace, repo=repo,
+                                              max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None,
+                                              token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
+                                          "check": check}
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
             else:
@@ -213,13 +211,13 @@ def run_live_delivery(
 
         saved = graph.get_state(config)
         if saved.values:
-            require_run_limits(saved.values, checkpoint, max_budget_usd)
+            require_run_limits(RunState.model_validate(saved.values.get("run", RunState())), checkpoint, max_budget_usd)
         saved_values = checkpoint_state(saved.values)
         if presentation is not None and saved.values:
             presentation.restore(saved)
         if saved_values is not None and fact_record is not None and fact_record != saved_values.get("fact_record", MANIFEST_PATH):
             raise ValueError("--fact-record differs from the checkpoint.")
-        saved_workspace = saved_values.get("workspace") if saved_values else None
+        saved_workspace = saved_values["run"].workspace if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
         waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == Halt.quota_exhausted
@@ -259,12 +257,9 @@ def run_live_delivery(
             initial: DeliveryState = {
                 "schema_version": SCHEMA_VERSION,
                 "fact_record": fact_record or MANIFEST_PATH,
-                "repo": repo,
-                "token_cap": max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
-                "max_budget_usd": usd_text(max_budget_usd) if max_budget_usd is not None else None,
-                "issue": issue,
-                "workspace": workspace,
-                "request": text,
+                "run": RunState(repo=repo, issue=issue, workspace=workspace, request=text,
+                                token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
+                                max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
                 "check": check,
                 "pstack_pin": pin.model_dump(),
                 "path": [],
@@ -305,7 +300,7 @@ def run_live_delivery(
                     repaired = worktree.head != head
             before = _checkpoint_before_halt(graph, config, saved_values["path"], "prepare" if repaired else None)
             require_schema_version(before.values, checkpoint)
-            require_run_limits(before.values, checkpoint, max_budget_usd)
+            require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_budget_usd)
             restored = checkpoint_state(before.values)
             assert restored is not None
             previous_attempts = restored.get("attempts", [])

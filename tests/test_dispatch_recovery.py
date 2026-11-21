@@ -79,7 +79,7 @@ class DispatchRecoveryTests(unittest.TestCase):
                     result = json.loads(resumed.stdout)
                     self.assertEqual(result["stop"], "usage_unknown")
                     self.assertEqual(run_exit_code(result), 1)
-                    self.assertEqual(result["max_budget_usd"], limit or None)
+                    self.assertEqual(result["run"]["max_budget_usd"], limit or None)
                     self.assertEqual(result["attempts"][-1]["outcome"], "interrupted")
                     self.assertIsNone(result["pending_dispatch"])
                     self.assertNotIn("triage", result)

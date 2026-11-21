@@ -16,7 +16,7 @@ import yaml
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend
 from foreman.readiness import MergeState
-from foreman.state import DeliveryResult
+from foreman.state import RunState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.dry_run import ScriptHandler
@@ -44,7 +44,8 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
         _print_run_rows(result, dry_run=dry_run, commands=presentation.commands if presentation else None)
         return
     rows: list[tuple[str, str | None]] = []
-    current: DeliveryResult = {"repo": result["repo"], "check": result["check"], "path": [], "stop": result["stop"]}
+    run_state = result["run"]
+    current: DeliveryResult = {"run": RunState(repo=run_state.repo, max_budget_usd=run_state.max_budget_usd), "check": result["check"], "path": [], "stop": result["stop"]}
     for update in presentation.updates:
         current.update(update)
         rows.extend((node, update.get("models_used", {}).get(node)) for node in update.get("path", []))
@@ -54,7 +55,6 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
         return
     current["path"] = [node for node, _ in rows]
     current["stop"] = result["stop"]
-    current["max_budget_usd"] = result.get("max_budget_usd")
     current["attempts"] = result.get("attempts", [])
     if result["stop"] in {"needs_human", Halt.quota_exhausted}:
         current["halt_detail"] = result.get("halt_detail", "")
@@ -71,7 +71,8 @@ def _print_run_rows(
     def write_literal(text: str) -> None:
         print("\n".join(prefix + line for line in text.split("\n")))
 
-    if (limit := result.get("max_budget_usd")) is not None:
+    run_state = result["run"]
+    if (limit := run_state.max_budget_usd) is not None:
         spent = claude_spend(result.get("attempts", []))
         amount = "unknown" if spent is None else f"${spent:f}"
         write_literal(f"claude spend {amount} of ${limit}")
@@ -90,8 +91,8 @@ def _print_run_rows(
                 write_literal(f"check exit {result['check_exit_code']}")
             for proof, label in result.get("proof_labels", {}).items():
                 write(f"{proof} proof {label}")
-            if "token_cap" in result:
-                write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {result['token_cap']}")
+            if run_state.token_cap is not None:
+                write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {run_state.token_cap}")
             write(f"done {result['stop']}")
             if result.get("stop") == Halt.skill_missing:
                 pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
@@ -128,8 +129,8 @@ def _print_run_rows(
             write(" ".join(fields))
     stop = result.get("stop")
     if stop in {"needs_human", Halt.quota_exhausted} and "done" not in result["path"]:
-        if "token_cap" in result:
-            write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {result['token_cap']}")
+        if run_state.token_cap is not None:
+            write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {run_state.token_cap}")
         label = "done" if stop == "needs_human" and dry_run else "paused"
         write_literal(f"{label} {stop}")
         if detail := result.get("halt_detail"):

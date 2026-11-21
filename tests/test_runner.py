@@ -29,7 +29,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
-from foreman.state import checkpoint_serializer, CheckpointVersionError
+from foreman.state import RunState, checkpoint_serializer, CheckpointVersionError
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
@@ -308,13 +308,16 @@ class CliWorkerTest(unittest.TestCase):
                          candidate={"disposition": "edits", "fingerprint": "tree"},
                          partial_edits="partial", head_sha=HEAD, repair_head="b" * 40)
 
+        run_state = RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout", token_cap=100, max_budget_usd="1.5")
+
         def run(args, cwd, env):
             state = json.loads(args[-1].split("Delivery state:\n")[1])
+            self.assertEqual(state["run"], run_state.model_dump(mode="json"))
             self.assertEqual(state["work"], work.model_dump(mode="json"))
             self.assertEqual(state["merge"], merge.model_dump(mode="json"))
             return worker_reply(args, {"triage": "implement"})
 
-        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge, "work": work}, "Read.")
+        result = CliWorker(Path("."), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {"merge": merge, "work": work, "run": run_state}, "Read.")
         self.assertEqual(result.kind, "ran")
 
     def test_commands_use_the_configured_models_and_parse_the_final_result(self):
@@ -329,7 +332,7 @@ class CliWorkerTest(unittest.TestCase):
                 def run(args, cwd, env):
                     self.assertEqual(args[:len(prefix)], prefix)
                     self.assertEqual(cwd, Path("engine"))
-                    self.assertIn('{"issue": 12}', args[-1])
+                    self.assertEqual(json.loads(args[-1].split("Delivery state:\n")[1])["run"], RunState(issue=12).model_dump(mode="json"))
                     expected_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"} if args[0] == "claude" else {}
                     self.assertEqual(env, {**expected_env, "TMPDIR": env["TMPDIR"]})
                     self.assertTrue(Path(env["TMPDIR"]).is_dir())
@@ -346,7 +349,7 @@ class CliWorkerTest(unittest.TestCase):
                     return worker_reply(args, {"triage": "implement"})
 
                 result = CliWorker(Path("engine"), run)(
-                    "triage", ModelSpec.parse(model), {"issue": 12}, "Read the issue.",
+                    "triage", ModelSpec.parse(model), {"run": RunState(issue=12)}, "Read the issue.",
                 )
                 self.assertEqual(result.kind, "ran")
                 self.assertEqual(result.output["triage"], "implement")
@@ -660,7 +663,7 @@ class LiveRunnerTest(unittest.TestCase):
             historical = next(item for item in saver.list(config)
                               if item.checkpoint["channel_values"].get("path", [])[-1:] == ["review"])
             historical.checkpoint["channel_values"].pop("schema_version")
-            historical.checkpoint["channel_values"].pop("token_cap")
+            historical.checkpoint["channel_values"]["run"] = historical.checkpoint["channel_values"]["run"].model_copy(update={"token_cap": None})
             saver.put(historical.config, historical.checkpoint, historical.metadata, {})
         with self.assertRaises(CheckpointVersionError) as raised:
             self.walk([])
@@ -916,7 +919,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_load_slice_issue(self):
         result = self.walk([{"triage": "question"}, {"research": "answer"}])
-        self.assertEqual(result["request"], "Issue title\n\n" + slice_body(EMPTY_SLICE))
+        self.assertEqual(result["run"].request, "Issue title\n\n" + slice_body(EMPTY_SLICE))
         self.assertEqual(result["issue_kind"], "slice")
         self.assertEqual(result["slice"], EMPTY_SLICE)
 
@@ -1109,7 +1112,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
         }])
         self.assertEqual(result["issue_kind"], "parent")
-        self.assertEqual(result["request"], "Issue title\n\nIssue body")
+        self.assertEqual(result["run"].request, "Issue title\n\nIssue body")
         self.assertEqual(result["child_issue_numbers"], [101, 102])
         self.assertEqual([x[0] for x in self.github.created], [BUILDER["title"], CONSUMER["title"]])
         self.assertEqual(self.github.created[0][2], ["slice", "factory"])
@@ -1465,7 +1468,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertTrue((root / "checked").exists())
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         rerun = {"repo": "Example/Engine", "issue": 8, "check": "exit 0", "checkpoint": self.checkpoint, "dispatcher": ScriptHandler()}
-        self.assertEqual(run_live_delivery(**rerun, run=live_run)["workspace"], str(root.resolve()))
+        self.assertEqual(run_live_delivery(**rerun, run=live_run)["run"].workspace, str(root.resolve()))
         with self.assertRaisesRegex(ValueError, "Run this issue from"):
             run_live_delivery(**rerun, run=LiveRun(self.github, FakeWorkspace(self.cwd)))
 
@@ -1873,10 +1876,36 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(resumed["stop"], "dirty_worktree")
         expected = WorkState(branch=BRANCH, base="main", repair_head="3" * 40)
         self.assertEqual(resumed["work"], expected)
+        self.assertEqual(resumed["run"], halted["run"])
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(saved.checkpoint["channel_values"]["work"], expected)
+        self.assertEqual(saved.checkpoint["channel_values"]["run"], halted["run"])
+
+    def test_multi_round_repair_halt_preserves_run_and_discards_previous_attempt(self):
+        workspace = FakeWorkspace(self.cwd)
+        create_branch = workspace.create_branch
+        calls = 0
+
+        def prepare_branch(branch, base):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise WorktreeInspectionFailed("branch unavailable")
+            return create_branch(branch, base)
+
+        changes = {**APPROVE, "findings": [FINDING]}
+        with patch.object(workspace, "create_branch", side_effect=prepare_branch):
+            halted = self.walk([{"triage": "implement"}, {"implementation": "first"}, changes], workspace=workspace)
+        self.assertEqual(halted["stop"], "git_failed")
+        self.assertIsNotNone(halted["work"].candidate)
+        workspace.current = WorktreeState(HEAD, False, BRANCH)
+        resumed = self.walk([], workspace=workspace)
+        self.assertEqual(resumed["stop"], "dirty_worktree")
+        self.assertEqual(resumed["run"], halted["run"])
+        self.assertEqual(resumed["work"], WorkState(branch=BRANCH, base="main"))
+        self.assertEqual(resumed["merge"], MergeState())
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
@@ -2154,7 +2183,7 @@ def run(args, cwd, env):
         log.write(schema["title"] + "\\n")
     if schema["title"] == "TriageOutput":
         assert not state.get("human_answers")
-        assert state["request"] == "List items"
+        assert state["run"]["request"] == "List items"
         return worker_reply(args, {"triage": "spec"})
     if schema["title"] == "SpecOutput":
         if not state.get("human_answers"):
@@ -2163,7 +2192,7 @@ def run(args, cwd, env):
                 "human_question": f"Which items? {SYNTHETIC_QUESTION_TOKEN}",
             })
         assert state["human_answers"] == ["Only open items"]
-        assert state["request"] == "List items"
+        assert state["run"]["request"] == "List items"
         assert state["human_question"] == "Which items? [redacted:GitHub Token]"
         return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
     if schema["title"] == "ImplementOutput":
@@ -2472,7 +2501,7 @@ class HaltExitCodeTest(unittest.TestCase):
         detail = "Merge arming requires a full 40-hex commit SHA."
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
-        result = {**halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed")}
+        result = {"run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed")}
         with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)

@@ -1,4 +1,4 @@
-from foreman.state import SCHEMA_VERSION
+from foreman.state import RunState, SCHEMA_VERSION
 from foreman.dry_run import DEFAULT_RISK
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 import unittest
@@ -112,7 +112,7 @@ class StageRecordTests(unittest.TestCase):
 
     def test_current_checkpoint_restores_slice_defaults(self):
         from foreman.runner import checkpoint_state
-        state = checkpoint_state({"schema_version": SCHEMA_VERSION, "token_cap": 20_000_000, "repo": "example/repo", "check": "true", "path": [], "slice": {"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []}})
+        state = checkpoint_state({"schema_version": SCHEMA_VERSION, "run": RunState(token_cap=20_000_000, repo="example/repo"), "check": "true", "path": [], "slice": {"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []}})
         self.assertFalse(state["slice"]["stateful"])
         self.assertEqual(state["slice"]["builds"], [])
         self.assertEqual(state["slice"]["uses"], [])
@@ -143,7 +143,7 @@ class StageOwnershipTests(unittest.TestCase):
         from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import STAGE_OUTPUTS, parse_output
 
-        state = {"repo": "org/repo", "check": "", "path": [], "issue_kind": "slice", "review_rounds": 2}
+        state = {"run": RunState(repo="org/repo"), "check": "", "path": [], "issue_kind": "slice", "review_rounds": 2}
         handler = ScriptHandler(reviews=["changes"])
         for stage, contract in STAGE_OUTPUTS.items():
             with self.subTest(stage=stage):
@@ -163,7 +163,7 @@ class StageOwnershipTests(unittest.TestCase):
 
     def test_legacy_failure_budget_is_preserved_separately(self):
         from foreman.delivery import read_delivery_state
-        result = read_delivery_state({"repo": "org/repo", "check": "", "path": [], "stop": "verify_cap", "review_rounds": 2})
+        result = read_delivery_state({"run": RunState(repo="org/repo"), "check": "", "path": [], "stop": "verify_cap", "review_rounds": 2})
         self.assertEqual(result["review_rounds"], 0)
         for key in ("verify_failures", "proof_failures", "spec_failures"):
             self.assertEqual(result[key], 2)
@@ -172,4 +172,4 @@ class StageOwnershipTests(unittest.TestCase):
         from foreman.delivery import read_delivery_state
 
         with self.assertRaises(ValidationError):
-            read_delivery_state({"repo": "org/repo", "check": "", "path": [], "stop": "sliced", "slice": {"title": "Incomplete"}})
+            read_delivery_state({"run": RunState(repo="org/repo"), "check": "", "path": [], "stop": "sliced", "slice": {"title": "Incomplete"}})

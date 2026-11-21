@@ -7,6 +7,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
+from foreman.state import RunState
 from foreman.outcomes import HALTS
 from foreman.github import Forge, ForgeError, LiveForge
 from foreman.redaction import redact
@@ -41,7 +42,7 @@ SKIPPED = {"reviewer_unavailable", "model_dependency_missing", "model_family_exh
 
 
 def state(halt="invalid_output", detail="bad output", node="review", model="gpt-6.1-sol-high"):
-    return dict(repo=REPO, issue=8, check="true", path=["triage", node, "done", "done"], stop=halt,
+    return dict(run=RunState(repo=REPO, issue=8), check="true", path=["triage", node, "done", "done"], stop=halt,
                 halt=halt, halt_detail=detail, attempts=[dict(stage=node, model=model, outcome="ran",
                                                            commit="pin", methods=[], usage=None)])
 
