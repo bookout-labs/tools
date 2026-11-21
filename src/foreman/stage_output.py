@@ -20,6 +20,8 @@ Text = Annotated[str, StringConstraints(pattern=r"\S")]
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Output = TypeVar("Output", bound=BaseModel)
 WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
+Severity = Literal["blocking", "nit"]
+ResolutionStatus = Literal["resolved", "unresolved"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -100,7 +102,7 @@ class FindingRecord(TypedDict):
     ruling_id: str | None
     file: str
     line: int
-    severity: Literal["blocking", "nit"]
+    severity: Severity
     summary: str
 
 
@@ -409,13 +411,13 @@ class Finding(RecordContract[FindingRecord]):
     ruling_id: str | None = Field(description="If this contradicts a settled ruling, give its ID so it becomes a coordinator note. Otherwise null.")
     file: Text = Field(description="Give the path relative to the repository root.")
     line: int = Field(description="Give the line number in the reviewed commit.")
-    severity: Literal["blocking", "nit"]
+    severity: Severity
     summary: Text = Field(max_length=200)
 
 
 class FindingResolution(Contract):
     id: TrimmedText
-    status: Literal["resolved", "unresolved"]
+    status: ResolutionStatus
 
 
 class SettledRuling(Contract):
