@@ -1,11 +1,10 @@
-from pathlib import Path
 import json
 from subprocess import CompletedProcess
 import unittest
 
 from pydantic import TypeAdapter, ValidationError
 
-from foreman.adapters import Call, Usage
+from foreman.adapters import Usage
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.adapters.codex import CodexAdapter
@@ -13,7 +12,7 @@ from foreman.stage_output import AttemptUsage, AttemptUsageRecord
 from foreman.config import ModelSpec
 from foreman.delivery import run_tokens, run_delivery
 from foreman.dry_run import ScriptHandler
-from tests.test_adapters import fixture_process
+from tests.test_adapters import CALL, fixture_process
 
 
 class UsageTests(unittest.TestCase):
@@ -30,7 +29,7 @@ class UsageTests(unittest.TestCase):
                         container.pop(key)
                     else:
                         container[key] = invalid
-                    outcome = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), ""), Call("", "{}", False, Path(".")))
+                    outcome = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), ""), CALL)
                     self.assertEqual(outcome.kind, "ran")
                     usage = outcome.usage
                     self.assertEqual((usage.input_tokens, usage.output_tokens,
@@ -45,7 +44,7 @@ class UsageTests(unittest.TestCase):
             with self.subTest(delta=delta):
                 envelope = json.loads(recorded.stdout)
                 envelope["total_cost_usd"] += delta
-                usage = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), ""), Call("", "{}", False, Path("."))).usage
+                usage = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), ""), CALL).usage
                 if expected is None:
                     self.assertIsNone(usage.total_cost_usd)
                 else:
@@ -54,13 +53,13 @@ class UsageTests(unittest.TestCase):
         envelope["total_cost_usd"] = 0
         for row in envelope["modelUsage"].values():
             row["costUSD"] = 0
-        usage = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), ""), Call("", "{}", False, Path("."))).usage
+        usage = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), ""), CALL).usage
         self.assertEqual(usage.total_cost_usd, 0.0)
         self.assertEqual(usage.input_tokens, 1481)
         envelope["total_cost_usd"] = 1e308
         for row in envelope["modelUsage"].values():
             row["costUSD"] = 1e308
-        usage = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), ""), Call("", "{}", False, Path("."))).usage
+        usage = adapter.read(CompletedProcess(recorded.args, 0, json.dumps(envelope), ""), CALL).usage
         self.assertIsNone(usage.total_cost_usd)
         self.assertEqual(usage.input_tokens, 1481)
 
@@ -83,7 +82,7 @@ class UsageTests(unittest.TestCase):
         ):
             with self.subTest(cli=cli):
                 process = fixture_process([cli], fixture, 0)
-                usage = adapter.read(process, Call("", "{}", False, Path("."))).usage
+                usage = adapter.read(process, CALL).usage
                 self.assertIsNotNone(usage)
                 self.assertEqual(usage.input_tokens + usage.output_tokens +
                                  (usage.cache_read_input_tokens or 0) + (usage.cache_creation_input_tokens or 0), total)
@@ -95,7 +94,7 @@ class UsageTests(unittest.TestCase):
                              ("grok", GrokAdapter(ModelSpec.parse("grok-4.7-high")))):
             for name in ("negative_side", "partial_side", "fractional_side", "zero_tokens_with_cost"):
                 with self.subTest(cli=cli, name=name):
-                    result = adapter.read(fixture_process([cli], name, 0), Call("", "{}", False, Path(".")))
+                    result = adapter.read(fixture_process([cli], name, 0), CALL)
                     self.assertIsNone(result.usage)
                     self.assertEqual(result.kind, "ran")
 
@@ -116,11 +115,11 @@ class UsageTests(unittest.TestCase):
         row = next(iter(envelope["modelUsage"].values()))
         for invalid in (-1, 1.5, True):
             row["inputTokens"] = invalid
-            self.assertEqual(adapter.read(CompletedProcess(process.args, 1, json.dumps(envelope), ""), Call("", "{}", False, Path("."))).kind, "quota")
-            self.assertIsNone(adapter.read(CompletedProcess(process.args, 1, json.dumps(envelope), ""), Call("", "{}", False, Path("."))).usage)
+            self.assertEqual(adapter.read(CompletedProcess(process.args, 1, json.dumps(envelope), ""), CALL).kind, "quota")
+            self.assertIsNone(adapter.read(CompletedProcess(process.args, 1, json.dumps(envelope), ""), CALL).usage)
         row["inputTokens"] = 1
         row["extra"] = "ignored"
         envelope["modelUsage"]["side"] = {"inputTokens": 1, "outputTokens": 1}
-        usage = adapter.read(CompletedProcess(process.args, 1, json.dumps(envelope), ""), Call("", "{}", False, Path("."))).usage
+        usage = adapter.read(CompletedProcess(process.args, 1, json.dumps(envelope), ""), CALL).usage
         self.assertIsNotNone(usage)
         self.assertIsNone(usage.total_cost_usd)
