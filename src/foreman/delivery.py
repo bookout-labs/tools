@@ -34,7 +34,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
+    BrowserProofRecord, FormalProofRecord, SliceRecord, Contract, Finding, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -113,7 +113,7 @@ class PullRequestSplit(TypedDict):
     plan: str
     gate: Literal["ready", "needs_human"]
     question: str | None
-    slices: list[dict[str, object]]
+    slices: list[SliceRecord]
 
 
 class DeliveryFields(TypedDict, total=False):
@@ -126,9 +126,9 @@ class DeliveryFields(TypedDict, total=False):
     spec: str
     spec_gate: str
     spec_rejection: SpecRejection | None
-    slices: list[dict[str, object]]
+    slices: list[SliceRecord]
     child_issue_numbers: list[int]
-    slice: dict[str, object]
+    slice: SliceRecord
     issue_kind: str
     work_kind: WorkKind
     pstack_pin: dict[str, str]
@@ -147,8 +147,8 @@ class DeliveryFields(TypedDict, total=False):
     merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
-    browser_proof: dict[str, object] | None
-    formal_proof: dict[str, object] | None
+    browser_proof: BrowserProofRecord | None
+    formal_proof: FormalProofRecord | None
     proof_labels: dict[str, str]
     human_question: str
     human_answers: list[str]
@@ -200,7 +200,7 @@ def read_delivery_state(raw: object) -> DeliveryResult:
     return _DELIVERY_STATE.validate_python(raw, strict=True)
 
 
-def _active_slice(state: DeliveryState) -> dict[str, object]:
+def _active_slice(state: DeliveryState) -> SliceRecord:
     slice = state.get("slice")
     if slice is None:
         raise InvalidOutput("implementation requires an active slice")
@@ -224,11 +224,11 @@ def stage_text(name: str) -> str:
 def clean_slices(
     raw: list[Slice] | None,
     workspace: Workspace | None,
-) -> list[dict[str, object]]:
+) -> list[SliceRecord]:
     if not raw:
         raise InvalidOutput("slices: ready parent spec needs at least one slice")
     if len(raw) == 1:
-        return [{**raw[0].model_dump(), "depends_on": []}]
+        return [{**raw[0].record(), "depends_on": []}]
     slices = {item.title: item for item in raw}
     if len(slices) != len(raw):
         raise InvalidSlicePlan("duplicate_title", "Slice titles must be unique.")
@@ -255,12 +255,12 @@ def clean_slices(
         ordered = list(TopologicalSorter(graph).static_order())
     except CycleError as exc:
         raise InvalidSlicePlan("dependency_cycle", "Dependency cycle: " + " -> ".join(exc.args[1])) from exc
-    return [{**slices[title].model_dump(), "depends_on": list(graph[title])} for title in ordered]
+    return [{**slices[title].record(), "depends_on": list(graph[title])} for title in ordered]
 
 
 def load_slice(raw: object) -> DeliveryUpdate:
     stored = parse_output(StoredSlice, raw)
-    state: DeliveryUpdate = {"slice": stored.model_dump(exclude_unset=True)}
+    state: DeliveryUpdate = {"slice": stored.record()}
     if stored.work_kind is not None:
         state["work_kind"] = stored.work_kind
     return state
@@ -296,8 +296,8 @@ def stage_update(
     elif isinstance(output, ImplementOutput):
         update.update(
             implementation=output.implementation,
-            browser_proof=output.browser_proof.model_dump() if output.browser_proof else None,
-            formal_proof=output.formal_proof.model_dump() if output.formal_proof else None,
+            browser_proof=output.browser_proof.record() if output.browser_proof else None,
+            formal_proof=output.formal_proof.record() if output.formal_proof else None,
         )
     elif isinstance(output, ReviewOutput):
         update.update(
@@ -328,7 +328,7 @@ def stage_update(
     if isinstance(output, TriageOutput) and state.get("issue_kind") == "parent" and output.triage == "implement":
         if output.slice is None:
             raise InvalidOutput("slice: required when a parent triages as implement")
-        update["slice"] = output.slice.model_dump()
+        update["slice"] = output.slice.record()
     if update.get("verify") == "fail":
         update["review_rounds"] = state.get("review_rounds", 0) + 1
     if model:
@@ -951,7 +951,7 @@ def run_delivery(
     request: str,
     check: str = "",
     config: Config | None = None,
-    slice: dict[str, object] | None = None,
+    slice: object = None,
     scratch: Path | None = None,
 ) -> DeliveryResult:
     state: DeliveryState = {
