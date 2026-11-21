@@ -46,6 +46,7 @@ class Call:
     budget_usd: BudgetUsd | None = None
     check: str | None = None
     read_roots: tuple[Path, ...] = ()
+    check_commands: tuple[str, ...] | None = None
 
 
 class CapabilityUnavailable(ValueError):

@@ -11,15 +11,17 @@ from tempfile import TemporaryDirectory
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
+from foreman.worker import CliWorker
 from foreman.workspace import LiveWorkspace
 from foreman.review_round import GraphCheck, ReviewHistory, accept
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
-from foreman.config import load_config
+from foreman.config import ModelSpec, load_config
 from foreman.adapters import Outcome
 from foreman.dry_run import SCRIPTED_USAGE
 from foreman.stage_output import ReviewOutput, parse_output
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from skill_fixture import skill_fixture
+from test_adapters import fixture_process
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
@@ -219,6 +221,46 @@ class ReviewRoundsTest(unittest.TestCase):
             self.assertEqual(workspace.review_diff(head, head, interdiff=True).patch, "")
             subprocess.run(["sh", "-c", workspace.review_scope(tip, head, previous).command],
                            cwd=workspace.root, check=True, stdout=subprocess.PIPE)
+
+    def test_claude_grants_each_rendered_review_command(self):
+        with review_trees() as trees:
+            workspace, tip, _, previous, head = trees
+            result = self.run_rounds([
+                {**APPROVE, "findings": [FINDING]},
+                {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]},
+            ], trees=trees)
+            self.assertEqual(result["merge"].status, "armed")
+            reviews = [p for p in self.prompts if p[0] == "review"]
+            self.assertEqual(len(reviews), 2)
+            for index, (node, state, instruction) in enumerate(reviews):
+                scope = state["dispatch_plan"]["scope"]["command"]
+                self.assertIn(scope, instruction)
+                commands = [line for line in scope.splitlines() if line.startswith("git diff ")]
+                self.assertEqual(len(commands), index + 1)
+                current = head if index else previous
+                self.assertIn(f"{tip}...{current} --", commands[0])
+                if index:
+                    self.assertIn(f"{previous}..{head} --", commands[1])
+                outside = ("git status", "git diff --output=escape", "exit 0", commands[0] + " --stat")
+
+                def runner(args, cwd, env):
+                    permissions = json.loads(args[args.index("--settings") + 1])["permissions"]
+                    self.assertEqual(permissions["allow"], [f"Bash({c})" for c in commands])
+                    for command in outside:
+                        self.assertNotIn(f"Bash({command})", permissions["allow"])
+                    self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
+                    for command in commands:
+                        subprocess.run(["sh", "-c", command], cwd=cwd, check=True, stdout=subprocess.PIPE)
+                    process = fixture_process(args, "success", 0)
+                    envelope = json.loads(process.stdout)
+                    envelope["permission_denials"] = [
+                        {"tool_name": "Bash", "tool_input": {"command": c}} for c in outside
+                    ]
+                    return subprocess.CompletedProcess(args, 0, json.dumps(envelope), "")
+
+                outcome = CliWorker(workspace.root, runner)(
+                    node, ModelSpec.parse("claude-opus-5-5-high"), state, instruction)
+                self.assertEqual(outcome.kind, "ran", outcome.detail)
 
     def test_missing_duplicate_unknown_resolutions_and_reused_ids_fail_closed(self):
         resolved = {"id": "f1", "status": "resolved"}

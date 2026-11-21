@@ -96,7 +96,8 @@ class ClaudeAdapter(NativeAdapter):
     def command(self, call: Call) -> list[str]:
         effort = ["--effort", self.model.effort] if self.model.effort else []
         budget = ["--max-budget-usd", usd_text(call.budget_usd)] if call.budget_usd is not None else []
-        allow = [f"Bash({call.check})"] if call.check else []
+        commands = call.check_commands if call.check_commands is not None else (call.check,) if call.check else ()
+        allow = [f"Bash({command})" for command in commands]
         if call.edit:
             allow += ["Edit", "Write"]
         settings = {"permissions": {"allow": allow, "deny": [

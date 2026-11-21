@@ -93,6 +93,16 @@ class PermissionsTest(unittest.TestCase):
         self.assertEqual(json.loads(args[args.index("--settings") + 1])["permissions"]["allow"],
                          ["Bash(git diff --no-color abc...def --)"])
 
+    def test_multiline_implementation_check_stays_one_grant(self):
+        check = "# implementation check\npython check.py\npython other.py"
+        def runner(args, cwd, env):
+            permissions = json.loads(args[args.index("--settings") + 1])["permissions"]
+            self.assertEqual(permissions["allow"], [f"Bash({check})", "Edit", "Write"])
+            return fixture_process(args, "success", 0)
+        result = CliWorker(Path.cwd(), runner)("implement", ModelSpec.parse("claude-opus-5-5-high"),
+                                              {"checks": ChecksState(check=check)}, "implement")
+        self.assertEqual(result.kind, "ran")
+
     def test_captured_permissions_and_effects(self):
         folder = Path(__file__).parent / "fixtures/claude/permissions"
         for mode in ("edit", "inherited", "compound", "readonly"):

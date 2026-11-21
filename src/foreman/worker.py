@@ -59,6 +59,9 @@ class CliWorker:
         budget = plan.budget_usd if plan else None
         edit = node == "implement"
         check = ChecksState.model_validate(state["checks"]).check if edit else plan.scope["command"] if plan and plan.scope else None
+        # Review scopes contain generated one-line commands and explanatory comments.
+        check_commands = (tuple(line for line in check.splitlines() if line.strip() and not line.lstrip().startswith("#"))
+                          if node == "review" and check is not None else None)
         adapter = ADAPTERS[model.family](model)
         checkout = self.cwd.resolve()
         temp_root = Path(tempfile.gettempdir()).resolve()
@@ -67,7 +70,7 @@ class CliWorker:
         with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
             scratch = Path(directory) / "scratch"
             scratch.mkdir()
-            call = Call(prompt, schema, edit=edit, check=check,
+            call = Call(prompt, schema, edit=edit, check=check, check_commands=check_commands,
                         read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                         temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None)
             try:
