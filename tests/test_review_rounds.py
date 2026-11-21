@@ -13,12 +13,13 @@ from foreman.config import load_config
 from foreman.adapters import Outcome
 from foreman.dry_run import SCRIPTED_USAGE
 from foreman.stage_output import ReviewOutput, parse_output
+from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from skill_fixture import skill_fixture
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
 class ReviewRoundsTest(unittest.TestCase):
-    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False, review_crash=False, review_quota=False, bad_interdiff=False):
+    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False, review_crash=False, review_quota=False, bad_interdiff=False, rerun=False):
         self.prompts = []
         self.diffs = []
         self.gate_reads = []
@@ -44,6 +45,10 @@ class ReviewRoundsTest(unittest.TestCase):
                     super().commit(message)
                     if answer or advance_head:
                         self.current = type(self.current)(str(implementations) * 40, True, self.current.branch)
+
+                def review_context(self, base, head):
+                    context = super().review_context(base, head)
+                    return ReviewContext(context.base, replace(context.head, files=context.head.files | {"main.txt"}, lines={**context.head.lines, "main.txt": 1})) if divergent else context
 
                 def files_at(self, head, prefix):
                     outer.gate_reads.append(head)
@@ -78,7 +83,7 @@ class ReviewRoundsTest(unittest.TestCase):
                         quota_returned = True
                         return Outcome("quota")
                     raw = next(replies)
-                    return Outcome("ran", parse_output(ReviewOutput, raw).model_dump(), usage=SCRIPTED_USAGE)
+                    return Outcome("ran", raw, usage=SCRIPTED_USAGE)
                 if crash and state.get("review_findings") and not crashed:
                     crashed = True
                     raise RuntimeError("process lost")
@@ -92,9 +97,9 @@ class ReviewRoundsTest(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint")) as saver:
                 graph = compile_delivery(dispatch, settings, scratch=scratch,
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
-                config = {"configurable": {"thread_id": "rounds"}}
+                config = {"configurable": {"thread_id": "example/repo#8"}}
                 state = {"repo": "Example/Repo", "issue": 8, "issue_kind": "slice", "slice": EMPTY_SLICE,
-                         "check": "exit 0", "token_cap": 20_000_000, **(initial or {})}
+                         "check": "exit 0", "token_cap": 20_000_000, "max_budget_usd": None, "pstack_pin": settings.pstack.model_dump(), **(initial or {})}
                 if crash or post_crash or review_crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
                         graph.invoke(state, config)
@@ -105,6 +110,12 @@ class ReviewRoundsTest(unittest.TestCase):
                     result = graph.invoke(None, config)
                 else:
                     result = graph.invoke(state, config)
+                if rerun:
+                    from foreman.runner import run_live_delivery
+                    from unittest.mock import patch
+                    with patch('foreman.runner.load_config', return_value=settings):
+                        result = run_live_delivery(repo='Example/Repo', issue=8, check='exit 0',
+                            checkpoint=Path(directory) / 'checkpoint', run=LiveRun(self.forge, workspace), dispatcher=dispatch)
                 if answer:
                     self.assertEqual(result["halt"], "design_rethink")
                     self.assertEqual(read_delivery_state({"stop": "needs_human", **result})["review_rounds"], 2)
@@ -145,7 +156,7 @@ class ReviewRoundsTest(unittest.TestCase):
                                  {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}], crash=True)
         self.assertEqual(result["merge"], "armed")
         self.assertEqual(self.diffs, [(BASE, HEAD, False), (BASE, HEAD, False), (HEAD, HEAD, True)])
-        raw = parse_output(ReviewOutput, {**APPROVE, "findings": [FINDING]})
+        raw = parse_output(ReviewOutput, {**APPROVE, "findings": [FINDING]}, context=SCRIPTED_REVIEW_CONTEXT)
         before = raw.model_dump()
         past = ReviewHistory()
         accepted = accept(past, raw, HEAD, None)
@@ -155,7 +166,7 @@ class ReviewRoundsTest(unittest.TestCase):
 
     def test_gate_rejects_every_previously_failing_head(self):
         past = ReviewHistory()
-        output = parse_output(ReviewOutput, APPROVE)
+        output = parse_output(ReviewOutput, APPROVE, context=SCRIPTED_REVIEW_CONTEXT)
         for head, fails, expected in [("a", True, "changes"), ("b", True, "changes"),
                                       ("b", False, "changes"), ("c", False, "approve")]:
             accepted = accept(past, output, head, GraphCheck(failing_heads=[head], detail="Missing fixture") if fails else None)

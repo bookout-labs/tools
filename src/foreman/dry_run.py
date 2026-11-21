@@ -10,11 +10,11 @@ SCRIPTED_USAGE = Usage(input_tokens=1, output_tokens=1)
 CLEAR = SpecCheckOutput(findings=[], notes=[], resolutions=[])
 
 DEFAULT_RISK: MergeRiskRecord = {
-    "alignment": "The change matches the request.",
-    "impact": "The change is limited to the requested surface.",
-    "verification": "The engine check covers this change.",
-    "rollback": "The change reverts in one commit.",
-    "error_detection": "A failure of this change is visible in the engine check.",
+    "alignment": {"applies": True, "assessment": "Items are listed once.", "evidence": [{"side": "head", "path": "items.txt", "line": 1}]},
+    "impact": {"applies": True, "assessment": "The item list changes.", "evidence": [{"side": "head", "path": "items.txt", "line": 1}]},
+    "verification": {"applies": True, "assessment": "The item check covers this edit.", "evidence": [{"side": "head", "path": "items.txt", "line": 1}]},
+    "rollback": {"applies": True, "assessment": "Revert the item edit.", "evidence": [{"side": "head", "path": "items.txt", "line": 1}]},
+    "error_detection": {"applies": True, "assessment": "The item check detects duplicates.", "evidence": [{"side": "head", "path": "items.txt", "line": 1}]},
     "level": "low",
 }
 
@@ -77,11 +77,11 @@ class ScriptHandler:
         if node == "review":
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = (
-                [{"id": "check", "kind": "untested-path", "fix": "Add a check.", "ruling_id": None, "file": "example.txt", "line": 1, "severity": "blocking", "summary": "Add a check."}]
+                [{"id": "check", "kind": "untested-path", "fix": "Add a check.", "ruling_id": None, "file": "items.txt", "line": 1, "severity": "blocking", "summary": "Add a check."}]
                 if verdict == "changes" and not state.get("review") else []
             )
             return Outcome("ran", {
-                "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if state.get("review") else [], "risk": dict(self.risk), "findings": findings, "detail": "Scripted review.", "tool_facts": [],
+                "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if state.get("review") else [], "risk": dict(self.risk), "findings": findings, "tool_facts": [],
             }, usage=SCRIPTED_USAGE)
         raise ValueError(f"no script for {node}")
 
