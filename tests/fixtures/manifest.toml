@@ -213,6 +213,20 @@ argv = [
 ]
 notes = "Exit 0. Relevant banner lines from stderr report the requested model and effort separately."
 
+[fixtures."git/tree-and-blob.txt"]
+tool = "git"
+version = "2.56.0"
+kind = "quoted_source"
+argv = []
+sources = [
+  "https://github.com/git/git/blob/v2.56.0/Documentation/git-ls-tree.adoc",
+  "https://github.com/git/git/blob/v2.56.0/Documentation/git-fast-import.adoc",
+  "https://github.com/git/git/blob/v2.56.0/Documentation/git-show.adoc",
+  "https://github.com/git/git/blob/v2.56.0/Documentation/gitrevisions.adoc",
+  "https://github.com/git/git/blob/v2.56.0/Documentation/git.adoc",
+]
+notes = "Git documentation for reading the fixture inventory and manifest from one commit."
+
 [fixtures."grok/catalog_alias.json"]
 tool = "grok"
 version = "1.0.89 (28be5bb1bf65)"

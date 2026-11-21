@@ -25,6 +25,8 @@ class Workspace(Protocol):
 
     def run(self, command: str) -> int: ...
     def inspect(self) -> WorktreeState: ...
+    def files_at(self, head: str, directory: str) -> set[str]: ...
+    def read_file_at(self, head: str, path: str) -> str: ...
 
 
 class LiveWorkspace:
@@ -41,6 +43,18 @@ class LiveWorkspace:
         status = self._git("status", "--porcelain")
         branch = self._git("branch", "--show-current").strip()
         return WorktreeState(head, not status, branch or None)
+
+    def files_at(self, head: str, directory: str) -> set[str]:
+        tree = self._git("--no-replace-objects", "ls-tree", "-rz", "--full-tree", head, "--", directory)
+        files: set[str] = set()
+        for entry in tree.split("\0"):
+            metadata, _, path = entry.partition("\t")
+            if metadata.startswith(("100644 blob ", "100755 blob ")):
+                files.add(path)
+        return files
+
+    def read_file_at(self, head: str, path: str) -> str:
+        return self._git("--no-replace-objects", "show", f"{head}:{path}")
 
     def _git(self, *args: str) -> str:
         operation = " ".join(("git", *args))

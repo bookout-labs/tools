@@ -16,7 +16,7 @@ from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, run_delivery
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK
-from foreman.github import MergeHoldUnreadable, MergeNotArmed
+from foreman.github import Issue, MergeHoldUnreadable, MergeNotArmed
 from foreman.runner import run_live_delivery
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
@@ -37,7 +37,7 @@ SLICE = {
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
 FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}]}
-APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "review_note": None}
+APPROVE = {"review": "approve", "risk": DEFAULT_RISK, "review_note": None, "tool_facts": []}
 
 
 def slice_body(item):
@@ -92,7 +92,7 @@ class FakeGitHub:
     def arm_auto_merge(self, repo, issue, branch, sha):
         self.merge_calls.append((repo, issue, branch, sha))
 
-    def load_issue(self, repo, number):
+    def load_issue(self, repo, number) -> Issue:
         if number in self.issue_labels:
             title, body, _ = self.created[number - 101]
             return {"title": title, "body": body, "labels": self.issue_labels[number]}
@@ -394,6 +394,78 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["head_sha"], "b" * 40)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"], "armed")
+
+    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False):
+        root = self.cwd / "checkout"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=root, check=True)
+        fixtures = root / "tests/fixtures"
+        fixtures.mkdir(parents=True)
+        (fixtures / "result.txt").write_text("debug output\n")
+
+        def manifest(path: str) -> str:
+            return (
+                f'[fixtures."{path}"]\n'
+                'kind = "captured_run"\n'
+                'tool = "example"\n'
+                'version = "1"\n'
+                'argv = ["example", "--debug"]\n'
+            )
+
+        manifest_path = fixtures / "manifest.toml"
+        manifest_path.write_text(manifest(entry) if entry is not None else "[fixtures]\n")
+        subprocess.run(["git", "add", "."], cwd=root, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgSign=false",
+             "commit", "-qm", "Add fixture"],
+            cwd=root, check=True,
+        )
+        built = {"implementation": "Built.", "head_sha": HEAD}
+        review = {
+            **APPROVE,
+            "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": fixture}],
+        }
+        replies = iter([{"triage": "implement"}] + [built, review] * 3)
+
+        def worker(args, cwd, env):
+            reply = next(replies)
+            if record_during_review and "review" in reply:
+                manifest_path.write_text(manifest("result.txt"))
+            return worker_reply(args, reply)
+
+        return run_live_delivery(
+            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+            dispatcher=FailoverDispatcher(CliWorker(root, worker)),
+            run=LiveRun(self.github, LiveWorkspace(root)),
+        )
+
+    def test_approve_with_unrecorded_tool_fact_becomes_changes(self):
+        result = self.review_tool_fact("result.txt", record_during_review=True)
+        self.assertEqual(result.get("review"), "changes")
+        self.assertIn("The CLI accepts --debug.", result.get("review_note") or "")
+        self.assertEqual(result.get("review_rounds"), 1)
+        self.assertEqual(self.github.merge_calls, [])
+
+    def test_approve_with_recorded_tool_fact_stays_approve(self):
+        result = self.review_tool_fact("result.txt", entry="result.txt")
+        self.assertEqual(result.get("review"), "approve")
+        self.assertIsNone(result.get("review_note"))
+        self.assertEqual(result.get("head_sha"), HEAD)
+        self.assertNotEqual(result.get("verified_head"), HEAD)
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, result.get("verified_head"))])
+
+    def test_dangling_tool_fact_citation_blocks_approval(self):
+        result = self.review_tool_fact("absent.txt", entry="absent.txt")
+        self.assertEqual(result.get("review"), "changes")
+        self.assertIn("absent.txt", result.get("review_note") or "")
+        self.assertEqual(result.get("stop"), "review_cap")
+        self.assertEqual(self.github.merge_calls, [])
+
+    def test_tool_fact_without_citation_blocks_approval(self):
+        result = self.review_tool_fact(None, entry="result.txt")
+        self.assertEqual(result.get("review"), "changes")
+        self.assertIn("The CLI accepts --debug.", result.get("review_note") or "")
+        self.assertEqual(self.github.merge_calls, [])
 
     def test_cli_uses_one_workspace_root_for_the_worker_check_and_checkpoint(self):
         root = self.cwd / "checkout"

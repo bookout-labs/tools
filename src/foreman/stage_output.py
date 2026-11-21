@@ -115,11 +115,21 @@ class MergeRisk(Contract):
     level: Literal["low", "medium", "high"]
 
 
+class ToolFact(Contract):
+    claim: TrimmedText = Field(description="State the outside-tool behavior the diff relies on.")
+    fixture: TrimmedText | None = Field(
+        description="Give the exact entry ID in tests/fixtures/manifest.toml. Use null when the claim has no recorded evidence.",
+    )
+
+
 class ReviewOutput(Contract):
     review: Literal["approve", "changes"]
     risk: MergeRisk
     review_note: str | None = Field(
         description="Put the reviewer's requested changes here and keep the verdict in review. Use null when there is no note.",
+    )
+    tool_facts: list[ToolFact] = Field(
+        description="List every outside-tool fact the diff relies on, including unrecorded facts. Use an empty list if there are none.",
     )
 
 

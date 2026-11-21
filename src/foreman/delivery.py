@@ -3,20 +3,23 @@
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
+from tomllib import TOMLDecodeError
 from typing import Annotated, Literal, TypedDict
 import operator
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from pydantic import ValidationError
 
 from foreman.adapters import Outcome
 from foreman.config import Config, ConfigError, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
+from foreman.fixture_manifest import MANIFEST_PATH, recorded_fixtures
 from foreman.github import MERGE_HOLD_VARIABLE, Forge, MergeHoldUnreadable, MergeNotArmed, merge_command
 from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
 from foreman.stage_output import (
-    Contract, HumanQuestionOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
+    Contract, HumanQuestionOutput, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, TriageOutput, VerifyOutput, parse_output,
 )
 from foreman.workspace import Workspace, WorktreeInspectionFailed
 
@@ -68,6 +71,7 @@ class DeliveryState(TypedDict, total=False):
     human_answers: list[str]
     review: str
     review_note: str | None
+    tool_facts: list[dict[str, str | None]]
     risk: dict[str, str]
     verify: str
     review_rounds: int
@@ -117,6 +121,23 @@ def clean_slices(
 
 def load_slice(raw: object) -> dict[str, object]:
     return clean_slices([parse_output(Slice, raw)], "slice", allow_external_dependencies=True)[0]
+
+
+def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | None) -> ReviewOutput:
+    recorded: set[str] = set()
+    notes = [output.review_note] if output.review_note else []
+    if isinstance(run, LiveRun) and head and any(fact.fixture is not None for fact in output.tool_facts):
+        try:
+            recorded = recorded_fixtures(run.workspace, head)
+        except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
+            notes.append(f"Could not check {MANIFEST_PATH} at {head}. {exc}")
+    unrecorded = [fact for fact in output.tool_facts if fact.fixture not in recorded]
+    if not unrecorded:
+        return output
+    for fact in unrecorded:
+        citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
+        notes.append(f"Unrecorded outside-tool fact{citation}: {fact.claim}")
+    return output.model_copy(update={"review": "changes", "review_note": "\n".join(notes)})
 
 
 def stage_update(name: str, output: Contract, state: DeliveryState, model: str | None = None) -> dict[str, object]:
@@ -200,7 +221,10 @@ def compile_delivery(
                     raise QuotaExhausted(model)
                 return {"path": [name], "halt": "no_reviewer", "halt_detail": f"review quota exhausted: {model}"}
             try:
-                return stage_update(name, parse_output(STAGE_OUTPUTS[name], outcome.output), state, model)
+                output = parse_output(STAGE_OUTPUTS[name], outcome.output)
+                if isinstance(output, ReviewOutput):
+                    output = _check_tool_facts(output, run, state.get("verified_head"))
+                return stage_update(name, output, state, model)
             except InvalidOutput as exc:
                 return {"path": [name], "halt": "invalid_output", "halt_detail": str(exc)}
 
