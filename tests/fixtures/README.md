@@ -73,7 +73,7 @@ Both statuses follow POSIX.1-2017's
 
 CI uses dash on Ubuntu 26.04. The runner image's
 [published software list](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2604-Readme.md)
-records dash `0.5.12-12ubuntu3` (image `20261111.196.1`). The CI
+records dash `0.5.12-12ubuntu3` (image `20261116.202.1`). The CI
 `Record check shell` step runs `readlink -f /bin/sh` and `dpkg-query -W dash`
 to record the actual interpreter and package version on every run.
 `test_check_that_cannot_start_stops_without_spending_a_round` executes the same

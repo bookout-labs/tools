@@ -95,6 +95,8 @@ Foreman records the ordered plan and stops the parent as `sliced`. Each child is
 
 A coordinator session reads `src/foreman/roles/coordinator.md` from the tools revision named in the engine. It files the parent issue and explains the run. It does not slice, build, or arm a merge.
 
+`foreman run` exits 0 for successful stops (`done verified`, `done sliced`, or `done answered`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a resumable halt (`merge_held`, `merge_not_armed`, or `env_unavailable`), and 1 for every other halt.
+
 ## What enters the graph
 
 `foreman accept` reads one event and either ignores it or prints the request. It does not call a model.
