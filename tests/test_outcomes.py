@@ -1,7 +1,6 @@
-from foreman.state import RunState
 import tests
 
-from foreman.state import SCHEMA_VERSION
+from foreman.state import RunState, SCHEMA_VERSION
 
 import unittest
 from typing import get_args

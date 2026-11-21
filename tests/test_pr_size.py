@@ -1,4 +1,3 @@
-from foreman.state import RunState
 import tests
 
 from dataclasses import replace
@@ -14,7 +13,7 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.state import checkpoint_serializer, SCHEMA_VERSION
+from foreman.state import RunState, checkpoint_serializer, SCHEMA_VERSION
 from foreman.cli import main
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery
 from foreman.config import load_config

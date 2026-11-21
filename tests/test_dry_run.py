@@ -1,4 +1,3 @@
-from foreman.state import RunState
 import ast
 from contextlib import redirect_stdout
 from io import StringIO
@@ -7,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from langgraph.checkpoint.memory import InMemorySaver
+from foreman.state import RunState
 from foreman.cli import _print_run_rows
 from foreman.delivery import compile_delivery
 from foreman.dry_run import ScriptHandler

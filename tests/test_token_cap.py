@@ -1,4 +1,3 @@
-from foreman.state import RunState
 from foreman.dry_run import DryRun
 import contextlib
 import io
@@ -14,7 +13,7 @@ from foreman.cli import _print_run, main, run_exit_code
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import ScriptHandler
 from foreman.runner import run_live_delivery
-from foreman.state import checkpoint_serializer, SCHEMA_VERSION, CheckpointVersionError
+from foreman.state import RunState, checkpoint_serializer, SCHEMA_VERSION, CheckpointVersionError
 from foreman.skill_rules import SkillMissing
 from tests.skill_fixture import skill_fixture
 from test_runner import FakeGitHub, FakeWorkspace
@@ -40,7 +39,7 @@ class TokenCapTests(unittest.TestCase):
                     saver.serde = checkpoint_serializer()
                     graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                     graph.update_state(invocation, {"run": RunState(repo="a/b", request="x", token_cap=100), "check": "", "path": ["triage"],
-                        "issue_kind": "parent",  "attempts": [{"stage": "spec",
+                        "issue_kind": "parent", "attempts": [{"stage": "spec",
                         "model": "prior", "commit": "a", "methods": [], "outcome": "ran",
                         "usage": {"input": prior, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}, as_node="needs_human")
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
@@ -142,9 +141,9 @@ class TokenCapTests(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=live, checkpointer=saver)
-                graph.update_state(invocation, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "check": "exit 0",  "path": ["triage"],
+                graph.update_state(invocation, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "check": "exit 0", "path": ["triage"],
                     "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
-                graph.update_state(invocation, {"run": RunState(token_cap=100, max_budget_usd=None),  "halt": "env_unavailable", "stop": "env_unavailable",
+                graph.update_state(invocation, {"run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                                 "path": ["implement", "done"]}, as_node="done")
             with self.assertRaisesRegex(ValueError, "unknown usage history"):
                 run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=live,

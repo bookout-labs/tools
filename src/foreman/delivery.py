@@ -136,16 +136,16 @@ def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
     return {"halt": cast(Halt, reason.value), "halt_detail": detail, "watch": None, "path": [path] if path else []}
 
 
-def dollar_detail(state: DeliveryState, attempts: list[AttemptRecord]) -> str:
+def dollar_detail(run_state: RunState, attempts: list[AttemptRecord]) -> str:
     spend = claude_spend(attempts)
     detail = f"Run Claude spend: ${spend}." if spend is not None else "Run Claude spend: unknown."
-    if (limit := state.get("run", RunState()).max_budget_usd) is not None:
+    if (limit := run_state.max_budget_usd) is not None:
         detail += f" Dollar allowance: ${limit}."
     return detail
 
 
-def dollar_admission_for(state: DeliveryState, attempts: list[AttemptRecord]) -> Remaining | Exhausted | CostUnknown | None:
-    limit = state.get("run", RunState()).max_budget_usd
+def dollar_admission_for(run_state: RunState, attempts: list[AttemptRecord]) -> Remaining | Exhausted | CostUnknown | None:
+    limit = run_state.max_budget_usd
     return dollar_admission(BudgetUsd(Decimal(limit)), attempts) if limit is not None else None
 
 
@@ -164,9 +164,9 @@ def admission_stop(
     match admission:
         case CostUnknown():
             detail = "A Claude attempt ran without a dollar cost. The allowance cannot be enforced."
-            return halted(Halt.usage_unknown, f"{detail} {dollar_detail(state, attempts)}", stage)
+            return halted(Halt.usage_unknown, f"{detail} {dollar_detail(run_state, attempts)}", stage)
         case Exhausted():
-            return halted(Halt.budget_exceeded, dollar_detail(state, attempts), stage)
+            return halted(Halt.budget_exceeded, dollar_detail(run_state, attempts), stage)
         case Remaining() | None:
             return None
 
@@ -368,7 +368,7 @@ def compile_delivery(
 
     def bind(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-            admission = dollar_admission_for(state, state.get("attempts", []))
+            admission = dollar_admission_for(state["run"], state.get("attempts", []))
             if stop := admission_stop(state, state.get("attempts", []), name, admission):
                 return stop
             current_run = runtime.context or run
@@ -494,10 +494,10 @@ def compile_delivery(
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
             attempt_history = state.get("attempts", []) + attempts
             if outcome.kind == "budget_exhausted":
-                return {**stopped, **halted(Halt.budget_exceeded, f"{name} {model} exhausted its dollar budget. {dollar_detail(state, attempt_history)} {outcome.detail}".strip(), name)}
+                return {**stopped, **halted(Halt.budget_exceeded, f"{name} {model} exhausted its dollar budget. {dollar_detail(state['run'], attempt_history)} {outcome.detail}".strip(), name)}
             if outcome.kind == "ran" and outcome.usage is None:
                 return {**stopped, **halted(Halt.usage_unknown, unknown_usage(name, model), name)}
-            admission = dollar_admission_for(state, attempt_history)
+            admission = dollar_admission_for(state["run"], attempt_history)
             if stop := admission_stop(state, attempt_history, name, admission):
                 return {**stopped, **stop}
             index = pending["index"] + 1
@@ -788,9 +788,7 @@ def compile_delivery(
                 return moved_before_review(worktree.head, head)
             if worktree.branch is None:
                 raise WorktreeInspectionFailed("HEAD is detached. Pull request sizing requires a checked-out branch.")
-            run_state = state["run"]
-            repo = run_state.repo
-            assert repo is not None
+            repo = state["run"].repo
             base = run.forge.pull_request_base(repo, worktree.branch)
             size = run.workspace.pull_request_size(head, base)
             checked = run.workspace.inspect()

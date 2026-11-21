@@ -45,7 +45,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
         return
     rows: list[tuple[str, str | None]] = []
     run_state = result["run"]
-    current: DeliveryResult = {"run": RunState(repo=run_state.repo), "check": result["check"], "path": [], "stop": result["stop"]}
+    current: DeliveryResult = {"run": RunState(repo=run_state.repo, max_budget_usd=run_state.max_budget_usd), "check": result["check"], "path": [], "stop": result["stop"]}
     for update in presentation.updates:
         current.update(update)
         rows.extend((node, update.get("models_used", {}).get(node)) for node in update.get("path", []))
@@ -55,7 +55,6 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
         return
     current["path"] = [node for node, _ in rows]
     current["stop"] = result["stop"]
-    current["run"] = RunState(repo=run_state.repo, max_budget_usd=run_state.max_budget_usd)
     current["attempts"] = result.get("attempts", [])
     if result["stop"] in {"needs_human", Halt.quota_exhausted}:
         current["halt_detail"] = result.get("halt_detail", "")

@@ -1,5 +1,5 @@
-from foreman.state import RunState
 import tests
+from foreman.state import RunState
 from foreman.dry_run import DryRun
 
 from pathlib import Path

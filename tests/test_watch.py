@@ -1,4 +1,3 @@
-from foreman.state import RunState
 import tests
 
 import ast
@@ -8,6 +7,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
+from foreman.state import RunState
 from foreman.outcomes import HALTS
 from foreman.github import Forge, ForgeError, LiveForge
 from foreman.redaction import redact

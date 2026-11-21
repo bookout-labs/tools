@@ -1,6 +1,5 @@
 """Dollar limits at the delivery and subprocess boundaries."""
 
-from foreman.state import RunState
 import tests
 
 from dataclasses import replace
@@ -11,7 +10,7 @@ from subprocess import CompletedProcess
 import unittest
 
 from langgraph.checkpoint.memory import InMemorySaver
-from foreman.state import checkpoint_serializer
+from foreman.state import RunState, checkpoint_serializer
 from foreman.runner import snapshot_result
 from foreman.adapters import Outcome, Usage
 from foreman.budget import claude_spend
@@ -44,7 +43,7 @@ def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000):
     dry = DryRun()
     graph = compile_delivery(handler, config or configured(), run=LiveRun(forge=dry, workspace=dry), checkpointer=saver).with_config({"configurable": {"thread_id": "budget"}})
     graph.invoke({
-        "run": RunState(issue=dry.issue_placeholder, repo="a/b", request="x", token_cap=token_cap, max_budget_usd=limit),   "check": "exit 0", "path": [], "issue_kind": "slice", "slice": EMPTY_SLICE,
+        "run": RunState(issue=dry.issue_placeholder, repo="a/b", request="x", token_cap=token_cap, max_budget_usd=limit), "check": "exit 0", "path": [], "issue_kind": "slice", "slice": EMPTY_SLICE,
 
         "attempts": [attempt(CLAUDE.name, prior)],
     })

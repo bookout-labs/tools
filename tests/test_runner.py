@@ -1,4 +1,3 @@
-from foreman.state import RunState
 import tests
 
 import contextlib
@@ -30,7 +29,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
-from foreman.state import checkpoint_serializer, CheckpointVersionError
+from foreman.state import RunState, checkpoint_serializer, CheckpointVersionError
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command

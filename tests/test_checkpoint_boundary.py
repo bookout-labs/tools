@@ -1,4 +1,3 @@
-from foreman.state import RunState
 import json
 import os
 from pathlib import Path
@@ -17,7 +16,7 @@ from foreman.outcomes import Halt
 from foreman.readiness import MergeState
 from foreman.workspace import WorkState
 from foreman.runner import run_live_delivery
-from foreman.state import SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer
+from foreman.state import RunState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer
 
 
 class CheckpointBoundaryTests(unittest.TestCase):
@@ -43,6 +42,8 @@ class CheckpointBoundaryTests(unittest.TestCase):
                             saved.checkpoint["channel_values"].update(delivery_branch="8-change", delivery_base="main",
                                 attempt_head="a" * 40, implementation_candidate={"disposition": "edits", "fingerprint": "edits"},
                                 partial_edits="partial", head_sha="b" * 40, repair_head="c" * 40)
+                        if type(version) is int and version in (1, 2, 3):
+                            saved.checkpoint["channel_values"].update(issue=8, request="Build it", workspace="/checkout", max_budget_usd="1.5")
                         saver.put({"configurable": {"thread_id": "a/b#8", "checkpoint_ns": ""}}, saved.checkpoint, saved.metadata, {})
                     before = checkpoint.read_bytes()
                     with patch("foreman.runner.compile_delivery") as compile_graph, \

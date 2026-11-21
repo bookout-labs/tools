@@ -1,5 +1,4 @@
-from foreman.state import RunState
-from foreman.state import checkpoint_serializer, SCHEMA_VERSION
+from foreman.state import RunState, checkpoint_serializer, SCHEMA_VERSION
 from foreman.dry_run import DryRun
 import contextlib
 from decimal import Decimal
@@ -245,12 +244,14 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with SqliteSaver.from_conn_string(str(historical)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
-                graph.update_state(THREAD, {"schema_version": 3, "run": RunState(repo="a/b", request="x", token_cap=100), "check": "exit 0",  "path": ["triage"],
+                graph.update_state(THREAD, {"schema_version": 3, "run": RunState(repo="a/b", request="x", token_cap=100), "check": "exit 0", "path": ["triage"],
                     "triage": "implement", "preflight": "exit 1", "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
-                graph.update_state(THREAD, {"run": RunState(max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
+                graph.update_state(THREAD, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                             "path": ["implement", "done"]}, as_node="done")
-            with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
-                run_live_delivery(**kwargs, checkpoint=historical)
+            with patch("foreman.runner.compile_delivery", wraps=compile_delivery) as compile_graph:
+                with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
+                    run_live_delivery(**kwargs, checkpoint=historical)
+                compile_graph.assert_called_once()
             self.assertEqual(len(calls), dispatched)
 
             finished = root / "finished.sqlite"
