@@ -182,16 +182,11 @@ class FakeGitHub:
         return {"title": "Issue title", "body": self.body, "labels": self.labels}
 
     def open_issues(self, repo) -> list[OpenIssue]:
-        issues = [OpenIssue(number=number, body=self.load_issue(repo, number)["body"])
-                  for number in self.issue_labels if number not in self.closed and number not in self.merged]
-        if not issues:
-            raise ForgeError("No open issues returned.")
-        return issues
+        return [OpenIssue(number=number, body=self.load_issue(repo, number)["body"])
+                for number in self.issue_labels if number not in self.closed and number not in self.merged]
 
     def issue_comments(self, repo, number) -> list[str]:
-        if not self.comments.get((repo, number)):
-            raise ForgeError("No issue comments returned.")
-        return list(self.comments[repo, number])
+        return list(self.comments.get((repo, number), []))
 
     def comment_issue(self, repo, number, body):
         self.comments.setdefault((repo, number), []).append(body)

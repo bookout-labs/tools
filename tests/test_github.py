@@ -183,7 +183,18 @@ class LiveForgeTest(unittest.TestCase):
         ])
 
     @patch("foreman.github.subprocess.run")
-    def test_issue_lists_reject_failed_malformed_or_empty_responses(self, run):
+    def test_issue_lists_return_empty_results_after_successful_reads(self, run):
+        forge = LiveForge()
+        for payload in ('[]', '[[]]', '[[], []]'):
+            with self.subTest(payload=payload):
+                run.return_value = gh_result(payload)
+                self.assertEqual(forge.open_issues(REPO), [])
+                self.assertEqual(forge.issue_comments(REPO, 8), [])
+        run.return_value = gh_result('[[{"number":1,"body":"PR","pull_request":{}}]]')
+        self.assertEqual(forge.open_issues(REPO), [])
+
+    @patch("foreman.github.subprocess.run")
+    def test_issue_lists_reject_failed_or_malformed_responses(self, run):
         forge = LiveForge()
         for read in (lambda: forge.open_issues(REPO), lambda: forge.issue_comments(REPO, 8)):
             for result in (
@@ -192,8 +203,6 @@ class LiveForgeTest(unittest.TestCase):
                 gh_result('[[{"number":1,"body":"valid"}],[{"number":2,"body":12}]]'),
                 gh_result('[[{"number":1,"body":"valid"}],[{}]]'),
                 gh_result('[[{"number":1,"body":"valid"}],'),
-                gh_result('[]'),
-                gh_result('[[], []]'),
             ):
                 with self.subTest(read=read, result=result):
                     run.return_value = result
@@ -204,9 +213,6 @@ class LiveForgeTest(unittest.TestCase):
                 run.return_value = gh_result(json.dumps([[{"number": number, "body": "invalid"}]]))
                 with self.assertRaises(ForgeError):
                     forge.open_issues(REPO)
-        run.return_value = gh_result('[[{"number":1,"body":"PR","pull_request":{}}]]')
-        with self.assertRaises(ForgeError):
-            forge.open_issues(REPO)
 
     @patch("foreman.github.subprocess.run")
     def test_comment_issue_posts_literal_body_and_redacts_secrets(self, run):

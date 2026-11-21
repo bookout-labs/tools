@@ -1,0 +1,10 @@
+{
+  "paths./repos/{owner}/{repo}/issues.get.responses.200.content.application/json.schema": {
+    "type": "array",
+    "items": {"$ref": "#/components/schemas/issue"}
+  },
+  "components.schemas.issue.properties.body": {
+    "type": "string",
+    "nullable": true
+  }
+}

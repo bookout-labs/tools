@@ -390,24 +390,43 @@ notes = "Published evidence for the PR fields, stdin request body, review endpoi
 
 [fixtures."github/open-issues.json"]
 tool = "gh and GitHub REST API"
-version = "GitHub REST API 2022-11-28"
+version = "gh 2.102.0; GitHub REST API 2022-11-28"
 kind = "quoted_source"
 sources = ["https://docs.github.com/en/rest/issues/issues?apiVersion=2022-11-28#list-repository-issues", "https://cli.github.com/manual/gh_api"]
-notes = 'Reduced response example with synthetic pagination and a nullable body. GitHub: "You can identify pull requests by the pull_request key." gh --paginate --slurp wraps all pages in an outer array.'
+claim_ids = ["tool-fact-b7f7b6bdb1bb5a702825f471629f67c00400809c27e545b1b6428a12ff37275e", "tool-fact-be0cf7118c96d3bfeca96a572c98bb5d668e9723a10f8a04d7024359561a0c22"]
+notes = 'Reduced response example with synthetic pagination and a nullable body. GitHub: "You can identify pull requests by the pull_request key." gh: "Pass --slurp to wrap all pages of JSON arrays or objects into an outer JSON array." --paginate requests pages until none remain.'
+
+[fixtures."github/issue-body-schema.json"]
+tool = "GitHub REST API OpenAPI description"
+version = "1.1.4; blob 688553389c92a31e6909759f7aaad7ae3c806523"
+kind = "quoted_source"
+sources = ["https://api.github.com/repos/github/rest-api-description/git/blobs/688553389c92a31e6909759f7aaad7ae3c806523", "https://docs.github.com/en/rest/issues/issues?apiVersion=2022-11-28#list-repository-issues"]
+claim_ids = ["tool-fact-b7f7b6bdb1bb5a702825f471629f67c00400809c27e545b1b6428a12ff37275e"]
+notes = "Selected OpenAPI properties: the list endpoint returns an array of issue schemas; issue.body permits null. Descriptions and examples omitted."
 
 [fixtures."github/issue-comments.json"]
 tool = "gh and GitHub REST API"
-version = "GitHub REST API 2022-11-28"
+version = "gh 2.102.0; GitHub REST API 2022-11-28"
 kind = "quoted_source"
 sources = ["https://docs.github.com/en/rest/issues/comments?apiVersion=2022-11-28#list-issue-comments", "https://cli.github.com/manual/gh_api"]
-notes = 'Reduced response example quoting "Me too", with synthetic second-page marker and nullable body; gh --paginate --slurp preserves every page.'
+claim_ids = ["tool-fact-4aaf6767289f41162d387a1afa197aafc007d6cd010b3412e53f20b56d0a54c3"]
+notes = 'Reduced GET /repos/{owner}/{repo}/issues/{issue_number}/comments array response quoting "Me too", with synthetic second-page marker and nullable body. per_page allows up to 100. gh: "Pass --slurp to wrap all pages of JSON arrays or objects into an outer JSON array."'
 
 [fixtures."github/created-comment.json"]
 tool = "GitHub REST API"
 version = "2022-11-28"
 kind = "quoted_source"
 sources = ["https://docs.github.com/en/rest/issues/comments?apiVersion=2022-11-28#create-an-issue-comment"]
+claim_ids = ["tool-fact-9395d5cea364408db872a4bc31b0911923850bb76962259b2c20d427586224fc"]
 notes = 'Reduced 201 response example. POST /repos/{owner}/{repo}/issues/{issue_number}/comments requires body: "The contents of the comment."'
+
+[fixtures."github/gh-api-fields-and-errors.txt"]
+tool = "gh"
+version = "2.102.0"
+kind = "quoted_source"
+sources = ["https://cli.github.com/manual/gh_api", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/fields.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/http.go", "https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go", "https://github.com/cli/cli/blob/v2.102.0/internal/ghcmd/cmd.go", "https://github.com/cli/cli/blob/v2.102.0/cmd/gh/main.go"]
+claim_ids = ["tool-fact-1f6c68c0b5ab3ea842ac165c30a9b77d54827b9257640cf085ea4ce551f9349c", "tool-fact-5744e144781330a0494b5a688e342db8c6f5e3cfc41da8d5072c7dceebda21d7"]
+notes = "Versioned source excerpts show literal raw fields, JSON POST bodies, and HTTP failures written to stderr with a nonzero process exit."
 
 # ## Pull request size
 #

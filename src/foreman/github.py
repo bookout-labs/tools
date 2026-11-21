@@ -133,8 +133,9 @@ class IssueComment(BaseModel, strict=True):
     body: str | None
 
 
-class RepositoryIssue(IssueComment):
+class RepositoryIssue(BaseModel, strict=True):
     number: PositiveInt
+    body: str | None
     pull_request: JsonValue = None
 
 
@@ -276,22 +277,16 @@ class LiveForge:
         pages = self._read(OpenIssuePages, [
             "gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate", "--slurp",
         ])
-        issues = [
+        return [
             OpenIssue(number=issue.number, body=issue.body or "")
             for page in pages.root for issue in page if "pull_request" not in issue.model_fields_set
         ]
-        if not issues:
-            raise ForgeError("No open issues returned.")
-        return issues
 
     def issue_comments(self, repo: str, number: int) -> list[str]:
         pages = self._read(IssueCommentPages, [
             "gh", "api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate", "--slurp",
         ])
-        comments = [comment.body or "" for page in pages.root for comment in page]
-        if not comments:
-            raise ForgeError("No issue comments returned.")
-        return comments
+        return [comment.body or "" for page in pages.root for comment in page]
 
     def comment_issue(self, repo: str, number: int, body: str) -> None:
         repo, body = (redact(value) for value in (repo, body))
