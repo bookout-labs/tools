@@ -6,16 +6,19 @@ from typing import Literal
 from pydantic import BaseModel as PydanticModel, Field, RootModel, AliasChoices
 
 
-class BaseModel(PydanticModel, strict=True):
+Outcome = Literal["ready", "conflict", "pending", "red", "policy", "head_changed", "closed", "retargeted"]
+
+
+class StrictModel(PydanticModel, strict=True):
     pass
 
 
-class Ref(BaseModel):
+class Ref(StrictModel):
     sha: str
     ref: str
 
 
-class Readiness(BaseModel):
+class PullSnapshot(StrictModel):
     number: int
     state: str
     draft: bool
@@ -26,66 +29,76 @@ class Readiness(BaseModel):
     mergeable_state: str
 
 
-class Requirement(BaseModel):
+class Requirement(StrictModel):
     context: str
     integration_id: int | None = Field(default=None, validation_alias=AliasChoices("integration_id", "app_id"))
 
 
-class Parameters(BaseModel):
+class Parameters(StrictModel):
     required_status_checks: list[Requirement] = Field(default_factory=list[Requirement])
-    merge_method: str | None = None
 
 
-class Rule(BaseModel):
+class Rule(StrictModel):
     type: str
     parameters: Parameters = Field(default_factory=Parameters)
 
 
-class App(BaseModel):
+class App(StrictModel):
     id: int
 
 
-class Check(BaseModel):
+class CheckSuite(StrictModel):
+    id: int
+
+
+class Check(StrictModel):
     id: int
     name: str
     head_sha: str
     app: App
+    check_suite: CheckSuite
     status: str
     conclusion: str | None
 
 
-class CheckPage(BaseModel):
+class CheckPage(StrictModel):
     check_runs: list[Check]
 
 
-class Status(BaseModel):
+class Status(StrictModel):
     id: int
     context: str
     state: str
 
 
-class Commit(BaseModel):
+class Commit(StrictModel):
     parents: list[CommitParent]
 
 
-class CommitParent(BaseModel):
+class CommitParent(StrictModel):
     sha: str
 
 
-class CheckEvidence(BaseModel):
+class CheckEvidence(StrictModel):
     context: str
     app: int | None
     run: int | None
-    tested_commit: str
+    source_commit: str
+    suite: int | None = None
+    tested_commit: str | None = None
     state: str
 
 
-class Observation(BaseModel):
+class Observation(StrictModel):
     repo: str
-    pr: Readiness
+    pr: PullSnapshot
     checks: list[CheckEvidence]
-    outcome: Literal['ready', 'conflict', 'pending', 'red', 'policy']
+    outcome: Outcome
     recovery: str
+
+    def detail(self) -> str:
+        checks = ", ".join(f"{c.context}={c.state}" for c in self.checks) or "no check evidence"
+        return f"PR #{self.pr.number} head={self.pr.head.sha} base={self.pr.base.ref}@{self.pr.base.sha}: {self.outcome}; {checks}. {self.recovery}"
 
 
 class Rules(RootModel[list[Rule]]):
@@ -100,14 +113,19 @@ class CheckPages(RootModel[list[CheckPage]]):
     pass
 
 
-class LegacyChecks(BaseModel):
+class LegacyChecks(StrictModel):
     checks: list[Requirement]
     contexts: list[str]
 
 
-class Protection(BaseModel):
+class Protection(StrictModel):
     required_status_checks: LegacyChecks
 
 
-class BranchPolicy(BaseModel):
+class BranchTip(StrictModel):
+    sha: str
+
+
+class BranchPolicy(StrictModel):
+    commit: BranchTip
     protection: Protection

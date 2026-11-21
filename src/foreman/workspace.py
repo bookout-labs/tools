@@ -112,6 +112,7 @@ class Workspace(Protocol):
     def run(self, command: str, *, log: CheckLog | None = None) -> int: ...
     def inspect(self) -> WorktreeState: ...
     def create_branch(self, branch: str, base: str) -> None: ...
+    def refresh(self, branch: str, head: str) -> None: ...
     def commit(self, message: str) -> None: ...
     def committed(self, parent: str, message: str) -> bool: ...
     def reconcile(self, parent: str, branch: str) -> ImplementationCandidate | None: ...
@@ -179,6 +180,16 @@ class LiveWorkspace:
             self._git("switch", branch)
         else:
             self._git(*branch_command(branch, base)[1:])
+
+    def refresh(self, branch: str, head: str) -> None:
+        current = self.inspect()
+        if not current.clean or current.branch != branch:
+            raise WorkspaceError("Restore a clean PR branch before adopting its repaired head.")
+        self._git("fetch", "--no-tags", "origin", f"refs/heads/{branch}")
+        fetched = os.fsdecode(self._git("rev-parse", "FETCH_HEAD")).strip()
+        if fetched != head:
+            raise WorkspaceError("PR head changed during fetch. Resume with a fresh observation.")
+        self._git("merge", "--ff-only", fetched)
 
     def fingerprint(self) -> str:
         digest = hashlib.sha256(self._git("diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv"))

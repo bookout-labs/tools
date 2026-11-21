@@ -19,7 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
-from pydantic import TypeAdapter, ValidationError
+from pydantic import JsonValue, TypeAdapter, ValidationError
 from typing_extensions import TypedDict
 
 from foreman.adapters import Outcome
@@ -35,6 +35,7 @@ from foreman.redaction import redact
 from foreman.stage_output import (
     CandidateSlice, SpecAuthor, SpecCandidate, SpecCandidateRecord, PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, PullRequestSplit, BrowserProofRecord, FormalProofRecord, SliceRecord, FindingRecord, MergeRiskRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, WorkKind, parse_output,
 )
+from foreman.readiness import Outcome as ReadinessOutcome
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import ImplementationCandidate, ImplementationRejected, WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -53,6 +54,10 @@ HaltReason = Literal[
     "budget_exceeded", "usage_unknown", "design_rethink", "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
+READINESS_HALTS: dict[ReadinessOutcome, MergeHalt] = {
+    "ready": "merge_not_armed", "conflict": "pr_conflict", "pending": "ci_pending", "red": "ci_red",
+    "policy": "readiness_unavailable", "head_changed": "merge_not_armed", "closed": "merge_not_armed", "retargeted": "merge_not_armed",
+}
 
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 
@@ -165,7 +170,8 @@ class DeliveryFields(TypedDict, total=False):
     commands: Annotated[list[list[str]], operator.add]
     head_sha: str | None
     verified_head: str
-    readiness_observation: str
+    repair_head: str | None
+    readiness_observation: dict[str, JsonValue]
     merge_observed_head: str
     merge: Literal["armed", "skipped", "not_armed"]
     merge_command: list[str]
@@ -659,8 +665,10 @@ def compile_delivery(
                 return halted("dirty_worktree", "Unowned edits exist before this attempt; save them before rerunning.", "prepare")
             base = state.get("delivery_base") or run.forge.default_branch(state["repo"])
             run.workspace.create_branch(branch, base)
+            if repair_head := state.get("repair_head"):
+                run.workspace.refresh(branch, repair_head)
             ready = run.workspace.inspect()
-            return {"delivery_branch": branch, "delivery_base": base, "attempt_head": ready.head, "partial_edits": "", "implementation_candidate": None}
+            return {"delivery_branch": branch, "delivery_base": base, "attempt_head": ready.head, "repair_head": None, "partial_edits": "", "implementation_candidate": None}
         except (WorkspaceError, ForgeError) as exc:
             return halted("git_failed", str(exc), "prepare")
 
@@ -993,11 +1001,8 @@ def compile_delivery(
                 except ForgeError as exc:
                     return merge_halted("readiness_unavailable", f"Platform/policy observation unavailable: {exc}")
                 if observation.outcome != "ready":
-                    reasons: dict[str, MergeHalt] = {"conflict": "pr_conflict", "pending": "ci_pending",
-                                                    "red": "ci_red", "policy": "readiness_unavailable"}
-                    reason = reasons[observation.outcome]
-                    return {**merge_halted(reason, observation.model_dump_json()),
-                            "readiness_observation": observation.model_dump_json()}
+                    return {**merge_halted(READINESS_HALTS[observation.outcome], observation.detail()),
+                            "readiness_observation": observation.model_dump(mode="json")}
                 try:
                     forge.arm_auto_merge(repo, issue, worktree.branch, head)
                 except MergeNotArmed as exc:
@@ -1005,10 +1010,13 @@ def compile_delivery(
                 try:
                     confirmed = forge.readiness(repo, issue, worktree.branch, head)
                 except ForgeError as exc:
-                    return merge_halted("readiness_unavailable", str(exc))
-                if confirmed.outcome != "ready" or confirmed.pr != observation.pr:
-                    return merge_halted("ci_pending", confirmed.model_dump_json())
-                return {"merge": "armed", "path": ["merge"], "readiness_observation": confirmed.model_dump_json()}
+                    return {**merge_halted("readiness_unavailable", str(exc)), "merge": "armed"}
+                update: DeliveryUpdate = {"merge": "armed", "path": ["merge"], "readiness_observation": confirmed.model_dump(mode="json")}
+                if confirmed.outcome != "ready":
+                    update.update(halted(READINESS_HALTS[confirmed.outcome], confirmed.detail(), "merge"))
+                elif (confirmed.pr.number, confirmed.pr.head.sha, confirmed.pr.base.ref, confirmed.pr.state) != (observation.pr.number, observation.pr.head.sha, observation.pr.base.ref, observation.pr.state):
+                    update.update(halted("merge_not_armed", confirmed.detail(), "merge"))
+                return update
 
     def finish(state: DeliveryState) -> DeliveryUpdate:
         reason = stop_reason(state)

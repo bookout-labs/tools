@@ -17,7 +17,7 @@ from foreman.delivery import LiveRun
 from foreman.redaction import redact
 from foreman.github import LiveForge
 from foreman.runner import run_live_delivery
-from foreman.workspace import LiveWorkspace
+from foreman.workspace import WorkspaceError, LiveWorkspace
 from skill_fixture import fixture_pin
 from test_runner import BRANCH, EMPTY_SLICE, slice_body
 
@@ -106,10 +106,10 @@ class PublicationTest(unittest.TestCase):
             case ["api", url] if "/rules/branches/" in url:
                 response = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test", integration_id=15368)]))]
             case ["api", url] if "/branches/" in url:
-                response = dict(protection=dict(required_status_checks=dict(checks=[], contexts=[])))
+                response = dict(commit=dict(sha=self.git("rev-parse", self.base)), protection=dict(required_status_checks=dict(checks=[], contexts=[])))
             case ["api", url] if "/check-runs" in url:
                 response = [dict(check_runs=[dict(id=1, name="test", head_sha=self.remote_head(),
-                    app=dict(id=15368), status="completed", conclusion="success")])]
+                    app=dict(id=15368), check_suite=dict(id=30), status="completed", conclusion="success")])]
             case ["api", url] if "/statuses" in url:
                 response = [[]]
             case ["pr", "merge"]:
@@ -146,6 +146,25 @@ class PublicationTest(unittest.TestCase):
             repo=REPO, issue=8, check="test -f items.txt", checkpoint=self.checkpoint,
             run=LiveRun(LiveForge(), workspace), dispatcher=FailoverDispatcher(handler),
         )
+
+    def test_refresh_adopts_only_the_observed_remote_repair(self):
+        self.walk()
+        repaired = self.checkout.parent / "repair"
+        run_subprocess(["git", "clone", str(self.remote), str(repaired)], check=True, capture_output=True)
+        run_subprocess(["git", "switch", self.branch], cwd=repaired, check=True, capture_output=True)
+        (repaired / "repair.txt").write_text("external repair")
+        for args in [("config", "user.name", "Repair"), ("config", "user.email", "repair@example.com"),
+                     ("add", "repair.txt"), ("-c", "commit.gpgsign=false", "commit", "-m", "Repair"),
+                     ("push", "origin", self.branch)]:
+            run_subprocess(["git", *args], cwd=repaired, check=True, capture_output=True)
+        head = self.remote_head()
+        before = LiveWorkspace(self.checkout).inspect().head
+        with self.assertRaisesRegex(WorkspaceError, "changed during fetch"):
+            LiveWorkspace(self.checkout).refresh(self.branch, before)
+        self.assertEqual(LiveWorkspace(self.checkout).inspect().head, before)
+        LiveWorkspace(self.checkout).refresh(self.branch, head)
+        self.assertEqual(LiveWorkspace(self.checkout).inspect().head, head)
+        self.assertEqual((self.checkout / "repair.txt").read_text(), "external repair")
 
     def test_graph_commits_and_pushes_before_opening_one_pull_request(self):
         for family, email in (("gpt", "noreply@openai.com"), ("claude", "noreply@anthropic.com"), ("grok", "noreply@x.ai")):

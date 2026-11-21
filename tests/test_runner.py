@@ -24,7 +24,7 @@ from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, PullRequest, render_slice_body
 
-from foreman.readiness import Observation, Readiness
+from foreman.readiness import Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.skill_rules import export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
@@ -171,7 +171,7 @@ class FakeGitHub:
         self.reviews.append((repo, target.number, target.headRefOid, body, comments))
         return {"id": len(self.reviews), "state": "COMMENTED", "commit_id": target.headRefOid}
     def readiness(self, repo, issue, branch, sha):
-        return Observation(repo=repo, pr=Readiness(number=12, state="open", draft=False,
+        return Observation(repo=repo, pr=PullSnapshot(number=12, state="open", draft=False,
             head={"sha": sha, "ref": branch}, base={"sha": self.base, "ref": "main"},
             mergeable=True, merge_commit_sha=None, mergeable_state="clean"),
             checks=[], outcome="ready", recovery="Eligible.")
@@ -475,6 +475,9 @@ class LiveRunnerTest(unittest.TestCase):
             with patch.object(self.github, "readiness", return_value=observed):
                 result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
             self.assertEqual(result["stop"], reason)
+            self.assertIsInstance(result["readiness_observation"], dict)
+            self.assertIn("PR #12 head=", result["halt_detail"])
+            self.assertIn("base=main@", result["halt_detail"])
             self.assertEqual(run_exit_code(result), 75)
             count = len(self.calls)
             resumed = self.walk([])
@@ -484,13 +487,59 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_readiness_is_reconciled_after_arming(self):
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        for outcome, halt in [("conflict", "pr_conflict"), ("red", "ci_red"), ("pending", "ci_pending")]:
+            self.checkpoint = self.cwd / (outcome + "-reconcile.sqlite3")
+            changed = ready.model_copy(update={"outcome": outcome})
+            with patch.object(self.github, "readiness", side_effect=[ready, changed]), patch.object(self.github, "arm_auto_merge") as arm:
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+            arm.assert_called_once()
+            self.assertEqual((result["stop"], result["merge"], run_exit_code(result)), (halt, "armed", 75))
+        self.checkpoint = self.cwd / "advanced-base.sqlite3"
         changed = ready.model_copy(deep=True)
         changed.pr.base.sha = "c" * 40
+        changed.pr.merge_commit_sha = "d" * 40
         with patch.object(self.github, "readiness", side_effect=[ready, changed]):
-            result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["stop"], "ci_pending")
-        self.assertEqual(result["merge"], "not_armed")
-        self.assertEqual(run_exit_code(result), 75)
+            self.assertEqual(self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])["stop"], "verified")
+
+    def test_unavailable_and_policy_outcomes_fail_closed(self):
+        ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        for index, sequence in enumerate([[ForgeError("HTTP 503")], [ready, ForgeError("HTTP 503")],
+                                          [ready.model_copy(update={"outcome": "policy"})]]):
+            self.checkpoint = self.cwd / f"unavailable-{index}.sqlite3"
+            with patch.object(self.github, "readiness", side_effect=sequence):
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual((result["stop"], run_exit_code(result)), ("readiness_unavailable", 75))
+            self.assertEqual(result["merge"], "armed" if index == 1 else "not_armed")
+
+    def test_receipt_and_ledger_guard_prevent_arming(self):
+        from foreman.review_round import ReviewHistory
+        for kind in ["receipt", "ledger"]:
+            self.checkpoint = self.cwd / (kind + ".sqlite3")
+            def posted(*args, **kwargs):
+                if kind == "ledger":
+                    self.enterContext(patch.object(ReviewHistory, "unresolved", return_value=[FINDING]))
+                return {"id": 1, "state": "COMMENTED", "commit_id": "d"*40 if kind == "receipt" else HEAD}
+            with patch.object(self.github, "post_review", side_effect=posted), patch.object(self.github, "arm_auto_merge") as arm:
+                result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual(result["stop"], "merge_not_armed")
+            self.assertIn("Renew review", result["halt_detail"])
+            arm.assert_not_called()
+
+    def test_remote_only_repair_fetches_and_renews_proof(self):
+        workspace = FakeWorkspace(self.cwd)
+        ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        with patch.object(self.github, "readiness", return_value=ready.model_copy(update={"outcome": "conflict"})):
+            self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE], workspace=workspace)
+        remote = ready.model_copy(deep=True)
+        remote.outcome, remote.pr.head.sha = "head_changed", "d"*40
+        observe = self.github.readiness
+        def refreshed(branch, head):
+            workspace.current = WorktreeState(head, True, branch)
+        with patch.object(self.github, "readiness", side_effect=lambda repo, issue, branch, sha: remote if sha == HEAD else observe(repo, issue, branch, sha)), patch.object(workspace, "refresh", side_effect=refreshed) as fetch, patch.object(workspace, "commit", side_effect=lambda message: refreshed(BRANCH, "d"*40)):
+            result = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
+        fetch.assert_called_once_with(BRANCH, "d"*40)
+        self.assertEqual(result["stop"], "verified", result)
+        self.assertEqual((result["verified_head"], result["reviewed_head"], result["review_receipt"]["commit_id"]), ("d"*40,)*3)
 
     def test_external_conflict_repair_renews_entire_lifecycle(self):
         workspace = FakeWorkspace(self.cwd)

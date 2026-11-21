@@ -9,7 +9,7 @@ from typing_extensions import TypedDict
 
 from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
-from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, Readiness, Rules, StatusPages
+from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages
 from foreman.redaction import redact
 if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
@@ -429,15 +429,20 @@ class LiveForge:
         return next((variable.value for variable in variables.root if variable.name == MERGE_HOLD_VARIABLE), None)
 
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation:
-        target = self.review_target(repo, issue, branch, sha)
+        target = self._view_pr(repo, branch)
         endpoint = f"repos/{repo}"
-        pr = self._read(Readiness, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
-        def observed(outcome: Literal["ready", "conflict", "pending", "red", "policy"], recovery: str,
+        pr = self._read(PullSnapshot, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
+        def observed(outcome: Outcome, recovery: str,
                      checks: list[CheckEvidence] | None = None) -> Observation:
             return Observation(repo=repo, pr=pr, checks=checks or [], outcome=outcome, recovery=recovery)
-        if (pr.number != target.number or pr.head.ref != branch or pr.head.sha.lower() != sha.lower() or pr.base.sha != target.baseRefOid
-                or pr.base.ref != target.baseRefName or pr.state != "open" or pr.draft):
-            return observed("pending", "PR changed or is draft. Renew verification and review.")
+        if pr.state != "open":
+            return observed("closed", "Restore an open PR before resuming.")
+        if pr.base.ref != self.default_branch(repo) or target.isCrossRepository or pr.head.ref != branch or not branch.startswith(f"{issue}-"):
+            return observed("retargeted", "Restore the same-repository PR and default-branch target before resuming.")
+        if pr.head.sha.lower() != sha.lower():
+            return observed("head_changed", "Fetch the repaired PR head, then renew verification and review.")
+        if pr.draft:
+            return observed("pending", "Mark the PR ready, then resume.")
         if pr.mergeable is False:
             return observed("conflict", "Request a merge-base repair round, then renew verification and review.")
         if pr.mergeable is None or pr.mergeable_state == "unknown":
@@ -455,7 +460,7 @@ class LiveForge:
         commits = [pr.head.sha]
         if pr.merge_commit_sha:
             merge = self._read(Commit, ["gh", "api", f"{endpoint}/commits/{pr.merge_commit_sha}"])
-            if {parent.sha for parent in merge.parents} == {pr.head.sha, pr.base.sha}:
+            if {parent.sha for parent in merge.parents} == {pr.head.sha, legacy.commit.sha}:
                 commits.insert(0, pr.merge_commit_sha)
         evidence: list[CheckEvidence] = []
         for commit in commits:
@@ -463,21 +468,21 @@ class LiveForge:
             statuses = self._read(StatusPages, ["gh", "api", f"{endpoint}/commits/{commit}/statuses?per_page=100", "--paginate", "--slurp"])
             for page in runs.root:
                 evidence.extend(CheckEvidence(context=run.name, app=run.app.id, run=run.id,
-                    tested_commit=commit, state=(run.conclusion or "pending") if run.status == "completed" else "pending")
+                    source_commit=commit, suite=run.check_suite.id, tested_commit=commit if commit != pr.head.sha else None, state=(run.conclusion or "pending") if run.status == "completed" else "pending")
                     for run in page.check_runs if run.head_sha == commit)
             evidence.extend(CheckEvidence(context=status.context, app=None, run=status.id,
-                tested_commit=commit, state=status.state) for page in statuses.root for status in page)
+                source_commit=commit, state=status.state) for page in statuses.root for status in page)
         effective: list[CheckEvidence] = []
         for required in requirements:
             candidates = [check for check in evidence if check.context == required.context
                           and (required.integration_id in (None, -1) or check.app == required.integration_id)]
             if len({check.app for check in candidates}) > 1:
                 return observed("policy", "Ambiguous required-check app identity. Bind the policy to an app.", evidence)
-            tested = next((commit for commit in commits if any(c.tested_commit == commit for c in candidates)), pr.head.sha)
-            latest = [c for c in candidates if c.tested_commit == tested]
+            tested = next((commit for commit in commits if any(c.source_commit == commit for c in candidates)), pr.head.sha)
+            latest = [c for c in candidates if c.source_commit == tested]
             effective.append(max(latest, key=lambda c: c.run or 0) if latest else CheckEvidence(
-                context=required.context, app=required.integration_id, run=None, tested_commit=tested, state="missing"))
-        current = self._read(Readiness, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
+                context=required.context, app=required.integration_id, run=None, source_commit=tested, state="missing"))
+        current = self._read(PullSnapshot, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
         if current != pr:
             return observed("pending", "PR changed during observation. Resume with fresh evidence.", effective)
         if any(c.state not in ("success", "pending", "missing") for c in effective):
