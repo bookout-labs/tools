@@ -58,23 +58,29 @@ class Slice(Contract):
         return value
 
 
-class SlicePlanningOutput(Contract):
+class HumanQuestionOutput(Contract):
     human_question: str | None = None  # CLIs without schema enforcement may omit this.
 
 
-class TriageOutput(SlicePlanningOutput):
+class TriageOutput(HumanQuestionOutput):
     triage: Literal["implement", "spec", "question", "needs_human"]
-    slice: Slice | None = None  # CLIs without schema enforcement may omit this.
+    slice: Slice | None = Field(
+        default=None,
+        description="For a parent issue that triages as implement, return its single slice. Use null otherwise, including for slice issues.",
+    )
 
 
 class ResearchOutput(Contract):
     research: Text
 
 
-class SpecOutput(SlicePlanningOutput):
+class SpecOutput(HumanQuestionOutput):
     spec: Text
     spec_gate: Literal["ready", "needs_human"]
-    slices: list[Slice] | None = None  # CLIs without schema enforcement may omit this.
+    slices: list[Slice] | None = Field(
+        default=None,
+        description="For a ready parent spec, return one entry per pull request, each about 400 changed lines or fewer. Use null otherwise.",
+    )
 
 
 class BrowserProof(Contract):

@@ -2,6 +2,7 @@ import unittest
 
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 
 from foreman.config import NodeConfig, load_config
 from foreman.delivery import REQUIRED_NODES, compile_delivery, diagram, run_delivery, stage_text
@@ -31,26 +32,23 @@ EMPTY_SLICE = {**SLICES[1], "depends_on": []}
 HEAD_SHA = "a" * 40
 
 
-def walk(handler, check="npm run check", issue_kind="slice", config=None, *, slice=None):
-    if issue_kind == "slice" and slice is None:
-        slice = EMPTY_SLICE
+def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE):
     return run_delivery(
         FailoverDispatcher(handler),
         repo="DoctorCRE/doctorcre-engine",
         request="Add a field",
         check=check,
-        issue_kind=issue_kind,
         slice=slice,
         config=config,
     )
 
 
 class DeliveryTest(unittest.TestCase):
-    def test_slice_run_requires_a_loaded_slice(self):
-        handler = ScriptHandler(triage="spec")
-        with self.assertRaisesRegex(ValueError, "slice is required"):
-            run_delivery(FailoverDispatcher(handler), repo="Example/Engine", request="Add a field", issue_kind="slice")
-        self.assertEqual(handler.calls, [])
+    def test_passing_a_slice_starts_a_slice_run(self):
+        result = walk(ScriptHandler(triage="spec"), slice=MappingProxyType(SLICES[1]))
+        self.assertEqual(result["issue_kind"], "slice")
+        self.assertEqual(result["slice"], SLICES[1])
+        self.assertEqual(result["stop"], "verified")
 
     def test_clear_change_skips_spec(self):
         handler = ScriptHandler(head_sha=HEAD_SHA)
@@ -90,7 +88,7 @@ class DeliveryTest(unittest.TestCase):
     def test_triage_slice_rejects_a_dependency(self):
         result = walk(
             lambda *_: {"triage": "implement", "slice": {**SLICES[0], "depends_on": ["Other"]}},
-            issue_kind="parent",
+            slice=None,
         )
         self.assertEqual(result["path"], ["triage", "done"])
         self.assertEqual(result["stop"], "invalid_output")
@@ -99,7 +97,7 @@ class DeliveryTest(unittest.TestCase):
     def test_a_parent_routes_spec_and_question_to_spec(self):
         for triage in ("spec", "question"):
             with self.subTest(triage=triage):
-                result = walk(ScriptHandler(triage=triage, slices=SLICES), issue_kind="parent")
+                result = walk(ScriptHandler(triage=triage, slices=SLICES), slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "sliced")
                 self.assertEqual(result["slices"], SLICES)
@@ -122,7 +120,7 @@ class DeliveryTest(unittest.TestCase):
         }
         for case, slices in cases.items():
             with self.subTest(case=case):
-                result = walk(ScriptHandler(triage="spec", slices=slices), issue_kind="parent")
+                result = walk(ScriptHandler(triage="spec", slices=slices), slice=None)
                 self.assertEqual(result["path"], ["triage", "spec", "done"])
                 self.assertEqual(result["stop"], "invalid_output")
                 self.assertTrue(result["halt_detail"])

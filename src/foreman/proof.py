@@ -6,62 +6,11 @@ class ProofError(ValueError):
 
 
 def browser_required(slice: dict) -> bool:
-    screen = slice.get("screen", "")
-    if not isinstance(screen, str):
-        raise ProofError("screen must be text")
-    return bool(screen.strip())
+    return bool(slice["screen"])
 
 
 def formal_required(slice: dict) -> bool:
-    properties = slice.get("properties", [])
-    if not isinstance(properties, list):
-        raise ProofError("properties must be a list")
-    for prop in properties:
-        if not isinstance(prop, dict):
-            raise ProofError("property must be a mapping")
-        for field in ("name", "constraint"):
-            value = prop.get(field)
-            if not isinstance(value, str) or not value.strip():
-                raise ProofError(f"property needs {field}")
-    return bool(properties)
-
-
-def accept_browser_proof(slice: dict, artifact: dict) -> bool:
-    """Accept {screen, trace}, or raise when required evidence is missing."""
-    if not browser_required(slice):
-        return True
-    if not isinstance(artifact, dict):
-        raise ProofError("browser proof must be a mapping")
-    if artifact.get("screen") != slice["screen"]:
-        raise ProofError("browser proof screen does not match the slice")
-    trace = artifact.get("trace")
-    if not isinstance(trace, str) or not trace.strip():
-        raise ProofError("browser proof needs a trace path")
-    return True
-
-
-def accept_formal_proof(slice: dict, artifact: dict) -> bool:
-    """Accept {constraints: [{constraint, rejected: true}]} for every property."""
-    if not formal_required(slice):
-        return True
-    if not isinstance(artifact, dict):
-        raise ProofError("formal proof must be a mapping")
-    evidence = artifact.get("constraints")
-    if not isinstance(evidence, list):
-        raise ProofError("formal proof needs constraint rejection results")
-    rejected = set()
-    for result in evidence:
-        if not isinstance(result, dict):
-            raise ProofError("constraint result must be a mapping")
-        constraint = result.get("constraint")
-        if not isinstance(constraint, str) or not constraint.strip():
-            raise ProofError("constraint result needs a constraint name")
-        if result.get("rejected") is True:
-            rejected.add(constraint)
-    for prop in slice["properties"]:
-        if prop["constraint"] not in rejected:
-            raise ProofError(f"missing rejection for constraint {prop['constraint']}")
-    return True
+    return bool(slice["properties"])
 
 
 def score_verdict(label: str) -> str:

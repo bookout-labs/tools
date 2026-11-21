@@ -27,7 +27,6 @@ def _stop(handler, *, slice=None) -> str:
         repo="DoctorCRE/doctorcre-engine",
         request="Add a field",
         check="npm run check",
-        issue_kind="parent" if slice is None else "slice",
         slice=slice,
     )
     return result["stop"]
@@ -46,7 +45,6 @@ def _with_quota_gap() -> str:
         repo="DoctorCRE/doctorcre-engine",
         request="Add a field",
         check="npm run check",
-        issue_kind="slice",
         slice=FIELD_SLICE,
     )
     implement = result["models_used"]["implement"]

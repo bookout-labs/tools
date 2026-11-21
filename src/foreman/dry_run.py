@@ -47,7 +47,7 @@ class ScriptHandler:
     def __call__(self, node: str, model: str | None, state: dict, instruction: str) -> dict:
         self.calls.append({"node": node, "model": model, "instruction": instruction})
         if node == "triage":
-            if self.triage == "implement":
+            if self.triage == "implement" and state["issue_kind"] == "parent":
                 return {"triage": self.triage, "slice": self.slice}
             return {"triage": self.triage}
         if node == "spec":
