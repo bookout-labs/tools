@@ -479,7 +479,12 @@ def compile_delivery(
             def record_attempt(model: str | None, outcome: Outcome) -> None:
                 attempts.append(Attempt(
                     stage=name, model=model, commit=config.pstack.commit, methods=methods, outcome=outcome.kind,
-                    usage=None if outcome.usage is None else AttemptUsage.model_validate(outcome.usage.model_dump()),
+                    usage=None if outcome.usage is None else AttemptUsage(
+                        input=outcome.usage.input_tokens, output=outcome.usage.output_tokens,
+                        cache_read=outcome.usage.cache_read_input_tokens or 0,
+                        cache_creation=outcome.usage.cache_creation_input_tokens or 0,
+                        cost_usd=outcome.usage.total_cost_usd,
+                    ),
                 ).record())
 
             outcome, model = dispatcher.run(
