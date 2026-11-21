@@ -9,6 +9,7 @@ from typing_extensions import TypedDict
 
 from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
+from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages
 from foreman.redaction import redact
 if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
@@ -179,6 +180,14 @@ class BlockerPages(RootModel[list[list[IssueBlocker]]]):
     pass
 
 
+class LinkedIssue(IssueBlocker):
+    id: PositiveInt
+
+
+class LinkedIssuePages(RootModel[list[list[LinkedIssue]]], strict=True):
+    pass
+
+
 class Issue(TypedDict):
     title: str
     body: str
@@ -226,6 +235,11 @@ class Forge(Protocol):
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
     def load_issue(self, repo: str, number: int) -> Issue: ...
     def open_issues(self, repo: str) -> list[OpenIssue]: ...
+    def marked_issues(self, repo: str, marker: str) -> list[int]: ...
+    def sub_issues(self, repo: str, number: int) -> list[LinkedIssue]: ...
+    def parent_issue(self, repo: str, number: int) -> LinkedIssue | None: ...
+    def add_sub_issue(self, repo: str, number: int, child: int) -> None: ...
+    def update_issue_body(self, repo: str, number: int, body: str) -> None: ...
     def issue_comments(self, repo: str, number: int) -> list[str]: ...
     def comment_issue(self, repo: str, number: int, body: str) -> None: ...
     def create_issue(
@@ -238,6 +252,7 @@ class Forge(Protocol):
     def pull_request_base(self, repo: str, branch: str) -> str: ...
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt: ...
+    def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation: ...
     def merge_hold(self, repo: str) -> str | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None: ...
 
@@ -316,6 +331,41 @@ class LiveForge:
             "gh", "api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate", "--slurp",
         ])
         return [comment.body or "" for page in pages.root for comment in page]
+
+    def marked_issues(self, repo: str, marker: str) -> list[int]:
+        pages = self._read(OpenIssuePages, [
+            "gh", "api", f"repos/{repo}/issues?state=all&per_page=100", "--paginate", "--slurp",
+        ])
+        return [issue.number for page in pages.root for issue in page
+                if "pull_request" not in issue.model_fields_set and marker in (issue.body or "")]
+
+    def sub_issues(self, repo: str, number: int) -> list[LinkedIssue]:
+        pages = self._read(LinkedIssuePages, [
+            "gh", "api", f"repos/{repo}/issues/{number}/sub_issues?per_page=100", "--paginate", "--slurp",
+        ])
+        return [issue for page in pages.root for issue in page]
+
+    def parent_issue(self, repo: str, number: int) -> LinkedIssue | None:
+        try:
+            return self._read(LinkedIssue, ["gh", "api", f"repos/{repo}/issues/{number}/parent"])
+        except CommandFailed as exc:
+            if str(exc) == "gh: No parent issue found (HTTP 404)":
+                return None
+            raise
+
+    def add_sub_issue(self, repo: str, number: int, child: int) -> None:
+        repo = redact(repo)
+        identity = self._read(IssueIdentity, ["gh", "api", f"repos/{repo}/issues/{child}"])
+        self._run_command([
+            "gh", "api", f"repos/{repo}/issues/{number}/sub_issues",
+            "--method", "POST", "-F", f"sub_issue_id={identity.id}",
+        ])
+
+    def update_issue_body(self, repo: str, number: int, body: str) -> None:
+        repo, body = (redact(value) for value in (repo, body))
+        self._run_command([
+            "gh", "api", f"repos/{repo}/issues/{number}", "--method", "PATCH", "-f", f"body={body}",
+        ])
 
     def comment_issue(self, repo: str, number: int, body: str) -> None:
         repo, body = (redact(value) for value in (repo, body))
@@ -425,6 +475,69 @@ class LiveForge:
         except ForgeError as exc:
             raise MergeHoldUnreadable(str(exc)) from exc
         return next((variable.value for variable in variables.root if variable.name == MERGE_HOLD_VARIABLE), None)
+
+    def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation:
+        target = self._view_pr(repo, branch)
+        endpoint = f"repos/{repo}"
+        pr = self._read(PullSnapshot, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
+        def observed(outcome: Outcome, recovery: str,
+                     checks: list[CheckEvidence] | None = None) -> Observation:
+            return Observation(repo=repo, pr=pr, checks=checks or [], outcome=outcome, recovery=recovery)
+        if pr.state != "open":
+            return observed("closed", "Restore an open PR before resuming.")
+        if pr.base.ref != self.default_branch(repo) or target.isCrossRepository or pr.head.ref != branch or not branch.startswith(f"{issue}-"):
+            return observed("retargeted", "Restore the same-repository PR and default-branch target before resuming.")
+        if pr.head.sha.lower() != sha.lower():
+            return observed("head_changed", "Fetch the repaired PR head, then renew verification and review.")
+        if pr.draft:
+            return observed("pending", "Mark the PR ready, then resume.")
+        if pr.mergeable is False:
+            return observed("conflict", "Request a merge-base repair round, then renew verification and review.")
+        if pr.mergeable is None or pr.mergeable_state == "unknown":
+            return observed("pending", "Resume when GitHub has computed mergeability.")
+        rules = self._read(Rules, ["gh", "api", f"{endpoint}/rules/branches/{pr.base.ref}"])
+        legacy = self._read(BranchPolicy, ["gh", "api", f"{endpoint}/branches/{pr.base.ref}"])
+        requirements = [check for rule in rules.root if rule.type == "required_status_checks"
+                        for check in rule.parameters.required_status_checks]
+        classic = legacy.protection.required_status_checks
+        if set(classic.contexts) - {check.context for check in classic.checks}:
+            return observed("policy", "Legacy policy lacks required app identity. Restore readable policy.")
+        requirements.extend(classic.checks)
+        if not requirements:
+            return observed("policy", "Effective required-check policy is empty. Restore readable policy.")
+        commits = [pr.head.sha]
+        if pr.merge_commit_sha:
+            merge = self._read(Commit, ["gh", "api", f"{endpoint}/commits/{pr.merge_commit_sha}"])
+            if {parent.sha for parent in merge.parents} == {pr.head.sha, legacy.commit.sha}:
+                commits.insert(0, pr.merge_commit_sha)
+        evidence: list[CheckEvidence] = []
+        for commit in commits:
+            runs = self._read(CheckPages, ["gh", "api", f"{endpoint}/commits/{commit}/check-runs?filter=latest&per_page=100", "--paginate", "--slurp"])
+            statuses = self._read(StatusPages, ["gh", "api", f"{endpoint}/commits/{commit}/statuses?per_page=100", "--paginate", "--slurp"])
+            for page in runs.root:
+                evidence.extend(CheckEvidence(context=run.name, app=run.app.id, run=run.id,
+                    source_commit=commit, suite=run.check_suite.id, tested_commit=commit if commit != pr.head.sha else None, state=(run.conclusion or "pending") if run.status == "completed" else "pending")
+                    for run in page.check_runs if run.head_sha == commit)
+            evidence.extend(CheckEvidence(context=status.context, app=None, run=status.id,
+                source_commit=commit, state=status.state) for page in statuses.root for status in page)
+        effective: list[CheckEvidence] = []
+        for required in requirements:
+            candidates = [check for check in evidence if check.context == required.context
+                          and (required.integration_id in (None, -1) or check.app == required.integration_id)]
+            if len({check.app for check in candidates}) > 1:
+                return observed("policy", "Ambiguous required-check app identity. Bind the policy to an app.", evidence)
+            tested = next((commit for commit in commits if any(c.source_commit == commit for c in candidates)), pr.head.sha)
+            latest = [c for c in candidates if c.source_commit == tested]
+            effective.append(max(latest, key=lambda c: c.run or 0) if latest else CheckEvidence(
+                context=required.context, app=required.integration_id, run=None, source_commit=tested, state="missing"))
+        current = self._read(PullSnapshot, ["gh", "api", f"{endpoint}/pulls/{target.number}"])
+        if current != pr:
+            return observed("pending", "PR changed during observation. Resume with fresh evidence.", effective)
+        if any(c.state not in ("success", "pending", "missing") for c in effective):
+            return observed("red", "Repair failing required checks, then resume.", effective)
+        if any(c.state != "success" for c in effective):
+            return observed("pending", "Wait for required checks, then resume.", effective)
+        return observed("ready", "Eligible for merge arming.", effective)
 
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str) -> None:
         try:

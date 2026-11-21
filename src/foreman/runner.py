@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
+from typing import get_args
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -15,11 +16,11 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
-from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
+from foreman.delivery import DEFAULT_TOKEN_CAP, MergeHalt, HumanPrompt, QuotaPause, DeliveryResult, DeliveryState, DeliveryUpdate, EnvironmentProbe, LiveRun, PullRequestSizeDecision, RESUMABLE_HALTS, compile_delivery, entry_node, halted, unknown_usage, read_delivery_state
 from foreman.dispatch import FailoverDispatcher, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
-from foreman.github import Forge
+from foreman.github import Forge, ForgeError
 from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
 from foreman.usd import BudgetUsd, usd_text
 
@@ -103,12 +104,13 @@ def _checkpoint_before_halt(
     graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult],
     config: RunnableConfig,
     path: list[str],
+    node: str | None = None,
 ) -> StateSnapshot:
     if path and path[-1] == "done":
         path = path[:-1]
     if not path:
         raise ValueError("Cannot resume a run without a halted node.")
-    node = path[-1]
+    node = node or path[-1]
     entry = entry_node(node)
     before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (entry,)), None)
     if before is None:
@@ -278,7 +280,20 @@ def run_live_delivery(
         elif waiting_for_quota:
             invoke(Command(resume=True), saved_values)
         elif saved_values.get("halt") in RESUMABLE_HALTS:
-            before = _checkpoint_before_halt(graph, config, saved_values["path"])
+            repaired = False
+            repair_head: str | None = None
+            if saved_values.get("halt") in get_args(MergeHalt) and (head := saved_values.get("verified_head")) and (branch := saved_values.get("delivery_branch")):
+                worktree = run.workspace.inspect()
+                try:
+                    observed = client.readiness(repo, issue, branch, head)
+                except ForgeError:
+                    observed = None
+                if observed is not None and observed.outcome == "head_changed":
+                    repair_head = observed.pr.head.sha
+                    repaired = True
+                elif observed is None or observed.outcome not in {"closed", "retargeted"}:
+                    repaired = worktree.head != head
+            before = _checkpoint_before_halt(graph, config, saved_values["path"], "prepare" if repaired else None)
             require_run_limits(before.values, checkpoint, max_budget_usd)
             restored = checkpoint_state(before.values)
             assert restored is not None
@@ -289,7 +304,7 @@ def run_live_delivery(
             if presentation is not None:
                 presentation.restore(before, saver)
             replay = before.config
-            retained: DeliveryUpdate = {}
+            retained: DeliveryUpdate = {"repair_head": repair_head}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             if partial := saved_values.get("partial_edits"):
