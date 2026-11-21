@@ -64,7 +64,7 @@ class ReviewRoundsTest(unittest.TestCase):
             workspace = Workspace(Path(directory))
             implementations = 0
 
-            def dispatch(node, model, state, instruction):
+            def dispatch(node, model, state, instruction, *, budget_usd=None):
                 nonlocal crashed, implementations, quota_returned
                 self.prompts.append((node, state, instruction))
                 if node == "review":

@@ -62,7 +62,7 @@ class DollarBudgetTests(unittest.TestCase):
                 script = ScriptHandler()
                 usage = Usage(input_tokens=7, output_tokens=3, total_cost_usd=0.1)
 
-                def handler(node, model, state, instruction):
+                def handler(node, model, state, instruction, *, budget_usd=None):
                     calls.append((node, model.name))
                     if node != stage:
                         return script(node, model, state, instruction)

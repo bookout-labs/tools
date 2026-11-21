@@ -6,11 +6,13 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from langgraph.checkpoint.sqlite import SqliteSaver
+from foreman.cli import run_exit_code
 from tests.skill_fixture import skill_fixture
 
 
 SCRIPT = '''
 import contextlib, json, os, sys
+from decimal import Decimal
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -19,12 +21,13 @@ from foreman.config import PstackPin, load_config
 from foreman.delivery import LiveRun
 from foreman.dispatch import FailoverDispatcher
 from foreman.dry_run import ScriptHandler
+from foreman.usd import BudgetUsd
 from foreman.runner import RunPresentation, run_live_delivery
 from test_runner import FakeGitHub, FakeWorkspace
-mode, checkpoint, raw_pin = sys.argv[1:]
+mode, checkpoint, raw_pin, limit = sys.argv[1:]
 script = ScriptHandler()
 calls = 0
-def handler(node, model, state, instruction):
+def handler(node, model, state, instruction, *, budget_usd=None):
     global calls
     calls += 1
     if mode == "recover":
@@ -32,10 +35,10 @@ def handler(node, model, state, instruction):
     if mode == "entry":
         os._exit(19)
     if mode == "quota-uncommitted":
-        return Outcome("quota", usage=Usage(input_tokens=9, output_tokens=1))
+        return Outcome("quota", usage=Usage(input_tokens=9, output_tokens=1, total_cost_usd=0.1))
     if mode == "quota":
         if calls == 1:
-            return Outcome("quota", usage=Usage(input_tokens=9, output_tokens=1))
+            return Outcome("quota", usage=Usage(input_tokens=9, output_tokens=1, total_cost_usd=0.1))
         os._exit(19)
     return script(node, model, state, instruction)
 def crash(*args, **kwargs):
@@ -49,7 +52,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     with patch("foreman.dispatch.FailoverDispatcher.run", new=uncommitted) if mode == "quota-uncommitted" else contextlib.nullcontext():
         with patch("foreman.delivery.stage_update", side_effect=crash) if mode == "success" else contextlib.nullcontext():
             result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=Path(checkpoint),
-                dispatcher=FailoverDispatcher(handler), presentation=RunPresentation(), run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())))
+                dispatcher=FailoverDispatcher(handler), presentation=RunPresentation(),
+                max_budget_usd=BudgetUsd(Decimal(limit)) if limit else None, run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd())))
 print(json.dumps(result))
 '''
 
@@ -57,13 +61,14 @@ print(json.dumps(result))
 class DispatchRecoveryTests(unittest.TestCase):
     def test_fresh_process_crash_after_success_or_quota_never_replays(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder:
-            for mode in ("entry", "success", "quota", "quota-uncommitted"):
-                with self.subTest(mode=mode):
-                    checkpoint = Path(folder) / (mode + ".sqlite")
+            for mode, limit in ((mode, limit) for mode in ("entry", "success", "quota", "quota-uncommitted")
+                                for limit in ("", "1")):
+                with self.subTest(mode=mode, limit=limit):
+                    checkpoint = Path(folder) / (mode + limit + ".sqlite")
                     bootstrap = f"import sys; sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n"
                     def invoke(phase):
                         return subprocess.run([sys.executable, "-c", bootstrap + SCRIPT, phase, str(checkpoint),
-                                               config.pstack.model_dump_json()], capture_output=True, text=True)
+                                               config.pstack.model_dump_json(), limit], capture_output=True, text=True)
                     crashed = invoke(mode)
                     self.assertEqual(crashed.returncode, 19, crashed.stderr)
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
@@ -76,6 +81,9 @@ class DispatchRecoveryTests(unittest.TestCase):
                     self.assertEqual(resumed.returncode, 0, resumed.stderr)
                     result = json.loads(resumed.stdout)
                     self.assertEqual(result["stop"], "usage_unknown")
+                    self.assertEqual(run_exit_code(result), 1)
+                    self.assertEqual(result["max_budget_usd"], limit or None)
+                    self.assertEqual(result["attempts"][-1]["outcome"], "interrupted")
                     self.assertIsNone(result["pending_dispatch"])
                     self.assertNotIn("triage", result)
                     self.assertEqual(len(result["attempts"]), 2 if mode == "quota" else 1)

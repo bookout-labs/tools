@@ -5,6 +5,7 @@ import operator
 from uuid import uuid4
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 from functools import cached_property
 from graphlib import CycleError, TopologicalSorter
@@ -23,6 +24,7 @@ from pydantic import TypeAdapter, ValidationError
 from typing_extensions import TypedDict
 
 from foreman.adapters import Outcome
+from foreman.budget import CostUnknown, Remaining, claude_spend, dollar_admission
 from foreman.config import Config, ConfigError, ModelSpec, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
 from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
@@ -50,7 +52,7 @@ ResumableHalt = Literal[MergeHalt, "env_unavailable", "publish_failed", "git_fai
 HaltReason = Literal[
     ResumableHalt, "failed", "no_dispatcher", "no_reviewer", "invalid_output", "cli_missing",
     "dirty_worktree", "insufficient_evidence", "review_cap", "verify_cap",
-    "budget_exceeded", "usage_unknown", "design_rethink", "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
+    "budget_exceeded", "usage_unknown", "cost_unknown", "design_rethink", "skill_missing", "missing_slice", "review_unavailable", "review_not_posted", "spec_cap", "pr_size_unavailable",
 ]
 RESUMABLE_HALTS: frozenset[ResumableHalt] = frozenset(get_args(ResumableHalt))
 
@@ -262,6 +264,24 @@ def budget_halt(state: DeliveryState, attempts: list[AttemptRecord], stage: str)
     return halted("budget_exceeded", detail, stage)
 
 
+def dollar_detail(state: DeliveryState, attempts: list[AttemptRecord]) -> str:
+    spend = claude_spend(attempts)
+    detail = f"Run Claude spend: ${spend}." if spend is not None else "Run Claude spend: unknown."
+    if (limit := state.get("max_budget_usd")) is not None:
+        detail += f" Dollar allowance: ${limit}."
+    return detail
+
+
+def remaining_budget(state: DeliveryState, attempts: list[AttemptRecord], stage: str) -> BudgetUsd | DeliveryUpdate | None:
+    if (limit := state.get("max_budget_usd")) is None:
+        return None
+    admission = dollar_admission(BudgetUsd(Decimal(limit)), attempts)
+    if isinstance(admission, Remaining):
+        return BudgetUsd(admission.usd)
+    reason = "cost_unknown" if isinstance(admission, CostUnknown) else "budget_exceeded"
+    return halted(reason, dollar_detail(state, attempts), stage)
+
+
 def stage_text(name: str) -> str:
     return (PACKAGE / "stages" / f"{name}.md").read_text().strip()
 
@@ -451,6 +471,8 @@ def compile_delivery(
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
             if run_tokens(state.get("attempts", [])) >= state["token_cap"]:
                 return budget_halt(state, state.get("attempts", []), name)
+            if isinstance(budget_stop := remaining_budget(state, state.get("attempts", []), name), dict):
+                return budget_stop
             if dispatcher is None:
                 return halted("no_dispatcher", "No dispatcher is configured.", name)
             current_run = run if isinstance(run, DryRun) else runtime.context or run
@@ -547,6 +569,12 @@ def compile_delivery(
             assert "pending_dispatch" in state and "dispatch_plan" in state
             pending, plan = state["pending_dispatch"], state["dispatch_plan"]
             assert pending is not None
+            prior = state.get("attempts", [])
+            if run_tokens(prior) >= state["token_cap"]:
+                return {"pending_dispatch": None, **budget_halt(state, prior, name)}
+            budget = remaining_budget(state, prior, name)
+            if isinstance(budget, dict):
+                return {"pending_dispatch": None, **budget}
             models, methods = plan["models"], plan["methods"]
             attempts: list[AttemptRecord] = []
             def record_attempt(model: str | None, outcome: Outcome) -> None:
@@ -565,17 +593,20 @@ def compile_delivery(
                 for key in ("review_findings", "settled_rulings", *(("findings", "detail", "implementation") if history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])}).rounds else ())):
                     worker_state.pop(key, None)
             outcome, accepted_model = dispatcher.run(
-                name, ModelSpec.parse(models[pending["index"]]) if models else None, worker_state, plan["instruction"], on_attempt=record_attempt,
+                name, ModelSpec.parse(models[pending["index"]]) if models else None, worker_state, plan["instruction"],
+                budget_usd=budget, on_attempt=record_attempt,
             )
             model = accepted_model.name if accepted_model else None
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
+            attempt_history = prior + attempts
             if outcome.kind == "budget_exhausted":
-                return {**stopped, **halted("budget_exceeded", f"{name} {model} exhausted its dollar budget. {outcome.detail}".strip(), name)}
-            attempt_history = state.get("attempts", []) + attempts
+                return {**stopped, **halted("budget_exceeded", f"{name} {model} exhausted its dollar budget. {dollar_detail(state, attempt_history)} {outcome.detail}".strip(), name)}
             if outcome.kind == "ran" and outcome.usage is None:
                 return {**stopped, **halted("usage_unknown", unknown_usage(name, model), name)}
             if run_tokens(attempt_history) >= state["token_cap"]:
                 return {**stopped, **budget_halt(state, attempt_history, name)}
+            if isinstance(budget_stop := remaining_budget(state, attempt_history, name), dict):
+                return {**stopped, **budget_stop}
             index = pending["index"] + 1
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):
                 return {"attempts": attempts, "pending_dispatch": PendingDispatch(
@@ -1150,11 +1181,12 @@ def run_delivery(
 
 def diagram(dispatcher: FailoverDispatcher | None = None, config: Config | None = None) -> str:
     if dispatcher is None:
-        dispatcher = FailoverDispatcher(
-            lambda node, model, state, instruction: Outcome(
+        def handler(node: str, model: ModelSpec | None, state: DeliveryState, instruction: str,
+                    *, budget_usd: BudgetUsd | None = None) -> Outcome:
+            return Outcome(
                 "ran", {"triage": "implement", "slice": None, "human_question": None},
-            ),
-        )
+            )
+        dispatcher = FailoverDispatcher(handler)
     graph = compile_delivery(dispatcher, config if config is not None else load_config(), run=DryRun())
     drawing = graph.get_graph()
     for name in REQUIRED_NODES:

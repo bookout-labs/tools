@@ -116,7 +116,7 @@ class PublicationTest(unittest.TestCase):
         script = ScriptHandler(reviews=reviews)
         workspace = LiveWorkspace(self.checkout)
 
-        def handler(node, model, state, instruction):
+        def handler(node, model, state, instruction, *, budget_usd=None):
             if node == "implement":
                 self.assertEqual(workspace.inspect().branch, self.branch)
                 self.assertEqual(instruction.count("Foreman owns commits and publishing"), 1)
