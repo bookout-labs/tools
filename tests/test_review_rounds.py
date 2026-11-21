@@ -194,6 +194,15 @@ class ReviewRoundsTest(unittest.TestCase):
                 self.assertIn(f"# head = current verified head {current}", prompt)
                 self.assertIn(f"{tip}...{current}", prompt)
                 self.assertIn("Full PR diff: old = merge-base (base); new = head", prompt)
+                for guidance in (
+                    "Use base for deletions or rename sources in the full PR diff from the merge-base",
+                    "never for deletions only in the interdiff from previous",
+                    "A previous-only path is never risk evidence, even with line=null",
+                    "Resolve its earlier finding by ID and ground dimensions in the remaining net PR changes",
+                    "Previous is for navigation only and is not a citation side",
+                ):
+                    with self.subTest(round=index, guidance=guidance):
+                        self.assertIn(guidance, prompt)
                 self.assertNotIn("HEAD~1", prompt)
                 self.assertNotIn("origin/main", prompt)
                 if index:
