@@ -200,7 +200,7 @@ class FakeGitHub:
         return {"title": "Issue title", "body": self.bodies.get((repo, number), self.body), "labels": self.labels}
 
     def open_issues(self, repo) -> list[OpenIssue]:
-        return [OpenIssue(number=number, body=self.load_issue(repo, number)["body"])
+        return [OpenIssue(number=number, body=self.bodies[repo, number])
                 for number in self.issue_labels if self.issue_repos[number] == repo
                 and number not in self.closed and number not in self.merged]
 
