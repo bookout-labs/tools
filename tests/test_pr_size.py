@@ -78,6 +78,15 @@ class PullRequestSizeTest(unittest.TestCase):
             "SpecOutput": {"spec": "Ship the list first, then add sorting.", "spec_gate": "ready"},
             "ReviewOutput": APPROVE,
         }
+        if stage == "ReviewOutput":
+            target = state["dispatch_plan"]["target"]
+            context = LiveWorkspace(self.root).review_context(target["baseRefOid"], target["headRefOid"])
+            side = "head" if context.head.changed else "base"
+            path = sorted(getattr(context, side).changed)[0]
+            replies[stage] = json.loads(json.dumps(APPROVE))
+            for name, dimension in replies[stage]["risk"].items():
+                if name != "level":
+                    dimension["evidence"] = [{"side": side, "path": path, "line": None}]
         if stage == "TriageOutput" and self.original_spec:
             return worker_reply(args, {"triage": "spec"})
         if stage == "SpecOutput":

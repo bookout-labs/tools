@@ -11,8 +11,6 @@ from pydantic import TypeAdapter, ValidationError
 from foreman._raw import is_dict
 from foreman.adapters import Call, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.config import ModelSpec
-from foreman.dispatch import InvalidOutput
-from foreman.stage_output import Contract, parse_output
 
 EVENT = TypeAdapter(dict[str, object])
 QUOTA_PREFIXES = (
@@ -85,7 +83,6 @@ class CodexTurn:
 @dataclass(frozen=True)
 class CodexAdapter:
     model: ModelSpec
-    contract: type[Contract]
     env: ClassVar[Mapping[str, str]] = {}
 
     def command(self, call: Call) -> list[str]:
@@ -125,9 +122,9 @@ class CodexAdapter:
         if turn.message is None:
             return "failed", None, "Codex did not return a final agent message"
         try:
-            output = parse_output(self.contract, json.loads(turn.message)).model_dump()
+            output = EVENT.validate_python(json.loads(turn.message))
         except json.JSONDecodeError:
             return "failed", None, "Codex did not return valid JSON"
-        except InvalidOutput as exc:
-            return "failed", None, str(exc)
+        except ValidationError:
+            return "failed", None, "Codex did not return a JSON object"
         return "ran", output, ""
