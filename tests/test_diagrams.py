@@ -22,16 +22,20 @@ SLICES = frozenset(f"slice_{name}" for name in (
     "1", "2", "3", "4", "5", "6", "7", "8a", "8b", "9", "10a", "10b",
     "11a", "11b", "12", "13", "14a", "14b", "15", "16",
 ))
-SHAPE = r'(?:\["[^"\n]*"\]|\(\[[^\]\n]*\]\)|\([^()\n]*\))'
-NODE = rf'\w+(?:{SHAPE})?'
+SHAPE = (
+    r'(?:\["[^"\n]*"\]|\(\[(?:"[^"\n]*"|(?:(?!--|-\.|==)[^\]\n])*)\]\)'
+    r'|\((?:"[^"\n]*"|(?:(?!--|-\.|==)[^()\n])*)\)'
+    r'|\{\{"[^"\n]*"\}\}|\{"[^"\n]*"\}|\[/"[^"\n]*"/\])'
+)
+NODE = rf'\w+(?:{SHAPE})?(?::{{3}}\w+)?'
 EDGE = re.compile(
-    rf'\s*(\w+)(?:{SHAPE})?\s*(?:-->(?:\|([^|]+)\|)?|-\.(?:->| &nbsp;(.*?)&nbsp; \.->))'
-    rf'\s*(\w+)(?:{SHAPE})?\s*;?\s*'
+    rf'\s*({NODE})\s*(?:-->(?:\|([^|]+)\|)?|-\.(?:->| &nbsp;((?:(?!&nbsp;).)+)&nbsp; \.->))'
+    rf'\s*({NODE})\s*;?\s*'
 )
 
 
 def edges(text):
-    result = set()
+    result, declared, connected = set(), set(), set()
     lines = text.splitlines()
     if lines and lines[0] == "---":
         lines = lines[lines.index("---", 1) + 1:]
@@ -41,12 +45,19 @@ def edges(text):
         match = EDGE.fullmatch(line)
         if match is not None:
             source, label, native_label, target = match.groups()
-            result.add((source, target, label or native_label or ""))
+            source, target = re.match(r'\w+', source)[0], re.match(r'\w+', target)[0]
+            edge = (source, target, label or native_label or "")
+            if edge in result:
+                raise ValueError(f"Duplicate Mermaid edge: {line}")
+            result.add(edge)
+            connected.update((source, target))
+        elif re.fullmatch(rf'\s*{NODE}\s*;?\s*', line):
+            declared.add(re.match(r'\s*(\w+)', line)[1])
         elif any(marker in line for marker in ('--', '-.', '==')) or not re.fullmatch(
-            rf'\s*(?:(?:graph|flowchart) TD;?|{NODE}(?:[:]{{3}}\w+)?|classDef \w+ [^;]+;?)\s*', line,
+            r'\s*(?:(?:graph|flowchart) TD;?|classDef \w+ [^;]+;?)\s*', line,
         ):
             raise ValueError(f"Unrecognized Mermaid line: {line}")
-    return result
+    return result, declared - connected
 
 
 class DiagramTests(unittest.TestCase):
@@ -99,8 +110,10 @@ class DiagramTests(unittest.TestCase):
         path = GRAPH / "gaps.toml"
         gaps = tomllib.loads(path.read_text()) if path.exists() else {}
         for name in ("delivery", "dispatch"):
-            actual = edges((GRAPH / f"{name}.mmd").read_text())
-            target = edges((GRAPH / ("target.mmd" if name == "delivery" else "dispatch-target.mmd")).read_text())
+            actual, actual_isolated = edges((GRAPH / f"{name}.mmd").read_text())
+            target, target_isolated = edges((GRAPH / ("target.mmd" if name == "delivery" else "dispatch-target.mmd")).read_text())
+            # Node labels, shapes and arrow kinds are presentation until #137 agrees stage semantics.
+            self.assertEqual(actual_isolated, target_isolated, f"{name} isolated nodes")
             for direction, difference in (("extra", actual - target), ("missing", target - actual)):
                 recorded = []
                 for slice_name, sources in gaps.get(name, {}).get(direction, {}).items():
@@ -113,7 +126,7 @@ class DiagramTests(unittest.TestCase):
     def test_stage_targets_and_gap_owners(self):
         targets = {path.name.removesuffix(".target.mmd")
                    for path in (GRAPH / "stages").glob("*.target.mmd")}
-        blueprint = edges((GRAPH / "target.mmd").read_text())
+        blueprint, _ = edges((GRAPH / "target.mmd").read_text())
         steps = {node for source, target, _ in blueprint for node in (source, target)}
         steps = (steps - {"__start__", "__end__"}) | {"dispatch_cell"}
         self.assertEqual(targets, steps, "missing or orphan stage target")
@@ -129,11 +142,59 @@ class DiagramTests(unittest.TestCase):
 
     def test_edge_labels_and_invalid_syntax(self):
         self.assertEqual(edges('a -->|fail: fix| b["step"]\na -. &nbsp;call&nbsp; .-> c;'),
-                         {("a", "b", "fail: fix"), ("a", "c", "call")})
+                         ({("a", "b", "fail: fix"), ("a", "c", "call")}, set()))
         for line in ("a ==> b", "a --> b --> c", "a-->b-->c", "a --- b", "a -.- c", "a --x d", 'a --> b["step"] --> c["step"]'):
             with self.subTest(line=line), self.assertRaises(ValueError):
                 edges(line)
-        self.assertEqual(edges("done --> __end__([End])"), {("done", "__end__", "")})
+        self.assertEqual(edges("done --> __end__([End])"), ({("done", "__end__", "")}, set()))
+
+    def test_added_isolated_halt_changes_projection(self):
+        original = 'a --> b'
+        self.assertNotEqual(edges(original), edges(original + '\nh["HALT invalid_output"]:::halt'))
+        self.assertEqual(edges('h["HALT"]\na --> b'), ({("a", "b", "")}, {"h"}))
+        self.assertEqual(edges('b["step"]\na --> b'), edges(original))
+        read_text = Path.read_text
+        def mutated(path, *args, **kwargs):
+            return read_text(path, *args, **kwargs) + ('\nh["HALT"]' if path == GRAPH / "delivery.mmd" else '')
+        with patch.object(Path, "read_text", mutated), self.assertRaisesRegex(AssertionError, "delivery isolated nodes"):
+            self.test_drift_is_exactly_the_scheduled_gaps()
+
+    def test_duplicate_edge_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Duplicate Mermaid edge"):
+            edges('a --> b\na --> b')
+
+    def test_stage_class_syntax_is_presentation(self):
+        for path in (GRAPH / "stages").glob("*.target.mmd"):
+            with self.subTest(path=path.name):
+                text = path.read_text()
+                self.assertEqual(edges(text), edges(re.sub(r':::\w+', '', text)))
+
+    def test_unsupported_syntax_mutation_is_rejected(self):
+        mutations = [
+            'a --> b\na ==> c',
+            'a -. &nbsp;x&nbsp; .-> b -. &nbsp;y&nbsp; .-> c',
+        ]
+        for marker in ('--', '-.', '=='):
+            mutations.extend((
+                f'a --> b\na(x {marker}> y)',
+                f'a --> b\na([x {marker}> y])',
+                f'a --> b\nclassDef x fill:#fff {marker}> y',
+                f'a --> b(x {marker}> y)',
+            ))
+        for text in mutations:
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "Unrecognized Mermaid line"):
+                edges(text)
+
+    def test_quoted_arrow_markers_are_presentation(self):
+        for shape in ('["--flag"]', '("--flag")', '(["--flag"])',
+                      '{"--flag"}', '{{"--flag"}}', '[/"--flag"/]'):
+            with self.subTest(shape=shape):
+                self.assertEqual(edges(f'a{shape} --> b["x -. y == z"]\nh{shape}'),
+                                 ({('a', 'b', '')}, {'h'}))
+
+    def test_order_whitespace_comments_and_style_are_presentation(self):
+        self.assertEqual(edges('a["start"] --> b\nb --> c\nh["halt"]'),
+                         edges('%% comment\nh["halt"]:::halt\n  b-->c;\na["new label"] -.-> b'))
 
     def test_write_rejects_missing_directory_or_markers_without_writes(self):
         with TemporaryDirectory() as directory:
