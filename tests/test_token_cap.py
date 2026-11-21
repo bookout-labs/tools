@@ -69,7 +69,7 @@ class TokenCapTests(unittest.TestCase):
             self.assertIsNone(result["attempts"][0]["usage"])
             self.assertEqual(run_exit_code(result), 1)
             graph = compile_delivery(unknown, config, run=LiveRun(forge=DryRun(), workspace=DryRun()))
-            saved = {**result, "halt": None, "stop": "", "path": [], "run": RunState(token_cap=1), "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}], "plan": PlanState()}
+            saved = {**result, "halt": None, "stop": "", "path": [], "run": RunState(token_cap=1), "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
             stopped = graph.invoke(saved)
             self.assertEqual(stopped["stop"], "budget_exceeded")
             self.assertEqual(calls, ["triage"])
@@ -98,7 +98,7 @@ class TokenCapTests(unittest.TestCase):
                 with SqliteSaver.from_conn_string(str(legacy)) as saver:
                     saver.serde = checkpoint_serializer()
                     graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
-                    graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {**snapshot, "run": snapshot["run"].model_copy(update={"token_cap": None}), "plan": PlanState()})
+                    graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {**snapshot, "run": snapshot["run"].model_copy(update={"token_cap": None})})
                 with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
                     run_live_delivery(**{**kwargs, "checkpoint": legacy}, dispatcher=quota)
 
@@ -114,7 +114,7 @@ class TokenCapTests(unittest.TestCase):
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
-                                   {**first, "run": first["run"].model_copy(update={"token_cap": None}), "plan": PlanState()})
+                                   {**first, "run": first["run"].model_copy(update={"token_cap": None})})
             with patch("foreman.delivery.export_skills", side_effect=SkillMissing(config.pstack)) as export:
                 with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
                     run_live_delivery(**kwargs, checkpoint=legacy, dispatcher=quota)
@@ -143,7 +143,7 @@ class TokenCapTests(unittest.TestCase):
                 graph.update_state(invocation, {"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
                     "plan": PlanState(triage="implement"), "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
                 graph.update_state(invocation, {"run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
-                                                "path": ["implement", "done"], "plan": PlanState()}, as_node="done")
+                                                "path": ["implement", "done"]}, as_node="done")
             with self.assertRaisesRegex(ValueError, "unknown usage history"):
                 run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=live,
                                   dispatcher=ScriptHandler())

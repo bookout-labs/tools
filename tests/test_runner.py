@@ -36,6 +36,7 @@ from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
 from test_adapters import codex_events, fixture_process
+from test_spec_candidate import CandidateTests
 
 
 HEAD = "a" * 40
@@ -313,11 +314,10 @@ class CliWorkerTest(unittest.TestCase):
         checks = ChecksState(check="true", preflight="env", check_exit_code=0, verify="pass", verified_head=HEAD,
             browser_proof=BROWSER, formal_proof=FORMAL, proof_labels={"browser": "block"})
 
-        plan = PlanState(triage="implement", issue_kind="slice", work_kind="feature", slice=EMPTY_SLICE, spec="Plan",
-            spec_gate="ready", slices=[EMPTY_SLICE], child_issue_numbers=[9], spec_rejection={"kind": "dangling_seam", "detail": "Missing"},
+        plan = PlanState(triage="implement", issue_kind="slice", spec_gate="ready", child_issue_numbers=[9],
+            spec_rejection={"kind": "dangling_seam", "detail": "Missing"},
             pr_split={"plan": "Split", "gate": "ready", "question": "Keep?", "slices": [EMPTY_SLICE]})
 
-        from test_spec_candidate import CandidateTests
         plan = CandidateTests().candidate().update(plan, single=True)
 
         def run(args, cwd, env):
@@ -1019,10 +1019,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["stop"], "ci_pending")
         result = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
         self.assertEqual(result["checks"], halted["checks"])
+        self.assertEqual(result["plan"], halted["plan"])
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(saved.checkpoint["channel_values"]["checks"], halted["checks"])
+        self.assertEqual(saved.checkpoint["channel_values"]["plan"], halted["plan"])
 
     def test_quota_pause_returns_the_resumable_cli_exit_code(self):
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
@@ -1899,6 +1901,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "pr_conflict")
         self.assertEqual(halted["work"].head_sha, "2" * 40)
+        halted["plan"] = halted["plan"].model_copy(update={"pr_split": {
+            "plan": "Split", "gate": "ready", "question": None, "slices": [EMPTY_SLICE]}})
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(self.github, workspace), checkpointer=saver)
+            graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {"plan": halted["plan"]}, as_node="done")
         remote = ready.model_copy(deep=True)
         remote.outcome, remote.pr.head.sha = "head_changed", "3" * 40
         workspace.current = WorktreeState("2" * 40, False, BRANCH)
@@ -1909,12 +1917,15 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(resumed["work"], expected)
         self.assertEqual(resumed["checks"], ChecksState(check=halted["checks"].check, preflight=halted["checks"].preflight))
         self.assertEqual(resumed["run"], halted["run"])
+        self.assertIsNone(resumed["plan"].pr_split)
+        self.assertEqual(resumed["plan"], halted["plan"].model_copy(update={"pr_split": None}))
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(saved.checkpoint["channel_values"]["checks"], resumed["checks"])
         self.assertEqual(saved.checkpoint["channel_values"]["work"], expected)
         self.assertEqual(saved.checkpoint["channel_values"]["run"], halted["run"])
+        self.assertEqual(saved.checkpoint["channel_values"]["plan"], resumed["plan"])
 
     def test_multi_round_repair_halt_preserves_run_and_discards_previous_attempt(self):
         workspace = FakeWorkspace(self.cwd)
@@ -1936,11 +1947,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "git_failed")
         self.assertIsNotNone(halted["work"].candidate)
-        halted["plan"] = halted["plan"].model_copy(update={"child_issue_numbers": [91]})
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saver.serde = checkpoint_serializer()
-            graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(self.github, workspace), checkpointer=saver)
-            graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {"plan": halted["plan"]}, as_node="done")
         workspace.current = WorktreeState(HEAD, False, BRANCH)
         resumed = self.walk([], workspace=workspace)
         self.assertEqual(resumed["stop"], "dirty_worktree")

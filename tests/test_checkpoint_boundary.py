@@ -33,7 +33,11 @@ class CheckpointBoundaryTests(unittest.TestCase):
                         saved = saver.get_tuple({"configurable": {"thread_id": "before-move"}})
                         values = saved.checkpoint["channel_values"]
                         values.clear()
-                        values.update(path=["triage"], attempts=[], review_rounds=2, triage="implement", spec="Plan", spec_gate="ready", issue_kind="slice", work_kind="feature", child_issue_numbers=[9])
+                        values.update(path=["triage"], attempts=[], review_rounds=2)
+                        plan = test_spec_candidate.CandidateTests().candidate().update(PlanState(
+                            triage="implement", spec_gate="ready", issue_kind="slice", child_issue_numbers=[9],
+                            spec_rejection={"kind": "dangling_seam", "detail": "Missing"},
+                            pr_split={"plan": "Split", "gate": "ready", "question": "Keep?", "slices": [test_spec_candidate.SLICE]}), single=True)
                         checks = ChecksState(check="true", preflight="env", check_exit_code=0, verify="pass",
                             verified_head="b" * 40, browser_proof={"screen": "page", "trace": "trace", "passed": True},
                             formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
@@ -48,6 +52,10 @@ class CheckpointBoundaryTests(unittest.TestCase):
                         revision = version if type(version) is int else 1
                         if version is not None:
                             values["schema_version"] = version
+                        if revision >= 6:
+                            values["plan"] = plan
+                        else:
+                            values.update(plan.model_dump())
                         if revision >= 5:
                             values["checks"] = checks
                         else:
@@ -165,10 +173,10 @@ with SqliteSaver.from_conn_string(path) as saver:
 '''
         size = {"head": "a" * 40, "merge_base": "b" * 40, "lines": 401}
         cases = [
-            ("triage", "triage_call", {"triage": "needs_human"}),
-            ("spec", "spec_call", {"spec_gate": "needs_human"}),
+            ("triage", "triage_call", {}),
+            ("spec", "spec_call", {}),
             ("review", "review_post", {"halt": "design_rethink", "review": "changes"}),
-            ("pr_size", "spec_call", {"spec_gate": "ready", "pr_size": size}),
+            ("pr_size", "spec_call", {"pr_size": size}),
             ("quota", "triage_call", {"halt": "quota_exhausted"}),
         ]
         cases += [(code.value, "done", {"halt": code.value, "stop": code.value}) for code in Halt]
@@ -186,9 +194,13 @@ with SqliteSaver.from_conn_string(path) as saver:
                         proof_labels={"browser": "block"}), "path": [stage], "human_question": "Which?", "halt_detail": "Waiting.", "attempts": [{"stage": "triage", "model": "gpt",
                                  "commit": "a" * 40, "methods": [], "outcome": "ran", "usage": {
                                      "input": 1, "output": 2, "cache_read": 0, "cache_creation": 0,
-                                     "cost_usd": None}}], **extra, "plan": PlanState()}
-                    plan = test_spec_candidate.CandidateTests().candidate().update(plan, single=True).model_copy(update={"spec_rejection": None})
-                    state["plan"] = plan.model_copy(update={key: state.pop(key) for key in ("triage", "spec_gate") if key in state})
+                                     "cost_usd": None}}], **extra}
+                    plan = test_spec_candidate.CandidateTests().candidate().update(plan, single=True)
+                    if predecessor == "spec_call":
+                        plan = plan.model_copy(update={"spec_gate": "needs_human" if name == "spec" else "ready", "spec_rejection": None})
+                    elif name == "triage":
+                        plan = plan.model_copy(update={"triage": "needs_human"})
+                    state["plan"] = plan
                     checkpoint = str(Path(directory) / f"{name}.sqlite")
                     outputs = []
                     for phase in ("write", "read"):

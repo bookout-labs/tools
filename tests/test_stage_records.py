@@ -174,4 +174,4 @@ class StageOwnershipTests(unittest.TestCase):
         from foreman.delivery import read_delivery_state
 
         with self.assertRaises(ValidationError):
-            read_delivery_state({"run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "stop": "sliced", "plan": PlanState(slice={"title": "Incomplete"})})
+            read_delivery_state({"run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "stop": "sliced", "plan": {"slice": {"title": "Incomplete"}}})
