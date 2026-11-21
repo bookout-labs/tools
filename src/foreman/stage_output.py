@@ -1,5 +1,6 @@
 """Worker output contracts shared by the CLI prompts and delivery graph."""
 
+from hashlib import sha256
 from typing import Annotated, Generic, Literal, Self, TypeVar
 
 from abc import abstractmethod
@@ -7,6 +8,8 @@ from abc import abstractmethod
 from typing_extensions import NotRequired, TypedDict, override
 
 from pydantic import BaseModel, ConfigDict, JsonValue, Field, PositiveInt, StringConstraints, TypeAdapter, ValidationError, with_config, field_validator, model_validator
+
+from pydantic.config import JsonDict
 
 from foreman.dispatch import InvalidOutput
 
@@ -75,7 +78,15 @@ class MergeRiskRecord(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class GraphCheckRecord(TypedDict):
+    head: str
+    command: str
+    exit_code: int
+
+
+@with_config(ConfigDict(extra="forbid"))
 class ToolFactRecord(TypedDict):
+    graph_check: GraphCheckRecord | None
     claim: str
     fixture: str | None
 
@@ -266,15 +277,42 @@ class MergeRisk(RecordContract[MergeRiskRecord]):
     level: Literal["low", "medium", "high"]
 
 
+class GraphCheck(Contract):
+    head: Text
+    command: Text
+    exit_code: int
+
+    @property
+    def claim(self) -> str:
+        return f"Check {self.command!r} exited {self.exit_code} at {self.head}."
+
+
+def _require_properties(schema: JsonDict) -> None:
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    schema["required"] = list(properties)
+
+
 class ToolFact(RecordContract[ToolFactRecord]):
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[ToolFactRecord]:
         return TypeAdapter(ToolFactRecord)
+
+    model_config = ConfigDict(json_schema_extra=_require_properties)
     claim: TrimmedText = Field(description="State the outside-tool behavior the diff relies on.")
+    graph_check: GraphCheck | None = Field(default=None, description="Only for an exact graph check restatement. Copy its claim verbatim and its structured evidence; otherwise null.")
     fixture: TrimmedText | None = Field(
-        description="Give the exact entry ID in tests/fixtures/manifest.toml. Use null when the claim has no recorded evidence.",
+        description="Give the exact entry ID in the run state fact_record. Use null when the claim has no recorded evidence.",
     )
+
+
+class StoredToolFact(ToolFact):
+    claim_id: Text
+
+    @classmethod
+    def from_fact(cls, fact: ToolFact) -> "StoredToolFact":
+        return cls(**fact.model_dump(), claim_id="tool-fact-" + sha256(fact.claim.encode()).hexdigest())
 
 
 class Finding(RecordContract[FindingRecord]):

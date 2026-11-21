@@ -62,9 +62,10 @@ class RecordedEvidenceTest(unittest.TestCase):
             "resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": "result.txt"}],
         })
+        gate = _check_tool_facts(output, LiveRun(Mock(), self.workspace), {
+            "repo": "example/repo", "check": "", "path": [], **({"verified_head": head} if head else {}),
+        })
         from foreman.review_round import ReviewHistory, accept
-
-        gate = _check_tool_facts(output, LiveRun(Mock(), self.workspace), head)
         return accept(ReviewHistory(), output, head or "", gate)
 
     def test_unreadable_manifest_blocks_approval(self):
@@ -89,6 +90,41 @@ class RecordedEvidenceTest(unittest.TestCase):
                 self.assertEqual(result.review, "changes")
                 self.assertIn("The CLI accepts --debug.", result.detail)
 
+    def test_custom_record_uses_its_own_directory_at_verified_head(self):
+        from foreman.fixture_manifest import recorded_fixtures
+        head = self.commit()
+        directory = self.root / "evidence"
+        directory.mkdir()
+        self.manifest.rename(directory / "facts.toml")
+        (self.fixtures / "result.txt").rename(directory / "result.txt")
+        self.assertEqual(recorded_fixtures(self.workspace, head, "evidence/facts.toml"), set())
+        self.assertEqual(recorded_fixtures(self.workspace, self.commit(), "evidence/facts.toml"), {"result.txt"})
+
+    def test_carried_claim_requires_committed_evidence_for_its_id(self):
+        from foreman.delivery import LiveRun, _check_tool_facts
+        from foreman.dry_run import DEFAULT_RISK
+        from foreman.stage_output import ReviewOutput, StoredToolFact, ToolFact
+        from foreman.review_round import GraphCheck, ReviewRound
+
+        fact = StoredToolFact.from_fact(ToolFact(claim="CLI accepts --debug", fixture=None))
+        state = {"repo": "example/repo", "check": "", "path": [],
+                 "review_findings": [ReviewRound(round=1, reviewed_head="a" * 40, findings=[], resolutions={},
+                     graph_check=GraphCheck(detail="Unrecorded fact", tool_facts=[fact])).model_dump()],
+                 "verified_head": self.commit()}
+        output = ReviewOutput(resolutions=[], risk=DEFAULT_RISK, findings=[], detail="Reviewed.", tool_facts=[])
+        run = LiveRun(Mock(), self.workspace)
+        self.manifest.write_text(self.manifest.read_text() + f'claim_ids = ["{fact.claim_id}"]\n')
+        self.assertEqual(_check_tool_facts(output, run, state).passed, False)
+        state["verified_head"] = self.commit()
+        self.assertEqual(_check_tool_facts(output, run, state).passed, True)
+        repeated = output.model_copy(update={"tool_facts": [ToolFact(claim=fact.claim, fixture="result.txt")]})
+        self.assertEqual(_check_tool_facts(repeated, run, state).tool_facts[0].model_dump()["claim_id"], fact.claim_id)
+        unrelated = output.model_copy(update={"tool_facts": [ToolFact(claim="Other behavior", fixture=None)]})
+        self.assertEqual(_check_tool_facts(unrelated, run, state).passed, False)
+        (self.fixtures / "result.txt").unlink()
+        state["verified_head"] = self.commit()
+        self.assertEqual(_check_tool_facts(output, run, state).passed, False)
+
     def test_only_regular_tracked_files_are_recorded(self):
         from foreman.fixture_manifest import recorded_fixtures
 
@@ -105,6 +141,48 @@ class RecordedEvidenceTest(unittest.TestCase):
         head = self.git("rev-parse", "HEAD")
         self.assertEqual(recorded_fixtures(self.workspace, head), set())
         self.assertEqual(self.check_approval(head).review, "changes")
+
+
+class GraphFactGateTest(unittest.TestCase):
+    def gate(self, facts, state):
+        from foreman.delivery import DryRun, _check_tool_facts
+        from foreman.dry_run import DEFAULT_RISK
+        from foreman.stage_output import ReviewOutput
+        output = ReviewOutput.model_validate({
+            "resolutions": [], "risk": DEFAULT_RISK, "findings": [], "detail": "Reviewed.",
+            "tool_facts": facts,
+        })
+        from foreman.review_round import ReviewHistory, accept
+        return accept(ReviewHistory(), output, state.get("verified_head", ""), _check_tool_facts(output, DryRun(), state))
+
+    def test_only_exact_graph_check_restatement_is_exempt(self):
+        from foreman.stage_output import GraphCheck
+        check = GraphCheck(head="a" * 40, command="exit 0", exit_code=0)
+        state = {"repo": "example/repo", "check": check.command, "path": [],
+                 "verified_head": check.head, "check_exit_code": 0, "verify": "pass"}
+        fact = {"claim": check.claim, "fixture": None, "graph_check": check.model_dump()}
+        self.assertEqual(self.gate([fact], state).review, "approve")
+        for altered in ({"claim": "CLI accepts --debug"}, {"graph_check": None},
+                        {"graph_check": {**check.model_dump(), "head": "b" * 40}},
+                        {"graph_check": {**check.model_dump(), "command": "other"}},
+                        {"graph_check": {**check.model_dump(), "exit_code": 1}}):
+            with self.subTest(altered=altered):
+                self.assertEqual(self.gate([{**fact, **altered}], state).review, "changes")
+        self.assertEqual(self.gate([fact], {**state, "verify": "fail"}).review, "changes")
+
+    def test_omission_cannot_resolve_an_unrecorded_fact(self):
+        fact = {"claim": "CLI accepts --debug", "fixture": None}
+        first = self.gate([fact], {"repo": "example/repo", "check": "exit 0", "path": []})
+        state = {"repo": "example/repo", "check": "exit 0", "path": [],
+                 "review_findings": [entry.model_dump() for entry in first.history.rounds]}
+        self.assertEqual(self.gate([], state).review, "changes")
+
+    def test_record_paths_are_relative_and_normalized(self):
+        from foreman.fixture_manifest import fact_record_path
+        for path in ("../manifest.toml", "/manifest.toml", "a/../manifest.toml", "", ".", "a//b"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                fact_record_path(path)
+        self.assertEqual(fact_record_path("evidence/facts.toml"), "evidence/facts.toml")
 
 
 class DerivedCaptureTest(unittest.TestCase):

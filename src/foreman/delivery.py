@@ -26,7 +26,7 @@ from typing_extensions import TypedDict
 from foreman.adapters import Outcome, OutcomeKind
 from foreman.config import Config, ConfigError, family, load_config, order_for
 from foreman.dispatch import FailoverDispatcher, InvalidOutput, QuotaExhausted
-from foreman.fixture_manifest import MANIFEST_PATH, recorded_fixtures
+from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, PullRequest, ReviewComment, merge_command, pull_request_command,
 )
@@ -34,7 +34,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillFailureReason, SkillMissing, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    BrowserProofRecord, FormalProofRecord, SliceRecord, Contract, Finding, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
+    BrowserProofRecord, FormalProofRecord, SliceRecord, Finding, Contract, StoredToolFact, GraphCheck as GraphEvidence, HumanQuestionOutput, ImplementOutput, ResearchOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, SpecOutput, StoredSlice, TriageOutput, VerifyOutput, WorkKind, parse_output,
 )
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.workspace import WorkspaceError, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, commit_sha, head_mismatch_detail
@@ -159,7 +159,7 @@ class DeliveryFields(TypedDict, total=False):
     review_findings: list[dict[str, object]]
     reviewed_head: str
     settled_rulings: list[dict[str, object]]
-    tool_facts: list[dict[str, str | None]]
+    fact_record: str
     findings: list[dict[str, object]]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None
@@ -266,21 +266,46 @@ def load_slice(raw: object) -> DeliveryUpdate:
     return state
 
 
-def _check_tool_facts(output: ReviewOutput, run: LiveRun | DryRun, head: str | None) -> GraphCheck | None:
-    recorded: set[str] = set()
-    notes = [output.detail]
-    if isinstance(run, LiveRun) and head and any(fact.fixture is not None for fact in output.tool_facts):
+def graph_check(state: DeliveryState) -> GraphEvidence | None:
+    head, command, code = state.get("verified_head"), state.get("check"), state.get("check_exit_code")
+    if head and command and code == 0 and state.get("verify") == "pass":
+        return GraphEvidence(head=head, command=command, exit_code=code)
+    return None
+
+
+def carried_tool_facts(state: DeliveryFields) -> list[StoredToolFact]:
+    gate = history({"rounds": state.get("review_findings", [])}).gate
+    return gate.tool_facts if gate else []
+
+
+def _check_tool_facts(
+    output: ReviewOutput, run: LiveRun | DryRun, state: DeliveryState,
+) -> GraphCheck | None:
+    head = state.get("verified_head")
+    manifest_path = state.get("fact_record", MANIFEST_PATH)
+    facts = {fact.claim: fact for fact in carried_tool_facts(state)}
+    for fact in output.tool_facts:
+        facts.setdefault(fact.claim, StoredToolFact.from_fact(fact))
+    proven = graph_check(state)
+    outside = [fact for fact in facts.values() if not (
+        proven is not None and fact.graph_check == proven and fact.claim == proven.claim
+    )]
+    recorded: dict[str, list[str]] = {}
+    notes: list[str] = []
+    if isinstance(run, LiveRun) and head and outside:
         try:
-            recorded = recorded_fixtures(run.workspace, head)
+            recorded = recorded_evidence(run.workspace, head, manifest_path)
         except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
-            notes.append(f"Could not check {MANIFEST_PATH} at {head}. {exc}")
-    unrecorded = [fact for fact in output.tool_facts if fact.fixture not in recorded]
-    if not unrecorded:
+            notes.append(f"Could not check {manifest_path} at {head}. {exc}")
+    claim_ids = {claim_id for ids in recorded.values() for claim_id in ids}
+    unrecorded = [fact for fact in outside if fact.fixture not in recorded and fact.claim_id not in claim_ids]
+    if not outside:
         return None
     for fact in unrecorded:
         citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
-        notes.append(f"Unrecorded outside-tool fact{citation}: {fact.claim}")
-    return GraphCheck(failing_heads=[head or ""], detail="\n".join(notes[1:]))
+        notes.append(f"Unrecorded outside-tool fact {fact.claim_id}{citation}: {fact.claim}")
+    return GraphCheck(failing_heads=[head or ""] if unrecorded else [],
+                      detail="\n".join(notes), passed=not unrecorded, tool_facts=outside)
 
 
 def stage_update(
@@ -303,7 +328,6 @@ def stage_update(
         update.update(
             risk=output.risk.model_dump(), detail=output.detail,
             findings=[finding.model_dump() for finding in output.findings],
-            tool_facts=[fact.model_dump() for fact in output.tool_facts],
         )
     elif isinstance(output, VerifyOutput):
         update["verify"] = output.verify
@@ -428,6 +452,22 @@ def compile_delivery(
             methods_text, methods = stage_methods(name, state, methods_root) if methods_root is not None else ("", [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
+            if name in {"implement", "review"}:
+                instruction += f"\n\nFact record in this checkout: {state.get('fact_record', MANIFEST_PATH)}"
+            gate = history({"rounds": state.get("review_findings", [])}).gate if state.get("review") == "changes" else None
+            if name == "implement" and gate and not gate.passed:
+                instruction += (
+                    "\nResolve the tool-facts finding by recording evidence and creating the record and parent directories if absent."
+                    " Fixture IDs are paths relative to the record directory. Commit regular evidence files."
+                    " Use TOML [fixtures.\"<evidence-file>\"] with tool and version, plus either"
+                    " kind = \"captured_run\" and argv = [\"tool\", \"arg\"] for captured output, or"
+                    " kind = \"quoted_source\" and sources = [\"https://source\"] for quoted source evidence."
+                    ' Add claim_ids = ["<claim_id>"] to the evidence entry for each carried claim.'
+                    " Support each carried tool fact; the graph rechecks the published verified head."
+                )
+                instruction += "\nCarried tool facts:\n" + json.dumps([fact.model_dump() for fact in carried_tool_facts(state)])
+            if name == "review" and (proven := graph_check(state)) is not None:
+                instruction += f"\nGraph fact: {proven.claim}\nGraph check evidence: {proven.model_dump_json()}"
             if name == "verify":
                 command = state.get("check") or "(none)"
                 instruction = f"{instruction}\n\nCommand: {command}"
@@ -491,11 +531,8 @@ def compile_delivery(
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output)
                 accepted: AcceptedReview | None = None
                 if isinstance(output, ReviewOutput):
-                    facts = list(({f.claim: f for r in past.rounds for f in r.tool_facts}
-                                  | {f.claim: f for f in output.tool_facts}).values())
-                    checked = output.model_copy(update={"tool_facts": facts})
                     head = state.get("verified_head") or state.get("head_sha") or ""
-                    accepted = accept(past, checked, head, _check_tool_facts(checked, run, head), review_context[2] if review_context else None)
+                    accepted = accept(past, output, head, _check_tool_facts(output, run, state), review_context[2] if review_context else None)
                 update = stage_update(name, output, state, model, workspace=plan_workspace)
                 update["skill_attempts"] = attempts
                 if accepted is not None:
@@ -574,7 +611,11 @@ def compile_delivery(
             if after.head != before.head or after.branch != before.branch:
                 return {**halted("failed", "The worker changed HEAD or switched branches.", "implement"), "head_sha": after.head}
             if not update.get("halt") and after.clean:
-                return halted("failed", "no changes", "implement")
+                identifiers = [str(f.get("id")) for f in state.get("findings", [])]
+                if (gate := history({"rounds": state.get("review_findings", [])}).gate) and not gate.passed:
+                    identifiers.insert(0, "tool-facts")
+                detail = "no changes" + ("; unresolved findings: " + ", ".join(identifiers) if identifiers else "")
+                return halted("failed", detail, "implement")
             fingerprint = run.workspace.fingerprint()
             return {**update, "implementation_edits": fingerprint,
                     "partial_edits": fingerprint if update.get("halt") == "quota_exhausted" else ""}
@@ -953,9 +994,11 @@ def run_delivery(
     config: Config | None = None,
     slice: object = None,
     scratch: Path | None = None,
+    fact_record: str = MANIFEST_PATH,
 ) -> DeliveryResult:
     state: DeliveryState = {
         "repo": repo,
+        "fact_record": fact_record_path(fact_record),
         "request": request,
         "check": check,
         "issue_kind": "parent" if slice is None else "slice",
