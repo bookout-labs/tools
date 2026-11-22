@@ -506,6 +506,7 @@ def compile_delivery(
             model = accepted_model.name if accepted_model else None
             attempts = [Attempt(
                 stage=name, model=model, commit=config.pstack.commit, methods=methods, outcome=outcome.kind,
+                prompt_bytes=outcome.prompt_bytes, native_usage=outcome.native_usage,
                 usage=None if outcome.usage is None else AttemptUsage(
                     input=outcome.usage.input_tokens, output=outcome.usage.output_tokens,
                     cache_read=outcome.usage.cache_read_input_tokens or 0,
