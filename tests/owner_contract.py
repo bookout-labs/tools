@@ -35,11 +35,11 @@ OWNERS = (
             "candidate": "implementation_candidate"}, repair_head_field="repair_head"),
     OwnerCase("run", RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
         token_cap=100, max_budget_usd="1.5"), frozenset(RunState.model_fields), 4, {}),
-    OwnerCase("checks", ChecksState(check="true", preflight="env", check_exit_code=0, verify="pass",
+    OwnerCase("checks", ChecksState(verify_failures=2, proof_failures=1, check="true", preflight="env", check_exit_code=0, verify="pass",
         verified_head="b" * 40, browser_proof={"screen": "page", "trace": "trace", "passed": True},
         formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
-        proof_labels={"browser": "block"}), frozenset({"check", "preflight"}), 5, {}),
-    OwnerCase("plan", CandidateTests().candidate().update(PlanState(triage="implement", spec_gate="ready",
+        proof_labels={"browser": "block"}), frozenset({"check", "preflight", "verify_failures", "proof_failures"}), 5, {}),
+    OwnerCase("plan", CandidateTests().candidate().update(PlanState(spec_failures=2, triage="implement", spec_gate="ready",
         issue_kind="parent", work_kind="feature", child_issue_numbers=[9],
         spec_rejection={"kind": "dangling_seam", "detail": "Missing"},
         pr_split={"plan": "Split", "gate": "ready", "question": "Keep?", "slices": [SLICE]}), single=True),
@@ -58,6 +58,11 @@ OWNERS = (
 )
 
 
+COUNTERS = (("verify", "checks", "verify_failures", "verify_cap"),
+            ("proof", "checks", "proof_failures", "review_cap"),
+            ("spec", "plan", "spec_failures", "spec_cap"),
+            ("review", "review", "review_findings", "review_cap"))
+
 def assert_channels(test, values, expected, *, names=None):
     for owner in OWNERS:
         if names is not None and owner.name not in names:
@@ -68,16 +73,36 @@ def assert_channels(test, values, expected, *, names=None):
 
 
 def historical_channels(version):
-    values = {"path": ["triage"], "attempts": [], "review_rounds": 2}
+    values = {"path": ["triage"], "attempts": []}
+    if type(version) is not int or version < 9:
+        values["review_rounds"] = 2
     for owner in OWNERS:
         if type(version) is int and version >= owner.grouped_at:
             values[owner.name] = owner.value
         else:
             values.update({owner.legacy_keys.get(field, field): value
                            for field, value in owner.value.model_dump().items()})
+    if type(version) is not int or version < 9:
+        for stage, owner, field, _ in COUNTERS:
+            if stage == "review":
+                continue
+            values[field] = 2
+            if owner in values:
+                values[owner] = values[owner].model_copy(update={field: 0})
     if version is not None:
         values["schema_version"] = version
     return values
+
+
+def seed_repair_channels(values, *, head_changed=False):
+    for owner in OWNERS:
+        fields = (type(owner.value).model_fields.keys() - owner.durable)
+        fields |= {field for _, name, field, _ in COUNTERS if name == owner.name and field != "review_findings"}
+        if head_changed:
+            fields |= owner.clear_on_head_change
+        if owner.name == "review":
+            fields |= {"settled_rulings", "fact_record"}
+        values[owner.name] = values.get(owner.name, type(owner.value)()).model_copy(update=owner.value.model_dump(include=fields))
 
 
 def assert_repaired(test, before, after, *, repair_head):
@@ -87,9 +112,9 @@ def assert_repaired(test, before, after, *, repair_head):
             defaults = type(owner.value)()
             for field in type(owner.value).model_fields.keys() - durable:
                 test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
-            if owner.name == "review":
-                for field in durable:
-                    test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
+            required = durable if owner.name == "review" else {field for _, name, field, _ in COUNTERS if name == owner.name}
+            for field in required:
+                test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
             fields = before[owner.name].model_dump(include=durable)
             if owner.repair_head_field is not None and repair_head is not None:
                 fields[owner.repair_head_field] = repair_head

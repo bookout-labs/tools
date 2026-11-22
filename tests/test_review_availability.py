@@ -177,11 +177,11 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                     self.assertIn(f"review {model}: {kind}. review fixture", first["result"]["halt_detail"])
                 again = self.invoke(root, author, outcomes, 75)
                 self.assertEqual(again["calls"], expected)
-                self.assertEqual(again["result"]["review_rounds"], 0)
+                self.assertEqual(len(again["result"]["review"].review_findings), 0)
                 self.assertEqual((again["posts"], again["merges"]), (0, 0))
                 ready = self.invoke(root, author, ["ran"], 0)
                 self.assertEqual(ready["calls"], expected[:1])
-                self.assertEqual(ready["result"]["review_rounds"], 1)
+                self.assertEqual(len(ready["result"]["review"].review_findings), 1)
                 self.assertEqual(ready["result"]["attempts"][:len(again["result"]["attempts"])], again["result"]["attempts"])
                 self.assertEqual((ready["posts"], ready["merges"]), (1, 1))
                 self.assertEqual(ready["result"]["path"].count("implement"), 1)
@@ -204,7 +204,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 self.assertEqual([a["model"] for a in attempts], models)
                 self.assertEqual([a["outcome"] for a in attempts], ["ran" if k in {"changes", "invalid"} else k for k in outcomes])
                 self.assertEqual([a["usage"] is None for a in attempts], [k in {"quota", "cli_missing", "failed"} for k in outcomes])
-                self.assertEqual(result["result"]["review_rounds"], rounds)
+                self.assertEqual(len(result["result"]["review"].review_findings), rounds)
                 self.assertEqual(result["posts"], posts)
                 if not code:
                     self.assertEqual(result["result"]["halt_detail"], "")
@@ -217,7 +217,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 if code:
                     self.assertEqual(result["result"]["halt"], "invalid_output")
                     self.assertIn(f"review output from {models[-1]}:", result["result"]["halt_detail"])
-                    self.assertEqual(result["result"]["review_rounds"], rounds)
+                    self.assertEqual(len(result["result"]["review"].review_findings), rounds)
                     self.assertEqual((result["posts"], result["merges"]), (posts, 0))
                     self.assertEqual(self.invoke(Path(directory), author, [], 1)["calls"], [])
 
@@ -229,7 +229,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
             with self.subTest(author=author), TemporaryDirectory(dir=self.root) as directory:
                 result = self.invoke(Path(directory), author, outcomes, 0, mode)
                 self.assertEqual(result["calls"], calls)
-                self.assertEqual(result["result"]["review_rounds"], rounds)
+                self.assertEqual(len(result["result"]["review"].review_findings), rounds)
                 self.assertEqual((result["posts"], result["merges"]), (rounds, 1))
                 provenance = result["result"]["review"].review_findings[-1]["provenance"]
                 self.assertTrue(provenance["same_family"])
@@ -242,7 +242,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 result = self.invoke(Path(directory), "gpt", [outcome], 1)
                 self.assertEqual(result["calls"], ["claude-opus-5-5-high"])
                 self.assertEqual(result["result"]["halt"], halt)
-                self.assertEqual(result["result"]["review_rounds"], 0)
+                self.assertEqual(len(result["result"]["review"].review_findings), 0)
                 self.assertEqual((result["posts"], result["merges"]), (0, 0))
                 attempts = [a for a in result["result"]["attempts"] if a["stage"] == "review"]
                 self.assertEqual(len(attempts), 1)
@@ -273,10 +273,9 @@ class ReviewerAvailabilityTest(unittest.TestCase):
             root = Path(directory)
             first = self.invoke(root, "grok", ["changes", "quota", "cli_missing"], 75)["result"]
             again = self.invoke(root, "grok", ["quota", "cli_missing"], 75)["result"]
-            for field in ("review", "review_rounds", "verify_failures", "proof_failures", "spec_failures"):
+            for field in ("review", "checks", "plan"):
                 self.assertEqual(first[field], again[field])
             ready = self.invoke(root, "grok", ["ran"], 0)["result"]
-            self.assertEqual(ready["review_rounds"], 2)
             self.assertEqual(len(ready["review"].review_findings), 2)
             self.assertEqual(ready["review"].review_findings[0], first["review"].review_findings[0])
 
@@ -321,7 +320,6 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 self.assertEqual(result["path"][-2:], ["review", "done"])
                 self.assertEqual(result["path"].count("implement"), rounds + 1)
                 self.assertEqual(result["path"].count("verify"), rounds + 1)
-                self.assertEqual(result["review_rounds"], rounds)
                 self.assertEqual(len(result["review"].review_findings), rounds)
                 self.assertEqual(first["posted"], first["posts_before_rejection"])
                 self.assertEqual((first["posts"], first["merges"]), (rounds, 0))
