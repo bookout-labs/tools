@@ -116,7 +116,7 @@ def legacy_order(node, config, used, implement_models=None):
 def legacy_halt(reason, detail, stage):
     return halted(Halt.quota_exhausted if reason == "reviewer_unavailable" else Halt(reason), detail, stage)
 run = LiveRun(forge, workspace)
-with patch("foreman.runner.load_config", return_value=config), patch("foreman.delivery.order_for", legacy_order), patch("foreman.delivery.halted", legacy_halt if legacy == "pause" else halted):
+with patch("foreman.runner.load_config", return_value=config), patch("foreman.stages.order_for", legacy_order), patch("foreman.delivery.halted", legacy_halt if legacy == "pause" else halted):
     try:
         result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
             checkpoint=root / "run.sqlite3", run=run, dispatcher=worker)

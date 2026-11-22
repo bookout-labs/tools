@@ -1,4 +1,5 @@
 import tests
+from foreman.stages import STAGES
 
 import unittest
 
@@ -8,7 +9,7 @@ from foreman.delivery import MODEL_STAGES
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import ScriptHandler
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
-from foreman.stage_output import STAGE_OUTPUTS, parse_output
+from foreman.stage_output import parse_output
 from test_delivery import walk
 
 
@@ -26,7 +27,7 @@ class RejectedStageOutputTest(unittest.TestCase):
                         diagnostic = "adapter could not parse JSON"
                         if kind == "ran":
                             with self.assertRaises(InvalidOutput) as raised:
-                                parse_output(STAGE_OUTPUTS[stage], {}, context=SCRIPTED_REVIEW_CONTEXT)
+                                parse_output(STAGES[stage].output, {}, context=SCRIPTED_REVIEW_CONTEXT)
                             diagnostic = str(raised.exception)
 
                         def worker(node, model, state, instruction):

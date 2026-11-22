@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 
 SkillSource = Callable[[PstackPin, Path], Path]
 
-AgentStage = Literal["triage", "research", "spec", "spec_check", "implement", "review"]
 LocalSkill = Literal["browser-proof", "formal-proof", "merge-risk", "review-quality"]
 Condition = WorkKind | Literal["stateful", "browser", "formal"]
 SkillFailureReason = Literal["pin_unavailable", "method_missing"]
@@ -43,7 +42,6 @@ class PstackMethod(BaseModel):
 class SkillRule(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    stage: AgentStage
     skill: PstackMethod | LocalSkill
     when: Condition | None = None
 
@@ -62,38 +60,8 @@ class SkillRule(BaseModel):
                 return plan.work_kind == work_kind
 
 
-def principle(stage: AgentStage, name: str) -> SkillRule:
-    return SkillRule(stage=stage, skill=PstackMethod(path=f"principle-{name}/SKILL.md", kind="principle"))
-
-
-SKILL_RULES = (
-    SkillRule(stage="triage", skill=PstackMethod(path="poteto-mode/SKILL.md", kind="skill", lines=(110, 110))),
-    SkillRule(stage="research", skill=PstackMethod(path="how/SKILL.md", kind="leaf_prompt", lines=(17, 17))),
-    SkillRule(stage="research", skill=PstackMethod(path="why/SKILL.md", kind="skill"), when="bug_fix"),
-    principle("spec", "redesign-from-first-principles"),
-    principle("spec", "subtract-before-you-add"),
-    principle("spec", "model-the-domain"),
-    principle("spec", "boundary-discipline"),
-    principle("spec", "type-system-discipline"),
-    SkillRule(stage="spec", skill=PstackMethod(path="statechart/SKILL.md", kind="skill"), when="stateful"),
-    principle("spec_check", "model-the-domain"),
-    principle("spec_check", "boundary-discipline"),
-    principle("spec_check", "type-system-discipline"),
-    principle("spec_check", "prove-it-works"),
-    principle("implement", "laziness-protocol"),
-    principle("implement", "test-behavior-not-implementation"),
-    principle("implement", "prove-it-works"),
-    SkillRule(stage="implement", skill=PstackMethod(path="tdd/SKILL.md", kind="skill"), when="bug_fix"),
-    SkillRule(stage="implement", skill=PstackMethod(path="benchmark-checklist/SKILL.md", kind="skill"), when="perf_issue"),
-    SkillRule(stage="implement", skill="browser-proof", when="browser"),
-    SkillRule(stage="implement", skill="formal-proof", when="formal"),
-    principle("review", "boundary-discipline"),
-    principle("review", "model-the-domain"),
-    principle("review", "prove-it-works"),
-    principle("review", "test-behavior-not-implementation"),
-    SkillRule(stage="review", skill="review-quality"),
-    SkillRule(stage="review", skill="merge-risk"),
-)
+def principle(name: str) -> SkillRule:
+    return SkillRule(skill=PstackMethod(path=f"principle-{name}/SKILL.md", kind="principle"))
 
 
 class SkillMissing(ValueError):
@@ -112,6 +80,8 @@ def git(root: Path, *args: str) -> str:
 
 
 def export_skills(pin: PstackPin, scratch: Path) -> Path:
+    from foreman.stages import STAGES
+
     checkout = scratch / "source"
     checkout.mkdir()
     archive = scratch / "skills.tar"
@@ -126,7 +96,7 @@ def export_skills(pin: PstackPin, scratch: Path) -> Path:
     except (OSError, subprocess.CalledProcessError, tarfile.TarError) as exc:
         raise SkillMissing(pin) from exc
 
-    for rule in SKILL_RULES:
+    for rule in (rule for stage in STAGES.values() for rule in stage.skills):
         method = rule.skill
         path = root / method.path if isinstance(method, PstackMethod) else PACKAGE_SKILLS / f"{method}.md"
         try:
@@ -149,11 +119,13 @@ def export_skills(pin: PstackPin, scratch: Path) -> Path:
 
 
 def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, list[str], list[str]]:
+    from foreman.stages import STAGES
+
     instructions: list[str] = []
     methods: list[str] = []
     roots: list[str] = []
-    for rule in SKILL_RULES:
-        if rule.stage != stage or not rule.applies(state):
+    for rule in STAGES[stage].skills:
+        if not rule.applies(state):
             continue
         method = rule.skill
         read_root = str((PACKAGE_SKILLS if isinstance(method, str) else root).resolve())

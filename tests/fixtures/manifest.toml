@@ -596,7 +596,7 @@ notes = "Versioned source excerpts show literal raw fields, JSON POST bodies, an
 
 # ## Codex JSONL
 #
-# Generate `triage.json` with `json.dumps(STAGE_OUTPUTS["triage"].model_json_schema())` from `foreman.stage_output`.
+# Generate `triage.json` with `json.dumps(STAGES["triage"].output.model_json_schema())` from `foreman.stages`.
 # The success probe used this argv in a temporary directory with stdin closed.
 #
 # ```sh
@@ -667,28 +667,28 @@ tool = "codex"
 version = "0.171.0"
 kind = "captured_run"
 argv = ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", "-c", "approval_policy=never", "-c", "mcp_servers={}", "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", "triage.json", "--color", "never", "-s", "read-only", "Do not use tools or read files. Choose needs_human, with no slice, and ask \"Which items?\""]
-notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGE_OUTPUTS[\"triage\"].model_json_schema(); <port> is the loopback stub port."
+notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGES[\"triage\"].output.model_json_schema(); <port> is the loopback stub port."
 
 [fixtures."codex/invalid-model.jsonl"]
 tool = "codex"
 version = "0.171.0"
 kind = "captured_run"
 argv = ["codex", "exec", "-m", "gpt-foreman-fixture-invalid", "-c", "model_reasoning_effort=high", "-c", "approval_policy=never", "-c", "mcp_servers={}", "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", "triage.json", "--color", "never", "-s", "read-only", "Do not use tools or read files. Choose needs_human, with no slice, and ask \"Which items?\""]
-notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGE_OUTPUTS[\"triage\"].model_json_schema(); <port> is the loopback stub port."
+notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGES[\"triage\"].output.model_json_schema(); <port> is the loopback stub port."
 
 [fixtures."codex/quota.jsonl"]
 tool = "codex"
 version = "0.171.0"
 kind = "captured_run"
 argv = ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", "-c", "approval_policy=never", "-c", "model_provider=synthetic", "-c", "model_providers.synthetic={name=\"Synthetic\", env_key=\"FOREMAN_PROBE_KEY\", base_url=\"http://127.0.0.1:<port>/v1\", request_max_retries=0, wire_api=\"responses\"}", "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", "triage.json", "--color", "never", "-s", "read-only", "Do not use tools or read files. Choose needs_human, with no slice, and ask \"Which items?\""]
-notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGE_OUTPUTS[\"triage\"].model_json_schema(); <port> is the loopback stub port."
+notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGES[\"triage\"].output.model_json_schema(); <port> is the loopback stub port."
 
 [fixtures."codex/cached_success.jsonl"]
 tool = "codex"
 version = "0.171.0"
 kind = "captured_run"
 argv = ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", "-c", "approval_policy=never", "-c", "model_provider=synthetic", "-c", "model_providers.synthetic={name=\"Synthetic\", env_key=\"FOREMAN_PROBE_KEY\", base_url=\"http://127.0.0.1:<port>/v1\", request_max_retries=0, wire_api=\"responses\"}", "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", "triage.json", "--color", "never", "-s", "read-only", "Do not use tools or read files. Choose needs_human, with no slice, and ask \"Which items?\""]
-notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGE_OUTPUTS[\"triage\"].model_json_schema(); <port> is the loopback stub port."
+notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGES[\"triage\"].output.model_json_schema(); <port> is the loopback stub port."
 
 [fixtures."codex/quota-formatters.json"]
 tool = "codex"
@@ -1271,3 +1271,10 @@ tool = "Python typing.get_type_hints"
 version = "3.14.7"
 argv = ["python", "-c", "import json; from typing import get_type_hints; from foreman.delivery import DeliveryState; print(json.dumps(sorted(get_type_hints(DeliveryState))))"]
 notes = "State channel inventory captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73."
+
+[fixtures."stage-calls.json"]
+tool = "Foreman adapter Call capture with scripted responses"
+version = "38295f978f6d4fa149ec9844ea32554d39c107bb"
+kind = "captured_run"
+argv = ["python", "-"]
+notes = "Captured test_stage_declarations.capture() before registry replacement on this main revision, using stable UUIDs and symbolic method roots. Each value is SHA256 of json.dumps(case, sort_keys=True), including brief and final prompt digests, schema, grants, models and method order. No model CLI was invoked."

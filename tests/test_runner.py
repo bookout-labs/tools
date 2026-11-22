@@ -1,6 +1,7 @@
 """Live runner behavior with offline workers and forge doubles."""
 
 import tests
+from foreman.stages import STAGES
 
 import contextlib
 from dataclasses import replace
@@ -34,7 +35,7 @@ from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
-from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
+from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
@@ -343,7 +344,7 @@ class CliWorkerTest(unittest.TestCase):
                         schema = json.loads(schema_path.read_text())
                     else:
                         schema = json.loads(args[args.index("--json-schema") + 1])
-                    self.assertEqual(schema, STAGE_OUTPUTS["triage"].model_json_schema())
+                    self.assertEqual(schema, STAGES["triage"].output.model_json_schema())
                     return worker_reply(args, {"triage": "implement"})
 
                 result = CliWorker(Path("engine"), run)(
@@ -538,7 +539,7 @@ class StageOutputTest(unittest.TestCase):
 
     def test_schema_snapshot(self):
         snapshot = Path(__file__).with_name("stage-schemas.json").read_text()
-        schemas = {name: model.model_json_schema() for name, model in STAGE_OUTPUTS.items()}
+        schemas = {name: model.model_json_schema() for name, stage in STAGES.items() if (model := stage.output) is not None}
         self.assertEqual(schemas, json.loads(snapshot))
 
     def test_every_object_in_the_schema_is_strict(self):
@@ -548,7 +549,9 @@ class StageOutputTest(unittest.TestCase):
                 self.assertIs(schema["additionalProperties"], False)
             return schema
 
-        for model in STAGE_OUTPUTS.values():
+        for stage in STAGES.values():
+            if (model := stage.output) is None:
+                continue
             schema = model.model_json_schema()
             self.assertEqual(schema["type"], "object")
             self.assertNotIn("anyOf", schema)
