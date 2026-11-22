@@ -308,6 +308,38 @@ def render_slice_body(prose: str, child: StoredSlice) -> str:
     )
 
 
+class SmokeActor(BaseModel, strict=True):
+    name: str
+    email: str
+
+
+class SmokeCommit(BaseModel, strict=True):
+    author: SmokeActor
+    committer: SmokeActor
+
+
+class SmokeGitHubCommit(BaseModel, strict=True):
+    sha: str
+    author: RepositoryOwner | None
+    committer: RepositoryOwner | None
+    commit: SmokeCommit
+
+
+class SmokeHead(BaseModel, strict=True):
+    sha: str
+
+
+class SmokePull(BaseModel, strict=True):
+    user: RepositoryOwner
+    head: SmokeHead
+
+
+class SmokeReview(BaseModel, strict=True):
+    user: RepositoryOwner
+    state: Literal["COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED", "PENDING"]
+    commit_id: str
+
+
 class LiveForge:
     def __init__(self):
         self._defaults: dict[str, str] = {}
@@ -319,6 +351,20 @@ class LiveForge:
         email = f"{user_id}+{BOT_LOGIN}@users.noreply.github.com"
         return {f"GIT_{role}_{field}": value for role in ("AUTHOR", "COMMITTER")
                 for field, value in (("NAME", BOT_LOGIN), ("EMAIL", email))}
+
+    def smoke_identity(self, repo: str, pr: int, head: str, review: int) -> tuple[bool, bool, bool]:
+        pull = self._read(repo, SmokePull, ["gh", "api", f"repos/{repo}/pulls/{pr}"])
+        commit = self._read(repo, SmokeGitHubCommit, ["gh", "api", f"repos/{repo}/commits/{head}"])
+        observed = self._read(repo, SmokeReview, ["gh", "api", f"repos/{repo}/pulls/{pr}/reviews/{review}"])
+        identity = self.bot_identity(repo)
+        return (
+            pull.user.login == BOT_LOGIN and pull.head.sha.lower() == head.lower(),
+            commit.sha.lower() == head.lower() and all(actor is not None and actor.login == BOT_LOGIN
+                                                      for actor in (commit.author, commit.committer))
+            and all(actor.name == BOT_LOGIN and actor.email == identity["GIT_AUTHOR_EMAIL"]
+                    for actor in (commit.commit.author, commit.commit.committer)),
+            observed.user.login == BOT_LOGIN and observed.state == "COMMENTED" and observed.commit_id.lower() == head.lower(),
+        )
 
     def default_branch(self, repo: str) -> str:
         if repo not in self._defaults:
