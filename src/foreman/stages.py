@@ -111,25 +111,25 @@ def spec_instructions(state: "DeliveryState") -> str:
 
 
 def accept_output(
-    output: StageOutput, state: "DeliveryState", model: str | None,
-    workspace: Workspace | None, accepted_model: ModelSpec | None,
+    output: StageOutput, state: "DeliveryState", model: ModelSpec | str | None,
+    workspace: Workspace | None,
 ) -> "DeliveryUpdate":
-    return {**output.update(UpdateContext(state["plan"], state["review"], bool(oversized_pr(state)), [], accepted_model))}
+    return {**output.update(UpdateContext(state["plan"], state["review"], bool(oversized_pr(state)), [], model if isinstance(model, ModelSpec) else None))}
 
 
 def accept_spec(
-    output: StageOutput, state: "DeliveryState", model: str | None,
-    workspace: Workspace | None, accepted_model: ModelSpec | None,
+    output: StageOutput, state: "DeliveryState", model: ModelSpec | str | None,
+    workspace: Workspace | None,
 ) -> "DeliveryUpdate":
     assert isinstance(output, SpecOutput)
     plan = state["plan"]
     slices = clean_slices(output.slices, workspace) if plan.issue_kind == "parent" and output.spec_gate == "ready" else []
-    return {**output.update(UpdateContext(plan, state["review"], bool(oversized_pr(state)), slices, accepted_model))}
+    return {**output.update(UpdateContext(plan, state["review"], bool(oversized_pr(state)), slices, model if isinstance(model, ModelSpec) else None))}
 
 
 def accept_implement(
-    output: StageOutput, state: "DeliveryState", model: str | None,
-    workspace: Workspace | None, accepted_model: ModelSpec | None,
+    output: StageOutput, state: "DeliveryState", model: ModelSpec | str | None,
+    workspace: Workspace | None,
 ) -> "DeliveryUpdate":
     assert isinstance(output, ImplementOutput)
     update: DeliveryUpdate = {"implementation": output.implementation, "checks": state["checks"].model_copy(update={
@@ -139,8 +139,18 @@ def accept_implement(
     if model:
         latest = state.get("models_used", {}).get("implement")
         history = state.get("implement_models", [latest] if latest else [])
-        update["implement_models"] = [*history, model]
+        update["implement_models"] = [*history, model.name if isinstance(model, ModelSpec) else model]
     return update
+
+
+def accept_verify(
+    output: StageOutput, state: "DeliveryState", model: ModelSpec | str | None,
+    workspace: Workspace | None,
+) -> "DeliveryUpdate":
+    assert isinstance(output, VerifyOutput)
+    checks = state["checks"]
+    return {"checks": checks.model_copy(update={"verify": output.verify,
+        "verify_failures": checks.verify_failures + (output.verify == "fail")})}
 
 
 @dataclass(frozen=True)
@@ -151,7 +161,7 @@ class Stage:
     kind: Literal["model", "dormant", "deterministic"] = "model"
     input_fields: tuple[str, ...] = ()
     prepare: Callable[["DeliveryState"], str] = no_instructions
-    accept: Callable[[StageOutput, "DeliveryState", str | None, Workspace | None, ModelSpec | None], "DeliveryUpdate"] = accept_output
+    accept: Callable[[StageOutput, "DeliveryState", ModelSpec | str | None, Workspace | None], "DeliveryUpdate"] = accept_output
 
     def models(self, name: str, state: "DeliveryState", config: Config) -> list[ModelSpec]:
         return order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
@@ -196,6 +206,6 @@ STAGES = {
         SkillRule(skill="review-quality"),
         SkillRule(skill="merge-risk"),
     ), input_fields=("run", "plan", "work", "checks", "review", "implementation")),
-    "verify": Stage(None, VerifyOutput, kind="deterministic", input_fields=("checks",)),
+    "verify": Stage(None, VerifyOutput, accept=accept_verify, kind="deterministic", input_fields=("checks",)),
     "proof": Stage(None, None, kind="deterministic", input_fields=("plan", "checks", "review")),
 }

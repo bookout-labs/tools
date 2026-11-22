@@ -34,7 +34,7 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    PlanState, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, StoredSlice, VerifyOutput, parse_output,
+    PlanState, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, StoredSlice, parse_output,
 )
 from foreman.stages import STAGES, InvalidSlicePlan, oversized_pr
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
@@ -227,13 +227,7 @@ def _check_tool_facts(
 def stage_update(
     name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None,
 ) -> DeliveryUpdate:
-    update: DeliveryUpdate
-    if isinstance(output, VerifyOutput):
-        checks = state["checks"]
-        update = {"checks": checks.model_copy(update={"verify": output.verify,
-            "verify_failures": checks.verify_failures + (output.verify == "fail")})}
-    else:
-        update = STAGES[name].accept(output, state, model, workspace, accepted_model)
+    update = STAGES[name].accept(output, state, accepted_model or model, workspace)
     update["path"] = [name]
     if model:
         used = state.get("models_used", {})
