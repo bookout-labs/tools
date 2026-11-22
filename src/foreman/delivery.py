@@ -559,7 +559,7 @@ def compile_delivery(
         ]})
         if stage == "review":
             past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
-            update.update(halt=None, halt_detail="", review=review_state.model_copy(update={"settled_rulings": [r.model_dump() for r in past.settled] +
+            update.update(halt=None, halt_detail="", human_question="", review=review_state.model_copy(update={"settled_rulings": [r.model_dump() for r in past.settled] +
                           [{"id": f"design:{len(past.rounds)}", "text": answer}]}))
         return update
 
@@ -707,6 +707,9 @@ def compile_delivery(
         if previous := merge.receipt:
             saved = MergeReceipt.model_validate(previous)
             if saved.source_head == head:
+                if (saved.repo, saved.pr, saved.base, saved.base_ref) != (repo, target["number"], report.base, target["baseRefName"]):
+                    merge = merge.model_copy(update={"receipt": None})
+                    return merge_halted(Halt.merge_not_armed, "The saved handoff does not match the reviewed pull request and base.")
                 try:
                     confirmed_receipt = forge.reconcile_merge(saved)
                 except HandoffChanged as exc:
@@ -743,12 +746,17 @@ def compile_delivery(
             confirmed = forge.readiness(repo, issue, worktree.branch, head)
         except ForgeError as exc:
             return {**merge_halted(Halt.readiness_unavailable, str(exc)), "merge": merge.model_copy(update={"status": "armed", "receipt": merge_receipt})}
+        if (confirmed.pr.number, confirmed.pr.head.sha, confirmed.pr.base.sha, confirmed.pr.base.ref) != (
+            observation.pr.number, observation.pr.head.sha, observation.pr.base.sha, observation.pr.base.ref,
+        ):
+            merge = merge.model_copy(update={"observation": confirmed.model_dump(mode="json"), "receipt": None})
+            return merge_halted(Halt.merge_not_armed, "The pull request head, base or identity changed after arming.")
         update: DeliveryUpdate = {"merge": merge.model_copy(update={
             "status": "armed", "receipt": merge_receipt, "observation": confirmed.model_dump(mode="json"),
         }), "path": ["merge"]}
         if confirmed.outcome != "ready":
             update.update(halted(READINESS_HALTS[confirmed.outcome], confirmed.detail(), "merge"))
-        elif (confirmed.pr.number, confirmed.pr.head.sha, confirmed.pr.base.ref, confirmed.pr.state) != (observation.pr.number, observation.pr.head.sha, observation.pr.base.ref, observation.pr.state):
+        elif confirmed.pr.state != observation.pr.state:
             update.update(halted(Halt.merge_not_armed, confirmed.detail(), "merge"))
         return update
 
@@ -844,8 +852,8 @@ def compile_delivery(
         "decide_pr_size", lambda state: "done" if oversized_pr(state) else "size", {"done": "done", "size": "size"},
     )
     builder.add_conditional_edges(
-        "needs_human", lambda state: "done" if state.get("halt") else "prepare" if _last_stage(state) == "review" else _last_stage(state),
-        {"triage": "triage", "spec": "spec", "prepare": "prepare", "done": "done"},
+        "needs_human", lambda state: "done" if state.get("halt") else _last_stage(state),
+        {"triage": "triage", "spec": "spec", "review": "review", "done": "done"},
     )
     builder.add_conditional_edges("prepare", after_halt("implement"), {"done": "done", "implement": "implement"})
     builder.add_conditional_edges("reconcile", after_halt("size"), {"done": "done", "size": "size"})

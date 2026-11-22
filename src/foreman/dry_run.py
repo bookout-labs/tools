@@ -160,12 +160,6 @@ class DryRun:
     def soft_reset(self, parent: str) -> None:
         raise NotImplementedError("Not used by dry delivery")
 
-    def files_at(self, head: str, directory: str) -> set[str]:
-        return set()
-
-    def read_file_at(self, head: str, path: str) -> str:
-        raise NotImplementedError("Not used by dry delivery")
-
     def has_file(self, path: str) -> bool:
         return False
 

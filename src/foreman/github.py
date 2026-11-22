@@ -280,8 +280,9 @@ class ReviewPages(RootModel[list[list[ListedReview]]]):
 
 
 def queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str,
-                  base_ref: str, policy: QueuePolicy) -> MergeReceipt | None:
+                  base: str, base_ref: str, policy: QueuePolicy) -> MergeReceipt | None:
     if (snapshot.number != number or snapshot.headRefOid.lower() != head.lower()
+            or snapshot.baseRefOid.lower() != base.lower()
             or snapshot.baseRefName != base_ref or snapshot.state == "CLOSED" or snapshot.isDraft):
         raise HandoffChanged("PR changed during merge handoff. Renew readiness, verification and review.")
     if snapshot.state == "MERGED":
@@ -790,7 +791,7 @@ class LiveForge:
     def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt:
         try:
             confirmed = queue_receipt(self._queue_snapshot(receipt.repo, receipt.pr), receipt.repo, receipt.pr,
-                                      receipt.source_head, receipt.base_ref, receipt.queue_policy)
+                                      receipt.source_head, receipt.base, receipt.base_ref, receipt.queue_policy)
             if confirmed is None:
                 raise QueueRejected(f"Queue receipt {receipt.identity} disappeared. Inspect rejection and repair before a new admission.")
             return confirmed
@@ -806,7 +807,7 @@ class LiveForge:
         policy, pr = observation.queue_policy, observation.pr
         if policy is None or observation.outcome != "ready" or observation.repo != repo or pr.head.sha.lower() != head or pr.head.ref != branch or not branch.startswith(f"{issue}-"):
             raise MergeNotArmed("Merge requires a ready observation for this PR and head.")
-        existing = queue_receipt(self._queue_snapshot(repo, pr.number), repo, pr.number, head, pr.base.ref, policy)
+        existing = queue_receipt(self._queue_snapshot(repo, pr.number), repo, pr.number, head, pr.base.sha, pr.base.ref, policy)
         if existing is not None:
             return existing
         timeout: CommandTimedOut | None = None
@@ -814,7 +815,7 @@ class LiveForge:
             self._run_command(repo, merge_command(redact(repo), str(pr.number), head))
         except CommandTimedOut as exc:
             timeout = exc
-        confirmed = queue_receipt(self._queue_snapshot(repo, pr.number), repo, pr.number, head, pr.base.ref, policy)
+        confirmed = queue_receipt(self._queue_snapshot(repo, pr.number), repo, pr.number, head, pr.base.sha, pr.base.ref, policy)
         if confirmed is None:
             raise MergeNotArmed("Merge handoff was not confirmed. Inspect queue admission and resume.") from timeout
         return confirmed

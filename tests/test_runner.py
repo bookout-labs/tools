@@ -989,7 +989,72 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         changed.pr.base.sha = "c" * 40
         changed.pr.merge_commit_sha = "d" * 40
         with patch.object(self.github, "readiness", side_effect=[ready, changed]):
-            self.assertEqual(self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])["stop"], "verified")
+            result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["stop"], "merge_not_armed")
+        self.assertIsNone(result["merge"].receipt)
+
+    def test_review_answer_survives_failed_post_and_fresh_process(self):
+        script = r"""
+import json, sys
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
+from foreman.config import PstackPin, load_config
+from foreman.delivery import LiveRun
+from foreman.github import ForgeError
+from foreman.runner import run_live_delivery
+from foreman.worker import CliWorker
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace
+
+phase, pin = sys.argv[1:]
+answer = "Active items only."
+question = "Should the list include archived items?"
+forge = FakeGitHub()
+workspace = FakeWorkspace(Path.cwd())
+replies = iter({
+    "initial": [{"triage": "implement"}, {"implementation": "built"}, {**APPROVE, "human_question": question}],
+    "answer": [APPROVE],
+    "resume": [],
+}[phase])
+
+def worker(args, cwd, env):
+    if phase == "answer":
+        assert answer in args[-1]
+    return workspace.reply(args, next(replies))
+
+def unavailable(*args, **kwargs):
+    raise ForgeError("Review post temporarily unavailable")
+
+if phase == "answer":
+    forge.post_review = unavailable
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=PstackPin.model_validate_json(pin))):
+    result = run_live_delivery(
+        repo="Example/Engine", issue=8, check="exit 0", checkpoint=Path("review.sqlite3"),
+        run=LiveRun(forge, workspace), dispatcher=CliWorker(workspace.root, worker),
+        answer=None if phase == "initial" else answer,
+    )
+print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path": result["path"],
+                  "answers": result.get("human_answers"), "rulings": result["review"].settled_rulings}))
+"""
+        paths = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
+        bootstrap = f"import sys; sys.path[:0] = {paths!r}\n"
+
+        def invoke(phase):
+            process = subprocess.run([sys.executable, "-c", bootstrap + script, phase, self.pin.model_dump_json()],
+                                     cwd=self.cwd, text=True, capture_output=True)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            return json.loads(process.stdout)
+
+        self.assertEqual(invoke("initial")["stop"], "needs_human")
+        interrupted = invoke("answer")
+        self.assertEqual(interrupted["stop"], "review_not_posted")
+        resumed = invoke("resume")
+        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["answers"], ["Active items only."])
+        self.assertEqual(resumed["qa"], [{"stage": "review", "question": "Should the list include archived items?",
+                                           "answer": "Active items only."}])
+        self.assertEqual(resumed["rulings"], interrupted["rulings"])
+        self.assertEqual(resumed["path"].count("implement"), 1)
 
     def test_unavailable_and_policy_outcomes_fail_closed(self):
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)

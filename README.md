@@ -61,7 +61,7 @@ graph TD;
 	implement_call -.-> reconcile;
 	merge --> done;
 	needs_human -.-> done;
-	needs_human -.-> prepare;
+	needs_human -.-> review;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
 	prepare -.-> done;

@@ -57,6 +57,7 @@ class CodexTurn:
     failure: str | None = None
     stream_error: str | None = None
     reroute: str | None = None
+    command_failure: str | None = None
 
     def record(self, event: dict[str, object]) -> None:
         match event:
@@ -64,6 +65,12 @@ class CodexTurn:
                 self.session_id = session_id
             case {"type": "item.completed", "item": {"type": "agent_message", "text": str(text)}}:
                 self.message = text
+            case {"type": "item.completed", "item": {"type": "command_execution", "exit_code": int(code)}} if (
+                code != 0 and self.command_failure is None
+            ):
+                self.command_failure = f"Codex reviewer command failed (exit {code})"
+            case {"type": "item.completed", "item": {"type": "command_execution", "status": "failed"}} if self.command_failure is None:
+                self.command_failure = "Codex reviewer command failed"
             case {"type": "item.completed", "item": {"type": "error", "message": str(message)}}:
                 if message.startswith("model rerouted: "):
                     self.reroute = message
@@ -111,7 +118,7 @@ class CodexAdapter:
         except ValidationError:
             return Outcome("failed", session_id=turn.session_id, detail="Codex emitted invalid JSONL")
 
-        kind, output, detail = self._result(process.returncode, turn)
+        kind, output, detail = self._result(process.returncode, turn, review=call.review)
         outcome = build_outcome(
             kind, output=output, usage=turn.usage,
             session_id=turn.session_id, detail=detail,
@@ -131,7 +138,7 @@ class CodexAdapter:
             },
         ))
 
-    def _result(self, returncode: int, turn: CodexTurn) -> tuple[OutcomeKind, dict[str, object] | None, str]:
+    def _result(self, returncode: int, turn: CodexTurn, *, review: bool) -> tuple[OutcomeKind, dict[str, object] | None, str]:
         if turn.reroute:
             return "failed", None, turn.reroute
         if returncode or turn.failure or not turn.completed:
@@ -140,6 +147,8 @@ class CodexAdapter:
                 return "quota", None, error
             detail = error or (f"Codex exited {returncode}" if returncode else "Codex did not complete the turn")
             return "failed", None, detail
+        if review and turn.command_failure:
+            return "failed", None, turn.command_failure
         if turn.message is None:
             return "failed", None, "Codex did not return a final agent message"
         try:

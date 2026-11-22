@@ -10,22 +10,24 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
 
 from foreman.worker import CliWorker, run_worker_command
 from unittest.mock import patch
 from foreman.workspace import LiveWorkspace
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
 from foreman.smoke import smoke_verdict
-from foreman.config import ModelSpec, load_config
+from foreman.github import LiveForge
+from foreman.config import ModelSpec
 from foreman.adapters import Outcome
 from foreman.dry_run import SCRIPTED_USAGE
 from skill_fixture import skill_fixture
-from test_adapters import fixture_process
+from test_adapters import codex_events, fixture_process
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
 @contextmanager
-def review_trees():
+def review_trees(*, fix_items=False):
     with TemporaryDirectory() as directory:
         root = Path(directory)
         def git(*args):
@@ -44,7 +46,7 @@ def review_trees():
         (root / "docs").mkdir()
         for name in ("issue-36-verification.md", "plus-sign-validation.txt"):
             (root / "docs" / name).write_text("historical evidence\n" * 14)
-        (root / "items.txt").write_text("one\nchanged\n")
+        (root / "items.txt").write_text("one\none\n")
         (root / "shared.txt").write_text("previous\nextra line\n")
         (root / "deleted.txt").unlink()
         git("mv", "old.txt", "new.txt")
@@ -53,9 +55,11 @@ def review_trees():
         previous = git("rev-parse", "HEAD")
         for path in (root / "docs").iterdir():
             path.unlink()
+        if fix_items:
+            (root / "items.txt").write_text("one\nthree\n")
         (root / "shared.txt").write_text("head line\n")
         git("add", ".")
-        git("commit", "-m", "Remove historical evidence")
+        git("commit", "-m", "Repair reviewed changes")
         head = git("rev-parse", "HEAD")
         git("switch", "main")
         (root / "main.txt").write_text("base tip advance\n")
@@ -67,13 +71,42 @@ def review_trees():
         yield LiveWorkspace(root), tip, base, previous, head
 
 
+class MergeReadbackForge(FakeGitHub, LiveForge):
+    arm_auto_merge = LiveForge.arm_auto_merge
+
+    def _run_command(self, repo, command, **kwargs):
+        if command[1:3] == ["pr", "merge"]:
+            number = int(command[3])
+            head = command[command.index("--match-head-commit") + 1]
+            if (number, head) != (self.target.number, self.target.headRefOid):
+                raise AssertionError("Merge command did not bind the published PR head")
+            self.merge_calls.append((repo, int(self.target.headRefName.split("-")[0]), self.target.headRefName, head))
+            return ""
+        if command[1:3] == ["api", "graphql"] and f"number={self.target.number}" in command:
+            return json.dumps({
+                "number": self.target.number, "headRefOid": self.target.headRefOid,
+                "baseRefOid": self.base, "baseRefName": self.target.baseRefName, "isDraft": False,
+                "state": "MERGED" if self.merge_calls else "OPEN",
+                "autoMergeRequest": None, "mergeQueueEntry": None,
+            })
+        raise AssertionError(f"Unexpected GitHub command: {command}")
+
+    def review_target(self, *args):
+        self.target = super().review_target(*args)
+        return self.target
+
+
+def rendered_patch(workspace, state):
+    scope = state["dispatch_plan"]["scope"]["command"]
+    diff, = (line for line in scope.splitlines() if line.startswith("git ") and " diff " in line)
+    return subprocess.check_output(["sh", "-c", diff], cwd=workspace.root, text=True)
+
+
 class ReviewRoundsTest(unittest.TestCase):
-    def run_rounds(self, reviews, *, initial=None, crash=False, advance_head=False, post_crash=False, review_crash=False, review_quota=False, rerun=False, trees=None, repo="Example/Repo", mutate=None):
+    def run_rounds(self, reviews, *, initial=None, crash=False, post_crash=False, review_crash=False, review_quota=False,
+                   rerun=False, answer=None, trees=None, repo="Example/Repo", mutate=None):
         self.prompts = []
-        self.forge = FakeGitHub()
-        if repo.startswith("bookout-labs/foreman-smoke"):
-            arm = self.forge.arm_auto_merge
-            self.forge.arm_auto_merge = lambda *args: arm(*args).model_copy(update={"status": "MERGED"})
+        self.forge = MergeReadbackForge() if repo.startswith("bookout-labs/foreman-smoke") else FakeGitHub()
         original_post = self.forge.post_review
         receipts = {}
         def post(*args, marker):
@@ -97,8 +130,6 @@ class ReviewRoundsTest(unittest.TestCase):
                     super().commit(message)
                     if trees:
                         self.current = type(self.current)(trees[3] if implementations == 1 else trees[4], True, self.current.branch)
-                    elif advance_head:
-                        self.current = type(self.current)(str(implementations) * 40, True, self.current.branch)
 
                 def review_context(self, base, head):
                     if trees:
@@ -124,6 +155,8 @@ class ReviewRoundsTest(unittest.TestCase):
                         quota_returned = True
                         return Outcome("quota", usage=SCRIPTED_USAGE)
                     raw = next(replies)
+                    if callable(raw):
+                        raw = raw(state, instruction)
                     if mutate is not None:
                         mutate(self.forge)
                     return raw if isinstance(raw, Outcome) else Outcome("ran", raw, usage=SCRIPTED_USAGE)
@@ -155,6 +188,8 @@ class ReviewRoundsTest(unittest.TestCase):
                     result = graph.invoke(None, config)
                 else:
                     result = graph.invoke(state, config)
+                if answer is not None:
+                    result = graph.invoke(Command(resume=answer), config)
                 if rerun:
                     from foreman.runner import run_live_delivery
                     from unittest.mock import patch
@@ -323,11 +358,16 @@ class ReviewRoundsTest(unittest.TestCase):
 
     def test_foreman_smoke_npm_repairs_p1_once_then_reposts_advice(self):
         note = {**FINDING, "id": "optional-record", "kind": "other", "severity": "P2"}
-        with review_trees() as trees:
-            result = self.run_rounds([{**APPROVE, "findings": [note, FINDING]},
-                                      {**APPROVE, "findings": [note]}],
-                                     trees=trees, repo="bookout-labs/foreman-smoke-npm")
+        with review_trees(fix_items=True) as trees:
             workspace, tip, base, previous, head = trees
+
+            def review(state, instruction):
+                findings = [note]
+                if "-two\n+one\n" in rendered_patch(workspace, state):
+                    findings.append(FINDING)
+                return {**APPROVE, "findings": findings}
+
+            result = self.run_rounds([review, review], trees=trees, repo="bookout-labs/foreman-smoke-npm")
             self.assertEqual(result["path"].count("implement"), 2)
             self.assertEqual([post[1:3] for post in self.forge.reviews], [(12, previous), (12, head)])
             self.assertEqual(self.forge.merge_calls[-1][-1], head)
@@ -336,20 +376,33 @@ class ReviewRoundsTest(unittest.TestCase):
             self.assertEqual(result["merge"].receipt["status"], "MERGED")
             self.assertEqual(result["merge"].receipt["source_head"], head)
             self.assertEqual(smoke_verdict(result).exit_code, 0)
-            for (_, state, _), current in zip((p for p in self.prompts if p[0] == "review"), (previous, head), strict=True):
+            self.assertEqual([[finding["id"] for finding in report["findings"]]
+                              for report in result["review"].review_findings], [["optional-record", "f1"], ["optional-record"]])
+            reviews = (p for p in self.prompts if p[0] == "review")
+            for (_, state, _), current, line in zip(reviews, (previous, head), ("one", "three"), strict=True):
                 commands = state["dispatch_plan"]["scope"]["command"].splitlines()
                 diff, = (command for command in commands if command.startswith("git ") and " diff " in command)
                 self.assertIn(f"{tip}...{current}", diff)
                 self.assertIn(f"# base = PR merge-base {base}", commands)
-                patch = subprocess.check_output(["sh", "-c", diff], cwd=workspace.root, text=True)
-                self.assertIn("-two\n+changed", patch)
+                self.assertIn(f"-two\n+{line}\n", rendered_patch(workspace, state))
 
     def test_unchanged_defect_and_priority_count_once_per_round_at_cap(self):
-        critical = {**FINDING, "id": "critical", "severity": "P0"}
+        critical = {**FINDING, "id": "critical", "severity": "P0",
+                    "location": {"side": "head", "path": "docs/issue-36-verification.md", "line": 1},
+                    "summary": "Remove the committed incident data.",
+                    "evidence": "The new verification record contains historical evidence.",
+                    "impact": "The evidence becomes public if this branch merges."}
         with review_trees() as trees:
-            result = self.run_rounds([{**APPROVE, "findings": [FINDING, critical]},
-                                      {**APPROVE, "findings": [FINDING]},
-                                      {**APPROVE, "findings": [FINDING]}], trees=trees)
+            workspace = trees[0]
+
+            def review(state, instruction):
+                patch = rendered_patch(workspace, state)
+                findings = [FINDING] if "-two\n+one\n" in patch else []
+                if "historical evidence" in patch:
+                    findings.append(critical)
+                return {**APPROVE, "findings": findings}
+
+            result = self.run_rounds([review] * 3, trees=trees)
         self.assertEqual(result["halt"], "review_cap")
         self.assertEqual(result["path"].count("implement"), 3)
         self.assertEqual([body.split(".")[0] for _, _, _, body, _ in self.forge.reviews],
@@ -387,6 +440,73 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual([stage for stage, _, _ in self.prompts].count("review"), 1)
         self.assertFalse(self.forge.reviews)
         self.assertFalse(self.forge.merge_calls)
+
+    def test_codex_failed_committed_read_cannot_clear_review(self):
+        with review_trees() as trees:
+            workspace = trees[0]
+
+            def review(state, instruction):
+                command = next(line for line in instruction.splitlines() if "cat-file blob" in line)
+                events = codex_events()
+                events[-2]["item"]["text"] = json.dumps(APPROVE)
+                events.insert(-2, {"type": "item.completed", "item": {
+                    "type": "command_execution", "command": command,
+                    "exit_code": 128, "status": "failed", "aggregated_output": "fatal: missing blob",
+                }})
+                worker = CliWorker(workspace.root, lambda args, *_:
+                    subprocess.CompletedProcess(args, 0, "\n".join(map(json.dumps, events)), ""))
+                return worker("review", ModelSpec.parse("gpt-6.1-sol-high"), state, instruction)
+
+            result = self.run_rounds([review], trees=trees)
+        self.assertEqual(result.get("halt"), "invalid_output")
+        self.assertIn("128", result["halt_detail"])
+        self.assertFalse(self.forge.reviews)
+        self.assertFalse(self.forge.merge_calls)
+
+    def test_resuming_after_base_move_reviews_same_checked_head_again(self):
+        new_base = "d" * 40
+
+        def first_review(state, instruction):
+            self.forge.base = new_base
+            return APPROVE
+
+        result = self.run_rounds([first_review, APPROVE], rerun=True)
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["path"].count("implement"), 1)
+        self.assertEqual([(r["reviewed_head"], r["base"]) for r in result["review"].review_findings],
+                         [(HEAD, BASE), (HEAD, new_base)])
+        self.assertEqual(len(self.forge.reviews), 2)
+        self.assertEqual(len(self.forge.merge_calls), 1)
+        self.assertEqual(result["merge"].receipt["base"], new_base)
+
+    def test_malformed_history_halts_only_in_review(self):
+        result = self.run_rounds([APPROVE], initial={"review": ReviewState(review_findings=[{"broken": True}])})
+        self.assertEqual(result["halt"], "invalid_output")
+        self.assertIn("implement", result["path"])
+        self.assertFalse(self.forge.reviews)
+        self.assertFalse(self.forge.merge_calls)
+
+    def test_interrupted_repair_keeps_the_posted_round(self):
+        result = self.run_rounds([{**APPROVE, "findings": [FINDING]}, APPROVE], crash=True)
+        self.assertEqual(len(self.interrupted["review"].review_findings), 1)
+        self.assertEqual(self.interrupted["review"].review_receipt["id"], 1)
+        self.assertEqual(result["path"].count("implement"), 2)
+        self.assertEqual(len(self.forge.reviews), 2)
+        self.assertEqual(result["stop"], "verified")
+
+    def test_answer_reopens_review_before_repair(self):
+        question = "Should the list include archived items?"
+        answer = "Active items only."
+
+        def after_answer(state, instruction):
+            self.assertIn(answer, instruction)
+            return APPROVE
+
+        result = self.run_rounds([{**APPROVE, "human_question": question, "findings": [FINDING]}, after_answer],
+                                 answer=answer)
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["path"].count("implement"), 1)
+        self.assertEqual(len(self.forge.reviews), 2)
 
     def test_report_with_unresolved_intent_holds_for_an_answer(self):
         question = "Should the list include archived items?"

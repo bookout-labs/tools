@@ -186,8 +186,6 @@ class Workspace(Protocol):
     def soft_reset(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
     def push(self, branch: str, repo: str) -> None: ...
-    def files_at(self, head: str, directory: str) -> set[str]: ...
-    def read_file_at(self, head: str, path: str) -> str: ...
     def has_file(self, path: str) -> bool: ...
     def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str) -> ReviewDiff: ...
@@ -427,20 +425,6 @@ class LiveWorkspace:
         if not observed or observed[0] != head:
             self._git(*push_command("origin", branch)[1:])
 
-    def files_at(self, head: str, directory: str) -> set[str]:
-        tree = os.fsdecode(self._git("--no-replace-objects", "ls-tree", "-rz", "--full-tree", head, "--", directory))
-        files: set[str] = set()
-        for entry in tree.split("\0"):
-            metadata, _, path = entry.partition("\t")
-            if metadata.startswith(("100644 blob ", "100755 blob ")):
-                files.add(path)
-        return files
-
-    def read_file_at(self, head: str, path: str) -> str:
-        try:
-            return self._git("--no-replace-objects", "show", f"{head}:{path}").decode("utf-8")
-        except UnicodeError as exc:
-            raise WorktreeInspectionFailed(f"Could not decode {path}: {exc}") from exc
     def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
         merge_base = merge_base or self._base_merge_base(base_branch, head or "HEAD")
         head = self.tree(None) if head is None else head

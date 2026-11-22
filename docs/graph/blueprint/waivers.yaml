@@ -208,7 +208,7 @@ waivers:
     V2-9ab4ebb59968902e: missing [steps/triage] subgraph endpoints
     V2-8f35d7f70507cf0c: mismatched [top/delivery] edge __start__ -> triage
     V2-5060bad7ad743fe1: extra [top/delivery] edge needs_human -> done
-    V2-26fc7836f9790458: extra [top/delivery] edge needs_human -> prepare
+    V2-fb25843cf90eaa92: extra [top/delivery] edge needs_human -> review
     V2-e95c028e381dbe08: extra [top/delivery] edge needs_human -> spec
     V2-51cdd27d0e88f52e: extra [top/delivery] edge needs_human -> triage
     V2-ac16f3a053beebac: missing [top/delivery] edge research -> __end__

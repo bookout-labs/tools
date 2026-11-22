@@ -277,6 +277,7 @@ def run_live_delivery(
             invoke(Command(resume=True), saved_values)
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             repaired = False
+            renew_review = False
             repair_head: str | None = None
             if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge", MergeState()).receipt and (head := saved_values["checks"].verified_head) and (branch := saved_values.get("work", WorkState()).branch):
                 worktree = run.workspace.inspect()
@@ -289,7 +290,16 @@ def run_live_delivery(
                     repaired = True
                 elif observed is None or observed.outcome not in {"closed", "retargeted"}:
                     repaired = worktree.head != head
-            before = _checkpoint_before_halt(graph, config, saved_values["path"], "prepare" if repaired else None)
+                    plan = saved_values.get("dispatch_plan")
+                    target = plan["target"] if plan else None
+                    if observed is not None and target is not None:
+                        pr = observed.pr
+                        renew_review = (pr.number, pr.head.sha, pr.base.ref) == (
+                            target["number"], head, target["baseRefName"],
+                        ) and pr.base.sha != target["baseRefOid"]
+            before = _checkpoint_before_halt(
+                graph, config, saved_values["path"], "prepare" if repaired else "review" if renew_review else None,
+            )
             require_schema_version(before.values, checkpoint, thread)
             require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_budget_usd)
             restored = checkpoint_state(before.values)
@@ -318,7 +328,7 @@ def run_live_delivery(
                 if repaired else saved_review)}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
-            if repaired:
+            if repaired or renew_review:
                 invoke(Command(update=retained), restored, replay)
             else:
                 replay = graph.update_state(replay, retained)
