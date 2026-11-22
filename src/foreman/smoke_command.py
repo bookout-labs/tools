@@ -18,6 +18,7 @@ from foreman.outcomes import Halt
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.runner import run_live_delivery
 from foreman.smoke import SmokeVerdict, smoke_verdict
+from foreman.smoke_ownership import cleanup_smoke, create_smoke_issue, smoke_lock
 from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker
 from foreman.workspace import LiveWorkspace
@@ -43,6 +44,17 @@ else:
 
 
 def run_smoke(directory: Path, deadline: float) -> int:
+    """Serialize cleanup and delivery for the target, including after a crash."""
+    try:
+        with smoke_lock(SMOKE_REPO):
+            return _run_smoke(directory, deadline)
+    except (ForgeError, OSError) as exc:
+        print(redact(str(exc)), file=sys.stderr, flush=True)
+        print("smoke exit 78 lock attempt prerequisite", flush=True)
+        return 78
+
+
+def _run_smoke(directory: Path, deadline: float) -> int:
     """Provision first, then exercise the normal live runner and its watcher."""
     verdict = SmokeVerdict(78, "bootstrap", "prerequisite")
     try:
@@ -51,6 +63,10 @@ def run_smoke(directory: Path, deadline: float) -> int:
             raise CredentialFailure("Smoke requires Studio App credentials; personal credentials are not supported.")
         forge = LiveForge()
         forge.default_branch(SMOKE_REPO)
+        verdict = SmokeVerdict(78, "cleanup", "prerequisite")
+        forge.ensure_smoke_label(SMOKE_REPO)
+        cleanup_smoke(forge, SMOKE_REPO)
+        verdict = SmokeVerdict(78, "bootstrap", "prerequisite")
         root = directory / "checkout"
         subprocess.run(["git", *git_auth([f"https://github.com/{SMOKE_REPO}"]), "clone",
                         f"https://github.com/{SMOKE_REPO}", str(root)], env=env,
@@ -63,8 +79,7 @@ def run_smoke(directory: Path, deadline: float) -> int:
         base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
         script = directory / "acceptance.py"
         script.write_text(FIXTURE_CHECK)
-        issue = forge.create_issue(SMOKE_REPO, "Smoke fixture", "Add smoke_<this issue number>.txt containing exactly "
-                                   "smoke <this issue number> and a newline. Change no other files.", ["smoke"])
+        issue = create_smoke_issue(forge, SMOKE_REPO)
         request = f"Add smoke_{issue}.txt containing exactly 'smoke {issue}\\n'. Change no other files."
         check = "python -m unittest discover -s tests && " + shlex.join(["python", str(script), str(issue), base])
         print(f"smoke issue {issue}; tokens {SMOKE_TOKEN_CAP}; Claude ${SMOKE_CLAUDE_USD.amount}; deadline {SMOKE_SECONDS}s. "
