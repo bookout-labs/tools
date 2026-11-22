@@ -87,7 +87,7 @@ def _run_smoke(directory: Path, deadline: float) -> int:
         verdict = SmokeVerdict(1, "live_run", "checkpoint")
         while True:
             result = run_live_delivery(repo=SMOKE_REPO, issue=issue, request=request, check=check,
-                                       checkpoint=directory / "checkpoint.sqlite3", dispatcher=CliWorker(root),
+                                       checkpoint=directory / "checkpoint.sqlite3", dispatcher=CliWorker(root, scratch_root=directory),
                                        run=LiveRun(forge, LiveWorkspace(root, SMOKE_REPO)),
                                        max_tokens=SMOKE_TOKEN_CAP, max_budget_usd=SMOKE_CLAUDE_USD,
                                        log=lambda message: print(redact(message), flush=True))

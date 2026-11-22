@@ -33,7 +33,7 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
         if outcome in {"quota", "cli_missing"}:
             if unavailable is None:
                 unavailable = SmokeVerdict(78, f"attempt.outcome={outcome}", last)
-        elif outcome != "ran":
+        elif outcome != "ran" and not (outcome == "review_denied" and attempt["stage"] == "review"):
             return SmokeVerdict(1, f"attempt.outcome={outcome}", last)
         else:
             if not attempt["model"]:

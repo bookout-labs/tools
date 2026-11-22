@@ -98,6 +98,7 @@ class WorktreeState:
 class ReviewDiff:
     command: str
     patch: str
+    merge_base: str | None = None
 
 
 ReviewLine = Annotated[tuple[str, int], BeforeValidator(TypeAdapter(tuple[object, ...]).validate_python)]
@@ -523,10 +524,11 @@ class LiveWorkspace:
     def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff:
         self._fetch_review(base, head)
         args = (
-            "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
+            "--no-replace-objects", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
             "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}..{head}" if interdiff else f"{base}...{head}", "--",
         )
         command = shlex.join(("git", *args))
+        merge_base = None
         if interdiff:
             command = f"# previous = last accepted reviewed head {base} (history only)\n# Interdiff: old = previous; new = head\n{command}"
         else:
@@ -534,7 +536,7 @@ class LiveWorkspace:
             if not FULL_SHA.fullmatch(merge_base):
                 raise WorktreeInspectionFailed("Git did not report a full merge-base SHA.")
             command = f"# base = PR merge-base {merge_base}\n# head = current verified head {head}\n# Full PR diff: old = merge-base (base); new = head\n{command}"
-        return ReviewDiff(command, os.fsdecode(self._git(*args)))
+        return ReviewDiff(command, os.fsdecode(self._git(*args)), merge_base)
 
     def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope:
         pr = self.review_diff(base, head)
@@ -544,10 +546,28 @@ class LiveWorkspace:
             if previous is not None:
                 raise WorktreeInspectionFailed("PR diff could not be parsed for scoping.") from exc
             inline = frozenset[tuple[str, int]]()
-        if previous is None:
-            return ReviewScope(pr.command, inline)
-        diff = self.review_diff(previous, head, interdiff=True)
-        return ReviewScope(f"{pr.command}\n\n{diff.command}", inline)
+        commands = [pr.command]
+        merge_base = pr.merge_base
+        assert merge_base is not None
+        if previous is not None:
+            commands.append(self.review_diff(previous, head, interdiff=True).command)
+        blobs: dict[str, list[str]] = {}
+        for side, sha in (("base", merge_base), ("head", head), ("previous (history only)", previous)):
+            if sha is None:
+                continue
+            args = ("--no-replace-objects", "ls-tree", "-rz", "--full-tree", sha, "--")
+            commands.append(f"# {side} tree {sha}\n{shlex.join(('git', *args))}")
+            for entry in self._git(*args).split(b"\0"):
+                if not entry:
+                    continue
+                metadata, path = entry.split(b"\t", 1)
+                _, kind, oid = metadata.split()
+                if kind == b"blob":
+                    blobs.setdefault(oid.decode("ascii"), []).append(f"{side} path {ascii(os.fsdecode(path))}")
+        for oid, labels in blobs.items():
+            # Object IDs avoid shell and permission-pattern syntax in repository paths.
+            commands.append(f"# {'; '.join(labels)}\ngit --no-replace-objects cat-file blob {oid}")
+        return ReviewScope("\n\n".join(commands), inline)
 
     def _ignored_at(self, commit: str, paths: set[bytes]) -> set[bytes]:
         names = self._inspection_git(commit, "ls-tree", "-rz", "--name-only", commit).split(b"\0")

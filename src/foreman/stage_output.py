@@ -200,6 +200,7 @@ class AttemptRecord(TypedDict):
     usage: AttemptUsageRecord | None
     prompt_bytes: NotRequired[NonNegativeInt | None]
     native_usage: NotRequired[NativeUsage | None]
+    detail: NotRequired[str | None]
     provenance: NotRequired[ReviewSelectionRecord]
 
 
@@ -217,7 +218,7 @@ class AttemptUsage(RecordContract[AttemptUsageRecord]):
 
 
 class Attempt(RecordContract[AttemptRecord]):
-    optional_record_fields: ClassVar[set[str]] = RecordContract.optional_record_fields | {"prompt_bytes", "native_usage"}
+    optional_record_fields: ClassVar[set[str]] = RecordContract.optional_record_fields | {"prompt_bytes", "native_usage", "detail"}
 
     @classmethod
     @override
@@ -232,6 +233,7 @@ class Attempt(RecordContract[AttemptRecord]):
     usage: AttemptUsage | None
     prompt_bytes: NonNegativeInt | None = None
     native_usage: NativeUsage | None = None
+    detail: str | None = None
     provenance: ReviewSelection | None = None
 
 

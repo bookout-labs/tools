@@ -51,7 +51,7 @@ class PermissionsTest(unittest.TestCase):
                 script = ScriptHandler(reviews=["changes", "approve"])
 
                 def runner(args, cwd, env):
-                    calls.append(args)
+                    calls.append((args, json.loads(Path(args[args.index("--settings") + 1]).read_text())))
                     return fixture_process(args, "success", 0)
 
                 worker = CliWorker(scratch, runner)
@@ -63,9 +63,9 @@ class PermissionsTest(unittest.TestCase):
                         return Outcome("quota", usage=SCRIPTED_USAGE)
                     worker(node, model, state, instruction)
                     roots = state["dispatch_plan"]["read_roots"]
-                    argv = calls[-1]
+                    argv, settings = calls[-1]
                     self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"][:-1], roots)
-                    permissions = json.loads(argv[argv.index("--settings") + 1])["permissions"]
+                    permissions = settings["permissions"]
                     self.assertEqual(permissions["allow"], ["Bash(sh check.sh)", "Edit", "Write"])
                     return script(node, model, state, instruction)
 
@@ -76,9 +76,11 @@ class PermissionsTest(unittest.TestCase):
 
     def test_readonly_has_no_edit_tools_or_allow_rules(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
-        args = adapter.command(Call("prompt", "{}", False, Path("scratch")))
+        with TemporaryDirectory() as directory:
+            args = adapter.command(Call("prompt", "{}", False, Path(directory)))
+            permissions = json.loads(Path(args[args.index("--settings") + 1]).read_text())
         self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep,Bash")
-        self.assertEqual(json.loads(args[args.index("--settings") + 1])["permissions"]["allow"], [])
+        self.assertEqual(permissions["permissions"]["allow"], [])
         self.assertIn("--restricted", args)
         self.assertIn("--strict-mcp-config", args)
         self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
@@ -86,20 +88,20 @@ class PermissionsTest(unittest.TestCase):
     def test_review_grants_only_the_bound_scope_command(self):
         args_seen = []
         def runner(args, cwd, env):
-            args_seen.append(args)
+            args_seen.append(json.loads(Path(args[args.index("--settings") + 1]).read_text()))
             return fixture_process(args, "success", 0)
         plan = {"models": [], "instruction": "review", "methods": [], "read_roots": [],
                 "target": None, "scope": {"command": "  # head history base\n  git diff --no-color abc...def --  \n\n", "inline": []}}
         CliWorker(Path.cwd(), runner)("review", ModelSpec.parse("claude-opus-5-5-high"),
                                      {"checks": ChecksState(check="sh check.sh"), "dispatch_plan": plan}, "review")
         args = args_seen[0]
-        self.assertEqual(json.loads(args[args.index("--settings") + 1])["permissions"]["allow"],
+        self.assertEqual(args["permissions"]["allow"],
                          ["Bash(git diff --no-color abc...def --)"])
 
     def test_multiline_implementation_check_stays_one_grant(self):
         check = "# implementation check\npython check.py\npython other.py"
         def runner(args, cwd, env):
-            permissions = json.loads(args[args.index("--settings") + 1])["permissions"]
+            permissions = json.loads(Path(args[args.index("--settings") + 1]).read_text())["permissions"]
             self.assertEqual(permissions["allow"], [f"Bash({check})", "Edit", "Write"])
             return fixture_process(args, "success", 0)
         result = CliWorker(Path.cwd(), runner)("implement", ModelSpec.parse("claude-opus-5-5-high"),
