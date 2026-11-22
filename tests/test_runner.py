@@ -33,11 +33,11 @@ from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, render_slice_body
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
-from foreman.runner import AnswerError, RunPresentation, run_live_delivery
+from foreman.runner import _load_slice, AnswerError, RunPresentation, run_live_delivery
 from foreman.review_round import carried_tool_facts
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
-from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, parse_output
+from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
@@ -569,6 +569,16 @@ class StageOutputTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             main(["run", "delivery", "--repo", "Example/Engine", "--fact-record", "../facts.toml"])
         self.assertEqual(raised.exception.code, 2)
+
+    def test_worker_schemas_deliver_the_shared_edit_contract(self):
+        for node in ("triage", "spec"):
+            def run(args, cwd, env):
+                schema = json.loads(args[args.index("--json-schema") + 1])
+                encoded = json.dumps(schema)
+                self.assertIn("Pure file edits belong in uses and acceptance/spec", encoded)
+                self.assertIn("Edit-only example: builds: [], uses:", encoded)
+                return worker_reply(args, {})
+            CliWorker(Path("."), run)(node, ModelSpec.parse("claude-opus-5-5-high"), {}, "Read.")
 
     def test_schema_snapshot(self):
         snapshot = Path(__file__).with_name("stage-schemas.json").read_text()
@@ -1460,6 +1470,84 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(child["plan"].slice, {**child_payload, "provenance": {"author": result["plan"].spec_candidate["author"], "revision": result["plan"].spec_candidate["revision"]}})
         self.assertEqual(child["plan"].work_kind, "bug_fix")
         self.assertIn("why/SKILL.md", self.prompts[-1])
+
+    def test_edit_only_spec_repairs_and_round_trips_to_children(self):
+        for count in (1, 2):
+            with self.subTest(count=count):
+                self.checkpoint = self.cwd / f"edit-{count}.sqlite3"
+                self.github = FakeGitHub(["factory"])
+                (self.cwd / "items.py").write_text('def visible(items):\n    return [i for i in items if i["open"]]\n')
+                seam = {"name": "items", "exists": True, "path": "items.py"}
+                edits = [{**EMPTY_SLICE, "title": f"Edit items {i}", "uses": [seam],
+                          "acceptance": "Include closed items in visible(items)."} for i in range(count)]
+                bad = [{**item, "builds": [seam], "uses": []} for item in edits]
+                spec = {"spec": "Change visible(items) in items.py.", "spec_gate": "ready", "slices": edits}
+                result = self.walk([{"triage": "spec"}, {**spec, "slices": bad}, spec])
+                self.assertEqual(result["path"], ["triage", "spec", "spec", "done"])
+                self.assertEqual(result["plan"].spec_failures, 1)
+                attempts = [a for a in result["attempts"] if a["stage"] == "spec"]
+                self.assertEqual(len(attempts), 2)
+                self.assertTrue(all(a["usage"]["input"] > 0 for a in attempts))
+                prompt = self.prompts[-1]
+                for text in ("existing_seam_builder", "slices.0.builds", "items", "move them to uses"):
+                    self.assertIn(text, prompt)
+                candidate = result["plan"].spec_candidate
+                self.assertEqual([s["builds"] for s in candidate["slices"]], [[]] * count)
+                self.assertEqual(len(self.github.created), count)
+                self.assertEqual(self.github.dependencies, {})
+                for index, (_, body, _) in enumerate(self.github.created):
+                    child = _load_slice(body)
+                    self.assertEqual(child.uses[0].record(), seam)
+                    self.assertEqual(child.acceptance, edits[index]["acceptance"])
+                    self.assertEqual(child.depends_on, [])
+                    self.assertEqual(child.provenance.revision, candidate["revision"])
+                child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=101)
+                self.assertEqual(child["plan"].slice["uses"], [seam])
+                self.assertEqual(child["plan"].slice["provenance"]["revision"], candidate["revision"])
+
+    def test_mislabel_cap_and_mixed_errors_never_file_children(self):
+        seam = {"name": "items", "exists": True, "path": "items.py"}
+        for count in (1, 2):
+            for malformed in (False, True):
+                with self.subTest(count=count, malformed=malformed):
+                    self.checkpoint = self.cwd / f"cap-{count}-{malformed}.sqlite3"
+                    self.github = FakeGitHub(["factory"])
+                    slices = [{**EMPTY_SLICE, "title": f"Edit {i}", "builds": [seam]} for i in range(count)]
+                    if malformed:
+                        slices[-1]["unexpected"] = True
+                    spec = {"spec": "Edit items", "spec_gate": "ready", "slices": slices}
+                    result = self.walk([{"triage": "spec"}, spec, spec, spec])
+                    self.assertEqual(result["stop"], "invalid_output" if malformed else "spec_cap")
+                    self.assertEqual(result["plan"].spec_failures, 0 if malformed else 3)
+                    self.assertIsNone(result["plan"].spec_candidate)
+                    self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
+                    self.assertTrue(all(a["usage"] for a in result["attempts"]))
+
+    def test_mislabels_with_invalid_questions_are_terminal(self):
+        seam = {"name": "items", "exists": True, "path": "items.py"}
+        question = {"question": "Which policy applies?", "why_code_unanswered": "A policy decision is needed.",
+                    "checked_paths": ["items.py"]}
+        for count in (1, 2):
+            for gate, questions in (("ready", [question]), ("needs_human", [])):
+                with self.subTest(count=count, gate=gate):
+                    self.checkpoint = self.cwd / f"mixed-questions-{count}-{gate}.sqlite3"
+                    self.github = FakeGitHub(["factory"])
+                    slices = [{**EMPTY_SLICE, "title": f"Edit {i}", "builds": [seam]} for i in range(count)]
+                    spec = {"spec": "Edit items", "spec_gate": gate, "questions": questions, "slices": slices}
+                    with self.assertRaises(InvalidOutput) as raised:
+                        parse_output(SpecOutput, spec)
+                    self.assertIs(type(raised.exception), InvalidOutput)
+                    self.assertIn("questions must be non-empty on needs_human and empty on ready", str(raised.exception))
+                    result = self.walk([{"triage": "spec"}, spec, spec, spec])
+                    self.assertEqual(result["stop"], "invalid_output")
+                    self.assertEqual(result["path"], ["triage", "spec", "done"])
+                    self.assertEqual(result["plan"].spec_failures, 0)
+                    self.assertIsNone(result["plan"].spec_candidate)
+                    self.assertEqual(result["plan"].child_issue_numbers, [])
+                    self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
+                    attempts = [a for a in result["attempts"] if a["stage"] == "spec"]
+                    self.assertEqual(len(attempts), 1)
+                    self.assertTrue(attempts[0]["usage"])
 
     def test_existing_seam_resolves_in_workspace_and_skips_a_dependency(self):
         self.github = FakeGitHub(["factory"])
