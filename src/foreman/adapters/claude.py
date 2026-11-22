@@ -65,24 +65,25 @@ class ClaudeEnvelope(NativeEnvelope):
         elif model_id not in self.model_usage:
             kind = "failed"
             detail = f"requested {model_id}, modelUsage reported {', '.join(self.model_usage)}"
-        elif self.structured_output is None:
-            kind = "failed"
-            detail = detail or "missing structured output"
-        if kind == "ran" and call.checks:
+        if kind == "ran" and (call.checks or call.review):
             try:
                 denials = TypeAdapter(list[PermissionDenial]).validate_python(self.permission_denials, strict=True)
             except ValidationError:
-                kind, detail = "failed", f"Claude denied-check evidence malformed: {call.checks}"
+                kind, detail = "review_denied" if call.review else "failed", f"Claude denied-check evidence malformed: {self.permission_denials!r}; {call.checks}"
             else:
                 for denial in denials:
                     command = denial.tool_input.get("command")
-                    if denial.tool_name == "Bash" and (
+                    if call.review or denial.tool_name == "Bash" and (
                         not isinstance(command, str) or not command.strip()
                         or any(check in command or command in check for check in call.checks)
                     ):
-                        kind = "failed"
-                        detail = f"Claude denied the granted check: {call.checks}; denied command: {command!r}"
+                        kind = "review_denied" if call.review else "failed"
+                        detail = (f"Claude reviewer permission denied: {self.permission_denials!r}" if call.review else
+                                  f"Claude denied the granted check: {call.checks}; denied command: {command!r}")
                         break
+        if kind == "ran" and self.structured_output is None:
+            kind = "failed"
+            detail = detail or "missing structured output"
         return build_outcome(
             kind, output=self.structured_output, usage=self.read_usage(),
             session_id=self.session_id, detail=detail,

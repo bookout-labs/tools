@@ -70,7 +70,7 @@ def review_trees():
 
 
 class ReviewRoundsTest(unittest.TestCase):
-    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False, review_crash=False, review_quota=False, bad_interdiff=False, rerun=False, trees=None, quota_after=0):
+    def run_rounds(self, reviews, *, initial=None, crash=False, answer=False, bad_diff=False, divergent=False, gate_heads=None, advance_head=False, post_crash=False, review_crash=False, review_quota=False, bad_interdiff=False, rerun=False, trees=None, quota_after=0, review_crash_after=0):
         self.prompts = []
         self.diffs = []
         self.gate_reads = []
@@ -92,6 +92,9 @@ class ReviewRoundsTest(unittest.TestCase):
             outer = self
 
             class Workspace(FakeWorkspace):
+                def review_scope(self, base, head, previous):
+                    return trees[0].review_scope(base, head, previous) if trees else super().review_scope(base, head, previous)
+
                 def commit(self, message):
                     super().commit(message)
                     if trees:
@@ -134,14 +137,14 @@ class ReviewRoundsTest(unittest.TestCase):
                 nonlocal crashed, implementations, quota_returned
                 self.prompts.append((node, state, instruction))
                 if node == "review":
-                    if review_crash and not crashed:
+                    if review_crash and not crashed and len([p for p in self.prompts if p[0] == "review"]) > review_crash_after:
                         crashed = True
                         raise RuntimeError("process lost")
                     if review_quota and not quota_returned and len([p for p in self.prompts if p[0] == "review"]) == quota_after + 1:
                         quota_returned = True
                         return Outcome("quota")
                     raw = next(replies)
-                    return Outcome("ran", raw, usage=SCRIPTED_USAGE)
+                    return raw if isinstance(raw, Outcome) else Outcome("ran", raw, usage=SCRIPTED_USAGE)
                 if crash and state["review"].review_findings and not crashed:
                     crashed = True
                     raise RuntimeError("process lost")
@@ -236,14 +239,18 @@ class ReviewRoundsTest(unittest.TestCase):
             for index, (node, state, instruction) in enumerate(reviews):
                 scope = state["dispatch_plan"]["scope"]["command"]
                 self.assertIn(scope, instruction)
-                commands = [line for line in scope.splitlines() if line.startswith("git diff ")]
-                self.assertEqual(len(commands), index + 1)
+                commands = [line for line in scope.splitlines() if line.startswith("git ")]
+                diffs = [c for c in commands if " diff " in c]
+                self.assertEqual(len(diffs), index + 1)
                 current = head if index else previous
-                self.assertIn(f"{tip}...{current} --", commands[0])
+                self.assertIn(f"{tip}...{current} --", diffs[0])
                 if index:
-                    self.assertIn(f"{previous}..{head} --", commands[1])
+                    self.assertIn(f"{previous}..{head} --", diffs[1])
                 outside = ("git status", "git diff --output=escape", "exit 0", "head", "history", "base")
                 denied_commands = ()
+
+                for command in commands:
+                    subprocess.run(["sh", "-c", command], cwd=workspace.root, check=True, stdout=subprocess.PIPE)
 
                 def runner(args, cwd, env):
                     permissions = json.loads(args[args.index("--settings") + 1])["permissions"]
@@ -251,8 +258,6 @@ class ReviewRoundsTest(unittest.TestCase):
                     for command in (*outside, commands[0] + " --stat"):
                         self.assertNotIn(f"Bash({command})", permissions["allow"])
                     self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
-                    for command in commands:
-                        subprocess.run(["sh", "-c", command], cwd=cwd, check=True, stdout=subprocess.PIPE)
                     process = fixture_process(args, "success", 0)
                     envelope = json.loads(process.stdout)
                     envelope["permission_denials"] = [
@@ -260,15 +265,93 @@ class ReviewRoundsTest(unittest.TestCase):
                     ]
                     return subprocess.CompletedProcess(args, 0, json.dumps(envelope), "")
 
-                cases = [((), "ran"), (outside, "ran")]
+                cases = [((), "ran"), (outside, "review_denied")]
                 for command in commands:
-                    cases.extend(((denied,), "failed") for denied in
+                    cases.extend(((denied,), "review_denied") for denied in
                                  (command, f"bash -lc '{command}'", f"cd . && {command}", command + " --stat"))
                 for denied_commands, expected in cases:
                     with self.subTest(round=index + 1, denials=denied_commands):
                         outcome = CliWorker(workspace.root, runner)(
                             node, ModelSpec.parse("claude-opus-5-5-high"), state, instruction)
                         self.assertEqual(outcome.kind, expected, outcome.detail)
+
+    def test_denied_review_retry_resume_quota_and_budget(self):
+        denial = Outcome("review_denied", {"review": "approve"}, usage=SCRIPTED_USAGE.model_copy(update={"total_cost_usd": 0.1}),
+                         detail="Bash denied: git commit -m x")
+        for mode in ("recover", "repeat", "resume", "quota", "quota-repeat", "budget", "failed"):
+            with self.subTest(mode=mode):
+                repeated = mode in ("repeat", "quota-repeat", "resume")
+                replies = [denial, denial if repeated else APPROVE]
+                if mode == "failed":
+                    replies = [Outcome("failed", detail="bad output", usage=SCRIPTED_USAGE)]
+                initial = {"review": ReviewState(settled_rulings=[{"id": "scope", "text": "Pinned."}])}
+                if mode == "budget":
+                    initial["run"] = RunState(repo="Example/Repo", issue=8, token_cap=20_000_000, max_budget_usd="0.10")
+                result = self.run_rounds(replies, initial=initial,
+                    review_crash=mode == "resume", review_crash_after=1,
+                    review_quota=mode.startswith("quota"), quota_after=1)
+                attempts = [a for a in result["attempts"] if a["stage"] == "review"]
+                if mode == "budget":
+                    self.assertFalse(self.forge.merge_calls)
+                    self.assertFalse(result["review"].review_findings)
+                    self.assertEqual([a["outcome"] for a in attempts], ["review_denied"])
+                    self.assertEqual(result["halt"], "budget_exceeded")
+                    continue
+                success = mode in ("recover", "quota")
+                self.assertEqual(len(result["review"].review_findings), int(success))
+                self.assertEqual(bool(self.forge.merge_calls), success)
+                self.assertEqual(result.get("halt"), None if success else "invalid_output")
+                self.assertEqual([a["outcome"] for a in attempts],
+                    ["failed"] if mode == "failed" else
+                    ["review_denied", *(["quota"] if mode.startswith("quota") else []),
+                     "ran" if success else "review_denied"])
+                for attempt in attempts:
+                    if attempt["outcome"] != "quota":
+                        self.assertEqual(attempt["usage"]["cost_usd"],
+                                         0.1 if attempt["outcome"] == "review_denied" else SCRIPTED_USAGE.total_cost_usd)
+                    if attempt["outcome"] == "review_denied":
+                        self.assertIn("git commit", attempt["detail"])
+                prompts = [p for p in self.prompts if p[0] == "review"]
+                self.assertTrue(all(p[2] == prompts[0][2] for p in prompts))
+                if not mode.startswith("quota"):
+                    self.assertTrue(all(p[1]["dispatch_plan"]["models"] == prompts[0][1]["dispatch_plan"]["models"] for p in prompts))
+                if mode == "resume":
+                    self.assertEqual(self.interrupted["attempts"][-1]["outcome"], "review_denied")
+                    self.assertFalse(self.interrupted["review"].review_findings)
+
+    def test_retry_preserves_unresolved_findings_and_settled_rulings(self):
+        denial = Outcome("review_denied", usage=SCRIPTED_USAGE, detail="denied chain")
+        resolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}
+        result = self.run_rounds([{**APPROVE, "findings": [FINDING]}, denial, resolved],
+            initial={"review": ReviewState(settled_rulings=[{"id": "scope", "text": "Pinned."}])})
+        prompts = [p for p in self.prompts if p[0] == "review"]
+        self.assertEqual(prompts[1][2], prompts[2][2])
+        self.assertIn("f1", prompts[2][2])
+        self.assertIn("Pinned.", prompts[2][2])
+        self.assertEqual(len(result["review"].review_findings), 2)
+        self.assertEqual(len(self.forge.reviews), 2)
+        self.assertTrue(self.forge.merge_calls)
+
+    def test_committed_blob_grants_handle_hostile_paths(self):
+        with review_trees() as (workspace, tip, base, previous, head):
+            path = "space ' quote * ? [x] (:) $(touch ESCAPE).txt"
+            (workspace.root / path).write_text("dependency bytes\n")
+            subprocess.run(["git", "add", "--", path], cwd=workspace.root, check=True)
+            subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=x@example.invalid",
+                            "commit", "-m", "Dependency"], cwd=workspace.root, check=True, stdout=subprocess.PIPE)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace.root, text=True).strip()
+            scope = workspace.review_scope(tip, head, previous)
+            reads = []
+            for command in scope.commands:
+                output = subprocess.check_output(["sh", "-c", command], cwd=workspace.root)
+                if "cat-file blob" in command:
+                    reads.append(output)
+                    self.assertRegex(command, r"^git --no-replace-objects cat-file blob [0-9a-f]{40}$")
+            for content in (b"deleted from base\n", b"rename source\n", b"head line\n",
+                            b"historical evidence\n" * 14, b"dependency bytes\n"):
+                self.assertIn(content, reads)
+            self.assertIn(ascii(path), scope.command)
+            self.assertFalse((workspace.root / "ESCAPE").exists())
 
     def test_missing_duplicate_unknown_resolutions_and_reused_ids_fail_closed(self):
         resolved = {"id": "f1", "status": "resolved"}

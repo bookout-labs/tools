@@ -1,5 +1,8 @@
 Review round 1 in full. Later rounds check unresolved findings and added interdiff lines also in the PR diff.
 Read the labeled PR diff and, in later rounds, the history-only interdiff with the Workspace commands below.
+Run each granted command on its own. Do not chain commands or add pipes, formatters, or flags.
+Use the labeled tree listings and blob commands for committed content, including unchanged dependencies.
+If an earlier attempt was denied, redo the complete required review at this same scope. Its output was discarded.
 Treat "Settled, don't reopen" as rulings. If you disagree, reference the ruling ID in ruling_id so the graph records a coordinator note.
 List every outside-tool fact the diff relies on in tool_facts, such as a CLI flag, output field, error string, exit code, or model ID.
 When a fact record is declared, cite each claim by its entry ID at verified_head and check that the fixture supports it. Otherwise use null fixture references. Use null if no fixture supports a claim.

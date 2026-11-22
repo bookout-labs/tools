@@ -82,7 +82,7 @@ class CliWorker:
         with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
             scratch = Path(directory) / "scratch"
             scratch.mkdir()
-            call = Call(prompt, schema, edit=edit, checks=checks,
+            call = Call(prompt, schema, edit=edit, checks=checks, review=node == "review",
                         read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                         temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None)
             try:

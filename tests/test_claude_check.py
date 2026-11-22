@@ -55,6 +55,47 @@ class ClaudeCheckTest(unittest.TestCase):
                     if name == 'wrong_model':
                         self.assertIn('modelUsage reported', result.detail)
 
+    def test_native_review_denial_and_fresh_standalone_reads(self):
+        capture = json.loads((FIXTURES / "claude/review-denial.json").read_text())
+        first, retry = capture["calls"]
+        call = replace(CALL, review=True)
+        for captured, kind in ((first, "review_denied"), (retry, "ran")):
+            outcome = ClaudeAdapter(MODEL).read(subprocess.CompletedProcess(
+                ["claude"], captured["returncode"], json.dumps(captured["envelope"]), ""), call)
+            self.assertEqual(outcome.kind, kind)
+            if kind == "review_denied":
+                self.assertEqual(outcome.output, {})
+            self.assertIsNotNone(outcome.usage)
+        self.assertLess(sum(c["envelope"]["total_cost_usd"] for c in capture["calls"]), 1)
+        denied_id = first["envelope"]["permission_denials"][0]["tool_use_id"]
+        self.assertTrue(any(b.get("tool_use_id") == denied_id and b.get("is_error") for b in first["blocks"]))
+        calls = {b["id"]: b["input"]["command"] for b in retry["blocks"] if b.get("name") == "Bash"}
+        successful = {calls[b["tool_use_id"]]: b["content"] for b in retry["blocks"]
+                      if b.get("tool_use_id") in calls and not b.get("is_error")}
+        commands = set(line for line in capture["scope"].splitlines() if line.startswith("git "))
+        self.assertEqual(set(successful), commands)
+        for content in ("base deletion\n", "unchanged dependency\n", "verified head\n", "previous only\n", "odd path\n"):
+            self.assertIn(content.strip(), successful.values())
+        partial = json.loads((FIXTURES / "claude/permissions/compound.json").read_text())
+        self.assertEqual(partial["files"]["repo/first"], "")
+        self.assertEqual(partial["files"]["repo/second"], "")
+        result = ClaudeAdapter(MODEL).read(subprocess.CompletedProcess(
+            ["claude"], 0, json.dumps(partial["stdout"]), ""), call)
+        self.assertEqual(result.kind, "review_denied")
+        self.assertEqual(result.output, {})
+
+    def test_reviewer_never_accepts_denial_bearing_output(self):
+        for evidence in (None, {}, [{"tool_name": "Bash", "tool_input": None}],
+                         denied("git commit -m x")["permission_denials"],
+                         denied(CHECK + " && git show HEAD:x | od -c")["permission_denials"]):
+            envelope = {**denied(CHECK), "permission_denials": evidence}
+            process = subprocess.CompletedProcess(["claude"], 0, json.dumps(envelope), "")
+            result = ClaudeAdapter(MODEL).read(process, replace(CALL, review=True))
+            self.assertEqual(result.kind, "review_denied")
+            self.assertEqual(result.output, {})
+            self.assertIsNotNone(result.usage)
+            self.assertTrue(result.detail)
+
     def test_graph_halts_on_first_fix_and_fallback(self):
         for mode in ('first', 'fix', 'fallback'):
             with self.subTest(mode=mode):

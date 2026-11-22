@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
+from unidiff.errors import UnidiffParseError
 
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome, Usage
@@ -35,7 +36,7 @@ from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpo
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
-from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
 from test_adapters import codex_events, fixture_process
 from test_spec_candidate import CandidateTests
@@ -118,6 +119,17 @@ class FakeWorkspace(LiveWorkspace):
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT
 
+    def review_scope(self, base, head, previous):
+        pr = self.review_diff(base, head)
+        try:
+            inline = added_lines(pr.patch)
+        except UnidiffParseError:
+            if previous is not None:
+                raise WorktreeInspectionFailed("PR diff could not be parsed for scoping.")
+            inline = frozenset()
+        return ReviewScope(pr.command if previous is None else
+                           pr.command + "\n" + self.review_diff(previous, head, interdiff=True).command, inline)
+
     def review_diff(self, base, head, *, interdiff=False):
         return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
 
@@ -142,6 +154,8 @@ def worker_reply(args, reply):
 
 
 class FixtureWorkspace(LiveWorkspace):
+    review_scope = FakeWorkspace.review_scope
+
     def push(self, branch, repo):
         pass
 

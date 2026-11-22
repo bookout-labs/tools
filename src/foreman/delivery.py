@@ -513,15 +513,27 @@ def compile_delivery(
                     cost_usd=outcome.usage.total_cost_usd,
                 ),
             ).record()]
+            if outcome.kind == "review_denied":
+                attempts[0]["detail"] = outcome.detail
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
             attempt_history = state.get("attempts", []) + attempts
             if outcome.kind == "budget_exhausted":
                 return {**stopped, **halted(Halt.budget_exceeded, f"{name} {model} exhausted its dollar budget. {dollar_detail(state['run'], attempt_history)} {outcome.detail}".strip(), name)}
-            if outcome.kind == "ran" and outcome.usage is None:
+            if outcome.kind in {"ran", "review_denied"} and outcome.usage is None:
                 return {**stopped, **halted(Halt.usage_unknown, unknown_usage(name, model), name)}
             admission = dollar_admission_for(state["run"], attempt_history)
             if stop := admission_stop(state, attempt_history, name, admission):
                 return {**stopped, **stop}
+            if name == "review" and outcome.kind == "review_denied":
+                denied = 0
+                for attempt in reversed(attempt_history):
+                    if attempt["stage"] != "review" or attempt["outcome"] == "ran":
+                        break
+                    denied += attempt["outcome"] == "review_denied"
+                if denied == 1:
+                    return {"attempts": attempts, "pending_dispatch": pending,
+                            "dispatch_plan": {**plan, "budget_usd": dispatch_budget(admission)}}
+                return {**stopped, **halted(Halt.invalid_output, f"Review denial retry exhausted: {outcome.detail}", name)}
             index = pending["index"] + 1
             unavailable = ""
             if name == "review" and outcome.kind in {"quota", "cli_missing"}:

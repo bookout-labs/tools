@@ -45,7 +45,7 @@ class NativeUsage(TypedDict):
     entries: dict[str, NativeUsageTokens]
 
 
-OutcomeKind = Literal["ran", "quota", "cli_missing", "failed", "budget_exhausted"]
+OutcomeKind = Literal["ran", "quota", "cli_missing", "failed", "budget_exhausted", "review_denied"]
 
 
 @dataclass(frozen=True)
@@ -68,6 +68,7 @@ class Call:
     budget_usd: BudgetUsd | None = None
     checks: tuple[str, ...] = ()
     read_roots: tuple[Path, ...] = ()
+    review: bool = False
 
 
 class CapabilityUnavailable(ValueError):
