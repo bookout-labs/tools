@@ -56,6 +56,7 @@ Co-Authored-By: gpt-6.1-sol-high <noreply@openai.com>'
 dry run: git push --no-follow-tags origin 'refs/heads/<issue>-board-saves-a-move:refs/heads/<issue>-board-saves-a-move'
 dry run: gh pr create --repo DoctorCRE/doctorcre-engine --base '<default-branch>' --head '<issue>-board-saves-a-move' --title 'Board saves a move' --body 'Closes #<issue>'
 triage claude-opus-5-5-high
+spec_check grok-4.7-high
 implement gpt-6.1-sol-high
 verify npm run check
 publish

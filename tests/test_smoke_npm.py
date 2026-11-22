@@ -15,9 +15,10 @@ from unittest.mock import Mock, patch
 
 from foreman import cli, smoke_command as smoke
 from foreman.delivery import LiveRun
+from foreman.config import load_config
 from foreman.state import CheckpointVersionError
 from foreman.workspace import LiveWorkspace
-from skill_fixture import fixture_skills
+from skill_fixture import fixture_skills, checker_reply
 from test_runner import APPROVE, FakeGitHub, worker_reply
 
 
@@ -77,6 +78,8 @@ class NpmSmokeTest(unittest.TestCase):
                         path.write_text(path.read_text() + '\n')
                 return result
             def worker(args, cwd, env):
+                if reply := checker_reply(args):
+                    return worker_reply(args, reply)
                 state = json.loads(args[-1].split('Delivery state:\n')[1])
                 node = state['path'][-1] if state['path'] else ''
                 # The worker is scripted; all workspace operations remain real.
@@ -104,6 +107,11 @@ class NpmSmokeTest(unittest.TestCase):
             stack.enter_context(patch('foreman.smoke_command.subprocess.run', side_effect=process))
             stack.enter_context(patch('foreman.smoke_command.main', side_effect=boundary))
             stack.enter_context(patch.object(LiveWorkspace, 'push'))
+            stack.enter_context(patch.object(LiveWorkspace, 'validate_origin'))
+            config = load_config()
+            spec = config.nodes["spec"]
+            config.nodes["spec"] = replace(spec, models=tuple(model for model in spec.models if model.family != "grok"))
+            stack.enter_context(patch("foreman.runner.load_config", return_value=config))
             stack.enter_context(patch.object(LiveWorkspace, 'reconcile', reconcile))
             if mutation == 'bare refusal':
                 stack.enter_context(patch.object(CheckpointVersionError, '__init__', lambda self, *args: ValueError.__init__(self, 'Unsupported checkpoint')))

@@ -395,4 +395,4 @@ class SmokeCommandTest(unittest.TestCase):
             for result in results:
                 self.assertEqual(result['run'].token_cap, SMOKE_TOKEN_CAP)
                 self.assertEqual(result['run'].max_budget_usd, '2')
-            self.assertEqual([call['node'] for call in handler.calls], ['triage', 'implement', 'review'])
+            self.assertEqual([call['node'] for call in handler.calls], ['triage', 'spec_check', 'implement', 'review'])

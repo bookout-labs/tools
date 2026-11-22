@@ -160,6 +160,8 @@ with SqliteSaver.from_conn_string(path) as saver:
                                  "commit": "a" * 40, "methods": [], "outcome": "ran", "usage": {
                                      "input": 1, "output": 2, "cache_read": 0, "cache_creation": 0,
                                      "cost_usd": None}}], **extra}
+                    if name == "pr_size":
+                        state["human_question"] = ""
                     if predecessor == "spec_call":
                         plan = plan.model_copy(update={"spec_gate": "needs_human" if name == "spec" else "ready", "spec_rejection": None})
                     elif name == "triage":
@@ -221,6 +223,7 @@ def worker(node, model, state, instruction):
     result = handler(node, model, state, instruction)
     if stage == "spec" and node == "spec":
         result.output["slices"] = [result.output["slices"][0]] * 2
+        result.output["spec"] += f" {count(state)}"
     return result
 
 config = replace(load_config(), pstack=PstackPin.model_validate_json(pin))

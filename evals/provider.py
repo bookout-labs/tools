@@ -98,7 +98,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
     elif case == "spec-ready":
         output = _stop(ScriptHandler(triage="spec", spec_gate="ready"), slice=FIELD_SLICE)
     elif case == "spec-gate":
-        output = _stop(ScriptHandler(triage="spec", spec_gate="needs_human"), slice=FIELD_SLICE)
+        output = _stop(ScriptHandler(triage="spec", spec_gate="needs_human"))
     elif case == "parent":
         output = _stop(ScriptHandler(triage="implement", slice=FIELD_SLICE))
     elif case == "parent-spec":

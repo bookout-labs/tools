@@ -177,7 +177,9 @@ class Workspace(Protocol):
     def run(self, command: str, *, log: CheckLog | None = None) -> int: ...
     def inspect(self) -> WorktreeState: ...
     def review_context(self, base: str, head: str) -> ReviewContext: ...
-    def create_branch(self, branch: str, base: str) -> None: ...
+    def validate_origin(self, repo: str) -> None: ...
+    def pin_base(self, base: str) -> str: ...
+    def create_branch(self, branch: str, base: str, *, pinned: str = "") -> None: ...
     def refresh(self, branch: str, head: str) -> None: ...
     def commit(self, message: str) -> None: ...
     def committed(self, parent: str, message: str) -> bool: ...
@@ -186,7 +188,7 @@ class Workspace(Protocol):
     def soft_reset(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
     def push(self, branch: str, repo: str) -> None: ...
-    def has_file(self, path: str) -> bool: ...
+    def has_tracked_file(self, base: str, path: str) -> bool: ...
     def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str) -> ReviewDiff: ...
     def review_scope(self, base: str, head: str) -> ReviewScope: ...
@@ -223,14 +225,6 @@ class LiveWorkspace:
                     log(line)
             return process.wait()
 
-    def has_file(self, path: str) -> bool:
-        root = self.root.resolve()
-        try:
-            file = (root / path).resolve()
-            return file.is_relative_to(root) and file.is_file()
-        except (OSError, RuntimeError, ValueError):
-            return False
-
     def inspect(self) -> WorktreeState:
         head = os.fsdecode(self._git("rev-parse", "HEAD")).strip()
         if commit_sha(head) is None:
@@ -239,18 +233,30 @@ class LiveWorkspace:
         branch = os.fsdecode(self._git("branch", "--show-current")).strip()
         return WorktreeState(head, not status, branch or None)
 
-    def create_branch(self, branch: str, base: str) -> None:
-        branch = redact(branch)
-        refs = self._git("for-each-ref", "--format=%(refname)", f"refs/heads/{branch}")
-        exists = f"refs/heads/{branch}" in os.fsdecode(refs).splitlines()
-        if exists and os.fsdecode(self._git("branch", "--show-current")).strip() == branch:
-            return
+    def has_tracked_file(self, base: str, path: str) -> bool:
+        if not path or "\\" in path or "\0" in path or any(part in {"", ".", ".."} for part in path.split("/")):
+            return False
+        entry = self._git("--no-replace-objects", "--literal-pathspecs", "ls-tree", "--full-tree", "-z", base, "--", path)
+        return entry.startswith((b"100644 blob ", b"100755 blob ")) and entry.endswith(b"\t" + os.fsencode(path) + b"\0")
+
+    def validate_origin(self, repo: str) -> None:
+        self._urls = self._validate_remote(repo)
+
+    def pin_base(self, base: str) -> str:
         base_ref = f"refs/remotes/origin/{base}"
         self._git(
             "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
             f"+refs/heads/{base}:{base_ref}",
         )
-        head = os.fsdecode(self._git("rev-parse", "--verify", f"{base_ref}^{{commit}}")).strip()
+        return os.fsdecode(self._git("rev-parse", "--verify", f"{base_ref}^{{commit}}")).strip()
+
+    def create_branch(self, branch: str, base: str, *, pinned: str = "") -> None:
+        branch = redact(branch)
+        refs = self._git("for-each-ref", "--format=%(refname)", f"refs/heads/{branch}")
+        exists = f"refs/heads/{branch}" in os.fsdecode(refs).splitlines()
+        if exists and os.fsdecode(self._git("branch", "--show-current")).strip() == branch:
+            return
+        head = pinned or self.pin_base(base)
         if exists:
             existing = os.fsdecode(self._git("rev-parse", "--verify", f"refs/heads/{branch}^{{commit}}")).strip()
             if existing != head:

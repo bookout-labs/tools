@@ -18,7 +18,7 @@ from foreman.state import DeliveryState, PlanState
 from foreman.stage_output import ResearchOutput
 from foreman.skill_rules import SkillMethod, SkillRule, SkillMissing, export_skills, stage_methods
 from skill_fixture import skill_fixture
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import DryRun, ScriptHandler
 from foreman.worker import CliWorker
 from test_delivery import EMPTY_SLICE
 
@@ -58,7 +58,8 @@ def capture():
             with patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex="stable")), patch(
                 "foreman.skill_rules.PACKAGE_SKILLS", Path("/LOCAL")), patch(
                 "foreman.delivery.PACKAGE", Path(__file__).resolve().parents[1] / "src/foreman"):
-                with patch("foreman.delivery.SCHEMA_VERSION", 10):  # Captured baseline schema.
+                with patch("foreman.delivery.DryRun", side_effect=lambda **kwargs: DryRun(root=Path("/TARGET"), **kwargs)):
+                    # Keep audit hashes independent of the checkout path.
                     result = run_delivery(dispatch, repo="Example/Engine", request="Change items", check="check",
                     slice=item, scratch=Path("/FIXTURE"), skills=lambda *_: Path("/METHODS"))
             captures[f"{kind}/{route}"] = {"calls": records, "stop": result["stop"],
@@ -80,7 +81,7 @@ class StageDeclarationsTest(unittest.TestCase):
             with self.subTest(stage=name):
                 row = STAGES[name]
                 seen = []
-                script = ScriptHandler(triage="question" if name == "research" else "spec")
+                script = ScriptHandler(triage="question" if name == "research" else "spec", slices=[EMPTY_SLICE])
 
                 def dispatch(stage, model, state, instruction):
                     if stage == name:
@@ -96,11 +97,11 @@ class StageDeclarationsTest(unittest.TestCase):
                     return "\nRow instruction", target, scope
 
                 with patch.dict(STAGES, {name: replace(row, prepare=prepare, accept=accept)}):
-                    result = walk(dispatch)
+                    result = walk(dispatch, slice=None) if name == "spec" else walk(dispatch)
                 self.assertEqual(seen, [name])
                 self.assertEqual(result["research"], "Row accepted")
-                self.assertEqual(result["stop"], "answered" if name == "research" else "verified")
-                self.assertEqual(result["attempts"][-1]["stage"], "research" if name == "research" else "review")
+                self.assertEqual(result["stop"], {"research": "answered", "spec": "sliced"}.get(name, "verified"))
+                self.assertEqual(result["attempts"][-1]["stage"], {"research": "research", "spec": "spec_check"}.get(name, "review"))
 
     def assert_no_stage_policy(self, source, module):
         expected = {"bind", "call", "stage_update"} if module == "delivery.py" else {"clean_outcome"}
@@ -288,15 +289,16 @@ class StageDeclarationsTest(unittest.TestCase):
             with self.subTest(stage=name):
                 self.assertFalse(set(row.input_fields) - fields.keys())
 
-    def test_spec_check_methods_include_proof(self):
+    def test_spec_checker_uses_the_independent_evidence_probe(self):
         with skill_fixture() as (config, scratch):
             root = export_skills(config.pstack, scratch)
             _, methods, _ = stage_methods("spec_check", {"plan": PlanState()}, root)
-        self.assertIn("principle-prove-it-works/SKILL.md", methods)
+        self.assertEqual(methods, ["interrogate/SKILL.md#L19-L19"])
 
     def test_active_and_non_model_resources_stay_distinct(self):
         self.assertEqual(MODEL_STAGES, ("triage", "research", "spec", "implement", "review"))
-        self.assertEqual(STAGES["spec_check"].kind, "dormant")
+        self.assertEqual(STAGES["spec_check"].kind, "model")
+        self.assertEqual(STAGES["spec_check"].model_selector, "spec")
         self.assertEqual(STAGES["spec_check"].prompt, "spec_check.md")
         for name, row in STAGES.items():
             if row.prompt is not None:

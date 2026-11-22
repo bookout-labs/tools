@@ -95,8 +95,7 @@ class PermissionsTest(unittest.TestCase):
             return script(node, model, state, instruction)
         with skill_fixture() as (config, scratch):
             run_delivery(handler, repo="org/repo", request="Change", config=config, scratch=scratch)
-        for rule in ("Read the target checkout before asking a person", "existing behavior",
-                     "external facts absent", "why_code_unanswered", "checked_paths"):
+        for rule in ("Read the target checkout at the named base", "pinned base:", "grounded questions", "target_repository: org/repo"):
             self.assertIn(rule, instructions[0])
 
     def test_review_grants_only_the_bound_scope_command(self):

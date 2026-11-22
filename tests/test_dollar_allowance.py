@@ -285,6 +285,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     if node == "triage":
                         return Outcome("ran", {**NEEDS_HUMAN, "triage": "implement", "human_question": None},
                                        usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.2))
+                    if node == "spec_check":
+                        return ScriptHandler()(node, model, state, instruction)
                     cost = next(claude_cost) if model.family == "claude" else 5.0
                     return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
@@ -309,5 +311,5 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 resumed = run_live_delivery(**kwargs)
                 self.assertEqual(resumed["stop"], "quota_exhausted")
                 self.assertEqual(resumed["attempts"][:len(halted["attempts"])], halted["attempts"])
-                self.assertEqual(run_tokens(resumed["attempts"]), 2 + 2 * len(implement))
+                self.assertEqual(run_tokens(resumed["attempts"]), 4 + 2 * len(implement))
                 self.assertIn("claude spend $0.6 of $1", printed(resumed))

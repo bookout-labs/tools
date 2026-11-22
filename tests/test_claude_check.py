@@ -104,7 +104,7 @@ class ClaudeCheckTest(unittest.TestCase):
             return replace(result, kind="failed") if node == "implement" else result
         result = walk(handler)
         self.assertEqual(result["halt"], "invalid_output")
-        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement"])
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check", "implement"])
 
     def test_graph_halts_on_first_fix_and_fallback(self):
         for mode in ('first', 'fix', 'fallback'):

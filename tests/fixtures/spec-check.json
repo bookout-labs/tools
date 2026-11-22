@@ -1,4 +1,5 @@
 {
+  "human_question": null,
   "findings": [
     {
       "id": "f1",
@@ -9,6 +10,5 @@
       "ruling_id": null
     }
   ],
-  "notes": [],
-  "resolutions": []
+  "notes": []
 }

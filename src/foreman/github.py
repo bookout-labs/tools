@@ -104,9 +104,12 @@ class IssueLabel(BaseModel, strict=True):
 
 
 class IssueView(BaseModel, strict=True):
+    number: PositiveInt
+    repository_url: str
     title: str
     body: str | None
     labels: list[IssueLabel]
+    pull_request: JsonValue = None
 
 
 class RepositoryOwner(BaseModel, strict=True):
@@ -181,6 +184,7 @@ class SmokeItemState(BaseModel, strict=True):
 
 class IssueComment(BaseModel, strict=True):
     body: str | None
+    user: RepositoryOwner | None = None
 
 
 class RepositoryIssue(BaseModel, strict=True):
@@ -238,6 +242,8 @@ class LinkedIssuePages(RootModel[list[list[LinkedIssue]]], strict=True):
 
 
 class Issue(TypedDict):
+    repo: str
+    number: int
     title: str
     body: str
     labels: list[str]
@@ -311,6 +317,7 @@ class Forge(Protocol):
     def add_sub_issue(self, repo: str, number: int, child: int) -> None: ...
     def update_issue_body(self, repo: str, number: int, body: str) -> None: ...
     def issue_comments(self, repo: str, number: int) -> list[str]: ...
+    def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]: ...
     def comment_issue(self, repo: str, number: int, body: str) -> None: ...
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None,
@@ -437,9 +444,13 @@ class LiveForge:
 
     def load_issue(self, repo: str, number: int) -> Issue:
         issue = self._read(
-            repo, IssueView, ["gh", "issue", "view", str(number), "--repo", repo, "--json", "title,body,labels"],
+            repo, IssueView, ["gh", "api", f"repos/{repo}/issues/{number}"],
         )
-        return {"title": issue.title, "body": issue.body or "", "labels": [label.name for label in issue.labels]}
+        canonical = issue.repository_url.removeprefix("https://api.github.com/repos/")
+        if issue.pull_request is not None or issue.number != number or canonical.lower() != repo.lower():
+            raise ForgeError("GitHub returned an issue outside the requested repository and number.")
+        return {"repo": canonical, "number": issue.number, "title": issue.title,
+                "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
     def open_issues(self, repo: str) -> list[OpenIssue]:
         pages = self._read(repo, OpenIssuePages, [
@@ -539,10 +550,13 @@ class LiveForge:
             raise ForgeError("Smoke item did not close.")
 
     def issue_comments(self, repo: str, number: int) -> list[str]:
+        return [comment.body or "" for comment in self.issue_comment_records(repo, number)]
+
+    def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]:
         pages = self._read(repo, IssueCommentPages, [
             "gh", "api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate", "--slurp",
         ])
-        return [comment.body or "" for page in pages.root for comment in page]
+        return [comment for page in pages.root for comment in page]
 
     def marked_issues(self, repo: str, marker: str) -> list[int]:
         pages = self._read(repo, OpenIssuePages, [

@@ -1,3 +1,8 @@
-Check only the supplied candidate and its proof obligations, seams, contracts, scope and failure paths. Read the repository as needed. Do not edit files, repair the candidate, start subagents or publish issues.
+# Check and approve the plan
 
-Report every blocking design gap as a finding with a stable ID and an existing candidate slice title. Report a blocking gap even when it falls outside a slice's stated scope. Put advisory observations and disagreements with settled rulings in notes, citing the ruling ID. Resolve every prior unresolved ID exactly once. Check unresolved findings and changed candidate sections on later rounds. Return only the native SpecCheckOutput contract. A clear result approves only this exact revision.
+Challenge the exact candidate against the originating issue and pinned target checkout.
+Confirm each slice belongs to that repository, including when a matching path exists in
+Foreman's repository. Check seam ownership, acceptance and dependencies. Cite concrete
+defects and report unresolved choices for the coordinator or personal agent to relay.
+Keep all repository and GitHub state read-only.
+Approve the checked candidate when no blocking defect or unresolved choice remains. Return empty findings for a clear verdict.

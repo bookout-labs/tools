@@ -6,7 +6,7 @@ from graphlib import CycleError, TopologicalSorter
 import json
 from typing import Literal, TYPE_CHECKING
 
-from foreman.config import Config, ModelSpec, order_for, contributors_for
+from foreman.config import Config, ModelSpec, order_for, contributors_for, family
 from foreman.skill_rules import SkillMethod, SkillRule, principle
 from foreman.stage_output import (
     StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput,
@@ -38,15 +38,14 @@ class Acceptance:
 def clean_slices(
     raw: list[Slice] | None,
     workspace: Workspace | None,
+    base: str = "",
 ) -> list[SliceRecord]:
     if not raw:
         raise InvalidOutput("slices: ready parent spec needs at least one slice")
     for item in raw:
         for seam in item.uses:
-            if seam.path is not None and (workspace is None or not workspace.has_file(seam.path)):
-                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, but {seam.path} is not a workspace file.")
-    if len(raw) == 1:
-        return [{**raw[0].record(), "depends_on": []}]
+            if seam.path is not None and (workspace is None or not workspace.has_tracked_file(base, seam.path)):
+                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, but {seam.path} is not a tracked regular file at {base}.")
     slices = {item.title: item for item in raw}
     if len(slices) != len(raw):
         raise InvalidSlicePlan("duplicate_title", "Slice titles must be unique.")
@@ -86,13 +85,16 @@ def no_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -
 
 
 def spec_instructions(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
+    run = state["run"]
+    pinned = (f"\n\ntarget_repository: {run.repo}\ntarget_checkout: {workspace.root.resolve()}\npinned base: {run.base_sha}"
+              f"\nRead the committed tree with git ls-tree {run.base_sha} and git show {run.base_sha}:<path>.")
     if size := oversized_pr(state):
         return (
-            f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."
+            pinned + f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."
             " Split the work into independently shippable pull requests."
             " For a slice issue, describe the split in spec."
         ), None, None
-    return "", None, None
+    return pinned, None, None
 
 
 def accept_output(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
@@ -106,10 +108,14 @@ def accept_spec(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     if workspace is not None:
         for question in output.questions:
             for path in question.checked_paths:
-                if not workspace.has_file(path):
-                    raise InvalidOutput(f"checked_paths: {path} is not a workspace file")
+                if not workspace.has_tracked_file(state["run"].base_sha, path):
+                    raise InvalidOutput(f"checked_paths: {path} is not a tracked regular file at the pinned base")
     plan = state["plan"]
-    slices = clean_slices(output.slices, workspace) if plan.issue_kind == "parent" and output.spec_gate == "ready" else []
+    slices = [item.record() for item in output.slices or []]
+    if output.spec_gate == "ready" and not slices and plan.slice is not None:
+        slices = [plan.slice]
+    if output.spec_gate == "ready" and not slices:
+        raise InvalidOutput("slices: ready spec needs at least one slice")
     return {**output.update(UpdateContext(plan, state["review"], bool(oversized_pr(state)), slices, model if isinstance(model, ModelSpec) else None))}
 
 
@@ -227,6 +233,30 @@ class Stage:
         name, config, state.get("models_used") or {}, state.get("implement_models"))
 
 
+class SpecCheckStage(Stage):
+    model_selector = "spec"
+    model_dependency = "spec"
+    worker = "checker"
+    step = "spec.check"
+
+
+def spec_check_models(name: str, state: "DeliveryState", config: Config) -> list[ModelSpec]:
+    models = order_for("spec", config, state.get("models_used", {}))
+    candidate = state.get("plan")
+    record = candidate.spec_candidate if candidate else None
+    latest = state.get("models_used", {}).get("spec")
+    author = record["author"]["family"] if record else family(latest) if latest else None
+    return sorted(models, key=lambda model: model.family == author)
+
+
+def spec_check_projection(state: "DeliveryState", workspace: Workspace) -> tuple["DeliveryState", ReviewContext | None]:
+    plan = state["plan"]
+    assert plan.spec_candidate is not None
+    answers = [answer for answer in plan.human_qa if answer.get("candidate") == plan.spec_candidate["revision"]]
+    return {**state, "plan": plan.model_copy(update={"human_qa": answers}),
+            "human_answers": [answer["answer"] for answer in answers]}, None
+
+
 STAGES = {
     "triage": Stage("triage.md", TriageOutput, (
         SkillRule(skill=SkillMethod(path="poteto-mode/SKILL.md", kind="skill", lines=(110, 110))),
@@ -243,12 +273,10 @@ STAGES = {
         principle("type-system-discipline"),
         SkillRule(skill=SkillMethod(path="statechart/SKILL.md", kind="skill"), when="stateful"),
     ), prepare=spec_instructions, accept=accept_spec, input_fields=("run", "plan", "pr_size", "pr_size_override", "human_question", "human_answers")),
-    "spec_check": Stage("spec_check.md", SpecCheckOutput, (
-        principle("model-the-domain"),
-        principle("boundary-discipline"),
-        principle("type-system-discipline"),
-        principle("prove-it-works"),
-    ), kind="dormant", input_fields=("run", "plan")),
+    "spec_check": SpecCheckStage("spec_check.md", SpecCheckOutput, (
+        SkillRule(skill=SkillMethod(path="interrogate/SKILL.md", kind="leaf_prompt", lines=(19, 19))),
+    ), prepare=spec_instructions, project=spec_check_projection,
+        input_fields=("run", "plan", "human_answers"), models=spec_check_models),
     "implement": Stage("implement.md", ImplementOutput, (
         SkillRule(skill=SkillMethod(path="tdd/SKILL.md", kind="skill", lines=(9, 31)), when="bug_fix"),
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill", lines=(13, 27)), when="perf_issue"),

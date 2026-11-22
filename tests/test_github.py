@@ -181,11 +181,13 @@ class LiveForgeTest(unittest.TestCase):
     @patch("foreman.github.subprocess.run")
     def test_load_issue_validates_labels_and_normalizes_an_empty_body(self, run):
         run.side_effect = [
-            gh_result('{"title":"Track items","body":null,"labels":[{"name":"slice","color":"eeeeee"}]}'),
-            gh_result('{"title":"Track items","body":"","labels":[{"name":12}]}'),
+            gh_result(json.dumps({"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}",
+                                  "title": "Track items", "body": None, "labels": [{"name": "slice", "color": "eeeeee"}]})),
+            gh_result(json.dumps({"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}",
+                                  "title": "Track items", "body": "", "labels": [{"name": 12}]})),
         ]
         forge = LiveForge()
-        self.assertEqual(forge.load_issue(REPO, 8), {"title": "Track items", "body": "", "labels": ["slice"]})
+        self.assertEqual(forge.load_issue(REPO, 8), {"repo": REPO, "number": 8, "title": "Track items", "body": "", "labels": ["slice"]})
         with self.assertRaises(ForgeError) as exc:
             forge.load_issue(REPO, 8)
         self.assertIsInstance(exc.exception.__cause__, ValidationError)
