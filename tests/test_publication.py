@@ -1050,7 +1050,7 @@ class PublicationTest(unittest.TestCase):
                     self.edit()
                 resumed = self.walk(finish if accepted else self.no_worker,
                                     preflight=preflight, check_log=logs.append)
-                self.assertEqual("".join(logs).count("probe"), 2)
+                self.assertEqual("".join(logs).count("probe"), 2 if accepted or change == "preflight" else 1)
                 self.assertEqual(resumed["attempts"][:len(attempts)], attempts)
                 self.assertEqual(resumed["work"].attempt_head, work.attempt_head)
                 if accepted:
@@ -1064,7 +1064,8 @@ class PublicationTest(unittest.TestCase):
 
     def test_dirty_initial_worktree_has_specific_detail(self):
         (self.checkout / "foreign.txt").touch()
-        result = self.walk(lambda: self.fail("unowned edits must halt"))
+        result = self.walk(lambda: self.fail("unowned edits must halt"), preflight="touch preflight_ran; exit 9")
+        self.assertFalse((self.checkout / "preflight_ran").exists())
         self.assertEqual(result.get("stop"), "dirty_worktree")
         self.assertIn("Unowned edits", result["halt_detail"])
 

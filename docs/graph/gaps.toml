@@ -33,7 +33,7 @@ verify = [["done", ""], ["prepare", ""], ["proof", ""]]
 
 [delivery.extra.slice_12]
 decide_pr_size = [["done", ""], ["verify", ""]]
-needs_human = [["done", ""], ["implement", ""], ["spec", ""], ["triage", ""]]
+needs_human = [["done", ""], ["prepare", ""], ["spec", ""], ["triage", ""]]
 review = [["decide_pr_size", ""], ["needs_human", ""]]
 review_call = [["decide_pr_size", ""], ["needs_human", ""]]
 review_post = [["decide_pr_size", ""], ["needs_human", ""]]
