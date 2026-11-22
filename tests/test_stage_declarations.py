@@ -1,4 +1,4 @@
-"""Adapter snapshots captured on main 38295f978 before registry replacement."""
+"""Adapter snapshots captured on main a68e815985cb6222cdfc807d53105f8644f437cf before registry replacement."""
 import tests
 
 from dataclasses import replace
