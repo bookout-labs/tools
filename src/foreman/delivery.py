@@ -182,7 +182,7 @@ def stage_update(
 def review_submission(output: ReviewRound, scope: ReviewScope, question: str) -> tuple[str, list[ReviewComment]]:
     body = [f"Review route: {output.severity or 'none'}. Head: {output.reviewed_head}. Base ref: {output.base}."]
     if question:
-        body.append(f"Question for Joe: {question}")
+        body.append(f"Question for the human: {question}")
     provenance = output.provenance
     if provenance is not None:
         reason = provenance.reason.replace("_", " ") if provenance.reason else "not needed"

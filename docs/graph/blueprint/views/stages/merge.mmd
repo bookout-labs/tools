@@ -4,23 +4,33 @@ flowchart TD
     n2["Foreman · Read the GitHub merge outcome"]:::step
     n3["Foreman · Recheck Ready dependent issues"]:::step
     n4["Foreman · Record the typed merge outcome"]:::step
-    n5(["Return stage result"]):::terminal
-    n6{{"Joe · Provide evidence for the ownership of the unexpected PR revision. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on Joe."}}:::gate
-    n7["Wait for GitHub checks or approval"]:::step
-    n8["Wait for GitHub to report a merge result"]:::step
+    n5(["Merged<br/>Reported on Project card"]):::terminal
+    n6(["Closed<br/>Reported on Project card"]):::terminal
+    n7["Continue to Review stage"]:::stage
+    n8["Continue to Implement stage"]:::stage
+    n9(["Cancelled<br/>Reported on Project card"]):::terminal
+    n10(["Run stops<br/>Reported on Project card"]):::terminal
+    n11{{"Human<br/>• Confirm revision ownership<br/>• Supply evidence or cancel<br/>• Recheck PR revision"}}:::gate
+    n12["Wait for GitHub checks or approval"]:::step
+    n13["Wait for GitHub to report a merge result"]:::step
     n0 --> n1
-    n1 -->|"Run stops / Review the checked revision / Repair"| n4
+    n1 -->|"Run stops / Checked revision / Repair"| n4
     n1 -->|"Armed / Already armed / Closed or merged / Head unverified"| n2
-    n2 -->|"Run stops / Cancelled / Closed / Review the checked revision / Repair"| n4
+    n2 -->|"Run stops / Cancelled / Closed / Checked revision / Repair"| n4
     n2 -->|"Merged"| n3
     n3 -->|"Released / Run stops"| n4
     n4 --> n5
-    n2 -.->|"head unverified"| n6
-    n6 -.->|"Answer to open question"| n2
-    n1 -.->|"Pending"| n7
-    n7 -.->|"Relevant event"| n1
-    n2 -.->|"Pending"| n8
-    n8 -.->|"Relevant event"| n2
+    n4 --> n6
+    n4 -->|"Checked revision"| n7
+    n4 -->|"Repair"| n8
+    n4 --> n9
+    n4 --> n10
+    n2 -.->|"head unverified"| n11
+    n11 -.-> n2
+    n1 -.->|"Pending"| n12
+    n12 -.->|"Relevant event"| n1
+    n2 -.->|"Pending"| n13
+    n13 -.->|"Relevant event"| n2
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36

@@ -8,7 +8,7 @@ The generator reads the Foreman baseline and the [pstack revision](https://githu
 uv run --python 3.12 python docs/graph/blueprint/gen.py --pstack /path/to/cursor/plugins --no-svg
 ```
 
-To regenerate SVGs and their checksums with Node and the pinned Mermaid CLI, omit `--no-svg` and pass `--puppeteer /path/to/puppeteer.json` if you need to set the Chrome executable.
+To regenerate SVGs and their checksums with Node and the pinned Mermaid CLI, omit `--no-svg` and pass `--puppeteer /path/to/puppeteer.json` if you need to set the Chrome executable. Rendering fails if an edge label overlaps another label or a node, or if a connector crosses another edge's label or a node outside its endpoints. The error names the diagram and the elements involved.
 
 CI checks out the Foreman history before the tests run. Set `FOREMAN_PINNED_SKILL_REPO` to your pstack checkout to run text regeneration locally. The SVG check verifies the published Mermaid sources and SVGs against `views/SHA256SUMS` without a browser.
 

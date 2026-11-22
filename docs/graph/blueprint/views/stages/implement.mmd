@@ -4,11 +4,11 @@ flowchart TD
     n2(["Builder · Edit and run target repository checks"]):::worker
     n3["Foreman · Commit or adopt the checked tree"]:::step
     n4["Foreman · Publish the checked commit"]:::step
-    n5(["Run stops"]):::terminal
-    n6(["Cancelled"]):::terminal
-    n7(["No change"]):::terminal
-    n8(["Published"]):::terminal
-    n9{{"Joe · Decide an unresolved acceptance choice before further editing. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on Joe."}}:::gate
+    n5(["Run stops<br/>Reported on Project card"]):::terminal
+    n6(["Cancelled<br/>Reported on Project card"]):::terminal
+    n7(["No change<br/>Reported on Project card"]):::terminal
+    n8["Continue to Review stage"]:::stage
+    n9{{"Human<br/>• Resolve acceptance choice<br/>• Choose or cancel<br/>• Resume editing"}}:::gate
     n0 --> n1
     n1 --> n5
     n1 -->|"Prepared"| n2
@@ -20,10 +20,10 @@ flowchart TD
     n3 --> n5
     n3 -->|"Committed"| n4
     n4 --> n5
-    n4 -->|"Owned branch revision changed"| n1
-    n4 --> n8
+    n4 -->|"Owned head moved"| n1
+    n4 -->|"Published"| n8
     n2 -.->|"Unresolved choice"| n9
-    n9 -.->|"Answer to open question"| n2
+    n9 -.-> n2
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36

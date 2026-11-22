@@ -1,13 +1,13 @@
 # IDs bind each exact difference to its migration issue. Delete the entry when the difference closes.
 waivers:
   233:
-    V2-bc3b71b99381228b: mismatched [procedure/spec] prompt
+    V2-2ccc581c949a2cc8: mismatched [procedure/spec] prompt
     V2-1758e49cc682d76c: mismatched [procedure/spec_check] inputs
     V2-4b09321a0dbefdf6: mismatched [procedure/spec_check] kind
     V2-1993627a3c124fb7: missing [procedure/spec_check] model_dependency
     V2-173eaf7d98475a38: missing [procedure/spec_check] model_policy
     V2-0e35eb22ddefe3ab: mismatched [procedure/spec_check] output_fields
-    V2-5639dc5cc59e841b: mismatched [procedure/spec_check] prompt
+    V2-6764b2ed7841d021: mismatched [procedure/spec_check] prompt
     V2-2debcdea1bd567b3: mismatched [procedure/spec_check] skills
     V2-54e8c089244e9959: missing [procedure/spec_check] step
     V2-8174b6febc90d8c7: missing [procedure/spec_check] worker
@@ -149,14 +149,14 @@ waivers:
     V2-a0d3b98bd4905901: missing [steps/dispatch] call from research.answer
     V2-ec184752ce9c77d4: mismatched [procedure/research] inputs
     V2-820c41915125fb11: mismatched [procedure/research] output_fields
-    V2-276551149fe57b00: mismatched [procedure/research] prompt
+    V2-990b11b9cfd08efd: mismatched [procedure/research] prompt
     V2-64289c5514b0ea0e: mismatched [procedure/research] skills
     V2-fcdd68b495a06252: missing [procedure/research] step
     V2-fc6cd8e3c6c2795a: mismatched [procedure/spec] inputs
     V2-0b74d060da68d39d: mismatched [procedure/spec] skills
     V2-5695273c30b5719d: missing [procedure/spec] step
     V2-3b552330fdf9655f: mismatched [procedure/triage] inputs
-    V2-b6c540c750227b74: mismatched [procedure/triage] prompt
+    V2-1e98be05b15e81b0: mismatched [procedure/triage] prompt
     V2-07e057e6ee90064d: mismatched [procedure/triage] skills
     V2-2be96502ef852069: missing [procedure/triage] step
     V2-9cf5fd5e5504f21b: missing [steps/research] edge __start__ -> answer
