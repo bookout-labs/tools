@@ -464,12 +464,21 @@ class SpecRejection(TypedDict):
     detail: str
 
 
+class HumanAnswer(TypedDict):
+    stage: str
+    question: str
+    answer: str
+
+
 class PlanState(BaseModel, frozen=True, extra="forbid"):
     # Rejected plans share dispatch receipts and paths with human questions.
     spec_failures: int = 0
     triage: Literal["", "implement", "spec", "question", "needs_human"] = ""
     spec: str = ""
     spec_gate: Literal["", "ready", "needs_human"] = ""
+    spec_draft_head: str = ""
+    spec_draft_clean: bool = False
+    human_qa: list[HumanAnswer] = Field(default_factory=list[HumanAnswer])
     spec_candidate: SpecCandidateRecord | None = None
     spec_rejection: SpecRejection | None = None
     slices: list[SliceRecord] = Field(default_factory=list[SliceRecord])

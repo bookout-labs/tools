@@ -2638,6 +2638,117 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                                         "cache_read tokens", "cache_creation tokens")):
                         self.assertIn("restored " + line, terminal)
 
+    def test_draft_resume_in_fresh_processes(self):
+        script = r'''
+import json
+import sys
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
+from langgraph.checkpoint.sqlite import SqliteSaver
+from foreman.config import PstackPin, load_config
+from foreman.delivery import LiveRun, compile_delivery
+from foreman.dry_run import ScriptHandler
+from foreman.runner import run_live_delivery
+from foreman.state import PlanState, RunState, ChecksState, ReviewState, SCHEMA_VERSION, checkpoint_serializer
+from foreman.workspace import LiveWorkspace
+from test_runner import FakeGitHub, EMPTY_SLICE
+from tests.skill_fixture import fixture_skills
+
+case, pin, answer = sys.argv[1:]
+config = replace(load_config(), pstack=PstackPin.model_validate_json(pin))
+root = Path.cwd()
+workspace = LiveWorkspace(root)
+live = LiveRun(FakeGitHub(["factory"]), workspace, skills=fixture_skills)
+checkpoint = root / "run.sqlite"
+
+def dispatch(stage, model, state, instruction):
+    with (root / "calls.jsonl").open("a") as log:
+        log.write(json.dumps({"stage": stage, "instruction": instruction,
+                             "plan": state["plan"].model_dump(),
+                             "answers": state.get("human_answers", [])}) + "\n")
+    count = len(state.get("human_answers", []))
+    if stage == "triage":
+        return ScriptHandler(triage="needs_human" if case.startswith("triage") and not count else "spec")(stage, model, state, instruction)
+    if stage == "spec":
+        pause = count < (2 if case in {"twice", "triage-spec"} else 0 if case == "triage" else 1)
+        return ScriptHandler(spec_gate="needs_human" if pause else "ready", slices=[EMPTY_SLICE])(stage, model, state, instruction)
+    return ScriptHandler()(stage, model, state, instruction)
+
+if case == "split" and not checkpoint.exists():
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+        saver.serde = checkpoint_serializer()
+        graph = compile_delivery(dispatch, config, run=live, checkpointer=saver)
+        graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {
+            "schema_version": SCHEMA_VERSION, "pstack_pin": config.pstack.model_dump(),
+            "run": RunState(repo="a/b", issue=8, workspace=str(root), token_cap=1000000),
+            "checks": ChecksState(check="exit 0"), "review": ReviewState(),
+            "plan": PlanState(triage="spec", issue_kind="parent", spec="PRE-SPLIT"),
+            "pr_size": {"head": workspace.inspect().head, "merge_base": "a" * 40, "lines": 401},
+            "path": ["triage"],
+        }, as_node="triage_call")
+with patch("foreman.runner.load_config", return_value=config):
+    result = run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint,
+    dispatcher=dispatch, run=live, answer=answer or None)
+print(result["stop"])
+'''
+        bootstrap = f"import sys; sys.path[:0] = {[str(Path(__file__).resolve().parents[1]), str(Path(__file__).parent.resolve())]!r}\n"
+        for case in ("normal", "triage", "triage-spec", "twice", "split", "head", "dirty", "paused-dirty"):
+            with self.subTest(case=case):
+                root = self.cwd / case
+                root.mkdir()
+                def git(*args):
+                    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+                git("init", "-q", "-b", "main")
+                (root / ".gitignore").write_text("*\n")
+                (root / "items.py").write_text("ITEMS = []\n")
+                git("add", "-f", ".gitignore", "items.py")
+                def commit():
+                    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "-qm", "Fixture")
+                commit()
+                if case == "paused-dirty":
+                    (root / "items.py").write_text("ITEMS = [1]\n")
+                def invoke(answer=""):
+                    process = subprocess.run([sys.executable, "-c", bootstrap + script, case,
+                        self.pin.model_dump_json(), answer], cwd=root, capture_output=True, text=True)
+                    self.assertEqual(process.returncode, 0, process.stderr + process.stdout)
+                    return [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
+                invoke()
+                if case in {"head", "dirty", "paused-dirty"}:
+                    (root / "items.py").write_text("ITEMS = [2]\n")
+                    if case != "dirty":
+                        git("add", "items.py")
+                        commit()
+                calls = invoke("Open items")
+                if case in {"twice", "triage-spec"}:
+                    calls = invoke("Keep sorting")
+                specs = [call for call in calls if call["stage"] == "spec"]
+                first = specs[0]
+                self.assertNotIn("Delta resume", first["instruction"])
+                resumed = specs[-1]
+                if case == "triage":
+                    self.assertEqual(len(specs), 1)
+                    self.assertEqual(resumed["answers"], ["Open items"])
+                    self.assertNotIn("Delta resume", resumed["instruction"])
+                    continue
+                self.assertEqual(sum(call["stage"] == "triage" for call in calls),
+                                 0 if case == "split" else 2 if case == "triage-spec" else 1)
+                instruction = resumed["instruction"]
+                self.assertIn("Delta resume", instruction)
+                self.assertIn('plan.pr_split["plan"]' if case == "split" else "plan.spec", instruction)
+                self.assertIn("Re-verify affected facts" if case in {"head", "dirty", "paused-dirty"}
+                              else "Keep the recorded checkout findings", instruction)
+                qa = resumed["plan"]["human_qa"]
+                self.assertEqual([item["answer"] for item in qa],
+                                 ["Open items", "Keep sorting"] if case in {"twice", "triage-spec"} else ["Open items"])
+                self.assertIn(json.dumps(qa), instruction)
+                if case == "triage-spec":
+                    self.assertEqual([item["stage"] for item in qa], ["triage", "spec"])
+                draft = resumed["plan"]["pr_split"]["plan"] if case == "split" else resumed["plan"]["spec"]
+                self.assertTrue(draft)
+                self.assertNotEqual(draft, "PRE-SPLIT")
+
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
         script = """
 import json

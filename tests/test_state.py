@@ -40,7 +40,8 @@ class StateTests(unittest.TestCase):
                             if key in DeliveryState.__annotations__}
             original["schema_version"] = SCHEMA_VERSION
             original["review"] = ReviewState()
-            original["plan"] = PlanState(triage="needs_human")
+            original["plan"] = PlanState(triage="needs_human", spec_draft_head="a" * 40, spec_draft_clean=True,
+                human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}])
             original["checks"] = ChecksState(check="true")
             original["run"] = RunState(repo="a/b", token_cap=100)
             with SqliteSaver.from_conn_string(str(path)) as saver:
