@@ -17,7 +17,7 @@ from unittest.mock import patch
 from foreman.workspace import LiveWorkspace
 from foreman.review_round import GraphCheck, ReviewHistory, accept
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
-from foreman.config import ModelSpec, load_config
+from foreman.config import ConfigError, ModelSpec, load_config
 from foreman.adapters import Outcome
 from foreman.dry_run import SCRIPTED_USAGE
 from foreman.stage_output import ReviewOutput, parse_output
@@ -278,12 +278,25 @@ class ReviewRoundsTest(unittest.TestCase):
                             node, ModelSpec.parse("claude-opus-5-5-high"), state, instruction)
                         self.assertEqual(outcome.kind, expected, outcome.detail)
 
+    def test_worker_refuses_scratch_root_inside_checkout(self):
+        with TemporaryDirectory() as directory:
+            checkout = Path(directory) / "checkout"
+            checkout.mkdir()
+            nested = checkout / "scratch"
+            nested.mkdir()
+            for scratch_root in (checkout, nested):
+                with self.subTest(scratch_root=scratch_root):
+                    worker = CliWorker(checkout, lambda *_: self.fail("CLI must not run"),
+                                       scratch_root=scratch_root)
+                    with self.assertRaisesRegex(ConfigError, "scratch root must be outside the checkout"):
+                        worker("review", ModelSpec.parse("claude-opus-5-5-high"), {}, "Review.")
+
     def test_review_payload_stays_off_exec_argv(self):
-        with review_trees() as (workspace, tip, _, previous, head):
+        with review_trees() as (workspace, tip, _, previous, head), TemporaryDirectory() as scratch:
             tools = LiveWorkspace(Path.cwd())
             with patch.object(tools, "_fetch_review"):
                 scopes = [tools.review_scope(
-                    subprocess.check_output(["git", "rev-parse", "origin/main"], text=True).strip(),
+                    subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                     subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), None)]
             for index in range(2000):
                 (workspace.root / f"blob-{index}.txt").write_text(str(index))
@@ -298,7 +311,8 @@ class ReviewRoundsTest(unittest.TestCase):
                         "target": None, "scope": {"command": scope.command, "inline": []}}
                 def runner(args, cwd, env):
                     settings = Path(args[args.index("--settings") + 1])
-                    self.assertTrue(settings.resolve().is_relative_to(workspace.root.resolve()))
+                    self.assertTrue(settings.resolve().is_relative_to(Path(scratch).resolve()))
+                    self.assertFalse(Path(env["TMPDIR"]).resolve().is_relative_to(workspace.root.resolve()))
                     with patch("foreman.worker.subprocess.run", return_value=fixture_process(args, "success", 0)) as execute:
                         result = run_worker_command(args, cwd, env)
                     prompt = execute.call_args.kwargs["input"]
@@ -307,7 +321,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     self.assertFalse({"instruction", "scope"} & projected_plan.keys())
                     self.assertLess(sum(len(arg.encode()) + 1 for arg in execute.call_args.args[0]), 32768)
                     return result
-                CliWorker(workspace.root, runner, scratch_root=workspace.root)(
+                CliWorker(workspace.root, runner, scratch_root=Path(scratch))(
                     "review", ModelSpec.parse("claude-opus-5-5-high"), {"dispatch_plan": plan}, instruction)
 
     def test_denied_review_retry_resume_quota_and_budget(self):
