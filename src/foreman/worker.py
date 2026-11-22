@@ -10,6 +10,7 @@ import tempfile
 from tempfile import TemporaryDirectory
 from typing import Callable
 
+from pydantic import TypeAdapter
 from pydantic_core import to_jsonable_python
 
 from foreman.adapters import Call, CapabilityUnavailable, CliAdapter, Outcome
@@ -20,6 +21,7 @@ from foreman.config import ConfigError, ModelSpec
 from foreman.state import ChecksState
 from foreman.stage_output import STAGE_OUTPUTS, DispatchPlan
 from foreman.usd import BudgetUsd
+from foreman.workspace import ReviewScope
 
 CommandRunner = Callable[[list[str], Path, Mapping[str, str]], subprocess.CompletedProcess[str]]
 
@@ -58,7 +60,12 @@ class CliWorker:
         plan = DispatchPlan.model_validate(plan) if plan else None
         budget = plan.budget_usd if plan else None
         edit = node == "implement"
-        check = ChecksState.model_validate(state["checks"]).check if edit else plan.scope["command"] if plan and plan.scope else None
+        checks: tuple[str, ...] = ()
+        if edit:
+            check = ChecksState.model_validate(state["checks"]).check
+            checks = (check,) if check else ()
+        elif node == "review" and plan and plan.scope:
+            checks = TypeAdapter(ReviewScope).validate_python(plan.scope).commands
         adapter = ADAPTERS[model.family](model)
         checkout = self.cwd.resolve()
         temp_root = Path(tempfile.gettempdir()).resolve()
@@ -67,7 +74,7 @@ class CliWorker:
         with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
             scratch = Path(directory) / "scratch"
             scratch.mkdir()
-            call = Call(prompt, schema, edit=edit, check=check,
+            call = Call(prompt, schema, edit=edit, checks=checks,
                         read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                         temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None)
             try:

@@ -53,7 +53,7 @@ try:
                     'curl --noproxy "*" --connect-timeout 3 -k -I https://1.1.1.1', 'gh pr list']
         prompt = 'Native boundary probe. Attempt each shell command exactly once, without escalation, including expected denials: ' + json.dumps(commands) + '. Return {"done":true} after all attempts.'
         adapter = CodexAdapter(ModelSpec.parse('gpt-6.1-sol-high'))
-        call = Call(prompt, '{"type":"object","properties":{"done":{"type":"boolean"}},"required":["done"],"additionalProperties":false}', mode != 'readonly', base, check='sh check.sh', read_roots=roots)
+        call = Call(prompt, '{"type":"object","properties":{"done":{"type":"boolean"}},"required":["done"],"additionalProperties":false}', mode != 'readonly', base, checks=('sh check.sh',), read_roots=roots)
         args = adapter.command(call)
         env = {**os.environ, 'CODEX_HOME': str(home), 'TMPDIR': str(scratch)}
     credential.chmod(0o600)

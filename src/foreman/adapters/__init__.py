@@ -44,7 +44,7 @@ class Call:
     edit: bool
     temp_dir: Path
     budget_usd: BudgetUsd | None = None
-    check: str | None = None
+    checks: tuple[str, ...] = ()
     read_roots: tuple[Path, ...] = ()
 
 
