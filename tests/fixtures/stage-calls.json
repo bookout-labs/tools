@@ -1,0 +1,14 @@
+{
+  "feature/spec": "a2d73bbd1a129d55f15f1864d3e7ecb6cd5888126145a1261973b234eab45fc9",
+  "feature/question": "f384fa680ffa785b073a939349bb1ee91b6422fe53e7ad4d68293e837ee7aca6",
+  "feature/proof": "0462202c57dbbb32b47d119236cd7717688a3b08f3b06d5743de3f75aff9a83b",
+  "bug_fix/spec": "5c29f2afa7bcd093415c414960d70f194f65ebdbd1ec753b8fa25bceb66a6077",
+  "bug_fix/question": "0d29b2e839cf17fd5835f92064e24fec2c454a9061e35facb328d339513ddf1c",
+  "bug_fix/proof": "c15fb586392ea4a0552455be5e8bf86b01d2b1445809b75cf1e280abea641def",
+  "refactoring/spec": "770b30ed77469b03a7fdb0e9218e47122b8ee39826280ea6c74d2ceefd84c553",
+  "refactoring/question": "8302fac0ff35d22697aa80680560fd99e58ef8783f2ac813f30e3ae5a66ef71c",
+  "refactoring/proof": "083a322de46beb76ef840d736dcbed59d15232acab1419c59f9c22a9e7a468f2",
+  "perf_issue/spec": "ff01ed09d53fab36c40ba9e66964601bdb0be40cd6fa0fb9ac5f51555abe4dc8",
+  "perf_issue/question": "5fbdc418c74f92dcc515dcecdeb950bc340bd500fb0aa6424068aec74501e994",
+  "perf_issue/proof": "a9ad0aa8b1a1be7e46b4504e8737c9fa09fd63db707995187515047a171cf73a"
+}

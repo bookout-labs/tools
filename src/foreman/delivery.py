@@ -24,7 +24,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from foreman.adapters import Outcome
 from foreman.budget import CostUnknown, Exhausted, Remaining, claude_spend, dollar_admission
-from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, contributors_for, family, load_config, order_for
+from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, contributors_for, family, load_config
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.dispatch import Handler, InvalidOutput, clean_outcome
 from foreman.fixture_manifest import fact_record_path, recorded_evidence
@@ -35,8 +35,9 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    SpecRejection, SpecRejectionKind, PlanState, ImplementOutput, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
+    SpecRejection, SpecRejectionKind, PlanState, ImplementOutput, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, Slice, StoredSlice, VerifyOutput, parse_output,
 )
+from foreman.stages import STAGES
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS
@@ -47,7 +48,7 @@ from foreman.workspace import WorkState, ImplementationRejected, WorkspaceError,
 GRAPH_NAME = "delivery"
 DEFAULT_TOKEN_CAP = 20_000_000
 PACKAGE = Path(__file__).parent
-MODEL_STAGES = ("triage", "research", "spec", "implement", "review")
+MODEL_STAGES = tuple(name for name, stage in STAGES.items() if stage.kind == "model")
 REQUIRED_NODES = (*MODEL_STAGES, "verify")
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
@@ -173,7 +174,9 @@ def dispatch_budget(admission: Remaining | Exhausted | CostUnknown | None) -> st
 
 
 def stage_text(name: str) -> str:
-    return (PACKAGE / "stages" / f"{name}.md").read_text().strip()
+    prompt = STAGES[name].prompt
+    assert prompt is not None
+    return (PACKAGE / "stages" / prompt).read_text().strip()
 
 
 def clean_slices(
@@ -400,7 +403,7 @@ def compile_delivery(
                 except WorkspaceError as exc:
                     return halted(Halt.git_failed, str(exc), name)
             try:
-                models = order_for(name, config, state.get("models_used") or {}, state.get("implement_models"))
+                models = STAGES[name].models(name, state, config)
             except ModelDependencyMissing as exc:
                 return halted(Halt.model_dependency_missing, str(exc), name)
             except ConfigError as exc:
@@ -547,7 +550,9 @@ def compile_delivery(
             if outcome.kind == "quota":
                 return {**stopped, **halted(Halt.quota_exhausted, f"{name} quota exhausted: {model}", name)}
             try:
-                output = parse_output(STAGE_OUTPUTS[name], outcome.output, context=citation_context)
+                contract = STAGES[name].output
+                assert contract is not None
+                output = parse_output(contract, outcome.output, context=citation_context)
                 accepted: AcceptedReview | None = None
                 if isinstance(output, ReviewOutput):
                     past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
