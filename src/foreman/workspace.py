@@ -17,7 +17,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, with_c
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
-from foreman.fixture_manifest import FixtureManifest, MANIFEST_PATH, fact_record_path
+from foreman.fixture_manifest import FixtureManifest, fact_record_path
 from foreman.credentials import CredentialFailure, COMMAND_TIMEOUT, credentials, failure, git_auth, validate_remote
 from foreman.redaction import redact
 from foreman.review_context import ReviewContext, ReviewSide
@@ -179,7 +179,7 @@ class Workspace(Protocol):
     def commit(self, message: str) -> None: ...
     def committed(self, parent: str, message: str) -> bool: ...
     def reconcile(self, parent: str, branch: str, base_branch: str,
-                  fact_record: str) -> ImplementationCandidate | None: ...
+                  fact_record: str | None) -> ImplementationCandidate | None: ...
     def tree(self, head: str) -> str: ...
     def soft_reset(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
@@ -302,7 +302,7 @@ class LiveWorkspace:
         return os.fsdecode(self._git("--no-replace-objects", "merge-base", base_ref, head)).strip()
 
     def reconcile(self, parent: str, branch: str, base_branch: str,
-                  fact_record: str) -> ImplementationCandidate | None:
+                  fact_record: str | None) -> ImplementationCandidate | None:
         observed = self.inspect()
         recovery = f" Checkout preserved. Restore branch {branch} at {parent}, keep the intended edits, then rerun."
         if observed.branch != branch:
@@ -323,18 +323,16 @@ class LiveWorkspace:
         paths.discard(b"")
         ignored = self._ignored_at(merge_base, paths)
         facts: set[bytes] = set()
-        for record in {MANIFEST_PATH, fact_record}:
-            if not self.has_file(record) or (self.root / record).is_symlink():
-                continue
-            facts.add(os.fsencode(record))
+        if fact_record is not None and self.has_file(fact_record) and not (self.root / fact_record).is_symlink():
+            facts.add(os.fsencode(fact_record))
             try:
-                manifest = FixtureManifest.from_toml((self.root / record).read_text())
+                manifest = FixtureManifest.from_toml((self.root / fact_record).read_text())
                 for capture in manifest.fixtures:
-                    path = (PurePosixPath(record).parent / fact_record_path(capture)).as_posix()
+                    path = (PurePosixPath(fact_record).parent / fact_record_path(capture)).as_posix()
                     if self.has_file(path) and not (self.root / path).is_symlink():
                         facts.add(os.fsencode(path))
             except (ValueError, OSError) as exc:
-                raise ImplementationRejected(f"Invalid fact record {record}: {exc}. Checkout preserved.") from exc
+                raise ImplementationRejected(f"Invalid fact record {fact_record}: {exc}. Checkout preserved.") from exc
         rejected = ignored - facts
         if rejected:
             names = ", ".join(repr(os.fsdecode(path)) for path in sorted(rejected))

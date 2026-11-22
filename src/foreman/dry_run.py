@@ -113,7 +113,7 @@ class DryRun:
             self.commands.append(branch_command(branch, base))
         self.branch = branch
 
-    def reconcile(self, parent: str, branch: str, base_branch: str, fact_record: str) -> ImplementationCandidate:
+    def reconcile(self, parent: str, branch: str, base_branch: str, fact_record: str | None) -> ImplementationCandidate:
         self.clean = False
         return {"disposition": "edits", "fingerprint": self.fingerprint()}
 

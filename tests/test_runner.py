@@ -1049,6 +1049,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             result = self.walk([], preflight="exit 9")
         self.assertEqual(result["checks"], ChecksState(check="exit 0", preflight="exit 9"))
         self.assertEqual(result["stop"], "skill_missing")
+        self.assertIsNone(result["fact_record"])
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            saved = saver.get({"configurable": {"thread_id": "example/engine#8"}})
+            self.assertIsNone(saved["channel_values"]["fact_record"])
         self.assertEqual(run_exit_code(result), 1)
         self.assertEqual(result["skill_reason"], "pin_unavailable")
         self.assertEqual(result["halt_detail"], f"pstack pin unavailable, commit {commit}")
@@ -1110,6 +1115,67 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                               fact_record="evidence/other.toml", checkpoint=self.checkpoint, dispatcher=ScriptHandler(),
                               run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(self.walk([])["stop"], "verified")
+
+    def test_resume_freezes_nullable_record_before_compilation(self):
+        for record, stop in ((None, "quota"), ("evidence/facts.toml", "quota"),
+                             (None, "needs_human"), ("tests/fixtures/manifest.toml", "terminal")):
+            with self.subTest(record=record, stop=stop), TemporaryDirectory() as directory:
+                checkpoint = Path(directory) / "run.sqlite3"
+                run = LiveRun(self.github, FakeWorkspace(self.cwd))
+                dispatcher = (lambda *args: Outcome("quota")) if stop == "quota" else ScriptHandler(triage="needs_human" if stop == "needs_human" else "implement")
+                first = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=checkpoint,
+                                          fact_record=record, run=run, dispatcher=dispatcher)
+                self.assertEqual(first["fact_record"], record)
+                before = checkpoint.read_bytes()
+                with patch("foreman.runner.compile_delivery", side_effect=AssertionError("compiled before validation")):
+                    with self.assertRaisesRegex(ValueError, "--fact-record differs"):
+                        run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=checkpoint,
+                                          fact_record="other.toml", run=run, dispatcher=dispatcher)
+                self.assertEqual(checkpoint.read_bytes(), before)
+                for argument in (None, record):
+                    resumed = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=checkpoint,
+                                               fact_record=argument, run=run, dispatcher=dispatcher)
+                    self.assertEqual(resumed["fact_record"], record)
+
+    def test_missing_record_channel_resumes_as_undeclared(self):
+        self.walk([{"triage": "needs_human", "human_question": "Which?"}])
+        config = {"configurable": {"thread_id": "example/engine#8"}}
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            saved = saver.get_tuple(config)
+            saved.checkpoint["channel_values"].pop("fact_record")
+            saver.put(saved.config, saved.checkpoint, saved.metadata, {})
+        before = self.checkpoint.read_bytes()
+        with self.assertRaisesRegex(ValueError, "--fact-record differs"):
+            run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
+                              fact_record="tests/fixtures/manifest.toml", dispatcher=ScriptHandler(),
+                              run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        result = self.walk([{"triage": "question"}, {"research": "Open items."}], answer="Open items")
+        self.assertIsNone(result.get("fact_record"))
+
+    def test_direct_run_delivery_defaults_to_undeclared_and_validates_record(self):
+        for kwargs, expected in (({}, None), ({"fact_record": "evidence/facts.toml"}, "evidence/facts.toml")):
+            with self.subTest(kwargs=kwargs), skill_fixture(load_config()) as (config, scratch):
+                result = run_delivery(ScriptHandler(triage="question"), repo="Example/Engine",
+                                      request="List items", config=config, scratch=scratch, **kwargs)
+                self.assertEqual(result["fact_record"], expected)
+        with self.assertRaisesRegex(ValueError, "normalized repository-relative"):
+            run_delivery(ScriptHandler(), repo="Example/Engine", request="List items",
+                         fact_record="evidence/./facts.toml")
+
+    def test_cli_forwards_declared_and_undeclared_records(self):
+        for record in (None, "tests/fixtures/manifest.toml"):
+            for dry in (False, True):
+                with self.subTest(record=record, dry=dry), patch("foreman.cli.run_live_delivery", side_effect=RuntimeError("forwarded")) as live, patch("foreman.cli.run_delivery", side_effect=RuntimeError("forwarded")) as dry_run:
+                    args = ["run", "delivery", "--repo", "bookout-labs/tools", "--issue", "200", "--check", "exit 0"]
+                    if record:
+                        args += ["--fact-record", record]
+                    if dry:
+                        args += ["--dry-run"]
+                    with self.assertRaisesRegex(RuntimeError, "forwarded"):
+                        main(args, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+                    self.assertEqual((dry_run if dry else live).call_args.kwargs["fact_record"], record)
 
     def test_resume_allocates_fresh_scratch_without_checkpointing_paths(self):
         paths = []
@@ -1310,7 +1376,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"].status, "armed")
 
-    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml", paraphrase: bool = False, worker_commits: bool = False, residual: bool = False):
+    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml", paraphrase: bool = False, worker_commits: bool = False, residual: bool = False, declared: bool = True):
         root = self.cwd / "checkout"
         root.mkdir()
         subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=root, check=True)
@@ -1330,8 +1396,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             )
 
         manifest_path = root / record_path
-        if not (recover or no_changes):
+        if entry is not None or not (recover or no_changes):
             manifest_path.write_text(manifest(entry) if entry is not None else "[fixtures]\n")
+            self.assertTrue(manifest_path.is_file())
         subprocess.run(["git", "add", "."], cwd=root, check=True)
         subprocess.run(
             ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgSign=false",
@@ -1352,12 +1419,15 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         replies = iter([{"triage": "implement"}] + [built, review] * 3)
 
         implementations = 0
+        undeclared_prompts = []
 
         def worker(args, cwd, env):
             nonlocal implementations
             reply = next(replies)
             if "implementation" in reply:
                 implementations += 1
+                if not declared:
+                    undeclared_prompts.append(("implement", args[-1]))
                 if implementations > 1 and (recover or no_changes):
                     if recover:
                         self.assertIn("captured_run", args[-1])
@@ -1377,18 +1447,33 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     return worker_reply(args, reply)
                 file = root / "items.txt"
                 file.write_text((file.read_text() if file.exists() else "") + "synthetic edit\n")
+            if not declared and "tool_facts" in reply:
+                undeclared_prompts.append(("review", args[-1]))
             if paraphrase and implementations > 1 and "tool_facts" in reply:
                 reply = {**reply, "tool_facts": [{"claim": "The debug flag is accepted.", "fixture": "result.txt"}]}
             if record_during_review and "tool_facts" in reply:
                 manifest_path.write_text(manifest("result.txt"))
             return worker_reply(args, reply)
 
-        return run_live_delivery(
+        result = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-            **({"fact_record": record_path} if record_path != "tests/fixtures/manifest.toml" else {}),
+            fact_record=record_path if declared else None,
             dispatcher=CliWorker(root, worker),
             run=LiveRun(self.github, FixtureWorkspace(root)),
         )
+        if not declared:
+            self.assertEqual({stage for stage, _ in undeclared_prompts}, {"implement", "review"})
+            for stage, prompt in undeclared_prompts:
+                self.assertIn("No fact record was declared", prompt)
+                self.assertNotIn("Fact record in this checkout:", prompt)
+                if stage == "review":
+                    self.assertIn("No fact record was declared. Use null fixture references for unsupported tool facts.", prompt)
+                else:
+                    self.assertNotIn("null fixture references", prompt)
+            if no_changes:
+                self.assertIn("new checkpoint", undeclared_prompts[-1][1])
+                self.assertNotIn("creating the record and parent directories", undeclared_prompts[-1][1])
+        return result
 
     def test_fact_repair_adopts_worker_commits_and_rechecks_exact_head(self):
         for committed, record, residual in ((False, "tests/fixtures/manifest.toml", False),
@@ -1433,6 +1518,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.review_tool_fact("result.txt", recover=True, record_path="evidence/facts.toml")
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(result.get("fact_record"), "evidence/facts.toml")
+
+    def test_undeclared_matching_record_still_blocks_with_recovery_guidance(self):
+        result = self.review_tool_fact("result.txt", entry="result.txt", no_changes=True, declared=False)
+        self.assertIsNone(result["fact_record"])
+        self.assertIn("tool-facts", result["halt_detail"])
+        self.assertEqual(self.github.merge_calls, [])
 
     def test_no_changes_names_unresolved_fact_gate(self):
         result = self.review_tool_fact(None, no_changes=True)

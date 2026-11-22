@@ -1,4 +1,5 @@
 import tests
+from foreman.fixture_manifest import FixtureManifest
 
 from contextlib import ExitStack
 from dataclasses import replace
@@ -448,6 +449,50 @@ class PublicationTest(unittest.TestCase):
                 for name in paths:
                     self.assertNotIn(name, files)
                     self.assertTrue((self.checkout / name).is_file())
+
+    def test_reconcile_parses_only_the_declared_record(self):
+        for record in (None, "evidence/facts.toml"):
+            with self.subTest(record=record):
+                self.reset_fixture()
+                def edit():
+                    self.edit()
+                    old = self.checkout / "tests/fixtures/manifest.toml"
+                    old.parent.mkdir(parents=True)
+                    old.write_text("issue = 1116\n")
+                    if record:
+                        selected = self.checkout / record
+                        selected.parent.mkdir()
+                        selected.write_text("[fixtures]\n")
+                original = FixtureManifest.from_toml
+                parsed = []
+                def parse(content):
+                    parsed.append(content)
+                    return original(content)
+                with patch.object(FixtureManifest, "from_toml", side_effect=parse):
+                    result = self.walk(edit, fact_record=record)
+                self.assertEqual(result["stop"], "verified")
+                self.assertEqual(parsed, ["[fixtures]\n"] if record else [])
+
+    def test_undeclared_old_manifest_cannot_exempt_ignored_capture(self):
+        for record in (None, "evidence/facts.toml"):
+            with self.subTest(record=record):
+                self.reset_fixture()
+                self.scratch_policy()
+                def edit():
+                    self.edit()
+                    old = self.checkout / "tests/fixtures/manifest.toml"
+                    old.parent.mkdir(parents=True)
+                    old.write_text('[fixtures."capture.log"]\nkind="captured_run"\n'
+                                   'tool="tool"\nversion="1"\nargv=["tool"]\n')
+                    (self.checkout / "evidence").mkdir()
+                    (old.parent / "capture.log").write_text("unselected capture")
+                    self.git("add", "-f", "tests/fixtures/capture.log")
+                    if record:
+                        (self.checkout / record).write_text("[fixtures]\n")
+                result = self.walk(edit, fact_record=record)
+                self.assertEqual(result["stop"], "implementation_rejected")
+                self.assertIn("tests/fixtures/capture.log", result["halt_detail"])
+                self.assertNotIn("Invalid fact record", result["halt_detail"])
 
     def test_malformed_fact_records_fail_closed(self):
         for content in ('[broken', '[fixtures."../bad"]\nkind="captured_run"\ntool="tool"\nversion="1"\nargv=["tool"]\n'):

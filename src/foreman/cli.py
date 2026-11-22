@@ -20,7 +20,7 @@ from foreman.state import ChecksState, RunState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.dry_run import ScriptHandler
-from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
+from foreman.fixture_manifest import fact_record_path
 from foreman.github import ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
@@ -265,7 +265,7 @@ def main(
             check=args.check,
             max_tokens=args.max_tokens if args.max_tokens is not None else DEFAULT_TOKEN_CAP,
             max_budget_usd=args.max_budget_usd,
-            fact_record=args.fact_record or MANIFEST_PATH,
+            fact_record=args.fact_record,
             commands=presentation.commands,
         )
         print("pstack pin not checked (dry run)")
