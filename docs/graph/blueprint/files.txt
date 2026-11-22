@@ -1,0 +1,69 @@
+bookout-labs/tools/.github/workflows/ci.yml
+bookout-labs/tools/docs/graph/blueprint/prompts/implement.md  —  Implement the slice
+bookout-labs/tools/docs/graph/blueprint/prompts/research.md  —  Answer the question
+bookout-labs/tools/docs/graph/blueprint/prompts/review.md  —  Review the full pull request
+bookout-labs/tools/docs/graph/blueprint/prompts/spec.md  —  Draft the plan
+bookout-labs/tools/docs/graph/blueprint/prompts/spec_check.md  —  Check and approve the plan
+bookout-labs/tools/docs/graph/blueprint/prompts/triage.md  —  Classify the issue
+bookout-labs/tools/docs/graph/gaps.toml  —  Exact edge differences. Each slice maps a source to [target, label] pairs.
+bookout-labs/tools/docs/graph/target.mmd
+bookout-labs/tools/evals/corpus/README.md  —  Known-answer corpus v1
+bookout-labs/tools/evals/eval.sh  —  Promptfoo's worker does not use the uv environment unless told which interpreter to start.
+bookout-labs/tools/evals/promptfooconfig.yaml  —  yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+cursor/plugins/pstack/skills/architect/SKILL.md  —  Sketch types, signatures, and module structure before code, then stay in the loop while implementation fills in. Use for /architect, 'architect this', 'design this', or non-trivial work where jumping to code would lock in the wrong shape.
+cursor/plugins/pstack/skills/benchmark-checklist/SKILL.md  —  Vet a perf measurement (limiter, tuning, limits, errors, repeatability, relevance, and whether the work happened) before you report or act on it. Use when you run a benchmark or report a speedup or regression you measured.
+cursor/plugins/pstack/skills/how/SKILL.md  —  Use for "how does X work", code walkthroughs before changing something, and placement / ownership / layering questions ("where should this live", "which package owns this", "is this the right layer"). Explains subsystem architecture, runtime flow, onboarding mental models. Use why for motivation.
+cursor/plugins/pstack/skills/interrogate/SKILL.md  —  Use for "interrogate", "adversarial review", "multi-model review", "challenge this", "stress test this code", "find blind spots", or "tear this apart". Adversaries try to break a change or design, and only findings proven by a run survive.
+cursor/plugins/pstack/skills/statechart/SKILL.md  —  Check a TLA+ model of a system that moves between states, such as a product flow, a protocol, or a service, and draw it as a Mermaid statechart. The report gives the shortest path to each state that breaks a rule. Use for /statechart, or to show a bug as a path through states.
+cursor/plugins/pstack/skills/tdd/SKILL.md  —  Use only when the user explicitly asks for TDD, a failing test, or a regression test, OR when the bug has an obvious cheap local test target. Skip when the test path is unclear, expensive, integration-heavy, or not requested.
+cursor/plugins/pstack/skills/why/SKILL.md  —  Use for 'why does X work this way', 'why we picked Y', design rationale, regressions, postmortems, or data-backed thresholds. Returns a cited read on decisions and tradeoffs. Use how for runtime behavior.
+bookout-labs/tools/src/foreman/accept.py  —  Decide whether an outside event enters the graph. This does not call a model.
+bookout-labs/tools/src/foreman/adapters/claude.py
+bookout-labs/tools/src/foreman/adapters/codex.py  —  Run one Codex turn and read its JSONL result.
+bookout-labs/tools/src/foreman/adapters/grok.py
+bookout-labs/tools/src/foreman/budget.py  —  Pure work-token and Claude dollar accounting over a run's attempt history.
+bookout-labs/tools/src/foreman/check_output.py  —  Bounded, sanitized verifier diagnostics. Raw output is never retained.
+bookout-labs/tools/src/foreman/config.py  —  Model assignment. This is data. A node does not get to rewrite it.
+bookout-labs/tools/src/foreman/delivery.py  —  The delivery graph. Edges live here. Models live in models.toml.
+bookout-labs/tools/src/foreman/dispatch.py  —  Model handler and dispatch errors.
+bookout-labs/tools/src/foreman/github.py  —  GitHub operations for delivery runs.
+bookout-labs/tools/src/foreman/models.toml  —  Failover order. The first model runs. Quota exhaustion tries the next.
+bookout-labs/tools/src/foreman/outcomes.py  —  One policy row per delivery halt, independent of graph execution.
+bookout-labs/tools/src/foreman/readiness.py  —  Typed GitHub policy and commit evidence for a single PR observation.
+bookout-labs/tools/src/foreman/review_context.py  —  Immutable facts about the two committed trees in a pull request review.
+bookout-labs/tools/src/foreman/review_round.py  —  Review history, PR scope and graph-check adapter over ResolutionLedger.
+bookout-labs/tools/src/foreman/runner.py  —  Run one delivery issue against its SQLite checkpoint.
+bookout-labs/tools/src/foreman/skill_rules.py  —  Worker methods selected by delivery state.
+bookout-labs/tools/src/foreman/skills/review-quality.md  —  Review quality
+bookout-labs/tools/src/foreman/spec_check.py  —  Pure candidate-bound spec acceptance over the shared resolution ledger.
+bookout-labs/tools/src/foreman/stage_output.py  —  Worker output contracts shared by the CLI prompts and delivery graph.
+bookout-labs/tools/src/foreman/stages.py  —  Canonical worker contracts, methods and callbacks. Graph successors stay in delivery.
+bookout-labs/tools/src/foreman/stages/implement.md  —  Implement the change in the repository. Fix every unresolved finding in findings, including nits.
+bookout-labs/tools/src/foreman/stages/research.md  —  Answer the question from the repository. Do not change code.
+bookout-labs/tools/src/foreman/stages/review.md  —  Review round 1 in full. Later rounds check unresolved findings and added interdiff lines also in the PR diff.
+bookout-labs/tools/src/foreman/stages/spec.md  —  Write the spec. Cover the behavior, the product decisions, and the technical design.
+bookout-labs/tools/src/foreman/stages/spec_check.md  —  Check only the supplied candidate and its proof obligations, seams, contracts, scope and failure paths. Read the repository as needed. Do not edit files, repair the candidate, start subagents or publish issues.
+bookout-labs/tools/src/foreman/stages/triage.md  —  Read the request and set `triage` according to the schema. Use these values for informational or unclear requests.
+bookout-labs/tools/src/foreman/state.py  —  Delivery graph state channels and their reducers.
+bookout-labs/tools/src/foreman/steps/implement.py
+bookout-labs/tools/src/foreman/steps/merge.py
+bookout-labs/tools/src/foreman/steps/research.py
+bookout-labs/tools/src/foreman/steps/review.py
+bookout-labs/tools/src/foreman/steps/spec.py
+bookout-labs/tools/src/foreman/steps/triage.py
+bookout-labs/tools/src/foreman/worker.py  —  Run a pinned worker and read its final stage result.
+bookout-labs/tools/src/foreman/worker_auth.py  —  Per-command App authentication for factory network commands.
+bookout-labs/tools/src/foreman/workspace.py  —  Local checkout operations used by delivery runs.
+bookout-labs/tools/tests/test_accept.py
+bookout-labs/tools/tests/test_delivery.py  —  Test delivery.
+bookout-labs/tools/tests/test_dispatch_budget.py  —  Dollar limits at the delivery and subprocess boundaries.
+bookout-labs/tools/tests/test_dispatch_recovery.py
+bookout-labs/tools/tests/test_merge_receipt.py
+bookout-labs/tools/tests/test_publication.py
+bookout-labs/tools/tests/test_readiness.py
+bookout-labs/tools/tests/test_review_availability.py  —  Reviewer eligibility and checkpoint recovery across independent processes.
+bookout-labs/tools/tests/test_review_context.py
+bookout-labs/tools/tests/test_review_rounds.py  —  Test review rounds.
+bookout-labs/tools/tests/test_runner.py  —  Live runner behavior with offline workers and forge doubles.
+bookout-labs/tools/tests/test_spec_candidate.py
+bookout-labs/tools/tests/test_spec_check.py

@@ -1,0 +1,28 @@
+flowchart TD
+    n0(["Enter stage"]):::terminal
+    n1["Foreman · Queue the exact reviewed head"]:::step
+    n2["Foreman · Read the GitHub merge outcome"]:::step
+    n3["Foreman · Recheck Ready dependent issues"]:::step
+    n4["Foreman · Record the typed merge outcome"]:::step
+    n5(["Return stage result"]):::terminal
+    n6{{"Joe · Provide evidence for the ownership of the unexpected PR revision. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on Joe."}}:::gate
+    n7["Wait for GitHub checks or approval"]:::step
+    n8["Wait for GitHub to report a merge result"]:::step
+    n0 --> n1
+    n1 -->|"Run stops / Review the checked revision / Repair"| n4
+    n1 -->|"Armed / Already armed / Closed or merged / Head unverified"| n2
+    n2 -->|"Run stops / Cancelled / Closed / Review the checked revision / Repair"| n4
+    n2 -->|"Merged"| n3
+    n3 -->|"Released / Run stops"| n4
+    n4 --> n5
+    n2 -.->|"head unverified"| n6
+    n6 -.->|"Answer to open question"| n2
+    n1 -.->|"Pending"| n7
+    n7 -.->|"Relevant event"| n1
+    n2 -.->|"Pending"| n8
+    n8 -.->|"Relevant event"| n2
+    classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
+    classDef step fill:#edf3f8,stroke:#597187,color:#132638
+    classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36
+    classDef gate fill:#fff0c9,stroke:#89641f,color:#3f2b0b
+    classDef terminal fill:#f0f0f0,stroke:#666666,color:#202020

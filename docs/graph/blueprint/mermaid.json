@@ -1,0 +1,13 @@
+{
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Arial, sans-serif",
+    "fontSize": "16px",
+    "lineColor": "#526979",
+    "edgeLabelBackground": "#ffffff"
+  },
+  "flowchart": {"htmlLabels": false, "curve": "basis"},
+  "deterministicIds": true,
+  "deterministicIDSeed": "foreman-v2",
+  "handDrawnSeed": 1
+}

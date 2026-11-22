@@ -1,0 +1,31 @@
+flowchart TD
+    n0(["Enter stage"]):::terminal
+    n1(["Reviewer · Assess the complete current PR"]):::worker
+    n2["Foreman · Post exact-head findings"]:::step
+    n3["Foreman · Route by finding severity"]:::step
+    n4(["PR revision changed"]):::terminal
+    n5(["Cancelled"]):::terminal
+    n6(["Run stops"]):::terminal
+    n7(["Critical defect"]):::terminal
+    n8(["Serious defect"]):::terminal
+    n9(["No blocking finding"]):::terminal
+    n10{{"Joe · Decide a disputed scope or product rule for the reviewed head. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on Joe."}}:::gate
+    n0 --> n1
+    n1 --> n4
+    n1 --> n5
+    n1 --> n6
+    n1 -->|"Assessed"| n2
+    n2 --> n4
+    n2 --> n6
+    n2 -->|"Posted"| n3
+    n3 --> n6
+    n3 --> n7
+    n3 --> n8
+    n3 --> n9
+    n1 -.->|"Unresolved choice"| n10
+    n10 -.->|"Answer to open question"| n1
+    classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
+    classDef step fill:#edf3f8,stroke:#597187,color:#132638
+    classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36
+    classDef gate fill:#fff0c9,stroke:#89641f,color:#3f2b0b
+    classDef terminal fill:#f0f0f0,stroke:#666666,color:#202020

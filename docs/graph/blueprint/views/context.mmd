@@ -1,0 +1,28 @@
+flowchart LR
+    n0["Joe"]:::stage
+    n1["Foreman"]:::stage
+    n2["GitHub Project board"]:::stage
+    n3["GitHub issue"]:::stage
+    n4["CARR record layer"]:::stage
+    n5["T3"]:::stage
+    n6["Worker CLIs"]:::stage
+    n7["Target checkout"]:::stage
+    n8["GitHub pull request"]:::stage
+    n9["GitHub checks"]:::stage
+    n10["GitHub merge queue"]:::stage
+    n0 -->|"Answers scope questions"| n1
+    n2 -->|"Delivers a Ready webhook"| n1
+    n3 -->|"Supplies work and repository identity"| n1
+    n1 -->|"Mirrors run state"| n2
+    n4 -->|"Supplies authorized team context"| n5
+    n5 -->|"Relays operator decisions"| n1
+    n1 -->|"Assigns a bounded procedure"| n6
+    n6 -->|"Reads or edits within assignment"| n7
+    n1 -->|"Publishes checked changes"| n8
+    n9 -->|"Enforces repository rules"| n10
+    n10 -->|"Reports the merge result"| n1
+    classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
+    classDef step fill:#edf3f8,stroke:#597187,color:#132638
+    classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36
+    classDef gate fill:#fff0c9,stroke:#89641f,color:#3f2b0b
+    classDef terminal fill:#f0f0f0,stroke:#666666,color:#202020

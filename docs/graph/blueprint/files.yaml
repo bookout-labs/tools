@@ -1,0 +1,824 @@
+.github/workflows/ci.yml:
+  kind: config
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/.github/workflows/ci.yml
+docs/graph/blueprint/prompts/implement.md:
+  kind: target prompt
+  description: Implement the slice
+  summary:
+    What it instructs: 'Edit the owned worktree within the cleared slice and acceptance.
+      Run the target repository
+
+      checks and fix concrete failures within the allowance. On a repair, address
+      the evidenced
+
+      blocking defects on the existing PR. Keep evidence requested by the issue or
+      repository.
+
+      Summarize the actual edits and checks. Foreman verifies the final tree, commits
+      and publishes.'
+  repository: bookout-labs/tools
+  revision: target
+  url: prompts/implement.md
+docs/graph/blueprint/prompts/research.md:
+  kind: target prompt
+  description: Answer the question
+  summary:
+    What it instructs: 'Answer the originating question from the issue, pinned target
+      checkout and cited sources.
+
+      Distinguish observed behavior from inference. Ask for missing external evidence
+      when
+
+      available sources cannot resolve the request. Return the typed answer or grounded
+      question.
+
+      Foreman posts the answer. Leave repository files untouched.'
+  repository: bookout-labs/tools
+  revision: target
+  url: prompts/research.md
+docs/graph/blueprint/prompts/review.md:
+  kind: target prompt
+  description: Review the full pull request
+  summary:
+    What it instructs: 'Assess the complete current PR at its named diff base and
+      head on every round. Read committed
+
+      files through the supplied read-only view. Honor settled rulings while their
+      evidence applies.
+
+      Give findings with a location, severity, impact and concrete evidence. Reserve
+      P0 and P1 for
+
+      substantive correctness, security or scope defects. Report other observations
+      as advisory.
+
+      Ask Joe about unresolved intent that changes the review verdict. Foreman posts
+      findings and routes.'
+  repository: bookout-labs/tools
+  revision: target
+  url: prompts/review.md
+docs/graph/blueprint/prompts/spec.md:
+  kind: target prompt
+  description: Draft the plan
+  summary:
+    What it instructs: 'Read the target checkout at the named base. Draft slices for
+      the admitted repository and
+
+      issue only. Give each slice testable acceptance. Name seams it builds and seams
+      it uses.
+
+      Put edits to tracked seams under uses. Inspect available code and issue evidence
+      before
+
+      asking Joe a grounded product, repository, architecture or policy question.
+      On revision,
+
+      use the saved candidate and defects. Return one typed draft or grounded questions.'
+  repository: bookout-labs/tools
+  revision: target
+  url: prompts/spec.md
+docs/graph/blueprint/prompts/spec_check.md:
+  kind: target prompt
+  description: Check and approve the plan
+  summary:
+    What it instructs: 'Challenge the exact candidate against the originating issue
+      and pinned target checkout.
+
+      Confirm each slice belongs to that repository, including when a matching path
+      exists in
+
+      Foreman''s repository. Check seam ownership, acceptance and dependencies. Cite
+      concrete
+
+      defects and report unresolved choices for Joe. Keep all repository and GitHub
+      state read-only.
+
+      Approve the checked candidate when no blocking defect or unresolved choice remains.
+      Return empty findings for a clear verdict.'
+  repository: bookout-labs/tools
+  revision: target
+  url: prompts/spec_check.md
+docs/graph/blueprint/prompts/triage.md:
+  kind: target prompt
+  description: Classify the issue
+  summary:
+    What it instructs: 'Classify the admitted issue as a question, plan request or
+      supplied slice. Treat the named
+
+      target repository as fixed. Inspect available context before asking Joe about
+      missing
+
+      intent. Give a bounded change one slice when its behavior and acceptance are
+      clear.
+
+      Foreman validates all supplied slices before a build. Return the typed classification.'
+  repository: bookout-labs/tools
+  revision: target
+  url: prompts/triage.md
+docs/graph/gaps.toml:
+  kind: config
+  description: Exact edge differences. Each slice maps a source to [target, label]
+    pairs.
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/docs/graph/gaps.toml
+docs/graph/target.mmd:
+  kind: diagram
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/docs/graph/target.mmd
+evals/corpus/README.md:
+  kind: document
+  description: Known-answer corpus v1
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/evals/corpus/README.md
+evals/eval.sh:
+  kind: script
+  description: Promptfoo's worker does not use the uv environment unless told which
+    interpreter to start.
+  summary:
+    What it does: Promptfoo's worker does not use the uv environment unless told which
+      interpreter to start.
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/evals/eval.sh
+evals/promptfooconfig.yaml:
+  kind: config
+  description: 'yaml-language-server: $schema=https://promptfoo.dev/config-schema.json'
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/evals/promptfooconfig.yaml
+pstack/skills/architect/SKILL.md:
+  kind: skill
+  description: Sketch types, signatures, and module structure before code, then stay
+    in the loop while implementation fills in. Use for /architect, 'architect this',
+    'design this', or non-trivial work where jumping to code would lock in the wrong
+    shape.
+  summary:
+    Method steps: Trace affected systems and sketch two ownership shapes. (lines 9–9)
+  repository: cursor/plugins
+  revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
+  url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/architect/SKILL.md
+pstack/skills/benchmark-checklist/SKILL.md:
+  kind: skill
+  description: Vet a perf measurement (limiter, tuning, limits, errors, repeatability,
+    relevance, and whether the work happened) before you report or act on it. Use
+    when you run a benchmark or report a speedup or regression you measured.
+  summary:
+    Method steps: Verify benchmark conditions (lines 13–27)
+  repository: cursor/plugins
+  revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
+  url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/benchmark-checklist/SKILL.md
+pstack/skills/how/SKILL.md:
+  kind: skill
+  description: Use for "how does X work", code walkthroughs before changing something,
+    and placement / ownership / layering questions ("where should this live", "which
+    package owns this", "is this the right layer"). Explains subsystem architecture,
+    runtime flow, onboarding mental models. Use why for motivation.
+  summary:
+    Method steps: Inspect the code and explain its architecture from source. (lines
+      17–17)
+  repository: cursor/plugins
+  revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
+  url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/how/SKILL.md
+pstack/skills/interrogate/SKILL.md:
+  kind: skill
+  description: Use for "interrogate", "adversarial review", "multi-model review",
+    "challenge this", "stress test this code", "find blind spots", or "tear this apart".
+    Adversaries try to break a change or design, and only findings proven by a run
+    survive.
+  summary:
+    Method steps: Probe the candidate in one independent session and cite verified
+      findings. (lines 19–19)
+  repository: cursor/plugins
+  revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
+  url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/interrogate/SKILL.md
+pstack/skills/statechart/SKILL.md:
+  kind: skill
+  description: Check a TLA+ model of a system that moves between states, such as a
+    product flow, a protocol, or a service, and draw it as a Mermaid statechart. The
+    report gives the shortest path to each state that breaks a rule. Use for /statechart,
+    or to show a bug as a path through states.
+  summary:
+    Method steps: Describe state transitions and invariants. (lines 23–27)
+  repository: cursor/plugins
+  revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
+  url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/statechart/SKILL.md
+pstack/skills/tdd/SKILL.md:
+  kind: skill
+  description: Use only when the user explicitly asks for TDD, a failing test, or
+    a regression test, OR when the bug has an obvious cheap local test target. Skip
+    when the test path is unclear, expensive, integration-heavy, or not requested.
+  summary:
+    Method steps: Reproduce cheaply and rerun the focused regression check. (lines
+      9–31)
+  repository: cursor/plugins
+  revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
+  url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/tdd/SKILL.md
+pstack/skills/why/SKILL.md:
+  kind: skill
+  description: Use for 'why does X work this way', 'why we picked Y', design rationale,
+    regressions, postmortems, or data-backed thresholds. Returns a cited read on decisions
+    and tradeoffs. Use how for runtime behavior.
+  summary:
+    Method steps: Read author records and mark inferences. (lines 9–9)
+  repository: cursor/plugins
+  revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
+  url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/why/SKILL.md
+src/foreman/accept.py:
+  kind: script
+  description: Decide whether an outside event enters the graph. This does not call
+    a model.
+  summary:
+    What it does: accept_event
+    Inputs: 'accept_event(event: object)'
+    Outputs: accept_event → IgnoreEvent | StartEvent
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/accept.py
+src/foreman/adapters/claude.py:
+  kind: script
+  description: ''
+  summary:
+    What it does: read_usage • outcome • command
+    Inputs: 'read_usage(self) • outcome(self, process: CompletedProcess[str], model_id:
+      str, call: Call) • command(self, call: Call)'
+    Outputs: read_usage → Usage | None • outcome → Outcome • command → list[str]
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/adapters/claude.py
+src/foreman/adapters/codex.py:
+  kind: script
+  description: Run one Codex turn and read its JSONL result.
+  summary:
+    What it does: read_usage
+    Inputs: 'read_usage(report: object)'
+    Outputs: read_usage → Usage | None
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/adapters/codex.py
+src/foreman/adapters/grok.py:
+  kind: script
+  description: ''
+  summary:
+    What it does: outcome • command
+    Inputs: 'outcome(self, process: CompletedProcess[str], model_id: str, call: Call)
+      • command(self, call: Call)'
+    Outputs: outcome → Outcome • command → list[str]
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/adapters/grok.py
+src/foreman/budget.py:
+  kind: script
+  description: Pure work-token and Claude dollar accounting over a run's attempt history.
+  summary:
+    What it does: claude_spend • dollar_admission • Charge canonical fresh input,
+      cache creation and output once.
+    Inputs: 'claude_spend(attempts: Sequence[AttemptRecord]) • dollar_admission(limit:
+      BudgetUsd, attempts: Sequence[AttemptRecord]) • work_tokens(attempts: Sequence[AttemptRecord])'
+    Outputs: claude_spend → Decimal | None • dollar_admission → Remaining | Exhausted
+      | CostUnknown • work_tokens → int | None
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/budget.py
+src/foreman/check_output.py:
+  kind: script
+  description: Bounded, sanitized verifier diagnostics. Raw output is never retained.
+  summary:
+    What it does: text
+    Inputs: text(self)
+    Outputs: text → str
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/check_output.py
+src/foreman/config.py:
+  kind: script
+  description: Model assignment. This is data. A node does not get to rewrite it.
+  summary:
+    What it does: family • parse_config • load_config
+    Inputs: 'family(model: str) • parse_config(data: object) • load_config(path: Path
+      | None=None)'
+    Outputs: family → str • parse_config → Config • load_config → Config
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/config.py
+src/foreman/delivery.py:
+  kind: script
+  description: The delivery graph. Edges live here. Models live in models.toml.
+  summary:
+    What it does: unknown_usage • run_tokens • review_count
+    Inputs: 'unknown_usage(stage: str, model: str | None) • run_tokens(attempts: list[AttemptRecord])
+      • review_count(state: DeliveryState | DeliveryResult)'
+    Outputs: unknown_usage → str • run_tokens → int • review_count → int
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py
+src/foreman/dispatch.py:
+  kind: script
+  description: Model handler and dispatch errors.
+  summary:
+    What it does: clean_outcome
+    Inputs: 'clean_outcome(outcome: Outcome)'
+    Outputs: clean_outcome → Outcome
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/dispatch.py
+src/foreman/github.py:
+  kind: script
+  description: GitHub operations for delivery runs.
+  summary:
+    What it does: queue_receipt • pull_request_command • merge_command
+    Inputs: 'queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head:
+      str, base_ref: str, policy: QueuePolicy) • pull_request_command(repo: str, head:
+      str, base: str, title: str, body: str) • merge_command(repo: str, pull_request:
+      str, sha: str)'
+    Outputs: queue_receipt → MergeReceipt | None • pull_request_command → list[str]
+      • merge_command → list[str]
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/github.py
+src/foreman/models.toml:
+  kind: config
+  description: Failover order. The first model runs. Quota exhaustion tries the next.
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/models.toml
+src/foreman/outcomes.py:
+  kind: script
+  description: One policy row per delivery halt, independent of graph execution.
+  summary:
+    What it does: halted • exit_code
+    Inputs: 'halted(reason: Halt, detail: str, path: str | None) • exit_code(code:
+      str | None)'
+    Outputs: halted → 'DeliveryUpdate' • exit_code → int
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/outcomes.py
+src/foreman/readiness.py:
+  kind: script
+  description: Typed GitHub policy and commit evidence for a single PR observation.
+  summary:
+    What it does: detail
+    Inputs: detail(self)
+    Outputs: detail → str
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/readiness.py
+src/foreman/review_context.py:
+  kind: script
+  description: Immutable facts about the two committed trees in a pull request review.
+  summary:
+    What it does: ''
+    Inputs: ''
+    Outputs: ''
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/review_context.py
+src/foreman/review_round.py:
+  kind: script
+  description: Review history, PR scope and graph-check adapter over ResolutionLedger.
+  summary:
+    What it does: accept • history • graph_check
+    Inputs: 'accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphCheck
+      | None) • history(raw: object) • graph_check(state: ''DeliveryState'')'
+    Outputs: accept → AcceptedReview • history → ReviewHistory • graph_check → GraphEvidence
+      | None
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/review_round.py
+src/foreman/runner.py:
+  kind: script
+  description: Run one delivery issue against its SQLite checkpoint.
+  summary:
+    What it does: snapshot_result • checkpoint_state • require_same_budget
+    Inputs: 'snapshot_result(snapshot: StateSnapshot) • checkpoint_state(values: dict[str,
+      object]) • require_same_budget(stored: str | None, max_budget_usd: BudgetUsd
+      | None)'
+    Outputs: snapshot_result → DeliveryResult • checkpoint_state → DeliveryState |
+      None • require_same_budget → None
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/runner.py
+src/foreman/skill_rules.py:
+  kind: script
+  description: Worker methods selected by delivery state.
+  summary:
+    What it does: principle • git • export_skills
+    Inputs: 'principle(name: str) • git(root: Path, *args: str) • export_skills(pin:
+      PstackPin, scratch: Path)'
+    Outputs: principle → SkillRule • git → str • export_skills → Path
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/skill_rules.py
+src/foreman/skills/review-quality.md:
+  kind: skill
+  description: Review quality
+  summary:
+    Method steps: Cite evidence and assign severity. (lines 3–7)
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/skills/review-quality.md
+src/foreman/spec_check.py:
+  kind: script
+  description: Pure candidate-bound spec acceptance over the shared resolution ledger.
+  summary:
+    What it does: accept
+    Inputs: 'accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate,
+      *, max_rounds: int)'
+    Outputs: accept → AcceptedSpecCheck
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/spec_check.py
+src/foreman/stage_output.py:
+  kind: script
+  description: Worker output contracts shared by the CLI prompts and delivery graph.
+  summary:
+    What it does: parse_output
+    Inputs: 'parse_output(contract: type[Output], raw: object, *, context: ReviewContext
+      | None=None)'
+    Outputs: parse_output → Output
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py
+src/foreman/stages.py:
+  kind: script
+  description: Canonical worker contracts, methods and callbacks. Graph successors
+    stay in delivery.
+  summary:
+    What it does: clean_slices • oversized_pr • no_preparation
+    Inputs: 'clean_slices(raw: list[Slice] | None, workspace: Workspace | None) •
+      oversized_pr(state: ''DeliveryState'') • no_preparation(state: ''DeliveryState'',
+      workspace: Workspace, forge: Forge)'
+    Outputs: clean_slices → list[SliceRecord] • oversized_pr → PullRequestSize | None
+      • no_preparation → tuple[str, PullRequest | None, ReviewScope | None]
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages.py
+src/foreman/stages/implement.md:
+  kind: baseline prompt
+  description: Implement the change in the repository. Fix every unresolved finding
+    in findings, including nits.
+  summary:
+    What it instructs: 'Implement the change in the repository. Fix every unresolved
+      finding in findings, including nits.
+
+      Foreman owns commits and publishing. Write edits and evidence files; do not
+      commit or publish.
+
+      Edit the files in the provided checkout. Follow the spec when one is present.
+
+      Summarize the changes in `implementation`.
+
+      A test must check a behavior the change can break. Do not add a test that restates
+      the code.'
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/implement.md
+src/foreman/stages/research.md:
+  kind: baseline prompt
+  description: Answer the question from the repository. Do not change code.
+  summary:
+    What it instructs: Answer the question from the repository. Do not change code.
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/research.md
+src/foreman/stages/review.md:
+  kind: baseline prompt
+  description: Review round 1 in full. Later rounds check unresolved findings and
+    added interdiff lines also in the PR diff.
+  summary:
+    What it instructs: 'Review round 1 in full. Later rounds check unresolved findings
+      and added interdiff lines also in the PR diff.
+
+      Read the labeled PR diff and, in later rounds, the history-only interdiff with
+      the Workspace commands below.
+
+      Run each granted command on its own. Do not chain commands or add pipes, formatters,
+      or flags.
+
+      Use the labeled tree listings and blob commands for committed content, including
+      unchanged dependencies.
+
+      If an earlier attempt was denied, redo the complete required review at this
+      same scope. Its output was discarded.
+
+      Treat "Settled, don''t reopen" as rulings. If you disagree, reference the ruling
+      ID in ruling_id so the graph records a coordinator note.
+
+      List every outside-tool fact the diff relies on in tool_facts, such as a CLI
+      flag, output field, error string, exit code, or model ID.
+
+      When a fact record is declared, cite each claim by its entry ID at verified_head
+      and check that the fixture supports it. Otherwise use null fixture references.
+      Use null if no fixture supports a claim.
+
+      Report alignment, impact, verification, rollback, and error_detection as dimensions
+      with applies, assessment and nonempty evidence.
+
+      Every dimension must cite at least one changed path. For applies=false explain
+      why it is inapplicable and still ground it in evidence.
+
+      Each citation has side (base or head), repository-relative path and line (positive
+      integer or null for the whole path).
+
+      Paths and text lines must exist in that committed tree. Use base for deletions
+      or rename sources in the full PR diff from the merge-base, never for deletions
+      only in the interdiff from previous. Binary and mode-only changes permit whole-path
+      citations; binaries have no text lines.
+
+      A previous-only path is never risk evidence, even with line=null. Resolve its
+      earlier finding by ID and ground dimensions in the remaining net PR changes.
+      Previous is for navigation only and is not a citation side.
+
+      Unchanged dependency evidence is allowed alongside changed-path evidence. Findings
+      may cite any existing head text line, regardless of inline posting eligibility.
+
+      These rules apply in every round even with no findings or new added lines. The
+      schema checks structural grounding, not prose truth or completeness.
+
+      Set level to low, medium, or high. The graph derives the verdict from findings
+      and resolutions.'
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/review.md
+src/foreman/stages/spec.md:
+  kind: baseline prompt
+  description: Write the spec. Cover the behavior, the product decisions, and the
+    technical design.
+  summary:
+    What it instructs: 'Write the spec. Cover the behavior, the product decisions,
+      and the technical design.
+
+      Set `spec_gate` to `ready` when a person could implement from the spec.
+
+      Read the target checkout before asking a person. Use Read, Glob and Grep to
+      inspect
+
+      existing behavior and answer questions the code and issue can settle yourself.
+
+      Reserve `needs_human` for intent, product or policy choices, or external facts
+      absent
+
+      from the code and issue. Return non-empty `questions`, each with `question`,
+
+      `why_code_unanswered` and workspace-relative `checked_paths` naming files you
+      read.
+
+      Use empty `checked_paths` only if no checkout file covers the topic, explaining
+      why
+
+      in `why_code_unanswered`. On `ready`, return `questions: []`.'
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/spec.md
+src/foreman/stages/spec_check.md:
+  kind: baseline prompt
+  description: Check only the supplied candidate and its proof obligations, seams,
+    contracts, scope and failure paths. Read the repository as needed. Do not edit
+    files, repair the candidate, start subagents or publish issues.
+  summary:
+    What it instructs: Check only the supplied candidate and its proof obligations,
+      seams, contracts, scope and failure paths. Read the repository as needed. Do
+      not edit files, repair the candidate, start subagents or publish issues.
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/spec_check.md
+src/foreman/stages/triage.md:
+  kind: baseline prompt
+  description: Read the request and set `triage` according to the schema. Use these
+    values for informational or unclear requests.
+  summary:
+    What it instructs: Read the request and set `triage` according to the schema.
+      Use these values for informational or unclear requests.
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/triage.md
+src/foreman/state.py:
+  kind: script
+  description: Delivery graph state channels and their reducers.
+  summary:
+    What it does: checkpoint_serializer • require_schema_version
+    Inputs: 'checkpoint_serializer() • require_schema_version(values: Mapping[str,
+      object], checkpoint: Path | None=None, thread: str | None=None)'
+    Outputs: checkpoint_serializer → JsonPlusSerializer • require_schema_version →
+      None
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/state.py
+src/foreman/steps/implement.py:
+  kind: planned script
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+src/foreman/steps/merge.py:
+  kind: planned script
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+src/foreman/steps/research.py:
+  kind: planned script
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+src/foreman/steps/review.py:
+  kind: planned script
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+src/foreman/steps/spec.py:
+  kind: planned script
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+src/foreman/steps/triage.py:
+  kind: planned script
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+src/foreman/worker.py:
+  kind: script
+  description: Run a pinned worker and read its final stage result.
+  summary:
+    What it does: run_worker_command
+    Inputs: 'run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str,
+      str])'
+    Outputs: run_worker_command → subprocess.CompletedProcess[str]
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/worker.py
+src/foreman/worker_auth.py:
+  kind: script
+  description: Per-command App authentication for factory network commands.
+  summary:
+    What it does: environment • validate_config • git_command
+    Inputs: 'environment(studio: str | None) • validate_config(url: str) • git_command(args:
+      list[str])'
+    Outputs: environment → dict[str, str] • validate_config → None • git_command →
+      list[str]
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/worker_auth.py
+src/foreman/workspace.py:
+  kind: script
+  description: Local checkout operations used by delivery runs.
+  summary:
+    What it does: commit_sha • head_mismatch_detail • added_lines
+    Inputs: 'commit_sha(value: str) • head_mismatch_detail(observed: str, verified:
+      str) • added_lines(patch: str)'
+    Outputs: commit_sha → CommitSHA | None • head_mismatch_detail → str • added_lines
+      → frozenset[tuple[str, int]]
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/workspace.py
+tests/test_accept.py:
+  kind: test
+  description: ''
+  summary:
+    What it checks: factory label starts a run • other labels are ignored • unknown
+      source is rejected
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_accept.py
+tests/test_delivery.py:
+  kind: test
+  description: Test delivery.
+  summary:
+    What it checks: graph receives the skill source as an input • passing a slice
+      starts a slice run • clear change skips spec • ready spec is implemented • ready
+      spec keeps the loaded slice proof obligations
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_delivery.py
+tests/test_dispatch_budget.py:
+  kind: test
+  description: Dollar limits at the delivery and subprocess boundaries.
+  summary:
+    What it checks: every dispatching stage recomputes the budget for each claude
+      attempt • cli worker sends one exact remainder flag only to claude • bounded
+      dry run records remainders and zero cost • quota or success at the limit stops
+      before fallback or output • spent or unknown allowance never starts a candidate
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_dispatch_budget.py
+tests/test_dispatch_recovery.py:
+  kind: test
+  description: ''
+  summary:
+    What it checks: fresh process crash after success or quota never replays
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_dispatch_recovery.py
+tests/test_merge_receipt.py:
+  kind: test
+  description: ''
+  summary:
+    What it checks: captures establish schema and queue contract • normal success
+      requires observed receipt and policy method • replay existing admission or merged
+      never writes • timeout confirmation and rejected write stderr • locked and advanced
+      base are eligible
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_merge_receipt.py
+tests/test_publication.py:
+  kind: test
+  description: ''
+  summary:
+    What it checks: new branch uses origin with stale missing or detached local base
+      • creation uses resolved sha even if shared remote ref moves • prepare crash
+      and checkpoint resume keep selected parent • incompatible existing branch is
+      not adopted • existing branch at origin is adopted from divergent detached head
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_publication.py
+tests/test_readiness.py:
+  kind: test
+  description: ''
+  summary:
+    What it checks: every outcome has an explicit halt policy • source and synthetic
+      merge success • missing wrong app wrong head and unrelated merge • pending red
+      skipped and latest rerun • conflict unknown policy and race
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_readiness.py
+tests/test_review_availability.py:
+  kind: test
+  description: Reviewer eligibility and checkpoint recovery across independent processes.
+  summary:
+    What it checks: selection matrix and full history • fresh process availability
+      and recovery • failover recovers but invalid or failed reviews are terminal
+      • mixed history completes and single family can run • budget and indeterminate
+      usage stop before same family call
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_review_availability.py
+tests/test_review_context.py:
+  kind: test
+  description: ''
+  summary:
+    What it checks: statuses assign paths to the side where they exist • nul delimiters
+      preserve path characters • unknown or incomplete records fail closed • captured
+      git records • malformed line counts fail closed
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_review_context.py
+tests/test_review_rounds.py:
+  kind: test
+  description: Test review rounds.
+  summary:
+    What it checks: three pinned trees across rounds and unavailable dispatch • claude
+      grants each rendered review command • worker refuses scratch root inside checkout
+      • review payload stays off exec argv • denied review retry resume quota and
+      budget
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_review_rounds.py
+tests/test_runner.py:
+  kind: test
+  description: Live runner behavior with offline workers and forge doubles.
+  summary:
+    What it checks: spec worker receives paired questions once • commands use the
+      configured models and parse the final result • each family can use scratch outside
+      checkout • inherited checkout tmpdir is overridden without changing environment
+      • subprocess merges adapter environment with inherited environment
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_runner.py
+tests/test_spec_candidate.py:
+  kind: test
+  description: ''
+  summary:
+    What it checks: grounded question contract and checkpoint • revision binds all
+      content and ignores mapping order • optional stored provenance round trips through
+      issue and checkpoint • actual accepted failover authors • inherited slice author
+      survives child triage and spec
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_spec_candidate.py
+tests/test_spec_check.py:
+  kind: test
+  description: ''
+  summary:
+    What it checks: native fixture and contradictions • clear approval is bound and
+      round history roundtrips • interdiff is derived and forged scope is rejected
+      • targets missing renamed and duplicate titles • accounting missing duplicate
+      unknown and reused ids
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_spec_check.py

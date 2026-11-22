@@ -1,0 +1,40 @@
+flowchart TD
+    n0(["Enter stage"]):::terminal
+    n1(["Spec worker · Draft repository-bound slices"]):::worker
+    n2["Foreman · Validate repository and seam paths"]:::step
+    n3(["Independent checker · Check and approve the plan"]):::worker
+    n4["Foreman · File and link child issues"]:::step
+    n5(["Cancelled"]):::terminal
+    n6(["Run stops"]):::terminal
+    n7(["Wrong repository"]):::terminal
+    n8(["Plan revision limit reached"]):::terminal
+    n9(["One slice clears both checks"]):::terminal
+    n10(["Children filed"]):::terminal
+    n11{{"Joe · Decide the unresolved product, repository, architecture or policy choice. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on Joe."}}:::gate
+    n12{{"Joe · Resolve an intent choice identified by the independent checker. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on Joe."}}:::gate
+    n0 -->|"Supplied slice"| n2
+    n0 -->|"Plan"| n1
+    n1 -->|"Ready"| n2
+    n1 --> n5
+    n1 --> n6
+    n2 --> n7
+    n2 --> n8
+    n2 -->|"Repair"| n1
+    n2 -->|"Valid"| n3
+    n3 --> n8
+    n3 -->|"Changes"| n1
+    n3 --> n5
+    n3 --> n9
+    n3 -->|"Parent plan clears both checks"| n4
+    n3 --> n6
+    n4 --> n10
+    n4 --> n6
+    n1 -.->|"Unresolved choice"| n11
+    n11 -.->|"Answer to open question"| n1
+    n3 -.->|"Unresolved choice"| n12
+    n12 -.->|"Answer to open question"| n3
+    classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
+    classDef step fill:#edf3f8,stroke:#597187,color:#132638
+    classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36
+    classDef gate fill:#fff0c9,stroke:#89641f,color:#3f2b0b
+    classDef terminal fill:#f0f0f0,stroke:#666666,color:#202020
