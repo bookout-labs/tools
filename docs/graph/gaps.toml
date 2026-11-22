@@ -33,7 +33,7 @@ verify = [["done", ""], ["prepare", ""], ["proof", ""]]
 
 [delivery.extra.slice_12]
 decide_pr_size = [["done", ""], ["verify", ""]]
-needs_human = [["done", ""], ["implement", ""], ["spec", ""], ["triage", ""]]
+needs_human = [["done", ""], ["prepare", ""], ["spec", ""], ["triage", ""]]
 review = [["decide_pr_size", ""], ["needs_human", ""]]
 review_call = [["decide_pr_size", ""], ["needs_human", ""]]
 review_post = [["decide_pr_size", ""], ["needs_human", ""]]
@@ -114,7 +114,6 @@ slice_14a = ["A parent plan does not carry revision-bound approval to its childr
 slice_14b = ["The runner files children without a confirmed sub-issue link.", "A dependent child becomes ready on a later parent rerun instead of its last blocker marking it ready."]
 
 [stages.prepare]
-slice_9 = ["Preflight, branch and attempt-start checks run inside implement's setup."]
 slice_11a = ["Recovery rewinds history instead of resuming at prepare."]
 
 [stages.implement]

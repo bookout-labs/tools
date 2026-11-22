@@ -122,9 +122,7 @@ class StageDeclarationsTest(unittest.TestCase):
                                   *(case.guard for case in branch.cases if case.guard is not None)]
                 for condition in conditions:
                     literals = {n.value for n in ast.walk(condition) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-                    # Slice 9d owns the implement re-entry guard; graph routers are outside this seam.
-                    allowed = {"implement"} if module == "delivery.py" and function.name == "bind" else set()
-                    self.assertFalse(literals & (set(STAGES) - allowed), ast.unparse(condition))
+                    self.assertFalse(literals & set(STAGES), ast.unparse(condition))
         self.assertTrue(expected <= visited, expected - visited)
 
     def test_dispatch_has_no_stage_policy_branches(self):
@@ -135,9 +133,11 @@ class StageDeclarationsTest(unittest.TestCase):
     def test_dispatch_policy_check_rejects_cases_guards_helpers_and_missing_functions(self):
         for body in ('match name:\n        case "review": pass',
                      'match name:\n        case _ if name == "review": pass',
-                     'if name == "review": pass'):
+                     'if name == "review": pass', 'if name == "implement": pass'):
             with self.subTest(body=body), self.assertRaises(AssertionError):
                 self.assert_no_stage_policy("def clean_outcome(): pass\ndef helper(name):\n    " + body, "dispatch.py")
+        with self.assertRaises(AssertionError):
+            self.assert_no_stage_policy('def bind(name):\n    if name == "implement": pass\ndef call(): pass\ndef stage_update(): pass', "delivery.py")
         for module in ("delivery.py", "dispatch.py"):
             with self.subTest(module=module), self.assertRaises(AssertionError):
                 self.assert_no_stage_policy("def renamed(): pass", module)

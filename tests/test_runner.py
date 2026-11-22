@@ -2022,7 +2022,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         halted = self.walk([{"triage": "implement"}], preflight=preflight)
         self.assertEqual(halted.get("stop"), "env_unavailable")
         self.assertEqual(len(halted["review"].review_findings), 0)
-        self.assertEqual(halted.get("path"), ["triage", "implement", "done"])
+        self.assertEqual(halted.get("path"), ["triage", "prepare", "done"])
         self.assertEqual(self.calls, ["claude"])
 
         (self.cwd / "ready").touch()
@@ -2092,11 +2092,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual((self.cwd / "probes").read_text(), "probed\n")
 
-    def test_parent_preflight_halts_at_implement(self):
+    def test_parent_preflight_halts_at_prepare(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}], preflight="exit 9")
         self.assertEqual(result.get("stop"), "env_unavailable")
-        self.assertEqual(result.get("path"), ["triage", "implement", "done"])
+        self.assertEqual(result.get("path"), ["triage", "prepare", "done"])
         self.assertEqual(self.calls, ["claude"])
 
     def test_parent_stops_sliced_without_running_preflight(self):
@@ -2180,6 +2180,85 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.walk([{"implementation": "built"}, APPROVE])
         self.assertEqual(result["stop"], "verified")
         self.assertNotIn("interrupted", [a["outcome"] for a in result["attempts"]])
+
+    def test_crash_after_prepare_rejects_unowned_edits_before_preflight(self):
+        with patch("foreman.delivery.EnvironmentProbe.error", new_callable=unittest.mock.PropertyMock,
+                   side_effect=[None, SystemExit("crash after prepare")]):
+            with self.assertRaisesRegex(SystemExit, "crash after prepare"):
+                self.walk([{"triage": "implement"}], preflight="touch preflight_ran")
+        workspace = FakeWorkspace(self.cwd)
+        workspace.current = WorktreeState(HEAD, False, BRANCH)
+        resumed = self.walk([{"implementation": "built"}, APPROVE], workspace=workspace)
+        self.assertEqual(resumed["stop"], "dirty_worktree")
+        self.assertIn("Unowned edits", resumed["halt_detail"])
+        self.assertFalse((self.cwd / "preflight_ran").exists())
+        self.assertEqual([a["stage"] for a in resumed["attempts"]], ["triage"])
+
+    def test_fresh_process_design_answer_survives_failed_prepare(self):
+        script = r'''
+import json
+from dataclasses import replace
+from pathlib import Path
+import sys
+from unittest.mock import patch
+from foreman.config import PstackPin, load_config
+from foreman.delivery import LiveRun
+from foreman.runner import run_live_delivery
+from foreman.worker import CliWorker
+from test_runner import APPROVE, FINDING, FakeGitHub, FakeWorkspace, worker_reply
+
+phase = sys.argv[2]
+workspace = FakeWorkspace(Path.cwd())
+reviews = iter([{**APPROVE, "findings": [FINDING]},
+                {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
+                 "findings": [{**FINDING, "id": "again"}]}] if phase == "initial" else
+               [{**APPROVE, "resolutions": [{"id": "again", "status": "resolved"}]}])
+def worker(args, cwd, env):
+    if args[0] == "codex":
+        schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
+    else:
+        schema = json.loads(args[args.index("--json-schema") + 1])
+    stage = schema["title"]
+    if stage == "TriageOutput":
+        return worker_reply(args, {"triage": "implement"})
+    if stage == "ImplementOutput":
+        return workspace.reply(args, {"implementation": "built"})
+    return worker_reply(args, next(reviews))
+pin = PstackPin.model_validate_json(sys.argv[1])
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
+    result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
+        preflight="test ! -f blocked", answer=None if phase == "initial" else "Use option B",
+        checkpoint=Path("runs.sqlite3"), run=LiveRun(FakeGitHub(), workspace),
+        dispatcher=CliWorker(Path.cwd(), worker))
+Path(phase + ".json").write_text(json.dumps({
+    "stop": result["stop"], "answers": result.get("human_answers"),
+    "models": result["implement_models"], "path": result["path"],
+    "attempts": result["attempts"], "rulings": result["review"].settled_rulings}))
+'''
+        bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
+                     f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
+        def invoke(phase):
+            process = subprocess.run([sys.executable, "-c", bootstrap + script,
+                                      self.pin.model_dump_json(), phase],
+                                     cwd=self.cwd, text=True, capture_output=True)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            return json.loads((self.cwd / (phase + ".json")).read_text())
+        initial = invoke("initial")
+        self.assertEqual(initial["stop"], "needs_human")
+        self.assertEqual(len(initial["models"]), 2)
+        (self.cwd / "blocked").touch()
+        failed = invoke("failed")
+        self.assertEqual(failed["stop"], "env_unavailable")
+        self.assertEqual(failed["answers"], ["Use option B"])
+        self.assertEqual(failed["models"], initial["models"])
+        (self.cwd / "blocked").unlink()
+        resumed = invoke("resumed")
+        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["answers"], ["Use option B"])
+        self.assertEqual(resumed["models"][:2], initial["models"])
+        self.assertEqual(len(resumed["models"]), 3)
+        self.assertEqual(resumed["attempts"][:len(initial["attempts"])], initial["attempts"])
+        self.assertEqual(resumed["rulings"], failed["rulings"])
 
     def test_env_unavailable_resumes_before_implement(self):
         with patch("foreman.delivery.EnvironmentProbe.error", new_callable=unittest.mock.PropertyMock,
