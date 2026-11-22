@@ -116,7 +116,8 @@ class DryRun:
 
     def reconcile(self, parent: str, branch: str, base_branch: str, fact_record: str | None) -> ImplementationCandidate:
         self.clean = False
-        return {"disposition": "edits", "fingerprint": self.fingerprint()}
+        return {"disposition": "edits", "fingerprint": self.fingerprint(),
+                "size": self.pull_request_size(self.tree(None), base_branch)}
 
     def fingerprint(self) -> str:
         return "dry-run"
@@ -137,8 +138,8 @@ class DryRun:
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None:
         self.commands.append(pull_request_command(repo, head, base, title, body))
 
-    def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
-        return {"head": head, "merge_base": "<base>", "lines": 0}
+    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
+        return {"head": head or self.tree(None), "merge_base": merge_base or "<base>", "lines": 0}
 
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest:
         return PullRequest(state="OPEN", number=1, headRefOid=sha, headRefName=branch,
@@ -170,8 +171,8 @@ class DryRun:
     def committed(self, parent: str, message: str) -> bool:
         raise NotImplementedError("Not used by dry delivery")
 
-    def tree(self, head: str) -> str:
-        raise NotImplementedError("Not used by dry delivery")
+    def tree(self, head: str | None) -> str:
+        return "<tree>"
 
     def soft_reset(self, parent: str) -> None:
         raise NotImplementedError("Not used by dry delivery")
