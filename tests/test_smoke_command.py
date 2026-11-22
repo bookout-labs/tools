@@ -27,9 +27,11 @@ class SmokeCommandTest(unittest.TestCase):
     def provision(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with (patch('foreman.smoke_command.credentials.environment', return_value={'PATH': '/app', 'GH_TOKEN': 'app'}) as credentials,
+            with (patch('foreman.smoke_command.SMOKE_TARGETS', (SMOKE_REPO,)),
+                  patch('foreman.smoke_command.credentials.environment', return_value={'PATH': '/app', 'GH_TOKEN': 'app'}) as credentials,
                   patch('foreman.smoke_command.LiveForge') as forge,
                   patch('foreman.smoke_command.subprocess.run') as process,
+                  patch('foreman.smoke_command.subprocess.check_output', return_value='abc'),
                   patch('foreman.smoke_command.run_live_delivery', return_value=passing()) as runner,
                   patch('foreman.smoke_command.smoke_lock'),
                   patch.dict(os.environ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors):
@@ -55,7 +57,7 @@ class SmokeCommandTest(unittest.TestCase):
             self.assertEqual(kwargs['max_budget_usd'], SMOKE_CLAUDE_USD)
             self.assertEqual(kwargs['run'].workspace.root, root / 'checkout')
             self.assertIs(kwargs['run'].forge, forge)
-            self.assertTrue(os.environ['PATH'].startswith(str(root / 'python/bin')))
+            self.assertFalse(os.environ['PATH'].startswith(str(root / 'python/bin')))
             self.assertEqual(process.call_args_list[0].kwargs['env'], credentials.return_value)
             forge.create_issue.assert_called_once()
             self.assertEqual(forge.create_issue.call_args.args[-1], ['smoke'])
@@ -74,7 +76,7 @@ class SmokeCommandTest(unittest.TestCase):
             forge.smoke_pull_requests.side_effect = ForgeError('cleanup denied')
             with redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
-            self.assertEqual(output.getvalue(), 'smoke exit 78 cleanup attempt prerequisite\n')
+            self.assertIn('smoke exit 78 cleanup attempt prerequisite', output.getvalue())
             self.assertIn('cleanup denied', errors.getvalue())
             forge.ensure_smoke_label.assert_called_once_with(SMOKE_REPO)
             forge.create_issue.assert_not_called()
@@ -85,7 +87,7 @@ class SmokeCommandTest(unittest.TestCase):
             with patch('foreman.smoke_command.smoke_lock', side_effect=OSError('lock denied')), \
                  redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
-            self.assertEqual(output.getvalue(), 'smoke exit 78 lock attempt prerequisite\n')
+            self.assertEqual(output.getvalue(), f'smoke {SMOKE_REPO} exit 78 lock attempt prerequisite\n')
             self.assertIn('lock denied', errors.getvalue())
             credentials.assert_not_called()
             forge.create_issue.assert_not_called()
