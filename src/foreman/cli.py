@@ -16,7 +16,7 @@ import yaml
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.readiness import MergeState
-from foreman.state import ReviewState, ChecksState, RunState, DeliveryResult
+from foreman.state import ReviewState, ChecksState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.dry_run import ScriptHandler
@@ -46,7 +46,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     rows: list[tuple[str, str | None]] = []
     checks = result["checks"]
     run_state = result["run"]
-    current: DeliveryResult = {"review": ReviewState(), "plan": result["plan"], "run": RunState(repo=run_state.repo, max_budget_usd=run_state.max_budget_usd), "checks": ChecksState(check=checks.check), "path": [], "stop": result["stop"]}
+    current: DeliveryResult = {"review": ReviewState(), "plan": result["plan"], "run": run_state, "checks": ChecksState(check=checks.check), "path": [], "stop": result["stop"]}
     for update in presentation.updates:
         current.update(update)
         rows.extend((node, update.get("models_used", {}).get(node)) for node in update.get("path", []))
@@ -57,11 +57,10 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     current["path"] = [node for node, _ in rows]
     current["stop"] = result["stop"]
     current["attempts"] = result.get("attempts", [])
-    current["run"] = run_state
     if result["stop"] in {"needs_human", Halt.quota_exhausted}:
         current["halt_detail"] = result.get("halt_detail", "")
-    _write_run_log("usage below is cumulative across all invocations")
     _write_run_log("this invocation:")
+    _write_run_log("usage below is cumulative across all invocations")
     _print_run_rows(current, rows=rows)
 
 

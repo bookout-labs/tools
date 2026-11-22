@@ -2477,7 +2477,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 resumed, attempts = invoke("--answer", "Open items", expected=code)
                 restored, current = resumed.split("this invocation:\n")
                 self.assertIn("restored raw tokens 230", restored)
-                self.assertIn("usage below is cumulative across all invocations", restored)
+                self.assertIn("usage below is cumulative across all invocations", current)
                 self.assertNotIn("\ntriage ", current)
                 self.assertEqual(sum(line.startswith("spec ") for line in current.splitlines()),
                                  0 if case in {"cap", "unknown"} else 1)
