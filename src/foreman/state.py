@@ -90,7 +90,7 @@ class DeliveryFields(TypedDict, total=False):
     review_findings: list[dict[str, object]]
     reviewed_head: str
     settled_rulings: list[dict[str, object]]
-    fact_record: str
+    fact_record: str | None
     findings: list[FindingRecord]
     detail: str
     review_change_kind: Literal["blocking", "nits"] | None

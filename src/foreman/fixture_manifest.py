@@ -63,7 +63,7 @@ def fact_record_path(path: str) -> str:
     return path
 
 
-def recorded_evidence(workspace: Workspace, head: str, manifest_path: str = MANIFEST_PATH) -> dict[str, list[str]]:
+def recorded_evidence(workspace: Workspace, head: str, manifest_path: str) -> dict[str, list[str]]:
     manifest_path = fact_record_path(manifest_path)
     directory = PurePosixPath(manifest_path).parent.as_posix()
     files = workspace.files_at(head, directory)
@@ -75,5 +75,5 @@ def recorded_evidence(workspace: Workspace, head: str, manifest_path: str = MANI
     return {path: fixture.claim_ids for path, fixture in manifest.fixtures.items() if path in tracked}
 
 
-def recorded_fixtures(workspace: Workspace, head: str, manifest_path: str = MANIFEST_PATH) -> set[str]:
+def recorded_fixtures(workspace: Workspace, head: str, manifest_path: str) -> set[str]:
     return set(recorded_evidence(workspace, head, manifest_path))

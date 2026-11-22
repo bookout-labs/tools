@@ -10,10 +10,11 @@ Design docs hold current design; PR evidence stays in the PR.
 
 Outside-tool facts cited by review need recorded evidence at the verified head.
 `foreman run delivery --fact-record evidence/facts.toml` selects a repository-relative
-TOML record. The default is `tests/fixtures/manifest.toml`. On resume, omit the flag to use the saved path. An explicit path that differs from the saved path is an error. Fixture IDs name regular tracked files relative to the record.
-When evidence is missing, implement receives the claims and recording schema and
-can create the record. Unresolved claims carry stable IDs across reviews. Add each claim ID to the evidence
+TOML record. Without it, no fact record is declared and no evidence is looked up. Unsupported outside-tool claims still block approval. On resume, omit the flag to retain the saved path or null. An explicit path that differs from the saved path is an error. Fixture IDs name regular tracked files relative to the record.
+When declared evidence is missing, implement receives the claims and recording schema and
+can create the declared record. An undeclared run needs an explicit path and a new checkpoint to record evidence. Existing v6 checkpoints retain their saved path, including the former default. Unresolved claims carry stable IDs across reviews. Add each claim ID to the evidence
 entry's `claim_ids` list to resolve it independently of later reviewer wording.
+For this repository, run `foreman run delivery --repo bookout-labs/tools --issue <number> --check "python -m unittest discover -s tests" --fact-record tests/fixtures/manifest.toml`. API callers pass `fact_record="tests/fixtures/manifest.toml"`.
 A typed exact restatement of the graph's verified check result needs no fixture.
 
 
