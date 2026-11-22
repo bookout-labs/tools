@@ -1,6 +1,6 @@
 import tests
 
-from foreman.state import RunState, SCHEMA_VERSION
+from foreman.state import ChecksState, PlanState, ReviewState, RunState, SCHEMA_VERSION, checkpoint_serializer
 
 import unittest
 from typing import get_args
@@ -25,6 +25,18 @@ class HaltPolicyTest(unittest.TestCase):
         for code in ("no_reviewer", "no_reviewr"):
             with self.subTest(code=code), self.assertRaisesRegex(ValueError, code):
                 checkpoint_state(dict(schema_version=SCHEMA_VERSION, halt=code, run=RunState(token_cap=100, repo="Example/Engine"), check="true", path=[]))
+
+    def test_current_schema_keeps_the_retired_size_halt_readable(self):
+        values = dict(schema_version=SCHEMA_VERSION, halt="pr_size_unavailable", stop="pr_size_unavailable",
+                      halt_detail="The pull request size could not be measured.", path=["review", "done"],
+                      run=RunState(repo="Example/Engine", token_cap=100), checks=ChecksState(),
+                      plan=PlanState(), review=ReviewState())
+        serializer = checkpoint_serializer()
+        state = checkpoint_state(serializer.loads_typed(serializer.dumps_typed(values)))
+        self.assertIsNotNone(state)
+        self.assertEqual(state["halt"], "pr_size_unavailable")
+        self.assertEqual(exit_code(state["halt"]), 1)
+        self.assertNotIn(state["halt"], RESUMABLE_HALTS)
 
     def test_retry_and_merge_recovery_preserve_the_existing_choices(self):
         merge = {"merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red",

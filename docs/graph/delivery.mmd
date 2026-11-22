@@ -18,6 +18,7 @@ graph TD;
 	verify(verify)
 	prepare(prepare)
 	reconcile(reconcile)
+	size(size)
 	commit(commit)
 	publish(publish)
 	proof(proof)
@@ -31,9 +32,9 @@ graph TD;
 	__start__ -.-> done;
 	__start__ -.-> triage;
 	commit -.-> done;
-	commit -.-> publish;
+	commit -.-> verify;
 	decide_pr_size -.-> done;
-	decide_pr_size -.-> verify;
+	decide_pr_size -.-> size;
 	implement -.-> done;
 	implement -. &nbsp;call&nbsp; .-> implement_call;
 	implement -.-> quota_wait;
@@ -50,22 +51,21 @@ graph TD;
 	prepare -.-> implement;
 	proof -.-> done;
 	proof -.-> prepare;
-	proof -.-> review;
+	proof -. &nbsp;pass&nbsp; .-> publish;
 	publish -.-> done;
-	publish -.-> verify;
+	publish -.-> review;
 	quota_wait -.-> implement;
 	quota_wait -.-> research;
 	quota_wait -.-> review;
 	quota_wait -.-> spec;
 	quota_wait -.-> triage;
-	reconcile -.-> commit;
 	reconcile -.-> done;
+	reconcile -.-> size;
 	research -.-> done;
 	research -.-> quota_wait;
 	research -. &nbsp;call&nbsp; .-> research_call;
 	research_call -.-> done;
 	research_call -.-> quota_wait;
-	review -.-> decide_pr_size;
 	review -.-> done;
 	review -.-> merge;
 	review -.-> needs_human;
@@ -73,21 +73,19 @@ graph TD;
 	review -.-> quota_wait;
 	review -. &nbsp;call&nbsp; .-> review_call;
 	review -.-> review_post;
-	review -.-> spec;
-	review_call -.-> decide_pr_size;
 	review_call -.-> done;
 	review_call -.-> merge;
 	review_call -.-> needs_human;
 	review_call -.-> prepare;
 	review_call -.-> quota_wait;
 	review_call -.-> review_post;
-	review_call -.-> spec;
-	review_post -.-> decide_pr_size;
 	review_post -.-> done;
 	review_post -.-> merge;
 	review_post -.-> needs_human;
 	review_post -.-> prepare;
-	review_post -.-> spec;
+	size -. &nbsp;fits&nbsp; .-> commit;
+	size -.-> decide_pr_size;
+	size -. &nbsp;too big: re-plan&nbsp; .-> spec;
 	spec -.-> decide_pr_size;
 	spec -.-> done;
 	spec -.-> needs_human;
@@ -116,7 +114,6 @@ graph TD;
 	verify -.-> done;
 	verify -.-> prepare;
 	verify -.-> proof;
-	verify -.-> review;
 	done --> __end__;
 	implement_call -. &nbsp;call&nbsp; .-> implement_call;
 	research_call -. &nbsp;call&nbsp; .-> research_call;

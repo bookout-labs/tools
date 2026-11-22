@@ -4,6 +4,7 @@ from foreman.fixture_manifest import FixtureManifest
 from contextlib import ExitStack
 from dataclasses import replace
 import json
+import multiprocessing
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
@@ -138,7 +139,8 @@ class PublicationTest(unittest.TestCase):
     def no_worker(self):
         self.fail("completed worker must not repeat")
 
-    def walk(self, edit=None, reviews=None, family=None, fact_record="tests/fixtures/manifest.toml", preflight="", check_log=None):
+    def walk(self, edit=None, reviews=None, family=None, fact_record="tests/fixtures/manifest.toml",
+             answer=None, preflight="", check_log=None):
         script = ScriptHandler(reviews=reviews)
         workspace = LiveWorkspace(self.checkout)
 
@@ -156,7 +158,8 @@ class PublicationTest(unittest.TestCase):
             return script(node, model, state, instruction)
 
         return run_live_delivery(
-            repo=REPO, issue=8, check="test -f items.txt", preflight=preflight, checkpoint=self.checkpoint, fact_record=fact_record,
+            repo=REPO, issue=8, check="test -f items.txt", preflight=preflight, checkpoint=self.checkpoint,
+            fact_record=fact_record, answer=answer,
             run=LiveRun(LiveForge(), workspace, check_log=check_log), dispatcher=handler,
         )
 
@@ -848,13 +851,101 @@ class PublicationTest(unittest.TestCase):
         self.assertIn("changed after reconciliation", result["halt_detail"])
         self.assertFalse(self.created)
 
+    def test_oversized_candidate_continues_in_fresh_process_for_split_and_override(self):
+        for committed in (False, True):
+            for answer in ("split", "override"):
+                with self.subTest(committed=committed, answer=answer):
+                    self.reset_fixture()
+                    def edit():
+                        (self.checkout / "items.txt").write_text("one\n" * 401)
+                        if committed:
+                            self.worker_commit()
+                    original_run = LiveWorkspace.run
+                    checked = []
+                    def check(workspace, command, **kwargs):
+                        self.assertFalse(self.created)
+                        checked.append(self.git("rev-parse", "HEAD"))
+                        return original_run(workspace, command, **kwargs)
+                    with patch.object(LiveWorkspace, "run", check):
+                        paused = self.walk(edit)
+                        self.assertEqual(paused["stop"], "needs_human")
+                        candidate = paused["work"].candidate
+                        self.assertEqual(candidate["disposition"], "adopted" if committed else "edits")
+                        head = self.git("rev-parse", "HEAD")
+                        self.assertFalse(self.created)
+                        self.assertFalse(checked)
+                        receiver, sender = multiprocessing.get_context("fork").Pipe(duplex=False)
+                        def resume():
+                            try:
+                                result = self.walk(self.no_worker, answer=answer)
+                                sender.send((result, checked, self.created))
+                            except BaseException as exc:
+                                sender.send(exc)
+                        process = multiprocessing.get_context("fork").Process(target=resume)
+                        process.start()
+                        sender.close()
+                        try:
+                            self.assertTrue(receiver.poll(30), "resume process did not finish")
+                            result = receiver.recv()
+                            if isinstance(result, BaseException):
+                                raise result
+                            resumed, checked, self.created = result
+                        finally:
+                            receiver.close()
+                            process.join(5)
+                            if process.is_alive():
+                                process.terminate()
+                                process.join()
+                        self.assertEqual(process.exitcode, 0)
+                    self.assertEqual(resumed["work"].candidate, candidate)
+                    if answer == "override":
+                        self.assertEqual(resumed["stop"], "verified")
+                        self.assertEqual(checked, self.created)
+                        self.assertEqual(len(checked), 1)
+                        self.assertEqual(resumed["pr_size_override"], candidate["size"])
+                        self.assertEqual(self.git("rev-parse", "HEAD^{tree}"), candidate["size"]["head"])
+                        self.assertEqual(resumed["path"][-5:], ["proof", "publish", "review", "merge", "done"])
+                    else:
+                        self.assertEqual(resumed["stop"], "pr_split_required")
+                        self.assertEqual(resumed["plan"].pr_split, paused["plan"].pr_split)
+                        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+                        self.assertFalse(checked)
+                        self.assertFalse(self.created)
+                        self.assertNotIn("publish", resumed["path"])
+                        self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
+
+    def test_fix_round_requires_new_size_override_before_publication(self):
+        def edit(text):
+            (self.checkout / "items.txt").write_text(text * 401)
+        self.assertEqual(self.walk(lambda: edit("one\n"))["stop"], "needs_human")
+        first = self.walk(lambda: edit("two\n"), reviews=["changes"], answer="override")
+        self.assertEqual(first["stop"], "needs_human")
+        self.assertEqual(len(self.created), 1)
+        published = self.remote_head()
+        self.assertNotEqual(first["pr_size"], first["pr_size_override"])
+        self.assertEqual(first["checks"].verified_head, "")
+        second = self.walk(self.no_worker, answer="override")
+        self.assertEqual(second["stop"], "verified")
+        self.assertEqual(len(self.created), 1)
+        self.assertEqual(self.git("rev-parse", "HEAD^"), published)
+        self.assertEqual(self.remote_head(), second["checks"].verified_head)
+        self.assertEqual(second["path"].count("proof"), 2)
+        self.assertEqual(second["path"].count("publish"), 2)
+
+    def test_missing_proof_never_publishes(self):
+        self.slice = {**EMPTY_SLICE, "screen": "docs/screens/items.md"}
+        result = self.walk()
+        self.assertEqual(result["stop"], "insufficient_evidence")
+        self.assertFalse(self.created)
+        self.assertNotIn("publish", result["path"])
+        self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
+
     def test_first_publication_uses_bound_size_without_pr_lookup(self):
-        with patch.object(LiveForge, "pull_request_base", side_effect=AssertionError("no PR lookup")):
-            result = self.walk(self.edit)
+        result = self.walk(self.edit)
         self.assertEqual(result["stop"], "verified")
         bound = result["work"].candidate["size"]
         self.assertEqual(bound["head"], self.git("rev-parse", "HEAD^{tree}"))
-        self.assertEqual(result["pr_size"], {**bound, "head": result["work"].head_sha})
+        self.assertEqual(result["pr_size"], bound)
 
     def test_changed_candidate_cannot_commit_with_stale_size(self):
         with patch.object(LiveWorkspace, "commit", side_effect=SystemExit("before commit")):
@@ -894,7 +985,7 @@ class PublicationTest(unittest.TestCase):
         self.assertIn("Commit differs from the measured implementation tree", result["halt_detail"])
         self.assertFalse(self.created)
 
-    def test_review_rejects_verified_commit_with_unmeasured_tree(self):
+    def test_verify_rejects_unmeasured_commit(self):
         with patch.object(LiveWorkspace, "run", side_effect=SystemExit("before verification")):
             with self.assertRaises(SystemExit):
                 self.walk(self.edit)
@@ -902,9 +993,10 @@ class PublicationTest(unittest.TestCase):
         self.worker_commit()
         head = self.git("rev-parse", "HEAD")
         result = self.walk(self.no_worker)
-        self.assertEqual(result["checks"].verified_head, head)
-        self.assertEqual(result["stop"], "pr_size_unavailable")
-        self.assertIn("Verified tree differs", result["halt_detail"])
+        self.assertEqual(result["checks"].verified_head, "")
+        self.assertEqual(result["stop"], "dirty_worktree")
+        self.assertIn("implementation commit", result["halt_detail"])
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
         self.assertEqual(self.published_heads, [])
 
     def test_recovery_with_edits_uses_reconciled_fingerprint(self):

@@ -22,6 +22,7 @@ class Halt(StrEnum):
     missing_slice = auto()
     review_unavailable = auto()
     review_not_posted = auto()
+    # Schema-12 checkpoints from before pre-commit sizing can still carry this halt.
     pr_size_unavailable = auto()
     git_failed = auto()
     usage_unknown = auto()

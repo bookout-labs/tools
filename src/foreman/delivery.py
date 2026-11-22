@@ -28,7 +28,7 @@ from foreman.fixture_manifest import fact_record_path
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, merge_command,
 )
-from foreman.proof import browser_proof_label, browser_required, formal_proof_label, formal_required
+from foreman.proof import browser_proof_label, formal_proof_label
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
@@ -41,7 +41,7 @@ from foreman.outcomes import Halt, READINESS_HALTS, halted
 from foreman.review_round import AcceptedReview, history
 from foreman.usd import BudgetUsd, usd_text
 from foreman.check_output import CheckOutput
-from foreman.workspace import WorkState, ImplementationRejected, WorkspaceError, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, head_mismatch_detail
+from foreman.workspace import WorkState, ImplementationRejected, WorkspaceError, CheckLog, ReviewScope, Workspace, WorktreeInspectionFailed, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 DEFAULT_TOKEN_CAP = 20_000_000
@@ -518,14 +518,15 @@ def compile_delivery(
         return {"path": ["publish"]}
 
     def verify(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+        assert "work" in state
         current = runtime.context or run
         workspace, check_log = current.workspace, current.check_log
         try:
             worktree = workspace.inspect()
         except WorktreeInspectionFailed as exc:
             return halted(Halt.dirty_worktree, str(exc), "verify")
-        if not worktree.clean:
-            return halted(Halt.dirty_worktree, "The worktree has changes.", "verify")
+        if not worktree.clean or worktree.head != state["work"].head_sha:
+            return halted(Halt.dirty_worktree, "Restore the clean implementation commit before verification.", "verify")
         checks = state["checks"]
         command = checks.check
         output = CheckOutput(check_log)
@@ -601,18 +602,13 @@ def compile_delivery(
             return {"pr_size_override": size}
         return {}
 
+    def size(state: DeliveryState) -> DeliveryUpdate:
+        assert "work" in state
+        candidate = state["work"].candidate
+        assert candidate is not None
+        return {"pr_size": candidate["size"]}
+
     dispatch_review = bind("review")
-
-    def moved_head_detail(actual: str, verified: str) -> str:
-        return (
-            f"HEAD is {actual}, verification checked {verified}. "
-            "Reset the PR branch to the verified commit.\n"
-            f"  git reset --keep {verified}\n"
-            "Then rerun the same command. New commits need a new run."
-        )
-
-    def moved_before_review(actual: str, verified: str) -> DeliveryUpdate:
-        return {**halted(Halt.merge_not_armed, moved_head_detail(actual, verified), "review"), "merge": MergeState(status="not_armed")}
 
     def review(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
         try:
@@ -621,30 +617,13 @@ def compile_delivery(
                 raise WorktreeInspectionFailed("The run did not record a verified HEAD.")
             worktree = run.workspace.inspect()
             if worktree.head != head:
-                return moved_before_review(worktree.head, head)
-            if worktree.branch is None:
-                raise WorktreeInspectionFailed("HEAD is detached. Pull request sizing requires a checked-out branch.")
-            repo = state["run"].repo
-            candidate = state.get("work", WorkState()).candidate
-            if candidate is not None:
-                bound = candidate["size"]
-                if run.workspace.tree(head) != bound["head"]:
-                    raise WorktreeInspectionFailed("Verified tree differs from the measured candidate.")
-                size: PullRequestSize = {**bound, "head": head}
-            else:
-                base = run.forge.pull_request_base(repo, worktree.branch)
-                size = run.workspace.pull_request_size(head, base)
-            checked = run.workspace.inspect()
-            if checked.head != head:
-                return moved_before_review(checked.head, head)
-            if not checked.clean or checked.branch != worktree.branch:
+                return {**halted(Halt.merge_not_armed, head_mismatch_detail(worktree.head, head), "review"),
+                        "merge": MergeState(status="not_armed")}
+            if not worktree.clean or worktree.branch is None:
                 raise WorktreeInspectionFailed("The worktree changed after verification.")
-        except (ForgeError, WorktreeInspectionFailed) as exc:
-            return halted(Halt.pr_size_unavailable, str(exc), "review")
-        measured: DeliveryState = {**state, "pr_size": size}
-        if oversized_pr(measured):
-            return {"pr_size": size}
-        return {**dispatch_review(measured, runtime), "pr_size": size}
+        except WorktreeInspectionFailed as exc:
+            return halted(Halt.review_unavailable, str(exc), "review")
+        return dispatch_review(state, runtime)
 
     def after_triage(state: DeliveryState) -> str:
         planning = state["plan"]
@@ -680,10 +659,6 @@ def compile_delivery(
             return "needs_human"
         if state.get("halt"):
             return "done"
-        if oversized_pr(state):
-            if state.get("pr_size_override"):
-                return "decide_pr_size"
-            return "spec"
         if review_state.review == "approve":
             return "merge"
         if review_count(state) < config.max_review_rounds:
@@ -695,10 +670,7 @@ def compile_delivery(
             return "done"
         checks = state["checks"]
         if checks.verify == "pass":
-            slice = _active_slice(state)
-            if browser_required(slice) or formal_required(slice):
-                return "proof"
-            return "review"
+            return "proof"
         if checks.verify_failures < config.max_review_rounds:
             return "prepare"
         return "done"
@@ -706,7 +678,7 @@ def compile_delivery(
     def after_proof(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
-        return "prepare" if state["checks"].proof_labels else "review"
+        return "prepare" if state["checks"].proof_labels else "pass"
 
     def arm_merge(state: DeliveryState) -> DeliveryUpdate:
         review_state = state["review"]
@@ -840,7 +812,9 @@ def compile_delivery(
         return route
 
     def after_size(state: DeliveryState) -> str:
-        return "done" if oversized_pr(state) else "verify"
+        if oversized_pr(state):
+            return "decide_pr_size" if state.get("pr_size_override") else "too big: re-plan"
+        return "fits"
 
     def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str]) -> None:
         def next_stage(state: DeliveryState) -> str:
@@ -859,6 +833,7 @@ def compile_delivery(
     builder.add_node("verify", verify)
     builder.add_node("prepare", prepare)
     builder.add_node("reconcile", reconcile)
+    builder.add_node("size", size)
     builder.add_node("commit", commit)
     builder.add_node("publish", publish)
     builder.add_node("proof", prove)
@@ -883,16 +858,17 @@ def compile_delivery(
         {"spec": "spec", "prepare": "prepare", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
     )
     builder.add_conditional_edges(
-        "decide_pr_size", after_size, {"done": "done", "verify": "verify"},
+        "decide_pr_size", lambda state: "done" if oversized_pr(state) else "size", {"done": "done", "size": "size"},
     )
     builder.add_conditional_edges(
         "needs_human", lambda state: "done" if state.get("halt") else "prepare" if _last_stage(state) == "review" else _last_stage(state),
         {"triage": "triage", "spec": "spec", "prepare": "prepare", "done": "done"},
     )
     builder.add_conditional_edges("prepare", after_halt("implement"), {"done": "done", "implement": "implement"})
-    builder.add_conditional_edges("reconcile", after_halt("commit"), {"done": "done", "commit": "commit"})
-    builder.add_conditional_edges("commit", after_halt("publish"), {"done": "done", "publish": "publish"})
-    builder.add_conditional_edges("publish", after_halt("verify"), {"done": "done", "verify": "verify"})
+    builder.add_conditional_edges("reconcile", after_halt("size"), {"done": "done", "size": "size"})
+    builder.add_conditional_edges("size", after_size, {"fits": "commit", "too big: re-plan": "spec", "decide_pr_size": "decide_pr_size"})
+    builder.add_conditional_edges("commit", after_halt("verify"), {"done": "done", "verify": "verify"})
+    builder.add_conditional_edges("publish", after_halt("review"), {"done": "done", "review": "review"})
     builder.add_conditional_edges(
         "quota_wait", _last_stage, {name: name for name in MODEL_STAGES},
     )
@@ -900,18 +876,18 @@ def compile_delivery(
     add_agent_edges("implement", after_halt("reconcile"), {"reconcile": "reconcile", "done": "done"})
     add_agent_edges(
         "review",
-        lambda state: after_review(state) if state.get("halt") not in (None, Halt.design_rethink) or oversized_pr(state) else "review_post",
-        {"review_post": "review_post", "merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"},
+        lambda state: after_review(state) if state.get("halt") not in (None, Halt.design_rethink) else "review_post",
+        {"review_post": "review_post", "merge": "merge", "prepare": "prepare", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges("review_post", after_review,
-        {"merge": "merge", "prepare": "prepare", "spec": "spec", "decide_pr_size": "decide_pr_size", "needs_human": "needs_human", "done": "done"})
+        {"merge": "merge", "prepare": "prepare", "needs_human": "needs_human", "done": "done"})
     builder.add_conditional_edges(
         "verify",
         after_verify,
-        {"proof": "proof", "review": "review", "prepare": "prepare", "done": "done"},
+        {"proof": "proof", "prepare": "prepare", "done": "done"},
     )
     builder.add_conditional_edges(
-        "proof", after_proof, {"review": "review", "prepare": "prepare", "done": "done"},
+        "proof", after_proof, {"pass": "publish", "prepare": "prepare", "done": "done"},
     )
     builder.add_edge("merge", "done")
     builder.add_edge("done", END)

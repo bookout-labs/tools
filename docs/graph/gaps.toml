@@ -2,16 +2,6 @@
 # Slice 11a also owns the queue-rejected fix loop approved on 2026-11-21.
 # spec_check -> file_slices closes in 15, when spec_check exists (file_slices arrives in 14b).
 
-[delivery.extra.slice_9]
-commit = [["publish", ""]]
-proof = [["review", ""]]
-publish = [["verify", ""]]
-reconcile = [["commit", ""]]
-review = [["spec", ""]]
-review_call = [["spec", ""]]
-review_post = [["spec", ""]]
-verify = [["review", ""]]
-
 [delivery.extra.slice_11b]
 __start__ = [["done", ""]]
 commit = [["done", ""]]
@@ -32,11 +22,12 @@ triage_call = [["done", ""]]
 verify = [["done", ""], ["prepare", ""], ["proof", ""]]
 
 [delivery.extra.slice_12]
-decide_pr_size = [["done", ""], ["verify", ""]]
+decide_pr_size = [["done", ""], ["size", ""]]
 needs_human = [["done", ""], ["prepare", ""], ["spec", ""], ["triage", ""]]
-review = [["decide_pr_size", ""], ["needs_human", ""]]
-review_call = [["decide_pr_size", ""], ["needs_human", ""]]
-review_post = [["decide_pr_size", ""], ["needs_human", ""]]
+review = [["needs_human", ""]]
+review_call = [["needs_human", ""]]
+review_post = [["needs_human", ""]]
+size = [["decide_pr_size", ""]]
 spec = [["decide_pr_size", ""], ["needs_human", ""]]
 spec_call = [["decide_pr_size", ""], ["needs_human", ""]]
 triage = [["needs_human", ""]]
@@ -59,13 +50,6 @@ triage_call = [["prepare", ""], ["quota_wait", ""], ["research", ""], ["spec", "
 spec = [["prepare", ""], ["spec", ""]]
 triage = [["prepare", ""]]
 
-[delivery.missing.slice_9]
-commit = [["verify", ""]]
-proof = [["publish", "pass"]]
-publish = [["review", ""]]
-reconcile = [["size", ""]]
-size = [["commit", "fits"]]
-
 [delivery.missing.slice_11a]
 merge = [["prepare", "head moved: resume same PR branch"], ["prepare", "queue rejected: fix on same PR branch"]]
 
@@ -76,6 +60,9 @@ review_post = [["merge", "approve"], ["prepare", "changes: resume same PR branch
 triage = [["research", "question"], ["spec", "needs a plan"]]
 verify = [["prepare", "fail: resume same PR branch"], ["proof", "pass"]]
 
+[delivery.missing.slice_12]
+spec = [["size", "override: keep this PR"]]
+
 [delivery.missing.slice_14b]
 file_slices = [["done", ""]]
 
@@ -84,16 +71,11 @@ spec = [["spec_check", ""]]
 spec_check = [["file_slices", "parent plan"], ["prepare", "approved slice"], ["spec", "gaps: repair the plan"]]
 triage = [["spec_check", "one slice"]]
 
-[delivery.missing.slice_16]
-spec = [["size", "override: keep this PR"]]
-size = [["spec", "too big: re-plan"]]
-
 [dispatch.missing.slice_13]
 __start__ = [["plan", ""]]
-run = [["__end__", "result"], ["plan", "quota or CLI missing: next model"], ["wait", "no eligible model now"]]
 plan = [["run", ""]]
+run = [["__end__", "result"], ["plan", "quota or CLI missing: next model"], ["wait", "no eligible model now"]]
 wait = [["plan", "resume"]]
-
 
 [stages.triage]
 slice_11b = ["A question on an issue not labelled slice is treated as a planning request.", "A missing slice halts at the start node, before triage."]
@@ -114,6 +96,7 @@ slice_14a = ["A parent plan does not carry revision-bound approval to its childr
 slice_14b = ["The runner files children without a confirmed sub-issue link.", "A dependent child becomes ready on a later parent rerun instead of its last blocker marking it ready."]
 
 [stages.prepare]
+slice_9 = ["Preflight, branch and attempt-start checks run inside implement's setup."]
 slice_11a = ["Recovery rewinds history instead of resuming at prepare."]
 
 [stages.implement]
@@ -130,13 +113,12 @@ slice_16 = ["The size override does not carry across fix rounds."]
 slice_7 = ["Verify is also wired as a model stage in the dry run, with stages/verify.md instructions."]
 
 [stages.proof]
-slice_9 = ["Proof runs only when the slice names a screen or database properties.", "Carried tool facts are checked only when a review is accepted instead of before publication."]
+slice_9 = ["Carried tool facts are checked only when a review is accepted instead of before publication."]
 
 [stages.publish]
 slice_11a = ["Recovery after publish_failed rewinds history instead of resuming at publish."]
 
 [stages.review]
-slice_9 = ["Review still performs PR-size measurement."]
 slice_11a = ["A head that moved before review halts as merge_not_armed instead of resuming through the moved-head recovery."]
 
 [stages.review_post]

@@ -22,16 +22,25 @@ stateDiagram-v2
     Editing --> Paused: quota, save owned edits fingerprint
     Editing --> UsageUnknown: crash leaves pending dispatch
     UsageUnknown --> [*]: stop without redispatch
-    Reconciling --> Committing: checkpoint edits or adopted worker tree
+    Reconciling --> Sizing: checkpoint measured edits or adopted worker tree
+    Sizing --> Committing: fits or operator override
+    Sizing --> Planning: oversized candidate
+    Planning --> Sizing: operator override
+    Planning --> Split: operator accepts plan
     Reconciling --> Paused: invalid worker history or changed branch
     Reconciling --> Rejected: no changes
     Reconciling --> Paused: git failure
     Committing --> Committing: soft-reset adopted history, preserve tree
-    Committing --> Publishing: Foreman commit succeeds or expected commit recovered
+    Committing --> Verifying: Foreman commit succeeds or expected commit recovered
+    Verifying --> Proving: checks pass
+    Proving --> Publishing: proof passes
+    Verifying --> Preparing: check failure, rounds remain
+    Proving --> Preparing: failed proof, rounds remain
+    Proving --> Rejected: missing proof
     Committing --> Paused: lock, timeout, or candidate mismatch
     Publishing --> Opening: remote already matches or push succeeds
     Publishing --> Paused: push fails or times out
-    Opening --> Verifying: matching open PR exists or create succeeds
+    Opening --> Reviewing: matching open PR exists or create succeeds
     Opening --> Paused: create fails without matching PR
     Opening --> Paused: existing PR targets wrong base
     Paused --> Preparing: retry branch preparation
@@ -76,7 +85,7 @@ All names below are methods in `tests/test_publication.py`.
 | Missing remote, halt | `test_publication_failures` |
 | Wrong push URL, reject before network | `test_publication_failures` |
 | Push finishes, crash and skip duplicate push | `test_crash_windows_resume_without_duplicate_completed_work` |
-| Missing PR, create then verify | `test_graph_commits_and_pushes_before_opening_one_pull_request` |
+| Missing PR, verify and prove before create | `test_graph_commits_and_pushes_before_opening_one_pull_request` |
 | PR create failure, halt and retry | `test_rerun_retries_publication_without_rerunning_the_worker` |
 | PR creation finishes, crash and reuse PR | `test_crash_windows_resume_without_duplicate_completed_work` |
 | Existing PR on wrong base, halt | `test_wrong_base_open_pr_stops_without_creation` |

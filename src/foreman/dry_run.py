@@ -134,9 +134,6 @@ class DryRun:
     def default_branch(self, repo: str) -> str:
         return "<default-branch>"
 
-    def pull_request_base(self, repo: str, branch: str) -> str:
-        return self.default_branch(repo)
-
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None:
         self.commands.append(pull_request_command(repo, head, base, title, body))
 
