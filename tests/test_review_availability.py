@@ -10,7 +10,7 @@ import unittest
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.state import checkpoint_serializer
+from foreman.state import ReviewState, checkpoint_serializer
 from foreman.config import load_config, order_for
 from skill_fixture import fixture_pin
 
@@ -62,7 +62,7 @@ def worker(node, model, state, instruction):
     if legacy == "reject_resume":
         forbidden()
     if node == "implement":
-        builder = ("claude" if state.get("review") == "changes" else "gpt") if author == "mixed" else author
+        builder = ("claude" if state["review"].review == "changes" else "gpt") if author == "mixed" else author
         if model.family != builder:
             return Outcome("quota")
         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
@@ -149,7 +149,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                                   self.pin.model_dump_json(), author, json.dumps(outcomes), legacy],
                                  text=True, capture_output=True)
         self.assertEqual(process.returncode, code, process.stderr)
-        return json.loads(process.stdout)
+        return json.loads(process.stdout, object_hook=lambda value: {**value, "review": ReviewState.model_validate(value["review"])} if isinstance(value.get("review"), dict) else value)
 
     def test_selection_matrix_and_full_history(self):
         config = load_config()
@@ -208,7 +208,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 self.assertEqual(result["posts"], posts)
                 if not code:
                     self.assertEqual(result["result"]["halt_detail"], "")
-                    provenance = result["result"]["review_findings"][-1]["provenance"]
+                    provenance = result["result"]["review"].review_findings[-1]["provenance"]
                     self.assertEqual(provenance, attempts[-1]["provenance"])
                     self.assertEqual(provenance["reviewer"], models[-1])
                     self.assertTrue(provenance["same_family"])
@@ -231,7 +231,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 self.assertEqual(result["calls"], calls)
                 self.assertEqual(result["result"]["review_rounds"], rounds)
                 self.assertEqual((result["posts"], result["merges"]), (rounds, 1))
-                provenance = result["result"]["review_findings"][-1]["provenance"]
+                provenance = result["result"]["review"].review_findings[-1]["provenance"]
                 self.assertTrue(provenance["same_family"])
                 self.assertEqual(provenance["reason"], "no_other_family_configured")
                 self.assertIn(f"Reviewer {provenance['reviewer']}; implemented by {', '.join(provenance['contributors'])}; same-family fallback: no other family configured.", result["posted"][-1]["body"])
@@ -250,7 +250,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
     def test_later_cross_family_round_does_not_inherit_fallback(self):
         with TemporaryDirectory(dir=self.root) as directory:
             result = self.invoke(Path(directory), "gpt", ["quota", "changes", "ran"], 0)
-            first, second = result["result"]["review_findings"]
+            first, second = result["result"]["review"].review_findings
             self.assertTrue(first["provenance"]["same_family"])
             self.assertFalse(second["provenance"]["same_family"])
             self.assertIsNone(second["provenance"]["reason"])
@@ -265,7 +265,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
             ready = self.invoke(root, "gpt", [], 0)
             self.assertEqual(ready["calls"], [])
             self.assertEqual(first["posted"], ready["posted"])
-            self.assertEqual(first["result"]["review_findings"], ready["result"]["review_findings"])
+            self.assertEqual(first["result"]["review"].review_findings, ready["result"]["review"].review_findings)
             self.assertEqual(first["result"]["attempts"], ready["result"]["attempts"])
 
     def test_resume_preserves_accepted_rounds_and_failure_counters(self):
@@ -273,12 +273,12 @@ class ReviewerAvailabilityTest(unittest.TestCase):
             root = Path(directory)
             first = self.invoke(root, "grok", ["changes", "quota", "cli_missing"], 75)["result"]
             again = self.invoke(root, "grok", ["quota", "cli_missing"], 75)["result"]
-            for field in ("review_findings", "review_rounds", "verify_failures", "proof_failures", "spec_failures"):
+            for field in ("review", "review_rounds", "verify_failures", "proof_failures", "spec_failures"):
                 self.assertEqual(first[field], again[field])
             ready = self.invoke(root, "grok", ["ran"], 0)["result"]
             self.assertEqual(ready["review_rounds"], 2)
-            self.assertEqual(len(ready["review_findings"]), 2)
-            self.assertEqual(ready["review_findings"][0], first["review_findings"][0])
+            self.assertEqual(len(ready["review"].review_findings), 2)
+            self.assertEqual(ready["review"].review_findings[0], first["review"].review_findings[0])
 
     def test_old_checkpoint_reselects_and_indeterminate_call_never_replays(self):
         for pending in (False, True):
@@ -302,8 +302,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                     self.assertEqual(result["result"]["attempts"][-1]["model"], "grok-4.7-high")
 
     def test_rejected_reviews_preserve_accepted_state_and_resume_terminally(self):
-        fields = ("review_findings", "review", "review_change_kind", "reviewed_head",
-                  "review_receipt", "risk", "findings", "settled_rulings", "detail")
+        fields = ("review",)
         cases = ((["placeholder"], 0), (["changes", "placeholder"], 1),
                  (["changes", "unresolved"], 1), (["changes", "rejected_failed"], 1),
                  (["changes", "quota", "placeholder"], 1),
@@ -323,7 +322,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 self.assertEqual(result["path"].count("implement"), rounds + 1)
                 self.assertEqual(result["path"].count("verify"), rounds + 1)
                 self.assertEqual(result["review_rounds"], rounds)
-                self.assertEqual(len(result.get("review_findings", [])), rounds)
+                self.assertEqual(len(result["review"].review_findings), rounds)
                 self.assertEqual(first["posted"], first["posts_before_rejection"])
                 self.assertEqual((first["posts"], first["merges"]), (rounds, 0))
                 self.assertIsNone(result["pending_dispatch"])
@@ -345,19 +344,18 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 review_attempts = [a for a in result["attempts"] if a["stage"] == "review"]
                 self.assertEqual(len(review_attempts), len(outcomes))
                 if rounds:
-                    accepted = result["review_findings"][0]
-                    self.assertEqual(result["review"], "changes")
-                    self.assertEqual(result["review_change_kind"], "blocking")
+                    accepted = result["review"].review_findings[0]
+                    self.assertEqual(result["review"].review, "changes")
+                    self.assertEqual(result["review"].review_change_kind, "blocking")
                     self.assertEqual(accepted["provenance"], review_attempts[0]["provenance"])
                     self.assertEqual(result["models_used"]["review"], review_attempts[0]["model"])
                     self.assertIn("Add a check.", first["posted"][0]["body"])
-                    self.assertEqual(result["review_receipt"]["id"], 1)
+                    self.assertEqual(result["review"].review_receipt["id"], 1)
                     if len(outcomes) == 3:
                         self.assertNotEqual(attempt["model"], result["models_used"]["review"])
                 else:
                     self.assertNotIn("review", result["models_used"])
-                    for field in fields:
-                        self.assertNotIn(field, result)
+                    self.assertEqual(result["review"], ReviewState(review_run_id=result["review"].review_run_id))
                 resumed = self.invoke(root, "grok", [], 1, "reject_resume")
                 self.assertEqual(resumed["result"], result)
                 self.assertEqual((resumed["calls"], resumed["posted"], resumed["posts"], resumed["merges"]),

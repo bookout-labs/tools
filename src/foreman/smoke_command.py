@@ -84,10 +84,10 @@ def run_smoke(directory: Path, deadline: float) -> int:
                 return 1
             time.sleep(min(5, remaining))
         verdict = smoke_verdict(result)
-        if verdict.exit_code != 1 and result["checks"].verified_head and result.get("review_receipt") and result.get("merge", MergeState()).receipt:
+        if verdict.exit_code != 1 and result["checks"].verified_head and result["review"].review_receipt and result.get("merge", MergeState()).receipt:
             checkpoint_verdict = verdict
             receipt = MergeReceipt.model_validate(result.get("merge", MergeState()).receipt)
-            review = result.get("review_receipt")
+            review = result["review"].review_receipt
             assert review is not None
             verdict = SmokeVerdict(1, "identity.unavailable", "GitHub identity")
             observed = forge.smoke_identity(SMOKE_REPO, receipt.pr, result["checks"].verified_head or "", review["id"])

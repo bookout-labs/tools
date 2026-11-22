@@ -1,6 +1,6 @@
 import tests
 
-from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 
 from dataclasses import replace
 from decimal import Decimal
@@ -73,7 +73,7 @@ class DollarBudgetTests(unittest.TestCase):
                         invocation = {"configurable": {"thread_id": stage}}
                         graph = compile_delivery(handler, config, run=LiveRun(forge, workspace),
                                                  scratch=scratch, checkpointer=saver)
-                        graph.invoke({"schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", issue=8, token_cap=100, request="x"), "checks": ChecksState(check="exit 0"), "path": [],
+                        graph.invoke({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", issue=8, token_cap=100, request="x"), "checks": ChecksState(check="exit 0"), "path": [],
                                         "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE)},
                                      invocation, durability="sync")
                         snapshot = graph.get_state(invocation)

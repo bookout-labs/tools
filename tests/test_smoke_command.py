@@ -296,6 +296,7 @@ class SmokeCommandTest(unittest.TestCase):
                     self.assertEqual(fake.issue_repos[102], 'bookout-labs/tools')
 
     def test_real_runner_resumes_ci_without_redispatch_or_resetting_usage(self):
+        from dataclasses import replace
         from foreman.delivery import LiveRun
         from foreman.dry_run import ScriptHandler
         from foreman.runner import run_live_delivery
@@ -313,7 +314,13 @@ class SmokeCommandTest(unittest.TestCase):
                 if node == 'implement':
                     from foreman.workspace import WorktreeState
                     workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
-                return handler(node, *args)
+                outcome = handler(node, *args)
+                return replace(outcome, prompt_bytes=123, native_usage={
+                    "family": args[0].family, "aggregation": "turn_total",
+                    "entries": {"turn": {"input_tokens": 1, "output_tokens": 1,
+                        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+                        "total_cost_usd": 0.0}},
+                })
             results = []
             observations = 0
             def readiness(*args):
@@ -335,6 +342,13 @@ class SmokeCommandTest(unittest.TestCase):
             self.assertEqual(len(results), 2)
             self.assertEqual(results[0]['halt'], Halt.ci_pending)
             self.assertEqual(results[0]['attempts'], results[1]['attempts'])
+            for attempt in results[1]['attempts']:
+                self.assertEqual(attempt['prompt_bytes'], 123)
+                self.assertEqual(attempt['native_usage']['entries']['turn']['input_tokens'], 1)
+            self.assertEqual(results[0]['review'], results[1]['review'])
+            transport.smoke_identity.assert_called_once_with(
+                SMOKE_REPO, 12, results[1]['checks'].verified_head,
+                results[1]['review'].review_receipt['id'])
             for result in results:
                 self.assertEqual(result['run'].token_cap, SMOKE_TOKEN_CAP)
                 self.assertEqual(result['run'].max_budget_usd, '2')

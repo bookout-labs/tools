@@ -31,7 +31,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
-from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
@@ -333,7 +333,7 @@ class CliWorkerTest(unittest.TestCase):
                     return worker_reply(args, {"triage": "implement"})
 
                 result = CliWorker(Path("engine"), run)(
-                    "triage", ModelSpec.parse(model), {"run": RunState(issue=12), "plan": PlanState()}, "Read the issue.",
+                    "triage", ModelSpec.parse(model), {"review": ReviewState(), "run": RunState(issue=12), "plan": PlanState()}, "Read the issue.",
                 )
                 self.assertEqual(result.kind, "ran")
                 self.assertEqual(result.output["triage"], "implement")
@@ -635,7 +635,7 @@ class LiveRunnerTest(unittest.TestCase):
             resumed = self.walk([])
             self.assertEqual(resumed["stop"], "verified")
             self.assertEqual(len(self.calls), count)
-            self.assertEqual(resumed["review_receipt"], result["review_receipt"])
+            self.assertEqual(resumed["review"].review_receipt, result["review"].review_receipt)
 
     def test_resume_rejects_historical_schema_before_missing_usage(self):
         self.github.hold = "Maintenance"
@@ -877,7 +877,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             result = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
         fetch.assert_called_once_with(BRANCH, "d"*40)
         self.assertEqual(result["stop"], "verified", result)
-        self.assertEqual((result["checks"].verified_head, result["reviewed_head"], result["review_receipt"]["commit_id"]), ("d"*40,)*3)
+        self.assertEqual((result["checks"].verified_head, result["review"].reviewed_head, result["review"].review_receipt["commit_id"]), ("d"*40,)*3)
 
     def test_external_conflict_repair_renews_entire_lifecycle(self):
         workspace = FakeWorkspace(self.cwd)
@@ -893,9 +893,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         with patch.object(workspace, "commit", side_effect=commit):
             resumed = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
         self.assertEqual(resumed["stop"], "verified")
-        self.assertEqual(resumed["reviewed_head"], repaired)
+        self.assertEqual(resumed["review"].reviewed_head, repaired)
         self.assertEqual(resumed["checks"].verified_head, repaired)
-        self.assertEqual(resumed["review_receipt"]["commit_id"], repaired)
+        self.assertEqual(resumed["review"].review_receipt["commit_id"], repaired)
         self.assertEqual(len(self.github.reviews), 2)
 
     def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
@@ -907,9 +907,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 finding = {**FINDING, "severity": severity}
                 self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, {**APPROVE, "resolutions": [{"id": finding["id"], "status": "resolved"}]}])
                 state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
-                self.assertEqual(state["findings"], [finding])
-                self.assertEqual(state["detail"], ReviewOutput.model_validate(changes, context=SCRIPTED_REVIEW_CONTEXT).risk.render())
-                self.assertEqual(state["review_change_kind"], kind)
+                state["review"] = ReviewState.model_validate(state["review"])
+                self.assertEqual(state["review"].findings, [finding])
+                self.assertEqual(state["review"].detail, ReviewOutput.model_validate(changes, context=SCRIPTED_REVIEW_CONTEXT).risk.render())
+                self.assertEqual(state["review"].review_change_kind, kind)
 
     def test_review_posts_only_changed_lines_inline(self):
         findings = [
@@ -940,7 +941,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual(result.get("stop"), stop)
                 self.assertEqual(result.get("halt_detail"), "Unavailable")
                 if replies:
-                    self.assertEqual(result.get("findings"), [FINDING])
+                    self.assertEqual(result["review"].findings, [FINDING])
                 self.assertEqual(self.github.merge_calls, [])
 
     def test_posting_retry_preserves_round_and_does_not_dispatch(self):
@@ -952,8 +953,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.walk([])
         self.assertEqual(self.calls, calls)
         self.assertEqual(result["review_rounds"], 1)
-        self.assertEqual(len(result["review_findings"]), 1)
-        self.assertEqual(result["review_receipt"]["state"], "COMMENTED")
+        self.assertEqual(len(result["review"].review_findings), 1)
+        self.assertEqual(result["review"].review_receipt["state"], "COMMENTED")
         self.assertEqual(result["merge"].status, "armed")
 
     def test_review_halts_when_git_fetch_times_out(self):
@@ -1049,11 +1050,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             result = self.walk([], preflight="exit 9")
         self.assertEqual(result["checks"], ChecksState(check="exit 0", preflight="exit 9"))
         self.assertEqual(result["stop"], "skill_missing")
-        self.assertIsNone(result["fact_record"])
+        self.assertIsNone(result["review"].fact_record)
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get({"configurable": {"thread_id": "example/engine#8"}})
-            self.assertIsNone(saved["channel_values"]["fact_record"])
+            self.assertIsNone(saved["channel_values"]["review"].fact_record)
         self.assertEqual(run_exit_code(result), 1)
         self.assertEqual(result["skill_reason"], "pin_unavailable")
         self.assertEqual(result["halt_detail"], f"pstack pin unavailable, commit {commit}")
@@ -1066,7 +1067,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 {"implementation": "built", "browser_proof": BROWSER, "formal_proof": FORMAL}, APPROVE], preflight="exit 0")
         self.assertEqual(halted["stop"], "ci_pending")
         result = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
-        assert_channels(self, result, halted, names={"run", "checks", "plan"})
+        assert_channels(self, result, halted, names={"run", "checks", "plan", "review"})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
@@ -1101,12 +1102,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             checkpoint=self.checkpoint, run=run,
             dispatcher=lambda *args: Outcome("quota"),
         )
-        self.assertEqual(first["fact_record"], "evidence/facts.toml")
+        self.assertEqual(first["review"].fact_record, "evidence/facts.toml")
         resumed = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, run=run,
             dispatcher=lambda *args: Outcome("quota"),
         )
-        self.assertEqual(resumed["fact_record"], "evidence/facts.toml")
+        self.assertEqual(resumed["review"].fact_record, "evidence/facts.toml")
 
     def test_resume_rejects_a_different_fact_record(self):
         self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
@@ -1125,7 +1126,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 dispatcher = (lambda *args: Outcome("quota")) if stop == "quota" else ScriptHandler(triage="needs_human" if stop == "needs_human" else "implement")
                 first = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=checkpoint,
                                           fact_record=record, run=run, dispatcher=dispatcher)
-                self.assertEqual(first["fact_record"], record)
+                self.assertEqual(first["review"].fact_record, record)
                 before = checkpoint.read_bytes()
                 with patch("foreman.runner.compile_delivery", side_effect=AssertionError("compiled before validation")):
                     with self.assertRaisesRegex(ValueError, "--fact-record differs"):
@@ -1135,15 +1136,17 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 for argument in (None, record):
                     resumed = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=checkpoint,
                                                fact_record=argument, run=run, dispatcher=dispatcher)
-                    self.assertEqual(resumed["fact_record"], record)
+                    self.assertEqual(resumed["review"].fact_record, record)
 
-    def test_missing_record_channel_resumes_as_undeclared(self):
+    def test_missing_owner_record_resumes_as_undeclared(self):
         self.walk([{"triage": "needs_human", "human_question": "Which?"}])
         config = {"configurable": {"thread_id": "example/engine#8"}}
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple(config)
-            saved.checkpoint["channel_values"].pop("fact_record")
+            owner = saved.checkpoint["channel_values"]["review"].model_dump()
+            owner.pop("fact_record")
+            saved.checkpoint["channel_values"]["review"] = ReviewState.model_validate(owner)
             saver.put(saved.config, saved.checkpoint, saved.metadata, {})
         before = self.checkpoint.read_bytes()
         with self.assertRaisesRegex(ValueError, "--fact-record differs"):
@@ -1152,14 +1155,14 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                               run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(self.checkpoint.read_bytes(), before)
         result = self.walk([{"triage": "question"}, {"research": "Open items."}], answer="Open items")
-        self.assertIsNone(result.get("fact_record"))
+        self.assertIsNone(result["review"].fact_record)
 
     def test_direct_run_delivery_defaults_to_undeclared_and_validates_record(self):
         for kwargs, expected in (({}, None), ({"fact_record": "evidence/facts.toml"}, "evidence/facts.toml")):
             with self.subTest(kwargs=kwargs), skill_fixture(load_config()) as (config, scratch):
                 result = run_delivery(ScriptHandler(triage="question"), repo="Example/Engine",
                                       request="List items", config=config, scratch=scratch, **kwargs)
-                self.assertEqual(result["fact_record"], expected)
+                self.assertEqual(result["review"].fact_record, expected)
         with self.assertRaisesRegex(ValueError, "normalized repository-relative"):
             run_delivery(ScriptHandler(), repo="Example/Engine", request="List items",
                          fact_record="evidence/./facts.toml")
@@ -1435,6 +1438,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         self.assertIn("The CLI accepts --debug.", args[-1])
                         worker_state = json.loads(args[-1].split("Delivery state:\n", 1)[1])
                         self.assertNotIn("tool_facts", worker_state)
+                        worker_state["review"] = ReviewState.model_validate(worker_state["review"])
                         claims = carried_tool_facts(worker_state)
                         self.assertIn("Carried tool facts:\n" + json.dumps([fact.model_dump() for fact in claims]), args[-1])
                         self.assertIn("claim_ids", args[-1])
@@ -1487,7 +1491,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 result = self.review_tool_fact(None, recover=True, record_path=record,
                                                worker_commits=committed, residual=residual)
                 self.assertEqual(result["stop"], "review_cap" if residual else "verified")
-                rounds = result["review_findings"]
+                rounds = result["review"].review_findings
                 self.assertFalse(rounds[0]["graph_check"]["passed"])
                 self.assertEqual(rounds[-1]["graph_check"]["passed"], not residual)
                 self.assertIn(rounds[0]["reviewed_head"], rounds[-1]["graph_check"]["failing_heads"])
@@ -1505,7 +1509,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         result = self.review_tool_fact("result.txt", recover=True)
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(result.get("merge", MergeState()).status, "armed")
-        self.assertEqual(result.get("fact_record"), "tests/fixtures/manifest.toml")
+        self.assertEqual(result["review"].fact_record, "tests/fixtures/manifest.toml")
         self.assertNotIn("tool_facts", result)
 
     def test_null_claim_resolves_by_id_when_reviewer_paraphrases(self):
@@ -1517,11 +1521,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_custom_fact_record_reaches_approval(self):
         result = self.review_tool_fact("result.txt", recover=True, record_path="evidence/facts.toml")
         self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(result.get("fact_record"), "evidence/facts.toml")
+        self.assertEqual(result["review"].fact_record, "evidence/facts.toml")
 
     def test_undeclared_matching_record_still_blocks_with_recovery_guidance(self):
         result = self.review_tool_fact("result.txt", entry="result.txt", no_changes=True, declared=False)
-        self.assertIsNone(result["fact_record"])
+        self.assertIsNone(result["review"].fact_record)
         self.assertIn("tool-facts", result["halt_detail"])
         self.assertEqual(self.github.merge_calls, [])
 
@@ -1531,30 +1535,30 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_approve_with_unrecorded_tool_fact_becomes_changes(self):
         result = self.review_tool_fact("result.txt", record_during_review=True)
-        self.assertEqual(result.get("review"), "changes")
-        self.assertIn("The CLI accepts --debug.", result.get("detail") or "")
+        self.assertEqual(result["review"].review, "changes")
+        self.assertIn("The CLI accepts --debug.", result["review"].detail or "")
         self.assertEqual(result.get("review_rounds"), 1)
         self.assertEqual(self.github.merge_calls, [])
 
     def test_approve_with_recorded_tool_fact_stays_approve(self):
         result = self.review_tool_fact("result.txt", entry="result.txt")
-        self.assertEqual(result.get("review"), "approve")
-        self.assertEqual(result.get("findings"), [])
+        self.assertEqual(result["review"].review, "approve")
+        self.assertEqual(result["review"].findings, [])
         self.assertEqual(result.get("work", WorkState()).head_sha, result["checks"].verified_head)
         self.assertNotEqual(result["checks"].verified_head, HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, result["checks"].verified_head)])
 
     def test_dangling_tool_fact_citation_blocks_approval(self):
         result = self.review_tool_fact("absent.txt", entry="absent.txt")
-        self.assertEqual(result.get("review"), "changes")
-        self.assertIn("absent.txt", result.get("detail") or "")
+        self.assertEqual(result["review"].review, "changes")
+        self.assertIn("absent.txt", result["review"].detail or "")
         self.assertEqual(result.get("stop"), "review_cap")
         self.assertEqual(self.github.merge_calls, [])
 
     def test_tool_fact_without_citation_blocks_approval(self):
         result = self.review_tool_fact(None, entry="result.txt")
-        self.assertEqual(result.get("review"), "changes")
-        self.assertIn("The CLI accepts --debug.", result.get("detail") or "")
+        self.assertEqual(result["review"].review, "changes")
+        self.assertIn("The CLI accepts --debug.", result["review"].detail or "")
         self.assertEqual(self.github.merge_calls, [])
     def test_cli_redacts_the_check_subprocess_stdout_and_stderr(self):
         check = self.cwd / "verify.sh"
@@ -2014,6 +2018,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertNotIn("HEAD is", out.getvalue())
 
     def test_multi_round_repair_prepare_halt_clears_attempt_observations(self):
+        self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, max_review_rounds=2)))
         workspace = FakeWorkspace(self.cwd)
         heads = iter(("1" * 40, "2" * 40))
 
@@ -2034,9 +2039,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["stop"], "pr_conflict")
         self.assertEqual(halted["work"].head_sha, "2" * 40)
         for owner in OWNERS:
-            transient = type(owner.value).model_fields.keys() - owner.durable
+            transient = (type(owner.value).model_fields.keys() - owner.durable) | owner.clear_on_head_change
             halted[owner.name] = halted[owner.name].model_copy(
                 update=owner.value.model_dump(include=transient))
+        review_sample = next(owner.value for owner in OWNERS if owner.name == "review")
+        halted["review"] = halted["review"].model_copy(update=review_sample.model_dump(include={"settled_rulings", "fact_record"}))
         # An empty receipt is non-default and still permits the head recheck.
         halted["merge"] = halted["merge"].model_copy(update={"receipt": {}})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
@@ -2080,6 +2087,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             transient = type(owner.value).model_fields.keys() - owner.durable
             halted[owner.name] = halted.get(owner.name, type(owner.value)()).model_copy(
                 update=owner.value.model_dump(include=transient))
+        review_sample = next(owner.value for owner in OWNERS if owner.name == "review")
+        halted["review"] = halted["review"].model_copy(update=review_sample.model_dump(include={"settled_rulings", "fact_record"}))
         halted["merge"] = halted["merge"].model_copy(update={"receipt": {"status": "QUEUED"}})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
@@ -2689,7 +2698,7 @@ class HaltExitCodeTest(unittest.TestCase):
         detail = "Merge arming requires a full 40-hex commit SHA."
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
-        result = {"checks": ChecksState(), "run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed"), "plan": PlanState()}
+        result = {"review": ReviewState(), "checks": ChecksState(), "run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed"), "plan": PlanState()}
         with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)

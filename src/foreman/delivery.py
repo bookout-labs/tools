@@ -37,7 +37,7 @@ from foreman.redaction import redact
 from foreman.stage_output import (
     SpecRejection, SpecRejectionKind, PlanState, ImplementOutput, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, STAGE_OUTPUTS, Slice, StoredSlice, VerifyOutput, parse_output,
 )
-from foreman.state import ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryFields, DeliveryState, DeliveryUpdate, DeliveryResult
+from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
@@ -106,8 +106,9 @@ class PullRequestSizeDecision(StrEnum):
 _DELIVERY_STATE = TypeAdapter(DeliveryResult)
 
 
-def review_count(state: DeliveryFields) -> int:
-    return len(state.get("review_findings", []))
+def review_count(state: DeliveryState | DeliveryResult) -> int:
+    review_state = state["review"]
+    return len(review_state.review_findings)
 
 
 def read_delivery_state(raw: object) -> DeliveryResult:
@@ -229,16 +230,18 @@ def graph_check(state: DeliveryState) -> GraphEvidence | None:
     return None
 
 
-def carried_tool_facts(state: DeliveryFields) -> list[StoredToolFact]:
-    gate = history({"rounds": state.get("review_findings", [])}).gate
+def carried_tool_facts(state: DeliveryState) -> list[StoredToolFact]:
+    review_state = state["review"]
+    gate = history({"rounds": review_state.review_findings}).gate
     return gate.tool_facts if gate else []
 
 
 def _check_tool_facts(
     output: ReviewOutput, workspace: Workspace, state: DeliveryState,
 ) -> GraphCheck | None:
+    review_state = state["review"]
     head = state["checks"].verified_head
-    manifest_path = state.get("fact_record")
+    manifest_path = review_state.fact_record
     facts = {fact.claim: fact for fact in carried_tool_facts(state)}
     for fact in output.tool_facts:
         facts.setdefault(fact.claim, StoredToolFact.from_fact(fact))
@@ -274,9 +277,10 @@ def failure_count(state: DeliveryState, key: Literal["verify_failures", "proof_f
 def stage_update(
     name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None,
 ) -> DeliveryUpdate:
+    review_state = state["review"]
     plan = state["plan"]
     slices = clean_slices(output.slices, workspace) if isinstance(output, SpecOutput) and plan.issue_kind == "parent" and output.spec_gate == "ready" else []
-    context = UpdateContext(plan, bool(oversized_pr(state)), slices, accepted_model)
+    context = UpdateContext(plan, review_state, bool(oversized_pr(state)), slices, accepted_model)
     checks = state["checks"]
     update: DeliveryUpdate
     if isinstance(output, ImplementOutput):
@@ -320,6 +324,7 @@ def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, 
 def stop_reason(state: DeliveryState) -> Halt | Literal[
     "sliced", "pr_split_required", "needs_human", "answered", "verified", "stopped"
 ]:
+    review_state = state["review"]
     planning = state["plan"]
     checks = state["checks"]
     if halt := state.get("halt"):
@@ -340,7 +345,7 @@ def stop_reason(state: DeliveryState) -> Halt | Literal[
         return "answered"
     if checks.verify == "fail":
         return Halt.verify_cap
-    if state.get("review") == "changes":
+    if review_state.review == "changes":
         return Halt.review_cap
     if checks.verify == "pass":
         return "verified"
@@ -381,6 +386,7 @@ def compile_delivery(
 
     def bind(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+            review_state = state["review"]
             checks = state["checks"]
             admission = dollar_admission_for(state["run"], state.get("attempts", []))
             if stop := admission_stop(state, state.get("attempts", []), name, admission):
@@ -413,13 +419,13 @@ def compile_delivery(
             methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
-            record = state.get("fact_record")
+            record = review_state.fact_record
             if name in {"implement", "review"}:
                 instruction += (f"\n\nFact record in this checkout: {record}" if record is not None else
                                 "\n\nNo fact record was declared.")
                 if name == "review" and record is None:
                     instruction += " Use null fixture references for unsupported tool facts."
-            gate = history({"rounds": state.get("review_findings", [])}).gate if state.get("review") == "changes" else None
+            gate = history({"rounds": review_state.review_findings}).gate if review_state.review == "changes" else None
             if name == "implement" and gate and not gate.passed:
                 if record is None:
                     instruction += ("\nRecording evidence requires a new run with an explicit --fact-record and a new checkpoint."
@@ -447,7 +453,7 @@ def compile_delivery(
             past = ReviewHistory()
             if name == "review":
                 try:
-                    past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
+                    past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
                 except InvalidOutput as exc:
                     return halted(Halt.invalid_output, str(exc), name)
             review_context: tuple[Forge, PullRequest, ReviewScope] | None = None
@@ -471,26 +477,29 @@ def compile_delivery(
                 instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
                 instruction += "\nGraph checks, not yours to resolve:\n" + json.dumps(past.rounds[-1].graph_check.model_dump(mode="json") if past.rounds and past.rounds[-1].graph_check else None)
                 instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
-            return {"verify_failures": failure_count(state, "verify_failures"),
-                    "proof_failures": failure_count(state, "proof_failures"), "spec_failures": failure_count(state, "spec_failures"),
-                    "review_run_id": state.get("review_run_id") or uuid4().hex, "dispatch_plan": DispatchPlan(
+            return {"verify_failures": failure_count(state, "verify_failures"), "proof_failures": failure_count(state, "proof_failures"), "spec_failures": failure_count(state, "spec_failures"), "dispatch_plan": DispatchPlan(
                 models=[model.name for model in models], instruction=instruction, methods=methods, read_roots=read_roots,
                 budget_usd=dispatch_budget(admission),
                 target=review_context[1] if review_context else None,
                 scope=review_context[2].record() if review_context else None,
-            ).record(), "pending_dispatch": PendingDispatch(stage=name, index=0, quota_model=None).record()}
+            ).record(), "pending_dispatch": PendingDispatch(stage=name, index=0, quota_model=None).record(), "review": review_state.model_copy(update={"review_run_id": review_state.review_run_id or uuid4().hex})}
         return node
 
     def call(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+            review_state = state["review"]
             assert "pending_dispatch" in state and "dispatch_plan" in state
             pending, plan = state["pending_dispatch"], state["dispatch_plan"]
             assert pending is not None
             models, methods = plan["models"], plan["methods"]
             worker_state: DeliveryState = state.copy()
             if name == "review":
-                for key in ("review_findings", "settled_rulings", *(("findings", "detail", "implementation") if history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])}).rounds else ())):
-                    worker_state.pop(key, None)
+                worker_state["review"] = review_state.model_copy(update={
+                    "review_findings": [], "settled_rulings": [],
+                    **({"findings": [], "detail": ""} if review_state.review_findings else {}),
+                })
+                if review_state.review_findings:
+                    worker_state.pop("implementation", None)
             citation_context = None
             if name == "review":
                 try:
@@ -551,7 +560,7 @@ def compile_delivery(
                 output = parse_output(STAGE_OUTPUTS[name], outcome.output, context=citation_context)
                 accepted: AcceptedReview | None = None
                 if isinstance(output, ReviewOutput):
-                    past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
+                    past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
                     head = state["checks"].verified_head or state.get("work", WorkState()).head_sha or ""
                     accepted = accept(past, output, head, _check_tool_facts(output, run.workspace, state))
                 if accepted is not None and accepted_model is not None:
@@ -567,12 +576,13 @@ def compile_delivery(
                 update = stage_update(name, output, state, model, workspace=plan_workspace, accepted_model=accepted_model)
                 update.update(attempts=attempts, pending_dispatch=None)
                 if accepted is not None:
-                    update.update(review=accepted.review, detail=accepted.detail,
-                                  review_findings=[r.model_dump(mode="json") for r in accepted.history.rounds],
-                                  reviewed_head=accepted.history.rounds[-1].reviewed_head,
-                                  findings=[f.record() for f in accepted.findings],
-                                  review_change_kind=accepted.change_kind,
-                                  review_receipt=None)
+                    assert "review" in update
+                    update["review"] = update["review"].model_copy(update={"review": accepted.review, "detail": accepted.detail,
+                                  "review_findings": [r.model_dump(mode="json") for r in accepted.history.rounds],
+                                  "reviewed_head": accepted.history.rounds[-1].reviewed_head,
+                                  "findings": [f.record() for f in accepted.findings],
+                                  "review_change_kind": accepted.change_kind,
+                                  "review_receipt": None})
                     if "halt_detail" in state:
                         update["halt_detail"] = ""
                     if accepted.rethink:
@@ -592,19 +602,20 @@ def compile_delivery(
         return node
 
     def post_review(state: DeliveryState) -> DeliveryUpdate:
-        assert "dispatch_plan" in state and "review_findings" in state and "detail" in state and "review_run_id" in state
+        review_state = state["review"]
+        assert "dispatch_plan" in state and review_state.review_run_id
         plan = state["dispatch_plan"]
         assert plan["target"] is not None and plan["scope"] is not None
-        past = history({"rounds": state["review_findings"], "settled": state.get("settled_rulings", [])})
-        accepted = AcceptedReview(history=past, findings=past.unresolved(), detail=state["detail"])
+        past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
+        accepted = AcceptedReview(history=past, findings=past.unresolved(), detail=review_state.detail)
         body, comments = review_submission(accepted, TypeAdapter(ReviewScope).validate_python(plan["scope"]))
         target = PullRequest.model_validate(plan["target"])
-        marker = f"{state['review_run_id']}:{len(past.rounds)}:{target.headRefOid}"
+        marker = f"{review_state.review_run_id}:{len(past.rounds)}:{target.headRefOid}"
         try:
             receipt = run.forge.post_review(state["run"].repo, target, body, comments, marker=marker)
         except ForgeError as exc:
             return halted(Halt.review_not_posted, str(exc), "review_post")
-        return {"review_receipt": receipt}
+        return {"review": review_state.model_copy(update={"review_receipt": receipt})}
 
     def prepare(state: DeliveryState) -> DeliveryUpdate:
         title = redact(str(_active_slice(state)["title"]))
@@ -642,13 +653,14 @@ def compile_delivery(
             return {**update, **halted(Halt.git_failed, str(exc), "implement")}
 
     def reconcile(state: DeliveryState) -> DeliveryUpdate:
+        review_state = state["review"]
         assert "work" in state and state["work"].attempt_head and state["work"].branch and state["work"].base
         try:
             candidate = run.workspace.reconcile(state["work"].attempt_head, state["work"].branch,
-                                                state["work"].base, state.get("fact_record"))
+                                                state["work"].base, review_state.fact_record)
             if candidate is None:
-                identifiers = [str(f.get("id")) for f in state.get("findings", [])]
-                if (gate := history({"rounds": state.get("review_findings", [])}).gate) and not gate.passed:
+                identifiers = [str(f.get("id")) for f in review_state.findings]
+                if (gate := history({"rounds": review_state.review_findings}).gate) and not gate.passed:
                     identifiers.insert(0, "tool-facts")
                 detail = "no changes" + ("; unresolved findings: " + ", ".join(identifiers) if identifiers else "")
                 return halted(Halt.failed, detail, "reconcile")
@@ -755,15 +767,16 @@ def compile_delivery(
         return update
 
     def needs_human(state: DeliveryState) -> DeliveryUpdate:
+        review_state = state["review"]
         stage = state["path"][-1]
         split = state["plan"].pr_split if stage == "spec" and oversized_pr(state) else None
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
         answer = interrupt(HumanPrompt.model_validate({"stage": stage, "question": question}).model_dump())
         update: DeliveryUpdate = {"human_answers": [*state.get("human_answers", []), answer]}
         if stage == "review":
-            past = history({"rounds": state.get("review_findings", []), "settled": state.get("settled_rulings", [])})
-            update.update(halt=None, halt_detail="", settled_rulings=[r.model_dump() for r in past.settled] +
-                          [{"id": f"design:{len(past.rounds)}", "text": answer}])
+            past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
+            update.update(halt=None, halt_detail="", review=review_state.model_copy(update={"settled_rulings": [r.model_dump() for r in past.settled] +
+                          [{"id": f"design:{len(past.rounds)}", "text": answer}]}))
             update.update(prepare(state))
         return update
 
@@ -856,6 +869,7 @@ def compile_delivery(
         return "prepare" if planning.spec_gate == "ready" else "done"
 
     def after_review(state: DeliveryState) -> str:
+        review_state = state["review"]
         if state.get("halt") == Halt.design_rethink:
             return "needs_human"
         if state.get("halt"):
@@ -864,7 +878,7 @@ def compile_delivery(
             if state.get("pr_size_override"):
                 return "decide_pr_size"
             return "spec"
-        if state.get("review") == "approve":
+        if review_state.review == "approve":
             return "merge"
         if review_count(state) < config.max_review_rounds:
             return "prepare"
@@ -888,6 +902,7 @@ def compile_delivery(
         return "prepare" if state["checks"].proof_labels else "review"
 
     def arm_merge(state: DeliveryState) -> DeliveryUpdate:
+        review_state = state["review"]
         run_state = state["run"]
         repo = run_state.repo
         head = state["checks"].verified_head
@@ -925,9 +940,9 @@ def compile_delivery(
         issue = run_state.issue
         if issue is None:
             return merge_halted(Halt.merge_not_armed, "Live merge requires an issue number.")
-        receipt = state.get("review_receipt")
-        past = history({"rounds": state.get("review_findings", [])})
-        if (state.get("reviewed_head") != head or not receipt or receipt["commit_id"] != head
+        receipt = review_state.review_receipt
+        past = history({"rounds": review_state.review_findings})
+        if (review_state.reviewed_head != head or not receipt or receipt["commit_id"] != head
                 or past.unresolved() or (past.gate and not past.gate.passed)):
             return merge_halted(Halt.merge_not_armed, "Renew review and its posted receipt at the verified head.")
         if previous := merge.receipt:
@@ -975,6 +990,7 @@ def compile_delivery(
         return update
 
     def finish(state: DeliveryState) -> DeliveryUpdate:
+        review_state = state["review"]
         planning = state["plan"]
         reason = stop_reason(state)
         if not state.get("halt"):
@@ -983,7 +999,7 @@ def compile_delivery(
                 detail = f"Verification failed after {rounds} rounds. Check {state['checks'].check or '(none)'} failed."
                 return {**halted(Halt.verify_cap, detail, "done"), "stop": str(reason)}
             if reason == Halt.review_cap:
-                detail = f"Review requested changes after {rounds} rounds. Last review: {state.get('detail', '')}"
+                detail = f"Review requested changes after {rounds} rounds. Last review: {review_state.detail}"
                 return {**halted(Halt.review_cap, detail, "done"), "stop": str(reason)}
             if reason == "needs_human":
                 return {"stop": reason, "path": ["done"], "halt_detail":
@@ -1117,12 +1133,12 @@ def run_delivery(
         "schema_version": SCHEMA_VERSION,
         "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens,
                         max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
-        "fact_record": fact_record_path(fact_record) if fact_record is not None else None,
         "checks": ChecksState(check=check),
         "plan": PlanState(issue_kind="parent" if slice is None else "slice"),
         "review_rounds": 0,
         "models_used": {},
         "path": [],
+        "review": ReviewState(fact_record=fact_record_path(fact_record) if fact_record is not None else None),
     }
     if slice is not None:
         state.update(load_slice(slice, state["plan"]))

@@ -9,14 +9,13 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from pydantic import BaseModel, Field, PlainValidator
 from typing_extensions import TypedDict
 
-from foreman.github import ReviewReceipt
 from foreman.outcomes import Halt
 from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
-    AttemptRecord, BrowserProofRecord, DispatchPlanRecord, FindingRecord,
-    FormalProofRecord, MergeRiskRecord, PendingDispatchRecord,
-    PlanState as PlanState,
+    AttemptRecord, BrowserProofRecord, DispatchPlanRecord,
+    FormalProofRecord, PendingDispatchRecord,
+    PlanState as PlanState, ReviewState as ReviewState,
 )
 from foreman.workspace import PullRequestSize, WorkState
 
@@ -41,11 +40,11 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     proof_labels: dict[str, str] = Field(default_factory=dict)
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState, ChecksState, PlanState])
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState, ChecksState, PlanState, ReviewState])
 
 
 class CheckpointVersionError(ValueError):
@@ -90,21 +89,10 @@ class DeliveryFields(TypedDict, total=False):
     human_answers: list[str]
     pr_size: PullRequestSize
     pr_size_override: PullRequestSize
-    review: str
-    review_findings: list[dict[str, object]]
-    reviewed_head: str
-    settled_rulings: list[dict[str, object]]
-    fact_record: str | None
-    findings: list[FindingRecord]
-    detail: str
-    review_change_kind: Literal["blocking", "nits"] | None
-    risk: MergeRiskRecord
     review_rounds: int
     verify_failures: int
     proof_failures: int
     spec_failures: int
-    review_run_id: str
-    review_receipt: ReviewReceipt | None
     models_used: dict[str, str]
     implement_models: list[str]
     watch: WatchRecord | None
@@ -113,6 +101,7 @@ class DeliveryFields(TypedDict, total=False):
 
 
 class DeliveryUpdate(DeliveryFields, total=False):
+    review: ReviewState
     plan: PlanState
     checks: ChecksState
     run: RunState
@@ -121,6 +110,7 @@ class DeliveryUpdate(DeliveryFields, total=False):
 
 
 class DeliveryState(DeliveryFields):
+    review: ReviewState
     plan: PlanState
     checks: ChecksState
     run: RunState
@@ -129,6 +119,7 @@ class DeliveryState(DeliveryFields):
 
 
 class DeliveryResult(DeliveryFields):
+    review: ReviewState
     plan: PlanState
     checks: ChecksState
     run: RunState

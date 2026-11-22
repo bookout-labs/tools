@@ -19,7 +19,7 @@ from foreman.outcomes import Halt
 from foreman.readiness import MergeState
 from foreman.smoke import SmokeVerdict, smoke_verdict
 from foreman.stage_output import Attempt, AttemptUsage, PlanState
-from foreman.state import ChecksState, DeliveryResult, RunState
+from foreman.state import ChecksState, DeliveryResult, RunState, ReviewState
 from foreman.workspace import WorkState
 
 
@@ -28,8 +28,8 @@ def passing() -> DeliveryResult:
         run=RunState(repo="bookout-labs/foreman-smoke", issue=1), plan=PlanState(),
         checks=ChecksState(verify="pass", check_exit_code=0, verified_head="abc"),
         path=["implement", "publish", "verify", "review", "merge", "done"], stop="verified",
-        work=WorkState(head_sha="abc"), reviewed_head="abc",
-        review_receipt={"id": 1, "state": "COMMENTED", "commit_id": "abc"},
+        work=WorkState(head_sha="abc"),
+        review=ReviewState(reviewed_head="abc", review_receipt={"id": 1, "state": "COMMENTED", "commit_id": "abc"}),
         merge=MergeState(status="armed", receipt={
             "repo": "bookout-labs/foreman-smoke", "pr": 2, "source_head": "abc",
             "base": "base", "base_ref": "main", "method": "SQUASH",
@@ -63,8 +63,8 @@ class SmokeTest(unittest.TestCase):
             ({"checks": ChecksState(verify="pass", check_exit_code=0)}, "verified_head"),
             ({"work": WorkState()}, "published_head"),
             ({"path": ["verify", "done"]}, "published_head"),
-            ({"reviewed_head": ""}, "reviewed_head"),
-            ({"review_receipt": None}, "review_receipt"),
+            ({"review": passing()["review"].model_copy(update={"reviewed_head": ""})}, "reviewed_head"),
+            ({"review": passing()["review"].model_copy(update={"review_receipt": None})}, "review_receipt"),
             ({"merge": MergeState(status="armed")}, "merge.receipt"),
         ]
         for update, condition in fixtures:
@@ -84,9 +84,10 @@ class SmokeTest(unittest.TestCase):
                 if field == "published_head":
                     state["work"] = WorkState(head_sha="old")
                 elif field == "reviewed_head":
-                    state["reviewed_head"] = "old"
+                    state["review"] = state["review"].model_copy(update={"reviewed_head": "old"})
                 elif field == "review_receipt":
-                    state["review_receipt"]["commit_id"] = "old"
+                    state["review"] = state["review"].model_copy(update={
+                        "review_receipt": {**state["review"].review_receipt, "commit_id": "old"}})
                 else:
                     merge = state["merge"]
                     if field == "merge.receipt":
@@ -108,7 +109,7 @@ class SmokeTest(unittest.TestCase):
     def test_unavailable_final_checkpoint(self):
         for halt in (Halt.cli_missing, Halt.env_unavailable, Halt.quota_exhausted, Halt.reviewer_unavailable):
             with self.subTest(halt=halt):
-                state = DeliveryResult(run=RunState(), plan=PlanState(), checks=ChecksState(),
+                state = DeliveryResult(run=RunState(), plan=PlanState(), checks=ChecksState(), review=ReviewState(),
                                       path=["triage"] if halt == Halt.quota_exhausted else ["done"], stop=halt, halt=halt)
                 self.assert_verdict(state, 78, f"halt={halt}", "checkpoint")
                 before = state["path"]
@@ -185,7 +186,7 @@ class SmokeTest(unittest.TestCase):
     def test_unavailable_after_dispatch_preserves_contract_precedence(self):
         for halt in (Halt.cli_missing, Halt.env_unavailable, Halt.quota_exhausted, Halt.reviewer_unavailable):
             state = passing()
-            state.update(stop=halt, halt=halt, merge=MergeState(), reviewed_head="", review_receipt=None)
+            state.update(stop=halt, halt=halt, merge=MergeState(), review=ReviewState())
             state["checks"] = ChecksState(check_exit_code=127 if halt == Halt.env_unavailable else None)
             self.assert_verdict(state, 78, f"halt={halt}")
             state["attempts"][0]["usage"] = None
@@ -246,8 +247,8 @@ class SmokeTest(unittest.TestCase):
             state["attempts"].insert(0, {**state["attempts"][0], "outcome": "quota"})
             state["attempts"].insert(1, {**state["attempts"][0], "outcome": "cli_missing"})
             if halt:
-                state.update(halt=halt, stop=halt, reviewed_head="old",
-                             review_receipt={"id": 1, "state": "COMMENTED", "commit_id": "old"})
+                state.update(halt=halt, stop=halt, review=ReviewState(reviewed_head="old",
+                             review_receipt={"id": 1, "state": "COMMENTED", "commit_id": "old"}))
                 state["work"] = WorkState(head_sha="old")
                 state["merge"] = state["merge"].model_copy(update={"status": "not_armed",
                     "receipt": {**state["merge"].receipt, "source_head": "old"}})

@@ -17,7 +17,7 @@ from foreman.config import ModelSpec, load_config
 from foreman.delivery import MODEL_STAGES, LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import snapshot_result
-from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer
 from foreman.worker import CliWorker
 from test_dollar_allowance import NEEDS_HUMAN, attempt
 from test_runner import EMPTY_SLICE, fixture_process, worker_reply
@@ -42,7 +42,7 @@ def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000):
     saver = InMemorySaver(serde=checkpoint_serializer())
     dry = DryRun()
     graph = compile_delivery(handler, config or configured(), run=LiveRun(forge=dry, workspace=dry), checkpointer=saver).with_config({"configurable": {"thread_id": "budget"}})
-    graph.invoke({
+    graph.invoke({"review": ReviewState(),
         "run": RunState(issue=dry.issue_placeholder, repo="a/b", request="x", token_cap=token_cap, max_budget_usd=limit), "checks": ChecksState(check="exit 0"), "path": [], "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE),
 
         "attempts": [attempt(CLAUDE.name, prior)],

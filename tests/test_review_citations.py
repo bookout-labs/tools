@@ -125,17 +125,17 @@ class CitationGraphTests(unittest.TestCase):
         result = self.run_rounds([payload('placeholder-99')])
         self.assertEqual(result['halt'], Halt.invalid_output)
         self.assertIn('review output from claude-opus-5-5-high:', result['halt_detail'])
-        self.assertFalse(result.get('review_findings'))
-        self.assertFalse(result.get('review_receipt'))
+        self.assertFalse(result["review"].review_findings)
+        self.assertFalse(result["review"].review_receipt)
         self.assertEqual((self.forge.reviews, self.forge.merge_calls), ([], []))
         self.assertEqual((result['attempts'][-1]['outcome'], result['attempts'][-1]['usage']['input']), ('ran', 1))
 
     def test_later_rejection_keeps_only_prior_accepted_round(self):
         result = self.run_rounds([{**payload(), 'findings': [FINDING]}, payload('stale')])
         self.assertEqual(result['halt'], Halt.invalid_output)
-        self.assertEqual(len(result['review_findings']), 1)
+        self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(len(self.forge.reviews), 1)
-        self.assertEqual(result['review_receipt'], {'id': 1, 'state': 'COMMENTED', 'commit_id': result['review_findings'][0]['reviewed_head']})
+        self.assertEqual(result["review"].review_receipt, {'id': 1, 'state': 'COMMENTED', 'commit_id': result["review"].review_findings[0]['reviewed_head']})
         self.assertFalse(self.forge.merge_calls)
 
     def test_captured_previous_only_deletions_reject_then_accept_corrected_payload(self):
@@ -150,15 +150,15 @@ class CitationGraphTests(unittest.TestCase):
                         self.assertEqual(result['halt'], Halt.invalid_output)
                         self.assertIn('review output from claude-opus-5-5-high:', result['halt_detail'])
                         self.assertIn(path, result['halt_detail'])
-                        self.assertEqual(len(result['review_findings']), 1)
+                        self.assertEqual(len(result["review"].review_findings), 1)
                         self.assertEqual(len(self.forge.reviews), 1)
                         self.assertFalse(self.forge.merge_calls)
                         self.assertEqual(len([a for a in result['attempts'] if a['stage'] == 'review']), 2)
                 corrected = dict(payload(), resolutions=[{'id': 'f1', 'status': 'resolved'}])
                 result = self.run_rounds([{**payload(), 'findings': [FINDING]}, corrected], trees=trees)
                 self.assertEqual(result['merge'].status, 'armed')
-                self.assertEqual(len(result['review_findings']), 2)
-                self.assertEqual(result['review_findings'][-1]['resolutions'], {'f1': 'resolved'})
+                self.assertEqual(len(result["review"].review_findings), 2)
+                self.assertEqual(result["review"].review_findings[-1]['resolutions'], {'f1': 'resolved'})
 
     def test_grounded_review_arms_merge(self):
         result = self.run_rounds([payload()])

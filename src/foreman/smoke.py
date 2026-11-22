@@ -64,7 +64,8 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
     head = checks.verified_head
     work = state.get("work", WorkState())
     merge = state.get("merge", MergeState())
-    review = state.get("review_receipt")
+    review = state["review"]
+    review_receipt = review.review_receipt
     receipt: MergeReceipt | None = None
     if merge.receipt is not None:
         try:
@@ -89,8 +90,8 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
         ("checks.verify", checks.verify == "pass" and checks.check_exit_code == 0),
         ("verified_head", bool(head)),
         ("published_head", "publish" in path and work.head_sha == head),
-        ("reviewed_head", state.get("reviewed_head") == head),
-        ("review_receipt", review is not None and review["commit_id"] == head),
+        ("reviewed_head", review.reviewed_head == head),
+        ("review_receipt", review_receipt is not None and review_receipt["commit_id"] == head),
         ("merge.receipt", receipt is not None and receipt.source_head == head),
         ("merge.armed", merge.status == "armed"),
     ):

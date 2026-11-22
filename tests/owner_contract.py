@@ -5,8 +5,9 @@ import tests
 from dataclasses import dataclass
 from pydantic import BaseModel
 
+from foreman.dry_run import DEFAULT_RISK
 from foreman.readiness import MergeState
-from foreman.state import ChecksState, PlanState, RunState
+from foreman.state import ChecksState, PlanState, RunState, ReviewState
 from foreman.workspace import WorkState
 from test_spec_candidate import CandidateTests, SLICE
 
@@ -43,6 +44,17 @@ OWNERS = (
         spec_rejection={"kind": "dangling_seam", "detail": "Missing"},
         pr_split={"plan": "Split", "gate": "ready", "question": "Keep?", "slices": [SLICE]}), single=True),
         frozenset(PlanState.model_fields) - {"pr_split"}, 6, {}),
+    OwnerCase("review", ReviewState(review="changes", review_findings=[{
+        "round": 1, "reviewed_head": "b" * 40, "findings": [], "resolutions": {},
+        "graph_check": None, "coordinator_notes": [], "provenance": None}],
+        reviewed_head="b" * 40, settled_rulings=[{"id": "design:1", "text": "Keep the seam"}],
+        fact_record="evidence/facts.toml", findings=[{"id": "nit", "kind": "untested-path", "fix": "Add coverage", "ruling_id": None, "file": "items.txt", "line": 1, "severity": "nit", "summary": "Cover the edge"}], detail="Review complete", review_change_kind="nits",
+        risk=DEFAULT_RISK,
+        review_run_id="review-run", review_receipt={"id": 12, "commit_id": "b" * 40, "state": "COMMENTED"}),
+        frozenset({"review_findings", "settled_rulings", "fact_record", "review_run_id", "review_receipt",
+                   "reviewed_head", "review", "risk", "findings", "detail", "review_change_kind"}), 8, {},
+        clear_on_head_change=frozenset({"review", "reviewed_head", "review_receipt", "risk", "findings", "detail", "review_change_kind"})),
+
 )
 
 
@@ -75,6 +87,9 @@ def assert_repaired(test, before, after, *, repair_head):
             defaults = type(owner.value)()
             for field in type(owner.value).model_fields.keys() - durable:
                 test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
+            if owner.name == "review":
+                for field in durable:
+                    test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
             fields = before[owner.name].model_dump(include=durable)
             if owner.repair_head_field is not None and repair_head is not None:
                 fields[owner.repair_head_field] = repair_head
