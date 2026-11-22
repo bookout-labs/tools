@@ -48,6 +48,17 @@ class SmokeOwnershipTest(unittest.TestCase):
         forge.close_pull_request.assert_not_called()
         forge.close_issue.assert_called_once_with(REPO, 1)
 
+    def test_case_insensitive_label_and_missing_author(self):
+        forge = Mock()
+        forge.smoke_pull_requests.return_value = []
+        forge.smoke_issues.return_value = [fixture(labels=[{'name': 'Smoke'}])]
+        cleanup_smoke(forge, REPO)
+        forge.close_issue.assert_called_once_with(REPO, 1)
+        forge.reset_mock()
+        forge.smoke_issues.return_value = [fixture().model_copy(update={'user': None})]
+        cleanup_smoke(forge, REPO)
+        forge.close_issue.assert_not_called()
+
     def test_armed_and_queued_prs_protect_the_issue(self):
         for field, value in (('autoMergeRequest', {'enabledAt': 'now', 'mergeMethod': 'SQUASH'}),
                              ('mergeQueueEntry', {'id': 'queue', 'state': 'QUEUED'})):

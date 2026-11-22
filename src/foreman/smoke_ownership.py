@@ -27,7 +27,8 @@ def smoke_lock(repo: str) -> Generator[None, None, None]:
 
 def owned(issue: SmokeIssue, repo: str) -> bool:
     return (issue.repository_url.lower() == f"https://api.github.com/repos/{repo.lower()}"
-            and issue.user.login == BOT_LOGIN and any(label.name == "smoke" for label in issue.labels)
+            and bool(issue.user and issue.user.login == BOT_LOGIN)
+            and any(label.name.lower() == "smoke" for label in issue.labels)
             and "pull_request" not in issue.model_fields_set and bool(_RUN.search(issue.body or "")))
 
 
