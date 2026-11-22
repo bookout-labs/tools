@@ -565,6 +565,10 @@ def compile_delivery(
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
         answer = interrupt(HumanPrompt.model_validate({"stage": stage, "question": question}).model_dump())
         update: DeliveryUpdate = {"human_answers": [*state.get("human_answers", []), answer]}
+        planning = state["plan"]
+        update["plan"] = planning.model_copy(update={"human_qa": [
+            *planning.human_qa, {"stage": stage, "question": question, "answer": answer},
+        ]})
         if stage == "review":
             past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
             update.update(halt=None, halt_detail="", review=review_state.model_copy(update={"settled_rulings": [r.model_dump() for r in past.settled] +

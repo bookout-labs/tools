@@ -26,8 +26,8 @@ class HaltPolicyTest(unittest.TestCase):
             with self.subTest(code=code), self.assertRaisesRegex(ValueError, code):
                 checkpoint_state(dict(schema_version=SCHEMA_VERSION, halt=code, run=RunState(token_cap=100, repo="Example/Engine"), check="true", path=[]))
 
-    def test_schema_12_keeps_the_retired_size_halt_readable(self):
-        values = dict(schema_version=12, halt="pr_size_unavailable", stop="pr_size_unavailable",
+    def test_current_schema_keeps_the_retired_size_halt_readable(self):
+        values = dict(schema_version=SCHEMA_VERSION, halt="pr_size_unavailable", stop="pr_size_unavailable",
                       halt_detail="The pull request size could not be measured.", path=["review", "done"],
                       run=RunState(repo="Example/Engine", token_cap=100), checks=ChecksState(),
                       plan=PlanState(), review=ReviewState())
