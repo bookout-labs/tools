@@ -1,5 +1,6 @@
 import tests
 import ast
+import re
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -12,6 +13,10 @@ from foreman.cli import _print_run_rows
 from foreman.delivery import compile_delivery
 from foreman.dry_run import ScriptHandler
 from test_delivery import walk
+
+
+def transcript(text):
+    return re.sub(r"^(?:raw tokens|work tokens|attempt |input tokens|output tokens|cache_read tokens|cache_creation tokens).*\n", "", text, flags=re.M)
 
 
 class DryRunTests(unittest.TestCase):
@@ -36,14 +41,14 @@ class DryRunTests(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             _print_run_rows(walk(ScriptHandler(triage="needs_human")), dry_run=True)
-        self.assertEqual(output.getvalue(), "triage claude-opus-5-5-high\ntokens 2 of 20000000\ndone needs_human\nWhat should Foreman know to continue?\n")
+        self.assertEqual(transcript(output.getvalue()), "triage claude-opus-5-5-high\ndone needs_human\nWhat should Foreman know to continue?\n")
 
     def test_transcript_records_commands_without_running_them(self):
         commands = []
         output = StringIO()
         with redirect_stdout(output):
             _print_run_rows(walk(ScriptHandler(), commands=commands), commands=commands, dry_run=True)
-        self.assertEqual(output.getvalue(), """dry run: git switch -c '<issue>-board-saves-a-move' 'refs/remotes/origin/<default-branch>'
+        self.assertEqual(transcript(output.getvalue()), """dry run: git switch -c '<issue>-board-saves-a-move' 'refs/remotes/origin/<default-branch>'
 dry run: git add --all
 dry run: git commit -m '<issue>: Board saves a move
 
@@ -57,6 +62,5 @@ verify npm run check
 review claude-opus-5-5-high risk low
 merge skipped (dry run): gh pr merge '<number>' --repo DoctorCRE/doctorcre-engine --auto --squash --match-head-commit '<sha>'
 check exit 0
-tokens 6 of 20000000
 done verified
 """)

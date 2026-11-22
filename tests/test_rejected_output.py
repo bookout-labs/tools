@@ -33,7 +33,7 @@ class RejectedStageOutputTest(unittest.TestCase):
                             if node == stage:
                                 calls.append(model.name if model else None)
                                 if fallback and len(calls) == 1:
-                                    return Outcome(fallback)
+                                    return Outcome(fallback, usage=usage if fallback == "quota" else None)
                                 return Outcome(kind, {}, usage=usage, detail="" if kind == "ran" else diagnostic)
                             return script(node, model, state, instruction)
 

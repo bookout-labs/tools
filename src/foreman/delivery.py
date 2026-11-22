@@ -23,7 +23,7 @@ from langgraph.types import interrupt
 from pydantic import TypeAdapter, ValidationError
 
 from foreman.adapters import Outcome
-from foreman.budget import CostUnknown, Exhausted, Remaining, claude_spend, dollar_admission
+from foreman.budget import CostUnknown, Exhausted, Remaining, claude_spend, dollar_admission, work_tokens
 from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, contributors_for, family, load_config, order_for
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.dispatch import Handler, InvalidOutput, clean_outcome
@@ -88,7 +88,7 @@ def unknown_usage(stage: str, model: str | None) -> str:
 
 
 def run_tokens(attempts: list[AttemptRecord]) -> int:
-    return sum(usage["input"] + usage["output"] + usage["cache_read"] + usage["cache_creation"]
+    return sum(usage["input"] + usage["output"] + (usage["cache_read"] or 0) + (usage["cache_creation"] or 0)
                for attempt in attempts if (usage := attempt["usage"]) is not None)
 
 
@@ -152,11 +152,14 @@ def admission_stop(
 ) -> DeliveryUpdate | None:
     run_state = state["run"]
     assert run_state.token_cap is not None
-    if run_tokens(attempts) >= run_state.token_cap:
+    work = work_tokens(attempts)
+    if work is None:
+        return halted(Halt.usage_unknown, "A launched attempt has unknown work usage; the work cap cannot be enforced.", stage)
+    if work >= run_state.token_cap:
         last = attempts[-1]
-        detail = (f"Run used {run_tokens(attempts)} tokens; cap is {run_state.token_cap}. "
-                  f"Last attempt: {last['stage']} {last['model']} used {run_tokens([last])}. "
-                  "An in-flight attempt can overshoot the cap.")
+        detail = (f"Run used {work} work tokens; cap is {run_state.token_cap}. "
+                  f"Last attempt: {last['stage']} {last['model']} used {work_tokens([last])} work tokens. "
+                  f"Measured work overshoot: {work - run_state.token_cap}. An in-flight attempt can overshoot the cap.")
         return halted(Halt.budget_exceeded, detail, stage)
     match admission:
         case CostUnknown():
@@ -508,17 +511,17 @@ def compile_delivery(
                 prompt_bytes=outcome.prompt_bytes, native_usage=outcome.native_usage,
                 usage=None if outcome.usage is None else AttemptUsage(
                     input=outcome.usage.input_tokens, output=outcome.usage.output_tokens,
-                    cache_read=outcome.usage.cache_read_input_tokens or 0,
-                    cache_creation=outcome.usage.cache_creation_input_tokens or 0,
+                    cache_read=outcome.usage.cache_read_input_tokens,
+                    cache_creation=outcome.usage.cache_creation_input_tokens,
                     cost_usd=outcome.usage.total_cost_usd,
                 ),
             ).record()]
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
             attempt_history = state.get("attempts", []) + attempts
+            if work_tokens(attempt_history) is None:
+                return {**stopped, **halted(Halt.usage_unknown, unknown_usage(name, model) + " (unknown work charge)", name)}
             if outcome.kind == "budget_exhausted":
                 return {**stopped, **halted(Halt.budget_exceeded, f"{name} {model} exhausted its dollar budget. {dollar_detail(state['run'], attempt_history)} {outcome.detail}".strip(), name)}
-            if outcome.kind == "ran" and outcome.usage is None:
-                return {**stopped, **halted(Halt.usage_unknown, unknown_usage(name, model), name)}
             admission = dollar_admission_for(state["run"], attempt_history)
             if stop := admission_stop(state, attempt_history, name, admission):
                 return {**stopped, **stop}

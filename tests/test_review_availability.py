@@ -64,7 +64,7 @@ def worker(node, model, state, instruction):
     if node == "implement":
         builder = ("claude" if state["review"].review == "changes" else "gpt") if author == "mixed" else author
         if model.family != builder:
-            return Outcome("quota")
+            return Outcome("quota", usage=SCRIPTED_USAGE)
         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
     if node == "review":
         calls.append(model.name)
@@ -88,9 +88,9 @@ def worker(node, model, state, instruction):
         if kind == "interrupt":
             raise RuntimeError("review interrupted")
         if kind in {"quota", "cli_missing", "failed"}:
-            return Outcome(kind, detail="review fixture")
+            return Outcome(kind, detail="review fixture", usage=None if kind == "cli_missing" else SCRIPTED_USAGE)
         if kind == "quota_budget":
-            return Outcome("quota", usage=Usage(input_tokens=20_000_000, output_tokens=0))
+            return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=20_000_000, output_tokens=0))
         if kind == "unknown":
             return Outcome("ran", {})
         if kind in {"changes", "ran"}:
@@ -203,7 +203,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 attempts = [a for a in result["result"]["attempts"] if a["stage"] == "review"]
                 self.assertEqual([a["model"] for a in attempts], models)
                 self.assertEqual([a["outcome"] for a in attempts], ["ran" if k in {"changes", "invalid"} else k for k in outcomes])
-                self.assertEqual([a["usage"] is None for a in attempts], [k in {"quota", "cli_missing", "failed"} for k in outcomes])
+                self.assertEqual([a["usage"] is None for a in attempts], [k == "cli_missing" for k in outcomes])
                 self.assertEqual(len(result["result"]["review"].review_findings), rounds)
                 self.assertEqual(result["posts"], posts)
                 if not code:

@@ -53,7 +53,7 @@ class DollarBudgetTests(unittest.TestCase):
                 workspace, forge = FakeWorkspace(root), FakeGitHub()
                 calls = []
                 script = ScriptHandler()
-                usage = Usage(input_tokens=7, output_tokens=3, total_cost_usd=0.1)
+                usage = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=7, output_tokens=3, total_cost_usd=0.1)
 
                 def handler(node, model, state, instruction):
                     calls.append((node, model.name))

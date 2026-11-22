@@ -139,7 +139,7 @@ class ReviewRoundsTest(unittest.TestCase):
                         raise RuntimeError("process lost")
                     if review_quota and not quota_returned and len([p for p in self.prompts if p[0] == "review"]) == quota_after + 1:
                         quota_returned = True
-                        return Outcome("quota")
+                        return Outcome("quota", usage=SCRIPTED_USAGE)
                     raw = next(replies)
                     return Outcome("ran", raw, usage=SCRIPTED_USAGE)
                 if crash and state["review"].review_findings and not crashed:

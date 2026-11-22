@@ -1,4 +1,4 @@
-"""Pure Claude dollar accounting over a run's attempt history."""
+"""Pure work-token and Claude dollar accounting over a run's attempt history."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -41,3 +41,19 @@ def dollar_admission(limit: BudgetUsd, attempts: Sequence[AttemptRecord]) -> Rem
         return CostUnknown()
     remaining = limit.amount - spent
     return Remaining(remaining) if remaining > 0 else Exhausted()
+
+
+def work_tokens(attempts: Sequence[AttemptRecord]) -> int | None:
+    """Charge canonical fresh input, cache creation and output once."""
+    total = 0
+    for attempt in attempts:
+        if attempt["outcome"] == "cli_missing":
+            continue
+        usage = attempt["usage"]
+        native = attempt.get("native_usage")
+        if (usage is None or usage["cache_creation"] is None
+                or (native is not None and any(row["cache_creation_input_tokens"] is None
+                                               for row in native["entries"].values()))):
+            return None
+        total += usage["input"] + usage["cache_creation"] + usage["output"]
+    return total
