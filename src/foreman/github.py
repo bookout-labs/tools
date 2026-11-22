@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict, NotRequired
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
-from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
+from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, QueueEntry, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
 from foreman.credentials import CredentialFailure, credentials, failure, COMMAND_TIMEOUT
 from foreman.redaction import redact
 if TYPE_CHECKING:
@@ -135,6 +135,46 @@ class CreatedIssue(BaseModel, strict=True):
 class OpenIssue(BaseModel, strict=True):
     number: PositiveInt
     body: str
+
+
+class SmokeIssue(BaseModel, strict=True):
+    state: Literal["open", "closed"]
+    number: PositiveInt
+    body: str | None
+    repository_url: str
+    labels: list[IssueLabel]
+    user: RepositoryOwner
+    pull_request: JsonValue = None
+
+
+class SmokeIssuePages(RootModel[list[list[SmokeIssue]]], strict=True):
+    pass
+
+
+class SmokePageInfo(BaseModel, strict=True):
+    hasNextPage: bool
+    endCursor: str | None
+
+
+class SmokeConnection(BaseModel, Generic[Model], strict=True):
+    nodes: list[Model]
+    pageInfo: SmokePageInfo
+
+
+class SmokeLinkedIssue(BaseModel, strict=True):
+    number: PositiveInt
+    repository: RepositoryReference
+
+
+class SmokeOpenPull(BaseModel, strict=True):
+    number: PositiveInt
+    closingIssuesReferences: SmokeConnection[SmokeLinkedIssue]
+    autoMergeRequest: AutoMergeRequest | None
+    mergeQueueEntry: QueueEntry | None
+
+
+class SmokePullPages(RootModel[list[SmokeConnection[SmokeOpenPull]]], strict=True):
+    pass
 
 
 class IssueComment(BaseModel, strict=True):
@@ -407,6 +447,66 @@ class LiveForge:
             OpenIssue(number=issue.number, body=issue.body or "")
             for page in pages.root for issue in page if "pull_request" not in issue.model_fields_set
         ]
+
+    def smoke_issues(self, repo: str) -> list[SmokeIssue]:
+        pages = self._read(repo, SmokeIssuePages, [
+            "gh", "api", f"repos/{repo}/issues?state=all&labels=smoke&per_page=100", "--paginate", "--slurp",
+        ])
+        return [item for page in pages.root for item in page if "pull_request" not in item.model_fields_set
+                and item.repository_url.lower() == f"https://api.github.com/repos/{repo.lower()}"
+                and any(label.name == "smoke" for label in item.labels)]
+
+    def smoke_pull_requests(self, repo: str) -> list[SmokeOpenPull]:
+        owner, name = repo.split("/", 1)
+        fields = "number repository { name owner { login } }"
+        # gh paginates the first pageInfo in the response, so the outer one goes first.
+        query = """query($owner:String!, $name:String!, $endCursor:String) {
+          repository(owner:$owner, name:$name) {
+            pullRequests(states:OPEN, first:100, after:$endCursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes { number autoMergeRequest { enabledAt mergeMethod } mergeQueueEntry { id state }
+                closingIssuesReferences(first:100) { nodes { FIELDS } pageInfo { hasNextPage endCursor } }
+              }
+            }
+          }
+        }""".replace("FIELDS", fields)
+        args = ["gh", "api", "graphql", "-f", f"owner={owner}", "-f", f"name={name}"]
+        pages = self._read(repo, SmokePullPages, [*args, "-f", f"query={query}", "--paginate", "--slurp",
+                                               "--jq", ".data.repository.pullRequests"])
+        if pages.root and pages.root[-1].pageInfo.hasNextPage:
+            raise ForgeError("Incomplete pull-request pagination.")
+        pulls = [pull for page in pages.root for pull in page.nodes]
+        for pull in pulls:
+            connection = pull.closingIssuesReferences
+            while connection.pageInfo.hasNextPage:
+                cursor = connection.pageInfo.endCursor
+                if not cursor:
+                    raise ForgeError("Missing closing-issue pagination cursor.")
+                query = """query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
+                  repository(owner:$owner, name:$name) { pullRequest(number:$number) {
+                    closingIssuesReferences(first:100, after:$endCursor) {
+                      nodes { FIELDS } pageInfo { hasNextPage endCursor }
+                    }
+                  } }
+                }""".replace("FIELDS", fields)
+                connection = self._read(repo, SmokeConnection[SmokeLinkedIssue], [
+                    *args, "-f", f"query={query}", "-F", f"number={pull.number}", "-f", f"endCursor={cursor}",
+                    "--jq", ".data.repository.pullRequest.closingIssuesReferences",
+                ])
+                if connection.pageInfo.hasNextPage and connection.pageInfo.endCursor == cursor:
+                    raise ForgeError("Closing-issue pagination did not advance.")
+                pull.closingIssuesReferences.nodes.extend(connection.nodes)
+            pull.closingIssuesReferences.pageInfo = connection.pageInfo
+        return pulls
+
+    def ensure_smoke_label(self, repo: str) -> None:
+        self._run_command(repo, ["gh", "label", "create", "smoke", "--repo", repo, "--color", "ededed", "--force"])
+
+    def close_issue(self, repo: str, number: int) -> None:
+        self._run_command(repo, ["gh", "api", f"repos/{repo}/issues/{number}", "--method", "PATCH", "-f", "state=closed"])
+
+    def close_pull_request(self, repo: str, number: int) -> None:
+        self._run_command(repo, ["gh", "api", f"repos/{repo}/pulls/{number}", "--method", "PATCH", "-f", "state=closed"])
 
     def issue_comments(self, repo: str, number: int) -> list[str]:
         pages = self._read(repo, IssueCommentPages, [
