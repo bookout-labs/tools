@@ -15,6 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DiagramTests(unittest.TestCase):
+    def test_committed_delivery_diagram_matches_compiled_graph(self):
+        drawing = diagram()
+        self.assertEqual((ROOT / "docs/graph/delivery.mmd").read_bytes(), drawing.encode())
+        readme = (ROOT / "README.md").read_text()
+        embedded = readme.split("<!-- graph:start -->\n", 1)[1].split("\n<!-- graph:end -->", 1)[0]
+        self.assertEqual(embedded, f"### Today's code\n\n```mermaid\n{drawing}```")
+
     def test_model_stage_loops_do_not_filter_verify(self):
         tree = ast.parse(Path(compile_delivery.__code__.co_filename).read_text())
         comparisons = (node for node in ast.walk(tree) if isinstance(node, ast.Compare))

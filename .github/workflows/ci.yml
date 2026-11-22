@@ -14,6 +14,8 @@ jobs:
       FOREMAN_PINNED_SKILL_REPO: ${{ github.workspace }}/.pstack-pin
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: cursor/plugins

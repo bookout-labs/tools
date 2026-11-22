@@ -1,12 +1,10 @@
+from hashlib import sha256
 import os
 from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-
-import yaml
-
 
 ROOT = Path(__file__).resolve().parents[1]
 BLUEPRINT = ROOT / "docs" / "graph" / "blueprint"
@@ -22,23 +20,9 @@ class BlueprintGenerationTest(unittest.TestCase):
 
         with TemporaryDirectory() as scratch:
             output = Path(scratch) / "output"
-            revision = yaml.safe_load((BLUEPRINT / "target.yaml").read_text())["baseline"]
-            baseline = ROOT
-            available = subprocess.run(
-                ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
-                cwd=ROOT, capture_output=True,
-            )
-            if available.returncode != 0:
-                baseline = Path(scratch) / "baseline"
-                subprocess.run(["git", "init", "--quiet", str(baseline)], check=True)
-                subprocess.run(
-                    ["git", "fetch", "--quiet", "--no-tags", "--depth=1", "--",
-                     "https://github.com/bookout-labs/tools", revision],
-                    cwd=baseline, check=True,
-                )
             subprocess.run(
                 [sys.executable, str(BLUEPRINT / "gen.py"), "--pstack", str(PSTACK_REPO),
-                 "--baseline-repo", str(baseline), "--output", str(output), "--no-svg"],
+                 "--output", str(output), "--no-svg"],
                 check=True,
             )
             actual = {path.relative_to(output) for path in output.rglob("*") if path.is_file()}
@@ -46,3 +30,14 @@ class BlueprintGenerationTest(unittest.TestCase):
             for path in sorted(expected):
                 with self.subTest(path=path):
                     self.assertEqual((output / path).read_bytes(), (BLUEPRINT / path).read_bytes())
+
+    def test_published_diagrams_match_render_checksums(self):
+        views = BLUEPRINT / "views"
+        sources = set(views.rglob("*.mmd"))
+        renders = set(views.rglob("*.svg"))
+        self.assertEqual(renders, {path.with_suffix(".svg") for path in sources})
+        checksums = [
+            f"{sha256(path.read_bytes()).hexdigest()}  {path.relative_to(views).as_posix()}"
+            for path in sorted(sources | renders, key=lambda path: path.as_posix())
+        ]
+        self.assertEqual((views / "SHA256SUMS").read_text().splitlines(), checksums)

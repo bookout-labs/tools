@@ -77,7 +77,7 @@ class BlueprintProjectionTests(unittest.TestCase):
 
         def with_new_symbol(path, *args, **kwargs):
             text = read_text(path, *args, **kwargs)
-            return text + "\n\ndef unplanned_owner():\n    pass\n" if path == owner else text
+            return text + "\n\nif True:\n    def unplanned_owner():\n        pass\n" if path == owner else text
 
         with patch.object(Path, "read_text", with_new_symbol):
             self.assert_unwaived("owner src/foreman/dispatch.py::unplanned_owner")
@@ -88,13 +88,17 @@ class BlueprintProjectionTests(unittest.TestCase):
         with patch.dict(projection.STAGES, triage=replace(stage, skills=(*stage.skills, extra_skill))):
             self.assert_unwaived("[procedure/triage] skills")
 
-    def test_waiver_becomes_stale_when_stage_matches_blueprint(self):
-        stage = projection.STAGES["research"]
-        inputs = tuple(self.target["procedures"]["research"]["inputs"])
-        with patch.dict(projection.STAGES, research=replace(stage, input_fields=inputs)):
-            errors = self.errors()
-        self.assertEqual(len(errors), 1, "\n".join(errors))
-        self.assertRegex(errors[0], r"Stale waiver .* \(#236\): mismatched \[procedure/research\] inputs")
+    def test_waiver_becomes_stale_when_injected_difference_disappears(self):
+        actual = projection.project()
+        baseline = projection.compare(self.target, actual)
+        actual["intake"].append("unplanned_event")
+        changed = projection.compare(self.target, actual)
+        difference, = (row for row in changed if row.subject == "admit unplanned_event")
+        waivers = {**self.waivers, 238: {**self.waivers.get(238, {}), difference.id: difference.subject}}
+
+        self.assertEqual(projection.check(changed, waivers), [])
+        self.assertEqual(projection.check(baseline, waivers),
+                         [f"Stale waiver {difference.id} (#238): admit unplanned_event"])
 
 
 if __name__ == "__main__":

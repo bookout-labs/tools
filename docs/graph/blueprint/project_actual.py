@@ -13,7 +13,7 @@ import sys
 import yaml
 from langgraph.pregel import Pregel
 
-from foreman.accept import accept_event
+from foreman import accept
 from foreman.adapters import Outcome
 from foreman.config import family, load_config
 from foreman.delivery import LiveRun, compile_delivery
@@ -37,18 +37,21 @@ def module_inventory(source):
         text = path.read_text()
         symbols = {}
 
-        def visit(body, prefix=""):
-            for item in body:
-                if isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                    name = prefix + item.name
-                    start = min([item.lineno, *(decorator.lineno for decorator in item.decorator_list)])
-                    symbols[name] = {
-                        "kind": "class" if isinstance(item, ast.ClassDef) else "function",
-                        "line": start, "lines": item.end_lineno - start + 1,
-                    }
-                    visit(item.body, name + ".")
+        def visit(item, prefix=""):
+            if isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = prefix + item.name
+                start = min([item.lineno, *(decorator.lineno for decorator in item.decorator_list)])
+                symbols[name] = {
+                    "kind": "class" if isinstance(item, ast.ClassDef) else "function",
+                    "line": start, "lines": item.end_lineno - start + 1,
+                }
+                for child in item.body:
+                    visit(child, name + ".")
+            else:
+                for child in ast.iter_child_nodes(item):
+                    visit(child, prefix)
 
-        visit(ast.parse(text).body)
+        visit(ast.parse(text))
         modules[path.relative_to(source).as_posix()] = {
             "lines": len(text.splitlines()), "symbols": symbols,
         }
@@ -156,22 +159,24 @@ def project():
                 expected_orders.append([model.name for model in ordered])
             if expected_orders != [example["order"] for example in procedure["model_orders"]]:
                 procedure["policy_orders"] = expected_orders
-        for kind in ("quota", "cli_missing"):
-            stop = stage.unavailable({"pending_dispatch": {"index": 0}}, Outcome(kind), "synthetic")
-            if stop is not None:
-                procedure.setdefault("unavailability_halt", {})[kind] = stop[0].value
+        if (unavailable := getattr(stage, "unavailable", None)) is not None:
+            for kind in ("quota", "cli_missing"):
+                stop = unavailable({"pending_dispatch": {"index": 0}}, Outcome(kind), "synthetic")
+                if stop is not None:
+                    procedure.setdefault("unavailability_halt", {})[kind] = stop[0].value
         procedures[name] = procedure
 
     envelope = {"source": "github", "title": "Synthetic scope", "body": "",
-                "repository": "example/synthetic", "issue_number": 1}
-    events = {
-        "issue_labeled": {"labels": ["factory"]},
-        "project_item_ready": {"project_id": "synthetic", "previous_status": "Todo", "status": "Ready"},
-    }
+                "repository": "example/synthetic", "issue_number": 1, "labels": ["factory"],
+                "project_id": "synthetic", "previous_status": "Todo", "status": "Ready"}
+    # The predicate decides which of its source literals are event selectors.
+    intake_source = ast.parse(Path(accept.__file__).read_text())
+    selectors = {node.value for node in ast.walk(intake_source)
+                 if isinstance(node, ast.Constant) and isinstance(node.value, str)}
     return {
         "schema_version": 1,
-        "intake": [event for event, payload in events.items()
-                   if accept_event({**envelope, **payload, "event": event})["start"]],
+        "intake": [event for event in sorted(selectors)
+                   if accept.accept_event({**envelope, "event": event})["start"]],
         "graph": graph_snapshot(compiled),
         "procedures": procedures,
         "modules": module_inventory(ROOT),

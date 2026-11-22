@@ -1,7 +1,6 @@
 # IDs bind each exact difference to its migration issue. Delete the entry when the difference closes.
 waivers:
   232:
-    V2-a048896415d188cd: mismatched [procedure/implement] output_fields
     V2-a84571dba5286e94: mismatched [procedure/implement] prompt
     V2-6bc519c6dc6c0cec: mismatched [procedure/implement] skills
     V2-7ccf17f9b80e0a2a: extra [procedure/proof] declaration
@@ -30,24 +29,19 @@ waivers:
     V2-5132467121aaf85a: extra [top/delivery] edge spec -> prepare
     V2-02b9d34fa4cf308e: extra [top/delivery] edge triage -> prepare
   234:
+    V2-8c03538569dd3058: extra [shared/halts] usage_unknown
     V2-69ddd346c649b1a5: extra [procedure/review] unavailability_halt
     V2-a804004e89ff1d18: extra [shared/halts] cli_missing
     V2-cf73d422ff07f1b9: extra [shared/halts] model_family_exhausted
     V2-d01511ae13d502d5: extra [shared/halts] quota_exhausted
     V2-9ab1f91a88a71cac: extra [shared/halts] review_unavailable
     V2-924010bb2349a623: extra [shared/halts] reviewer_unavailable
-    V2-cf41c5d5e274b2cf: missing [steps/dispatch] call from implement.edit
-    V2-a0d3b98bd4905901: missing [steps/dispatch] call from research.answer
-    V2-ac5a720ea744df66: missing [steps/dispatch] call from review.inspect
-    V2-7e04400433afc3a7: missing [steps/dispatch] call from spec.check
-    V2-afb68dac233b845c: missing [steps/dispatch] call from spec.draft
-    V2-69bf95b93e669d2b: missing [steps/dispatch] call from triage.route
     V2-0b19e86a0a4e216c: missing [steps/dispatch] edge __start__ -> reserve
     V2-ffce5bbfe186b434: missing [steps/dispatch] edge reconcile -> __end__
     V2-25eab3c665b6718f: missing [steps/dispatch] edge reconcile -> reserve
     V2-4826c2e4c082a58f: missing [steps/dispatch] edge reserve -> __end__
     V2-a17d4884bb19096e: missing [steps/dispatch] edge reserve -> reconcile
-    V2-cd22c64e7fb2a6f9: missing [steps/dispatch] halts
+    V2-3b5b1488d9bc6487: missing [steps/dispatch] halts
     V2-88b8c20634c89d04: missing [steps/dispatch] node reconcile
     V2-544b6bc18ed0d9f6: missing [steps/dispatch] node reserve
     V2-5673b8200a189540: extra [steps/dispatch] owner src/foreman/dispatch.py::clean_outcome
@@ -106,6 +100,8 @@ waivers:
     V2-f025b8c45304fcb4: extra [top/delivery] node spec_call
     V2-18db07ab98860f22: extra [top/delivery] node triage_call
   235:
+    V2-cf41c5d5e274b2cf: missing [steps/dispatch] call from implement.edit
+    V2-1debfbdb835fbdd8: mismatched [procedure/implement] output_fields
     V2-3c83ff3a89e487d1: missing [procedure/implement] step
     V2-96fba37eb404814b: extra [procedure/verify] declaration
     V2-0c0d2b8bd0152622: extra [shared/halts] failed
@@ -161,6 +157,10 @@ waivers:
     V2-adeea79d6722b70f: extra [top/delivery] node size
     V2-065fa8600ba9f22d: extra [top/delivery] node verify
   236:
+    V2-69bf95b93e669d2b: missing [steps/dispatch] call from triage.route
+    V2-afb68dac233b845c: missing [steps/dispatch] call from spec.draft
+    V2-7e04400433afc3a7: missing [steps/dispatch] call from spec.check
+    V2-a0d3b98bd4905901: missing [steps/dispatch] call from research.answer
     V2-ec184752ce9c77d4: mismatched [procedure/research] inputs
     V2-820c41915125fb11: mismatched [procedure/research] output_fields
     V2-276551149fe57b00: mismatched [procedure/research] prompt
@@ -196,7 +196,7 @@ waivers:
     V2-ded9875572a83c09: missing [steps/spec] edge validate -> __end__
     V2-3c8961a38964efc8: missing [steps/spec] edge validate -> check
     V2-94074dbacc24c69e: missing [steps/spec] edge validate -> draft
-    V2-8a76364458b7b797: missing [steps/spec] halts
+    V2-0d754151113540ad: missing [steps/spec] halts
     V2-e344bbf2b609ce8f: missing [steps/spec] node check
     V2-3144968e4ae82522: missing [steps/spec] node draft
     V2-e7191a86935adcc7: missing [steps/spec] node file_children
@@ -243,6 +243,7 @@ waivers:
     V2-883c2e884445e755: mismatched [top/delivery] node spec
     V2-033b77ac69c6ba6e: mismatched [top/delivery] node triage
   237:
+    V2-ac5a720ea744df66: missing [steps/dispatch] call from review.inspect
     V2-66f3c36d0dcb14da: missing [procedure/review] step
     V2-e706c75229be8c37: extra [shared/halts] ci_pending
     V2-112ffe489cffe949: extra [shared/halts] ci_red
