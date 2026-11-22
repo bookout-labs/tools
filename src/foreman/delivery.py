@@ -687,6 +687,8 @@ def compile_delivery(
                 if candidate["disposition"] == "adopted" and run.workspace.tree(observed.head) != candidate["tree"]:
                     raise WorkspaceError("Commit differs from the reconciled worker tree.")
             else:
+                if run.workspace.tree(None) != candidate["size"]["head"]:
+                    raise WorkspaceError("Implementation edits changed after reconciliation and size measurement.")
                 if observed.clean:
                     raise WorkspaceError("The checkpointed implementation edits are missing.")
                 if run.workspace.fingerprint() != candidate["fingerprint"]:
@@ -695,6 +697,8 @@ def compile_delivery(
                 observed = run.workspace.inspect()
                 if not observed.clean:
                     raise WorkspaceError("The commit left uncommitted edits; restore the implementation tree.")
+            if run.workspace.tree(observed.head) != candidate["size"]["head"]:
+                raise WorkspaceError("Commit differs from the measured implementation tree.")
             return {"work": state["work"].model_copy(update={"head_sha": observed.head})}
         except WorkspaceError as exc:
             return halted(Halt.git_failed, str(exc), "commit")
@@ -819,8 +823,15 @@ def compile_delivery(
             if worktree.branch is None:
                 raise WorktreeInspectionFailed("HEAD is detached. Pull request sizing requires a checked-out branch.")
             repo = state["run"].repo
-            base = run.forge.pull_request_base(repo, worktree.branch)
-            size = run.workspace.pull_request_size(head, base)
+            candidate = state.get("work", WorkState()).candidate
+            if candidate is not None:
+                bound = candidate["size"]
+                if run.workspace.tree(head) != bound["head"]:
+                    raise WorktreeInspectionFailed("Verified tree differs from the measured candidate.")
+                size: PullRequestSize = {**bound, "head": head}
+            else:
+                base = run.forge.pull_request_base(repo, worktree.branch)
+                size = run.workspace.pull_request_size(head, base)
             checked = run.workspace.inspect()
             if checked.head != head:
                 return moved_before_review(checked.head, head)

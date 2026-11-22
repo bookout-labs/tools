@@ -125,6 +125,48 @@ class PullRequestSizeTest(unittest.TestCase):
         assert saved is not None
         return saved["channel_values"]
 
+    def test_candidate_edits_and_adopted_commits_share_the_size_policy(self):
+        self.git("switch", "main")
+        self.write("deleted.md", "gone\n" * 7)
+        self.write("original.dat", "\0item\n" * 500)
+        self.write("original.md", "same\n" * 20)
+        self.write("tests/fixtures/extract.json", "fixture\n" * 13)
+        base = self.commit()
+        self.git("push", "origin", "main")
+        self.git("switch", "-C", BRANCH, base)
+        self.git("rm", "deleted.md")
+        self.git("mv", "original.dat", "renamed.dat")
+        self.write("renamed.dat", "\0item\n" * 500 + "added\n")
+        self.git("mv", "original.md", "renamed.md")
+        self.git("mv", "tests/fixtures/extract.json", "extracted.md")
+        self.write("new\tfile\n.md", "deliverable\n" * 401)
+        self.write("tests/fixtures/generated.json", "excluded\n" * 500)
+        attributes = (self.root / ".gitattributes").read_text()
+        self.write(".gitattributes", attributes + "** linguist-generated -diff\n")
+        workspace = LiveWorkspace(self.root)
+        with patch.object(workspace, "pull_request_size", wraps=workspace.pull_request_size) as measure:
+            edits = workspace.reconcile(base, BRANCH, "main", None)
+        self.assertIsNotNone(edits)
+        self.assertEqual(edits["size"]["lines"], 423)
+        self.assertEqual(edits["size"]["merge_base"], base)
+        self.assertEqual(measure.call_count, 1)
+        index = Path(self.git("rev-parse", "--path-format=absolute", "--git-path", "index"))
+        index_bytes = index.read_bytes()
+        status = self.git("status", "--porcelain=v1", "-z")
+        before = {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*")
+                  if path.is_file() and ".git" not in path.relative_to(self.root).parts}
+        with patch.object(workspace, "_base_merge_base", side_effect=AssertionError("no fetch")):
+            measured = workspace.pull_request_size(None, "unused", work_base=base)
+        self.assertEqual(measured, edits["size"])
+        self.assertEqual(index.read_bytes(), index_bytes)
+        self.assertEqual(self.git("status", "--porcelain=v1", "-z"), status)
+        self.assertEqual({path: (self.root / path).read_bytes() for path in before}, before)
+        head = self.commit()
+        adopted = workspace.reconcile(base, BRANCH, "main", None)
+        self.assertEqual(adopted["size"], measured)
+        self.assertEqual(workspace.pull_request_size(head, "main")["lines"], measured["lines"])
+        self.assertEqual(workspace.tree(head), measured["head"])
+
     def test_under_limit_diff_reaches_review(self):
         self.write("src/items.py", "changed\n" * (PULL_REQUEST_LINES - 2))
         head = self.commit()

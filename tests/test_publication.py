@@ -652,6 +652,26 @@ class PublicationTest(unittest.TestCase):
         self.assertIn("changed after reconciliation", result["halt_detail"])
         self.assertFalse(self.created)
 
+    def test_first_publication_uses_bound_size_without_pr_lookup(self):
+        with patch.object(LiveForge, "pull_request_base", side_effect=AssertionError("no PR lookup")):
+            result = self.walk(self.edit)
+        self.assertEqual(result["stop"], "verified")
+        bound = result["work"].candidate["size"]
+        self.assertEqual(bound["head"], self.git("rev-parse", "HEAD^{tree}"))
+        self.assertEqual(result["pr_size"], {**bound, "head": result["work"].head_sha})
+
+    def test_changed_candidate_cannot_commit_with_stale_size(self):
+        with patch.object(LiveWorkspace, "commit", side_effect=SystemExit("before commit")):
+            with self.assertRaises(SystemExit):
+                self.walk(self.edit)
+        head = self.git("rev-parse", "HEAD")
+        (self.checkout / "new-deliverable.md").write_text("oversized\n" * 401)
+        result = self.walk(self.no_worker)
+        self.assertEqual(result["stop"], "git_failed")
+        self.assertIn("size measurement", result["halt_detail"])
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertFalse(self.created)
+
     def test_recovery_with_edits_uses_reconciled_fingerprint(self):
         def edit():
             self.edit()

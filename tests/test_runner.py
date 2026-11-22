@@ -90,7 +90,11 @@ class FakeWorkspace(LiveWorkspace):
         return "synthetic-edits"
 
     def reconcile(self, parent, branch, base_branch, fact_record):
-        return None if self.current.clean else {"disposition": "edits", "fingerprint": self.fingerprint()}
+        return None if self.current.clean else {"disposition": "edits", "fingerprint": self.fingerprint(),
+            "size": self.pull_request_size(self.tree(None), base_branch)}
+
+    def tree(self, head):
+        return HEAD
 
     def create_branch(self, branch, base):
         self.current = WorktreeState(self.current.head, True, branch)
@@ -108,8 +112,8 @@ class FakeWorkspace(LiveWorkspace):
             self.current = WorktreeState(self.current.head, False, self.current.branch)
         return worker_reply(args, reply)
 
-    def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
-        return {"head": head, "merge_base": "b" * 40, "lines": 1}
+    def pull_request_size(self, head: str | None, base_branch: str, *, work_base: str | None = None) -> PullRequestSize:
+        return {"head": head or self.tree(None), "merge_base": work_base or "b" * 40, "lines": 1}
 
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT
@@ -141,8 +145,8 @@ class FixtureWorkspace(LiveWorkspace):
     def push(self, branch, repo):
         pass
 
-    def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
-        return {"head": head, "merge_base": BASE, "lines": 1}
+    def pull_request_size(self, head: str | None, base_branch: str, *, work_base: str | None = None) -> PullRequestSize:
+        return {"head": head or self.tree(None), "merge_base": work_base or BASE, "lines": 1}
 
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT
