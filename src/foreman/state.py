@@ -56,7 +56,7 @@ class CheckpointVersionError(ValueError):
         rendered_version = "missing" if version is None else repr(version)
         super().__init__(
             f"Unsupported checkpoint{location} schema_version {rendered_version}; expected {SCHEMA_VERSION}. "
-            "Start a new run with a new checkpoint path."
+            "Start a new run with a new checkpoint path (--checkpoint)."
         )
 
 

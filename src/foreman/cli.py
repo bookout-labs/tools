@@ -187,6 +187,7 @@ def main(
     run.add_argument("--answer")
     run.add_argument("--max-tokens", type=positive_tokens)
     run.add_argument("--max-budget-usd", type=positive_budget)
+    run.add_argument("--checkpoint", type=Path, help="SQLite file for this run. The default is $XDG_STATE_HOME/foreman/checkpoints.sqlite3.")
 
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")
     accept.add_argument("path")
@@ -256,6 +257,8 @@ def main(
     if args.dry_run:
         if args.answer is not None:
             run.error("--answer requires a live run")
+        if args.checkpoint is not None:
+            run.error("--checkpoint requires a live run")
         if args.request is None and args.issue is None:
             run.error("a dry run requires --request or --issue")
         result = run_delivery(
@@ -275,6 +278,8 @@ def main(
             run.error("--repo must be OWNER/NAME")
         if args.issue is None or args.issue < 1 or not args.check.strip():
             run.error("a live run requires a positive --issue and a --check command")
+        if checkpoint is None:
+            checkpoint = args.checkpoint
         if checkpoint is None:
             state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
             checkpoint = state_home / "foreman" / "checkpoints.sqlite3"

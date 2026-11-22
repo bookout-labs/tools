@@ -31,7 +31,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "old.sqlite"
             shutil.copyfile(Path(__file__).parent / "fixtures/state/before-move.sqlite", checkpoint)
-            for version in (None, *range(SCHEMA_VERSION), SCHEMA_VERSION + 1, True, "1", str(SCHEMA_VERSION)):
+            for version in (*range(SCHEMA_VERSION), SCHEMA_VERSION + 1, True, "1", str(SCHEMA_VERSION)):
                 with self.subTest(version=version):
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                         saver.serde = checkpoint_serializer()
@@ -49,8 +49,6 @@ class CheckpointBoundaryTests(unittest.TestCase):
                             run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint,
                                               dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun()))
                         self.assertIn(str(checkpoint), str(raised.exception))
-                        if version is None:
-                            self.assertIn("schema_version missing", str(raised.exception))
                         refuse.assert_called_once()
                         self.assertEqual(refuse.call_args.args[0], values)
                         stored_version = refuse.call_args.args[0].get("schema_version")

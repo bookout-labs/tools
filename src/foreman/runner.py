@@ -121,7 +121,7 @@ def require_same_budget(stored: str | None, max_budget_usd: BudgetUsd | None) ->
 
 def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: BudgetUsd | None) -> None:
     if run_state.token_cap is None:
-        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run with a new checkpoint path.")
+        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run with a new checkpoint path (--checkpoint).")
     require_same_budget(run_state.max_budget_usd, max_budget_usd)
 
 
@@ -157,6 +157,12 @@ def run_live_delivery(
         saver.serde = checkpoint_serializer()
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
+        if prior is not None and channels.get("schema_version") is None:
+            thread_id = str(config["configurable"]["thread_id"])
+            saver.delete_thread(thread_id)
+            log(f"Retired unversioned checkpoint thread {thread_id} in {checkpoint}. Starting a new run.")
+            prior = saver.get(config)
+            channels = prior["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, checkpoint)
         delivery_config = load_config()

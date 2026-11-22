@@ -13,7 +13,7 @@ from foreman.cli import _print_run, main, run_exit_code
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import run_live_delivery
-from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION, CheckpointVersionError
+from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing
 from tests.skill_fixture import skill_fixture
 from test_runner import FakeGitHub, FakeWorkspace
@@ -148,7 +148,7 @@ class TokenCapTests(unittest.TestCase):
                 run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=live,
                                   dispatcher=ScriptHandler())
 
-    def test_finished_legacy_checkpoint_is_refused(self):
+    def test_finished_unversioned_checkpoint_starts_over(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
             checkpoint = Path(folder) / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
@@ -156,6 +156,14 @@ class TokenCapTests(unittest.TestCase):
                 graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
                                    {"run": RunState(repo="a/b"), "checks": ChecksState(check=""), "path": ["done"], "stop": "answered", "plan": PlanState()}, as_node="done")
-            with self.assertRaisesRegex(CheckpointVersionError, "Start a new run"):
-                run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint, dispatcher=ScriptHandler(),
-                                  run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))
+            github = FakeGitHub()
+            github.hold = "Maintenance"
+            handler = ScriptHandler()
+            notes: list[str] = []
+            result = run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, dispatcher=handler,
+                                       log=notes.append, run=LiveRun(github, FakeWorkspace(Path(folder))))
+            self.assertEqual(result["schema_version"], SCHEMA_VERSION)
+            self.assertNotEqual(result["stop"], "answered")
+            self.assertTrue(handler.calls)
+            self.assertTrue(any("Retired unversioned checkpoint thread a/b#8" in note for note in notes))
+            self.assertIsNotNone(result["run"].token_cap)

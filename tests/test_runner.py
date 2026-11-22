@@ -31,7 +31,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
-from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError
+from foreman.state import PlanState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, CheckpointVersionError
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
@@ -601,7 +601,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.github = FakeGitHub()
         self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin)))
 
-    def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None, skills=export_skills, presentation=None):
+    def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(CLEAN_WORKTREE,), workspace: Workspace | None = None, skills=export_skills, presentation=None, log=None):
         outputs = iter(replies)
         active = workspace if workspace is not None else FakeWorkspace(self.cwd, snapshots)
 
@@ -615,7 +615,7 @@ class LiveRunnerTest(unittest.TestCase):
         return run_live_delivery(
             repo="Example/Engine", issue=issue, check=check, preflight=preflight, answer=answer,
             checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, run), presentation=presentation,
-            run=LiveRun(self.github, active, skills=skills),
+            run=LiveRun(self.github, active, skills=skills), log=log or (lambda message: None),
         )
 
     def test_readiness_halts_resume_without_repeating_workers(self):
@@ -637,22 +637,76 @@ class LiveRunnerTest(unittest.TestCase):
             self.assertEqual(len(self.calls), count)
             self.assertEqual(resumed["review_receipt"], result["review_receipt"])
 
-    def test_resume_rejects_historical_schema_before_missing_usage(self):
+    def test_unversioned_checkpoint_starts_over(self):
         self.github.hold = "Maintenance"
         result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(result["stop"], "merge_held")
         config = {"configurable": {"thread_id": "example/engine#8"}}
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
-            historical = next(item for item in saver.list(config)
-                              if item.checkpoint["channel_values"].get("path", [])[-1:] == ["review"])
+            historical = saver.get_tuple(config)
+            self.assertIsNotNone(historical)
             historical.checkpoint["channel_values"].pop("schema_version")
             historical.checkpoint["channel_values"]["run"] = historical.checkpoint["channel_values"]["run"].model_copy(update={"token_cap": None})
             saver.put(historical.config, historical.checkpoint, historical.metadata, {})
+            self.assertIsNone(next(saver.list({"configurable": {"thread_id": "example/engine#9"}}), None))
+            sibling = dict(historical.checkpoint)
+            sibling["id"] = "sibling-checkpoint"
+            saver.put(
+                {"configurable": {"thread_id": "example/engine#9", "checkpoint_ns": ""}},
+                sibling, historical.metadata, {},
+            )
+        notes = []
+        started = self.walk(
+            [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
+            log=notes.append,
+        )
+        self.assertEqual(started["stop"], "merge_held")
+        self.assertEqual(started["schema_version"], SCHEMA_VERSION)
+        self.assertTrue(any("Retired unversioned checkpoint thread example/engine#8" in note for note in notes))
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            current = saver.get(config)
+            self.assertEqual(current["channel_values"]["schema_version"], SCHEMA_VERSION)
+            self.assertIsNotNone(current["channel_values"]["run"].token_cap)
+            sibling_saved = saver.get({"configurable": {"thread_id": "example/engine#9"}})
+            self.assertIsNotNone(sibling_saved)
+            self.assertNotIn("schema_version", sibling_saved["channel_values"])
+
+    def test_wrong_schema_version_is_still_refused(self):
+        self.github.hold = "Maintenance"
+        self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        config = {"configurable": {"thread_id": "example/engine#8"}}
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            historical = saver.get_tuple(config)
+            self.assertIsNotNone(historical)
+            historical.checkpoint["channel_values"]["schema_version"] = 5
+            saver.put(historical.config, historical.checkpoint, historical.metadata, {})
+        calls = len(self.calls)
         with self.assertRaises(CheckpointVersionError) as raised:
             self.walk([])
         self.assertIn(str(self.checkpoint), str(raised.exception))
-        self.assertIn("schema_version missing", str(raised.exception))
+        self.assertIn("schema_version 5", str(raised.exception))
+        self.assertEqual(len(self.calls), calls)
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            kept = saver.get(config)
+            self.assertEqual(kept["channel_values"]["schema_version"], 5)
+
+    def test_run_help_offers_a_checkpoint_path(self):
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            with self.assertRaises(SystemExit) as raised:
+                main(["run", "--help"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("--checkpoint", stdout.getvalue())
+
+    def test_dry_run_rejects_a_checkpoint_path(self):
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            with self.assertRaises(SystemExit) as raised:
+                main(["run", "delivery", "--repo", "a/b", "--dry-run", "--request", "x", "--checkpoint", "runs.sqlite3"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--checkpoint requires a live run", stderr.getvalue())
 
     def test_queue_receipt_is_persisted_and_completion_does_not_reobserve(self):
         result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
