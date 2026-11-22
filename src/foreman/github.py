@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeVar
+from typing import TYPE_CHECKING, Generic, Iterator, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict, NotRequired
 from urllib.parse import quote
 
@@ -44,7 +44,9 @@ class MergeHoldUnreadable(ForgeError):
 
 
 class CommandFailed(ForgeError):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        self.status = status
+        super().__init__(message)
 
 
 class CommandTimedOut(ForgeError):
@@ -143,7 +145,7 @@ class SmokeIssue(BaseModel, strict=True):
     body: str | None
     repository_url: str
     labels: list[IssueLabel]
-    user: RepositoryOwner
+    user: RepositoryOwner | None
     pull_request: JsonValue = None
 
 
@@ -173,8 +175,8 @@ class SmokeOpenPull(BaseModel, strict=True):
     mergeQueueEntry: QueueEntry | None
 
 
-class SmokePullPages(RootModel[list[SmokeConnection[SmokeOpenPull]]], strict=True):
-    pass
+class SmokeItemState(BaseModel, strict=True):
+    state: Literal["open", "closed"]
 
 
 class IssueComment(BaseModel, strict=True):
@@ -454,12 +456,11 @@ class LiveForge:
         ])
         return [item for page in pages.root for item in page if "pull_request" not in item.model_fields_set
                 and item.repository_url.lower() == f"https://api.github.com/repos/{repo.lower()}"
-                and any(label.name == "smoke" for label in item.labels)]
+                and any(label.name.lower() == "smoke" for label in item.labels)]
 
     def smoke_pull_requests(self, repo: str) -> list[SmokeOpenPull]:
         owner, name = repo.split("/", 1)
         fields = "number repository { name owner { login } }"
-        # gh paginates the first pageInfo in the response, so the outer one goes first.
         query = """query($owner:String!, $name:String!, $endCursor:String) {
           repository(owner:$owner, name:$name) {
             pullRequests(states:OPEN, first:100, after:$endCursor) {
@@ -471,42 +472,71 @@ class LiveForge:
           }
         }""".replace("FIELDS", fields)
         args = ["gh", "api", "graphql", "-f", f"owner={owner}", "-f", f"name={name}"]
-        pages = self._read(repo, SmokePullPages, [*args, "-f", f"query={query}", "--paginate", "--slurp",
-                                               "--jq", ".data.repository.pullRequests"])
-        if pages.root and pages.root[-1].pageInfo.hasNextPage:
-            raise ForgeError("Incomplete pull-request pagination.")
-        pulls = [pull for page in pages.root for pull in page.nodes]
+        pulls = [pull for page in self._smoke_pages(repo, SmokeOpenPull, [
+            *args, "-f", f"query={query}", "--jq", ".data.repository.pullRequests",
+        ]) for pull in page.nodes]
         for pull in pulls:
-            connection = pull.closingIssuesReferences
-            while connection.pageInfo.hasNextPage:
-                cursor = connection.pageInfo.endCursor
-                if not cursor:
-                    raise ForgeError("Missing closing-issue pagination cursor.")
-                query = """query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
-                  repository(owner:$owner, name:$name) { pullRequest(number:$number) {
-                    closingIssuesReferences(first:100, after:$endCursor) {
-                      nodes { FIELDS } pageInfo { hasNextPage endCursor }
-                    }
-                  } }
-                }""".replace("FIELDS", fields)
-                connection = self._read(repo, SmokeConnection[SmokeLinkedIssue], [
-                    *args, "-f", f"query={query}", "-F", f"number={pull.number}", "-f", f"endCursor={cursor}",
-                    "--jq", ".data.repository.pullRequest.closingIssuesReferences",
-                ])
-                if connection.pageInfo.hasNextPage and connection.pageInfo.endCursor == cursor:
-                    raise ForgeError("Closing-issue pagination did not advance.")
-                pull.closingIssuesReferences.nodes.extend(connection.nodes)
-            pull.closingIssuesReferences.pageInfo = connection.pageInfo
+            query = """query($owner:String!, $name:String!, $number:Int!, $endCursor:String) {
+              repository(owner:$owner, name:$name) { pullRequest(number:$number) {
+                closingIssuesReferences(first:100, after:$endCursor) {
+                  nodes { FIELDS } pageInfo { hasNextPage endCursor }
+                }
+              } }
+            }""".replace("FIELDS", fields)
+            for connection in self._smoke_pages(repo, SmokeLinkedIssue, [
+                *args, "-f", f"query={query}", "-F", f"number={pull.number}",
+                "--jq", ".data.repository.pullRequest.closingIssuesReferences",
+            ], first=pull.closingIssuesReferences):
+                if connection is not pull.closingIssuesReferences:
+                    pull.closingIssuesReferences.nodes.extend(connection.nodes)
+                pull.closingIssuesReferences.pageInfo = connection.pageInfo
         return pulls
+
+    def _smoke_pages(self, repo: str, model: type[Model], command: list[str], *,
+                     first: SmokeConnection[Model] | None = None) -> Iterator[SmokeConnection[Model]]:
+        page = first if first is not None else self._read(repo, SmokeConnection[model], command)
+        seen: set[str] = set()
+        while True:
+            yield page
+            if not page.pageInfo.hasNextPage:
+                return
+            cursor = page.pageInfo.endCursor
+            if not cursor or cursor in seen:
+                raise ForgeError("Missing or repeated smoke pagination cursor.")
+            seen.add(cursor)
+            page = self._read(repo, SmokeConnection[model], [*command, "-f", f"endCursor={cursor}"])
 
     def ensure_smoke_label(self, repo: str) -> None:
         self._run_command(repo, ["gh", "label", "create", "smoke", "--repo", repo, "--color", "ededed", "--force"])
 
     def close_issue(self, repo: str, number: int) -> None:
-        self._run_command(repo, ["gh", "api", f"repos/{repo}/issues/{number}", "--method", "PATCH", "-f", "state=closed"])
+        self._close_smoke_item(repo, f"repos/{repo}/issues/{number}")
 
     def close_pull_request(self, repo: str, number: int) -> None:
-        self._run_command(repo, ["gh", "api", f"repos/{repo}/pulls/{number}", "--method", "PATCH", "-f", "state=closed"])
+        self._close_smoke_item(repo, f"repos/{repo}/pulls/{number}")
+
+    def _close_smoke_item(self, repo: str, endpoint: str) -> None:
+        try:
+            item = self._read(repo, SmokeItemState, ["gh", "api", endpoint, "--method", "PATCH", "-f", "state=closed"])
+        except (CommandFailed, CommandTimedOut) as original:
+            if isinstance(original, CommandFailed) and original.status not in {404, 422}:
+                raise
+            try:
+                item = self._read(repo, SmokeItemState, ["gh", "api", endpoint])
+            except CommandFailed as exc:
+                if exc.status == 404:
+                    try:
+                        self._run_command(repo, ["gh", "api", f"repos/{repo}"])
+                    except ForgeError:
+                        raise original from None
+                    return
+                raise original from None
+            except ForgeError:
+                raise original from None
+            if item.state != "closed":
+                raise original
+        if item.state != "closed":
+            raise ForgeError("Smoke item did not close.")
 
     def issue_comments(self, repo: str, number: int) -> list[str]:
         pages = self._read(repo, IssueCommentPages, [
@@ -818,13 +848,13 @@ class LiveForge:
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
             raise CommandFailed(redact(f"{operation} failed ({exc}).", credentials_only=True)) from None
         if result.returncode:
-            if env is not None:
-                status = re.search(r"HTTP (\d{3})", result.stderr)
-                if status:
-                    if status[1] == "401":
-                        credentials.invalidate()
-                    raise CommandFailed(failure(int(status[1]), "rate limit" in result.stderr.lower()))
-            raise CommandFailed(redact(result.stderr.strip(), credentials_only=True) or f"{operation} exited with code {result.returncode}.")
+            match = re.search(r"HTTP (\d{3})", result.stderr)
+            status = int(match[1]) if match else None
+            if env is not None and status:
+                if status == 401:
+                    credentials.invalidate()
+                raise CommandFailed(failure(status, "rate limit" in result.stderr.lower()), status=status)
+            raise CommandFailed(redact(result.stderr.strip(), credentials_only=True) or f"{operation} exited with code {result.returncode}.", status=status)
         return result.stdout
 
     def _read(self, repo: str, model: type[Model], command: list[str], *, timeout: float | None = COMMAND_TIMEOUT, body: str | None = None) -> Model:
