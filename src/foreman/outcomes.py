@@ -47,7 +47,7 @@ class Halt(StrEnum):
     publication_model_missing = auto()
 
 
-def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
+def halted(reason: Halt, detail: str, path: str | None) -> "DeliveryUpdate":
     if not detail.strip():
         raise ValueError(f"{reason} requires a nonempty halt detail")
     # Checkpoint codes remain strings after validation as Halt members.
