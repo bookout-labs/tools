@@ -4,7 +4,7 @@ import os
 import re
 
 from foreman.credentials import credentials
-from foreman.redaction import redact
+from foreman.redaction import PrivateKeyBlock, redact
 from foreman.workspace import CheckLog
 
 
@@ -24,24 +24,21 @@ class CheckOutput:
         self.log = log
         self.head = self.tail = ""
         self.omitted: bool = False
-        self.in_key = False
+        self.key_block = PrivateKeyBlock()
         self.values = tuple(sorted({*credentials.known_values(), *(os.environ.get(name, "") for name in
                                    ("GH_TOKEN", "GITHUB_TOKEN"))} - {""}, key=len, reverse=True))
 
     def __call__(self, output: str) -> None:
         if self.log:
             self.log(output)
-        output = _ESCAPE.sub("", output).replace("\r\n", "\n").replace("\r", "\n")
+        output = _ESCAPE.sub("", output)
+        output = re.sub(r"\r\n|[\r\v\f\x1c-\x1e\x85\u2028\u2029]", "\n", output)
         output = output.encode("utf-8", errors="replace").decode("utf-8")
         for line in output.splitlines(keepends=True):
-            if self.in_key:
-                self.in_key = not ("END " in line or not line.strip())
-                continue
+            line = self.key_block(line)
             for value in self.values:
                 line = line.replace(value, "[redacted:Credential]")
             clean = redact(line)
-            if "[redacted:Private Key]" in clean and "END " not in line:
-                self.in_key = True
             rest = clean
             if not self.tail and not self.omitted:
                 combined = self.head + clean

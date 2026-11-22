@@ -684,7 +684,7 @@ class LiveRunnerTest(unittest.TestCase):
                     return quota_with_usage(args)
                 self.assertIn("exact check command", prompt)
                 with patch("foreman.worker.subprocess.run", return_value=worker_reply(args, {"implementation": "retry", "browser_proof": None, "formal_proof": None})) as run:
-                    result = run_worker_command(args, cwd, env)
+                    run_worker_command(args, cwd, env)
                     self.assertEqual(run.call_args.kwargs["input"], prompt)
                 return active.reply(args, {"implementation": "retry", "browser_proof": None, "formal_proof": None})
             return active.reply(args, next(replies))
@@ -700,7 +700,13 @@ class LiveRunnerTest(unittest.TestCase):
         with patch.dict(os.environ, {"GH_TOKEN": canary}):
             failed = invoke("verify")
             evidence = failed["checks"].failure_output
+            with patch.object(active, "create_branch", side_effect=WorktreeInspectionFailed("synthetic prepare failure")):
+                halted = invoke()
+            self.assertEqual(halted["stop"], "git_failed")
+            self.assertEqual(halted["path"][-2:], ["prepare", "done"])
+            self.assertEqual(halted["checks"].verify, "fail")
             prepared = invoke("prepare")
+            self.assertEqual(prepared["checks"].check_exit_code, 1)
             self.assertEqual(prepared["checks"].failure_output, evidence)
             self.assertEqual(prepared["checks"].verify, "fail")
             backup = self.checkpoint.read_bytes()

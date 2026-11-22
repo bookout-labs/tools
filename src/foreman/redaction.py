@@ -51,24 +51,50 @@ def _spans(plugin: BasePlugin, line: str) -> Iterator[tuple[int, int]]:
         raise TypeError(f"No redaction matcher for {type(plugin).__name__}")
 
 
+class PrivateKeyBlock:
+    """Frame streamed key blocks without retaining their contents."""
+
+    def __init__(self) -> None:
+        self.footer: str | None = None
+
+    def __call__(self, line: str) -> str:
+        if self.footer is not None:
+            if not self.footer and not line.strip():
+                self.footer = None
+                return line
+            if self.footer and self.footer in line:
+                self.footer = None
+            return ""
+        for start, end in _spans(PrivateKeyDetector(), line):
+            header = line[start:end]
+            if line[max(0, start - 5):start] == "-----" and line.startswith("-----", end):
+                start -= 5
+                footer = "-----END " + header.removeprefix("BEGIN ") + "-----"
+                self.footer = None if footer in line[end:] else footer
+            elif header == "PuTTY-User-Key-File-2" and line.startswith(":", end):
+                self.footer = ""
+            else:
+                continue
+            return line[:start] + "[redacted:Private Key]" + ("\n" if line.endswith("\n") else "")
+        return line
+
+
 def _private_key_span(text: str, start: int, header: str) -> tuple[int, int]:
-    end = start + len(header)
-    if text[max(0, start - 5):start] == "-----" and text.startswith("-----", end):
-        start -= 5
-        footer = "END " + header.removeprefix("BEGIN ")
-        close = text.find(footer, end)
-        if close != -1:
-            end = close + len(footer)
-            if text.startswith("-----", end):
-                end += 5
-            return start, end
-    elif not (header == "PuTTY-User-Key-File-2" and text.startswith(":", end)):
-        return start, end
-    for line in text[end:].splitlines(keepends=True):
-        if not line.strip():
-            return start, len(text[:end].rstrip("\r\n"))
+    block = PrivateKeyBlock()
+    first = max(0, start - 5) if text[max(0, start - 5):start] == "-----" else start
+    end = first
+    for line in text[first:].splitlines(keepends=True):
+        clean = block(line)
+        if end == first and clean == line:
+            return start, start + len(header)
+        if end != first and clean:
+            break
         end += len(line)
-    return start, end
+        if end == first + len(line) and block.footer and block.footer not in text[end:]:
+            block.footer = ""  # Complete text can recover after an unterminated key at a blank line.
+        if block.footer is None:
+            break
+    return first, len(text[:end].rstrip("\r\n"))
 
 
 def _matches(text: str, plugins: list[BasePlugin]) -> Iterator[_Match]:
