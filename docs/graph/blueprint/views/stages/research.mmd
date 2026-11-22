@@ -2,10 +2,10 @@ flowchart TD
     n0(["Enter stage"]):::terminal
     n1(["Research worker · Return a sourced answer"]):::worker
     n2["Foreman · Post the saved answer"]:::step
-    n3(["Cancelled"]):::terminal
-    n4(["Run stops"]):::terminal
-    n5(["Answered"]):::terminal
-    n6{{"Joe · Provide the missing external source or clarify the question. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on Joe."}}:::gate
+    n3(["Cancelled<br/>Reported on Project card"]):::terminal
+    n4(["Run stops<br/>Reported on Project card"]):::terminal
+    n5(["Answered<br/>Reported on Project card"]):::terminal
+    n6{{"Human<br/>• Supply missing source<br/>• Clarify or cancel<br/>• Resume research"}}:::gate
     n0 --> n1
     n1 -->|"Answer"| n2
     n1 --> n3
@@ -13,7 +13,7 @@ flowchart TD
     n2 --> n5
     n2 --> n4
     n1 -.->|"Unresolved choice"| n6
-    n6 -.->|"Answer to open question"| n1
+    n6 -.-> n1
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36

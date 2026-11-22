@@ -50,13 +50,26 @@ def list_items(items):
     return "".join(f"<li>{text(item)}</li>" for item in items)
 
 
+def gate_popover(stage, gate, rule):
+    popover_id = text(f"{stage}-gate-{gate['resume']}")
+    question = text(gate["question"])
+    return f"""<li>
+      <button type="button" popovertarget="{popover_id}">{text(gate["bullets"][0])}</button>
+      <div class="gate-pop" id="{popover_id}" popover aria-labelledby="{popover_id}-title">
+        <h3 id="{popover_id}-title">{text(gate["answerer"])} gate</h3>
+        <p>{question}.</p><p>{text(rule)}</p>
+        <dl><dt>Accepted</dt><dd>{text(gate["accepted"])}</dd>
+        <dt>Saved</dt><dd>{text(gate["saved"])}</dd>
+        <dt>Resume</dt><dd>{text(gate["resume"].replace("_", " "))}</dd></dl>
+        <button type="button" popovertarget="{popover_id}" popovertargetaction="hide">Close</button>
+      </div></li>"""
+
+
 def stage_page(name, stage, files, paths, decisions, gate_rule):
     warp = stage["warp"]
     steps = "".join(f"<li><strong>{text(row['action'])}</strong><p>{text(row['result'])}</p></li>"
                     for row in stage["steps"].values())
-    gates = list_items(f"{gate['answerer']} answers “{gate['question']}.” "
-                       f"{gate_rule} Resume {gate['resume'].replace('_', ' ')} to verify the answer."
-                       for gate in stage.get("gates", []))
+    gates = "".join(gate_popover(name, gate, gate_rule) for gate in stage.get("gates", []))
     recovery = stage.get("failure_and_resume", {}).get("recovery")
     contract = f"<p>{text(stage['scope'])}</p>" if "scope" in stage else ""
     if recovery:
@@ -79,7 +92,7 @@ def stage_page(name, stage, files, paths, decisions, gate_rule):
       <div class="columns"><section><h2>What happens</h2><ol class="steps">{steps}</ol></section>
       <section><h2>Warp equivalent</h2><p><strong>{text(warp["equivalent"])}</strong></p>
       <p>{text(warp["divergence"])}</p><p><a href="{text(warp["page"])}">Read Warp’s documentation ↗</a></p>
-      {f'<h2>When Joe answers</h2><ul>{gates}</ul>' if gates else ''}</section></div>
+      {f'<h2>Human gates</h2><ul class="gate-list">{gates}</ul>' if gates else ''}</section></div>
       <details class="reference"><summary>Scope, recovery and checks</summary>
         {contract}<ul>{list_items(stage["invariants"])}</ul>
         <h3>Cases the implementation must pass</h3><ul class="steps">{scenarios}</ul>
@@ -158,7 +171,7 @@ def page(directory, target, files, sections):
 <body>
 <div class="shell"><aside><a class="brand" href="#overview">Foreman <small>Blueprint v{target["blueprint_version"]}</small></a>
 <nav aria-label="Blueprint navigation"><div class="nav-group">
-<a href="#overview">Overview</a><a href="#context">System context</a><a href="#decisions">Decisions for Joe</a>
+<a href="#overview">Overview</a><a href="#context">System context</a><a href="#decisions">Blueprint decisions</a>
 </div><h2>Stages</h2><div class="nav-group">{stage_links}<a href="#dispatch">Shared dispatch</a></div>
 <h2>Workers</h2><div class="nav-group">{worker_links}</div>
 <h2>Reference</h2><div class="nav-group"><a href="#files">All file paths</a>
@@ -174,12 +187,12 @@ def page(directory, target, files, sections):
 <p class="baseline">{text(target["status"].capitalize())} blueprint · Baseline <a href="https://github.com/{text(target["repositories"]["foreman_repository"])}/commit/{text(target["baseline"])}"><code>{text(target["baseline"][:8])}</code></a></p>
 </section>
 <section class="page" id="context"><header class="page-head"><h1>Where Foreman works</h1>
-<p>Foreman runs from bookout-labs/tools. Each issue names the repository where its changes belong.</p></header>
+<p>The human works through a coordinator or personal agent. The agent files the GitHub issue and relays gate answers and stop requests to Foreman.</p></header>
 {diagram("context", "Repository and authority boundaries")}
-<p>The GitHub Project board shows when an issue is Ready, Doing, Done or needs an answer. GitHub, the CARR record layer and T3 hold shared context. Git versions the blueprint.</p></section>
+<p>Foreman runs from bookout-labs/tools. Each issue names the repository where its changes belong. The Project board mirrors the run state and shows the result on the card. GitHub, the CARR record layer and T3 hold shared context. Git versions the blueprint.</p></section>
 {stage_pages}{"".join(worker_pages)}
-<section class="page" id="decisions"><header class="page-head"><h1>Decisions for Joe</h1>
-<p>Agreed decisions record Joe’s rulings. Open decisions include a recommendation.</p></header>
+<section class="page" id="decisions"><header class="page-head"><h1>Blueprint decisions</h1>
+<p>Agreed decisions record the owner’s rulings. Open decisions include a recommendation.</p></header>
 <section class="reference"><h2>Agreed direction</h2><p>{text(agreement_lines[0])}</p>
 <ul>{agreement_items}</ul><p>{render_inline(source)}</p></section>
 <div class="decision-list">{"".join(cards)}</div></section>

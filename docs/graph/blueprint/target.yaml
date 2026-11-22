@@ -18,7 +18,7 @@ intake:
   board_statuses:
     ready: Show eligible work waiting to start.
     doing: Show the admitted run and its current stage.
-    needs_answer: Show a saved question that requires Joe's decision.
+    needs_answer: Show a saved question that requires the human's decision.
     done: Show a typed terminal result and its links.
   policy: >-
     Verify the GitHub webhook and configured Project, then read current GitHub issue and board identity.
@@ -26,7 +26,7 @@ intake:
     or after a matching prerequisite merge for a dependent already in Ready. Ignore duplicate and stale
     deliveries and Foreman's status updates. Reuse the per-issue checkpoint and lock. Mirror checkpoint state on
     the card, including the typed result. The board does not grant authority to merge or answer gates.
-  settings: Joe chooses the pilot GitHub Project and its exact status-column mapping (D6).
+  settings: The human chooses the pilot GitHub Project and its exact status-column mapping (D6).
   source: https://docs.warp.dev/factories/automation-triggers/
 overview:
   framing: "Specific to issue delivery, shared through GitHub, and scrutinized with scorers, benchmarks and a scorecard for each run."
@@ -36,7 +36,7 @@ terminal_outcomes:
   children_filed: GitHub confirms the planned child issues and dependency links.
   merged: GitHub reports merged=true and the PR head SHA at merge equals the reviewed head. Foreman records merge_commit_sha separately and rechecks eligible Ready dependents.
   closed: GitHub confirms the pull request closed without a merge.
-  cancelled: Joe explicitly cancels at a human gate.
+  cancelled: The human explicitly cancels at a human gate.
   no_change: Implementation identifies no justified change and has published nothing.
   halted: Foreman saves a named halt and its evidence.
 evidence:
@@ -47,29 +47,33 @@ evidence:
 rules:
   routing: >-
     A step emits one typed outcome. CI checks that every value of each typed route enum has exactly one
-    route in its router. Use the transition order when checks overlap. Before returning from a stage,
-    normalize foreign_repository and exhausted to halted, preserving the named halt and evidence.
+    route in its router. Use the transition order when checks overlap. Apply exit_normalization
+    before returning from a stage, preserving the named halt and evidence.
     A stage result carries its typed outcome and artifact. The top router reads that outcome.
     An invalid worker result stops at dispatch. If a valid result still has no matching route at runtime,
     open the stage's question gate and record the unmatched result as a routing defect for the scorers.
   routing_source: https://docs.warp.dev/factories/blueprints/routes/
+  exit_normalization: {foreign_repository: halted, exhausted: halted}
   gates:
     continuation: >-
       Only an answer to the open question continues the run. Silence keeps the gate open.
       An unrelated reply does not count. Gates are only for unresolved questions.
-      Plan approval never waits on Joe.
-    checkpoint: Save the question, its exact issue or artifact identity, and Joe's answer. Explicit cancellation for that question emits cancelled.
+      Plan approval never waits on the human.
+    checkpoint: Save the question, its exact issue or artifact identity, and the human's answer. Explicit cancellation for that question emits cancelled.
   prompts: Load the target prompt as the complete worker instructions and supply the declared run context separately. Deploy the prompt by replacing the runtime file.
   publication_halt: publication_unreconciled
   paths: Existing seam paths must name Git-tracked regular files in the pinned target_checkout tree. Reject absolute paths, traversal, directories and symlinks. A seam under builds has one owner. An edit-only slice names its existing seams under uses.
   reporting: Each terminal result includes issue, blueprint version, furthest stage, saved evidence, known work and raw tokens, Claude spend where known, rounds and any hand fix. Unsupported metrics are unknown.
 context:
-  - [Joe, Foreman, Answers scope questions]
-  - [GitHub Project board, Foreman, Delivers a Ready webhook]
-  - [GitHub issue, Foreman, Supplies work and repository identity]
-  - [Foreman, GitHub Project board, Mirrors run state]
-  - [CARR record layer, T3, Supplies authorized team context]
-  - [T3, Foreman, Relays operator decisions]
+  - [Human, Coordinator or personal agent, Work and decisions]
+  - [Coordinator or personal agent, GitHub issue, Files for the human]
+  - [Coordinator or personal agent, Foreman, Relays answers and stops]
+  - [Foreman, Coordinator or personal agent, Gate questions]
+  - [GitHub Project board, Foreman, Ready webhook]
+  - [GitHub issue, Foreman, Work and repository identity]
+  - [Foreman, GitHub Project board, Run state]
+  - [CARR record layer, T3, Authorized team context]
+  - [T3, Coordinator or personal agent, Conversation context]
   - [Foreman, Worker CLIs, Assigns a bounded procedure]
   - [Worker CLIs, Target checkout, Reads or edits within assignment]
   - [Foreman, GitHub pull request, Publishes checked changes]
@@ -117,12 +121,12 @@ stages:
     inputs:
       run: Intake supplies canonical repo and issue, required for every admission.
       plan: GitHub supplies stored slice and dependencies for existing child issues.
-      human_answers: Joe supplies the saved answer for this issue on resume.
+      human_answers: The human supplies the saved answer for this issue on resume.
     outputs:
       schema: foreman.stage_output.TriageOutput
       fields: [human_question, slice, triage, work_kind]
       consumers: [research, spec]
-      outcomes: {question: Answer the bounded question, plan: Draft a plan, supplied_slice: Validate the supplied slice, needs_human: Ask Joe for missing intent, cancelled: Report cancellation, halted: Report failed admission}
+      outcomes: {question: Answer the bounded question, plan: Draft a plan, supplied_slice: Validate the supplied slice, needs_human: Ask the human for missing intent, cancelled: Report cancellation, halted: Report failed admission}
     steps:
       admit:
         actor: Foreman
@@ -146,13 +150,14 @@ stages:
       - [route, __end__, cancelled]
       - [route, __end__, halted]
     exits: {question: research, plan: spec, supplied_slice: spec, cancelled: __end__, halted: __end__}
-    gates: [{answerer: Joe, question: Decide the missing issue intent, accepted: answer or cancel, saved: Issue-bound answer, resume: route}]
+    gates:
+      - {answerer: Human, question: Decide the missing issue intent, accepted: answer or cancel, saved: Issue-bound answer, resume: route, bullets: [Clarify issue intent, Answer or cancel, Resume triage]}
     effects: [Foreman reads GitHub and saves admission and route records., Foreman uses the GitHub adapter to mirror checkpoint state on the Project card.]
     invariants: [GitHub repository identity and run configuration agree., Open dependencies prevent admission and later eligibility is read from GitHub.]
     failure_and_resume:
       halts: [missing_slice]
       retries: {}
-      recovery: Missing child payload stops admission. An open dependency leaves the issue unadmitted. Worker dispatch failures use shared dispatch. Joe's answer resumes route.
+      recovery: Missing child payload stops admission. An open dependency leaves the issue unadmitted. Worker dispatch failures use shared dispatch. The human's answer resumes route.
     implementation: {module: src/foreman/steps/triage.py, entry: compile_stage, max_lines: 110, allowed_imports: [state, stage_output, github, dispatch], shared: [Forge, dispatch], never_does: [create child issues, edit source]}
     checks: {TR1: tests/test_runner.py, TR2: tests/test_delivery.py, TR3: tests/test_accept.py}
     scenarios:
@@ -178,13 +183,13 @@ stages:
       - {ref: why/SKILL.md, when: bug_fix, kind: skill, lines: [9, 9], method: Read author records and mark inferences.}
     inputs:
       run: Triage supplies origin issue, repository, base and question, required.
-      human_answers: Joe supplies the saved source or clarification for the issue on resume.
+      human_answers: The human supplies the saved source or clarification for the issue on resume.
       plan: Triage supplies work kind, required for skill selection.
     outputs:
       schema: foreman.stage_output.ResearchOutput
       fields: [research, human_question]
       consumers: [origin issue, operator]
-      outcomes: {answered: Origin issue has the saved answer, cancelled: Joe cancelled, halted: Delivery stopped with evidence}
+      outcomes: {answered: Origin issue has the saved answer, cancelled: The human cancelled, halted: Delivery stopped with evidence}
     steps:
       answer: {actor: Research worker, action: Return a sourced answer, result: Typed answer for the pinned base, owner: answer, check: RE2}
       post: {actor: Foreman, action: Post the saved answer, result: Observed issue comment, owner: post, check: RE1}
@@ -196,7 +201,8 @@ stages:
       - [post, __end__, answered]
       - [post, __end__, halted]
     exits: {answered: __end__, cancelled: __end__, halted: __end__}
-    gates: [{answerer: Joe, question: Provide the missing external source or clarify the question, accepted: source or answer or cancel, saved: Issue-bound answer, resume: answer}]
+    gates:
+      - {answerer: Human, question: Provide the missing external source or clarify the question, accepted: source or answer or cancel, saved: Issue-bound answer, resume: answer, bullets: [Supply missing source, Clarify or cancel, Resume research]}
     effects: [Foreman posts an issue comment keyed by run and answer digest.]
     invariants: [The worker reads the named repository and cites source evidence., Publication cannot allocate a PR.]
     failure_and_resume:
@@ -208,7 +214,7 @@ stages:
     scenarios:
       RE1: {given: GitHub accepts the answer before the checkpoint fails, expect: Adopt the matching comment once or report publication_unreconciled if the prior write cannot be confirmed.}
       RE2: {given: A question about a revision-sensitive symbol, expect: Return a cited answer from the pinned target base and open no PR.}
-      RE3: {given: The answer needs external evidence absent from the issue and pinned checkout, expect: Pause before posting and resume answer with Joe’s clarification.}
+      RE3: {given: The answer needs external evidence absent from the issue and pinned checkout, expect: Pause before posting and resume answer with the human’s clarification.}
     decisions: [D7]
     warp: {equivalent: Research and answer, page: https://docs.warp.dev/factories/factory-agents/, divergence: Foreman confirms one issue comment because the source is GitHub.}
 
@@ -222,19 +228,19 @@ stages:
     instructions:
       prompt: docs/graph/blueprint/prompts/spec.md
       runtime_prompt: src/foreman/stages/spec.md
-      context: [Canonical repository and pinned base, prior candidate and findings, Joe's saved answer]
+      context: [Canonical repository and pinned base, prior candidate and findings, the human's saved answer]
     skills:
       - {ref: architect/SKILL.md, when: always, kind: skill, lines: [9, 9], method: Trace affected systems and sketch two ownership shapes.}
       - {ref: statechart/SKILL.md, when: stateful, kind: skill, lines: [23, 27], method: Describe state transitions and invariants.}
     inputs:
       run: Triage supplies canonical issue, target repository and pinned base, required.
       plan: Triage supplies a stored slice, or spec supplies a draft and bound prior findings for revision.
-      human_answers: Foreman reads recorded clarifications and any comment or approval Joe supplies through the issue or coordinator.
+      human_answers: Foreman reads recorded clarifications and any comment or approval the human supplies through the issue or coordinator.
     outputs:
       schema: foreman.stage_output.SpecOutput
       fields: [questions, slices, spec, spec_gate]
       consumers: [implement, child issue runs, operator]
-      outcomes: {ready: Worker supplied a candidate for validation, needs_human: Joe must answer grounded questions, validated_single: One candidate slice cleared both checks, children_filed: All children and links confirmed, cancelled: Joe cancelled, halted: Planning stopped}
+      outcomes: {ready: Worker supplied a candidate for validation, needs_human: The human must answer grounded questions, validated_single: One candidate slice cleared both checks, children_filed: All children and links confirmed, cancelled: The human cancelled, halted: Planning stopped}
     steps:
       draft: {actor: Spec worker, action: Draft repository-bound slices, result: Candidate and grounded questions when present, owner: draft, check: SP1}
       validate: {actor: Foreman, action: Validate repository and seam paths, result: Ordered exact candidate or typed defect, owner: validate, check: SC1}
@@ -260,15 +266,15 @@ stages:
       - [file_children, __end__, halted]
     exits: {validated_single: implement, children_filed: __end__, cancelled: __end__, halted: __end__}
     gates:
-      - {answerer: Joe, question: "Decide the unresolved product, repository, architecture or policy choice", accepted: explicit choice or cancel, saved: Answer scoped to the candidate and choice, resume: draft}
-      - {answerer: Joe, question: Resolve an intent choice identified by the independent checker, accepted: explicit choice or cancel, saved: Answer scoped to the candidate and choice, resume: check}
+      - {answerer: Human, question: "Decide the unresolved product, repository, architecture or policy choice", accepted: explicit choice or cancel, saved: Answer scoped to the candidate and choice, resume: draft, bullets: [Resolve planning choice, Choose or cancel, Resume drafting]}
+      - {answerer: Human, question: Resolve an intent choice identified by the independent checker, accepted: explicit choice or cancel, saved: Answer scoped to the candidate and choice, resume: check, bullets: [Resolve checker question, Choose or cancel, Resume plan check]}
     effects: [Foreman saves draft and verdict by candidate revision., Only file_children creates or adopts child issues and links by stable parent issue and slice marker.]
     invariants:
       - The candidate digest binds target_repository, pinned base, issue and approved content scope. A changed digest needs fresh validation and checking.
       - Validate explicit repository and path identity before a paid plan check. The checker independently assesses ambiguous issue intent and repository ownership.
       - Every existing seam is a Git-tracked regular file in the pinned target_checkout. Reject directories and symlinks for all slices, including directly supplied and edit-only slices. A built seam has a single provider. Slice titles are unique. Dependencies are acyclic. Existing edits use existing seams without inventing a new seam.
       - The independent model checker can approve the plan after validation. Ready is the drafter's claim of completeness.
-      - Joe may comment, approve or stop a plan through the issue or coordinator. Record “we're good” as approval of the identified plan. Continue after the validator and model check clear the plan even without Joe's review. A recorded stop prevents further filing or building. A separate clarification gate only asks Joe to resolve an open choice.
+      - The human may comment, approve or stop a plan through the issue or coordinator. Record “we're good” as approval of the identified plan. Continue after the validator and model check clear the plan even without the human's review. A recorded stop prevents further filing or building. A separate clarification gate only asks the human to resolve an open choice.
       - File children from the cleared candidate only. Adoption verifies marker, repository, parent, body and links. Release only eligible children.
     failure_and_resume:
       halts: [invalid_output, spec_cap, git_failed, publication_unreconciled]
@@ -281,12 +287,12 @@ stages:
       SP2: {given: Valid typed draft, expect: "Save one digest scoped to issue, base and repo before independent check."}
       SC1: {given: A slice names a foreign repository or a seam available only in foreman_repository, expect: Explicit mismatch stops and wrong root rejects before any builder call.}
       SC2: {given: Synthetic wrong-repository issue with matching seam names in both repositories, expect: Checker rejects implied foreign intent and no build or child filing occurs.}
-      SC3: {given: Joe answers a choice on candidate A then candidate B changes scope, expect: Validate and check B and ask any unresolved choice again.}
+      SC3: {given: The human answers a choice on candidate A then candidate B changes scope, expect: Validate and check B and ask any unresolved choice again.}
       SC4: {given: Invalid singleton seam or cyclic parent dependencies, expect: Common validator rejects both and the final allowed rejection reports spec_cap.}
-      SC5: {given: The model clears a validated plan with no response from Joe or after his optional approval, expect: Proceed without a manual approval step. Honor a recorded stop before implementing or filing.}
+      SC5: {given: The model clears a validated plan with no response from the human or after their optional approval, expect: Proceed without a manual approval step. Honor a recorded stop before implementing or filing.}
       FS1: {given: A child issue or link write times out, expect: Adopt the matching result once and complete missing links. Report publication_unreconciled if the write cannot be confirmed.}
     decisions: [D3, D7, D8, D9]
-    warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and Joe's review is optional.}
+    warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and the human's review is optional.}
 
   implement:
     title: Build and publish the change
@@ -312,7 +318,7 @@ stages:
       schema: foreman.stage_output.ImplementOutput
       fields: [implementation, human_question]
       consumers: [review, operator]
-      outcomes: {published: Confirmed PR at checked head, no_change: No justified change, cancelled: Joe cancelled, halted: No valid checked publication}
+      outcomes: {published: Confirmed PR at checked head, no_change: No justified change, cancelled: The human cancelled, halted: No valid checked publication}
     steps:
       prepare: {actor: Foreman, action: Prepare and reconcile the worktree, result: Trusted checkout and attempt parent, owner: prepare, check: IM1}
       edit: {actor: Builder, action: Edit and run target repository checks, result: "Checked candidate tree, exact command failure, or the shared optional human_question for the acceptance gate", owner: edit, check: IM2}
@@ -333,7 +339,8 @@ stages:
       - [publish, prepare, owned_head_moved]
       - [publish, __end__, published]
     exits: {published: review, no_change: __end__, cancelled: __end__, halted: __end__}
-    gates: [{answerer: Joe, question: Decide an unresolved acceptance choice before further editing, accepted: explicit choice or cancel, saved: Answer bound to issue and current attempt, resume: edit}]
+    gates:
+      - {answerer: Human, question: Decide an unresolved acceptance choice before further editing, accepted: explicit choice or cancel, saved: Answer bound to issue and current attempt, resume: edit, bullets: [Resolve acceptance choice, Choose or cancel, Resume editing]}
     effects: [Foreman allocates and inspects the owned worktree., Builder edits source and runs checks., Foreman checks exact tree, commits and publishes through existing adapters.]
     invariants:
       - Preserve the tree on branch, ancestry or fingerprint mismatch. Reject scratch files and unexpected outside edits before commit. No force push.
@@ -380,7 +387,7 @@ stages:
       schema: foreman.stage_output.ReviewOutput
       fields: [findings, human_question]
       consumers: [implement, merge, operator]
-      outcomes: {P0: Repair critical evidenced defect, P1: Repair serious evidenced defect, none: Hand off exact current head with advisory comments, head_moved: Re-establish checked evidence, cancelled: Joe cancelled, halted: Review stopped}
+      outcomes: {P0: Repair critical evidenced defect, P1: Repair serious evidenced defect, none: Hand off exact current head with advisory comments, head_moved: Re-establish checked evidence, cancelled: The human cancelled, halted: Review stopped}
     steps:
       inspect: {actor: Reviewer, action: Assess the complete current PR, result: Typed findings pinned to head and base, owner: inspect, check: RV1}
       post: {actor: Foreman, action: Post exact-head findings, result: Observed GitHub report and typed severity, owner: post, check: RV2}
@@ -399,7 +406,8 @@ stages:
       - [route, __end__, P1]
       - [route, __end__, none]
     exits: {P0: implement, P1: implement, head_moved: implement, none: merge, cancelled: __end__, halted: __end__}
-    gates: [{answerer: Joe, question: Decide a disputed scope or product rule for the reviewed head, accepted: scoped ruling or cancel, saved: Ruling bound to finding and head, resume: inspect}]
+    gates:
+      - {answerer: Human, question: Decide a disputed scope or product rule for the reviewed head, accepted: scoped ruling or cancel, saved: Ruling bound to finding and head, resume: inspect, bullets: [Resolve scope or rule, Decide or cancel, Resume review]}
     effects: [Foreman reads the full diff and posts one COMMENT review for each exact report., Foreman records the head and typed route.]
     invariants:
       - Every round starts a fresh session and assesses the full current PR. Prior diffs or rulings are context and cannot carry review authority across heads.
@@ -442,7 +450,7 @@ stages:
       merge_binding: The GitHub PR record captured at merge must show merged=true and head.sha equal to the reviewed head. Record merge_commit_sha separately because a squash or queue merge can produce a different SHA.
       source: https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request
       consumers: [operator, eligible child runs]
-      outcomes: {merged: Reviewed revision merged, closed: PR closed without merge, reviewable_head: New observed head has valid build evidence, repair: Owning run must repair, cancelled: Joe cancelled, halted: Merge cannot proceed}
+      outcomes: {merged: Reviewed revision merged, closed: PR closed without merge, reviewable_head: New observed head has valid build evidence, repair: Owning run must repair, cancelled: The human cancelled, halted: Merge cannot proceed}
     steps:
       arm: {actor: Foreman, action: Queue the exact reviewed head, result: Observed queue or arm receipt, owner: arm, check: ME1}
       observe: {actor: Foreman, action: Read the GitHub merge outcome, result: Matching merge receipt or typed alternate outcome, owner: observe, check: ME2}
@@ -467,7 +475,8 @@ stages:
       - [release, report, halted]
       - [report, __end__, null]
     exits: {merged: __end__, closed: __end__, reviewable_head: review, repair: implement, cancelled: __end__, halted: __end__}
-    gates: [{route: head_unverified, answerer: Joe, question: Provide evidence for the ownership of the unexpected PR revision, accepted: scoped evidence or cancel, saved: Evidence bound to PR and observed head, resume: observe}]
+    gates:
+      - {route: head_unverified, answerer: Human, question: Provide evidence for the ownership of the unexpected PR revision, accepted: scoped evidence or cancel, saved: Evidence bound to PR and observed head, resume: observe, bullets: [Confirm revision ownership, Supply evidence or cancel, Recheck PR revision]}
     effects: [Foreman arms the exact head through GitHub App., Foreman records observed outcome and releases only eligible dependency links.]
     invariants:
       - Required CI is green and GitHub eligibility is fresh for the assessed head before arm. GitHub enforces approvals, rulesets and merge-group checks.
@@ -475,7 +484,7 @@ stages:
       - Keep merge_held until a synthetic repository probe proves that neither an outside writer nor the App can move the source branch while the arm is open. The exact-head arm argument protects only the request.
       - A queue acknowledgment stays pending. An authenticated relevant GitHub event wakes the checkpoint and Foreman re-reads GitHub.
       - After a matching merge, recheck admission for every dependent already in Ready. Admit only when all of its prerequisites merged. Reuse intake deduplication and keep the card in Ready until admitted.
-      - Foreman verifies the repository, PR, issue and owned branch from GitHub evidence and verifies Git ancestry against the saved owned revision. Joe's ruling supplies evidence. Keep the head_unverified gate open until Foreman verifies both. Only verified heads can route to review or repair.
+      - Foreman verifies the repository, PR, issue and owned branch from GitHub evidence and verifies Git ancestry against the saved owned revision. The human's ruling supplies evidence. Keep the head_unverified gate open until Foreman verifies both. Only verified heads can route to review or repair.
     failure_and_resume:
       halts: [merge_held, merge_not_armed, readiness_unavailable]
       retries: {}
@@ -487,7 +496,7 @@ stages:
       ME1: {given: The PR moves before arm or source policy has no accepted probe, expect: Stale evidence cannot arm and unproven policy reports merge_held.}
       ME2: {given: GitHub reports a squash or queue merge with a distinct merge commit SHA, expect: Record both SHAs and accept the merge only when the PR head at merge matches the reviewed head.}
       ME3: {given: "Queue pending and rejection precede the matching merge of the last prerequisite for an already-Ready issue, with duplicate wakes", expect: "Wait, repair, then recheck admission and admit the dependent once without another Ready transition."}
-      ME4: {given: Joe says an unexpected head belongs to the run but lineage has no verification, expect: Stay at head_unverified without adopting or repairing the revision.}
+      ME4: {given: The human says an unexpected head belongs to the run but lineage has no verification, expect: Stay at head_unverified without adopting or repairing the revision.}
       ME5: {given: GitHub arms the PR before interruption or reports a merge of an unreviewed head, expect: Adopt the existing arm once and give no delivery credit or dependent release to the unreviewed head.}
       DN1: {given: "An answer, child issue plan, cancellation, queued PR, closed PR and confirmed merge", expect: Distinct typed exits with no completion for a queued PR.}
     decisions: [D2, D10]

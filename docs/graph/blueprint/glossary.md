@@ -5,7 +5,7 @@
 | `foreman_repository` | The `bookout-labs/tools` repository that contains Foreman and its blueprint. |
 | `target_repository` | The repository of the admitted issue and the only destination for that run's changes. |
 | `target_checkout` | The pinned checkout of the target repository. Implementation owns its editable worktree. |
-| Blueprint | The versioned design Joe approves for future Foreman runs. |
+| Blueprint | The versioned design the human approves for future Foreman runs. |
 | Run | One execution for a GitHub issue under a pinned blueprint and runtime release. |
 | Stage | One of six LangGraph subgraphs. A stage owns a result and its permitted routes. |
 | Step | A checkpointed node inside a stage or shared dispatch. |
@@ -17,7 +17,7 @@
 | Candidate | A saved plan or supplied slice bound to a repository, issue, base revision and content digest. |
 | Ready | The draft worker says the candidate is complete enough to validate. |
 | Approval | An authorized person's explicit assent for the named choice, plan revision or PR head. |
-| Gate | A saved pause for Joe's answer to a specific unresolved choice. |
+| Gate | A saved pause for the human's answer to a specific unresolved choice. |
 | Halt | A named terminal stop with evidence. A provider or GitHub wait keeps the run open. |
 | Checkpoint | LangGraph's saved continuation and input records for this run. |
 | Reservation | A durable record of authorized spending and identity persisted before a paid worker call. |
