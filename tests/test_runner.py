@@ -31,7 +31,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
-from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError
+from foreman.state import PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import STAGE_OUTPUTS, ImplementOutput, ReviewOutput, Slice, parse_output
 from foreman.worker import CliWorker, run_worker_command
@@ -653,6 +653,45 @@ class LiveRunnerTest(unittest.TestCase):
             self.walk([])
         self.assertIn(str(self.checkpoint), str(raised.exception))
         self.assertIn("schema_version missing", str(raised.exception))
+
+    def test_old_checkpoint_refusal_explains_fresh_start_without_affecting_other_issues(self):
+        config = {"configurable": {"thread_id": "example/engine#8"}}
+        for version in (None, SCHEMA_VERSION - 1):
+            with self.subTest(version=version):
+                self.checkpoint = self.cwd / f"old-{version}.sqlite3"
+                self.walk([{"triage": "question"}, {"research": "Answer"}])
+                with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+                    saver.serde = checkpoint_serializer()
+                    saved = saver.get_tuple(config)
+                    channels = saved.checkpoint["channel_values"]
+                    if version is None:
+                        channels.pop("schema_version")
+                    else:
+                        channels["schema_version"] = version
+                    saver.put(saved.config, saved.checkpoint, saved.metadata, {})
+                    before = list(saver.list(config))
+                calls = len(self.calls)
+                with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    code = main(
+                        ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                        checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                        worker_runner=Mock(side_effect=AssertionError("old checkpoint dispatched a worker")),
+                    )
+                self.assertEqual(code, 1)
+                message = stderr.getvalue()
+                for text in ("example/engine#8",
+                             f"schema_version {version if version is not None else 'missing'}",
+                             f"expected {SCHEMA_VERSION}", "written by an older release",
+                             "cannot be resumed", "same command", "XDG_STATE_HOME",
+                             "new directory", "left untouched", "never deleted or migrated"):
+                    self.assertIn(text, message)
+                self.assertEqual(len(self.calls), calls)
+                other = self.walk([{"triage": "question"}, {"research": "Other answer"}], issue=9)
+                self.assertEqual(other["stop"], "answered")
+                self.assertEqual(other["run"].issue, 9)
+                with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+                    saver.serde = checkpoint_serializer()
+                    self.assertEqual(list(saver.list(config)), before)
 
     def test_queue_receipt_is_persisted_and_completion_does_not_reobserve(self):
         result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])

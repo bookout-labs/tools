@@ -348,6 +348,20 @@ Foreman creates the slice branch from the repository default branch, checkpoints
 
 The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request, check command, and any preflight command.
 
+After an upgrade, Foreman refuses checkpoints from older releases, including checkpoints
+without a schema version. The refusal names the stored and expected versions and the
+issue thread. Old checkpoints cannot be resumed and are never migrated or deleted.
+To start that issue fresh, set `XDG_STATE_HOME` to a new directory and rerun the same
+command. For example, choose an unused directory for this run:
+
+```sh
+XDG_STATE_HOME="$HOME/.local/state/foreman-fresh-42" foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm run check"
+```
+
+The new checkpoint is `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`. Keep using that
+same `XDG_STATE_HOME` value to resume the fresh run. The old file stays untouched,
+and other issue threads in the old file remain available under the old state directory.
+
 If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota returns. Foreman retries the same stage and retains its earlier attempt records. Review instead prints `done reviewer_unavailable` (exit 75) when all eligible reviewers are unavailable. Rerun after restoring quota or the missing CLI; review reselects from the current model table.
 
 Before review, Foreman fetches the pull request's base branch from `origin` and counts added and deleted lines across every path against the merge base, including root files, docs, and logs. Use Git 2.43 or later.

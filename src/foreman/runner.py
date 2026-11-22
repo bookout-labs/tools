@@ -158,7 +158,7 @@ def run_live_delivery(
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
         if prior is not None:
-            require_schema_version(channels, checkpoint)
+            require_schema_version(channels, checkpoint, f"{repo.lower()}#{issue}")
         delivery_config = load_config()
         run_state = RunState()
         if prior is not None:
@@ -295,7 +295,7 @@ def run_live_delivery(
                 elif observed is None or observed.outcome not in {"closed", "retargeted"}:
                     repaired = worktree.head != head
             before = _checkpoint_before_halt(graph, config, saved_values["path"], "prepare" if repaired else None)
-            require_schema_version(before.values, checkpoint)
+            require_schema_version(before.values, checkpoint, f"{repo.lower()}#{issue}")
             require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_budget_usd)
             restored = checkpoint_state(before.values)
             assert restored is not None
