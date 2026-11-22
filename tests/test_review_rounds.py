@@ -186,6 +186,8 @@ class ReviewRoundsTest(unittest.TestCase):
                     self.assertEqual(result["halt"], "design_rethink")
                     self.assertEqual(len(read_delivery_state({"stop": "needs_human", **result})["review"].review_findings), 2)
                     result = graph.invoke(Command(resume="Redesign the ownership."), config)
+                if result.get("halt") == "design_rethink":
+                    self.assertIs(type(result["halt"]), str)
                 return read_delivery_state({"stop": "needs_human", **result})
 
     def test_three_pinned_trees_across_rounds_and_unavailable_dispatch(self):

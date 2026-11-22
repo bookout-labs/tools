@@ -1,15 +1,13 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from decimal import Decimal
-import json
 from uuid import uuid4
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from tomllib import TOMLDecodeError
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 import re
 import textwrap
 
@@ -19,14 +17,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 
 from foreman.adapters import Outcome
 from foreman.budget import CostUnknown, Exhausted, Remaining, claude_spend, dollar_admission, work_tokens
-from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, contributors_for, family, load_config
+from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, family, load_config
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.dispatch import Handler, InvalidOutput, clean_outcome
-from foreman.fixture_manifest import fact_record_path, recorded_evidence
+from foreman.fixture_manifest import fact_record_path
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, merge_command,
 )
@@ -34,13 +32,13 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    PlanState, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, StoredSlice, parse_output,
+    PlanState, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, SliceRecord, StageOutput, PULL_REQUEST_LINES, StoredSlice, parse_output,
 )
-from foreman.stages import STAGES, InvalidSlicePlan, oversized_pr
+from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, oversized_pr
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.readiness import MergeReceipt, MergeState
-from foreman.outcomes import Halt, READINESS_HALTS
-from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
+from foreman.outcomes import Halt, READINESS_HALTS, halted
+from foreman.review_round import AcceptedReview, history
 from foreman.usd import BudgetUsd, usd_text
 from foreman.check_output import CheckOutput
 from foreman.workspace import WorkState, ImplementationRejected, WorkspaceError, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, head_mismatch_detail
@@ -121,13 +119,6 @@ def _last_stage(state: DeliveryState) -> str:
     return state["path"][-1]
 
 
-def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
-    if not detail.strip():
-        raise ValueError(f"{reason} requires a nonempty halt detail")
-    # Checkpoint codes remain strings after validation as Halt members.
-    return {"halt": cast(Halt, reason.value), "halt_detail": detail, "watch": None, "path": [path] if path else []}
-
-
 def dollar_detail(run_state: RunState, attempts: list[AttemptRecord]) -> str:
     spend = claude_spend(attempts)
     detail = f"Run Claude spend: ${spend}." if spend is not None else "Run Claude spend: unknown."
@@ -180,57 +171,10 @@ def load_slice(raw: object, plan: PlanState) -> DeliveryUpdate:
     return {"plan": plan.model_copy(update={"slice": stored.record(), "work_kind": stored.work_kind})}
 
 
-def graph_check(state: DeliveryState) -> GraphEvidence | None:
-    checks = state["checks"]
-    head, command, code = checks.verified_head, checks.check, checks.check_exit_code
-    if head and command and code == 0 and checks.verify == "pass":
-        return GraphEvidence(head=head, command=command, exit_code=code)
-    return None
-
-
-def carried_tool_facts(state: DeliveryState) -> list[StoredToolFact]:
-    review_state = state["review"]
-    gate = history({"rounds": review_state.review_findings}).gate
-    return gate.tool_facts if gate else []
-
-
-def _check_tool_facts(
-    output: ReviewOutput, workspace: Workspace, state: DeliveryState,
-) -> GraphCheck | None:
-    review_state = state["review"]
-    head = state["checks"].verified_head
-    manifest_path = review_state.fact_record
-    facts = {fact.claim: fact for fact in carried_tool_facts(state)}
-    for fact in output.tool_facts:
-        facts.setdefault(fact.claim, StoredToolFact.from_fact(fact))
-    proven = graph_check(state)
-    outside = [fact for fact in facts.values() if not (
-        proven is not None and fact.graph_check == proven and fact.claim == proven.claim
-    )]
-    recorded: dict[str, list[str]] = {}
-    notes: list[str] = []
-    if head and outside and manifest_path is not None:
-        try:
-            recorded = recorded_evidence(workspace, head, manifest_path)
-        except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
-            notes.append(f"Could not check {manifest_path} at {head}. {exc}")
-    claim_ids = {claim_id for ids in recorded.values() for claim_id in ids}
-    unrecorded = [fact for fact in outside if fact.fixture not in recorded and fact.claim_id not in claim_ids]
-    if not outside:
-        return None
-    if unrecorded and manifest_path is None:
-        notes.append("No fact record was declared.")
-    for fact in unrecorded:
-        citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
-        notes.append(f"Unrecorded outside-tool fact {fact.claim_id}{citation}: {fact.claim}")
-    return GraphCheck(failing_heads=[head or ""] if unrecorded else [],
-                      detail="\n".join(notes), passed=not unrecorded, tool_facts=outside)
-
-
 def stage_update(
-    name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None,
+    name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None, config: Config | None = None, attempt: AttemptRecord | None = None,
 ) -> DeliveryUpdate:
-    update = STAGES[name].accept(output, state, accepted_model or model, workspace)
+    update = STAGES[name].accept(output, Acceptance(state, accepted_model or model, workspace, config, attempt))
     update["path"] = [name]
     if model:
         used = state.get("models_used", {})
@@ -345,75 +289,31 @@ def compile_delivery(
             methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
-            instruction += STAGES[name].prepare(state)
-            record = review_state.fact_record
-            if name == "review":
-                instruction += (f"\n\nFact record in this checkout: {record}" if record is not None else
-                                "\n\nNo fact record was declared.")
-                if record is None:
-                    instruction += " Use null fixture references for unsupported tool facts."
-            if name == "review" and (proven := graph_check(state)) is not None:
-                instruction += f"\nGraph fact: {proven.claim}\nGraph check evidence: {proven.model_dump_json()}"
-            past = ReviewHistory()
-            if name == "review":
-                try:
-                    past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
-                except InvalidOutput as exc:
-                    return halted(Halt.invalid_output, str(exc), name)
-            review_context: tuple[Forge, PullRequest, ReviewScope] | None = None
-            run_state = state["run"]
-            repo = run_state.repo
-            if name == "review":
-                head, issue = checks.verified_head, run_state.issue
-                try:
-                    worktree = run.workspace.inspect()
-                    if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
-                        raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
-                    target = run.forge.review_target(repo, issue, worktree.branch, head)
-                    diff = run.workspace.review_scope(target.baseRefOid, head, past.rounds[-1].reviewed_head if past.rounds else None)
-                except (ForgeError, WorktreeInspectionFailed) as exc:
-                    return halted(Halt.review_unavailable, str(exc), name)
-                review_context = (run.forge, target, diff)
-                instruction = f"{instruction}\n\nRead the labeled review diffs with these commands in the checkout:\n{diff.command}"
-            if name == "review":
-                scope = "Full PR review." if not past.rounds else "Check unresolved findings and added interdiff lines also in the PR diff."
-                instruction += "\n\n" + scope
-                instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
-                instruction += "\nGraph checks, not yours to resolve:\n" + json.dumps(past.rounds[-1].graph_check.model_dump(mode="json") if past.rounds and past.rounds[-1].graph_check else None)
-                instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
+            try:
+                suffix, target, scope = STAGES[name].prepare(state, run.workspace, run.forge)
+            except InvalidOutput as exc:
+                return halted(Halt.invalid_output, str(exc), name)
+            except (ForgeError, WorktreeInspectionFailed) as exc:
+                return halted(Halt.review_unavailable, str(exc), name)
+            instruction += suffix
             return {"dispatch_plan": DispatchPlan(
                 models=[model.name for model in models], instruction=instruction, methods=methods, read_roots=read_roots,
                 budget_usd=dispatch_budget(admission),
-                target=review_context[1] if review_context else None,
-                scope=review_context[2].record() if review_context else None,
+                target=target,
+                scope=scope.record() if scope else None,
             ).record(), "pending_dispatch": PendingDispatch(stage=name, index=0, quota_model=None).record(), "review": review_state.model_copy(update={"review_run_id": review_state.review_run_id or uuid4().hex})}
         return node
 
     def call(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-            review_state = state["review"]
             assert "pending_dispatch" in state and "dispatch_plan" in state
             pending, plan = state["pending_dispatch"], state["dispatch_plan"]
             assert pending is not None
             models, methods = plan["models"], plan["methods"]
-            worker_state: DeliveryState = state.copy()
-            if name == "review":
-                worker_state["review"] = review_state.model_copy(update={
-                    "review_findings": [], "settled_rulings": [],
-                    **({"findings": [], "detail": ""} if review_state.review_findings else {}),
-                })
-                if review_state.review_findings:
-                    worker_state.pop("implementation", None)
-            citation_context = None
-            if name == "review":
-                try:
-                    assert plan["target"] is not None
-                    target = plan["target"]
-                    citation_context = run.workspace.review_context(target["baseRefOid"], target["headRefOid"])
-                except WorktreeInspectionFailed as exc:
-                    return {"pending_dispatch": None, **halted(Halt.review_unavailable, str(exc), name)}
-                if not (citation_context.base.changed or citation_context.head.changed):
-                    return {"pending_dispatch": None, **halted(Halt.review_unavailable, "Review requires changed paths.", name)}
+            try:
+                worker_state, citation_context = STAGES[name].project(state, run.workspace)
+            except WorktreeInspectionFailed as exc:
+                return {"pending_dispatch": None, **halted(Halt.review_unavailable, str(exc), name)}
             accepted_model = ModelSpec.parse(models[pending["index"]]) if models else None
             outcome = clean_outcome(dispatcher(name, accepted_model, worker_state, plan["instruction"]))
             model = accepted_model.name if accepted_model else None
@@ -440,20 +340,12 @@ def compile_delivery(
             if stop := admission_stop(state, attempt_history, name, admission, work):
                 return {**stopped, **stop}
             if outcome.kind == "review_denied":
-                denied = 0
-                for attempt in reversed(attempt_history):
-                    if attempt["stage"] != "review" or attempt["outcome"] == "ran":
-                        break
-                    denied += attempt["outcome"] == "review_denied"
-                if name == "review" and denied == 1:
+                if STAGES[name].retry_denied(attempt_history):
                     return {"attempts": attempts, "pending_dispatch": pending,
                             "dispatch_plan": {**plan, "budget_usd": dispatch_budget(admission)}}
                 return {**stopped, **halted(Halt.invalid_output, f"Review denial retry exhausted: {outcome.detail}", name)}
             index = pending["index"] + 1
-            unavailable = ""
-            if name == "review" and outcome.kind in {"quota", "cli_missing"}:
-                prior = state.get("halt_detail", "") + "; " if pending["index"] else ""
-                unavailable = f"{prior}review {model}: {outcome.kind}. {outcome.detail}".strip()
+            unavailable = STAGES[name].unavailable(state, outcome, model)
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):
                 retry: DeliveryUpdate = {"attempts": attempts,
                     "dispatch_plan": {**plan, "budget_usd": dispatch_budget(admission)}, "pending_dispatch": PendingDispatch(
@@ -461,10 +353,10 @@ def compile_delivery(
                     quota_model=model if outcome.kind == "quota" else pending["quota_model"],
                 ).record()}
                 if unavailable:
-                    retry["halt_detail"] = unavailable
+                    retry["halt_detail"] = unavailable[1]
                 return retry
             if unavailable:
-                return {**stopped, **halted(Halt.reviewer_unavailable, unavailable, name)}
+                return {**stopped, **halted(*unavailable, name)}
             if outcome.kind == "cli_missing" and pending["quota_model"]:
                 outcome, model = Outcome("quota"), pending["quota_model"]
             if outcome.kind == "failed":
@@ -477,36 +369,9 @@ def compile_delivery(
                 contract = STAGES[name].output
                 assert contract is not None
                 output = parse_output(contract, outcome.output, context=citation_context)
-                accepted: AcceptedReview | None = None
-                if isinstance(output, ReviewOutput):
-                    past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
-                    head = state["checks"].verified_head or state.get("work", WorkState()).head_sha or ""
-                    accepted = accept(past, output, head, _check_tool_facts(output, run.workspace, state))
-                if accepted is not None and accepted_model is not None:
-                    contributors, families = contributors_for(name, config, state.get("models_used", {}), state.get("implement_models"))
-                    same_family = accepted_model.family in families
-                    other_configured = any(ModelSpec.parse(candidate).family not in families for candidate in models)
-                    provenance = ReviewSelection(
-                        reviewer=accepted_model.name, contributors=contributors, same_family=same_family,
-                        reason=("preceding_candidates_unavailable" if other_configured else "no_other_family_configured") if same_family else None,
-                    )
-                    accepted.history.rounds[-1].provenance = provenance
-                    attempts[0]["provenance"] = provenance.record()
-                update = stage_update(name, output, state, model, workspace=plan_workspace, accepted_model=accepted_model)
-                update.update(attempts=attempts, pending_dispatch=None)
-                if accepted is not None:
-                    assert "review" in update
-                    update["review"] = update["review"].model_copy(update={"review": accepted.review, "detail": accepted.detail,
-                                  "review_findings": [r.model_dump(mode="json") for r in accepted.history.rounds],
-                                  "reviewed_head": accepted.history.rounds[-1].reviewed_head,
-                                  "findings": [f.record() for f in accepted.findings],
-                                  "review_change_kind": accepted.change_kind,
-                                  "review_receipt": None})
-                    if "halt_detail" in state:
-                        update["halt_detail"] = ""
-                    if accepted.rethink:
-                        update.update(halted(Halt.design_rethink, accepted.rethink, name))
-                        update["human_question"] = accepted.rethink
+                update = stage_update(name, output, state, model, workspace=plan_workspace,
+                                      accepted_model=accepted_model, config=config, attempt=attempts[0])
+                update.update(attempts=update.get("attempts", attempts), pending_dispatch=None)
             except InvalidSlicePlan as exc:
                 planning = state["plan"]
                 rounds = planning.spec_failures + 1

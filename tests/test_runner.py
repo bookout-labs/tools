@@ -26,7 +26,7 @@ from foreman.adapters import Outcome, Usage
 from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
-from foreman.delivery import compile_delivery, LiveRun, carried_tool_facts, halted, run_delivery
+from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import DEFAULT_RISK, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
@@ -34,6 +34,7 @@ from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, Lin
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery
+from foreman.review_round import carried_tool_facts
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, parse_output

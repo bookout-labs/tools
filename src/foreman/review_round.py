@@ -1,11 +1,17 @@
 """Review history, PR scope and graph-check adapter over ResolutionLedger."""
 
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
+from tomllib import TOMLDecodeError
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
+from foreman.fixture_manifest import recorded_evidence
+from foreman.workspace import Workspace, WorktreeInspectionFailed
 from foreman.resolution import ResolutionLedger
-from foreman.stage_output import Contract, Finding, ReviewOutput, ReviewSelection, ResolutionStatus, SettledRuling, StoredToolFact, parse_output
+from foreman.stage_output import Contract, Finding, ReviewOutput, ReviewSelection, ResolutionStatus, SettledRuling, StoredToolFact, GraphCheck as GraphEvidence, parse_output
+
+if TYPE_CHECKING:
+    from foreman.state import DeliveryState
 
 
 class GraphCheck(Contract):
@@ -87,3 +93,50 @@ def accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphChec
 
 def history(raw: object) -> ReviewHistory:
     return parse_output(ReviewHistory, raw)
+
+
+def graph_check(state: "DeliveryState") -> GraphEvidence | None:
+    checks = state["checks"]
+    head, command, code = checks.verified_head, checks.check, checks.check_exit_code
+    if head and command and code == 0 and checks.verify == "pass":
+        return GraphEvidence(head=head, command=command, exit_code=code)
+    return None
+
+
+def carried_tool_facts(state: "DeliveryState") -> list[StoredToolFact]:
+    review_state = state["review"]
+    gate = history({"rounds": review_state.review_findings}).gate
+    return gate.tool_facts if gate else []
+
+
+def check_tool_facts(
+    output: ReviewOutput, workspace: Workspace, state: "DeliveryState",
+) -> GraphCheck | None:
+    review_state = state["review"]
+    head = state["checks"].verified_head
+    manifest_path = review_state.fact_record
+    facts = {fact.claim: fact for fact in carried_tool_facts(state)}
+    for fact in output.tool_facts:
+        facts.setdefault(fact.claim, StoredToolFact.from_fact(fact))
+    proven = graph_check(state)
+    outside = [fact for fact in facts.values() if not (
+        proven is not None and fact.graph_check == proven and fact.claim == proven.claim
+    )]
+    recorded: dict[str, list[str]] = {}
+    notes: list[str] = []
+    if head and outside and manifest_path is not None:
+        try:
+            recorded = recorded_evidence(workspace, head, manifest_path)
+        except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
+            notes.append(f"Could not check {manifest_path} at {head}. {exc}")
+    claim_ids = {claim_id for ids in recorded.values() for claim_id in ids}
+    unrecorded = [fact for fact in outside if fact.fixture not in recorded and fact.claim_id not in claim_ids]
+    if not outside:
+        return None
+    if unrecorded and manifest_path is None:
+        notes.append("No fact record was declared.")
+    for fact in unrecorded:
+        citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
+        notes.append(f"Unrecorded outside-tool fact {fact.claim_id}{citation}: {fact.claim}")
+    return GraphCheck(failing_heads=[head or ""] if unrecorded else [],
+                      detail="\n".join(notes), passed=not unrecorded, tool_facts=outside)
