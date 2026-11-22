@@ -151,7 +151,7 @@ def worker_reply(args, reply):
         if "triage" in reply:
             reply = {"work_kind": "feature", "slice": None, "human_question": None, **reply}
         if "spec" in reply:
-            reply = {"slices": None, "human_question": None, **reply}
+            reply = {"slices": None, "questions": [], **reply}
         if "implementation" in reply and args[0] == "codex":
             reply = {"browser_proof": None, "formal_proof": None, **reply}
     if args[0] == "codex":
@@ -1950,7 +1950,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         for issue, replies, stop in (
             (8, [{"triage": "question"}, {"research": "answer"}], "answered"),
             (9, [{"triage": "spec"}, {"spec": "not ready", "spec_gate": "needs_human",
-                                       "human_question": "Which items?"}], "needs_human"),
+                                       "questions": [{"question": "Which items?", "why_code_unanswered": "No policy in code.", "checked_paths": []}]}], "needs_human"),
         ):
             with self.subTest(stop=stop):
                 result = self.walk(replies, issue=issue, preflight="touch probed; exit 9")
@@ -2548,7 +2548,10 @@ def worker(args, cwd, env):
         reply = {"triage": "spec"}
     elif title == "SpecOutput":
         if not state.get("human_answers") or mode == "pause":
-            reply = {"spec": "Need decision", "spec_gate": "needs_human", "human_question": "Which?"}
+            reply = {"spec": "Need decision", "spec_gate": "needs_human",
+                     "questions": [{"question": "Which items?",
+                         "why_code_unanswered": "items.py defines items but no visibility policy.",
+                         "checked_paths": ["items.py"]}]}
         else:
             reply = {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}
     else:
@@ -2577,6 +2580,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with self.subTest(case=case):
                 root = self.cwd / case
                 root.mkdir()
+                (root / "items.py").write_text("ITEMS = []\n")
                 checkpoint = root / "run.sqlite"
 
                 def invoke(*flags, expected):
@@ -2663,11 +2667,13 @@ def run(args, cwd, env):
         if not state.get("human_answers"):
             return worker_reply(args, {
                 "spec": "A decision is open", "spec_gate": "needs_human",
-                "human_question": f"Which items? {SYNTHETIC_QUESTION_TOKEN}",
+                "questions": [{"question": f"Which items? {SYNTHETIC_QUESTION_TOKEN}",
+                    "why_code_unanswered": "No policy in code.", "checked_paths": []}],
             })
         assert state["human_answers"] == ["Only open items"]
         assert state["run"]["request"] == "List items"
-        assert state["human_question"] == "Which items? [redacted:GitHub Token]"
+        assert state["human_question"].startswith("Which items? [redacted:GitHub Token]")
+        assert "Why code cannot answer:" in state["human_question"]
         return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
     if schema["title"] == "ImplementOutput":
         return workspace.reply(args, {"implementation": "built"})
@@ -3002,5 +3008,7 @@ class HaltExitCodeTest(unittest.TestCase):
                     code = main(["run", "delivery", "--repo", "Example/Engine", "--request", "test", "--dry-run"])
                 self.assertEqual(code, expected, output.getvalue())
                 self.assertIn(f"done {stop}\n", output.getvalue())
-                if stop == "needs_human":
+                if stop == "needs_human" and handler.spec_gate == "needs_human":
+                    self.assertIn("Which policy should apply?\nWhy code cannot answer:", output.getvalue())
+                elif stop == "needs_human":
                     self.assertIn("done needs_human\nWhat should Foreman know to continue?\n", output.getvalue())

@@ -15,7 +15,7 @@ from foreman.delivery import LiveRun, DEFAULT_TOKEN_CAP, compile_delivery, run_d
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.github import render_slice_body
 from foreman.runner import _load_slice, checkpoint_state
-from foreman.stage_output import CandidateSlice, SliceProvenance, SpecAuthor, SpecCandidate, StoredSlice
+from foreman.stage_output import CandidateSlice, SliceProvenance, SpecAuthor, SpecCandidate, StoredSlice, SpecOutput
 from skill_fixture import skill_fixture
 
 
@@ -33,6 +33,47 @@ class CandidateTests(unittest.TestCase):
             slices=[CandidateSlice.model_validate(SLICE)], spec="Save with a unique ID.", work_kind="feature",
             author=SpecAuthor(stage="spec", model="gpt-test", family="gpt"),
         )
+
+    def test_grounded_question_contract_and_checkpoint(self):
+        from foreman.dispatch import InvalidOutput
+        from foreman.stages import Acceptance, accept_spec
+        from foreman.workspace import LiveWorkspace
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+
+        question = {"question": "Which policy?", "why_code_unanswered": "Code describes mechanics only.",
+                    "checked_paths": ["policy.py"]}
+        raw = {"spec": "Open policy decision", "spec_gate": "needs_human", "slices": None,
+               "questions": [question]}
+        for changes in ({"questions": []}, {"spec_gate": "ready"},
+                        {"questions": [{**question, "question": " "}]},
+                        {"questions": [{**question, "why_code_unanswered": " "}]},
+                        {"questions": [{**question, "checked_paths": [" "]}]}):
+            with self.subTest(changes=changes), self.assertRaises(ValidationError):
+                SpecOutput.model_validate({**raw, **changes})
+        with self.assertRaises(ValidationError):
+            SpecOutput.model_validate({k: v for k, v in raw.items() if k != "questions"})
+        candidate = self.candidate()
+        state = {"review": ReviewState(), "schema_version": SCHEMA_VERSION,
+                 "run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "checks": ChecksState(check=""),
+                 "path": [], "plan": candidate.update(PlanState(), single=False)}
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = LiveWorkspace(root, "org/repo")
+            with self.assertRaisesRegex(InvalidOutput, "checked_paths"):
+                accept_spec(SpecOutput.model_validate(raw), Acceptance(state, workspace=workspace))
+            (root / "policy.py").write_text("# Mechanics only\n")
+            update = accept_spec(SpecOutput.model_validate(raw), Acceptance(state, workspace=workspace))
+            restored = checkpoint_state(json.loads(json.dumps({**state, **update}, default=lambda x: x.model_dump())))
+            self.assertIsNone(restored["plan"].spec_candidate)
+            self.assertEqual(restored["plan"].spec, raw["spec"])
+            for text in (question["question"], question["why_code_unanswered"], "policy.py"):
+                self.assertIn(text, update["human_question"])
+            state["pr_size"] = {"head": "a", "merge_base": "b", "lines": 401}
+            split = accept_spec(SpecOutput.model_validate(raw), Acceptance(state, workspace=workspace))["plan"].pr_split
+            self.assertEqual(split["question"], update["human_question"])
+            empty = SpecOutput.model_validate({**raw, "questions": [{**question, "checked_paths": []}]})
+            accept_spec(empty, Acceptance(state, workspace=workspace))
 
     def test_revision_binds_all_content_and_ignores_mapping_order(self):
         self.assertEqual(SpecCandidate.from_record(json.loads(self.candidate().model_dump_json())), self.candidate())
