@@ -990,7 +990,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 {"implementation": "built", "browser_proof": BROWSER, "formal_proof": FORMAL}, APPROVE], preflight="exit 0")
         self.assertEqual(halted["stop"], "ci_pending")
         result = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
-        assert_channels(self, result, halted, names={"run", "checks", "plan"})
+        assert_channels(self, result, halted, names={"run", "checks", "plan", "review"})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
@@ -1852,6 +1852,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertNotIn("HEAD is", out.getvalue())
 
     def test_multi_round_repair_prepare_halt_clears_attempt_observations(self):
+        self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, max_review_rounds=2)))
         workspace = FakeWorkspace(self.cwd)
         heads = iter(("1" * 40, "2" * 40))
 
@@ -1872,9 +1873,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["stop"], "pr_conflict")
         self.assertEqual(halted["work"].head_sha, "2" * 40)
         for owner in OWNERS:
-            transient = type(owner.value).model_fields.keys() - owner.durable
+            transient = (type(owner.value).model_fields.keys() - owner.durable) | owner.clear_on_head_change
             halted[owner.name] = halted[owner.name].model_copy(
                 update=owner.value.model_dump(include=transient))
+        review_sample = next(owner.value for owner in OWNERS if owner.name == "review")
+        halted["review"] = halted["review"].model_copy(update=review_sample.model_dump(include={"settled_rulings", "fact_record"}))
         # An empty receipt is non-default and still permits the head recheck.
         halted["merge"] = halted["merge"].model_copy(update={"receipt": {}})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
@@ -1918,6 +1921,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             transient = type(owner.value).model_fields.keys() - owner.durable
             halted[owner.name] = halted.get(owner.name, type(owner.value)()).model_copy(
                 update=owner.value.model_dump(include=transient))
+        review_sample = next(owner.value for owner in OWNERS if owner.name == "review")
+        halted["review"] = halted["review"].model_copy(update=review_sample.model_dump(include={"settled_rulings", "fact_record"}))
         halted["merge"] = halted["merge"].model_copy(update={"receipt": {"status": "QUEUED"}})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()

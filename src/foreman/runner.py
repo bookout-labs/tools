@@ -317,14 +317,19 @@ def run_live_delivery(
             checks = ChecksState(check=prior_checks.check, preflight=prior_checks.preflight,
                                  verify_failures=prior_checks.verify_failures, proof_failures=prior_checks.proof_failures) if reset_work else prior_checks
             assert saved_review is not None
-            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": saved_review}
+            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": (
+                ReviewState(review_findings=saved_review.review_findings, settled_rulings=saved_review.settled_rulings,
+                            fact_record=saved_review.fact_record, review_run_id=saved_review.review_run_id)
+                if repaired else saved_review)}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
-            if retained:
+            if repaired:
+                invoke(Command(update=retained), restored, replay)
+            else:
                 replay = graph.update_state(replay, retained)
                 restored = checkpoint_state(graph.get_state(replay).values)
                 assert restored is not None
-            invoke(None, restored, replay)
+                invoke(None, restored, replay)
         elif saved.next and not saved.interrupts:
             invoke(None, saved_values)
 

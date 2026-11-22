@@ -1,6 +1,5 @@
 """Reviewer eligibility and checkpoint recovery across independent processes."""
 import tests
-from foreman.state import ReviewState
 
 import json
 from pathlib import Path
@@ -11,7 +10,7 @@ import unittest
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.state import checkpoint_serializer
+from foreman.state import ReviewState, checkpoint_serializer
 from foreman.config import load_config, order_for
 from skill_fixture import fixture_pin
 
