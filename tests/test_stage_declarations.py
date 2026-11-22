@@ -59,7 +59,8 @@ def capture():
             with patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex="stable")), patch(
                 "foreman.skill_rules.PACKAGE_SKILLS", Path("/LOCAL")), patch(
                 "foreman.delivery.PACKAGE", Path(__file__).resolve().parents[1] / "src/foreman"):
-                result = run_delivery(dispatch, repo="Example/Engine", request="Change items", check="check",
+                with patch("foreman.delivery.SCHEMA_VERSION", 10):  # Captured baseline schema.
+                    result = run_delivery(dispatch, repo="Example/Engine", request="Change items", check="check",
                     slice=item, scratch=Path("/FIXTURE"), skills=lambda *_: Path("/METHODS"))
             captures[f"{kind}/{route}"] = {"calls": records, "stop": result["stop"],
                 "attempts": [(a["stage"], a["model"], a["methods"]) for a in result["attempts"]]}
