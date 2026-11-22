@@ -1,6 +1,6 @@
 # Decisions for Joe
 
-Decisions D6, D7, D9 and D10 remain open.
+Decisions D6 and D7 remain open.
 
 ## Agreed direction
 
@@ -50,8 +50,8 @@ Agreed by Joe 2026-11-22. Delete the proof step and universal tool-fact veto. Ru
 
 ## D9. Which paths count as existing seams?
 
-Repository and seam validation followed by a separate plan check is agreed. Require existing seams to be tracked regular files in the pinned checkout. Apply the same rule to directly supplied and edit-only slices. Allowing directories or symlinks would need explicit containment and identity rules. The precise seam-path policy remains open. Warp exposes a plan gate. [Warp gates](https://docs.warp.dev/factories/blueprints/gates/)
+Agreed by Joe 2026-11-22: (a). Only Git-tracked regular files in the pinned target checkout qualify as existing seams. Reject directories and symlinks. Apply the same rule to directly supplied and edit-only slices before the independent plan check. Warp exposes a plan gate. Foreman validates exact paths to bind the plan to the pinned checkout. [Warp gates](https://docs.warp.dev/factories/blueprints/gates/)
 
 ## D10. What happens after an interruption?
 
-Warp exposes persistent work and worker conversations. Keep Foreman's checkpoint at the pending step and reconcile before paying again or repeating a remote write. If provider evidence cannot establish usage, make that uncertainty visible. Rewinding a whole stage would risk rerunning a worker or repeating an already accepted write. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)
+Agreed by Joe 2026-11-22: (a) with (ii). Resume at the interrupted step and reconcile before repeating a model call or remote write. If a model call's usage is ambiguous, charge the worst case to the budget, log usage unknown, and continue within the remaining allowance. Foreman reconciles calls and writes at the saved step because its local CLIs and GitHub effects can outlive the process. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)

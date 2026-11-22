@@ -61,7 +61,7 @@ rules:
     checkpoint: Save the question, its exact issue or artifact identity, and Joe's answer. Explicit cancellation for that question emits cancelled.
   prompts: Load the target prompt as the complete worker instructions and supply the declared run context separately. Deploy the prompt by replacing the runtime file.
   publication_halt: publication_unreconciled
-  paths: Existing seam paths must name tracked files in the pinned target_checkout tree. Reject absolute paths, traversal, directories and symlinks. A seam under builds has one owner. An edit-only slice names its existing seams under uses.
+  paths: Existing seam paths must name Git-tracked regular files in the pinned target_checkout tree. Reject absolute paths, traversal, directories and symlinks. A seam under builds has one owner. An edit-only slice names its existing seams under uses.
   reporting: Each terminal result includes issue, blueprint version, furthest stage, saved evidence, known work and raw tokens, Claude spend where known, rounds and any hand fix. Unsupported metrics are unknown.
 context:
   - [Joe, Foreman, Answers scope questions]
@@ -266,14 +266,14 @@ stages:
     invariants:
       - The candidate digest binds target_repository, pinned base, issue and approved content scope. A changed digest needs fresh validation and checking.
       - Validate explicit repository and path identity before a paid plan check. The checker independently assesses ambiguous issue intent and repository ownership.
-      - Every existing seam resolves in target_checkout. A built seam has a single provider. Slice titles are unique. Dependencies are acyclic. Existing edits use existing seams without inventing a new seam.
+      - Every existing seam is a Git-tracked regular file in the pinned target_checkout. Reject directories and symlinks for all slices, including directly supplied and edit-only slices. A built seam has a single provider. Slice titles are unique. Dependencies are acyclic. Existing edits use existing seams without inventing a new seam.
       - The independent model checker can approve the plan after validation. Ready is the drafter's claim of completeness.
       - Joe may comment, approve or stop a plan through the issue or coordinator. Record “we're good” as approval of the identified plan. Continue after the validator and model check clear the plan even without Joe's review. A recorded stop prevents further filing or building. A separate clarification gate only asks Joe to resolve an open choice.
       - File children from the cleared candidate only. Adoption verifies marker, repository, parent, body and links. Release only eligible children.
     failure_and_resume:
-      halts: [invalid_output, spec_cap, git_failed]
+      halts: [invalid_output, spec_cap, git_failed, publication_unreconciled]
       retries: {plan_revisions: src/foreman/models.toml#max_review_rounds}
-      recovery: Explicit foreign scope reports invalid_output before the checker. Other candidate defects save evidence, count each rejected digest once, and return to draft only while rejections remain below max_review_rounds. No paid call repeats on an ambiguous result. On ambiguous child filing or linking, inspect issue marker and links before repeating a write.
+      recovery: Explicit foreign scope reports invalid_output before the checker. Other candidate defects save evidence, count each rejected digest once, and return to draft only while rejections remain below max_review_rounds. Dispatch reconciles paid calls before any repeat. At file_children, inspect the issue marker and links before repeating an ambiguous write. If the outcome stays ambiguous, stop with publication_unreconciled.
     implementation: {module: src/foreman/steps/spec.py, entry: compile_stage, max_lines: 410, allowed_imports: [state, stage_output, github, dispatch, spec_check, workspace], shared: [Forge, Workspace, dispatch], never_does: [edit source, choose a replacement target repository]}
     checks: {SP1: tests/test_spec_candidate.py, SP2: tests/test_spec_candidate.py, SC1: tests/test_spec_check.py, SC2: tests/test_spec_check.py, SC3: tests/test_spec_check.py, SC4: tests/test_spec_check.py, SC5: tests/test_spec_check.py, FS1: tests/test_runner.py}
     scenarios:
@@ -284,7 +284,7 @@ stages:
       SC3: {given: Joe answers a choice on candidate A then candidate B changes scope, expect: Validate and check B and ask any unresolved choice again.}
       SC4: {given: Invalid singleton seam or cyclic parent dependencies, expect: Common validator rejects both and the final allowed rejection reports spec_cap.}
       SC5: {given: The model clears a validated plan with no response from Joe or after his optional approval, expect: Proceed without a manual approval step. Honor a recorded stop before implementing or filing.}
-      FS1: {given: GitHub accepts a child or link before a timeout, expect: Adopt only the matching child and complete missing links without duplication.}
+      FS1: {given: A child issue or link write times out, expect: Adopt the matching result once and complete missing links. Report publication_unreconciled if the write cannot be confirmed.}
     decisions: [D3, D7, D8, D9]
     warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and Joe's review is optional.}
 
@@ -310,12 +310,12 @@ stages:
       review: Review or merge supplies PR-bound repair evidence, conditional.
     outputs:
       schema: foreman.stage_output.ImplementOutput
-      fields: [implementation]
+      fields: [implementation, human_question]
       consumers: [review, operator]
       outcomes: {published: Confirmed PR at checked head, no_change: No justified change, cancelled: Joe cancelled, halted: No valid checked publication}
     steps:
       prepare: {actor: Foreman, action: Prepare and reconcile the worktree, result: Trusted checkout and attempt parent, owner: prepare, check: IM1}
-      edit: {actor: Builder, action: Edit and run target repository checks, result: Checked candidate tree or exact command failure, owner: edit, check: IM2}
+      edit: {actor: Builder, action: Edit and run target repository checks, result: "Checked candidate tree, exact command failure, or the shared optional human_question for the acceptance gate", owner: edit, check: IM2}
       commit: {actor: Foreman, action: Commit or adopt the checked tree, result: Exact commit with tested tree, owner: commit, check: IM4}
       publish: {actor: Foreman, action: Publish the checked commit, result: "Confirmed repository, PR, branch, base and head", owner: publish, check: PU2}
     transitions:
@@ -505,7 +505,7 @@ dispatch:
   implementation: {module: src/foreman/dispatch.py, entry: compile_dispatch, max_lines: 250, shared: [runner, worker, budget], never_does: [choose workflow routes, publish artifacts, guess usage]}
   steps:
     reserve: {actor: Foreman, action: Save the paid-call reservation, result: Durable authorized attempt identity, owner: reserve, check: DP4}
-    reconcile: {actor: Foreman, action: Reconcile or run the worker call, result: Typed output and observed usage or a pause or halt, owner: reconcile, check: DP2}
+    reconcile: {actor: Foreman, action: Reconcile or run the worker call, result: Typed output and usage record or a pause or halt, owner: reconcile, check: DP2}
   transitions:
     - [__start__, reserve, null]
     - [reserve, reconcile, admitted]
@@ -513,19 +513,19 @@ dispatch:
     - [reconcile, reserve, eligible_fallback]
     - [reconcile, __end__, accepted]
     - [reconcile, __end__, halted]
-  halts: [budget_exceeded, usage_unknown, invalid_output, skill_missing, model_dependency_missing, dirty_worktree]
+  halts: [budget_exceeded, invalid_output, skill_missing, model_dependency_missing, dirty_worktree]
   retries: {provider_fallback: eligible configured model order and remaining allowance, quota_resume: explicit wake or known provider reset and remaining allowance}
   invariants:
     - Runner acquires a per-repository and issue OS lock before loading the LangGraph checkpoint. Release on pause or process exit.
     - Save run, worker procedure, candidate or head, attempt id, allowance and worktree identity before every paid call.
     - Resolve worker model and CLI configuration independently of the stage procedure. The procedure owns instructions and typed outputs.
-    - A reservation alone proves neither launch nor absence of launch. A replay must recover an exact result or prove the previous attempt never started. Ambiguity reports usage_unknown and preserves edits. Charge each observed attempt once before returning its response.
+    - Resume at the interrupted step and reconcile before any repeat. A reservation alone does not establish whether the call launched. Charge each attempt once. If usage is ambiguous, charge the worst case to the budget, log usage unknown, and continue within the remaining allowance.
     - Try available qualified models within the token and dollar allowance. Review prefers another model family and falls back in configured order once that preference cannot be met. A quota or missing CLI moves to the next qualified model. Use the shared quota wait only when none is available. Retain the caller's continuation and recheck branch, parent and fingerprint before continuing partial edits.
   waits: {reconcile: Wait until a qualified model becomes available}
   checks: {DP1: tests/test_dispatch_budget.py, DP2: tests/test_dispatch_recovery.py, DP3: tests/test_dispatch_recovery.py, DP4: tests/test_dispatch_recovery.py}
   scenarios:
     DP1: {given: The charged result is replayed, expect: One ledger row and accepted response.}
-    DP2: {given: "Crash before launch, after ambiguous send, or after a durable result", expect: "Launch only if proved unsent, stop on ambiguity and recover a finished result without a paid repeat."}
+    DP2: {given: "Crash before launch, after ambiguous send, or after a durable result", expect: "Reconcile at the interrupted step before repeating. Adopt a finished result. When usage is ambiguous, log usage unknown, charge the worst case once, and continue within the remaining allowance."}
     DP3: {given: Quota exhaustion after partial edits, expect: Verified caller and fingerprint resume under remaining allowance.}
     DP4: {given: Two wakes for one issue checkpoint, expect: "At most one active writer, no duplicate charge or external write."}
 
