@@ -149,11 +149,10 @@ def dollar_admission_for(run_state: RunState, attempts: list[AttemptRecord]) -> 
 
 def admission_stop(
     state: DeliveryState, attempts: list[AttemptRecord], stage: str,
-    admission: Remaining | Exhausted | CostUnknown | None,
+    admission: Remaining | Exhausted | CostUnknown | None, work: int | None,
 ) -> DeliveryUpdate | None:
     run_state = state["run"]
     assert run_state.token_cap is not None
-    work = work_tokens(attempts)
     if work is None:
         return halted(Halt.usage_unknown, "A launched attempt has unknown work usage; the work cap cannot be enforced.", stage)
     if work >= run_state.token_cap:
@@ -385,7 +384,7 @@ def compile_delivery(
             review_state = state["review"]
             checks = state["checks"]
             admission = dollar_admission_for(state["run"], state.get("attempts", []))
-            if stop := admission_stop(state, state.get("attempts", []), name, admission):
+            if stop := admission_stop(state, state.get("attempts", []), name, admission, work_tokens(state.get("attempts", []))):
                 return stop
             current_run = runtime.context or run
             if name == "implement":
@@ -521,12 +520,13 @@ def compile_delivery(
             ).record()]
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
             attempt_history = state.get("attempts", []) + attempts
-            if work_tokens(attempt_history) is None:
+            work = work_tokens(attempt_history)
+            if work is None:
                 return {**stopped, **halted(Halt.usage_unknown, unknown_usage(name, model) + " (unknown work charge)", name)}
             if outcome.kind == "budget_exhausted":
                 return {**stopped, **halted(Halt.budget_exceeded, f"{name} {model} exhausted its dollar budget. {dollar_detail(state['run'], attempt_history)} {outcome.detail}".strip(), name)}
             admission = dollar_admission_for(state["run"], attempt_history)
-            if stop := admission_stop(state, attempt_history, name, admission):
+            if stop := admission_stop(state, attempt_history, name, admission, work):
                 return {**stopped, **stop}
             index = pending["index"] + 1
             unavailable = ""

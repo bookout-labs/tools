@@ -14,7 +14,7 @@ from typing import TextIO, assert_never
 import yaml
 
 from foreman.accept import AcceptError, accept_event
-from foreman.budget import claude_spend, work_tokens
+from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.readiness import MergeState
 from foreman.state import ReviewState, ChecksState, RunState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
@@ -74,30 +74,18 @@ def _print_run_rows(
 
     def write_tokens() -> None:
         attempts = result.get("attempts", [])
-        charged = [a for a in attempts if a["outcome"] != "cli_missing"]
-        work = work_tokens(attempts)
-        known = sum(u["input"] + u["output"] + (u["cache_creation"] or 0)
-                    for a in charged if (u := a["usage"]) is not None)
-        unknown = sum(work_tokens([a]) is None for a in charged)
+        summary = token_summary(attempts)
         write_literal(f"raw tokens {run_tokens(attempts)} (known subtotal)")
-        write_literal(f"work tokens used / work cap: {known} / {run_state.token_cap}; "
-                      f"{'complete' if work is not None else 'partial'}; unknown attempts {unknown}")
+        write_literal(f"work tokens used / work cap: {summary.known} / {run_state.token_cap}; "
+                      f"{'complete' if summary.unknown == 0 else 'partial'}; unknown attempts {summary.unknown}")
         for index, attempt in enumerate(attempts, 1):
             usage = attempt["usage"]
             buckets = " ".join(f"{key}={value if value is not None else 'unknown'}"
                                for key, value in usage.items() if key != "cost_usd") if usage else "all buckets unknown"
-            write_literal(f"attempt {index} {attempt['stage']} {attempt['model']} {attempt['outcome']}: {buckets}; work={work_tokens([attempt])}")
-        for bucket in ("input", "output", "cache_read", "cache_creation"):
-            values = [a["usage"][bucket] if a["usage"] is not None else None for a in charged]
-            available = 0
-            for attempt, value in zip(charged, values):
-                native = attempt.get("native_usage")
-                counts = ([row["cache_read_input_tokens"] if bucket == "cache_read" else row["cache_creation_input_tokens"]
-                           for row in native["entries"].values()]
-                          if native is not None and bucket in ("cache_read", "cache_creation") else [])
-                available += value is not None and all(count is not None for count in counts)
-            write_literal(f"{bucket} tokens {sum(v for v in values if v is not None)}; "
-                          f"available {available}/{len(values)}")
+            work = work_tokens([attempt])
+            write_literal(f"attempt {index} {attempt['stage']} {attempt['model']} {attempt['outcome']}: {buckets}; work={work if work is not None else 'unknown'}")
+        for bucket, (total, available) in summary.buckets.items():
+            write_literal(f"{bucket} tokens {total}; available {available}/{summary.charged}")
 
     checks = result["checks"]
     run_state = result["run"]

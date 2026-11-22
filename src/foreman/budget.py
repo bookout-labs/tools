@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Literal
 
 from foreman.stage_output import AttemptRecord
 from foreman.usd import BudgetUsd
@@ -50,10 +51,26 @@ def work_tokens(attempts: Sequence[AttemptRecord]) -> int | None:
         if attempt["outcome"] == "cli_missing":
             continue
         usage = attempt["usage"]
-        native = attempt.get("native_usage")
-        if (usage is None or usage["cache_creation"] is None
-                or (native is not None and any(row["cache_creation_input_tokens"] is None
-                                               for row in native["entries"].values()))):
+        if usage is None or usage["cache_creation"] is None:
             return None
         total += usage["input"] + usage["cache_creation"] + usage["output"]
     return total
+
+
+@dataclass(frozen=True)
+class TokenSummary:
+    known: int
+    unknown: int
+    buckets: dict[str, tuple[int, int]]
+    charged: int
+
+
+def token_summary(attempts: Sequence[AttemptRecord]) -> TokenSummary:
+    charged = [a for a in attempts if a["outcome"] != "cli_missing"]
+    buckets: dict[str, tuple[int, int]] = {}
+    bucket: Literal["input", "output", "cache_read", "cache_creation"]
+    for bucket in ("input", "output", "cache_read", "cache_creation"):
+        values = [value for a in charged if (u := a["usage"]) is not None and (value := u[bucket]) is not None]
+        buckets[bucket] = (sum(values), len(values))
+    return TokenSummary(sum(buckets[b][0] for b in ("input", "output", "cache_creation")),
+                        sum(work_tokens([a]) is None for a in charged), buckets, len(charged))

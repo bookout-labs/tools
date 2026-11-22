@@ -9,7 +9,6 @@ import unittest
 from foreman.adapters import Call, Outcome, Usage
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
-from foreman.budget import work_tokens
 from foreman.cli import _print_run
 from foreman.delivery import run_delivery, run_tokens
 from test_adapters import fixture_process
@@ -44,51 +43,35 @@ class WorkCapTests(unittest.TestCase):
                     self.assertEqual(result["plan"].triage, "")
                     self.assertIn(f"Measured work overshoot: {169395-cap}", result["halt_detail"])
 
-    def test_normalized_codex_and_claude_side_model_count_once(self):
-        call = Call("", "{}", False, Path("."))
-        codex = CodexAdapter(GPT).read(fixture_process(["codex"], "cached_success", 0), call)
-        claude = ClaudeAdapter(CLAUDE).read(fixture_process(["claude"], "success", 0), call)
-        for outcome, expected in ((codex, 69), (claude, 5814)):
-            with self.subTest(expected=expected):
-                result, _ = self.walk(Outcome("ran", QUESTION, usage=outcome.usage,
-                                             native_usage=outcome.native_usage), expected)
-                self.assertEqual(result["stop"], "budget_exceeded")
-                self.assertEqual(work_tokens(result["attempts"]), expected)
-
-    def test_unknown_work_never_falls_back(self):
-        for kind in ("ran", "failed", "quota", "budget_exhausted"):
-            for usage in (None, Usage(input_tokens=2, output_tokens=1),
-                          Usage(input_tokens=2, output_tokens=1, total_cost_usd=0.1)):
-                with self.subTest(kind=kind, usage=usage):
-                    result, calls = self.walk(Outcome(kind, QUESTION, usage=usage))
-                    self.assertEqual(result["stop"], "usage_unknown")
-                    self.assertEqual(len(calls), 1)
-
-    def test_native_omission_or_bad_count_is_unknown(self):
-        for value in (None, "bad", -1):
-            envelope = json.loads(fixture_process(["claude"], "success", 0).stdout)
-            row = envelope["modelUsage"]["claude-haiku-5-5" if value is None else "claude-opus-5-5"]
-            if value is None:
-                del row["cacheCreationInputTokens"]
-            else:
-                row["cacheCreationInputTokens"] = value
-            outcome = ClaudeAdapter(CLAUDE).read(
-                CompletedProcess([], 0, json.dumps(envelope), ""), Call("", "{}", False, Path(".")))
-            result, calls = self.walk(outcome)
-            if value is None:
-                self.assertEqual(run_tokens(result["attempts"]), 9799)
-            self.assertEqual(result["stop"], "usage_unknown")
-            self.assertEqual(len(calls), 1)
-
     def test_reports_known_subtotals_and_bucket_availability(self):
-        for usage, coverage in ((None, "partial"), (Usage(input_tokens=4, output_tokens=2), "partial"),
-                                (Usage(input_tokens=4, output_tokens=2, cache_creation_input_tokens=0), "complete")):
-            result, _ = self.walk(Outcome("ran", QUESTION, usage=usage))
+        envelope = json.loads(fixture_process(["claude"], "success", 0).stdout)
+        cases = [(Outcome(kind, QUESTION, usage=u), raw, known, "unknown")
+                 for kind in ("ran", "failed", "quota", "budget_exhausted")
+                 for u, raw, known in ((None, 0, 0), (Usage(input_tokens=4, output_tokens=2), 6, 6),
+                                       (Usage(input_tokens=4, output_tokens=2, total_cost_usd=0.1), 6, 6))]
+        cases.append((Outcome("ran", QUESTION, usage=Usage(input_tokens=4, output_tokens=2, cache_creation_input_tokens=0)), 6, 6, "6"))
+        codex = CodexAdapter(GPT).read(fixture_process(["codex"], "cached_success", 0), Call("", "{}", False, Path(".")))
+        cases.append((Outcome("ran", QUESTION, usage=codex.usage, native_usage=codex.native_usage), 149, 69, "69"))
+        for field, value, raw, known, work in (("cacheCreationInputTokens", None, 5713, 1728, "unknown"),
+                                              ("cacheReadInputTokens", None, 5814, 5814, "5814"),
+                                              ("cacheCreationInputTokens", "bad", 0, 0, "unknown"), ("cacheCreationInputTokens", -1, 0, 0, "unknown")):
+            omitted = json.loads(json.dumps(envelope))
+            row = omitted["modelUsage"]["claude-haiku-5-5"]
+            row.pop(field) if value is None else row.update({field: value})
+            outcome = ClaudeAdapter(CLAUDE).read(CompletedProcess([], 0, json.dumps(omitted), ""), Call("", "{}", False, Path(".")))
+            cases.append((Outcome("ran", QUESTION, usage=outcome.usage, native_usage=outcome.native_usage), raw, known, work))
+        for outcome, raw, known, work in cases:
+            result, calls = self.walk(outcome)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(result["stop"], "usage_unknown" if work == "unknown" else "needs_human")
             with contextlib.redirect_stdout(io.StringIO()) as output:
                 _print_run(result)
             report = output.getvalue()
-            self.assertIn("raw tokens", report)
-            self.assertIn("work tokens used / work cap:", report)
-            self.assertIn(coverage, report)
+            self.assertIn(f"raw tokens {raw} (known subtotal)", report)
+            coverage = "partial; unknown attempts 1" if work == "unknown" else "complete; unknown attempts 0"
+            self.assertIn(f"work tokens used / work cap: {known} / 200000; {coverage}", report)
+            self.assertIn(f"work={work}", report)
+            usage = outcome.usage
             for bucket in ("input", "output", "cache_read", "cache_creation"):
-                self.assertIn(f"{bucket} tokens", report)
+                value = getattr(usage, f"{bucket}_input_tokens" if bucket.startswith("cache") else f"{bucket}_tokens", None)
+                self.assertIn(f"{bucket} tokens {value or 0}; available {int(value is not None)}/1", report)
