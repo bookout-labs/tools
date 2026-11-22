@@ -221,13 +221,53 @@ class PublicationTest(unittest.TestCase):
                 self.assertEqual(self.git("rev-parse", "HEAD^"), tip)
 
     def test_incompatible_existing_branch_is_not_adopted(self):
-        self.git("switch", "--orphan", self.branch)
-        self.git("commit", "--allow-empty", "-m", "Unrelated")
-        self.git("switch", "main")
-        before = LiveWorkspace(self.checkout).inspect()
-        result = self.walk(self.no_worker)
-        self.assertEqual(result["stop"], "git_failed")
-        self.assertEqual(LiveWorkspace(self.checkout).inspect(), before)
+        for kind in ("orphan", "stale", "extra"):
+            with self.subTest(kind=kind):
+                self.reset_fixture()
+                if kind == "orphan":
+                    self.git("switch", "--orphan", self.branch)
+                    self.git("commit", "--allow-empty", "-m", "Unrelated")
+                else:
+                    self.git("switch", "-c", self.branch)
+                    if kind == "extra":
+                        self.git("commit", "--allow-empty", "-m", "Unrelated extra commit")
+                existing = self.git("rev-parse", "HEAD")
+                self.git("switch", "main")
+                tip = self.advance_origin()
+                before = LiveWorkspace(self.checkout).inspect()
+                result = self.walk(self.no_worker)
+                self.assertEqual(result["stop"], "git_failed")
+                self.assertEqual(LiveWorkspace(self.checkout).inspect(), before)
+                for detail in (self.branch, existing, "origin/main", tip, "Checkout preserved", "Switch to", "delete"):
+                    self.assertIn(detail, result["halt_detail"])
+
+    def test_existing_branch_at_origin_is_adopted_from_divergent_detached_head(self):
+        tip = self.advance_origin()
+        self.git("branch", self.branch, tip)
+        detached = self.git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Divergent")
+        self.git("switch", "--detach", detached)
+        result = self.walk()
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["work"].attempt_head, tip)
+
+    def test_merge_base_operational_errors_keep_their_detail(self):
+        original = LiveWorkspace._git
+        for failure in (subprocess.CompletedProcess([], 128, b"", b"fatal: object store locked"),
+                        subprocess.TimeoutExpired("git merge-base", 30)):
+            with self.subTest(failure=failure):
+                before = LiveWorkspace(self.checkout).inspect()
+                def git(workspace, *args, **kwargs):
+                    if args[:2] == ("--no-replace-objects", "merge-base"):
+                        with patch("foreman.workspace.subprocess.run", side_effect=(
+                            failure if isinstance(failure, Exception) else [failure]
+                        )):
+                            return original(workspace, *args, **kwargs)
+                    return original(workspace, *args, **kwargs)
+                with patch.object(LiveWorkspace, "_git", git), self.assertRaises(WorkspaceError) as caught:
+                    LiveWorkspace(self.checkout)._base_merge_base("main", before.head)
+                self.assertIn("locked" if isinstance(failure, subprocess.CompletedProcess) else "timed out", str(caught.exception))
+                self.assertNotIn("unshallow", str(caught.exception))
+                self.assertEqual(LiveWorkspace(self.checkout).inspect(), before)
 
     def test_prepare_transport_failures_do_not_use_cached_base(self):
         for kind in ("missing", "absent", "auth", "timeout"):

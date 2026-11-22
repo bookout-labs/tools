@@ -242,18 +242,24 @@ class LiveWorkspace:
     def create_branch(self, branch: str, base: str) -> None:
         branch = redact(branch)
         refs = self._git("for-each-ref", "--format=%(refname)", f"refs/heads/{branch}")
-        if f"refs/heads/{branch}" in os.fsdecode(refs).splitlines():
-            self._git("merge-base", "--is-ancestor", "HEAD", f"refs/heads/{branch}")
+        exists = f"refs/heads/{branch}" in os.fsdecode(refs).splitlines()
+        if exists and os.fsdecode(self._git("branch", "--show-current")).strip() == branch:
+            return
+        base_ref = f"refs/remotes/origin/{base}"
+        self._git(
+            "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
+            f"+refs/heads/{base}:{base_ref}",
+        )
+        head = os.fsdecode(self._git("rev-parse", "--verify", f"{base_ref}^{{commit}}")).strip()
+        if exists:
+            existing = os.fsdecode(self._git("rev-parse", "--verify", f"refs/heads/{branch}^{{commit}}")).strip()
+            if existing != head:
+                raise WorktreeInspectionFailed(
+                    f"Branch {branch} at {existing} differs from origin/{base} at {head}. Checkout preserved. "
+                    f"Switch to {branch} to reuse it, or delete that branch before rerunning."
+                )
             self._git("switch", branch)
         else:
-            base_ref = f"refs/remotes/origin/{base}"
-            self._git(
-                "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
-                f"+refs/heads/{base}:{base_ref}",
-            )
-            head = os.fsdecode(self._git("rev-parse", "--verify", f"{base_ref}^{{commit}}")).strip()
-            if commit_sha(head) is None:
-                raise WorktreeInspectionFailed("Fetched base must resolve to a full commit SHA.")
             self._git(*branch_command(branch, head)[1:])
 
     def refresh(self, branch: str, head: str) -> None:
@@ -307,14 +313,16 @@ class LiveWorkspace:
             "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
             f"+refs/heads/{base_branch}:{base_ref}",
         )
-        try:
-            return os.fsdecode(self._git("--no-replace-objects", "merge-base", base_ref, head)).strip()
-        except WorktreeInspectionFailed as exc:
+        ancestor = os.fsdecode(self._git(
+            "--no-replace-objects", "merge-base", base_ref, head, allowed_returncodes=(0, 1),
+        )).strip()
+        if not ancestor:
             raise WorktreeInspectionFailed(
                 f"Cannot establish ancestry with origin/{base_branch}. Checkout preserved. "
                 "Fetch the needed history (git fetch --unshallow origin for a shallow clone), "
-                f"or restore related base history, then resume. {exc}"
-            ) from exc
+                "or restore related base history, then resume."
+            )
+        return ancestor
 
     def reconcile(self, parent: str, branch: str, base_branch: str,
                   fact_record: str | None) -> ImplementationCandidate | None:

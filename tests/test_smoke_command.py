@@ -30,14 +30,13 @@ class SmokeCommandTest(unittest.TestCase):
             with (patch('foreman.smoke_command.credentials.environment', return_value={'PATH': '/app', 'GH_TOKEN': 'app'}) as credentials,
                   patch('foreman.smoke_command.LiveForge') as forge,
                   patch('foreman.smoke_command.subprocess.run') as process,
-                  patch('foreman.smoke_command.subprocess.check_output', return_value='base\n'),
                   patch('foreman.smoke_command.run_live_delivery', return_value=passing()) as runner,
                   patch('foreman.smoke_command.smoke_lock'),
                   patch.dict(os.environ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors):
                 forge.return_value.smoke_issues.return_value = []
                 forge.return_value.smoke_pull_requests.return_value = []
                 forge.return_value.create_issue.return_value = 17
-                forge.return_value.default_branch.return_value = "main"
+                forge.return_value.default_branch.return_value = "trunk"
                 forge.return_value.smoke_identity.return_value = (True, True, True)
                 yield root, forge.return_value, process, runner, credentials, errors
 
@@ -152,7 +151,7 @@ class SmokeCommandTest(unittest.TestCase):
             git('init')
             git('add', '.')
             git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'base')
-            base = 'refs/remotes/origin/main'
+            base = 'refs/remotes/origin/trunk'
             git('update-ref', base, 'HEAD')
             def provision(args, **kwargs):
                 if args[0] == 'python3.12':
@@ -185,6 +184,15 @@ class SmokeCommandTest(unittest.TestCase):
                 git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'fixture')
                 check(True)
                 committed = git('rev-parse', 'HEAD')
+                origin_parent = git('rev-parse', base)
+                git('switch', '--detach', origin_parent)
+                (checkout / 'later-origin.txt').write_text('Later origin change')
+                git('add', 'later-origin.txt')
+                git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'Origin advanced again')
+                moved = git('rev-parse', 'HEAD')
+                git('switch', '--detach', committed)
+                git('update-ref', base, moved)
+                check(True)
                 saved_command = command
                 command = command.replace(base, committed)
                 check(False)
@@ -204,8 +212,7 @@ class SmokeCommandTest(unittest.TestCase):
                 check(False)
                 return passing()
             runner.side_effect = delivery
-            with patch('foreman.smoke_command.subprocess.check_output', return_value=base):
-                self.assertEqual(run_smoke(root, time.monotonic() + 30), 0)
+            self.assertEqual(run_smoke(root, time.monotonic() + 30), 0)
 
     def test_observed_identity_receipts(self):
         email = '359513816+' + BOT_LOGIN + '@users.noreply.github.com'
