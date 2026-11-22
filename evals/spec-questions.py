@@ -9,7 +9,7 @@ from foreman.config import ModelSpec
 from foreman.delivery import stage_text
 from foreman.stage_output import DispatchPlan, PlanState, SpecOutput
 from foreman.state import ReviewState
-from foreman.stages import accept_spec
+from foreman.stages import Acceptance, accept_spec
 from foreman.worker import CliWorker
 from foreman.workspace import LiveWorkspace
 
@@ -47,7 +47,7 @@ for request, expected in (
     if outcome.kind != "ran" or outcome.usage is None or outcome.usage.total_cost_usd is None:
         raise SystemExit(f"Incomplete live evidence. See {scratch / 'report.json'}")
     output = SpecOutput.model_validate(outcome.output)
-    accept_spec(output, state, model, workspace)
+    accept_spec(output, Acceptance(state, model, workspace))
     assert output.spec_gate == expected
     if expected == "needs_human":
         assert any(q.checked_paths for q in output.questions)

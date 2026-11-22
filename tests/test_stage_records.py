@@ -142,7 +142,7 @@ class StageOwnershipTests(unittest.TestCase):
 
     def test_every_registered_stage_owns_its_update(self):
         from foreman.delivery import stage_update
-        from foreman.dry_run import ScriptHandler
+        from foreman.dry_run import DryRun, ScriptHandler
         from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
         from foreman.stage_output import parse_output
 
@@ -158,7 +158,7 @@ class StageOwnershipTests(unittest.TestCase):
                     continue
                 payload = {"verify": "fail"} if stage == "verify" else handler(stage, None, state, "").output
                 output = parse_output(contract, payload, context=SCRIPTED_REVIEW_CONTEXT)
-                update = stage_update(stage, output, state, "model")
+                update = stage_update(stage, output, state, "model", workspace=DryRun())
                 key = {"implement": "implementation", "review": "review", "verify": "checks", "triage": "plan", "spec": "plan"}.get(stage, stage)
                 self.assertIn(key, update)
                 self.assertEqual(update["path"], [stage])
