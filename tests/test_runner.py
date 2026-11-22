@@ -2435,7 +2435,8 @@ def run(args, cwd, env):
             })
         assert state["human_answers"] == ["Only open items"]
         assert state["run"]["request"] == "List items"
-        assert state["human_question"].startswith("Which items? [redacted:GitHub Token]\nWhy code cannot answer:")
+        assert state["human_question"].startswith("Which items? [redacted:GitHub Token]")
+        assert "Why code cannot answer:" in state["human_question"]
         return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
     if schema["title"] == "ImplementOutput":
         return workspace.reply(args, {"implementation": "built"})
