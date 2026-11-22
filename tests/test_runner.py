@@ -653,13 +653,17 @@ class LiveRunnerTest(unittest.TestCase):
             self.walk([])
         self.assertIn(str(self.checkpoint), str(raised.exception))
         self.assertIn("schema_version missing", str(raised.exception))
+        self.assertIn("example/engine#8", str(raised.exception))
+        self.assertIn("XDG_STATE_HOME", str(raised.exception))
 
     def test_old_checkpoint_refusal_explains_fresh_start_without_affecting_other_issues(self):
         config = {"configurable": {"thread_id": "example/engine#8"}}
         for version in (None, SCHEMA_VERSION - 1):
             with self.subTest(version=version):
-                self.checkpoint = self.cwd / f"old-{version}.sqlite3"
-                self.walk([{"triage": "question"}, {"research": "Answer"}])
+                state_home = Path(f"old-{version}")
+                self.checkpoint = self.cwd / state_home / "foreman" / "checkpoints.sqlite3"
+                paused = self.walk([{"triage": "needs_human", "human_question": "Which items?"}])
+                self.assertEqual(paused["stop"], "needs_human")
                 with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
                     saver.serde = checkpoint_serializer()
                     saved = saver.get_tuple(config)
@@ -670,28 +674,56 @@ class LiveRunnerTest(unittest.TestCase):
                         channels["schema_version"] = version
                     saver.put(saved.config, saved.checkpoint, saved.metadata, {})
                     before = list(saver.list(config))
-                calls = len(self.calls)
-                with contextlib.redirect_stderr(io.StringIO()) as stderr:
-                    code = main(
-                        ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
-                        checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
-                        worker_runner=Mock(side_effect=AssertionError("old checkpoint dispatched a worker")),
-                    )
+                old_bytes = self.checkpoint.read_bytes()
+                command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"]
+                worker = Mock(side_effect=AssertionError("old checkpoint dispatched a worker"))
+                live_run = LiveRun(self.github, FakeWorkspace(self.cwd))
+                with (contextlib.chdir(self.cwd),
+                      patch.dict(os.environ, XDG_STATE_HOME=str(state_home)),
+                      patch("foreman.cli.Path.home", return_value=self.cwd / "unused-home"),
+                      contextlib.redirect_stderr(io.StringIO()) as stderr):
+                    code = main(command + ["--answer", "Option A"], live_run=live_run, worker_runner=worker)
                 self.assertEqual(code, 1)
                 message = stderr.getvalue()
-                for text in ("example/engine#8",
+                for text in (str(state_home / "foreman" / "checkpoints.sqlite3"), "example/engine#8",
                              f"schema_version {version if version is not None else 'missing'}",
                              f"expected {SCHEMA_VERSION}", "written by an older release",
-                             "cannot be resumed", "same command", "XDG_STATE_HOME",
-                             "new directory", "left untouched", "never deleted or migrated"):
+                             "cannot be resumed", "without --answer", "XDG_STATE_HOME",
+                             "new directory", "existing checkpoint file", "left untouched", "never deleted or migrated"):
                     self.assertIn(text, message)
-                self.assertEqual(len(self.calls), calls)
-                other = self.walk([{"triage": "question"}, {"research": "Other answer"}], issue=9)
-                self.assertEqual(other["stop"], "answered")
-                self.assertEqual(other["run"].issue, 9)
+                worker.assert_not_called()
+                self.assertEqual(self.checkpoint.read_bytes(), old_bytes)
+                other_command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "9", "--check", "exit 0"]
+                replies = iter([{"triage": "question"}, {"research": "Other answer"}])
+                with (contextlib.chdir(self.cwd),
+                      patch.dict(os.environ, XDG_STATE_HOME=str(state_home)),
+                      contextlib.redirect_stdout(io.StringIO()) as stdout):
+                    code = main(other_command, live_run=live_run,
+                                worker_runner=lambda args, cwd, env: worker_reply(args, next(replies)))
+                self.assertEqual(code, 0)
+                self.assertIn("done answered", stdout.getvalue())
                 with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
                     saver.serde = checkpoint_serializer()
                     self.assertEqual(list(saver.list(config)), before)
+                    other = saver.get({"configurable": {"thread_id": "example/engine#9"}})
+                    self.assertEqual(other["channel_values"]["run"].issue, 9)
+                old_bytes = self.checkpoint.read_bytes()
+                fresh_home = self.cwd / f"fresh-{version}"
+                fresh_checkpoint = fresh_home / "foreman" / "checkpoints.sqlite3"
+                replies = iter([{"triage": "question"}, {"research": "Fresh answer"}])
+                with (patch.dict(os.environ, XDG_STATE_HOME=str(fresh_home)),
+                      contextlib.redirect_stdout(io.StringIO()) as stdout):
+                    code = main(command, live_run=live_run,
+                                worker_runner=lambda args, cwd, env: worker_reply(args, next(replies)))
+                self.assertEqual(code, 0)
+                self.assertIn("done answered", stdout.getvalue())
+                self.assertTrue(fresh_checkpoint.is_file())
+                with SqliteSaver.from_conn_string(str(fresh_checkpoint)) as saver:
+                    saver.serde = checkpoint_serializer()
+                    fresh = saver.get(config)["channel_values"]
+                    self.assertEqual(fresh["schema_version"], SCHEMA_VERSION)
+                    self.assertEqual(fresh["run"].issue, 8)
+                self.assertEqual(self.checkpoint.read_bytes(), old_bytes)
 
     def test_queue_receipt_is_persisted_and_completion_does_not_reobserve(self):
         result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])

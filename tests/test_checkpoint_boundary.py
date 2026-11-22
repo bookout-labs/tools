@@ -49,6 +49,10 @@ class CheckpointBoundaryTests(unittest.TestCase):
                             run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint,
                                               dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun()))
                         self.assertIn(str(checkpoint), str(raised.exception))
+                        self.assertIn("a/b#8", str(raised.exception))
+                        self.assertIn("XDG_STATE_HOME", str(raised.exception))
+                        if version is not None and (type(version) is not int or version > SCHEMA_VERSION):
+                            self.assertIn("written by an incompatible release", str(raised.exception))
                         if version is None:
                             self.assertIn("schema_version missing", str(raised.exception))
                         refuse.assert_called_once()

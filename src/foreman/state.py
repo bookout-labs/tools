@@ -59,8 +59,8 @@ class CheckpointVersionError(ValueError):
         super().__init__(
             f"Unsupported checkpoint{location}{issue} schema_version {rendered_version}; expected {SCHEMA_VERSION}. "
             f"This checkpoint was written by {release} release and cannot be resumed. "
-            "Start a new run for this issue by rerunning the same command with XDG_STATE_HOME set to a new directory. "
-            "The old checkpoint file is left untouched, never deleted or migrated."
+            "Start a new run for this issue by rerunning without --answer and with XDG_STATE_HOME set to a new directory. "
+            "The existing checkpoint file is left untouched, never deleted or migrated."
         )
 
 

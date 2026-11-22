@@ -351,8 +351,8 @@ The runner uses the pinned model slugs from `models.toml` with the installed Cod
 After an upgrade, Foreman refuses checkpoints from older releases, including checkpoints
 without a schema version. The refusal names the stored and expected versions and the
 issue thread. Old checkpoints cannot be resumed and are never migrated or deleted.
-To start that issue fresh, set `XDG_STATE_HOME` to a new directory and rerun the same
-command. For example, choose an unused directory for this run:
+To start that issue fresh, set `XDG_STATE_HOME` to a new directory and rerun the
+command without `--answer`. For example, choose an unused directory for this run:
 
 ```sh
 XDG_STATE_HOME="$HOME/.local/state/foreman-fresh-42" foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm run check"
