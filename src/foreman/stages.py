@@ -7,7 +7,7 @@ import json
 from typing import Literal, TYPE_CHECKING
 
 from foreman.config import Config, ModelSpec, order_for, contributors_for
-from foreman.skill_rules import PstackMethod, SkillRule, principle
+from foreman.skill_rules import SkillMethod, SkillRule, principle
 from foreman.stage_output import (
     StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput,
     ImplementOutput, ReviewOutput, VerifyOutput, UpdateContext, Slice, SliceRecord,
@@ -15,12 +15,12 @@ from foreman.stage_output import (
 )
 
 from foreman.dispatch import InvalidOutput
-from foreman.review_round import history, accept, graph_check, check_tool_facts
-from foreman.workspace import WorkState, Workspace, PullRequestSize, ReviewScope, WorktreeInspectionFailed
+from foreman.review_round import history, accept
+from foreman.workspace import Workspace, PullRequestSize, ReviewScope, WorktreeInspectionFailed
 from foreman.github import Forge, PullRequest
 from foreman.review_context import ReviewContext
 from foreman.adapters import Outcome
-from foreman.outcomes import Halt, halted
+from foreman.outcomes import Halt
 
 if TYPE_CHECKING:
     from foreman.state import DeliveryState, DeliveryUpdate
@@ -85,30 +85,6 @@ def no_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -
     return "", None, None
 
 
-def implement_instructions(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
-    review_state = state["review"]
-    record = review_state.fact_record
-    instruction = (f"\n\nFact record in this checkout: {record}" if record is not None else
-                   "\n\nNo fact record was declared.")
-    gate = history({"rounds": review_state.review_findings}).gate if review_state.review == "changes" else None
-    if gate and not gate.passed:
-        if record is None:
-            instruction += ("\nRecording evidence requires a new run with an explicit --fact-record and a new checkpoint."
-                            " Remove the unsupported dependency if possible; carried claims remain subject to the gate.")
-        else:
-            instruction += (
-                "\nResolve the tool-facts finding by recording evidence and creating the record and parent directories if absent."
-                " Fixture IDs are paths relative to the record directory. Write regular evidence files."
-                " Use TOML [fixtures.\"<evidence-file>\"] with tool and version, plus either"
-                " kind = \"captured_run\" and argv = [\"tool\", \"arg\"] for captured output, or"
-                " kind = \"quoted_source\" and sources = [\"https://source\"] for quoted source evidence."
-                ' Add claim_ids = ["<claim_id>"] to the evidence entry for each carried claim.'
-                " Support each carried tool fact; the graph rechecks the published verified head."
-            )
-        instruction += "\nCarried tool facts:\n" + json.dumps([fact.model_dump() for fact in gate.tool_facts])
-    return instruction, None, None
-
-
 def spec_instructions(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
     if size := oversized_pr(state):
         return (
@@ -140,10 +116,7 @@ def accept_spec(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
 def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     state, model = context.state, context.model
     assert isinstance(output, ImplementOutput)
-    update: DeliveryUpdate = {"implementation": output.implementation, "checks": state["checks"].model_copy(update={
-        "browser_proof": output.browser_proof.record() if output.browser_proof else None,
-        "formal_proof": output.formal_proof.record() if output.formal_proof else None,
-    })}
+    update: DeliveryUpdate = {"implementation": output.implementation}
     if model:
         latest = state.get("models_used", {}).get("implement")
         history = state.get("implement_models", [latest] if latest else [])
@@ -160,14 +133,14 @@ def accept_verify(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
 
 
 def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
-    state, model, workspace, config = context.state, context.model, context.workspace, context.config
-    assert isinstance(output, ReviewOutput) and workspace is not None
+    state, model, config = context.state, context.model, context.config
+    assert isinstance(output, ReviewOutput) and "dispatch_plan" in state
+    target = state["dispatch_plan"]["target"]
+    assert target is not None
     review_state = state["review"]
     past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
-    head = state["checks"].verified_head or state.get("work", WorkState()).head_sha or ""
-    accepted = accept(past, output, head, check_tool_facts(output, workspace, state))
+    accepted = accept(past, output, target["headRefOid"], target["baseRefOid"])
     if isinstance(model, ModelSpec) and config is not None:
-        assert "dispatch_plan" in state
         contributors, families = contributors_for("review", config, state.get("models_used", {}), state.get("implement_models"))
         same_family = model.family in families
         other_configured = any(ModelSpec.parse(candidate).family not in families for candidate in state["dispatch_plan"]["models"])
@@ -175,45 +148,41 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
             reviewer=model.name, contributors=contributors, same_family=same_family,
             reason=("preceding_candidates_unavailable" if other_configured else "no_other_family_configured") if same_family else None,
         )
-        accepted.history.rounds[-1].provenance = provenance
-    update: DeliveryUpdate = {"review": review_state.model_copy(update={"risk": output.risk.record(), "review": accepted.review, "detail": accepted.detail,
-                  "review_findings": [r.model_dump(mode="json") for r in accepted.history.rounds],
-                  "reviewed_head": accepted.history.rounds[-1].reviewed_head,
-                  "findings": [f.record() for f in accepted.findings],
-                  "review_change_kind": accepted.change_kind, "review_receipt": None})}
-    if context.attempt is not None and (selection := accepted.history.rounds[-1].provenance) is not None:
-        update["attempts"] = [{**context.attempt, "provenance": selection.record()}]
+        accepted.provenance = provenance
+    blockers = sorted(
+        (finding for finding in accepted.findings if finding.blocking_severity),
+        key=lambda finding: finding.severity,
+    )
+    update: DeliveryUpdate = {
+        "review": review_state.model_copy(update={
+            "review": "changes" if accepted.severity else "" if output.human_question else "approve",
+            "detail": "\n".join(f"{finding.severity} {finding.summary}" for finding in blockers),
+            "review_findings": [*review_state.review_findings, accepted.model_dump(mode="json")],
+            "reviewed_head": accepted.reviewed_head,
+            "findings": [finding.record() for finding in blockers],
+            "review_receipt": None,
+        }),
+    }
+    if output.human_question or "human_question" in state:
+        update["human_question"] = output.human_question or ""
     if "halt_detail" in state:
         update["halt_detail"] = ""
-    if accepted.rethink:
-        update.update(halted(Halt.design_rethink, accepted.rethink, "review"))
-        update["human_question"] = accepted.rethink
+    if context.attempt is not None and accepted.provenance is not None:
+        update["attempts"] = [{**context.attempt, "provenance": accepted.provenance.record()}]
     return update
 
 
 def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
     review_state, checks = state["review"], state["checks"]
-    record = review_state.fact_record
-    instruction = (f"\n\nFact record in this checkout: {record}" if record is not None else
-                   "\n\nNo fact record was declared.")
-    if record is None:
-        instruction += " Use null fixture references for unsupported tool facts."
-    if (proven := graph_check(state)) is not None:
-        instruction += f"\nGraph fact: {proven.claim}\nGraph check evidence: {proven.model_dump_json()}"
-    past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
     run_state = state["run"]
     repo, head, issue = run_state.repo, checks.verified_head, run_state.issue
     worktree = workspace.inspect()
     if not (repo and issue is not None and head and worktree.clean and worktree.branch and worktree.head == head):
         raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
     target = forge.review_target(repo, issue, worktree.branch, head)
-    diff = workspace.review_scope(target.baseRefOid, head, past.rounds[-1].reviewed_head if past.rounds else None)
-    instruction += f"\n\nRead the labeled review diffs with these commands in the checkout:\n{diff.command}"
-    scope = "Full PR review." if not past.rounds else "Check unresolved findings and added interdiff lines also in the PR diff."
-    instruction += "\n\n" + scope
-    instruction += "\nUnresolved findings:\n" + json.dumps([f.model_dump() for f in past.unresolved()])
-    instruction += "\nGraph checks, not yours to resolve:\n" + json.dumps(past.rounds[-1].graph_check.model_dump(mode="json") if past.rounds and past.rounds[-1].graph_check else None)
-    instruction += "\nSettled, don't reopen:\n" + json.dumps([r.model_dump() for r in past.rulings()])
+    diff = workspace.review_scope(target.baseRefOid, head)
+    instruction = f"\n\nRead the full PR diff and committed files with these commands in the checkout:\n{diff.command}"
+    instruction += "\n\nSettled rulings:\n" + json.dumps(review_state.settled_rulings)
     return instruction, target, diff
 
 
@@ -222,26 +191,15 @@ def review_projection(state: "DeliveryState", workspace: Workspace) -> tuple["De
     review_state, plan = state["review"], state["dispatch_plan"]
     worker_state = state.copy()
     worker_state["review"] = review_state.model_copy(update={
-        "review_findings": [], "settled_rulings": [],
-        **({"findings": [], "detail": ""} if review_state.review_findings else {}),
+        "review_findings": [], "settled_rulings": [], "findings": [], "detail": "",
+        "review": "", "reviewed_head": "", "review_receipt": None,
     })
-    if review_state.review_findings:
-        worker_state.pop("implementation", None)
     assert plan["target"] is not None
     target = plan["target"]
     context = workspace.review_context(target["baseRefOid"], target["headRefOid"])
     if not (context.base.changed or context.head.changed):
         raise WorktreeInspectionFailed("Review requires changed paths.")
     return worker_state, context
-
-
-def retry_denied_review(attempts: list[AttemptRecord]) -> bool:
-    denied = 0
-    for attempt in reversed(attempts):
-        if attempt["stage"] != "review" or attempt["outcome"] == "ran":
-            break
-        denied += attempt["outcome"] == "review_denied"
-    return denied == 1
 
 
 def review_unavailable(state: "DeliveryState", outcome: Outcome, model: str | None) -> tuple[Halt, str] | None:
@@ -263,7 +221,6 @@ class Stage:
     prepare: Callable[["DeliveryState", Workspace, Forge], tuple[str, PullRequest | None, ReviewScope | None]] = no_preparation
     accept: Callable[[StageOutput, Acceptance], "DeliveryUpdate"] = accept_output
     project: Callable[["DeliveryState", Workspace], tuple["DeliveryState", ReviewContext | None]] = lambda state, workspace: (state.copy(), None)
-    retry_denied: Callable[[list[AttemptRecord]], bool] = lambda attempts: False
     unavailable: Callable[["DeliveryState", Outcome, str | None], tuple[Halt, str] | None] = lambda state, outcome, model: None
 
     models: Callable[[str, "DeliveryState", Config], list[ModelSpec]] = lambda name, state, config: order_for(
@@ -272,11 +229,11 @@ class Stage:
 
 STAGES = {
     "triage": Stage("triage.md", TriageOutput, (
-        SkillRule(skill=PstackMethod(path="poteto-mode/SKILL.md", kind="skill", lines=(110, 110))),
+        SkillRule(skill=SkillMethod(path="poteto-mode/SKILL.md", kind="skill", lines=(110, 110))),
     ), input_fields=("run", "plan", "human_question", "human_answers")),
     "research": Stage("research.md", ResearchOutput, (
-        SkillRule(skill=PstackMethod(path="how/SKILL.md", kind="leaf_prompt", lines=(17, 17))),
-        SkillRule(skill=PstackMethod(path="why/SKILL.md", kind="skill"), when="bug_fix"),
+        SkillRule(skill=SkillMethod(path="how/SKILL.md", kind="leaf_prompt", lines=(17, 17))),
+        SkillRule(skill=SkillMethod(path="why/SKILL.md", kind="skill"), when="bug_fix"),
     ), input_fields=("run", "plan")),
     "spec": Stage("spec.md", SpecOutput, (
         principle("redesign-from-first-principles"),
@@ -284,7 +241,7 @@ STAGES = {
         principle("model-the-domain"),
         principle("boundary-discipline"),
         principle("type-system-discipline"),
-        SkillRule(skill=PstackMethod(path="statechart/SKILL.md", kind="skill"), when="stateful"),
+        SkillRule(skill=SkillMethod(path="statechart/SKILL.md", kind="skill"), when="stateful"),
     ), prepare=spec_instructions, accept=accept_spec, input_fields=("run", "plan", "pr_size", "pr_size_override", "human_question", "human_answers")),
     "spec_check": Stage("spec_check.md", SpecCheckOutput, (
         principle("model-the-domain"),
@@ -293,23 +250,12 @@ STAGES = {
         principle("prove-it-works"),
     ), kind="dormant", input_fields=("run", "plan")),
     "implement": Stage("implement.md", ImplementOutput, (
-        principle("laziness-protocol"),
-        principle("test-behavior-not-implementation"),
-        principle("prove-it-works"),
-        SkillRule(skill=PstackMethod(path="tdd/SKILL.md", kind="skill"), when="bug_fix"),
-        SkillRule(skill=PstackMethod(path="benchmark-checklist/SKILL.md", kind="skill"), when="perf_issue"),
-        SkillRule(skill="browser-proof", when="browser"),
-        SkillRule(skill="formal-proof", when="formal"),
-    ), prepare=implement_instructions, accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review")),
+        SkillRule(skill=SkillMethod(path="tdd/SKILL.md", kind="skill", lines=(9, 31)), when="bug_fix"),
+        SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill", lines=(13, 27)), when="perf_issue"),
+    ), accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review")),
     "review": Stage("review.md", ReviewOutput, (
-        principle("boundary-discipline"),
-        principle("model-the-domain"),
-        principle("prove-it-works"),
-        principle("test-behavior-not-implementation"),
-        SkillRule(skill="review-quality"),
-        SkillRule(skill="merge-risk"),
+        SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill", lines=(3, 7))),
     ), prepare=review_preparation, accept=accept_review, project=review_projection,
-       retry_denied=retry_denied_review, unavailable=review_unavailable, input_fields=("run", "plan", "work", "checks", "review", "implementation")),
+       unavailable=review_unavailable, input_fields=("run", "plan", "work", "checks", "review")),
     "verify": Stage(None, VerifyOutput, accept=accept_verify, kind="deterministic", input_fields=("checks",)),
-    "proof": Stage(None, None, kind="deterministic", input_fields=("plan", "checks", "review")),
 }

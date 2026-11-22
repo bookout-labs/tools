@@ -35,8 +35,9 @@ class PermissionsTest(unittest.TestCase):
                     text, methods, roots = stage_methods(stage, state, root)
                     self.assertEqual(len(roots), len(set(roots)))
                     self.assertTrue(set(roots) <= {str(root.resolve()), str(PACKAGE_SKILLS.resolve())})
-                    self.assertEqual(len(text.split('\n\n')), len(methods))
-                    for instruction in text.split('\n\n'):
+                    instructions = text.split('\n\n') if text else []
+                    self.assertEqual(len(instructions), len(methods))
+                    for instruction in instructions:
                         path = instruction.split(' of ')[-1].split(' as the method.')[0] if ' of ' in instruction else instruction.removeprefix('Read ').split(' in full')[0]
                         self.assertTrue(Path(path).is_file())
                         self.assertTrue(any(Path(path).is_relative_to(Path(r)) for r in roots))

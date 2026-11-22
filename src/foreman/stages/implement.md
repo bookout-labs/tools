@@ -1,8 +1,6 @@
-Implement the change in the repository. Fix every unresolved finding in findings, including nits.
-Foreman owns commits and publishing. Write edits and evidence files; do not commit or publish.
-Edit the files in the provided checkout. Follow the spec when one is present.
-Summarize the changes in `implementation`.
-A test must check a behavior the change can break. Do not add a test that restates the code.
+# Implement the slice
 
-The model list is config outside this node. Do not edit it.
-Run the `check` command from the delivery state before finishing.
+Edit the owned worktree within the cleared slice and acceptance. Run the target repository
+checks and fix concrete failures within the allowance. On a repair, address the evidenced
+blocking defects on the existing PR. Keep evidence requested by the issue or repository.
+Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.

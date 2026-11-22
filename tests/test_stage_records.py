@@ -2,7 +2,7 @@
 import tests
 from foreman.stages import STAGES
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION
-from foreman.dry_run import DEFAULT_RISK
+from test_runner import FINDING
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 import unittest
 
@@ -10,10 +10,9 @@ from pydantic import TypeAdapter, ValidationError
 
 from foreman.stage_output import (
     CandidateSlice, CandidateSliceRecord, SpecAuthor, SpecAuthorRecord, SpecCandidate, SpecCandidateRecord, SliceProvenance, SliceProvenanceRecord,
-    PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, AttemptUsageRecord, ConstraintResult, ConstraintResultRecord,
-    BrowserProof, BrowserProofRecord, Finding, FindingRecord, FormalProof, FormalProofRecord,
-    MergeRisk, MergeRiskRecord, Seam, SeamRecord, Slice, SliceRecord, SliceProperty,
-    SlicePropertyRecord, StoredSlice, ToolFact, ToolFactRecord,
+    PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, AttemptUsageRecord,
+    Finding, FindingRecord, Seam, SeamRecord, Slice, SliceRecord, SliceProperty,
+    SlicePropertyRecord, StoredSlice,
 )
 
 
@@ -32,15 +31,9 @@ class StageRecordTests(unittest.TestCase):
             (DispatchPlan, DispatchPlanRecord, {"budget_usd": None, "models": [], "instruction": "test", "methods": [], "read_roots": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)]}}),
             (AttemptUsage, AttemptUsageRecord, usage),
             (Attempt, AttemptRecord, {"stage": "triage", "model": None, "commit": "pin", "methods": [], "outcome": "ran", "usage": usage}),
-            (ConstraintResult, ConstraintResultRecord, {"constraint": "positive", "rejected": True}),
-            (BrowserProof, BrowserProofRecord, {"screen": None, "trace": None, "passed": None}),
-            (FormalProof, FormalProofRecord, {"ran": True, "constraints": [{"constraint": "positive", "rejected": True}], "typecheck": False}),
-            (Finding, FindingRecord, {"id": "f1", "kind": "correctness", "fix": "Rename.", "ruling_id": None, "file": "a.py", "line": 1, "severity": "nit", "summary": "Rename."}),
-            (MergeRisk, MergeRiskRecord, DEFAULT_RISK),
+            (Finding, FindingRecord, FINDING),
             (Seam, SeamRecord, {"name": "db", "exists": True, "path": "db.py"}),
             (SliceProperty, SlicePropertyRecord, {"name": "Positive", "constraint": "positive"}),
-            (ToolFact, ToolFactRecord, {"claim": "Tool accepts JSON.", "fixture": None, "graph_check": None}),
-            (ToolFact, ToolFactRecord, {"claim": "Checked.", "fixture": None, "graph_check": {"head": "a" * 40, "command": "exit 0", "exit_code": 0}}),
             (Slice, SliceRecord, {"title": "Ship", "stateful": False, "acceptance": "Pass", "builds": [], "uses": [], "screen": "", "properties": []}),
         )
         for model, record, raw in cases:
@@ -85,10 +78,9 @@ class StageRecordTests(unittest.TestCase):
                         shape.validate_python({**usage, key: -1}, strict=True)
 
     def test_nested_boundaries_reject_coercion(self):
-        for raw in ({"ran": "true", "constraints": None, "typecheck": None},
-                    {"ran": True, "constraints": [{"constraint": "positive", "rejected": 1}], "typecheck": None}):
-            with self.subTest(raw=raw), self.assertRaises(ValidationError):
-                FormalProof.model_validate(raw)
+        for location in ({**FINDING["location"], "line": "1"}, {**FINDING["location"], "path": 1}):
+            with self.subTest(location=location), self.assertRaises(ValidationError):
+                Finding.model_validate({**FINDING, "location": location})
 
     def test_candidate_nested_boundaries_reject_coercion(self):
         from test_spec_candidate import CandidateTests, SLICE
@@ -147,6 +139,10 @@ class StageOwnershipTests(unittest.TestCase):
         from foreman.stage_output import parse_output
 
         state = {"review": ReviewState(), "run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "plan": PlanState(issue_kind="slice")}
+        workspace = DryRun()
+        target = workspace.review_target("org/repo", 1, "1-branch", "a" * 40)
+        state["dispatch_plan"] = DispatchPlan(models=[], instruction="Review", methods=[], read_roots=[],
+                                              target=target, scope=None).record()
         handler = ScriptHandler(reviews=["changes"])
         for stage, row in STAGES.items():
             if (contract := row.output) is None:
@@ -158,7 +154,7 @@ class StageOwnershipTests(unittest.TestCase):
                     continue
                 payload = {"verify": "fail"} if stage == "verify" else handler(stage, None, state, "").output
                 output = parse_output(contract, payload, context=SCRIPTED_REVIEW_CONTEXT)
-                update = stage_update(stage, output, state, "model", workspace=DryRun())
+                update = stage_update(stage, output, state, "model", workspace=workspace)
                 key = {"implement": "implementation", "review": "review", "verify": "checks", "triage": "plan", "spec": "plan"}.get(stage, stage)
                 self.assertIn(key, update)
                 self.assertEqual(update["path"], [stage])

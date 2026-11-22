@@ -21,7 +21,6 @@ graph TD;
 	size(size)
 	commit(commit)
 	publish(publish)
-	proof(proof)
 	review_post(review_post)
 	needs_human(needs_human)
 	quota_wait(quota_wait)
@@ -49,9 +48,6 @@ graph TD;
 	needs_human -.-> triage;
 	prepare -.-> done;
 	prepare -.-> implement;
-	proof -.-> done;
-	proof -.-> prepare;
-	proof -. &nbsp;pass&nbsp; .-> publish;
 	publish -.-> done;
 	publish -.-> review;
 	quota_wait -.-> implement;
@@ -113,7 +109,7 @@ graph TD;
 	triage_call -.-> spec;
 	verify -.-> done;
 	verify -.-> prepare;
-	verify -.-> proof;
+	verify -.-> publish;
 	done --> __end__;
 	implement_call -. &nbsp;call&nbsp; .-> implement_call;
 	research_call -. &nbsp;call&nbsp; .-> research_call;

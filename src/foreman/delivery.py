@@ -24,11 +24,9 @@ from foreman.budget import CostUnknown, Exhausted, Remaining, claude_spend, doll
 from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, family, load_config
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.dispatch import Handler, InvalidOutput, clean_outcome
-from foreman.fixture_manifest import fact_record_path
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, merge_command,
 )
-from foreman.proof import browser_proof_label, formal_proof_label
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
@@ -38,7 +36,7 @@ from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, oversized_pr
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS, halted
-from foreman.review_round import AcceptedReview, history
+from foreman.review_round import ReviewRound, history
 from foreman.usd import BudgetUsd, usd_text
 from foreman.check_output import CheckOutput
 from foreman.workspace import WorkState, ImplementationRejected, WorkspaceError, CheckLog, ReviewScope, Workspace, WorktreeInspectionFailed, head_mismatch_detail
@@ -100,8 +98,7 @@ _DELIVERY_STATE = TypeAdapter(DeliveryResult)
 
 
 def review_count(state: DeliveryState | DeliveryResult) -> int:
-    review_state = state["review"]
-    return len(review_state.review_findings)
+    return sum(round.severity is not None for round in history({"rounds": state["review"].review_findings}).rounds)
 
 
 def read_delivery_state(raw: object) -> DeliveryResult:
@@ -182,19 +179,25 @@ def stage_update(
     return update
 
 
-def review_submission(output: AcceptedReview, scope: ReviewScope) -> tuple[str, list[ReviewComment]]:
-    body = [f"Graph verdict: {output.review}. Review event: COMMENT (Foreman authors this PR).", output.detail]
-    provenance = output.history.rounds[-1].provenance if output.history.rounds else None
+def review_submission(output: ReviewRound, scope: ReviewScope, question: str) -> tuple[str, list[ReviewComment]]:
+    body = [f"Review route: {output.severity or 'none'}. Head: {output.reviewed_head}. Base ref: {output.base}."]
+    if question:
+        body.append(f"Question for Joe: {question}")
+    provenance = output.provenance
     if provenance is not None:
         reason = provenance.reason.replace("_", " ") if provenance.reason else "not needed"
         body.append(f"Reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; same-family fallback: {reason}.")
     comments: list[ReviewComment] = []
-    for finding in output.findings:
-        message = f"[{finding.severity}] {finding.summary}"
-        if (finding.file, finding.line) in scope.inline:
-            comments.append({"path": finding.file, "line": finding.line, "side": "RIGHT", "body": message})
+    for finding in sorted(output.findings, key=lambda item: item.severity):
+        location = finding.location
+        path, line = location["path"], location["line"]
+        label = f"Advisory, settled by {finding.ruling_id}" if finding.ruling_id else finding.severity
+        message = f"[{label}] {finding.summary}\n\nImpact: {finding.impact}\n\nEvidence: {finding.evidence}"
+        if location["side"] == "head" and line is not None and (path, line) in scope.inline:
+            comments.append({"path": path, "line": line, "side": "RIGHT", "body": message})
         else:
-            body.append(f"{finding.file}:{finding.line} {message}")
+            citation = f"{path}:{line}" if line is not None else path
+            body.append(f"{location['side']} {citation} {message}")
     return "\n\n".join(body), comments
 
 
@@ -333,8 +336,6 @@ def compile_delivery(
                     cost_usd=outcome.usage.total_cost_usd,
                 ),
             ).record()]
-            if outcome.kind == "review_denied":
-                attempts[0]["detail"] = outcome.detail
             stopped: DeliveryUpdate = {"path": [name], "attempts": attempts, "pending_dispatch": None}
             attempt_history = state.get("attempts", []) + attempts
             work = work_tokens(attempt_history)
@@ -345,11 +346,6 @@ def compile_delivery(
             admission = dollar_admission_for(state["run"], attempt_history)
             if stop := admission_stop(state, attempt_history, name, admission, work):
                 return {**stopped, **stop}
-            if outcome.kind == "review_denied":
-                if STAGES[name].retry_denied(attempt_history):
-                    return {"attempts": attempts, "pending_dispatch": pending,
-                            "dispatch_plan": {**plan, "budget_usd": dispatch_budget(admission)}}
-                return {**stopped, **halted(Halt.invalid_output, f"Review denial retry exhausted: {outcome.detail}", name)}
             index = pending["index"] + 1
             unavailable = STAGES[name].unavailable(state, outcome, model)
             if outcome.kind in {"quota", "cli_missing"} and index < len(models):
@@ -398,14 +394,21 @@ def compile_delivery(
         plan = state["dispatch_plan"]
         assert plan["target"] is not None and plan["scope"] is not None
         past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
-        accepted = AcceptedReview(history=past, findings=past.unresolved(), detail=review_state.detail)
-        body, comments = review_submission(accepted, TypeAdapter(ReviewScope).validate_python(plan["scope"]))
+        report = past.rounds[-1]
         target = PullRequest.model_validate(plan["target"])
-        marker = f"{review_state.review_run_id}:{len(past.rounds)}:{target.headRefOid}"
+        if report.reviewed_head != state["checks"].verified_head or (
+            report.reviewed_head, report.base
+        ) != (target.headRefOid, target.baseRefOid):
+            return halted(Halt.review_not_posted, "Review does not match the checked PR head and base.", "review_post")
+        body, comments = review_submission(report, TypeAdapter(ReviewScope).validate_python(plan["scope"]),
+                                           state.get("human_question", ""))
+        marker = f"{review_state.review_run_id}:{len(past.rounds)}:{report.base}:{report.reviewed_head}"
         try:
             receipt = run.forge.post_review(state["run"].repo, target, body, comments, marker=marker)
         except ForgeError as exc:
             return halted(Halt.review_not_posted, str(exc), "review_post")
+        if receipt["state"] != "COMMENTED" or receipt["commit_id"] != report.reviewed_head:
+            return halted(Halt.review_not_posted, "The review receipt does not match the submitted COMMENT.", "review_post")
         return {"review": review_state.model_copy(update={"review_receipt": receipt})}
 
     def prepare(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
@@ -447,11 +450,9 @@ def compile_delivery(
         assert "work" in state and state["work"].attempt_head and state["work"].branch and state["work"].base
         try:
             candidate = run.workspace.reconcile(state["work"].attempt_head, state["work"].branch,
-                                                state["work"].base, review_state.fact_record)
+                                                state["work"].base)
             if candidate is None:
                 identifiers = [str(f.get("id")) for f in review_state.findings]
-                if (gate := history({"rounds": review_state.review_findings}).gate) and not gate.passed:
-                    identifiers.insert(0, "tool-facts")
                 detail = "no changes" + ("; unresolved findings: " + ", ".join(identifiers) if identifiers else "")
                 return halted(Halt.failed, detail, "reconcile")
             return {"work": state["work"].model_copy(update={"candidate": candidate})}
@@ -509,8 +510,8 @@ def compile_delivery(
         body = f"Closes #{run_state.issue or '<issue>'}"
         try:
             observed = run.workspace.inspect()
-            if not observed.clean or observed.branch != branch or observed.head != state["work"].head_sha:
-                raise WorkspaceError("Restore the clean delivery branch at its implementation commit before publishing.")
+            if not observed.clean or observed.branch != branch or observed.head != state["checks"].verified_head:
+                raise WorkspaceError("Restore the clean delivery branch at its verified commit before publishing.")
             run.workspace.push(branch, repo)
             run.forge.open_pull_request(repo, branch, base, title, body)
         except (WorkspaceError, ForgeError) as exc:
@@ -536,31 +537,13 @@ def compile_delivery(
             detail = f"Check {command!r} exited with {exit_code} ({reason})"
         elif exit_code:
             detail = failed_preflight(workspace, checks.preflight, log=check_log)
-        checked = checks.model_copy(update={"check_exit_code": exit_code, "failure_output": output.text if exit_code else "", "proof_labels": {},
+        checked = checks.model_copy(update={"check_exit_code": exit_code, "failure_output": output.text if exit_code else "",
             "verify": "" if detail else "pass" if exit_code == 0 else "fail", "verified_head": worktree.head if exit_code == 0 else ""})
         if detail:
             return {**halted(Halt.env_unavailable, detail, "verify"), "checks": checked}
         update: DeliveryUpdate = {"path": ["verify"], "checks": checked}
         if exit_code:
             update["checks"] = update["checks"].model_copy(update={"verify_failures": checks.verify_failures + 1})
-        return update
-
-    def prove(state: DeliveryState) -> DeliveryUpdate:
-        slice = _active_slice(state)
-        checks = state["checks"]
-        labels = {
-            "browser": browser_proof_label(slice, checks.browser_proof),
-            "formal": formal_proof_label(slice, checks.formal_proof),
-        }
-        update: DeliveryUpdate = {"path": ["proof"], "checks": checks.model_copy(update={"proof_labels": {key: label for key, label in labels.items() if label}})}
-        if "insufficient_evidence" in labels.values():
-            update.update(halted(Halt.insufficient_evidence, "Required proof is missing.", "proof"))
-        elif "block" in labels.values():
-            rounds = checks.proof_failures + 1
-            update["checks"] = update["checks"].model_copy(update={"proof_failures": rounds})
-            if rounds >= config.max_review_rounds:
-                detail = f"Proof failed after {rounds} rounds: {update['checks'].proof_labels}."
-                update.update(halted(Halt.review_cap, detail, "proof"))
         return update
 
     def needs_human(state: DeliveryState) -> DeliveryUpdate:
@@ -655,30 +638,23 @@ def compile_delivery(
 
     def after_review(state: DeliveryState) -> str:
         review_state = state["review"]
-        if state.get("halt") == Halt.design_rethink:
-            return "needs_human"
         if state.get("halt"):
             return "done"
-        if review_state.review == "approve":
-            return "merge"
-        if review_count(state) < config.max_review_rounds:
-            return "prepare"
-        return "done"
+        if review_state.review == "changes" and review_count(state) >= config.max_review_rounds:
+            return "done"
+        if state.get("human_question"):
+            return "needs_human"
+        return "prepare" if review_state.review == "changes" else "merge"
 
     def after_verify(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
         checks = state["checks"]
         if checks.verify == "pass":
-            return "proof"
+            return "publish"
         if checks.verify_failures < config.max_review_rounds:
             return "prepare"
         return "done"
-
-    def after_proof(state: DeliveryState) -> str:
-        if state.get("halt"):
-            return "done"
-        return "prepare" if state["checks"].proof_labels else "pass"
 
     def arm_merge(state: DeliveryState) -> DeliveryUpdate:
         review_state = state["review"]
@@ -720,9 +696,13 @@ def compile_delivery(
         if issue is None:
             return merge_halted(Halt.merge_not_armed, "Live merge requires an issue number.")
         receipt = review_state.review_receipt
-        past = history({"rounds": review_state.review_findings})
-        if (review_state.reviewed_head != head or not receipt or receipt["commit_id"] != head
-                or past.unresolved() or (past.gate and not past.gate.passed)):
+        rounds = history({"rounds": review_state.review_findings}).rounds
+        report = rounds[-1] if rounds else None
+        plan = state.get("dispatch_plan")
+        target = plan["target"] if plan else None
+        if (report is None or target is None or report.severity or state.get("human_question")
+                or report.reviewed_head != head or target["headRefOid"] != head or report.base != target["baseRefOid"]
+                or not receipt or receipt["state"] != "COMMENTED" or receipt["commit_id"] != head):
             return merge_halted(Halt.merge_not_armed, "Renew review and its posted receipt at the verified head.")
         if previous := merge.receipt:
             saved = MergeReceipt.model_validate(previous)
@@ -744,6 +724,10 @@ def compile_delivery(
         if observation.outcome != "ready":
             merge = merge.model_copy(update={"observation": observation.model_dump(mode="json")})
             return merge_halted(READINESS_HALTS[observation.outcome], observation.detail())
+        if (observation.pr.number, observation.pr.head.sha, observation.pr.base.sha, observation.pr.base.ref) != (
+            target["number"], head, report.base, target["baseRefName"],
+        ):
+            return merge_halted(Halt.merge_not_armed, "The pull request head, base or identity changed after review.")
         try:
             receipt = forge.arm_auto_merge(repo, issue, worktree.branch, head, observation)
             if receipt is None:
@@ -836,7 +820,6 @@ def compile_delivery(
     builder.add_node("size", size)
     builder.add_node("commit", commit)
     builder.add_node("publish", publish)
-    builder.add_node("proof", prove)
     builder.add_node("review_post", post_review)
     builder.add_node("needs_human", needs_human)
     builder.add_node("quota_wait", quota_wait)
@@ -876,7 +859,7 @@ def compile_delivery(
     add_agent_edges("implement", after_halt("reconcile"), {"reconcile": "reconcile", "done": "done"})
     add_agent_edges(
         "review",
-        lambda state: after_review(state) if state.get("halt") not in (None, Halt.design_rethink) else "review_post",
+        after_halt("review_post"),
         {"review_post": "review_post", "merge": "merge", "prepare": "prepare", "needs_human": "needs_human", "done": "done"},
     )
     builder.add_conditional_edges("review_post", after_review,
@@ -884,15 +867,12 @@ def compile_delivery(
     builder.add_conditional_edges(
         "verify",
         after_verify,
-        {"proof": "proof", "prepare": "prepare", "done": "done"},
-    )
-    builder.add_conditional_edges(
-        "proof", after_proof, {"pass": "publish", "prepare": "prepare", "done": "done"},
+        {"publish": "publish", "prepare": "prepare", "done": "done"},
     )
     builder.add_edge("merge", "done")
     builder.add_edge("done", END)
     # Each round visits at most all stages, each with one setup and every configured candidate,
-    # plus prepare/commit/publish, proof, prompts, merge and done.
+    # plus prepare/commit/publish, prompts, merge and done.
     steps = sum(1 + max(1, len(config.nodes[name].models)) for name in REQUIRED_NODES) + 12
     return builder.compile(checkpointer=checkpointer).with_config({"recursion_limit": steps * (config.max_review_rounds + 1)})
 
@@ -909,7 +889,6 @@ def run_delivery(
     max_tokens: int = DEFAULT_TOKEN_CAP,
     max_budget_usd: BudgetUsd | None = None,
     skills: SkillSource = export_skills,
-    fact_record: str | None = None,
     commands: list[list[str]] | None = None,
 ) -> DeliveryResult:
     dry = DryRun(commands=commands if commands is not None else [])
@@ -921,7 +900,7 @@ def run_delivery(
         "plan": PlanState(issue_kind="parent" if slice is None else "slice"),
         "models_used": {},
         "path": [],
-        "review": ReviewState(fact_record=fact_record_path(fact_record) if fact_record is not None else None),
+        "review": ReviewState(),
     }
     if slice is not None:
         state.update(load_slice(slice, state["plan"]))

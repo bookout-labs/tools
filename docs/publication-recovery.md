@@ -32,11 +32,8 @@ stateDiagram-v2
     Reconciling --> Paused: git failure
     Committing --> Committing: soft-reset adopted history, preserve tree
     Committing --> Verifying: Foreman commit succeeds or expected commit recovered
-    Verifying --> Proving: checks pass
-    Proving --> Publishing: proof passes
+    Verifying --> Publishing: checks pass
     Verifying --> Preparing: check failure, rounds remain
-    Proving --> Preparing: failed proof, rounds remain
-    Proving --> Rejected: missing proof
     Committing --> Paused: lock, timeout, or candidate mismatch
     Publishing --> Opening: remote already matches or push succeeds
     Publishing --> Paused: push fails or times out

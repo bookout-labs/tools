@@ -77,7 +77,7 @@ class ClaudeEnvelope(NativeEnvelope):
                         not isinstance(command, str) or not command.strip()
                         or any(check in command or command in check for check in call.checks)
                     ):
-                        kind = "review_denied" if call.review else "failed"
+                        kind = "failed"
                         detail = (f"Claude reviewer permission denied: {self.permission_denials!r}" if call.review else
                                   f"Claude denied the granted check: {call.checks}; denied command: {command!r}")
                         break

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
 
 from foreman.dispatch import InvalidOutput
-from foreman.stage_output import FindingResolution, ResolutionStatus, SettledRuling, Severity
+from foreman.stage_output import FindingResolution, ResolutionStatus, SettledRuling
 
 
 class AccountedFinding(Protocol):
@@ -16,7 +16,7 @@ class AccountedFinding(Protocol):
     @property
     def ruling_id(self) -> str | None: ...
     @property
-    def severity(self) -> Severity: ...
+    def severity(self) -> str: ...
     @property
     def kind(self) -> str: ...
 

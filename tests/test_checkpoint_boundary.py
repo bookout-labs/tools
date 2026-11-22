@@ -144,7 +144,7 @@ with SqliteSaver.from_conn_string(path) as saver:
         cases = [
             ("triage", "triage_call", {}),
             ("spec", "spec_call", {}),
-            ("review", "review_post", {"halt": "design_rethink"}),
+            ("review", "review_post", {}),
             ("pr_size", "spec_call", {"pr_size": size}),
             ("quota", "triage_call", {"halt": "quota_exhausted"}),
         ]
@@ -198,7 +198,7 @@ from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.runner import run_live_delivery
 from foreman.workspace import WorktreeState
 from owner_contract import COUNTERS
-from test_runner import FakeGitHub, FakeWorkspace, BRANCH, BROWSER, FORMAL, SLICE, slice_body
+from test_runner import FakeGitHub, FakeWorkspace, BRANCH, SLICE, slice_body
 
 root, pin, stage, phase = sys.argv[1:]
 root = Path(root)
@@ -206,8 +206,6 @@ _, owner, field, stop = next(row for row in COUNTERS if row[0] == stage)
 workspace = FakeWorkspace(root)
 workspace.current = WorktreeState(workspace.current.head, True, BRANCH)
 forge = FakeGitHub(["factory"] if stage == "spec" else ["slice"])
-if stage == "proof":
-    forge.body = slice_body(SLICE)
 handler = ScriptHandler(triage="spec" if stage == "spec" else "implement", reviews=["changes"] * 3, slices=[SLICE])
 calls = []
 def count(state):
@@ -221,9 +219,6 @@ def worker(node, model, state, instruction):
     if node == "implement":
         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
     result = handler(node, model, state, instruction)
-    if stage == "proof" and node == "implement":
-        result.output.update(browser_proof=BROWSER, formal_proof={**FORMAL,
-            "constraints": [{"constraint": "unique_item_id", "rejected": False}]})
     if stage == "spec" and node == "spec":
         result.output["slices"] = [result.output["slices"][0]] * 2
     return result
@@ -236,7 +231,7 @@ with patch("foreman.runner.load_config", return_value=config), patch.object(
         checkpoint=root / "run.sqlite", run=LiveRun(forge, workspace), dispatcher=worker)
 assert count(result) == (1 if phase == "pause" else config.max_review_rounds), result
 assert result["stop"] == ("quota_exhausted" if phase == "pause" else stop), result
-assert not any(key in result for key in ("review_rounds", "verify_failures", "proof_failures", "spec_failures"))
+assert not any(key in result for key in ("review_rounds", "verify_failures", "spec_failures"))
 print(json.dumps({"count": count(result), "calls": calls, "path": result["path"]}))
 '''
         env = {**os.environ, "LANGGRAPH_STRICT_MSGPACK": "true",

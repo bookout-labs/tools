@@ -9,7 +9,6 @@ from typing import Annotated, Literal, TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from foreman.config import PstackPin
-from foreman.proof import browser_required, formal_required
 from foreman.stage_output import WorkKind
 
 if TYPE_CHECKING:
@@ -17,19 +16,21 @@ if TYPE_CHECKING:
 
 SkillSource = Callable[[PstackPin, Path], Path]
 
-LocalSkill = Literal["browser-proof", "formal-proof", "merge-risk", "review-quality"]
-Condition = WorkKind | Literal["stateful", "browser", "formal"]
+Condition = WorkKind | Literal["stateful"]
 SkillFailureReason = Literal["pin_unavailable", "method_missing"]
 LineNumber = Annotated[int, Field(ge=1)]
 PACKAGE_SKILLS = Path(__file__).resolve().with_name("skills")
 
 
-class PstackMethod(BaseModel):
+class SkillMethod(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     path: str
-    kind: Literal["principle", "skill", "leaf_prompt"]
+    kind: Literal["principle", "skill", "leaf_prompt", "repository_skill"]
     lines: tuple[LineNumber, LineNumber] | None = None
+
+    def source(self, root: Path) -> Path:
+        return PACKAGE_SKILLS / Path(self.path).name if self.kind == "repository_skill" else root / self.path
 
     @field_validator("lines")
     @classmethod
@@ -42,7 +43,7 @@ class PstackMethod(BaseModel):
 class SkillRule(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    skill: PstackMethod | LocalSkill
+    skill: SkillMethod
     when: Condition | None = None
 
     def applies(self, state: "DeliveryState") -> bool:
@@ -52,16 +53,12 @@ class SkillRule(BaseModel):
                 return True
             case "stateful":
                 return plan.issue_kind == "slice" and plan.slice is not None and plan.slice["stateful"] is True
-            case "browser":
-                return bool(item := plan.slice) and browser_required(item)
-            case "formal":
-                return bool(item := plan.slice) and formal_required(item)
             case work_kind:
                 return plan.work_kind == work_kind
 
 
 def principle(name: str) -> SkillRule:
-    return SkillRule(skill=PstackMethod(path=f"principle-{name}/SKILL.md", kind="principle"))
+    return SkillRule(skill=SkillMethod(path=f"principle-{name}/SKILL.md", kind="principle"))
 
 
 class SkillMissing(ValueError):
@@ -98,15 +95,15 @@ def export_skills(pin: PstackPin, scratch: Path) -> Path:
 
     for rule in (rule for stage in STAGES.values() for rule in stage.skills):
         method = rule.skill
-        path = root / method.path if isinstance(method, PstackMethod) else PACKAGE_SKILLS / f"{method}.md"
+        path = method.source(root)
         try:
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
-            raise SkillMissing(pin, method.path if isinstance(method, PstackMethod) else path.name) from exc
-        name = method.path if isinstance(method, PstackMethod) else path.name
+            raise SkillMissing(pin, method.path) from exc
+        name = method.path
         if not content.strip():
             raise SkillMissing(pin, name, "method is empty")
-        if isinstance(method, PstackMethod) and method.lines:
+        if method.lines:
             first, last = method.lines
             if len(content.splitlines()) < last:
                 raise SkillMissing(pin, name, f"requires lines {first} through {last}, has {len(content.splitlines())}")
@@ -128,18 +125,15 @@ def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, 
         if not rule.applies(state):
             continue
         method = rule.skill
-        read_root = str((PACKAGE_SKILLS if isinstance(method, str) else root).resolve())
+        path = method.source(root)
+        read_root = str((PACKAGE_SKILLS if method.kind == "repository_skill" else root).resolve())
         if read_root not in roots:
             roots.append(read_root)
-        if isinstance(method, str):
-            path = PACKAGE_SKILLS / f"{method}.md"
-            methods.append(f"foreman/skills/{path.name}")
-            instructions.append(f"Read {path} in full and follow it.")
-        elif method.lines:
+        if method.lines:
             first, last = method.lines
             methods.append(f"{method.path}#L{first}-L{last}")
-            instructions.append(f"Use only lines {first} through {last} of {root / method.path} as the method.")
+            instructions.append(f"Use only lines {first} through {last} of {path} as the method.")
         else:
             methods.append(method.path)
-            instructions.append(f"Read {root / method.path} in full and follow it.")
+            instructions.append(f"Read {path} in full and follow it.")
     return "\n\n".join(instructions), methods, roots

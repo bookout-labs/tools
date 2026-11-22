@@ -51,14 +51,12 @@ tests:
     assert:
       - type: equals
         value: verified
-  - description: A settled ruling disagreement is a note and permits merge
+  - description: A P1 needs one repair and the repeated advisory note permits merge
     vars:
       case: review-converges
     assert:
-      - type: contains
-        value: verified skipped
-      - type: contains
-        value: Coordinator note repeat
+      - type: equals
+        value: verified skipped edits=2 reports=2
   - description: Review falls back to the configured builder model after quota
     vars:
       case: review-fallback

@@ -74,16 +74,15 @@ and [Superserve credential isolation](https://www.superserve.ai/blog/introducing
 On implement calls, Claude matches denied Bash text against `Call.checks` by literal containment in both directions.
 This covers exact checks, wrappers, and compound segments without shell parsing.
 Unrelated quoted commands and non-Bash denials stay `ran`. Missing, blank, or malformed evidence
-fails closed on successful checked calls. On review calls, any permission denial
-discards the output and requests one complete fresh review at the same scope. Malformed
-denial evidence fails closed without retry. Existing failures, quota, budget, and usage stay intact.
+fails closed on successful checked calls. On review calls, a permission denial or
+malformed denial evidence stops the run before it posts a review.
 Claude names commands, not allow rules. Obfuscated wrappers without literal check text cannot be
 reliably attributed; `verify` remains authoritative. T1 joins tool IDs, successful results, and a marker.
 Separate captures prove wrapper and compound-segment denials.
 
 Failed verifier checks retain diagnostic context in `checks.failure_output`. Retries,
 resume and provider failover receive it as untrusted previous-attempt data. Prepare
-clears current verification and proof attestations. A pass clears the failure text.
+clears the previous verification result. A pass clears the failure text.
 Only the verifier check is captured, not preflight. The window keeps the first
 2048 UTF-8 bytes / 32 lines and last 6144 bytes / 96 lines, with a final 8192-byte /
 128-line cap including omission markers. Terminal escapes and newline variants are

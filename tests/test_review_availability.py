@@ -79,11 +79,11 @@ def worker(node, model, state, instruction):
             if kind == "rejected_failed":
                 return Outcome("failed", detail="review JSON was truncated", usage=usage)
             if kind == "placeholder":
-                payload = json.loads((Path(sys.path[0]) / "fixtures/review/placeholder-99.json").read_text())
+                capture = json.loads((Path(sys.path[0]) / "fixtures/review/placeholder-99.json").read_text())
+                payload = {"findings": [], "human_question": None, "risk": capture["risk"]}
             else:
                 payload = script(node, model, state, instruction).output
-                payload["resolutions"] = []
-                payload["risk"] = {**payload["risk"], "level": "high"}
+                payload["findings"] = [{"location": {"side": "head", "path": "missing.txt", "line": 1}}]
             return Outcome("ran", payload, usage=usage)
         if kind == "interrupt":
             raise RuntimeError("review interrupted")
@@ -334,20 +334,20 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 prefix = f"review output from {attempt['model']}: "
                 self.assertTrue(result["halt_detail"].startswith(prefix))
                 if outcomes[-1] == "placeholder":
-                    self.assertIn("risk.alignment", result["halt_detail"][len(prefix):])
+                    self.assertIn("risk: Extra inputs", result["halt_detail"][len(prefix):])
                 elif outcomes[-1] == "rejected_failed":
                     self.assertEqual(result["halt_detail"], prefix + "review JSON was truncated")
                 else:
-                    self.assertIn("resolution", result["halt_detail"][len(prefix):].lower())
+                    self.assertIn("findings.0", result["halt_detail"][len(prefix):])
                 review_attempts = [a for a in result["attempts"] if a["stage"] == "review"]
                 self.assertEqual(len(review_attempts), len(outcomes))
                 if rounds:
                     accepted = result["review"].review_findings[0]
                     self.assertEqual(result["review"].review, "changes")
-                    self.assertEqual(result["review"].review_change_kind, "blocking")
+                    self.assertEqual(accepted["findings"][0]["severity"], "P1")
                     self.assertEqual(accepted["provenance"], review_attempts[0]["provenance"])
                     self.assertEqual(result["models_used"]["review"], review_attempts[0]["model"])
-                    self.assertIn("Add a check.", first["posted"][0]["body"])
+                    self.assertIn("The first item is listed twice.", first["posted"][0]["body"])
                     self.assertEqual(result["review"].review_receipt["id"], 1)
                     if len(outcomes) == 3:
                         self.assertNotEqual(attempt["model"], result["models_used"]["review"])

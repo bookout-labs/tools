@@ -80,15 +80,6 @@ class PullRequestSizeTest(unittest.TestCase):
             "SpecOutput": {"spec": "Ship the list first, then add sorting.", "spec_gate": "ready"},
             "ReviewOutput": APPROVE,
         }
-        if stage == "ReviewOutput":
-            target = state["dispatch_plan"]["target"]
-            context = LiveWorkspace(self.root).review_context(target["baseRefOid"], target["headRefOid"])
-            side = "head" if context.head.changed else "base"
-            path = sorted(getattr(context, side).changed)[0]
-            replies[stage] = json.loads(json.dumps(APPROVE))
-            for name, dimension in replies[stage]["risk"].items():
-                if name != "level":
-                    dimension["evidence"] = [{"side": side, "path": path, "line": None}]
         if stage == "TriageOutput" and self.original_spec:
             return worker_reply(args, {"triage": "spec"})
         if stage == "SpecOutput":
@@ -146,7 +137,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.write(".gitattributes", attributes + "** linguist-generated -diff\n")
         workspace = LiveWorkspace(self.root)
         with patch.object(workspace, "pull_request_size", wraps=workspace.pull_request_size) as measure:
-            edits = workspace.reconcile(base, BRANCH, "main", None)
+            edits = workspace.reconcile(base, BRANCH, "main")
         self.assertIsNotNone(edits)
         self.assertEqual(edits["size"]["lines"], 423)
         self.assertEqual(edits["size"]["merge_base"], base)
@@ -163,7 +154,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(self.git("status", "--porcelain=v1", "-z"), status)
         self.assertEqual({path: (self.root / path).read_bytes() for path in before}, before)
         head = self.commit()
-        adopted = workspace.reconcile(base, BRANCH, "main", None)
+        adopted = workspace.reconcile(base, BRANCH, "main")
         self.assertEqual(adopted["size"], measured)
         self.assertEqual(workspace.pull_request_size(head, "main")["lines"], measured["lines"])
         self.assertEqual(workspace.tree(head), measured["head"])
@@ -174,9 +165,9 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertNotEqual(parent, self.base)
         self.write("round-two.md", "second round\n" * 7)
         workspace = LiveWorkspace(self.root)
-        edits = workspace.reconcile(parent, BRANCH, "main", None)
+        edits = workspace.reconcile(parent, BRANCH, "main")
         self.commit()
-        adopted = workspace.reconcile(parent, BRANCH, "main", None)
+        adopted = workspace.reconcile(parent, BRANCH, "main")
         for candidate in (edits, adopted):
             with self.subTest(disposition=candidate["disposition"]):
                 self.assertEqual(candidate["size"]["merge_base"], self.base)

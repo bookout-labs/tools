@@ -18,7 +18,6 @@ class Halt(StrEnum):
     review_cap = auto()
     spec_cap = auto()
     dirty_worktree = auto()
-    insufficient_evidence = auto()
     missing_slice = auto()
     review_unavailable = auto()
     review_not_posted = auto()
@@ -42,7 +41,6 @@ class Halt(StrEnum):
     publish_failed = auto()
     implementation_rejected = auto()
     failed = auto()
-    design_rethink = auto()
     model_dependency_missing = auto()
     model_family_exhausted = auto()
     publication_model_missing = auto()
@@ -77,18 +75,15 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.verify_cap: Policy("Verification still fails at the attempt cap.", "terminal",
         Watch("Investigate repeated verify failures reaching cap",
               "Verification kept failing after implementation.", "src/foreman/stages/implement.md")),
-    Halt.review_cap: Policy("Review or proof still blocks at the attempt cap.", "terminal",
-        Watch("Investigate repeated review or proof blocks reaching cap",
-              "Review or proof remained blocked after implementation.", "src/foreman/stages/implement.md")),
+    Halt.review_cap: Policy("Review still blocks at the attempt cap.", "terminal",
+        Watch("Investigate repeated review blocks reaching cap",
+              "Review remained blocked after implementation.", "src/foreman/stages/implement.md")),
     Halt.spec_cap: Policy("The slice plan still fails at the attempt cap.", "terminal",
         Watch("Investigate rejected slice plans reaching cap",
               "Slice plans kept failing the spec gate.", "src/foreman/stages/spec.md")),
     Halt.dirty_worktree: Policy("The workspace does not match the expected clean tree.", "terminal",
         Watch("Handle dirty worktree before verify",
               "Implementation left a dirty worktree before verification.", "src/foreman/stages/implement.md")),
-    Halt.insufficient_evidence: Policy("Required proof is missing.", "terminal",
-        Watch("Required proof is missing after implement",
-              "Implementation did not supply the required proof.", "src/foreman/stages/implement.md")),
     Halt.missing_slice: Policy("The issue has no loadable slice.", "terminal",
         Watch("Slice issues carry a loadable slice",
               "The issue did not carry a loadable slice.", "src/foreman/github.py")),
@@ -129,7 +124,6 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.publish_failed: Policy("The branch or pull request could not be published.", "retry", None),
     Halt.implementation_rejected: Policy("The code changes did not match what the step reported.", "retry", None),
     Halt.failed: Policy("The worker failed or produced no usable change.", "terminal", None),
-    Halt.design_rethink: Policy("The design requires a human decision.", "terminal", None),
     Halt.model_dependency_missing: Policy(
         "This step needs a model from an earlier step that never ran. Fix models.toml.", "terminal", None),
     Halt.model_family_exhausted: Policy("No model from a different company is left to review.", "terminal", None),

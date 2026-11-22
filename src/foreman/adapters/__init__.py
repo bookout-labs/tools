@@ -45,7 +45,7 @@ class NativeUsage(TypedDict):
     entries: dict[str, NativeUsageTokens]
 
 
-OutcomeKind = Literal["ran", "quota", "cli_missing", "failed", "budget_exhausted", "review_denied"]
+OutcomeKind = Literal["ran", "quota", "cli_missing", "failed", "budget_exhausted"]
 
 
 @dataclass(frozen=True)
