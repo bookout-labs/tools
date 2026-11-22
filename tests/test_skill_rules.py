@@ -27,13 +27,14 @@ class SkillRulesTest(unittest.TestCase):
         pin = PSTACK_PIN.model_copy(update={"repository": source.as_uri()})
         with TemporaryDirectory() as scratch:
             root = export_skills(pin, Path(scratch))
-            for rule in (rule for stage in STAGES.values() for rule in stage.skills):
-                method = rule.skill
-                path = root / method.path if isinstance(method, PstackMethod) else PACKAGE_SKILLS / f"{method}.md"
-                with self.subTest(path=path.name):
-                    content = path.read_text(encoding="utf-8")
-                    if isinstance(method, PstackMethod) and method.lines:
-                        start, end = method.lines
-                        content = "\n".join(content.splitlines()[start - 1:end])
-                    self.assertTrue(content.strip())
-                    self.assertNotRegex(content, SPAWN_INSTRUCTIONS, str(path))
+            for stage, row in STAGES.items():
+                for rule in row.skills:
+                    method = rule.skill
+                    path = root / method.path if isinstance(method, PstackMethod) else PACKAGE_SKILLS / f"{method}.md"
+                    with self.subTest(stage=stage, path=path.name):
+                        content = path.read_text(encoding="utf-8")
+                        if isinstance(method, PstackMethod) and method.lines:
+                            start, end = method.lines
+                            content = "\n".join(content.splitlines()[start - 1:end])
+                        self.assertTrue(content.strip())
+                        self.assertNotRegex(content, SPAWN_INSTRUCTIONS, str(path))

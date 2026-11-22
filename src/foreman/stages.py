@@ -29,7 +29,7 @@ class Stage:
 STAGES = {
     "triage": Stage("triage.md", TriageOutput, (
         SkillRule(skill=PstackMethod(path="poteto-mode/SKILL.md", kind="skill", lines=(110, 110))),
-    ), input_fields=("run", "plan")),
+    ), input_fields=("run", "plan", "human_question", "human_answers")),
     "research": Stage("research.md", ResearchOutput, (
         SkillRule(skill=PstackMethod(path="how/SKILL.md", kind="leaf_prompt", lines=(17, 17))),
         SkillRule(skill=PstackMethod(path="why/SKILL.md", kind="skill"), when="bug_fix"),
@@ -41,7 +41,7 @@ STAGES = {
         principle("boundary-discipline"),
         principle("type-system-discipline"),
         SkillRule(skill=PstackMethod(path="statechart/SKILL.md", kind="skill"), when="stateful"),
-    ), input_fields=("run", "plan", "pr_size")),
+    ), input_fields=("run", "plan", "pr_size", "pr_size_override", "human_question", "human_answers")),
     "spec_check": Stage("spec_check.md", SpecCheckOutput, (
         principle("model-the-domain"),
         principle("boundary-discipline"),
@@ -64,7 +64,7 @@ STAGES = {
         principle("test-behavior-not-implementation"),
         SkillRule(skill="review-quality"),
         SkillRule(skill="merge-risk"),
-    ), input_fields=("run", "plan", "work", "checks", "review")),
-    "verify": Stage(None, VerifyOutput, kind="deterministic", input_fields=("work", "checks")),
+    ), input_fields=("run", "plan", "work", "checks", "review", "implementation")),
+    "verify": Stage(None, VerifyOutput, kind="deterministic", input_fields=("checks",)),
     "proof": Stage(None, None, kind="deterministic", input_fields=("plan", "checks", "review")),
 }

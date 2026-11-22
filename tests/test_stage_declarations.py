@@ -7,13 +7,15 @@ import json
 from pathlib import Path
 from subprocess import CompletedProcess
 from types import SimpleNamespace
+from typing import get_type_hints
 import unittest
 from unittest.mock import patch
 
-from foreman.delivery import MODEL_STAGES, run_delivery
+from foreman.delivery import MODEL_STAGES, run_delivery, stage_text
 from foreman.stages import STAGES
+from foreman.state import DeliveryState, PlanState
 from foreman.stage_output import ResearchOutput
-from foreman.skill_rules import PstackMethod, SkillRule, SkillMissing, export_skills
+from foreman.skill_rules import PstackMethod, SkillRule, SkillMissing, export_skills, stage_methods
 from skill_fixture import skill_fixture
 from foreman.dry_run import ScriptHandler
 from foreman.worker import CliWorker
@@ -83,9 +85,26 @@ class StageDeclarationsTest(unittest.TestCase):
                 with self.assertRaises(SkillMissing):
                     export_skills(config.pstack, scratch)
 
+    def test_declared_inputs_are_delivery_channels(self):
+        fields = get_type_hints(DeliveryState)
+        for name, row in STAGES.items():
+            with self.subTest(stage=name):
+                self.assertFalse(set(row.input_fields) - fields.keys())
+
+    def test_spec_check_methods_include_proof(self):
+        with skill_fixture() as (config, scratch):
+            root = export_skills(config.pstack, scratch)
+            _, methods, _ = stage_methods("spec_check", {"plan": PlanState()}, root)
+        self.assertIn("principle-prove-it-works/SKILL.md", methods)
+
     def test_active_and_non_model_resources_stay_distinct(self):
         self.assertEqual(MODEL_STAGES, ("triage", "research", "spec", "implement", "review"))
         self.assertEqual(STAGES["spec_check"].kind, "dormant")
+        self.assertEqual(STAGES["spec_check"].prompt, "spec_check.md")
+        for name, row in STAGES.items():
+            if row.prompt is not None:
+                with self.subTest(stage=name):
+                    self.assertTrue(stage_text(name))
         for name in ("verify", "proof"):
             self.assertEqual(STAGES[name].kind, "deterministic")
             self.assertIsNone(STAGES[name].prompt)
