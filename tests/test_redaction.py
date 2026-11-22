@@ -233,7 +233,7 @@ class RedactionTest(unittest.TestCase):
             ("dispatch.py", "clean_outcome.clean"): 1,
             ("cli.py", "_write_run_log"): 1,
             ("smoke_command.py", "run_smoke"): 1,
-            ("smoke_command.py", "_run_smoke"): 2,
+            ("smoke_command.py", "_run_smoke"): 3,
             ("worker_auth.py", "main"): 1,
             ("worker_auth.py", "environment"): 1,
             ("worker_auth.py", "validate_config"): 1,
