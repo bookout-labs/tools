@@ -2377,11 +2377,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         held = invoke()
         self.assertIn(f"done merge_held\nFOREMAN_MERGE_HOLD is set: {self.github.hold}\n", held)
         retried = invoke()
-        self.assertIn("this invocation:\nmerge not armed\ndone merge_held", retried)
+        self.assertIn("this invocation:\nmerge not armed\ndone merge_held", transcript(retried))
         self.assertEqual(self.github.merge_calls, [])
         self.github.hold = ""
         armed = invoke()
-        self.assertIn("merge armed\ndone verified", armed)
+        self.assertIn("merge armed\ndone verified", transcript(armed))
         terminal = invoke()
         self.assertIn("restored raw tokens 47606", terminal)
         self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
@@ -2737,7 +2737,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertEqual(saved_path(), previous_path)
                     self.assertIn("restored review ", restored)
                     self.assertIn("risk low", restored)
-                    self.assertEqual(current, "merge not armed\ndone merge_held\nFOREMAN_MERGE_HOLD is set: Maintenance\n")
+                    self.assertEqual(transcript(current), "merge not armed\ndone merge_held\nFOREMAN_MERGE_HOLD is set: Maintenance\n")
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
                                      ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review"])
                     self.assertEqual((root / "check.log").read_text(), "checked\n")
@@ -2752,7 +2752,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 restored, current = resumed.split("this invocation:\n")
                 self.assertNotIn("\ntriage ", current)
                 if scenario == "held":
-                    self.assertEqual(current, "merge armed\ndone verified\n")
+                    self.assertEqual(transcript(current), "merge armed\ndone verified\n")
                     expected_workers = ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"]
                 else:
                     self.assertRegex(transcript(restored.replace("restored ", "")), r"implement\npaused quota_exhausted")
