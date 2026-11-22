@@ -6,7 +6,7 @@ waivers:
     V2-7ccf17f9b80e0a2a: extra [procedure/proof] declaration
     V2-cd6b52df9aa54a21: mismatched [procedure/review] inputs
     V2-9509e553a2f38d9c: mismatched [procedure/review] output_fields
-    V2-bd94fb45a1f8591c: mismatched [procedure/review] prompt
+    V2-90061710bda76305: mismatched [procedure/review] prompt
     V2-8521f746f1c929ae: mismatched [procedure/review] skills
     V2-d78ccda46832c3a0: extra [shared/halts] design_rethink
     V2-37a251de4395de5e: extra [shared/halts] insufficient_evidence
@@ -16,13 +16,13 @@ waivers:
     V2-b422c14f49bb06a6: extra [top/delivery] edge verify -> proof
     V2-c3a69fb6f8e02d18: extra [top/delivery] node proof
   233:
-    V2-bc3b71b99381228b: mismatched [procedure/spec] prompt
+    V2-37f8b627a48f73b1: mismatched [procedure/spec] prompt
     V2-1758e49cc682d76c: mismatched [procedure/spec_check] inputs
     V2-4b09321a0dbefdf6: mismatched [procedure/spec_check] kind
     V2-1993627a3c124fb7: missing [procedure/spec_check] model_dependency
     V2-173eaf7d98475a38: missing [procedure/spec_check] model_policy
     V2-0e35eb22ddefe3ab: mismatched [procedure/spec_check] output_fields
-    V2-5639dc5cc59e841b: mismatched [procedure/spec_check] prompt
+    V2-ef53fbb6ce1c552b: mismatched [procedure/spec_check] prompt
     V2-2debcdea1bd567b3: mismatched [procedure/spec_check] skills
     V2-54e8c089244e9959: missing [procedure/spec_check] step
     V2-8174b6febc90d8c7: missing [procedure/spec_check] worker
@@ -170,7 +170,7 @@ waivers:
     V2-0b74d060da68d39d: mismatched [procedure/spec] skills
     V2-5695273c30b5719d: missing [procedure/spec] step
     V2-3b552330fdf9655f: mismatched [procedure/triage] inputs
-    V2-b6c540c750227b74: mismatched [procedure/triage] prompt
+    V2-e1ce3f60bb637990: mismatched [procedure/triage] prompt
     V2-07e057e6ee90064d: mismatched [procedure/triage] skills
     V2-2be96502ef852069: missing [procedure/triage] step
     V2-9cf5fd5e5504f21b: missing [steps/research] edge __start__ -> answer

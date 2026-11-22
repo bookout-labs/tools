@@ -4,6 +4,7 @@ import argparse
 import ast
 from collections import defaultdict
 from hashlib import sha256
+import json
 import os
 from pathlib import Path
 import re
@@ -19,7 +20,7 @@ BLUEPRINT = Path(__file__).resolve().parent
 ROOT = BLUEPRINT.parents[2]
 PROMPT_DIR = BLUEPRINT.relative_to(ROOT) / "prompts"
 FOREMAN_SOURCE = "src/foreman/"
-SENTINELS = {"__start__": "Enter stage", "__end__": "Return stage result"}
+SENTINELS = {"__start__", "__end__"}
 REQUIRED = {
     "title", "purpose", "scope", "entry", "worker", "model_policy", "instructions",
     "skills", "inputs", "outputs", "steps", "transitions", "exits", "gates", "effects",
@@ -47,7 +48,7 @@ def load_target():
         if name in stages and set(contract) != REQUIRED:
             raise ValueError(f"{name} stage fields differ: {set(contract) ^ REQUIRED}")
         steps = contract["steps"]
-        valid = set(steps) | SENTINELS.keys()
+        valid = set(steps) | SENTINELS
         transitions = contract["transitions"]
         if len({tuple(edge) for edge in transitions}) != len(transitions):
             raise ValueError(f"Duplicate transition in {name}")
@@ -94,7 +95,8 @@ def load_target():
 
 
 def mtext(value):
-    return str(value).replace("&", "&amp;").replace('"', "#quot;").replace("<", "&lt;").replace(">", "&gt;").replace("|", "#124;")
+    return (str(value).replace("&", "&amp;").replace('"', "#quot;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace("|", "#124;").replace("\n", "<br/>"))
 
 
 def label(value):
@@ -105,8 +107,8 @@ def label(value):
         "validated_single": "One slice clears both checks",
         "validated_parent": "Parent plan clears both checks",
         "head_moved": "PR revision changed",
-        "owned_head_moved": "Owned branch revision changed",
-        "reviewable_head": "Review the checked revision",
+        "owned_head_moved": "Owned head moved",
+        "reviewable_head": "Checked revision",
         "halted": "Run stops",
         "foreign_repository": "Wrong repository",
         "exhausted": "Plan revision limit reached",
@@ -143,11 +145,34 @@ def mermaid(nodes, edges, direction="TD"):
     return "\n".join(lines) + "\n"
 
 
+def stage_links(name, contract, target, nodes):
+    exits = contract["exits"]
+    normalize = target["rules"]["exit_normalization"]
+    for origin, destination, route in contract["transitions"]:
+        if destination != "__end__":
+            yield origin, destination, label(route or "")
+            continue
+        for outcome in (route,) if route else exits:
+            normalized = normalize.get(outcome, outcome)
+            if normalized not in exits:
+                raise ValueError(f"{name}.{outcome} has no declared exit destination")
+            next_stage = exits[normalized]
+            if next_stage == "__end__":
+                end = f"exit_{normalized}"
+                nodes[end] = (f"{label(normalized)}\nReported on Project card", "terminal")
+                detail = label(outcome) if outcome != normalized else ""
+            else:
+                end = f"continue_{next_stage}"
+                nodes[end] = (f"Continue to {next_stage.title()} stage", "stage")
+                detail = label(outcome)
+            yield origin, end, detail
+
+
 def views(target):
     out = {}
     context = target["context"]
     nodes = dict.fromkeys(name for origin, destination, _ in context for name in (origin, destination))
-    out["context"] = mermaid({name: (name, "stage") for name in nodes}, context, "LR")
+    out["context"] = mermaid({name: (name, "stage") for name in nodes}, context)
     stages = target["stages"]
     intake = target["intake"]
     nodes = {"entry": (intake["trigger"], "terminal")}
@@ -166,31 +191,33 @@ def views(target):
         gates = stage.get("gates", [])
         waits = stage.get("failure_and_resume", stage).get("waits", {})
         nodes = {}
-        transitions = stage["transitions"]
-        entry_label = intake["trigger"] if name == target["entry"] else SENTINELS["__start__"]
+        entry_label = intake["trigger"] if name == target["entry"] else "Enter stage"
         nodes["__start__"] = (entry_label, "terminal")
         for step, row in stage["steps"].items():
             kind = "worker" if f"{name}.{step}" in callers else "step"
             nodes[step] = (f"{row['actor']} · {row['action']}", kind)
-        links = []
-        for origin, destination, route in transitions:
-            if destination == "__end__" and route:
-                destination = f"exit_{route}"
-                nodes[destination] = (label(route), "terminal")
-                route = None
-            elif destination == "__end__":
-                nodes[destination] = (SENTINELS[destination], "terminal")
-            detail = label(route or "")
-            if name == target["entry"] and origin == "__start__":
-                detail = intake["delivery"] + " or dependent admission recheck"
-            links.append((origin, destination, detail))
+        if name in stages:
+            links = list(stage_links(name, stage, target, nodes))
+        else:
+            links = []
+            for origin, destination, route in stage["transitions"]:
+                if destination == "__end__":
+                    destination = f"exit_{route}"
+                    nodes[destination] = (label(route), "terminal")
+                    route = None
+                links.append((origin, destination, label(route or "")))
+        if name == target["entry"]:
+            links = [
+                (origin, destination, "Project webhook or dependent recheck" if origin == "__start__" else detail)
+                for origin, destination, detail in links
+            ]
         for gate in gates:
             step = gate["resume"]
             gate_id = f"gate_{step}"
-            rule = target["rules"]["gates"]["continuation"]
-            nodes[gate_id] = (f"{gate['answerer']} · {gate['question']}. {rule}", "gate")
+            title = "\n".join([gate["answerer"], *(f"• {bullet}" for bullet in gate["bullets"])])
+            nodes[gate_id] = (title, "gate")
             route = gate.get("route", "Unresolved choice")
-            links.extend([(step, gate_id, route.replace("_", " ")), (gate_id, step, "Answer to open question")])
+            links.extend([(step, gate_id, route.replace("_", " ")), (gate_id, step, "")])
         for step, purpose in waits.items():
             wait_id = f"wait_{step}"
             nodes[wait_id] = (purpose, "step")
@@ -207,23 +234,35 @@ def views(target):
     return out
 
 
-def write_mermaid(drawings, output):
+def write_views(drawings, svgs, output):
+    view_dir = output / "views"
     for name, content in drawings.items():
-        path = output / "views" / f"{name}.mmd"
+        path = view_dir / f"{name}.mmd"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
+    if svgs is not None:
+        for name, content in svgs.items():
+            (view_dir / f"{name}.svg").write_text(content)
+        paths = sorted(f"{name}.{extension}" for name in drawings for extension in ("mmd", "svg"))
+        (view_dir / "SHA256SUMS").write_text("".join(
+            f"{sha256((view_dir / path).read_bytes()).hexdigest()}  {path}\n" for path in paths
+        ))
 
 
-def render(drawings, output, puppeteer):
+def render(drawings, puppeteer):
     scratch = Path(mkdtemp(prefix=".scratch.", dir=ROOT))
-    (scratch / "views.md").write_text("\n".join(f"```mermaid\n{body}```\n" for body in drawings.values()))
-    env = dict(os.environ, PUPPETEER_SKIP_DOWNLOAD="true")
-    command = ["npx", "-y", "@mermaid-js/mermaid-cli@11.4.2",
-               "-i", str(scratch / "views.md"), "-o", str(scratch / "rendered.md"),
-               "-c", str(BLUEPRINT / "mermaid.json")]
-    if puppeteer:
-        command.extend(["-p", str(puppeteer)])
-    subprocess.run(command, env=env, check=True)
+    manifest = {
+        "drawings": drawings,
+        "mermaidConfig": json.loads((BLUEPRINT / "mermaid.json").read_text()),
+        "puppeteerConfig": json.loads(puppeteer.read_text()) if puppeteer else {},
+        "output": str(scratch),
+    }
+    env = dict(os.environ, PUPPETEER_SKIP_DOWNLOAD="true",
+               FOREMAN_RENDER_SCRIPT=str(BLUEPRINT / "render.mjs"))
+    command = ["npx", "-y", "--package=@mermaid-js/mermaid-cli@11.4.2", "-c",
+               'node "$FOREMAN_RENDER_SCRIPT" "$(command -v mmdc)"']
+    subprocess.run(command, env=env, input=json.dumps(manifest), text=True, check=True)
+    svgs = {}
     for index, name in enumerate(drawings, start=1):
         rendered = (scratch / f"rendered-{index}.svg").read_text()
         root = ET.fromstring(rendered)
@@ -231,13 +270,8 @@ def render(drawings, output, puppeteer):
             raise ValueError(f"Invalid diagram output for {name}")
         _, _, width, height = root.attrib["viewBox"].split()
         rendered = rendered.replace('width="100%"', f'width="{width}" height="{height}"', 1)
-        (output / "views" / f"{name}.svg").write_text(rendered.rstrip() + "\n")
-
-    view_dir = output / "views"
-    paths = sorted(f"{name}.{extension}" for name in drawings for extension in ("mmd", "svg"))
-    (view_dir / "SHA256SUMS").write_text("".join(
-        f"{sha256((view_dir / path).read_bytes()).hexdigest()}  {path}\n" for path in paths
-    ))
+        svgs[name] = rendered.rstrip() + "\n"
+    return svgs
 
 
 def baseline_file(repo, revision, path):
@@ -403,9 +437,8 @@ def main():
     target = load_target()
     files, sections = inventory(target, args.pstack)
     drawings = views(target)
-    write_mermaid(drawings, args.output)
-    if not args.no_svg:
-        render(drawings, args.output, args.puppeteer)
+    svgs = None if args.no_svg else render(drawings, args.puppeteer)
+    write_views(drawings, svgs, args.output)
     write_maps(target, files, args.output)
     (args.output / "index.html").write_text(page(BLUEPRINT, target, files, sections))
 

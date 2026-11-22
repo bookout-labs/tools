@@ -1,26 +1,30 @@
-flowchart LR
-    n0["Joe"]:::stage
-    n1["Foreman"]:::stage
-    n2["GitHub Project board"]:::stage
-    n3["GitHub issue"]:::stage
-    n4["CARR record layer"]:::stage
-    n5["T3"]:::stage
-    n6["Worker CLIs"]:::stage
-    n7["Target checkout"]:::stage
-    n8["GitHub pull request"]:::stage
-    n9["GitHub checks"]:::stage
-    n10["GitHub merge queue"]:::stage
-    n0 -->|"Answers scope questions"| n1
-    n2 -->|"Delivers a Ready webhook"| n1
-    n3 -->|"Supplies work and repository identity"| n1
-    n1 -->|"Mirrors run state"| n2
-    n4 -->|"Supplies authorized team context"| n5
-    n5 -->|"Relays operator decisions"| n1
-    n1 -->|"Assigns a bounded procedure"| n6
-    n6 -->|"Reads or edits within assignment"| n7
-    n1 -->|"Publishes checked changes"| n8
-    n9 -->|"Enforces repository rules"| n10
-    n10 -->|"Reports the merge result"| n1
+flowchart TD
+    n0["Human"]:::stage
+    n1["Coordinator or personal agent"]:::stage
+    n2["GitHub issue"]:::stage
+    n3["Foreman"]:::stage
+    n4["GitHub Project board"]:::stage
+    n5["CARR record layer"]:::stage
+    n6["T3"]:::stage
+    n7["Worker CLIs"]:::stage
+    n8["Target checkout"]:::stage
+    n9["GitHub pull request"]:::stage
+    n10["GitHub checks"]:::stage
+    n11["GitHub merge queue"]:::stage
+    n0 -->|"Work and decisions"| n1
+    n1 -->|"Files for the human"| n2
+    n1 -->|"Relays answers and stops"| n3
+    n3 -->|"Gate questions"| n1
+    n4 -->|"Ready webhook"| n3
+    n2 -->|"Work and repository identity"| n3
+    n3 -->|"Run state"| n4
+    n5 -->|"Authorized team context"| n6
+    n6 -->|"Conversation context"| n1
+    n3 -->|"Assigns a bounded procedure"| n7
+    n7 -->|"Reads or edits within assignment"| n8
+    n3 -->|"Publishes checked changes"| n9
+    n10 -->|"Enforces repository rules"| n11
+    n11 -->|"Reports the merge result"| n3
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36

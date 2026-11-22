@@ -2,22 +2,20 @@ flowchart TD
     n0(["GitHub Project issue enters Ready"]):::terminal
     n1["Foreman · Validate issue and prerequisites"]:::step
     n2(["Triage worker · Classify the admitted issue"]):::worker
-    n3(["Run stops"]):::terminal
-    n4(["Question"]):::terminal
-    n5(["Plan"]):::terminal
-    n6(["Supplied slice"]):::terminal
-    n7(["Cancelled"]):::terminal
-    n8{{"Joe · Decide the missing issue intent. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on Joe."}}:::gate
-    n0 -->|"GitHub Project webhook or dependent admission recheck"| n1
+    n3(["Run stops<br/>Reported on Project card"]):::terminal
+    n4["Continue to Research stage"]:::stage
+    n5["Continue to Spec stage"]:::stage
+    n6(["Cancelled<br/>Reported on Project card"]):::terminal
+    n7{{"Human<br/>• Clarify issue intent<br/>• Answer or cancel<br/>• Resume triage"}}:::gate
+    n0 -->|"Project webhook or dependent recheck"| n1
     n1 -->|"Admitted"| n2
     n1 --> n3
-    n2 --> n4
-    n2 --> n5
+    n2 -->|"Question"| n4
+    n2 -->|"Plan / Supplied slice"| n5
     n2 --> n6
-    n2 --> n7
     n2 --> n3
-    n2 -.->|"Unresolved choice"| n8
-    n8 -.->|"Answer to open question"| n2
+    n2 -.->|"Unresolved choice"| n7
+    n7 -.-> n2
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36
