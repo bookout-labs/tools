@@ -115,7 +115,7 @@ graph TD;
 	implement_call -.-> reconcile;
 	merge --> done;
 	needs_human -.-> done;
-	needs_human -.-> implement;
+	needs_human -.-> prepare;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
 	prepare -.-> done;
@@ -219,7 +219,7 @@ Foreman creates an `<issue>-<slug>` branch from the repository default branch be
 
 Live verify stops with `dirty_worktree` if the checkout has changes, HEAD differs from the saved implementation commit, or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs skip preflight and use a scripted verdict.
 
-Use `--preflight <command>` to check environment readiness in the engine checkout. Each new or resumed invocation checks readiness once, just before its first implement dispatch. Routes that never reach implement skip the probe. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
+Use `--preflight <command>` to check environment readiness in the engine checkout. Each new or resumed invocation checks readiness once, after checkout validation and before its first implement dispatch. Review answers resume through prepare, so environment retries retain the answer and implementer history. Routes that never reach implement skip the probe. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
 
 Restore the environment and rerun the same command to resume from the saved checkpoint.
 
