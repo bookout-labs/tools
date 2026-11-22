@@ -131,6 +131,24 @@ class CredentialsTest(CredentialFixture):
                         workspace._git('push', 'origin', 'main')
                     self.assertEqual(invalidate.call_count, int(expected == 'unauthorized'))
 
+    def test_prepare_fetch_uses_app_transport_and_stops_on_auth_or_timeout(self):
+        for error, detail in ((subprocess.CompletedProcess([], 1, b'', b'Authentication failed'), 'unauthorized'),
+                              (subprocess.TimeoutExpired('git fetch', 30), 'timed out')):
+            with self.subTest(detail=detail), patch('foreman.workspace.credentials', self.owner), \
+                 patch('foreman.workspace.subprocess.run') as run:
+                workspace = LiveWorkspace(Path.cwd(), 'org/repo')
+                run.side_effect = [subprocess.CompletedProcess([], 0, b'', b''),
+                                   *[subprocess.CompletedProcess([], 0, b'https://github.com/org/repo', b'')] * 4,
+                                   error]
+                with self.assertRaisesRegex(WorktreeInspectionFailed, detail):
+                    workspace.create_branch('delivery', 'main')
+                command = run.call_args.args[0]
+                self.assertIn('credential.helper=', command)
+                self.assertEqual(command[-6:], ['fetch', '--no-tags', '--no-recurse-submodules', '--refmap=',
+                                                'origin', '+refs/heads/main:refs/remotes/origin/main'])
+                self.assertTrue(run.call_args.kwargs['env']['GH_TOKEN'].startswith('ghs_'))
+                self.assertFalse(any('switch' in call.args[0] for call in run.call_args_list))
+
     def test_redaction_removes_entire_app_secrets(self):
         secrets = ['ghs_' + 'a' * 36, 'ghs_123_eyJabc.eyJdef.signature_suffix',
                    'eyJabc.eyJdef.signature_suffix', 'Authorization: Basic c3ludGhldGljOnNlY3JldA==',

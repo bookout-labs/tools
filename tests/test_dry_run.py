@@ -43,7 +43,7 @@ class DryRunTests(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             _print_run_rows(walk(ScriptHandler(), commands=commands), commands=commands, dry_run=True)
-        self.assertEqual(output.getvalue(), """dry run: git switch -c '<issue>-board-saves-a-move' 'refs/heads/<default-branch>'
+        self.assertEqual(output.getvalue(), """dry run: git switch -c '<issue>-board-saves-a-move' 'refs/remotes/origin/<default-branch>'
 dry run: git add --all
 dry run: git commit -m '<issue>: Board saves a move
 

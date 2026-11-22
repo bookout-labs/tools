@@ -101,10 +101,10 @@ class PublicationTest(unittest.TestCase):
                 if not self.created:
                     return subprocess.CompletedProcess(command, 1, "", f'no pull requests found for branch "{self.branch}"')
                 response = {"number": 12, "state": "OPEN", "headRefOid": self.remote_head(), "headRefName": self.branch,
-                            "baseRefName": self.base, "baseRefOid": self.git("rev-parse", self.base), "autoMergeRequest": None}
+                            "baseRefName": self.base, "baseRefOid": self.git("--git-dir", str(self.remote), "rev-parse", self.base), "autoMergeRequest": None}
             case ["api", "graphql"]:
                 response = dict(number=12, state="OPEN", headRefOid=self.remote_head(),
-                    baseRefName=self.base, baseRefOid=self.git("rev-parse", self.base),
+                    baseRefName=self.base, baseRefOid=self.git("--git-dir", str(self.remote), "rev-parse", self.base),
                     isDraft=False, autoMergeRequest=None,
                     mergeQueueEntry=dict(id="queue-12", state="QUEUED", headCommit=dict(oid=self.remote_head())) if self.queued else None)
             case ["api", "repos/Example/Engine/pulls/12/reviews"]:
@@ -113,12 +113,12 @@ class PublicationTest(unittest.TestCase):
             case ["api", "repos/Example/Engine/pulls/12"]:
                 response = dict(number=12, state="open", draft=False, mergeable=True, mergeable_state="clean",
                     merge_commit_sha=None, head=dict(sha=self.remote_head(), ref=self.branch),
-                    base=dict(sha=self.git("rev-parse", self.base), ref=self.base))
+                    base=dict(sha=self.git("--git-dir", str(self.remote), "rev-parse", self.base), ref=self.base))
             case ["api", url] if "/rules/branches/" in url:
                 response = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test", integration_id=15368)])),
                             dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))]
             case ["api", url] if "/branches/" in url:
-                response = dict(commit=dict(sha=self.git("rev-parse", self.base)), protection=dict(required_status_checks=dict(checks=[], contexts=[])))
+                response = dict(commit=dict(sha=self.git("--git-dir", str(self.remote), "rev-parse", self.base)), protection=dict(required_status_checks=dict(checks=[], contexts=[])))
             case ["api", url] if "/check-runs" in url:
                 response = [dict(check_runs=[dict(id=1, name="test", head_sha=self.remote_head(),
                     app=dict(id=15368), check_suite=dict(id=30), status="completed", conclusion="success")])]
@@ -160,6 +160,194 @@ class PublicationTest(unittest.TestCase):
             run=LiveRun(LiveForge(), workspace), dispatcher=handler,
         )
 
+    def advance_origin(self, *, parent=None):
+        parent = parent or self.git("--git-dir", str(self.remote), "rev-parse", "main")
+        head = self.git("commit-tree", f"{parent}^{{tree}}", "-p", parent, "-m", "Origin advance")
+        self.git("push", "origin", f"{head}:refs/heads/main")
+        return head
+
+    def test_new_branch_uses_origin_with_stale_missing_or_detached_local_base(self):
+        for kind in ("stale", "missing", "newer", "divergent"):
+            with self.subTest(kind=kind):
+                self.reset_fixture()
+                local = self.git("rev-parse", "main")
+                tip = self.advance_origin()
+                if kind != "stale":
+                    detached = tip if kind == "newer" else local
+                    if kind in ("newer", "divergent"):
+                        detached = self.git("commit-tree", "HEAD^{tree}", "-p", detached, "-m", "Detached")
+                    self.git("switch", "--detach", detached)
+                    if kind == "missing":
+                        self.git("branch", "-d", "main")
+                before = self.git("rev-parse", "HEAD")
+                result = self.walk()
+                self.assertEqual(result["stop"], "verified")
+                self.assertEqual(result["work"].attempt_head, tip)
+                self.assertEqual(self.git("rev-parse", "HEAD^"), tip)
+                self.assertEqual(self.git("rev-parse", before), before)
+                if kind != "missing":
+                    self.assertEqual(self.git("rev-parse", "main"), local)
+
+    def test_creation_uses_resolved_sha_even_if_shared_remote_ref_moves(self):
+        old = self.git("rev-parse", "main")
+        tip = self.advance_origin()
+        original = LiveWorkspace._git
+        def moving(workspace, *args, **kwargs):
+            value = original(workspace, *args, **kwargs)
+            if args[:2] == ("rev-parse", "--verify"):
+                self.git("update-ref", "refs/remotes/origin/main", old)
+            return value
+        with patch.object(LiveWorkspace, "_git", moving):
+            LiveWorkspace(self.checkout).create_branch(self.branch, "main")
+        self.assertEqual(self.git("rev-parse", "HEAD"), tip)
+
+    def test_prepare_crash_and_checkpoint_resume_keep_selected_parent(self):
+        for checkpointed in (False, True):
+            with self.subTest(checkpointed=checkpointed):
+                self.reset_fixture()
+                tip = self.advance_origin()
+                original = LiveWorkspace.create_branch if not checkpointed else LiveWorkspace.commit
+                def crash(*args, **kwargs):
+                    if not checkpointed:
+                        original(*args, **kwargs)
+                    raise SystemExit("crash")
+                method = "commit" if checkpointed else "create_branch"
+                with patch.object(LiveWorkspace, method, crash), self.assertRaises(SystemExit):
+                    self.walk(self.edit if checkpointed else self.no_worker)
+                self.advance_origin()
+                result = self.walk(self.no_worker if checkpointed else self.edit)
+                self.assertEqual(result["stop"], "verified")
+                self.assertEqual(result["work"].attempt_head, tip)
+                self.assertEqual(self.git("rev-parse", "HEAD^"), tip)
+
+    def test_incompatible_existing_branch_is_not_adopted(self):
+        for kind in ("orphan", "stale", "extra"):
+            with self.subTest(kind=kind):
+                self.reset_fixture()
+                if kind == "orphan":
+                    self.git("switch", "--orphan", self.branch)
+                    self.git("commit", "--allow-empty", "-m", "Unrelated")
+                else:
+                    self.git("switch", "-c", self.branch)
+                    if kind == "extra":
+                        self.git("commit", "--allow-empty", "-m", "Unrelated extra commit")
+                existing = self.git("rev-parse", "HEAD")
+                self.git("switch", "main")
+                tip = self.advance_origin()
+                before = LiveWorkspace(self.checkout).inspect()
+                result = self.walk(self.no_worker)
+                self.assertEqual(result["stop"], "git_failed")
+                self.assertEqual(LiveWorkspace(self.checkout).inspect(), before)
+                for detail in (self.branch, existing, "origin/main", tip, "Checkout preserved", "Switch to", "delete"):
+                    self.assertIn(detail, result["halt_detail"])
+
+    def test_existing_branch_at_origin_is_adopted_from_divergent_detached_head(self):
+        tip = self.advance_origin()
+        self.git("branch", self.branch, tip)
+        detached = self.git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Divergent")
+        self.git("switch", "--detach", detached)
+        result = self.walk()
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["work"].attempt_head, tip)
+
+    def test_merge_base_operational_errors_keep_their_detail(self):
+        original = LiveWorkspace._git
+        for failure in (subprocess.CompletedProcess([], 128, b"", b"fatal: object store locked"),
+                        subprocess.TimeoutExpired("git merge-base", 30)):
+            with self.subTest(failure=failure):
+                before = LiveWorkspace(self.checkout).inspect()
+                def git(workspace, *args, **kwargs):
+                    if args[:2] == ("--no-replace-objects", "merge-base"):
+                        with patch("foreman.workspace.subprocess.run", side_effect=(
+                            failure if isinstance(failure, Exception) else [failure]
+                        )):
+                            return original(workspace, *args, **kwargs)
+                    return original(workspace, *args, **kwargs)
+                with patch.object(LiveWorkspace, "_git", git), self.assertRaises(WorkspaceError) as caught:
+                    LiveWorkspace(self.checkout)._base_merge_base("main", before.head)
+                self.assertIn("locked" if isinstance(failure, subprocess.CompletedProcess) else "timed out", str(caught.exception))
+                self.assertNotIn("unshallow", str(caught.exception))
+                self.assertEqual(LiveWorkspace(self.checkout).inspect(), before)
+
+    def test_prepare_transport_failures_do_not_use_cached_base(self):
+        for kind in ("missing", "absent", "auth", "timeout"):
+            with self.subTest(kind=kind):
+                self.reset_fixture()
+                self.git("fetch", "origin", "main")
+                before = LiveWorkspace(self.checkout).inspect()
+                original = LiveWorkspace._git
+                def failing(workspace, *args, **kwargs):
+                    if args[0] == "fetch" and kind in ("auth", "timeout"):
+                        raise WorkspaceError("App authentication denied" if kind == "auth" else "git fetch timed out")
+                    return original(workspace, *args, **kwargs)
+                if kind == "missing":
+                    self.git("--git-dir", str(self.remote), "update-ref", "-d", "refs/heads/main")
+                elif kind == "absent":
+                    self.git("remote", "remove", "origin")
+                with patch.object(LiveWorkspace, "_git", failing):
+                    result = self.walk(self.no_worker)
+                self.assertEqual(result["stop"], "git_failed")
+                self.assertEqual(LiveWorkspace(self.checkout).inspect(), before)
+                self.assertEqual(self.git("for-each-ref", "--format=%(refname)", self.ref), "")
+
+    def test_two_review_rounds_count_whole_pr_while_origin_advances(self):
+        heads = []
+        def edit():
+            heads.append(self.git("rev-parse", "HEAD"))
+            (self.checkout / "src").mkdir(exist_ok=True)
+            (self.checkout / "src/items.py").write_text("one\n" * len(heads))
+            self.edit()
+        original = LiveWorkspace.create_branch
+        prepares = []
+        def prepare(workspace, branch, base):
+            if prepares:
+                self.advance_origin()
+            prepares.append(branch)
+            return original(workspace, branch, base)
+        with patch.object(LiveWorkspace, "create_branch", prepare):
+            result = self.walk(edit, reviews=["changes", "approve"])
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(len(heads), 2)
+        self.assertEqual(result["work"].attempt_head, heads[1])
+        self.assertEqual(self.git("rev-parse", "HEAD^"), heads[1])
+        size = LiveWorkspace(self.checkout).pull_request_size(self.git("rev-parse", "HEAD"), "main")
+        self.assertEqual(size["lines"], 3)
+        self.assertEqual(size["merge_base"], heads[0])
+
+    def test_depth_one_without_local_base_prepares_and_missing_ancestry_is_explicit(self):
+        tip = self.advance_origin()
+        shallow = self.checkout.parent / "shallow"
+        self.git("clone", "--depth=1", "--branch=main", self.remote.as_uri(), str(shallow))
+        workspace = LiveWorkspace(shallow)
+        workspace._git("switch", "--detach")
+        workspace._git("branch", "-d", "main")
+        workspace.create_branch(self.branch, "main")
+        self.assertEqual(workspace.inspect().head, tip)
+        old = self.git("rev-parse", "main")
+        self.git("--git-dir", str(self.remote), "update-ref", "refs/heads/main", old)
+        before = workspace.inspect()
+        with self.assertRaisesRegex(WorkspaceError, "git fetch --unshallow origin"):
+            workspace.reconcile(tip, self.branch, "main", None)
+        self.assertEqual(workspace.inspect(), before)
+
+    def test_rewritten_and_rewound_origin_keep_checkout_and_comparison_semantics(self):
+        parent = self.advance_origin()
+        workspace = LiveWorkspace(self.checkout)
+        workspace.create_branch(self.branch, "main")
+        self.edit()
+        before = workspace.inspect()
+        old = self.git("rev-parse", "main")
+        self.git("--git-dir", str(self.remote), "update-ref", "refs/heads/main", old)
+        candidate = workspace.reconcile(parent, self.branch, "main", None)
+        self.assertIsNotNone(candidate)
+        self.assertEqual(workspace._base_merge_base("main", parent), old)
+        unrelated = self.git("commit-tree", "HEAD^{tree}", "-m", "Unrelated")
+        self.git("--git-dir", str(self.remote), "fetch", str(self.checkout), unrelated)
+        self.git("--git-dir", str(self.remote), "update-ref", "refs/heads/main", unrelated)
+        with self.assertRaisesRegex(WorkspaceError, "restore related base history"):
+            workspace.reconcile(parent, self.branch, "main", None)
+        self.assertEqual(workspace.inspect(), before)
+
     def test_refresh_adopts_only_the_observed_remote_repair(self):
         self.walk()
         repaired = self.checkout.parent / "repair"
@@ -171,11 +359,17 @@ class PublicationTest(unittest.TestCase):
                      ("push", "origin", self.branch)]:
             run_subprocess(["git", *args], cwd=repaired, check=True, capture_output=True)
         head = self.remote_head()
-        before = LiveWorkspace(self.checkout).inspect().head
+        self.advance_origin()
+        workspace = LiveWorkspace(self.checkout)
+        before = workspace.inspect().head
+        workspace.create_branch(self.branch, "main")
+        self.assertEqual(workspace.inspect().head, before)
         with self.assertRaisesRegex(WorkspaceError, "changed during fetch"):
             LiveWorkspace(self.checkout).refresh(self.branch, before)
         self.assertEqual(LiveWorkspace(self.checkout).inspect().head, before)
         LiveWorkspace(self.checkout).refresh(self.branch, head)
+        self.advance_origin()
+        workspace.create_branch(self.branch, "main")
         self.assertEqual(LiveWorkspace(self.checkout).inspect().head, head)
         self.assertEqual((self.checkout / "repair.txt").read_text(), "external repair")
 
@@ -190,7 +384,7 @@ class PublicationTest(unittest.TestCase):
                 self.assertEqual(self.remote_head(), result.get("work", WorkState()).head_sha)
                 self.assertEqual(result["checks"].verified_head, self.remote_head())
                 self.assertEqual(self.created, [self.remote_head()])
-                self.assertEqual(self.git("rev-parse", f"{self.ref}^"), self.git("rev-parse", self.base))
+                self.assertEqual(self.git("rev-parse", f"{self.ref}^"), self.git("--git-dir", str(self.remote), "rev-parse", self.base))
                 self.assertEqual(self.git("--git-dir", str(self.remote), "show", f"{self.ref}:items.txt"), "one")
                 message = self.git("show", "-s", "--format=%B", "HEAD")
                 self.assertLessEqual(len(message.splitlines()[0]), 72)
@@ -292,6 +486,7 @@ class PublicationTest(unittest.TestCase):
                 self.reset_fixture()
                 if kind == "rewind":
                     self.git("commit", "--allow-empty", "-m", "New base")
+                    self.git("push", "origin", "main")
                 def edit():
                     if kind == "unrelated":
                         self.git("switch", "--orphan", "orphan")
@@ -353,6 +548,7 @@ class PublicationTest(unittest.TestCase):
                 self.git("merge", "--no-ff", "side", "-m", "Merge into main")
                 main = self.git("rev-parse", "HEAD")
                 self.git("commit", "--allow-empty", "-m", "Attempt base")
+                self.git("push", "origin", "main")
                 parent = self.git("rev-parse", "HEAD")
 
                 def edit():

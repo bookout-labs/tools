@@ -4,6 +4,14 @@ This statechart abstracts publication recovery. The [native delivery graph](grap
 
 The checkpoint owns the attempt's starting HEAD, branch, dispatch result, and reconciled candidate. Git owns commits and remote refs. Forge owns the open PR. Preparation precedes worker edits. Reconciliation checkpoints either the edits fingerprint or an adopted worker HEAD, tree, and fingerprint before commit. A clean worker history is adopted only on the delivery branch, with nonempty linear commits after the attempt head, a net tree change, and a remote branch that is absent or still at the attempt head. Foreman soft-resets adopted commits to the attempt head and creates its own commit with attribution and redaction, preserving the adopted tree. Commit recovery accepts the expected parent and complete message, and checks the tree for an adopted candidate. Push compares the remote branch SHA. PR lookup matches the repository head and base.
 
+New delivery branches start at the current origin base fetched during preparation. The fetch uses repository-scoped App credentials when configured and resolves the fetched ref once to a full SHA. Stale or missing local base branches have no effect. This policy also applies to tools itself and clean detached checkouts whose HEAD is newer or divergent. Detached commits and local main remain unchanged.
+
+An existing delivery branch retains its inspected HEAD for correction and repair attempts, after any repair refresh. If preparation was interrupted after branch creation but before checkpointing, replay reuses that branch without fetching a new parent. When the checkout is not already attached to the delivery branch, that branch must equal the fetched origin base tip before switching to it. Otherwise preparation preserves the checkout and asks the operator to switch to the delivery branch to reuse it or delete it before rerunning. A checkpointed attempt retains its saved parent when origin advances.
+
+The attempt parent and PR comparison base serve different purposes. Reconciliation fetches origin again and computes the merge base for the entire PR. A force rewind can yield a comparison base older than the attempt parent. Unrelated rewritten history or missing shallow ancestry halts with the checkout preserved and instructions to fetch the needed history. Fresh depth-one clones work without automatic deepening.
+
+Smoke compares its fixture against the merge base with the origin ref fetched during preparation, excluding unrelated origin changes between clone and prepare.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Preparing
