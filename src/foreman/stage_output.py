@@ -464,8 +464,9 @@ class SpecRejection(TypedDict):
     detail: str
 
 
+@with_config(ConfigDict(extra="forbid"))
 class HumanAnswer(TypedDict):
-    stage: str
+    stage: Literal["triage", "spec", "pr_size", "review"]
     question: str
     answer: str
 
@@ -476,8 +477,6 @@ class PlanState(BaseModel, frozen=True, extra="forbid"):
     triage: Literal["", "implement", "spec", "question", "needs_human"] = ""
     spec: str = ""
     spec_gate: Literal["", "ready", "needs_human"] = ""
-    spec_draft_head: str = ""
-    spec_draft_clean: bool = False
     human_qa: list[HumanAnswer] = Field(default_factory=list[HumanAnswer])
     spec_candidate: SpecCandidateRecord | None = None
     spec_rejection: SpecRejection | None = None

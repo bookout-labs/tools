@@ -10,6 +10,7 @@ from typing import Annotated, get_args, get_origin, get_type_hints
 import unittest
 
 from langgraph.checkpoint.sqlite import SqliteSaver
+from pydantic import ValidationError
 
 from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
@@ -22,6 +23,13 @@ FIXTURES = Path(__file__).with_name("fixtures") / "state"
 
 
 class StateTests(unittest.TestCase):
+    def test_human_answer_rejects_unknown_fields_and_stages(self):
+        answer = {"stage": "spec", "question": "Keep?", "answer": "Yes"}
+        self.assertEqual(PlanState(human_qa=[answer]).human_qa, [answer])
+        for invalid in ({**answer, "stage": "implement"}, {**answer, "extra": True}):
+            with self.subTest(answer=invalid), self.assertRaises(ValidationError):
+                PlanState(human_qa=[invalid])
+
     def test_owner_channels_and_reducers(self):
         hints = get_type_hints(DeliveryState, include_extras=True)
         self.assertEqual(sorted(set(hints) - {"schema_version"}), json.loads((FIXTURES / "channels.json").read_text()))
@@ -40,7 +48,7 @@ class StateTests(unittest.TestCase):
                             if key in DeliveryState.__annotations__}
             original["schema_version"] = SCHEMA_VERSION
             original["review"] = ReviewState()
-            original["plan"] = PlanState(triage="needs_human", spec_draft_head="a" * 40, spec_draft_clean=True,
+            original["plan"] = PlanState(triage="needs_human",
                 human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}])
             original["checks"] = ChecksState(check="true")
             original["run"] = RunState(repo="a/b", token_cap=100)

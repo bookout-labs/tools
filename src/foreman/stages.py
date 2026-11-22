@@ -114,33 +114,13 @@ def implement_instructions(state: "DeliveryState", workspace: Workspace, forge: 
 
 
 def spec_instructions(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
-    plan = state["plan"]
-    size = oversized_pr(state)
-    split = plan.pr_split if size else None
-    instruction = (
-        f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."
-        " Split the work into independently shippable pull requests."
-        " For a slice issue, describe the split in spec."
-    ) if size else ""
-    gate = (split["gate"] if split else "") if size else plan.spec_gate
-    if gate == "needs_human":
-        draft = 'plan.pr_split["plan"]' if split else "plan.spec"
-        current = workspace.inspect()
-        instruction += (
-            f"\n\nDelta resume from the paused draft in {draft}."
-            "\nPaired Q&A history: " + json.dumps(plan.human_qa)
-        )
-        if plan.spec_draft_clean and current.clean and current.head == plan.spec_draft_head:
-            instruction += (
-                "\nWorkspace HEAD and clean status match the pause. Keep the recorded checkout findings"
-                " and provisional spec; apply the answers. Re-read files only where answers open a new area or seam."
-            )
-        else:
-            instruction += (
-                f"\nCheckout changed since {plan.spec_draft_head} or was dirty at the pause."
-                " Re-verify affected facts against the current checkout before applying the answers to the draft."
-            )
-    return instruction, None, None
+    if size := oversized_pr(state):
+        return (
+            f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."
+            " Split the work into independently shippable pull requests."
+            " For a slice issue, describe the split in spec."
+        ), None, None
+    return "", None, None
 
 
 def accept_output(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
@@ -158,16 +138,7 @@ def accept_spec(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
                     raise InvalidOutput(f"checked_paths: {path} is not a workspace file")
     plan = state["plan"]
     slices = clean_slices(output.slices, workspace) if plan.issue_kind == "parent" and output.spec_gate == "ready" else []
-    update = output.update(UpdateContext(plan, state["review"], bool(oversized_pr(state)), slices, model if isinstance(model, ModelSpec) else None))
-    if output.spec_gate == "needs_human" and workspace is not None:
-        try:
-            observed = workspace.inspect()
-        except WorktreeInspectionFailed as exc:
-            raise InvalidOutput(str(exc)) from exc
-        update["plan"] = update.get("plan", plan).model_copy(update={
-            "spec_draft_head": observed.head, "spec_draft_clean": observed.clean,
-        })
-    return {**update}
+    return {**output.update(UpdateContext(plan, state["review"], bool(oversized_pr(state)), slices, model if isinstance(model, ModelSpec) else None))}
 
 
 def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":

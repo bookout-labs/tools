@@ -5,10 +5,6 @@ existing behavior and answer questions the code and issue can settle yourself.
 Reserve `needs_human` for intent, product or policy choices, or external facts absent
 from the code and issue. Return non-empty `questions`, each with `question`,
 `why_code_unanswered` and workspace-relative `checked_paths` naming files you read.
-Before pausing, write completed checkout findings (checked files and observed
-behavior) and the provisional spec into `spec`. Clearly mark only the open human
-decisions. On a delta resume, reuse that draft according to the checkout drift
-guidance and paired Q&A; do not repeat a full spec pass.
 Use empty `checked_paths` only if no checkout file covers the topic, explaining why
 in `why_code_unanswered`. On `ready`, return `questions: []`.
 
