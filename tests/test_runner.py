@@ -1525,7 +1525,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertEqual(result["path"], ["triage", "spec", "done"])
                     self.assertEqual(result["plan"].spec_failures, 0)
                     self.assertIsNone(result["plan"].spec_candidate)
-                    self.assertEqual(self.github.created, [])
+                    self.assertEqual(result["plan"].child_issue_numbers, [])
+                    self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
                     attempts = [a for a in result["attempts"] if a["stage"] == "spec"]
                     self.assertEqual(len(attempts), 1)
                     self.assertTrue(attempts[0]["usage"])

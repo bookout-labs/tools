@@ -592,11 +592,13 @@ class SpecOutput(StageOutput):
         description="For a ready parent spec, return one entry per pull request. Use null otherwise.",
     )
 
-    @model_validator(mode="after")
-    def grounded_questions(self) -> Self:
-        if bool(self.questions) != (self.spec_gate == "needs_human"):
+    @field_validator("questions")
+    @classmethod
+    def grounded_questions(cls, value: list[SpecQuestion], info: ValidationInfo) -> list[SpecQuestion]:
+        gate = info.data.get("spec_gate")
+        if gate is not None and bool(value) != (gate == "needs_human"):
             raise ValueError("questions must be non-empty on needs_human and empty on ready")
-        return self
+        return value
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
