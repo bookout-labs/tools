@@ -13,7 +13,7 @@ from unittest.mock import patch
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome
 from foreman.config import load_config
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.delivery import LiveRun
 from foreman.redaction import redact
 from foreman.github import LiveForge
@@ -405,7 +405,7 @@ class PublicationTest(unittest.TestCase):
         def edit():
             calls.append(1)
             if len(calls) == 1:
-                return Outcome("quota")
+                return Outcome("quota", usage=SCRIPTED_USAGE)
             self.edit()
         result = self.walk(edit)
         self.assertEqual(result["stop"], "verified")
@@ -1011,7 +1011,7 @@ class PublicationTest(unittest.TestCase):
     def test_quota_stop_continues_owned_partial_edits(self):
         def stop():
             (self.checkout / "items.txt").write_text("partial\n")
-            return Outcome("quota")
+            return Outcome("quota", usage=SCRIPTED_USAGE)
         self.assertEqual(self.walk(stop).get("stop"), "quota_exhausted")
         def finish():
             self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
@@ -1021,7 +1021,7 @@ class PublicationTest(unittest.TestCase):
     def test_foreign_edits_after_quota_stop_are_rejected(self):
         def stop():
             (self.checkout / "items.txt").write_text("partial\n")
-            return Outcome("quota")
+            return Outcome("quota", usage=SCRIPTED_USAGE)
         self.walk(stop)
         (self.checkout / "foreign.txt").write_text("unowned\n")
         result = self.walk(lambda: self.fail("foreign edits must halt"))

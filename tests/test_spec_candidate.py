@@ -1,7 +1,7 @@
 import tests
 
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION
-from foreman.dry_run import DryRun
+from foreman.dry_run import DryRun, SCRIPTED_USAGE
 
 import json
 import unittest
@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from foreman.adapters import Outcome
 from foreman.config import ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, DEFAULT_TOKEN_CAP, compile_delivery, run_delivery
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.github import render_slice_body
 from foreman.runner import _load_slice, checkpoint_state
 from foreman.stage_output import CandidateSlice, SliceProvenance, SpecAuthor, SpecCandidate, StoredSlice
@@ -73,7 +73,7 @@ class CandidateTests(unittest.TestCase):
 
                 def handler(node, model, state, instruction):
                     if node == stage and model.name == "gpt-test":
-                        return Outcome("quota")
+                        return Outcome("quota", usage=SCRIPTED_USAGE)
                     return script(node, model, state, instruction)
                 with skill_fixture(replace(config, nodes=nodes)) as (configured, scratch):
                     result = run_delivery(handler, repo="org/repo", request="Save", config=configured, scratch=scratch)
@@ -117,7 +117,7 @@ class CandidateTests(unittest.TestCase):
 
     def test_failed_author_does_not_produce_a_candidate(self):
         with skill_fixture() as (config, scratch):
-            result = run_delivery(lambda *_: Outcome("failed", detail="Malformed output"),
+            result = run_delivery(lambda *_: Outcome("failed", detail="Malformed output", usage=SCRIPTED_USAGE),
                                   repo="org/repo", request="Save", config=config, scratch=scratch)
         self.assertEqual(result["halt"], "invalid_output")
         self.assertIsNone(result["plan"].spec_candidate)

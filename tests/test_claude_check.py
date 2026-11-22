@@ -14,7 +14,7 @@ import unittest
 from foreman.adapters import Outcome
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.config import ModelSpec, load_config
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.worker import CliWorker
 from test_adapters import CALL, FIXTURES, fixture_process
 from test_delivery import walk
@@ -66,7 +66,7 @@ class ClaudeCheckTest(unittest.TestCase):
                     if node == 'implement':
                         count += 1
                         if mode == 'fallback' and model.family != 'claude':
-                            return Outcome('quota', detail='quota')
+                            return Outcome('quota', detail='quota', usage=SCRIPTED_USAGE)
                         if mode != 'fix' or count == 2:
                             return CliWorker(Path('.'), run=lambda *_: subprocess.CompletedProcess(['claude'], 0, json.dumps(denied(CHECK)), ''))(node, model, state, instruction)
                     return script(node, model, state, instruction)

@@ -20,7 +20,7 @@ from foreman.github import Forge, ForgeError, LiveForge
 from foreman.runner import run_live_delivery
 from foreman.skill_rules import SkillMissing
 from foreman.workspace import WorkspaceError
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.worker import CliWorker
 from skill_fixture import fixture_skills
 from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, slice_body, worker_reply
@@ -37,7 +37,7 @@ class LiveWatchTest(unittest.TestCase):
 
     def invoke(self, **kwargs):
         return run_live_delivery(repo='Example/Engine', issue=8, check='exit 0',
-                                 checkpoint=self.checkpoint, run=self.run, **({'dispatcher': lambda *args: Outcome('failed', detail='bad output')} | kwargs))
+                                 checkpoint=self.checkpoint, run=self.run, **({'dispatcher': lambda *args: Outcome('failed', detail='bad output', usage=SCRIPTED_USAGE)} | kwargs))
 
     def stored(self):
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
@@ -147,7 +147,7 @@ class LiveWatchTest(unittest.TestCase):
         self.fake.merged.add(101)
         def dispatch(stage, *args):
             return (Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
-                            usage=Usage(input_tokens=1, output_tokens=1)) if stage == 'triage' else Outcome('quota'))
+                            usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1)) if stage == 'triage' else Outcome('quota', usage=SCRIPTED_USAGE))
         quota = dispatch
         paused = self.invoke(dispatcher=quota)
         self.assertEqual(paused['stop'], 'quota_exhausted')
@@ -166,9 +166,9 @@ class LiveWatchTest(unittest.TestCase):
                 self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
                 def dispatch(stage, *args):
                     if stop == 'quota_exhausted':
-                        return Outcome('quota')
+                        return Outcome('quota', usage=SCRIPTED_USAGE)
                     return Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
-                                   usage=Usage(input_tokens=1, output_tokens=1))
+                                   usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1))
                 dispatcher = dispatch
                 self.assertEqual(self.invoke(dispatcher=dispatcher)['stop'], stop)
                 before = self.stored()
@@ -226,7 +226,7 @@ class LiveWatchTest(unittest.TestCase):
                 self.invoke()
             with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
                 saver.serde = checkpoint_serializer()
-                graph = compile_delivery(lambda *args: Outcome('failed', detail='bad output'), load_config(), run=self.run, checkpointer=saver)
+                graph = compile_delivery(lambda *args: Outcome('failed', detail='bad output', usage=SCRIPTED_USAGE), load_config(), run=self.run, checkpointer=saver)
                 graph.update_state({'configurable': {'thread_id': 'example/engine#8'}},
                                    {'stop': stop, 'watch': None}, as_node='done')
             self.forge.open_issues.side_effect = ForgeError('#48 ' + secret)

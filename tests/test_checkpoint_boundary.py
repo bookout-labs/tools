@@ -194,7 +194,7 @@ from unittest.mock import patch
 from foreman.adapters import Outcome
 from foreman.config import PstackPin, load_config
 from foreman.delivery import LiveRun
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.runner import run_live_delivery
 from foreman.workspace import WorktreeState
 from owner_contract import COUNTERS
@@ -216,7 +216,7 @@ def count(state):
 
 def worker(node, model, state, instruction):
     if phase == "pause" and count(state) >= 1:
-        return Outcome("quota")
+        return Outcome("quota", usage=SCRIPTED_USAGE)
     calls.append(node)
     if node == "implement":
         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)

@@ -35,10 +35,10 @@ def handler(node, model, state, instruction):
     if mode == "entry":
         os._exit(19)
     if mode == "quota-uncommitted":
-        return Outcome("quota", usage=Usage(input_tokens=9, output_tokens=1, total_cost_usd=0.1))
+        return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=9, output_tokens=1, total_cost_usd=0.1))
     if mode == "quota":
         if calls == 1:
-            return Outcome("quota", usage=Usage(input_tokens=9, output_tokens=1, total_cost_usd=0.1))
+            return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=9, output_tokens=1, total_cost_usd=0.1))
         os._exit(19)
     return script(node, model, state, instruction)
 def crash(*args, **kwargs):

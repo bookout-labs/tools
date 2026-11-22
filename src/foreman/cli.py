@@ -14,7 +14,7 @@ from typing import TextIO, assert_never
 import yaml
 
 from foreman.accept import AcceptError, accept_event
-from foreman.budget import claude_spend
+from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.readiness import MergeState
 from foreman.state import ReviewState, ChecksState, RunState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
@@ -72,6 +72,21 @@ def _print_run_rows(
     def write_literal(text: str) -> None:
         print("\n".join(prefix + line for line in text.split("\n")))
 
+    def write_tokens() -> None:
+        attempts = result.get("attempts", [])
+        summary = token_summary(attempts)
+        write_literal(f"raw tokens {run_tokens(attempts)} (known subtotal)")
+        write_literal(f"work tokens used / work cap: {summary.known} / {run_state.token_cap}; "
+                      f"{'complete' if summary.unknown == 0 else 'partial'}; unknown attempts {summary.unknown}")
+        for index, attempt in enumerate(attempts, 1):
+            usage = attempt["usage"]
+            buckets = " ".join(f"{key}={value if value is not None else 'unknown'}"
+                               for key, value in usage.items() if key != "cost_usd") if usage else "all buckets unknown"
+            work = work_tokens([attempt])
+            write_literal(f"attempt {index} {attempt['stage']} {attempt['model']} {attempt['outcome']}: {buckets}; work={work if work is not None else 'unknown'}")
+        for bucket, (total, available) in summary.buckets.items():
+            write_literal(f"{bucket} tokens {total}; available {available}/{summary.charged}")
+
     checks = result["checks"]
     run_state = result["run"]
     review_state = result["review"]
@@ -95,7 +110,7 @@ def _print_run_rows(
             for proof, label in checks.proof_labels.items():
                 write(f"{proof} proof {label}")
             if run_state.token_cap is not None:
-                write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {run_state.token_cap}")
+                write_tokens()
             write(f"done {result['stop']}")
             if result.get("stop") == Halt.skill_missing:
                 pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
@@ -133,7 +148,7 @@ def _print_run_rows(
     stop = result.get("stop")
     if stop in {"needs_human", Halt.quota_exhausted} and "done" not in result["path"]:
         if run_state.token_cap is not None:
-            write_literal(f"tokens {run_tokens(result.get('attempts', []))} of {run_state.token_cap}")
+            write_tokens()
         label = "done" if stop == "needs_human" and dry_run else "paused"
         write_literal(f"{label} {stop}")
         if detail := result.get("halt_detail"):
@@ -186,7 +201,7 @@ def main(
     run.add_argument("--fact-record", type=fact_record_path, default=None)
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
-    run.add_argument("--max-tokens", type=positive_tokens)
+    run.add_argument("--max-tokens", type=positive_tokens, help="cap uncached input + cache creation + output work tokens")
     run.add_argument("--max-budget-usd", type=positive_budget)
 
     accept = commands.add_parser("accept", help="decide whether an event enters the graph")

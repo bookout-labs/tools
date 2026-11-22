@@ -403,17 +403,24 @@ Both halts exit 1. Dry runs record zero dollar cost.
 
 `foreman run delivery --max-tokens N` stores a positive token cap, defaulting to
 20,000,000. Resume keeps the stored cap and rejects a differing flag.
-Each dispatch checks the sum of all attempt input, output, cache read and cache
-creation tokens. The attempt already in flight can overshoot the cap. Once the
+The cap measures work tokens, the canonical uncached input + cache creation +
+output across all models and attempted calls. Cache reads are excluded. Admission
+is checked between calls; no active CLI proves a native token bound within a call.
+The report separates raw tokens from work tokens used / work cap, shows all four
+buckets with availability, and reports measured work overshoot when exhausted.
+The attempt already in flight can overshoot the cap. Once the
 cap is reached, no subsequent model runs and that attempt's output is not
 applied. `budget_exceeded` and `usage_unknown` exit 1 and cannot resume.
 Interrupted calls with no committed usage halt as unknown rather than being
-retried. Checkpoints from before usage accounting require a new run.
+retried. Checkpoints from before this work-cap schema require a new run.
 
 Claude's `error_max_budget_usd` result also halts as `budget_exceeded`, retaining
 the attempt's usage without applying its output or trying the next model.
-It precedes missing usage and the token cap. Otherwise missing successful usage
-halts first, then the token cap, then the dollar allowance.
+Unknown work on any launched call halts as usage_unknown before fallback,
+including failed and quota calls. Missing cache creation stays unknown rather
+than defaulting to zero. Proven pre-launch rejection adds no work charge.
+Known native budget exhaustion precedes the work cap, then the dollar allowance.
+Claude's native dollar limiter and the smoke deadline remain in place.
 Claude dollar costs are known only when every model ledger cost is finite and
 nonnegative and their sum agrees with the envelope total within floating-point
 tolerance; invalid costs leave token accounting intact.

@@ -112,10 +112,12 @@ class NativeEnvelope(BaseModel, ABC):
             return None
         costs = [row.cost for row in rows if row.cost is not None]
         cost = sum(costs) if len(costs) == len(rows) else None
+        reads = [row.cache_read for row in rows if "cache_read" in row.model_fields_set]
+        writes = [row.cache_creation for row in rows if "cache_creation" in row.model_fields_set]
         return Usage(
             input_tokens=sum(row.input for row in rows), output_tokens=sum(row.output for row in rows),
-            cache_read_input_tokens=sum(row.cache_read for row in rows),
-            cache_creation_input_tokens=sum(row.cache_creation for row in rows),
+            cache_read_input_tokens=sum(reads) if len(reads) == len(rows) else None,
+            cache_creation_input_tokens=sum(writes) if len(writes) == len(rows) else None,
             total_cost_usd=cost if cost is not None and isfinite(cost) else None,
         )
 
