@@ -72,9 +72,22 @@ class SmokeCommandTest(unittest.TestCase):
     def test_cleanup_failure_stops_before_filing_and_reports_error(self):
         with self.provision() as (root, forge, process, runner, credentials, errors):
             forge.smoke_pull_requests.side_effect = ForgeError('cleanup denied')
-            self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
+            self.assertEqual(output.getvalue(), 'smoke exit 78 cleanup attempt prerequisite\n')
             self.assertIn('cleanup denied', errors.getvalue())
             forge.ensure_smoke_label.assert_called_once_with(SMOKE_REPO)
+            forge.create_issue.assert_not_called()
+            runner.assert_not_called()
+
+    def test_lock_oserror_stops_before_provisioning(self):
+        with self.provision() as (root, forge, process, runner, credentials, errors):
+            with patch('foreman.smoke_command.smoke_lock', side_effect=OSError('lock denied')), \
+                 redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
+            self.assertEqual(output.getvalue(), 'smoke exit 78 lock attempt prerequisite\n')
+            self.assertIn('lock denied', errors.getvalue())
+            credentials.assert_not_called()
             forge.create_issue.assert_not_called()
             runner.assert_not_called()
 

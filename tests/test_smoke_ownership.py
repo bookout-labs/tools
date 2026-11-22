@@ -11,12 +11,12 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from foreman.github import BOT_LOGIN, ForgeError, SmokeIssue, SmokeOpenPull
+from foreman.github import BOT_LOGIN, ForgeError, LiveForge, SmokeIssue, SmokeOpenPull
 from foreman.smoke_command import SMOKE_REPO as REPO
-from foreman.smoke_ownership import cleanup_smoke, create_smoke_issue, smoke_lock
+from foreman.smoke_ownership import cleanup_smoke, create_smoke_issue, owned, smoke_lock
 from tests.test_smoke_forge import connection, issue
 
-MARKER = '<!-- foreman-smoke-run: ' + 'a' * 32 + ' -->'
+MARKER = '<!-- foreman-smoke-run: ' + '0123-4567-89ab-cdef-0123-4567-89ab-cdef' + ' -->'
 
 
 def fixture(number=1, **changes):
@@ -99,6 +99,105 @@ class SmokeOwnershipTest(unittest.TestCase):
         forge.smoke_issues.return_value = [fixture(9)]
         with self.assertRaisesRegex(ForgeError, 'not created'):
             create_smoke_issue(forge, REPO)
+
+    def test_marker_lines_are_strict_and_unique(self):
+        invalid = [None, "", "smoke", MARKER.replace("0123", "012g"),
+                   MARKER.replace("0123", "ABC0"), MARKER.replace("0123-", "", 1),
+                   MARKER.replace(" -->", "-0123 -->"), "prefix " + MARKER,
+                   MARKER + " suffix", MARKER + "\n" + MARKER,
+                   MARKER + "\n" + MARKER.replace("0123", "abcd")]
+        for body in invalid:
+            with self.subTest(body=body):
+                self.assertFalse(owned(fixture().model_copy(update={'body': body}), REPO))
+        for body in (MARKER, "Header\n" + MARKER + "\nFooter",
+                     "Header\r\n" + MARKER + "\r\nFooter"):
+            with self.subTest(body=body):
+                self.assertTrue(owned(fixture().model_copy(update={'body': body}), REPO))
+
+    def test_repository_case_and_lock_identity(self):
+        forge = Mock()
+        forge.smoke_issues.return_value = [fixture(repository_url=f'https://api.github.com/repos/{REPO.upper()}')]
+        forge.smoke_pull_requests.return_value = [pull(linked_repo=REPO.upper())]
+        cleanup_smoke(forge, REPO)
+        forge.close_pull_request.assert_called_once_with(REPO, 2)
+        forge.close_issue.assert_called_once_with(REPO, 1)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'XDG_STATE_HOME': directory}):
+            with smoke_lock(REPO.upper()):
+                self.assertEqual([p.name for p in (Path(directory) / 'foreman').iterdir()],
+                                 ["smoke-" + REPO.replace('/', '--') + ".lock"])
+                with self.assertRaises(ForgeError):
+                    with smoke_lock(REPO):
+                        self.fail('case variant acquired the same lock')
+
+    def test_mixed_links_only_protect_owned_issues_when_armed(self):
+        for other_repo in (REPO, 'other/repo'):
+            for armed in (False, True):
+                with self.subTest(other_repo=other_repo, armed=armed):
+                    item = pull()
+                    extra = pull(linked_repo=other_repo).closingIssuesReferences.nodes[0].model_copy(update={'number': 99})
+                    item.closingIssuesReferences.nodes.append(extra)
+                    if armed:
+                        item = item.model_copy(update={'autoMergeRequest': {'enabledAt': 'now'}})
+                    forge = Mock()
+                    forge.smoke_issues.return_value = [fixture()]
+                    forge.smoke_pull_requests.return_value = [item]
+                    cleanup_smoke(forge, REPO)
+                    forge.close_pull_request.assert_not_called()
+                    self.assertEqual(forge.close_issue.call_count, 0 if armed else 1)
+
+    def test_cleanup_visits_all_prs_and_accumulates_protection(self):
+        first = pull(3).model_copy(update={'autoMergeRequest': {'enabledAt': 'now'}})
+        second = pull(4).model_copy(update={'mergeQueueEntry': {'id': 'queue'}})
+        second.closingIssuesReferences.nodes[0].number = 5
+        forge = Mock()
+        forge.smoke_issues.return_value = [fixture(), fixture(5), fixture(6)]
+        last = pull(7)
+        last.closingIssuesReferences.nodes[0].number = 6
+        forge.smoke_pull_requests.return_value = [pull(2, linked_repo='other/repo'), first, second, last]
+        cleanup_smoke(forge, REPO)
+        forge.close_pull_request.assert_called_once_with(REPO, 7)
+        forge.close_issue.assert_called_once_with(REPO, 6)
+
+    def test_reconciliation_requires_one_open_owned_exact_marker(self):
+        for variant in ('unowned', 'substring', 'closed', 'duplicate_issue', 'duplicate_marker'):
+            with self.subTest(variant=variant):
+                forge = Mock()
+                def lost(repo, title, body, labels):
+                    item = fixture().model_copy(update={'body': body})
+                    if variant == 'unowned':
+                        item.user.login = 'personal'
+                    elif variant == 'substring':
+                        item.body = body.replace('<!--', 'prefix <!--') + '\n' + MARKER
+                    elif variant == 'closed':
+                        item.state = 'closed'
+                    elif variant == 'duplicate_marker':
+                        item.body += "\n" + MARKER
+                    forge.smoke_issues.return_value = [item, item.model_copy(update={'number': 2})] if variant == 'duplicate_issue' else [item]
+                    raise ForgeError('lost response')
+                forge.create_issue.side_effect = lost
+                with self.assertRaisesRegex(ForgeError, 'lost response'):
+                    create_smoke_issue(forge, REPO)
+                forge.create_issue.assert_called_once()
+
+    def test_live_create_preserves_marker_and_reconciles_lost_response(self):
+        for lost in (False, True):
+            with self.subTest(lost=lost):
+                posted = []
+                def transport(args, **kwargs):
+                    if '--method' in args:
+                        body = next(arg.removeprefix('body=') for arg in args if arg.startswith('body='))
+                        posted.append(body)
+                        self.assertTrue(owned(fixture().model_copy(update={'body': body}), REPO), body)
+                        if lost:
+                            raise subprocess.TimeoutExpired(args, 1)
+                        result = {'number': 1}
+                    else:
+                        result = [[fixture().model_copy(update={'body': posted[0]}).model_dump(exclude_unset=True)]]
+                    return subprocess.CompletedProcess(args, 0, json.dumps(result), '')
+                with patch('foreman.github.credentials.environment', return_value=None), \
+                     patch('foreman.github.subprocess.run', side_effect=transport):
+                    self.assertEqual(create_smoke_issue(LiveForge(), REPO), 1)
+                self.assertEqual(len(posted), 1)
 
     def test_process_crashes_release_lock_and_next_run_cleans_github(self):
         code = '''
