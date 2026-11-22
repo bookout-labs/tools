@@ -42,11 +42,14 @@ def _search_found_no_match(command: str, output: object) -> bool:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
+    # Treat shell punctuation as whitespace outside quotes and escapes. Only
+    # unquoted operators change the tokens compared to ordinary word splitting.
+    lexer.whitespace += lexer.punctuation_chars
     try:
-        args = list(lexer)
+        args = shlex.split(command)
+        if "\n" in command or args != list(lexer):
+            return False
     except ValueError:
-        return False
-    if "\n" in command or any(arg and not arg.strip(lexer.punctuation_chars) for arg in args):
         return False
     match args:
         case ["grep" | "rg", *_]:

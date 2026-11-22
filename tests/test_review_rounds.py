@@ -444,14 +444,46 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertFalse(self.forge.merge_calls)
 
     def test_codex_review_accepts_no_match_after_required_reads(self):
-        self.check_codex_review_reads(None)
+        for search in (
+            "git --no-replace-objects grep -n FOREMAN_REMOVED_PATH {head} -- items.txt",
+            "git grep -F '|' {head} -- items.txt",
+            'git grep -F "&&" {head} -- items.txt',
+            "git grep -F ';' {head} -- items.txt",
+            "git grep -F '>' {head} -- items.txt",
+            r"git grep -F \| {head} -- items.txt",
+        ):
+            with self.subTest(search=search):
+                self.check_codex_review_reads(search)
+
+    def test_codex_review_rejects_compound_searches_with_exit_one(self):
+        for search in (
+            "git grep -F one {head} -- items.txt | grep -F FOREMAN_REMOVED_PATH",
+            "git grep -F one {head} -- items.txt|grep -F FOREMAN_REMOVED_PATH",
+            "git grep -F FOREMAN_REMOVED_PATH {head} -- items.txt && true",
+            "git grep -F FOREMAN_REMOVED_PATH {head} -- items.txt; false",
+            "git grep -F FOREMAN_REMOVED_PATH {head} -- items.txt > search-output.txt",
+        ):
+            with self.subTest(search=search):
+                self.check_codex_review_reads(search, halt_detail="exit 1")
+
+    def test_codex_review_rejects_git_grep_error(self):
+        self.check_codex_review_reads(
+            "git grep -G '[' {head} -- items.txt", search_exit=128, halt_detail="exit 128",
+        )
 
     def test_codex_review_rejects_failed_denied_or_missing_reads(self):
-        for status in ("failed", "declined", "missing"):
+        for status, halt_detail in (
+            ("failed", "exit 128"),
+            ("declined", "command failed"),
+            ("missing", "required read"),
+        ):
             with self.subTest(status=status):
-                self.check_codex_review_reads(status)
+                self.check_codex_review_reads(
+                    "git --no-replace-objects grep -n FOREMAN_REMOVED_PATH {head} -- items.txt",
+                    read_status=status, halt_detail=halt_detail,
+                )
 
-    def check_codex_review_reads(self, read_status):
+    def check_codex_review_reads(self, search_template, *, search_exit=1, read_status=None, halt_detail=None):
         with review_trees() as trees:
             workspace = trees[0]
 
@@ -459,7 +491,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 required = [line for line in instruction.splitlines() if line.startswith("git ")]
                 blob = next(command for command in required if "cat-file blob" in command)
                 head = state["dispatch_plan"]["target"]["headRefOid"]
-                search = f"git --no-replace-objects grep -n FOREMAN_REMOVED_PATH {head} -- items.txt"
+                search = search_template.format(head=head)
                 commands = []
                 for command in [*required, search]:
                     status = read_status if command == blob else None
@@ -468,12 +500,15 @@ class ReviewRoundsTest(unittest.TestCase):
                     code, output = None, ""
                     if status != "declined":
                         env = {**os.environ, "GIT_DIR": str(workspace.root / "missing.git")} if status == "failed" else None
-                        completed = subprocess.run(shlex.split(command), cwd=workspace.root, env=env,
+                        argv = ["/bin/sh", "-c", command] if command == search else shlex.split(command)
+                        completed = subprocess.run(argv, cwd=workspace.root, env=env,
                                                    text=True, capture_output=True)
                         code, output = completed.returncode, completed.stdout + completed.stderr
                         status = "failed" if code else "completed"
                     if command == search:
-                        self.assertEqual((code, output), (1, ""))
+                        self.assertEqual(code, search_exit)
+                        if search_exit == 1:
+                            self.assertEqual(output, "")
                     commands.append({"type": "item.completed", "item": {
                         "id": f"read_{len(commands)}", "type": "command_execution",
                         "command": f"/bin/zsh -lc {shlex.quote(command)}",
@@ -486,14 +521,12 @@ class ReviewRoundsTest(unittest.TestCase):
                 return worker("review", ModelSpec.parse("gpt-6.1-sol-high"), state, instruction)
 
             result = self.run_rounds([review], trees=trees)
-        if read_status is None:
+        if halt_detail is None:
             self.assertEqual(result["stop"], "verified")
             self.assertEqual(len(self.forge.merge_calls), 1)
         else:
             self.assertEqual(result.get("halt"), "invalid_output")
-            self.assertIn({
-                "failed": "exit 128", "declined": "command failed", "missing": "required read",
-            }[read_status], result["halt_detail"])
+            self.assertIn(halt_detail, result["halt_detail"])
             self.assertFalse(self.forge.reviews)
             self.assertFalse(self.forge.merge_calls)
 
