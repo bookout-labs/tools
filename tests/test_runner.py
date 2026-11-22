@@ -1916,7 +1916,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         halted = self.walk([{"triage": "implement"}], preflight=preflight)
         self.assertEqual(halted.get("stop"), "env_unavailable")
         self.assertEqual(len(halted["review"].review_findings), 0)
-        self.assertEqual(halted.get("path"), ["triage", "implement", "done"])
+        self.assertEqual(halted.get("path"), ["triage", "prepare", "done"])
         self.assertEqual(self.calls, ["claude"])
 
         (self.cwd / "ready").touch()
@@ -1982,11 +1982,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual((self.cwd / "probes").read_text(), "probed\n")
 
-    def test_parent_preflight_halts_at_implement(self):
+    def test_parent_preflight_halts_at_prepare(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}], preflight="exit 9")
         self.assertEqual(result.get("stop"), "env_unavailable")
-        self.assertEqual(result.get("path"), ["triage", "implement", "done"])
+        self.assertEqual(result.get("path"), ["triage", "prepare", "done"])
         self.assertEqual(self.calls, ["claude"])
 
     def test_parent_stops_sliced_without_running_preflight(self):

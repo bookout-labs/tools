@@ -254,31 +254,39 @@ def compile_delivery(
     prompts = {name: stage_text(name) for name in MODEL_STAGES}
     plan_workspace = run.workspace
 
+    def implementation_guard(state: DeliveryState, active: LiveRun, stage: str) -> DeliveryUpdate | None:
+        probe = active.environment or EnvironmentProbe(
+            active.workspace, state["checks"].preflight, active.check_log,
+        )
+        if detail := probe.error:
+            return halted(Halt.env_unavailable, detail, stage)
+        try:
+            before = active.workspace.inspect()
+            if stage == "prepare":
+                if not before.clean:
+                    return halted(Halt.dirty_worktree, "Unowned edits exist before this attempt; save them before rerunning.", stage)
+                return None
+            work = state.get("work", WorkState())
+            branch, parent = work.branch, work.attempt_head
+            if before.branch != branch or before.head != parent:
+                return halted(Halt.dirty_worktree, "Restore the attempt's branch and starting HEAD before resuming edits.", stage)
+            partial = work.partial_edits
+            if not before.clean and partial and active.workspace.fingerprint() != partial:
+                return halted(Halt.dirty_worktree, "Edits changed after the quota stop; restore the run's partial edits.", stage)
+        except WorkspaceError as exc:
+            return halted(Halt.git_failed, str(exc), stage)
+        return None
+
     def bind(name: str) -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
             review_state = state["review"]
-            checks = state["checks"]
             admission = dollar_admission_for(state["run"], state.get("attempts", []))
             if stop := admission_stop(state, state.get("attempts", []), name, admission, work_tokens(state.get("attempts", []))):
                 return stop
             current_run = runtime.context or run
             if name == "implement":
-                probe = current_run.environment or EnvironmentProbe(
-                    current_run.workspace, checks.preflight, current_run.check_log,
-                )
-                if detail := probe.error:
-                    return halted(Halt.env_unavailable, detail, name)
-                try:
-                    before = current_run.workspace.inspect()
-                    work = state.get("work", WorkState())
-                    branch, parent = work.branch, work.attempt_head
-                    if before.branch != branch or before.head != parent:
-                        return halted(Halt.dirty_worktree, "Restore the attempt's branch and starting HEAD before resuming edits.", "implement")
-                    partial = work.partial_edits
-                    if not before.clean and partial and current_run.workspace.fingerprint() != partial:
-                        return halted(Halt.dirty_worktree, "Edits changed after the quota stop; restore the run's partial edits.", "implement")
-                except WorkspaceError as exc:
-                    return halted(Halt.git_failed, str(exc), name)
+                if stop := implementation_guard(state, current_run, "implement"):
+                    return stop
             try:
                 models = STAGES[name].models(name, state, config)
             except ModelDependencyMissing as exc:
@@ -402,16 +410,15 @@ def compile_delivery(
             return halted(Halt.review_not_posted, str(exc), "review_post")
         return {"review": review_state.model_copy(update={"review_receipt": receipt})}
 
-    def prepare(state: DeliveryState) -> DeliveryUpdate:
+    def prepare(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+        if stop := implementation_guard(state, runtime.context or run, "prepare"):
+            return stop
         title = redact(str(_active_slice(state)["title"]))
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
         work = state.get("work", WorkState())
         run_state = state["run"]
         branch = work.branch or f"{run_state.issue or '<issue>'}-{slug}"
         try:
-            before = run.workspace.inspect()
-            if not before.clean:
-                return halted(Halt.dirty_worktree, "Unowned edits exist before this attempt; save them before rerunning.", "prepare")
             base = work.base or run.forge.default_branch(run_state.repo)
             run.workspace.create_branch(branch, base)
             if repair_head := work.repair_head:
@@ -557,7 +564,7 @@ def compile_delivery(
                 update.update(halted(Halt.review_cap, detail, "proof"))
         return update
 
-    def needs_human(state: DeliveryState) -> DeliveryUpdate:
+    def needs_human(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
         review_state = state["review"]
         stage = state["path"][-1]
         split = state["plan"].pr_split if stage == "spec" and oversized_pr(state) else None
@@ -568,7 +575,7 @@ def compile_delivery(
             past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
             update.update(halt=None, halt_detail="", review=review_state.model_copy(update={"settled_rulings": [r.model_dump() for r in past.settled] +
                           [{"id": f"design:{len(past.rounds)}", "text": answer}]}))
-            update.update(prepare(state))
+            update.update(prepare(state, runtime))
         return update
 
     def quota_wait(state: DeliveryState) -> DeliveryUpdate:

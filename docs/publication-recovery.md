@@ -56,8 +56,8 @@ All names below are methods in `tests/test_publication.py`.
 | Preparation lock, halt and retry | `test_index_lock_is_resumable` |
 | Worker edits to checkpointed result | `test_graph_commits_and_pushes_before_opening_one_pull_request` |
 | Crash during worker dispatch, stop with `usage_unknown` without redispatch | `test_crash_during_worker_stops_with_unknown_usage` |
-| Quota halt, retry same partial edits | `test_quota_stop_continues_owned_partial_edits` |
-| Foreign changes after quota halt, reject | `test_foreign_edits_after_quota_stop_are_rejected` |
+| Quota halt, retry same partial edits | `test_quota_resume_guards_preserve_attempt_and_partial_tree` |
+| Changed edits, wrong branch or HEAD, failed preflight after quota halt, reject | `test_quota_resume_guards_preserve_attempt_and_partial_tree` |
 | Unowned initial edits, reject | `test_dirty_initial_worktree_has_specific_detail` |
 | Empty worker commit, halt, preserve checkout, rerun after restore | `test_worker_commit_is_detected_using_the_actual_head` |
 | Clean, unpublished, nonempty linear worker history, adopt tree and replace with Foreman commit | `test_worker_tree_replays_reconciliation_and_publication` |

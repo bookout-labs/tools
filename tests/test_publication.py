@@ -138,7 +138,7 @@ class PublicationTest(unittest.TestCase):
     def no_worker(self):
         self.fail("completed worker must not repeat")
 
-    def walk(self, edit=None, reviews=None, family=None, fact_record="tests/fixtures/manifest.toml"):
+    def walk(self, edit=None, reviews=None, family=None, fact_record="tests/fixtures/manifest.toml", preflight="", check_log=None):
         script = ScriptHandler(reviews=reviews)
         workspace = LiveWorkspace(self.checkout)
 
@@ -156,8 +156,8 @@ class PublicationTest(unittest.TestCase):
             return script(node, model, state, instruction)
 
         return run_live_delivery(
-            repo=REPO, issue=8, check="test -f items.txt", checkpoint=self.checkpoint, fact_record=fact_record,
-            run=LiveRun(LiveForge(), workspace), dispatcher=handler,
+            repo=REPO, issue=8, check="test -f items.txt", preflight=preflight, checkpoint=self.checkpoint, fact_record=fact_record,
+            run=LiveRun(LiveForge(), workspace, check_log=check_log), dispatcher=handler,
         )
 
     def advance_origin(self, *, parent=None):
@@ -1008,25 +1008,59 @@ class PublicationTest(unittest.TestCase):
         self.git("branch", self.branch, "main")
         self.assertEqual(self.walk().get("stop"), "verified")
 
-    def test_quota_stop_continues_owned_partial_edits(self):
-        def stop():
-            (self.checkout / "items.txt").write_text("partial\n")
-            return Outcome("quota", usage=SCRIPTED_USAGE)
-        self.assertEqual(self.walk(stop).get("stop"), "quota_exhausted")
-        def finish():
-            self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
-            (self.checkout / "items.txt").write_text("finished\n")
-        self.assertEqual(self.walk(finish).get("stop"), "verified")
+    def test_prepare_preflight_stops_before_creating_attempt(self):
+        logs = []
+        result = self.walk(self.no_worker, preflight="echo unavailable; exit 9", check_log=logs.append)
+        self.assertEqual(result["stop"], "env_unavailable")
+        self.assertEqual(self.git("branch", "--show-current"), "main")
+        self.assertFalse(result.get("work", WorkState()).attempt_head)
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage"])
+        self.assertEqual(result["path"][-2:], ["prepare", "done"])
+        self.assertIn("unavailable", "".join(logs))
 
-    def test_foreign_edits_after_quota_stop_are_rejected(self):
-        def stop():
-            (self.checkout / "items.txt").write_text("partial\n")
-            return Outcome("quota", usage=SCRIPTED_USAGE)
-        self.walk(stop)
-        (self.checkout / "foreign.txt").write_text("unowned\n")
-        result = self.walk(lambda: self.fail("foreign edits must halt"))
-        self.assertEqual(result.get("stop"), "dirty_worktree")
-        self.assertIn("Edits changed", result["halt_detail"])
+    def test_quota_resume_guards_preserve_attempt_and_partial_tree(self):
+        for change in ("unchanged", "cleared", "changed", "branch", "head", "preflight"):
+            with self.subTest(change=change):
+                self.reset_fixture()
+                logs = []
+                preflight = "echo probe; test ! -f .git/block-preflight"
+                def stop():
+                    (self.checkout / "items.txt").write_text("partial\n")
+                    return Outcome("quota", usage=SCRIPTED_USAGE)
+                paused = self.walk(stop, preflight=preflight, check_log=logs.append)
+                self.assertEqual(paused["stop"], "quota_exhausted")
+                work, attempts = paused["work"], paused["attempts"]
+                self.assertTrue(work.partial_edits)
+                self.assertEqual([a["outcome"] for a in attempts], ["ran"] + ["quota"] * 4)
+                self.assertEqual("".join(logs).count("probe"), 1)
+                if change == "cleared":
+                    (self.checkout / "items.txt").unlink()
+                elif change == "changed":
+                    (self.checkout / "items.txt").write_text("foreign edit\n")
+                elif change == "branch":
+                    self.git("switch", "-c", "foreign")
+                elif change == "head":
+                    self.git("commit", "--allow-empty", "-m", "Foreign HEAD")
+                elif change == "preflight":
+                    (self.checkout / ".git/block-preflight").touch()
+                accepted = change in {"unchanged", "cleared"}
+                def finish():
+                    if change == "unchanged":
+                        self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
+                    self.edit()
+                resumed = self.walk(finish if accepted else self.no_worker,
+                                    preflight=preflight, check_log=logs.append)
+                self.assertEqual("".join(logs).count("probe"), 2)
+                self.assertEqual(resumed["attempts"][:len(attempts)], attempts)
+                self.assertEqual(resumed["work"].attempt_head, work.attempt_head)
+                if accepted:
+                    self.assertEqual(resumed["stop"], "verified")
+                    self.assertEqual([a["stage"] for a in resumed["attempts"][len(attempts):]],
+                                     ["implement", "review"])
+                else:
+                    self.assertEqual(resumed["attempts"], attempts)
+                    self.assertEqual(resumed["stop"], "env_unavailable" if change == "preflight" else "dirty_worktree")
+                    self.assertEqual(resumed["work"], work)
 
     def test_dirty_initial_worktree_has_specific_detail(self):
         (self.checkout / "foreign.txt").touch()
