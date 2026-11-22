@@ -16,8 +16,8 @@
 | Seam | A named interface or file a slice provides or uses. |
 | Candidate | A saved plan or supplied slice bound to a repository, issue, base revision and content digest. |
 | Ready | The draft worker says the candidate is complete enough to validate. |
-| Approval | An authorized person's explicit assent for the named choice, plan revision or PR head. |
-| Gate | A saved pause for the human's answer to a specific unresolved choice. |
+| Approval | An authorized person's explicit assent for the named choice, plan revision or PR head. For a choice or plan, the coordinator or personal agent posts the approval as an issue comment under the human's identity. |
+| Gate | A saved pause for the human's answer to a specific unresolved choice. The coordinator or personal agent posts the answer or cancellation as an issue comment under the human's identity. |
 | Halt | A named terminal stop with evidence. A provider or GitHub wait keeps the run open. |
 | Checkpoint | LangGraph's saved continuation and input records for this run. |
 | Reservation | A durable record of authorized spending and identity persisted before a paid worker call. |

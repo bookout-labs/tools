@@ -56,29 +56,30 @@ rules:
   exit_normalization: {foreign_repository: halted, exhausted: halted}
   gates:
     continuation: >-
+      The coordinator or personal agent relays the question and posts the answer or cancellation on
+      the issue under the human's identity.
       Only an answer to the open question continues the run. Silence keeps the gate open.
       An unrelated reply does not count. Gates are only for unresolved questions.
       Plan approval never waits on the human.
-    checkpoint: Save the question, its exact issue or artifact identity, and the human's answer. Explicit cancellation for that question emits cancelled.
+    checkpoint: Save the question, its exact issue or artifact identity, and the human's answer from the issue comment. Explicit cancellation for that question emits cancelled.
   prompts: Load the target prompt as the complete worker instructions and supply the declared run context separately. Deploy the prompt by replacing the runtime file.
   publication_halt: publication_unreconciled
   paths: Existing seam paths must name Git-tracked regular files in the pinned target_checkout tree. Reject absolute paths, traversal, directories and symlinks. A seam under builds has one owner. An edit-only slice names its existing seams under uses.
   reporting: Each terminal result includes issue, blueprint version, furthest stage, saved evidence, known work and raw tokens, Claude spend where known, rounds and any hand fix. Unsupported metrics are unknown.
 context:
+  - [GitHub checks, GitHub merge queue, Enforces repository rules]
+  - [GitHub merge queue, Foreman, Reports the merge result]
   - [Human, Coordinator or personal agent, Work and decisions]
-  - [Coordinator or personal agent, GitHub issue, Files for the human]
-  - [Coordinator or personal agent, Foreman, Relays answers and stops]
+  - [Coordinator or personal agent, GitHub issue, Files and comments for the human]
   - [Foreman, Coordinator or personal agent, Gate questions]
   - [GitHub Project board, Foreman, Ready webhook]
-  - [GitHub issue, Foreman, Work and repository identity]
+  - [GitHub issue, Foreman, "Work, repository identity, and comments"]
   - [Foreman, GitHub Project board, Run state]
   - [CARR record layer, T3, Authorized team context]
   - [T3, Coordinator or personal agent, Conversation context]
   - [Foreman, Worker CLIs, Assigns a bounded procedure]
   - [Worker CLIs, Target checkout, Reads or edits within assignment]
   - [Foreman, GitHub pull request, Publishes checked changes]
-  - [GitHub checks, GitHub merge queue, Enforces repository rules]
-  - [GitHub merge queue, Foreman, Reports the merge result]
 workers:
   coordinator:
     title: Investigate and plan
@@ -121,7 +122,7 @@ stages:
     inputs:
       run: Intake supplies canonical repo and issue, required for every admission.
       plan: GitHub supplies stored slice and dependencies for existing child issues.
-      human_answers: The human supplies the saved answer for this issue on resume.
+      human_answers: On resume, Foreman supplies the saved answer the agent posted on the issue under the human's identity.
     outputs:
       schema: foreman.stage_output.TriageOutput
       fields: [human_question, slice, triage, work_kind]
@@ -183,7 +184,7 @@ stages:
       - {ref: why/SKILL.md, when: bug_fix, kind: skill, lines: [9, 9], method: Read author records and mark inferences.}
     inputs:
       run: Triage supplies origin issue, repository, base and question, required.
-      human_answers: The human supplies the saved source or clarification for the issue on resume.
+      human_answers: On resume, Foreman supplies the saved source or clarification the agent posted on the issue under the human's identity.
       plan: Triage supplies work kind, required for skill selection.
     outputs:
       schema: foreman.stage_output.ResearchOutput
@@ -235,7 +236,7 @@ stages:
     inputs:
       run: Triage supplies canonical issue, target repository and pinned base, required.
       plan: Triage supplies a stored slice, or spec supplies a draft and bound prior findings for revision.
-      human_answers: Foreman reads recorded clarifications and any comment or approval the human supplies through the issue or coordinator.
+      human_answers: Foreman reads clarifications, comments, approvals and stop requests the agent posts on the issue under the human's identity.
     outputs:
       schema: foreman.stage_output.SpecOutput
       fields: [questions, slices, spec, spec_gate]
@@ -274,7 +275,7 @@ stages:
       - Validate explicit repository and path identity before a paid plan check. The checker independently assesses ambiguous issue intent and repository ownership.
       - Every existing seam is a Git-tracked regular file in the pinned target_checkout. Reject directories and symlinks for all slices, including directly supplied and edit-only slices. A built seam has a single provider. Slice titles are unique. Dependencies are acyclic. Existing edits use existing seams without inventing a new seam.
       - The independent model checker can approve the plan after validation. Ready is the drafter's claim of completeness.
-      - The human may comment, approve or stop a plan through the issue or coordinator. Record “we're good” as approval of the identified plan. Continue after the validator and model check clear the plan even without the human's review. A recorded stop prevents further filing or building. A separate clarification gate only asks the human to resolve an open choice.
+      - The human may comment on, approve or stop a plan through their coordinator or personal agent. The agent posts each response as an issue comment under the human's identity. Record “we're good” as approval of the identified plan. Continue after the validator and model check clear the plan even without the human's review. A recorded stop prevents further filing or building. A separate clarification gate only asks the human to resolve an open choice.
       - File children from the cleared candidate only. Adoption verifies marker, repository, parent, body and links. Release only eligible children.
     failure_and_resume:
       halts: [invalid_output, spec_cap, git_failed, publication_unreconciled]
@@ -289,7 +290,7 @@ stages:
       SC2: {given: Synthetic wrong-repository issue with matching seam names in both repositories, expect: Checker rejects implied foreign intent and no build or child filing occurs.}
       SC3: {given: The human answers a choice on candidate A then candidate B changes scope, expect: Validate and check B and ask any unresolved choice again.}
       SC4: {given: Invalid singleton seam or cyclic parent dependencies, expect: Common validator rejects both and the final allowed rejection reports spec_cap.}
-      SC5: {given: The model clears a validated plan with no response from the human or after their optional approval, expect: Proceed without a manual approval step. Honor a recorded stop before implementing or filing.}
+      SC5: {given: The model clears a validated plan with no human response or after the agent posts optional human approval on the issue, expect: Proceed without a manual approval step. Honor a stop the agent posts under the human's identity before implementing or filing.}
       FS1: {given: A child issue or link write times out, expect: Adopt the matching result once and complete missing links. Report publication_unreconciled if the write cannot be confirmed.}
     decisions: [D3, D7, D8, D9]
     warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and the human's review is optional.}
