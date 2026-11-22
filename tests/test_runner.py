@@ -2716,8 +2716,8 @@ print(result["stop"])
                     return [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
                 invoke()
                 if case in {"head", "dirty", "paused-dirty"}:
-                    (root / "items.py").write_text("ITEMS = [2]\n")
-                    if case != "dirty":
+                    (root / "items.py").write_text("ITEMS = []\n" if case == "paused-dirty" else "ITEMS = [2]\n")
+                    if case == "head":
                         git("add", "items.py")
                         commit()
                 calls = invoke("Open items")
