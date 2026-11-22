@@ -77,8 +77,15 @@ class NpmSmokeTest(unittest.TestCase):
                     return subprocess.CompletedProcess(args, 0, '', '')
                 if mutation == 'npm missing' and args == ['npm', 'ci']:
                     raise FileNotFoundError('npm unavailable')
+                if mutation == 'npm failed' and args == ['npm', 'ci']:
+                    raise subprocess.CalledProcessError(1, args, stderr='npm install failed')
                 commands.append(args)
-                return real_run(args, **kwargs)
+                result = real_run(args, **kwargs)
+                if mutation == 'npm dirty' and args == ['npm', 'ci']:
+                    for name in ('package.json', 'package-lock.json'):
+                        path = Path(kwargs['cwd']) / name
+                        path.write_text(path.read_text() + '\n')
+                return result
             def worker(args, cwd, env):
                 state = json.loads(args[-1].split('Delivery state:\n')[1])
                 node = state['path'][-1] if state['path'] else ''
@@ -193,6 +200,22 @@ class NpmSmokeTest(unittest.TestCase):
         self.assertEqual(code, 78, output)
         self.assertFalse(reconciled)
         self.assertIn('npm unavailable', output)
+
+    def test_failed_npm_install_is_unavailable_before_dispatch(self):
+        code, output, _, reconciled = self.exercise('npm failed')
+        self.assertEqual(code, 78, output)
+        self.assertFalse(reconciled)
+        self.assertIn('npm install failed', output)
+
+    def test_successful_npm_install_with_dirty_checkout_is_contract_failure(self):
+        code, output, commands, reconciled = self.exercise('npm dirty')
+        self.assertEqual(code, 1, output)
+        self.assertIn(['npm', 'ci'], commands)
+        self.assertFalse(reconciled)
+        self.assertIn('target.contract', output)
+        self.assertIn('target bookout-labs/foreman-smoke-npm', output)
+        self.assertIn('package.json', output)
+        self.assertIn('package-lock.json', output)
 
     def test_explicit_custom_record_ignores_collision(self):
         code, output, _, reconciled = self.exercise('custom record')

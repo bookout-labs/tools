@@ -149,8 +149,10 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
                 if actual != package["engines"][name]:
                     raise ValueError(f"{name} requires {package['engines'][name]}, found {actual}")
             subprocess.run(["npm", "ci"], cwd=root, capture_output=True, check=True)
-            if subprocess.check_output(["git", "status", "--porcelain"], cwd=root):
-                raise ValueError("npm ci changed tracked checkout")
+            verdict = SmokeVerdict(1, "target.contract", "npm fixture")
+            dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root, text=True)
+            if dirty:
+                raise ValueError(f"npm ci changed tracked checkout:\n{dirty}")
         else:
             subprocess.run(["python3.12", "-m", "venv", str(directory / "python")], capture_output=True, check=True)
             os.environ["PATH"] = str(directory / "python/bin") + os.pathsep + old_path
