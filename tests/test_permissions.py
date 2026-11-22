@@ -15,7 +15,8 @@ from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec, NodeConfig, load_config
 from foreman.delivery import run_delivery
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
-from foreman.skill_rules import PACKAGE_SKILLS, SKILL_RULES, export_skills, stage_methods
+from foreman.skill_rules import PACKAGE_SKILLS, export_skills, stage_methods
+from foreman.stages import STAGES
 from foreman.worker import CliWorker
 from skill_fixture import skill_fixture
 from test_adapters import fixture_process
@@ -26,7 +27,9 @@ class PermissionsTest(unittest.TestCase):
     def test_method_paths_are_covered_by_precise_roots(self):
         with skill_fixture() as (config, scratch):
             root = export_skills(config.pstack, scratch)
-            for stage in {rule.stage for rule in SKILL_RULES}:
+            for stage, row in STAGES.items():
+                if not row.skills:
+                    continue
                 for kind in ("feature", "bug_fix", "perf_issue"):
                     state = {"plan": PlanState(work_kind=kind, issue_kind="slice", slice={**EMPTY_SLICE, "stateful": True, "screen": "docs/screens/ui.md", "properties": [{"name": "rule", "constraint": "unique"}]})}
                     text, methods, roots = stage_methods(stage, state, root)

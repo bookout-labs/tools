@@ -6,12 +6,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from foreman.stages import STAGES
 from foreman.config import Config, PstackPin, load_config
 from foreman.delivery import stage_text
 from foreman.dry_run import CLEAR
 from foreman.spec_check import SpecHistory, accept
 from foreman.stage_output import PlanState, CandidateSlice, SliceProvenanceRecord, SpecCandidate, SpecAuthor
-from foreman.skill_rules import PstackMethod, SKILL_RULES, export_skills, git
+from foreman.skill_rules import PstackMethod, export_skills, git
 
 
 AUTHOR = SpecAuthor(stage="spec", model="gpt-author", family="gpt")
@@ -21,7 +22,7 @@ PROVENANCE: SliceProvenanceRecord = {"author": AUTHOR.record(), "revision": "0" 
 def fixture_pin(root: Path) -> PstackPin:
     root.mkdir()
     git(root, "init", "--quiet")
-    for rule in SKILL_RULES:
+    for rule in (rule for stage in STAGES.values() for rule in stage.skills):
         method = rule.skill
         if isinstance(method, PstackMethod):
             path = root / "pstack" / "skills" / method.path

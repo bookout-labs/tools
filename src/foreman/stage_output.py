@@ -805,17 +805,6 @@ class VerifyOutput(StageOutput):
         raise NotImplementedError("verify: use checks-bound stage_update")
 
 
-STAGE_OUTPUTS: dict[str, type[StageOutput]] = {
-    "triage": TriageOutput,
-    "research": ResearchOutput,
-    "spec": SpecOutput,
-    "spec_check": SpecCheckOutput,
-    "implement": ImplementOutput,
-    "review": ReviewOutput,
-    "verify": VerifyOutput,
-}
-
-
 def parse_output(contract: type[Output], raw: object, *, context: ReviewContext | None = None) -> Output:
     try:
         return contract.model_validate(raw, context=context)
