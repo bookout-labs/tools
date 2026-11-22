@@ -315,9 +315,10 @@ def run_live_delivery(
                 work = work.model_copy(update={"partial_edits": partial})
             prior_checks = restored["checks"]
             checks = ChecksState(check=prior_checks.check, preflight=prior_checks.preflight,
-                                 verify_failures=prior_checks.verify_failures, proof_failures=prior_checks.proof_failures) if reset_work else prior_checks
+                                 verify_failures=saved_values["checks"].verify_failures, proof_failures=saved_values["checks"].proof_failures) if reset_work else prior_checks
             assert saved_review is not None
-            retained: DeliveryUpdate = {"work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": (
+            retained: DeliveryUpdate = {"plan": restored["plan"].model_copy(update={"spec_failures": saved_values["plan"].spec_failures}),
+                                        "work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": (
                 ReviewState(review_findings=saved_review.review_findings, settled_rulings=saved_review.settled_rulings,
                             fact_record=saved_review.fact_record, review_run_id=saved_review.review_run_id)
                 if repaired else saved_review)}

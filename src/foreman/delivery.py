@@ -568,8 +568,9 @@ def compile_delivery(
                         update.update(halted(Halt.design_rethink, accepted.rethink, name))
                         update["human_question"] = accepted.rethink
             except InvalidSlicePlan as exc:
-                rounds = state["plan"].spec_failures + 1
-                rejected: DeliveryUpdate = {**stopped, "plan": state["plan"].model_copy(update={"spec_rejection": exc.reason, "spec_failures": rounds})}
+                planning = state["plan"]
+                rounds = planning.spec_failures + 1
+                rejected: DeliveryUpdate = {**stopped, "plan": planning.model_copy(update={"spec_rejection": exc.reason, "spec_failures": rounds})}
                 if rounds >= config.max_review_rounds:
                     rejected.update(halted(Halt.spec_cap, str(exc), name))
                 return rejected
@@ -868,12 +869,13 @@ def compile_delivery(
     def after_verify(state: DeliveryState) -> str:
         if state.get("halt"):
             return "done"
-        if state["checks"].verify == "pass":
+        checks = state["checks"]
+        if checks.verify == "pass":
             slice = _active_slice(state)
             if browser_required(slice) or formal_required(slice):
                 return "proof"
             return "review"
-        if state["checks"].verify_failures < config.max_review_rounds:
+        if checks.verify_failures < config.max_review_rounds:
             return "prepare"
         return "done"
 
@@ -973,11 +975,12 @@ def compile_delivery(
     def finish(state: DeliveryState) -> DeliveryUpdate:
         review_state = state["review"]
         planning = state["plan"]
+        checks = state["checks"]
         reason = stop_reason(state)
         if not state.get("halt"):
-            rounds = state["checks"].verify_failures if reason == Halt.verify_cap else review_count(state)
+            rounds = checks.verify_failures if reason == Halt.verify_cap else review_count(state)
             if reason == Halt.verify_cap:
-                detail = f"Verification failed after {rounds} rounds. Check {state['checks'].check or '(none)'} failed."
+                detail = f"Verification failed after {rounds} rounds. Check {checks.check or '(none)'} failed."
                 return {**halted(Halt.verify_cap, detail, "done"), "stop": str(reason)}
             if reason == Halt.review_cap:
                 detail = f"Review requested changes after {rounds} rounds. Last review: {review_state.detail}"

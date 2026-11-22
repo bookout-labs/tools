@@ -94,6 +94,17 @@ def historical_channels(version):
     return values
 
 
+def seed_repair_channels(values, *, head_changed=False):
+    for owner in OWNERS:
+        fields = (type(owner.value).model_fields.keys() - owner.durable)
+        fields |= {field for _, name, field, _ in COUNTERS if name == owner.name and field != "review_findings"}
+        if head_changed:
+            fields |= owner.clear_on_head_change
+        if owner.name == "review":
+            fields |= {"settled_rulings", "fact_record"}
+        values[owner.name] = values.get(owner.name, type(owner.value)()).model_copy(update=owner.value.model_dump(include=fields))
+
+
 def assert_repaired(test, before, after, *, repair_head):
     for owner in OWNERS:
         durable = owner.durable - (owner.clear_on_head_change if repair_head is not None else frozenset())
@@ -101,9 +112,9 @@ def assert_repaired(test, before, after, *, repair_head):
             defaults = type(owner.value)()
             for field in type(owner.value).model_fields.keys() - durable:
                 test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
-            if owner.name == "review":
-                for field in durable:
-                    test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
+            required = durable if owner.name == "review" else {field for _, name, field, _ in COUNTERS if name == owner.name}
+            for field in required:
+                test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
             fields = before[owner.name].model_dump(include=durable)
             if owner.repair_head_field is not None and repair_head is not None:
                 fields[owner.repair_head_field] = repair_head

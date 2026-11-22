@@ -39,7 +39,7 @@ from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, ReviewD
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
 from test_adapters import codex_events, fixture_process
 from test_spec_candidate import CandidateTests
-from owner_contract import OWNERS, assert_channels, assert_repaired
+from owner_contract import OWNERS, assert_channels, assert_repaired, seed_repair_channels
 
 
 HEAD = "a" * 40
@@ -1146,6 +1146,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertIn("no merged pull request", self.walk([], issue=102)["halt_detail"])
         self.github.merged.add(101)
         self.walk([])
+        self.walk([])
         self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
         child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
@@ -1851,6 +1852,30 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             _print_run(resumed)
         self.assertNotIn("HEAD is", out.getvalue())
 
+    def test_repair_preserves_spec_rejections_after_the_prepare_checkpoint(self):
+        self.github = FakeGitHub(["factory"])
+        workspace = FakeWorkspace(self.cwd)
+        size = {"head": HEAD, "merge_base": BASE, "lines": 401}
+        invalid = {"spec": "Split", "spec_gate": "ready", "slices": [SLICE, CONSUMER]}
+        valid = {"spec": "Split", "spec_gate": "ready", "slices": [BUILDER, CONSUMER]}
+        with patch.object(workspace, "pull_request_size", return_value=size):
+            paused = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}, {"implementation": "built"}, invalid, valid], workspace=workspace)
+            self.assertEqual(paused["stop"], "needs_human", paused.get("halt_detail"))
+            self.assertEqual(paused["plan"].spec_failures, 1)
+            ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+            with patch.object(self.github, "readiness", return_value=ready.model_copy(update={"outcome": "conflict"})):
+                halted = self.walk([APPROVE], answer="override", workspace=workspace)
+        self.assertEqual(halted["stop"], "pr_conflict")
+        self.assertEqual(halted["plan"].spec_failures, 1)
+        remote = ready.model_copy(deep=True)
+        remote.outcome, remote.pr.head.sha = "head_changed", "3" * 40
+        workspace.current = WorktreeState(HEAD, False, BRANCH)
+        with patch.object(self.github, "readiness", return_value=remote):
+            resumed = self.walk([], workspace=workspace)
+        self.assertEqual(resumed["stop"], "dirty_worktree")
+        self.assertEqual(resumed["plan"].spec_failures, 1)
+        self.assertIsNone(resumed["plan"].pr_split)
+
     def test_multi_round_repair_prepare_halt_clears_attempt_observations(self):
         self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, max_review_rounds=2)))
         workspace = FakeWorkspace(self.cwd)
@@ -1872,12 +1897,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "pr_conflict")
         self.assertEqual(halted["work"].head_sha, "2" * 40)
-        for owner in OWNERS:
-            transient = (type(owner.value).model_fields.keys() - owner.durable) | owner.clear_on_head_change
-            halted[owner.name] = halted[owner.name].model_copy(
-                update=owner.value.model_dump(include=transient))
-        review_sample = next(owner.value for owner in OWNERS if owner.name == "review")
-        halted["review"] = halted["review"].model_copy(update=review_sample.model_dump(include={"settled_rulings", "fact_record"}))
+        seed_repair_channels(halted, head_changed=True)
         # An empty receipt is non-default and still permits the head recheck.
         halted["merge"] = halted["merge"].model_copy(update={"receipt": {}})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
@@ -1917,12 +1937,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "git_failed")
         self.assertIsNotNone(halted["work"].candidate)
-        for owner in OWNERS:
-            transient = type(owner.value).model_fields.keys() - owner.durable
-            halted[owner.name] = halted.get(owner.name, type(owner.value)()).model_copy(
-                update=owner.value.model_dump(include=transient))
-        review_sample = next(owner.value for owner in OWNERS if owner.name == "review")
-        halted["review"] = halted["review"].model_copy(update=review_sample.model_dump(include={"settled_rulings", "fact_record"}))
+        seed_repair_channels(halted)
         halted["merge"] = halted["merge"].model_copy(update={"receipt": {"status": "QUEUED"}})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
