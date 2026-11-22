@@ -69,7 +69,7 @@ class ClaudeEnvelope(NativeEnvelope):
             try:
                 denials = TypeAdapter(list[PermissionDenial]).validate_python(self.permission_denials, strict=True)
             except ValidationError:
-                kind, detail = "review_denied" if call.review else "failed", f"Claude denied-check evidence malformed: {self.permission_denials!r}; {call.checks}"
+                kind, detail = "failed", f"Claude denied-check evidence malformed: {self.permission_denials!r}; {call.checks}"
             else:
                 for denial in denials:
                     command = denial.tool_input.get("command")
@@ -103,6 +103,8 @@ class ClaudeAdapter(NativeAdapter):
         settings = {"permissions": {"allow": allow, "deny": [
             f"Edit(/{root.resolve()}/**)" for root in call.read_roots
         ]}}
+        settings_path = call.temp_dir / "claude-settings.json"
+        settings_path.write_text(json.dumps(settings))
         directories = [str(root) for root in call.read_roots]
         if call.edit:
             directories.append(str(call.temp_dir))
@@ -110,5 +112,5 @@ class ClaudeAdapter(NativeAdapter):
         return ["claude", "--model", self.model.model_id, *effort, "--restricted",
                 "--strict-mcp-config", "--permission-mode", "dontAsk",
                 "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else "Read,Glob,Grep,Bash",
-                *scope, "--settings", json.dumps(settings),
+                *scope, "--settings", str(settings_path),
                 *budget, "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]

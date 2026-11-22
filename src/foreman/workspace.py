@@ -98,6 +98,7 @@ class WorktreeState:
 class ReviewDiff:
     command: str
     patch: str
+    merge_base: str | None = None
 
 
 ReviewLine = Annotated[tuple[str, int], BeforeValidator(TypeAdapter(tuple[object, ...]).validate_python)]
@@ -527,6 +528,7 @@ class LiveWorkspace:
             "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}..{head}" if interdiff else f"{base}...{head}", "--",
         )
         command = shlex.join(("git", *args))
+        merge_base = None
         if interdiff:
             command = f"# previous = last accepted reviewed head {base} (history only)\n# Interdiff: old = previous; new = head\n{command}"
         else:
@@ -534,7 +536,7 @@ class LiveWorkspace:
             if not FULL_SHA.fullmatch(merge_base):
                 raise WorktreeInspectionFailed("Git did not report a full merge-base SHA.")
             command = f"# base = PR merge-base {merge_base}\n# head = current verified head {head}\n# Full PR diff: old = merge-base (base); new = head\n{command}"
-        return ReviewDiff(command, os.fsdecode(self._git(*args)))
+        return ReviewDiff(command, os.fsdecode(self._git(*args)), merge_base)
 
     def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope:
         pr = self.review_diff(base, head)
@@ -545,9 +547,8 @@ class LiveWorkspace:
                 raise WorktreeInspectionFailed("PR diff could not be parsed for scoping.") from exc
             inline = frozenset[tuple[str, int]]()
         commands = [pr.command]
-        merge_base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base, head)).strip()
-        if not FULL_SHA.fullmatch(merge_base):
-            raise WorktreeInspectionFailed("Git did not report a full merge-base SHA.")
+        merge_base = pr.merge_base
+        assert merge_base is not None
         if previous is not None:
             commands.append(self.review_diff(previous, head, interdiff=True).command)
         blobs: dict[str, list[str]] = {}

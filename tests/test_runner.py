@@ -435,7 +435,7 @@ assert dict(os.environ) == inherited
             run_worker_command(["claude"], Path("engine"), adapter_env)
         run.assert_called_once_with(
             ["claude"], cwd=Path("engine"), env={**inherited, **adapter_env},
-            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, input=None, capture_output=True, text=True,
         )
 
     def test_worker_without_a_model_raises_a_config_error(self):

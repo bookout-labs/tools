@@ -527,13 +527,13 @@ def compile_delivery(
             admission = dollar_admission_for(state["run"], attempt_history)
             if stop := admission_stop(state, attempt_history, name, admission):
                 return {**stopped, **stop}
-            if name == "review" and outcome.kind == "review_denied":
+            if outcome.kind == "review_denied":
                 denied = 0
                 for attempt in reversed(attempt_history):
                     if attempt["stage"] != "review" or attempt["outcome"] == "ran":
                         break
                     denied += attempt["outcome"] == "review_denied"
-                if denied == 1:
+                if name == "review" and denied == 1:
                     return {"attempts": attempts, "pending_dispatch": pending,
                             "dispatch_plan": {**plan, "budget_usd": dispatch_budget(admission)}}
                 return {**stopped, **halted(Halt.invalid_output, f"Review denial retry exhausted: {outcome.detail}", name)}

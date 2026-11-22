@@ -282,7 +282,7 @@ def main(
         if live_run is None:
             live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd(), args.repo))
         live_run = replace(live_run, check_log=_write_check_log)
-        dispatcher = CliWorker(live_run.workspace.root, worker_runner)
+        dispatcher = CliWorker(live_run.workspace.root, worker_runner, scratch_root=checkpoint.parent)
         try:
             result = run_live_delivery(
                 repo=args.repo,

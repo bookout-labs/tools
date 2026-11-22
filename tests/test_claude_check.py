@@ -85,16 +85,26 @@ class ClaudeCheckTest(unittest.TestCase):
         self.assertEqual(result.output, {})
 
     def test_reviewer_never_accepts_denial_bearing_output(self):
-        for evidence in (None, {}, [{"tool_name": "Bash", "tool_input": None}],
-                         denied("git commit -m x")["permission_denials"],
-                         denied(CHECK + " && git show HEAD:x | od -c")["permission_denials"]):
+        for evidence, kind in ((None, "failed"), ({}, "failed"),
+                ([{"tool_name": "Bash", "tool_input": None}], "failed"),
+                (denied("git commit -m x")["permission_denials"], "review_denied"),
+                (denied(CHECK + " && git show HEAD:x | od -c")["permission_denials"], "review_denied")):
             envelope = {**denied(CHECK), "permission_denials": evidence}
             process = subprocess.CompletedProcess(["claude"], 0, json.dumps(envelope), "")
             result = ClaudeAdapter(MODEL).read(process, replace(CALL, review=True))
-            self.assertEqual(result.kind, "review_denied")
+            self.assertEqual(result.kind, kind)
             self.assertEqual(result.output, {})
             self.assertIsNotNone(result.usage)
             self.assertTrue(result.detail)
+
+    def test_non_review_denial_halts(self):
+        script = ScriptHandler()
+        def handler(node, model, state, instruction):
+            result = script(node, model, state, instruction)
+            return replace(result, kind="review_denied") if node == "implement" else result
+        result = walk(handler)
+        self.assertEqual(result["halt"], "invalid_output")
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement"])
 
     def test_graph_halts_on_first_fix_and_fallback(self):
         for mode in ('first', 'fix', 'fallback'):

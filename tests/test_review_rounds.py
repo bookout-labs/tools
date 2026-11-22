@@ -12,7 +12,8 @@ from tempfile import TemporaryDirectory
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from foreman.worker import CliWorker
+from foreman.worker import CliWorker, run_worker_command
+from unittest.mock import patch
 from foreman.workspace import LiveWorkspace
 from foreman.review_round import GraphCheck, ReviewHistory, accept
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
@@ -166,6 +167,8 @@ class ReviewRoundsTest(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
                         graph.invoke(state, config)
                     self.interrupted = read_delivery_state({"stop": "interrupted", **graph.get_state(config).values})
+                    if review_crash:
+                        self.assertEqual(self.forge.reviews, [])
                     (scratch / "resume").mkdir()
                     graph = compile_delivery(dispatch, settings, scratch=scratch / "resume",
                                              run=LiveRun(self.forge, workspace), checkpointer=saver)
@@ -253,7 +256,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     subprocess.run(["sh", "-c", command], cwd=workspace.root, check=True, stdout=subprocess.PIPE)
 
                 def runner(args, cwd, env):
-                    permissions = json.loads(args[args.index("--settings") + 1])["permissions"]
+                    permissions = json.loads(Path(args[args.index("--settings") + 1]).read_text())["permissions"]
                     self.assertEqual(permissions["allow"], [f"Bash({c})" for c in commands])
                     for command in (*outside, commands[0] + " --stat"):
                         self.assertNotIn(f"Bash({command})", permissions["allow"])
@@ -275,8 +278,40 @@ class ReviewRoundsTest(unittest.TestCase):
                             node, ModelSpec.parse("claude-opus-5-5-high"), state, instruction)
                         self.assertEqual(outcome.kind, expected, outcome.detail)
 
+    def test_review_payload_stays_off_exec_argv(self):
+        with review_trees() as (workspace, tip, _, previous, head):
+            tools = LiveWorkspace(Path.cwd())
+            with patch.object(tools, "_fetch_review"):
+                scopes = [tools.review_scope(
+                    subprocess.check_output(["git", "rev-parse", "origin/main"], text=True).strip(),
+                    subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), None)]
+            for index in range(2000):
+                (workspace.root / f"blob-{index}.txt").write_text(str(index))
+            subprocess.run(["git", "add", "."], cwd=workspace.root, check=True)
+            subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "-qm", "2000 blobs"], cwd=workspace.root, check=True)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace.root, text=True).strip()
+            scopes.append(workspace.review_scope(tip, head, previous))
+            for scope in scopes:
+                instruction = "Review with standalone commands.\n" + scope.command
+                plan = {"models": [], "instruction": instruction, "methods": [], "read_roots": [],
+                        "target": None, "scope": {"command": scope.command, "inline": []}}
+                def runner(args, cwd, env):
+                    settings = Path(args[args.index("--settings") + 1])
+                    self.assertTrue(settings.resolve().is_relative_to(workspace.root.resolve()))
+                    with patch("foreman.worker.subprocess.run", return_value=fixture_process(args, "success", 0)) as execute:
+                        result = run_worker_command(args, cwd, env)
+                    prompt = execute.call_args.kwargs["input"]
+                    self.assertEqual(prompt.count(instruction), 1)
+                    projected_plan = json.loads(prompt.split("Delivery state:\n")[1])["dispatch_plan"]
+                    self.assertFalse({"instruction", "scope"} & projected_plan.keys())
+                    self.assertLess(sum(len(arg.encode()) + 1 for arg in execute.call_args.args[0]), 32768)
+                    return result
+                CliWorker(workspace.root, runner, scratch_root=workspace.root)(
+                    "review", ModelSpec.parse("claude-opus-5-5-high"), {"dispatch_plan": plan}, instruction)
+
     def test_denied_review_retry_resume_quota_and_budget(self):
-        denial = Outcome("review_denied", {"review": "approve"}, usage=SCRIPTED_USAGE.model_copy(update={"total_cost_usd": 0.1}),
+        denial = Outcome("review_denied", APPROVE, usage=SCRIPTED_USAGE.model_copy(update={"total_cost_usd": 0.1}),
                          detail="Bash denied: git commit -m x")
         for mode in ("recover", "repeat", "resume", "quota", "quota-repeat", "budget", "failed"):
             with self.subTest(mode=mode):
@@ -291,6 +326,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     review_crash=mode == "resume", review_crash_after=1,
                     review_quota=mode.startswith("quota"), quota_after=1)
                 attempts = [a for a in result["attempts"] if a["stage"] == "review"]
+                self.assertEqual(len(self.forge.reviews), int(mode in ("recover", "quota")))
                 if mode == "budget":
                     self.assertFalse(self.forge.merge_calls)
                     self.assertFalse(result["review"].review_findings)
