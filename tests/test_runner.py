@@ -112,8 +112,8 @@ class FakeWorkspace(LiveWorkspace):
             self.current = WorktreeState(self.current.head, False, self.current.branch)
         return worker_reply(args, reply)
 
-    def pull_request_size(self, head: str | None, base_branch: str, *, work_base: str | None = None) -> PullRequestSize:
-        return {"head": head or self.tree(None), "merge_base": work_base or "b" * 40, "lines": 1}
+    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
+        return {"head": head or self.tree(None), "merge_base": merge_base or "b" * 40, "lines": 1}
 
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT
@@ -145,8 +145,8 @@ class FixtureWorkspace(LiveWorkspace):
     def push(self, branch, repo):
         pass
 
-    def pull_request_size(self, head: str | None, base_branch: str, *, work_base: str | None = None) -> PullRequestSize:
-        return {"head": head or self.tree(None), "merge_base": work_base or BASE, "lines": 1}
+    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
+        return {"head": head or self.tree(None), "merge_base": merge_base or BASE, "lines": 1}
 
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT

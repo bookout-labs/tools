@@ -90,6 +90,15 @@ def historical_channels(version):
             values[field] = 2
             if owner in values:
                 values[owner] = values[owner].model_copy(update={field: 0})
+    if type(version) is not int or version < 10:
+        if "work" in values:
+            work = values["work"].model_dump()
+            work["candidate"].pop("size", None)
+            values["work"] = WorkState.model_construct(**work)
+        else:
+            values["implementation_candidate"] = {
+                key: value for key, value in values["implementation_candidate"].items() if key != "size"
+            }
     if version is not None:
         values["schema_version"] = version
     return values

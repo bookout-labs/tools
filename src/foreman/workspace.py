@@ -190,7 +190,7 @@ class Workspace(Protocol):
     def files_at(self, head: str, directory: str) -> set[str]: ...
     def read_file_at(self, head: str, path: str) -> str: ...
     def has_file(self, path: str) -> bool: ...
-    def pull_request_size(self, head: str | None, base_branch: str, *, work_base: str | None = None) -> PullRequestSize: ...
+    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff: ...
     def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope: ...
 
@@ -299,7 +299,7 @@ class LiveWorkspace:
             try:
                 with TemporaryDirectory(prefix="foreman-candidate-") as directory:
                     index = {"GIT_INDEX_FILE": str(Path(directory) / "index")}
-                    source = Path(os.fsdecode(self._git("rev-parse", "--path-format=absolute", "--git-path", "index")).strip())
+                    source = Path(os.fsdecode(self._git("rev-parse", "--path-format=absolute", "--git-path", "index")).removesuffix("\n"))
                     if source.exists():
                         shutil.copyfile(source, index["GIT_INDEX_FILE"])
                     else:
@@ -363,7 +363,7 @@ class LiveWorkspace:
             observed = self.inspect()
         if observed.head == parent:
             return None if observed.clean else {"disposition": "edits", "fingerprint": self.fingerprint(),
-                "size": self.pull_request_size(None, base_branch, work_base=merge_base)}
+                "size": self.pull_request_size(None, base_branch, merge_base=merge_base)}
         if not observed.clean:
             raise ImplementationRejected(f"Moved HEAD {observed.head} has uncommitted edits." + recovery)
         try:
@@ -400,7 +400,7 @@ class LiveWorkspace:
         diff = self._git("diff", parent, observed.head, "--binary", "--no-ext-diff", "--no-textconv")
         return {"disposition": "adopted", "head": observed.head, "tree": tree,
                 "fingerprint": hashlib.sha256(diff).hexdigest(),
-                "size": self.pull_request_size(tree, base_branch, work_base=merge_base)}
+                "size": self.pull_request_size(tree, base_branch, merge_base=merge_base)}
 
     def soft_reset(self, parent: str) -> None:
         self._git("reset", "--soft", parent)
@@ -439,8 +439,8 @@ class LiveWorkspace:
             return self._git("--no-replace-objects", "show", f"{head}:{path}").decode("utf-8")
         except UnicodeError as exc:
             raise WorktreeInspectionFailed(f"Could not decode {path}: {exc}") from exc
-    def pull_request_size(self, head: str | None, base_branch: str, *, work_base: str | None = None) -> PullRequestSize:
-        merge_base = work_base or self._base_merge_base(base_branch, head or "HEAD")
+    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
+        merge_base = merge_base or self._base_merge_base(base_branch, head or "HEAD")
         head = self.tree(None) if head is None else head
         diff_options = (
             "--find-renames", "--text",

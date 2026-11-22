@@ -156,7 +156,7 @@ class PullRequestSizeTest(unittest.TestCase):
         before = {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*")
                   if path.is_file() and ".git" not in path.relative_to(self.root).parts}
         with patch.object(workspace, "_base_merge_base", side_effect=AssertionError("no fetch")):
-            measured = workspace.pull_request_size(None, "unused", work_base=base)
+            measured = workspace.pull_request_size(None, "unused", merge_base=base)
         self.assertEqual(measured, edits["size"])
         self.assertEqual(index.read_bytes(), index_bytes)
         self.assertEqual(self.git("status", "--porcelain=v1", "-z"), status)
@@ -166,6 +166,21 @@ class PullRequestSizeTest(unittest.TestCase):
         self.assertEqual(adopted["size"], measured)
         self.assertEqual(workspace.pull_request_size(head, "main")["lines"], measured["lines"])
         self.assertEqual(workspace.tree(head), measured["head"])
+
+    def test_later_round_sizes_edits_and_adopted_commits_against_merge_base(self):
+        self.write("round-one.md", "first round\n" * 11)
+        parent = self.commit()
+        self.assertNotEqual(parent, self.base)
+        self.write("round-two.md", "second round\n" * 7)
+        workspace = LiveWorkspace(self.root)
+        edits = workspace.reconcile(parent, BRANCH, "main", None)
+        self.commit()
+        adopted = workspace.reconcile(parent, BRANCH, "main", None)
+        for candidate in (edits, adopted):
+            with self.subTest(disposition=candidate["disposition"]):
+                self.assertEqual(candidate["size"]["merge_base"], self.base)
+                self.assertEqual(candidate["size"]["lines"], 18)
+        self.assertEqual(adopted["size"], edits["size"])
 
     def test_under_limit_diff_reaches_review(self):
         self.write("src/items.py", "changed\n" * (PULL_REQUEST_LINES - 2))

@@ -687,10 +687,10 @@ def compile_delivery(
                 if candidate["disposition"] == "adopted" and run.workspace.tree(observed.head) != candidate["tree"]:
                     raise WorkspaceError("Commit differs from the reconciled worker tree.")
             else:
-                if run.workspace.tree(None) != candidate["size"]["head"]:
-                    raise WorkspaceError("Implementation edits changed after reconciliation and size measurement.")
                 if observed.clean:
                     raise WorkspaceError("The checkpointed implementation edits are missing.")
+                if run.workspace.tree(None) != candidate["size"]["head"]:
+                    raise WorkspaceError("Implementation edits changed after reconciliation and size measurement.")
                 if run.workspace.fingerprint() != candidate["fingerprint"]:
                     raise WorkspaceError("Implementation edits changed after reconciliation.")
                 run.workspace.commit(message)
