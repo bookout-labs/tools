@@ -20,7 +20,8 @@ from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
 from foreman.state import ChecksState
-from foreman.stage_output import STAGE_OUTPUTS, DispatchPlan
+from foreman.stage_output import DispatchPlan
+from foreman.stages import STAGES
 from foreman.usd import BudgetUsd
 from foreman.workspace import ReviewScope
 
@@ -53,7 +54,8 @@ class CliWorker:
             " Write disposable scratch only under $TMPDIR, outside the checkout."
             " Do not return the scratch path as evidence."
         )
-        contract = STAGE_OUTPUTS[node]
+        contract = STAGES[node].output
+        assert contract is not None
         schema = json.dumps(contract.model_json_schema())
         projected = to_jsonable_python(state)
         for attempt in projected.get("attempts", []):

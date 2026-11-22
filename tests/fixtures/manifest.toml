@@ -596,7 +596,7 @@ notes = "Versioned source excerpts show literal raw fields, JSON POST bodies, an
 
 # ## Codex JSONL
 #
-# Generate `triage.json` with `json.dumps(STAGE_OUTPUTS["triage"].model_json_schema())` from `foreman.stage_output`.
+# Generate `triage.json` with `json.dumps(STAGES["triage"].output.model_json_schema())` from `foreman.stages`.
 # The success probe used this argv in a temporary directory with stdin closed.
 #
 # ```sh
@@ -667,28 +667,28 @@ tool = "codex"
 version = "0.171.0"
 kind = "captured_run"
 argv = ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", "-c", "approval_policy=never", "-c", "mcp_servers={}", "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", "triage.json", "--color", "never", "-s", "read-only", "Do not use tools or read files. Choose needs_human, with no slice, and ask \"Which items?\""]
-notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGE_OUTPUTS[\"triage\"].model_json_schema(); <port> is the loopback stub port."
+notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGES[\"triage\"].output.model_json_schema(); <port> is the loopback stub port."
 
 [fixtures."codex/invalid-model.jsonl"]
 tool = "codex"
 version = "0.171.0"
 kind = "captured_run"
 argv = ["codex", "exec", "-m", "gpt-foreman-fixture-invalid", "-c", "model_reasoning_effort=high", "-c", "approval_policy=never", "-c", "mcp_servers={}", "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", "triage.json", "--color", "never", "-s", "read-only", "Do not use tools or read files. Choose needs_human, with no slice, and ask \"Which items?\""]
-notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGE_OUTPUTS[\"triage\"].model_json_schema(); <port> is the loopback stub port."
+notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGES[\"triage\"].output.model_json_schema(); <port> is the loopback stub port."
 
 [fixtures."codex/quota.jsonl"]
 tool = "codex"
 version = "0.171.0"
 kind = "captured_run"
 argv = ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", "-c", "approval_policy=never", "-c", "model_provider=synthetic", "-c", "model_providers.synthetic={name=\"Synthetic\", env_key=\"FOREMAN_PROBE_KEY\", base_url=\"http://127.0.0.1:<port>/v1\", request_max_retries=0, wire_api=\"responses\"}", "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", "triage.json", "--color", "never", "-s", "read-only", "Do not use tools or read files. Choose needs_human, with no slice, and ask \"Which items?\""]
-notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGE_OUTPUTS[\"triage\"].model_json_schema(); <port> is the loopback stub port."
+notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGES[\"triage\"].output.model_json_schema(); <port> is the loopback stub port."
 
 [fixtures."codex/cached_success.jsonl"]
 tool = "codex"
 version = "0.171.0"
 kind = "captured_run"
 argv = ["codex", "exec", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", "-c", "approval_policy=never", "-c", "model_provider=synthetic", "-c", "model_providers.synthetic={name=\"Synthetic\", env_key=\"FOREMAN_PROBE_KEY\", base_url=\"http://127.0.0.1:<port>/v1\", request_max_retries=0, wire_api=\"responses\"}", "--ephemeral", "--skip-git-repo-check", "--json", "--output-schema", "triage.json", "--color", "never", "-s", "read-only", "Do not use tools or read files. Choose needs_human, with no slice, and ask \"Which items?\""]
-notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGE_OUTPUTS[\"triage\"].model_json_schema(); <port> is the loopback stub port."
+notes = "See Codex JSONL and quota formatter notes below. Schema generated from STAGES[\"triage\"].output.model_json_schema(); <port> is the loopback stub port."
 
 [fixtures."codex/quota-formatters.json"]
 tool = "codex"
@@ -1278,3 +1278,9 @@ tool = "claude"
 version = "2.1.329"
 argv = ["claude", "--model", "claude-opus-5-5", "--effort", "low", "--restricted", "--strict-mcp-config", "--permission-mode", "dontAsk", "--max-budget-usd", "0.40", "--output-format", "stream-json", "--verbose"]
 notes = "Two fresh native calls, $0.1396765 total. First denied the granted diff chained with show | od and ls-tree. Second succeeded with standalone exact scope grants. Tool-call IDs join successful tree/blob results for base deletion, unchanged dependency, verified head, previous-only content, and a path containing spaces, quotes and permission metacharacters. Scope and envelopes are embedded; argv lists common flags with per-call settings, schema and prompt omitted."
+[fixtures."stage-calls.json"]
+tool = "Foreman adapter Call capture with scripted responses"
+version = "38295f978f6d4fa149ec9844ea32554d39c107bb"
+kind = "captured_run"
+argv = ["python", "-"]
+notes = "Recaptured test_stage_declarations.capture() after the issue #211 standalone reviewer prompt change on main ca5f86c9a, using stable UUIDs and symbolic method roots. Each value is SHA256 of json.dumps(case, sort_keys=True), including brief and final prompt digests, schema, grants, models and method order. No model CLI was invoked."
