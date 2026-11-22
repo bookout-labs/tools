@@ -649,6 +649,124 @@ class LiveRunnerTest(unittest.TestCase):
             run=LiveRun(self.github, active, skills=skills),
         )
 
+    def test_verify_feedback_reopens_and_fails_over_without_resetting_cap(self):
+        canary = "syntheticlowentropy"
+        token = "ghp_" + "A" * 36
+        sensitive = [canary, token, "bearercanary", "YmFzaWNjYW5hcnk=", "KEYBODY"]
+        secret_lines = ("Authorization: Bearer bearercanary\nAuthorization: Basic YmFzaWNjYW5hcnk=\n"
+                        "-----BEGIN RSA PRIVATE KEY-----\nKEYBODY\n-----END RSA PRIVATE KEY-----")
+        script = self.cwd / "check.py"
+        script.write_text("import sys\nprint('noise\\n' * 300)\n"
+                          f"print({canary!r})\nprint({token!r})\nprint({secret_lines!r})\n"
+                          "print('AssertionError: expected short id', file=sys.stderr)\n"
+                          "print('- actual full id\\n+ expected short id', file=sys.stderr)\nsys.exit(1)\n")
+        check = f"{sys.executable} {script}"
+        active = FakeWorkspace(self.cwd)
+        logs = []
+        crash = False
+        replies = iter([{"triage": "implement"}, {"implementation": "first"}])
+        def worker(args, cwd, env):
+            prompt = args[-1]
+            state = json.loads(prompt.split("Delivery state:\n")[1])
+            if state["checks"]["verify_failures"]:
+                if crash:
+                    raise RuntimeError("synthetic pending dispatch crash")
+                self.assertIn("untrusted diagnostic data", prompt)
+                self.assertIn("previous attempt", prompt)
+                self.assertIn("authoritative", prompt)
+                for secret in sensitive:
+                    self.assertNotIn(secret, prompt)
+                self.assertEqual(state["checks"]["check_exit_code"], 1)
+                self.assertIn("+ expected short id", state["checks"]["failure_output"])
+                self.assertFalse(state["checks"]["verified_head"])
+                if args[0] == "codex":
+                    self.assertIn("Network and database connections are unavailable", prompt)
+                    return quota_with_usage(args)
+                self.assertIn("exact check command", prompt)
+                with patch("foreman.worker.subprocess.run", return_value=worker_reply(args, {"implementation": "retry", "browser_proof": None, "formal_proof": None})) as run:
+                    run_worker_command(args, cwd, env)
+                    self.assertEqual(run.call_args.kwargs["input"], prompt)
+                return active.reply(args, {"implementation": "retry", "browser_proof": None, "formal_proof": None})
+            return active.reply(args, next(replies))
+        def invoke(stop=None):
+            def compile(*args, **kwargs):
+                graph = compile_delivery(*args, **kwargs)
+                graph.interrupt_after_nodes = [stop] if stop else []
+                return graph
+            with patch("foreman.runner.compile_delivery", side_effect=compile):
+                return run_live_delivery(repo="Example/Engine", issue=8, check=check,
+                    checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, worker),
+                    run=LiveRun(self.github, active, check_log=logs.append))
+        with patch.dict(os.environ, {"GH_TOKEN": canary}):
+            failed = invoke("verify")
+            evidence = failed["checks"].failure_output
+            with patch.object(active, "create_branch", side_effect=WorktreeInspectionFailed("synthetic prepare failure")):
+                halted = invoke()
+            self.assertEqual(halted["stop"], "git_failed")
+            self.assertEqual(halted["path"][-2:], ["prepare", "done"])
+            self.assertEqual(halted["checks"].verify, "fail")
+            prepared = invoke("prepare")
+            self.assertEqual(prepared["checks"].check_exit_code, 1)
+            self.assertEqual(prepared["checks"].failure_output, evidence)
+            self.assertEqual(prepared["checks"].verify, "fail")
+            backup = self.checkpoint.read_bytes()
+            crash = True
+            with self.assertRaisesRegex(RuntimeError, "pending dispatch crash"):
+                invoke()
+            crash = False
+            interrupted = invoke()
+            self.assertEqual(interrupted["stop"], "usage_unknown")
+            self.assertEqual(interrupted["checks"].failure_output, evidence)
+            self.checkpoint.write_bytes(backup)
+            result = invoke()
+        self.assertEqual(result["stop"], "verify_cap", result.get("halt_detail"))
+        self.assertEqual(result["checks"].verify_failures, 3)
+        self.assertEqual(result["path"].count("implement"), 3)
+        self.assertNotIn("review", result["path"])
+        self.assertEqual(result["checks"].failure_output, evidence)
+        self.assertIn(canary, "".join(logs))
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            checkpoints = list(saver.list({"configurable": {"thread_id": "example/engine#8"}}))
+            pending = [c for c in checkpoints if c.checkpoint["channel_values"].get("pending_dispatch")
+                       and c.checkpoint["channel_values"]["checks"].verify_failures]
+            self.assertTrue(pending)
+            for saved in checkpoints:
+                for secret in sensitive:
+                    self.assertNotIn(secret, str(saved.checkpoint))
+            for saved in pending:
+                self.assertEqual(saved.checkpoint["channel_values"]["checks"].failure_output, evidence)
+        self.assertEqual(ChecksState().failure_output, "")
+        self.assertEqual(ChecksState(verify="pass", verified_head=HEAD, failure_output=evidence).for_attempt(), ChecksState())
+
+    def test_next_failure_replaces_diagnostics_and_pass_clears_them(self):
+        script = self.cwd / "check.py"
+        script.write_text("from pathlib import Path\nimport sys\np = Path('count')\n"
+                          "n = int(p.read_text()) + 1 if p.exists() else 1\np.write_text(str(n))\n"
+                          "print('failure attempt', n)\nsys.exit(1 if n < 3 else 0)\n")
+        result = self.walk([{"triage": "implement"}, *[{"implementation": "built"}] * 3, APPROVE],
+                           check=f"{sys.executable} {script}")
+        states = [json.loads(prompt.split("Delivery state:\n")[1]) for prompt in self.prompts]
+        self.assertIn("failure attempt 1", states[2]["checks"]["failure_output"])
+        self.assertIn("failure attempt 2", states[3]["checks"]["failure_output"])
+        self.assertNotIn("failure attempt 1", states[3]["checks"]["failure_output"])
+        self.assertEqual(result["checks"].verify, "pass")
+        self.assertEqual(result["checks"].failure_output, "")
+
+    def test_preflight_output_never_replaces_failed_check_context(self):
+        active = FakeWorkspace(self.cwd)
+        probes = iter([0, 1])
+        def run(command, *, log=None):
+            if log:
+                log("preflight private context\n" if command == "probe" else "synthetic check failure\n")
+            return next(probes) if command == "probe" else 1
+        with patch.object(active, "run", side_effect=run):
+            result = self.walk([{"triage": "implement"}, {"implementation": "built"}],
+                               workspace=active, check="check", preflight="probe")
+        self.assertEqual(result["stop"], "env_unavailable")
+        self.assertEqual(result["checks"].failure_output, "synthetic check failure\n")
+        self.assertEqual(result["checks"].verify_failures, 0)
+
     def test_readiness_halts_resume_without_repeating_workers(self):
         for outcome, reason in [("pending", "ci_pending"), ("red", "ci_red"), ("conflict", "pr_conflict")]:
             self.checkpoint = self.cwd / (outcome + ".sqlite3")

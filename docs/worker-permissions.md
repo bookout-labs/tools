@@ -80,3 +80,20 @@ denial evidence fails closed without retry. Existing failures, quota, budget, an
 Claude names commands, not allow rules. Obfuscated wrappers without literal check text cannot be
 reliably attributed; `verify` remains authoritative. T1 joins tool IDs, successful results, and a marker.
 Separate captures prove wrapper and compound-segment denials.
+
+Failed verifier checks retain diagnostic context in `checks.failure_output`. Retries,
+resume and provider failover receive it as untrusted previous-attempt data. Prepare
+clears current verification and proof attestations. A pass clears the failure text.
+Only the verifier check is captured, not preflight. The window keeps the first
+2048 UTF-8 bytes / 32 lines and last 6144 bytes / 96 lines, with a final 8192-byte /
+128-line cap including omission markers. Terminal escapes and newline variants are
+normalized; empty output is labelled. This is context, not guaranteed assertion selection.
+
+Before clipping or persistence, the full existing redactor detects provider tokens,
+authorization credentials, private keys, keyword secrets and high-entropy values.
+Multiline key bodies are suppressed through their footer or blank separator. Cached
+Foreman App tokens and inherited GH_TOKEN/GITHUB_TOKEN values are also masked.
+Arbitrary transformed secrets and unlabelled low-entropy values are not guaranteed.
+No raw-output companion or environment dump is persisted. Codex still has no network
+or database connections; Claude still receives only the exact check command grant.
+The configured verifier remains authoritative when local reproduction is blocked.

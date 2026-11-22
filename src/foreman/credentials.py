@@ -52,6 +52,10 @@ class AppCredentials:
     def configured(self) -> bool:
         return bool(os.environ.get("FOREMAN_APP_ID") or os.environ.get("FOREMAN_INSTALLATION_ID"))
 
+    def known_values(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(entry.token.token.get_secret_value() for entry in self._entries.values() if entry.token)
+
     def invalidate(self) -> None:
         with self._lock:
             self._entries.clear()

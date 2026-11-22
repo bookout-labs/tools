@@ -1,4 +1,4 @@
-"""Adapter snapshots captured on main a68e815985cb6222cdfc807d53105f8644f437cf before registry replacement."""
+"""Adapter snapshots refreshed for retry diagnostics (#218)."""
 import tests
 
 from dataclasses import replace
@@ -68,7 +68,7 @@ def capture():
 
 
 class StageDeclarationsTest(unittest.TestCase):
-    def test_adapter_payload_and_method_order_match_before_refactor(self):
+    def test_adapter_payload_and_method_order_match_snapshot(self):
         baseline = Path(__file__).parent / "fixtures/stage-calls.json"
         actual = {key: sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
                   for key, value in capture().items()}

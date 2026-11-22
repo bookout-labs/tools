@@ -38,13 +38,21 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     preflight: str = ""
     check_exit_code: int | None = None
     verify: Literal["", "pass", "fail"] = ""
+    failure_output: str = ""
     verified_head: str = ""
     browser_proof: BrowserProofRecord | None = None
     formal_proof: FormalProofRecord | None = None
     proof_labels: dict[str, str] = Field(default_factory=dict)
 
+    def for_attempt(self) -> "ChecksState":
+        return ChecksState(check=self.check, preflight=self.preflight,
+                           verify_failures=self.verify_failures, proof_failures=self.proof_failures,
+                           verify="fail" if self.verify == "fail" else "",
+                           check_exit_code=self.check_exit_code if self.verify == "fail" else None,
+                           failure_output=self.failure_output if self.verify == "fail" else "")
 
-SCHEMA_VERSION = 11
+
+SCHEMA_VERSION = 12
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
