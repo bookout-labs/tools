@@ -44,7 +44,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     proof_labels: dict[str, str] = Field(default_factory=dict)
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -54,19 +54,23 @@ def checkpoint_serializer() -> JsonPlusSerializer:
 class CheckpointVersionError(ValueError):
     """The checkpoint belongs to an incompatible delivery state schema."""
 
-    def __init__(self, version: object, checkpoint: Path | None = None):
+    def __init__(self, version: object, checkpoint: Path | None = None, thread: str | None = None):
         location = f" {checkpoint}" if checkpoint is not None else ""
         rendered_version = "missing" if version is None else repr(version)
+        issue = f" for issue {thread}" if thread is not None else ""
+        release = "an older" if version is None or (type(version) is int and version < SCHEMA_VERSION) else "an incompatible"
         super().__init__(
-            f"Unsupported checkpoint{location} schema_version {rendered_version}; expected {SCHEMA_VERSION}. "
-            "Start a new run with a new checkpoint path."
+            f"Unsupported checkpoint{location}{issue} schema_version {rendered_version}; expected {SCHEMA_VERSION}. "
+            f"This checkpoint was written by {release} release and cannot be resumed. "
+            "Start a new run for this issue by rerunning without --answer and with XDG_STATE_HOME set to a new directory. "
+            "The existing checkpoint file is left untouched, never deleted or migrated."
         )
 
 
-def require_schema_version(values: Mapping[str, object], checkpoint: Path | None = None) -> None:
+def require_schema_version(values: Mapping[str, object], checkpoint: Path | None = None, thread: str | None = None) -> None:
     version = values.get("schema_version")
     if type(version) is not int or version != SCHEMA_VERSION:
-        raise CheckpointVersionError(version, checkpoint)
+        raise CheckpointVersionError(version, checkpoint, thread)
 
 
 class WatchRecord(TypedDict):

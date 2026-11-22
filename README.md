@@ -10,10 +10,11 @@ Design docs hold current design; PR evidence stays in the PR.
 
 Outside-tool facts cited by review need recorded evidence at the verified head.
 `foreman run delivery --fact-record evidence/facts.toml` selects a repository-relative
-TOML record. The default is `tests/fixtures/manifest.toml`. On resume, omit the flag to use the saved path. An explicit path that differs from the saved path is an error. Fixture IDs name regular tracked files relative to the record.
-When evidence is missing, implement receives the claims and recording schema and
-can create the record. Unresolved claims carry stable IDs across reviews. Add each claim ID to the evidence
+TOML record. Without it, no fact record is declared and no evidence is looked up. Unsupported outside-tool claims still block approval. On resume, omit the flag to retain the saved path or null. An explicit path that differs from the saved path is an error. Fixture IDs name regular tracked files relative to the record.
+When declared evidence is missing, implement receives the claims and recording schema and
+can create the declared record. An undeclared run needs an explicit path and a new checkpoint to record evidence. Existing checkpoints at the current schema version retain their saved path, including the former default. Unresolved claims carry stable IDs across reviews. Add each claim ID to the evidence
 entry's `claim_ids` list to resolve it independently of later reviewer wording.
+For this repository, run `foreman run delivery --repo bookout-labs/tools --issue <number> --check "python -m unittest discover -s tests" --fact-record tests/fixtures/manifest.toml`. API callers pass `fact_record="tests/fixtures/manifest.toml"`.
 A typed exact restatement of the graph's verified check result needs no fixture.
 
 
@@ -348,11 +349,25 @@ Foreman creates the slice branch from the repository default branch, checkpoints
 
 The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request, check command, and any preflight command.
 
+After an upgrade, Foreman refuses checkpoints from older releases, including checkpoints
+without a schema version. The refusal names the stored and expected versions and the
+issue thread. Old checkpoints cannot be resumed and are never migrated or deleted.
+To start that issue fresh, set `XDG_STATE_HOME` to a new directory and rerun the
+command without `--answer`. For example, choose an unused directory for this run:
+
+```sh
+XDG_STATE_HOME="$HOME/.local/state/foreman-fresh-42" foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm run check"
+```
+
+The new checkpoint is `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`. Keep using that
+same `XDG_STATE_HOME` value to resume the fresh run. The old file stays untouched,
+and other issue threads in the old file remain available under the old state directory.
+
 If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota returns. Foreman retries the same stage and retains its earlier attempt records. Review instead prints `done reviewer_unavailable` (exit 75) when all eligible reviewers are unavailable. Rerun after restoring quota or the missing CLI; review reselects from the current model table.
 
 Before review, Foreman fetches the pull request's base branch from `origin` and counts added and deleted lines across every path against the merge base, including root files, docs, and logs. Use Git 2.43 or later.
 
-Reconciliation and size use the merge base with fetched `refs/remotes/origin/<base>`. Reconciliation rejects added or modified deliverable paths matching that base's `.gitignore` files, including staged files and worker commits. Ignored untracked files stay outside the delta; deleting tracked scratch is allowed. Here, `evidence/` declares disposable worker output. The default and configured fact records and their named regular captures remain deliverables, without exempting adjacent files. `implementation_rejected` names rejected paths and preserves the checkout. Remove the scratch and rerun to reconcile again without repeating the implement call.
+Reconciliation and size use the merge base with fetched `refs/remotes/origin/<base>`. Reconciliation rejects added or modified deliverable paths matching that base's `.gitignore` files, including staged files and worker commits. Ignored untracked files stay outside the delta; deleting tracked scratch is allowed. Here, `evidence/` declares disposable worker output. A declared fact record and its named regular captures remain deliverables, without exempting adjacent files. `implementation_rejected` names rejected paths and preserves the checkout. Remove the scratch and rerun to reconcile again without repeating the implement call.
 
 Files marked `linguist-generated` by [`.gitattributes`](.gitattributes) at the merge base do not count. Here, that means fixtures, generated schemas, and lockfiles. Candidate attribute changes cannot exempt their own lines.
 

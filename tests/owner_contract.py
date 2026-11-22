@@ -52,7 +52,7 @@ OWNERS = (
         risk=DEFAULT_RISK,
         review_run_id="review-run", review_receipt={"id": 12, "commit_id": "b" * 40, "state": "COMMENTED"}),
         frozenset({"review_findings", "settled_rulings", "fact_record", "review_run_id", "review_receipt",
-                   "reviewed_head", "review", "risk", "findings", "detail", "review_change_kind"}), 7, {},
+                   "reviewed_head", "review", "risk", "findings", "detail", "review_change_kind"}), 8, {},
         clear_on_head_change=frozenset({"review", "reviewed_head", "review_receipt", "risk", "findings", "detail", "review_change_kind"})),
 
 )
@@ -74,7 +74,7 @@ def assert_channels(test, values, expected, *, names=None):
 
 def historical_channels(version):
     values = {"path": ["triage"], "attempts": []}
-    if type(version) is not int or version < 8:
+    if type(version) is not int or version < 9:
         values["review_rounds"] = 2
     for owner in OWNERS:
         if type(version) is int and version >= owner.grouped_at:
@@ -82,7 +82,7 @@ def historical_channels(version):
         else:
             values.update({owner.legacy_keys.get(field, field): value
                            for field, value in owner.value.model_dump().items()})
-    if type(version) is not int or version < 8:
+    if type(version) is not int or version < 9:
         for stage, owner, field, _ in COUNTERS:
             if stage == "review":
                 continue

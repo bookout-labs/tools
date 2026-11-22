@@ -21,7 +21,7 @@ from foreman.readiness import MergeState
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
-from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
+from foreman.fixture_manifest import fact_record_path
 from foreman.github import Forge, ForgeError
 from foreman.watch import run_key, watch
 from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
@@ -121,7 +121,7 @@ def require_same_budget(stored: str | None, max_budget_usd: BudgetUsd | None) ->
 
 def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: BudgetUsd | None) -> None:
     if run_state.token_cap is None:
-        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run with a new checkpoint path.")
+        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run without --answer and with XDG_STATE_HOME set to a new directory.")
     require_same_budget(run_state.max_budget_usd, max_budget_usd)
 
 
@@ -150,7 +150,8 @@ def run_live_delivery(
     if fact_record is not None:
         fact_record = fact_record_path(fact_record)
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
+    thread = f"{repo.lower()}#{issue}"
+    config: RunnableConfig = {"configurable": {"thread_id": thread}}
     workspace = str(run.workspace.root.resolve())
     client = run.forge
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver, TemporaryDirectory(prefix="foreman-skills-") as scratch:
@@ -158,7 +159,13 @@ def run_live_delivery(
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
         if prior is not None:
-            require_schema_version(channels, checkpoint)
+            require_schema_version(channels, checkpoint, thread)
+            saved_record = ReviewState.model_validate(channels["review"]).fact_record
+            if fact_record is not None and fact_record != saved_record:
+                raise ValueError("--fact-record differs from the checkpoint.")
+            fact_record = saved_record
+        if fact_record is not None:
+            fact_record = fact_record_path(fact_record)
         delivery_config = load_config()
         run_state = RunState()
         if prior is not None:
@@ -188,7 +195,7 @@ def run_live_delivery(
                                               token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
                                           "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
                                           "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(check=check, preflight=preflight),
-                                          "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState(fact_record=fact_record or MANIFEST_PATH)}
+                                          "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState(fact_record=fact_record)}
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
             else:
@@ -215,8 +222,6 @@ def run_live_delivery(
         saved_review = saved_values["review"] if saved_values is not None else None
         if presentation is not None and saved.values:
             presentation.restore(saved)
-        if saved_review is not None and fact_record is not None and fact_record != saved_review.fact_record:
-            raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values["run"].workspace if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
@@ -263,7 +268,7 @@ def run_live_delivery(
                 "pstack_pin": pin.model_dump(),
                 "path": [],
                 "plan": PlanState(issue_kind="slice" if "slice" in loaded["labels"] else "parent"),
-                "review": ReviewState(fact_record=fact_record or MANIFEST_PATH),
+                "review": ReviewState(fact_record=fact_record),
             }
             if initial["plan"].issue_kind == "slice":
                 try:
@@ -295,7 +300,7 @@ def run_live_delivery(
                 elif observed is None or observed.outcome not in {"closed", "retargeted"}:
                     repaired = worktree.head != head
             before = _checkpoint_before_halt(graph, config, saved_values["path"], "prepare" if repaired else None)
-            require_schema_version(before.values, checkpoint)
+            require_schema_version(before.values, checkpoint, thread)
             require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_budget_usd)
             restored = checkpoint_state(before.values)
             assert restored is not None

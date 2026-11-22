@@ -20,7 +20,7 @@ from foreman.state import ReviewState, ChecksState, RunState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.dry_run import ScriptHandler
-from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
+from foreman.fixture_manifest import fact_record_path
 from foreman.github import ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
@@ -164,6 +164,8 @@ def main(
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    commands.add_parser("smoke", help="run the bounded live scratch-repository smoke")
+
     commands.add_parser("coordinator", help="start an interactive Claude coordinator session")
 
     draw = commands.add_parser("diagram", help="print the graph")
@@ -191,6 +193,9 @@ def main(
     accept.add_argument("path")
 
     args = parser.parse_args(argv)
+    if args.command == "smoke":
+        from foreman.smoke_command import smoke_command
+        return smoke_command()
     if args.command == "coordinator":
         try:
             instruction = files("foreman").joinpath("roles/coordinator.md").read_text(encoding="utf-8")
@@ -261,7 +266,7 @@ def main(
             check=args.check,
             max_tokens=args.max_tokens if args.max_tokens is not None else DEFAULT_TOKEN_CAP,
             max_budget_usd=args.max_budget_usd,
-            fact_record=args.fact_record or MANIFEST_PATH,
+            fact_record=args.fact_record,
             commands=presentation.commands,
         )
         print("pstack pin not checked (dry run)")
