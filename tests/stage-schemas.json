@@ -59,7 +59,7 @@
             "type": "string"
           },
           "builds": {
-            "description": "List interfaces, modules, and contracts this slice builds for other slices. Use an empty list when there are none.",
+            "description": "List only new seams this slice provides for other slices, with exists false and path null. A seam is an interface, module, or contract, not a file; a new seam may be implemented in an existing file. Pure file edits belong in uses and acceptance/spec, not builds.",
             "items": {
               "$ref": "#/$defs/Seam"
             },
@@ -67,7 +67,7 @@
             "type": "array"
           },
           "uses": {
-            "description": "List seams this slice needs. Use an empty list when there are none.",
+            "description": "List seams this slice needs, including existing seams it edits with exists true and a workspace-relative path. Describe the edit in acceptance/spec. Edit-only example: builds: [], uses: [{name: items, exists: true, path: items.py}], acceptance: Change visible(items) to include closed items. Use an empty list when there are none.",
             "items": {
               "$ref": "#/$defs/Seam"
             },
@@ -257,7 +257,7 @@
             "type": "string"
           },
           "builds": {
-            "description": "List interfaces, modules, and contracts this slice builds for other slices. Use an empty list when there are none.",
+            "description": "List only new seams this slice provides for other slices, with exists false and path null. A seam is an interface, module, or contract, not a file; a new seam may be implemented in an existing file. Pure file edits belong in uses and acceptance/spec, not builds.",
             "items": {
               "$ref": "#/$defs/Seam"
             },
@@ -265,7 +265,7 @@
             "type": "array"
           },
           "uses": {
-            "description": "List seams this slice needs. Use an empty list when there are none.",
+            "description": "List seams this slice needs, including existing seams it edits with exists true and a workspace-relative path. Describe the edit in acceptance/spec. Edit-only example: builds: [], uses: [{name: items, exists: true, path: items.py}], acceptance: Change visible(items) to include closed items. Use an empty list when there are none.",
             "items": {
               "$ref": "#/$defs/Seam"
             },

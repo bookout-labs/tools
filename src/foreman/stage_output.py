@@ -12,6 +12,7 @@ from typing_extensions import NotRequired, TypedDict, override
 from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, with_config, field_validator, model_validator, computed_field
 
 from pydantic.config import JsonDict
+from pydantic_core import PydanticCustomError
 
 from foreman.review_context import ReviewContext
 from foreman.contracts import Contract as Contract, Text as Text
@@ -316,8 +317,8 @@ class SliceContent(RecordContract[Record], Generic[Record]):
     title: TrimmedText = Field(description="Name the outcome.")
     stateful: bool = Field(description="Set true when the slice changes behavior across states or transitions.")
     acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
-    builds: list[Seam] = Field(description="List interfaces, modules, and contracts this slice builds for other slices. Use an empty list when there are none.")
-    uses: list[Seam] = Field(description="List seams this slice needs. Use an empty list when there are none.")
+    builds: list[Seam] = Field(description="List only new seams this slice provides for other slices, with exists false and path null. A seam is an interface, module, or contract, not a file; a new seam may be implemented in an existing file. Pure file edits belong in uses and acceptance/spec, not builds.")
+    uses: list[Seam] = Field(description="List seams this slice needs, including existing seams it edits with exists true and a workspace-relative path. Describe the edit in acceptance/spec. Edit-only example: builds: [], uses: [{name: items, exists: true, path: items.py}], acceptance: Change visible(items) to include closed items. Use an empty list when there are none.")
     screen: str = Field(
         description=(
             "When the change alters a screen described under docs/screens/, name that Markdown file directly under "
@@ -332,8 +333,11 @@ class SliceContent(RecordContract[Record], Generic[Record]):
     @field_validator("builds")
     @classmethod
     def new_seams(cls, value: list[Seam]) -> list[Seam]:
-        if any(seam.exists for seam in value):
-            raise ValueError("only uses can name existing seams")
+        if existing := [seam.name for seam in value if seam.exists]:
+            raise PydanticCustomError("existing_seam_builder",
+                "Existing seams {seams} cannot be in builds. For edits, move them to uses with exists true "
+                "and describe the edit in acceptance/spec; for a genuinely new seam, use exists false and path null.",
+                {"seams": ", ".join(existing)})
         return value
 
 
@@ -462,6 +466,12 @@ SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_se
 class SpecRejection(TypedDict):
     kind: SpecRejectionKind
     detail: str
+
+
+class InvalidSlicePlan(InvalidOutput):
+    def __init__(self, kind: SpecRejectionKind, detail: str):
+        super().__init__(detail)
+        self.reason: SpecRejection = {"kind": kind, "detail": detail}
 
 
 class PlanState(BaseModel, frozen=True, extra="forbid"):
@@ -830,6 +840,10 @@ def parse_output(contract: type[Output], raw: object, *, context: ReviewContext 
     try:
         return contract.model_validate(raw, context=context)
     except ValidationError as exc:
-        error = exc.errors(include_input=False)[0]
+        errors = exc.errors(include_input=False)
+        if contract is SpecOutput and all(error["type"] == "existing_seam_builder" for error in errors):
+            detail = "; ".join(f"{'.'.join(map(str, error['loc']))}: {error['msg']}" for error in errors)
+            raise InvalidSlicePlan("existing_seam_builder", detail) from exc
+        error = next((error for error in errors if error["type"] != "existing_seam_builder"), errors[0])
         path = ".".join(map(str, error["loc"])) or "$"
         raise InvalidOutput(f"{path}: {error['msg']}") from exc

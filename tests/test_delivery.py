@@ -157,6 +157,48 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual(result["stop"], "sliced")
                 self.assertIsNone(result["plan"].spec_rejection)
 
+    def test_seam_validation_for_single_and_multiple_slices(self):
+        from foreman.stages import clean_slices, InvalidSlicePlan
+        from foreman.stage_output import Slice
+        from foreman.workspace import LiveWorkspace
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "items.py").touch()
+            workspace = LiveWorkspace(root)
+            new = {"name": "items", "exists": False, "path": None}
+            existing = {**new, "exists": True, "path": "items.py"}
+            for count in (1, 2):
+                for use, kind in ((existing, "existing_seam_builder" if count == 2 else None), ({**existing, "path": "absent.py"}, "dangling_seam"),
+                                  (new, None)):
+                    item = {**EMPTY_SLICE, "builds": [new], "uses": [use]}
+                    raw = [item] + ([{**item, "title": "Consumer", "builds": []}] if count == 2 else [])
+                    if kind:
+                        with self.assertRaises(InvalidSlicePlan) as raised:
+                            clean_slices([Slice.model_validate(s) for s in raw], workspace)
+                        self.assertEqual(raised.exception.reason["kind"], kind)
+                    else:
+                        self.assertEqual(clean_slices([Slice.model_validate(s) for s in raw], workspace)[0]["depends_on"], [])
+
+    def test_single_slice_shortcut_and_multiple_slice_graph_errors(self):
+        from foreman.stages import clean_slices, InvalidSlicePlan
+        from foreman.stage_output import Slice
+        first, second = SLICES
+        cases = {
+            "duplicate_builder": [first, {**second, "builds": [BOARD]}],
+            "dangling_seam": [{**first, "builds": [], "uses": [MOVE]}, {**second, "builds": []}],
+            "dependency_cycle": [{**first, "uses": [MOVE]}, second],
+        }
+        for kind, plan in cases.items():
+            for count in (1, 2):
+                raw = [Slice.model_validate(item) for item in plan[:count]]
+                with self.subTest(kind=kind, count=count):
+                    if count == 1:
+                        self.assertEqual(clean_slices(raw, None)[0]["depends_on"], [])
+                    else:
+                        with self.assertRaises(InvalidSlicePlan) as raised:
+                            clean_slices(raw, None)
+                        self.assertEqual(raised.exception.reason["kind"], kind)
+
     def test_a_parent_stops_on_malformed_slices(self):
         first = SLICES[0]
         missing_key = {key: value for key, value in first.items() if key != "screen"}
