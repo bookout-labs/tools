@@ -8,8 +8,7 @@ from the code and issue. Return non-empty `questions`, each with `question`,
 Use empty `checked_paths` only if no checkout file covers the topic, explaining why
 in `why_code_unanswered`. On `ready`, return `questions: []`.
 
-List what each slice builds and uses. Reuse the seam name exactly where slices share an interface, module, or contract.
-For a seam already in the checkout, set `exists` to true and give its workspace-relative file path.
+Follow the output contract for builds, uses, and edit-only slices.
 If the state contains `spec_rejection`, fix that problem before returning a ready spec.
 The graph orders the slices before filing any child issues.
 

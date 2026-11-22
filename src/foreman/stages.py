@@ -11,7 +11,7 @@ from foreman.skill_rules import PstackMethod, SkillRule, principle
 from foreman.stage_output import (
     StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput,
     ImplementOutput, ReviewOutput, VerifyOutput, UpdateContext, Slice, SliceRecord,
-    SpecRejection, SpecRejectionKind, PULL_REQUEST_LINES, AttemptRecord, ReviewSelection,
+    InvalidSlicePlan as InvalidSlicePlan, PULL_REQUEST_LINES, AttemptRecord, ReviewSelection,
 )
 
 from foreman.dispatch import InvalidOutput
@@ -35,18 +35,16 @@ class Acceptance:
     attempt: AttemptRecord | None = None
 
 
-class InvalidSlicePlan(InvalidOutput):
-    def __init__(self, kind: SpecRejectionKind, detail: str):
-        super().__init__(detail)
-        self.reason: SpecRejection = {"kind": kind, "detail": detail}
-
-
 def clean_slices(
     raw: list[Slice] | None,
     workspace: Workspace | None,
 ) -> list[SliceRecord]:
     if not raw:
         raise InvalidOutput("slices: ready parent spec needs at least one slice")
+    for item in raw:
+        for seam in item.uses:
+            if seam.path is not None and (workspace is None or not workspace.has_file(seam.path)):
+                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, but {seam.path} is not a workspace file.")
     if len(raw) == 1:
         return [{**raw[0].record(), "depends_on": []}]
     slices = {item.title: item for item in raw}
@@ -62,8 +60,6 @@ def clean_slices(
     for item in raw:
         dependencies = graph[item.title] = {}
         for seam in item.uses:
-            if seam.path is not None and (workspace is None or not workspace.has_file(seam.path)):
-                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, but {seam.path} is not a workspace file.")
             if builder := builders.get(seam.name):
                 if seam.exists:
                     raise InvalidSlicePlan("existing_seam_builder", f"{seam.name}: marked existing but built by {builder}.")

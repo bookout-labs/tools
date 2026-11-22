@@ -7,14 +7,15 @@ from tempfile import mkdtemp
 
 from foreman.config import ModelSpec
 from foreman.delivery import stage_text
-from foreman.stage_output import DispatchPlan, PlanState, SpecOutput
+from foreman.stage_output import DispatchPlan, PlanState, SpecOutput, parse_output, InvalidSlicePlan
 from foreman.state import ReviewState
 from foreman.stages import Acceptance, accept_spec
 from foreman.worker import CliWorker
 from foreman.workspace import LiveWorkspace
 
-if os.environ.get("FOREMAN_LIVE_SPEC") != "1":
-    raise SystemExit("Set FOREMAN_LIVE_SPEC=1 to authorize the paid pair (two $1 caps).")
+parent = os.environ.get("FOREMAN_LIVE_SLICE_EDITS") == "1"
+if not parent and os.environ.get("FOREMAN_LIVE_SPEC") != "1":
+    raise SystemExit("Set FOREMAN_LIVE_SPEC=1 for the paid pair, or FOREMAN_LIVE_SLICE_EDITS=1 for the parent edit check ($2 cap).")
 root = Path(__file__).resolve().parents[1]
 scratch = Path(mkdtemp(prefix=".scratch.spec-", dir=root))
 checkout = scratch / "target"
@@ -30,13 +31,16 @@ report = {"target_commit": sha(checkout), "graph_sha": sha(root),
           "cli": subprocess.check_output(["claude", "--version"], text=True).strip(),
           "model": model.name, "effort": model.effort, "cap_usd": 2, "attempts": []}
 workspace = LiveWorkspace(checkout, "fixture/items")
-for request, expected in (
+requests = (
     ("Document the current visible(items) behavior. Does it return all items or only open items? Preserve behavior.", "ready"),
     ("Change visible(items) for a new audience. The owner must decide whether closed items should become visible. No policy decision has been made; ask the owner before changing behavior.", "needs_human"),
-):
-    state = {"run": {"request": request}, "plan": PlanState(issue_kind="slice"), "review": ReviewState(),
+)
+if parent:
+    requests = (("Change visible(items) in the existing items.py to include closed items. Return a ready parent spec with its slice array. This is an edit of existing behavior; no new interface is needed.", "ready"),)
+for request, expected in requests:
+    state = {"run": {"request": request}, "plan": PlanState(issue_kind="parent" if parent else "slice"), "review": ReviewState(),
              "dispatch_plan": DispatchPlan(models=[model.name], instruction="", methods=[], read_roots=[],
-                                           target=None, scope=None, budget_usd="1")}
+                                           target=None, scope=None, budget_usd="2" if parent else "1")}
     outcome = CliWorker(checkout, scratch_root=scratch)("spec", model, state, stage_text("spec"))
     attempt = {"expected": expected, "kind": outcome.kind, "output": outcome.output,
                "prompt_bytes": outcome.prompt_bytes, "native_usage": outcome.native_usage,
@@ -46,8 +50,18 @@ for request, expected in (
     print(json.dumps(attempt), flush=True)
     if outcome.kind != "ran" or outcome.usage is None or outcome.usage.total_cost_usd is None:
         raise SystemExit(f"Incomplete live evidence. See {scratch / 'report.json'}")
-    output = SpecOutput.model_validate(outcome.output)
-    accept_spec(output, Acceptance(state, model, workspace))
+    try:
+        output = parse_output(SpecOutput, outcome.output)
+        accepted = accept_spec(output, Acceptance(state, model, workspace))
+    except InvalidSlicePlan as exc:
+        report["rejection"] = exc.reason
+        (scratch / "report.json").write_text(json.dumps(report, indent=2))
+        raise
+    if parent:
+        report["accepted_slices"] = accepted["plan"].slices
+        (scratch / "report.json").write_text(json.dumps(report, indent=2))
+        assert output.slices and all(not item.builds for item in output.slices)
+        assert any(seam.exists and seam.path == "items.py" for item in output.slices for seam in item.uses)
     assert output.spec_gate == expected
     if expected == "needs_human":
         assert any(q.checked_paths for q in output.questions)
