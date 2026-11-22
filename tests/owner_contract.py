@@ -30,7 +30,8 @@ OWNERS = (
             "observation": "readiness_observation", "observed_head": "merge_observed_head", "command": "merge_command"},
         clear_on_head_change=frozenset({"receipt"})),
     OwnerCase("work", WorkState(branch="8-change", base="main", attempt_head="a" * 40,
-        candidate={"disposition": "adopted", "head": "b" * 40, "tree": "c" * 40, "fingerprint": "tree"},
+        candidate={"disposition": "adopted", "head": "b" * 40, "tree": "c" * 40, "fingerprint": "tree",
+                   "size": {"head": "c" * 40, "merge_base": "a" * 40, "lines": 1}},
         partial_edits="partial", head_sha="b" * 40, repair_head="d" * 40), frozenset({"branch", "base"}), 3, {"branch": "delivery_branch", "base": "delivery_base",
             "candidate": "implementation_candidate"}, repair_head_field="repair_head"),
     OwnerCase("run", RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
@@ -89,6 +90,15 @@ def historical_channels(version):
             values[field] = 2
             if owner in values:
                 values[owner] = values[owner].model_copy(update={field: 0})
+    if type(version) is not int or version < 10:
+        if "work" in values:
+            work = values["work"].model_dump()
+            work["candidate"].pop("size", None)
+            values["work"] = WorkState.model_construct(**work)
+        else:
+            values["implementation_candidate"] = {
+                key: value for key, value in values["implementation_candidate"].items() if key != "size"
+            }
     if version is not None:
         values["schema_version"] = version
     return values

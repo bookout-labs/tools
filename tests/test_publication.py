@@ -652,6 +652,65 @@ class PublicationTest(unittest.TestCase):
         self.assertIn("changed after reconciliation", result["halt_detail"])
         self.assertFalse(self.created)
 
+    def test_first_publication_uses_bound_size_without_pr_lookup(self):
+        with patch.object(LiveForge, "pull_request_base", side_effect=AssertionError("no PR lookup")):
+            result = self.walk(self.edit)
+        self.assertEqual(result["stop"], "verified")
+        bound = result["work"].candidate["size"]
+        self.assertEqual(bound["head"], self.git("rev-parse", "HEAD^{tree}"))
+        self.assertEqual(result["pr_size"], {**bound, "head": result["work"].head_sha})
+
+    def test_changed_candidate_cannot_commit_with_stale_size(self):
+        with patch.object(LiveWorkspace, "commit", side_effect=SystemExit("before commit")):
+            with self.assertRaises(SystemExit):
+                self.walk(self.edit)
+        head = self.git("rev-parse", "HEAD")
+        (self.checkout / "new-deliverable.md").write_text("oversized\n" * 401)
+        result = self.walk(self.no_worker)
+        self.assertEqual(result["stop"], "git_failed")
+        self.assertIn("size measurement", result["halt_detail"])
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertFalse(self.created)
+
+    def test_missing_checkpointed_edits_cannot_commit(self):
+        with patch.object(LiveWorkspace, "commit", side_effect=SystemExit("before commit")):
+            with self.assertRaises(SystemExit):
+                self.walk(self.edit)
+        (self.checkout / "items.txt").unlink()
+        head = self.git("rev-parse", "HEAD")
+        result = self.walk(self.no_worker)
+        self.assertEqual(result["stop"], "git_failed")
+        self.assertIn("checkpointed implementation edits are missing", result["halt_detail"])
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertFalse(self.created)
+
+    def test_resumed_edits_commit_must_match_measured_tree(self):
+        original = LiveWorkspace.commit
+        def crash(workspace, message):
+            (self.checkout / "extra.md").write_text("unmeasured\n")
+            original(workspace, message)
+            raise SystemExit("after commit")
+        with patch.object(LiveWorkspace, "commit", crash), self.assertRaises(SystemExit):
+            self.walk(self.edit)
+        result = self.walk(self.no_worker)
+        self.assertEqual(result["work"].candidate["disposition"], "edits")
+        self.assertEqual(result["stop"], "git_failed")
+        self.assertIn("Commit differs from the measured implementation tree", result["halt_detail"])
+        self.assertFalse(self.created)
+
+    def test_review_rejects_verified_commit_with_unmeasured_tree(self):
+        with patch.object(LiveWorkspace, "run", side_effect=SystemExit("before verification")):
+            with self.assertRaises(SystemExit):
+                self.walk(self.edit)
+        (self.checkout / "extra.md").write_text("unmeasured\n")
+        self.worker_commit()
+        head = self.git("rev-parse", "HEAD")
+        result = self.walk(self.no_worker)
+        self.assertEqual(result["checks"].verified_head, head)
+        self.assertEqual(result["stop"], "pr_size_unavailable")
+        self.assertIn("Verified tree differs", result["halt_detail"])
+        self.assertEqual(self.published_heads, [])
+
     def test_recovery_with_edits_uses_reconciled_fingerprint(self):
         def edit():
             self.edit()

@@ -32,7 +32,10 @@ class SmokeCommandTest(unittest.TestCase):
                   patch('foreman.smoke_command.subprocess.run') as process,
                   patch('foreman.smoke_command.subprocess.check_output', return_value='base\n'),
                   patch('foreman.smoke_command.run_live_delivery', return_value=passing()) as runner,
+                  patch('foreman.smoke_command.smoke_lock'),
                   patch.dict(os.environ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors):
+                forge.return_value.smoke_issues.return_value = []
+                forge.return_value.smoke_pull_requests.return_value = []
                 forge.return_value.create_issue.return_value = 17
                 forge.return_value.smoke_identity.return_value = (True, True, True)
                 yield root, forge.return_value, process, runner, credentials, errors
@@ -65,6 +68,28 @@ class SmokeCommandTest(unittest.TestCase):
             forge.smoke_identity.reset_mock()
             self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
             forge.smoke_identity.assert_called_once()
+
+    def test_cleanup_failure_stops_before_filing_and_reports_error(self):
+        with self.provision() as (root, forge, process, runner, credentials, errors):
+            forge.smoke_pull_requests.side_effect = ForgeError('cleanup denied')
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
+            self.assertEqual(output.getvalue(), 'smoke exit 78 cleanup attempt prerequisite\n')
+            self.assertIn('cleanup denied', errors.getvalue())
+            forge.ensure_smoke_label.assert_called_once_with(SMOKE_REPO)
+            forge.create_issue.assert_not_called()
+            runner.assert_not_called()
+
+    def test_lock_oserror_stops_before_provisioning(self):
+        with self.provision() as (root, forge, process, runner, credentials, errors):
+            with patch('foreman.smoke_command.smoke_lock', side_effect=OSError('lock denied')), \
+                 redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
+            self.assertEqual(output.getvalue(), 'smoke exit 78 lock attempt prerequisite\n')
+            self.assertIn('lock denied', errors.getvalue())
+            credentials.assert_not_called()
+            forge.create_issue.assert_not_called()
+            runner.assert_not_called()
 
     def test_ci_resume_preserves_checkpoint_and_limits(self):
         with self.provision() as (root, forge, process, runner, credentials, errors):
@@ -107,7 +132,7 @@ class SmokeCommandTest(unittest.TestCase):
                     self.assertNotIn('ghp_' + 'a' * 36, errors.getvalue())
 
     def test_personal_credentials_rejected_through_real_environment(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'GH_TOKEN': 'personal'}, clear=True), \
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'GH_TOKEN': 'personal', 'XDG_STATE_HOME': directory}, clear=True), \
              patch('foreman.smoke_command.LiveForge') as forge, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             self.assertEqual(run_smoke(Path(directory), time.monotonic() + 30), 78)
             forge.assert_not_called()
@@ -307,6 +332,9 @@ class SmokeCommandTest(unittest.TestCase):
             fake = FakeGitHub(labels=[])
             transport = Mock(wraps=fake)
             transport.smoke_identity = Mock(return_value=(True, True, True))
+            transport.smoke_issues = Mock(return_value=[])
+            transport.smoke_pull_requests = Mock(return_value=[])
+            transport.ensure_smoke_label = Mock()
             handler = ScriptHandler()
             workspace = FakeWorkspace(root / 'checkout')
             workspace.run = Mock(return_value=0)

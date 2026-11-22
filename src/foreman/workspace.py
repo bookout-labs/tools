@@ -8,6 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import shutil
 import subprocess
 import tarfile
 from tempfile import TemporaryDirectory
@@ -49,9 +50,16 @@ class ImplementationRejected(WorkspaceError):
     """Recoverable implementation history mismatch; keep the checkout."""
 
 
+class PullRequestSize(TypedDict):
+    head: str
+    merge_base: str
+    lines: int
+
+
 class ImplementationEdits(TypedDict):
     disposition: Literal["edits"]
     fingerprint: str
+    size: PullRequestSize
 
 
 class AdoptedImplementation(TypedDict):
@@ -59,6 +67,7 @@ class AdoptedImplementation(TypedDict):
     head: str
     tree: str
     fingerprint: str
+    size: PullRequestSize
 
 
 ImplementationCandidate = ImplementationEdits | AdoptedImplementation
@@ -83,12 +92,6 @@ class WorktreeState:
     head: str
     clean: bool
     branch: str | None
-
-
-class PullRequestSize(TypedDict):
-    head: str
-    merge_base: str
-    lines: int
 
 
 @dataclass(frozen=True)
@@ -180,14 +183,14 @@ class Workspace(Protocol):
     def committed(self, parent: str, message: str) -> bool: ...
     def reconcile(self, parent: str, branch: str, base_branch: str,
                   fact_record: str | None) -> ImplementationCandidate | None: ...
-    def tree(self, head: str) -> str: ...
+    def tree(self, head: str | None) -> str: ...
     def soft_reset(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
     def push(self, branch: str, repo: str) -> None: ...
     def files_at(self, head: str, directory: str) -> set[str]: ...
     def read_file_at(self, head: str, path: str) -> str: ...
     def has_file(self, path: str) -> bool: ...
-    def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize: ...
+    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff: ...
     def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope: ...
 
@@ -290,7 +293,21 @@ class LiveWorkspace:
         return (os.fsdecode(self._git("show", "-s", "--format=%P%n%B", "HEAD")).strip()
                 == f"{parent}\n{redact(message)}".strip())
 
-    def tree(self, head: str) -> str:
+    def tree(self, head: str | None) -> str:
+        """Resolve a revision, or snapshot the next commit tree through a private index."""
+        if head is None:
+            try:
+                with TemporaryDirectory(prefix="foreman-candidate-") as directory:
+                    index = {"GIT_INDEX_FILE": str(Path(directory) / "index")}
+                    source = Path(os.fsdecode(self._git("rev-parse", "--path-format=absolute", "--git-path", "index")).removesuffix("\n"))
+                    if source.exists():
+                        shutil.copyfile(source, index["GIT_INDEX_FILE"])
+                    else:
+                        self._git("read-tree", "--empty", environment=index)
+                    self._git("add", "--all", environment=index)
+                    return os.fsdecode(self._git("write-tree", environment=index)).strip()
+            except OSError as exc:
+                raise WorktreeInspectionFailed(f"Could not snapshot the candidate: {exc}.") from exc
         return os.fsdecode(self._git("--no-replace-objects", "rev-parse", f"{head}^{{tree}}")).strip()
 
     def _base_merge_base(self, base_branch: str, head: str) -> str:
@@ -345,7 +362,8 @@ class LiveWorkspace:
             self._git("--literal-pathspecs", "add", "--force", "--", *(os.fsdecode(path) for path in ignored_facts if path))
             observed = self.inspect()
         if observed.head == parent:
-            return None if observed.clean else {"disposition": "edits", "fingerprint": self.fingerprint()}
+            return None if observed.clean else {"disposition": "edits", "fingerprint": self.fingerprint(),
+                "size": self.pull_request_size(None, base_branch, merge_base=merge_base)}
         if not observed.clean:
             raise ImplementationRejected(f"Moved HEAD {observed.head} has uncommitted edits." + recovery)
         try:
@@ -381,7 +399,8 @@ class LiveWorkspace:
             raise ImplementationRejected(f"Delivery branch is already published at {os.fsdecode(remote[0])}; cannot replace worker HEAD {observed.head}." + recovery)
         diff = self._git("diff", parent, observed.head, "--binary", "--no-ext-diff", "--no-textconv")
         return {"disposition": "adopted", "head": observed.head, "tree": tree,
-                "fingerprint": hashlib.sha256(diff).hexdigest()}
+                "fingerprint": hashlib.sha256(diff).hexdigest(),
+                "size": self.pull_request_size(tree, base_branch, merge_base=merge_base)}
 
     def soft_reset(self, parent: str) -> None:
         self._git("reset", "--soft", parent)
@@ -420,8 +439,9 @@ class LiveWorkspace:
             return self._git("--no-replace-objects", "show", f"{head}:{path}").decode("utf-8")
         except UnicodeError as exc:
             raise WorktreeInspectionFailed(f"Could not decode {path}: {exc}") from exc
-    def pull_request_size(self, head: str, base_branch: str) -> PullRequestSize:
-        merge_base = self._base_merge_base(base_branch, head)
+    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
+        merge_base = merge_base or self._base_merge_base(base_branch, head or "HEAD")
+        head = self.tree(None) if head is None else head
         diff_options = (
             "--find-renames", "--text",
             "--no-ext-diff", "--no-textconv",
@@ -569,13 +589,14 @@ class LiveWorkspace:
         )
 
     def _git(self, *args: str, input_paths: bytes | None = None, timeout: float | None = None,
-             allowed_returncodes: tuple[int, ...] = (0,)) -> bytes:
+             allowed_returncodes: tuple[int, ...] = (0,), environment: dict[str, str] | None = None) -> bytes:
         operation = f"git {args[0]}"
         if timeout is None:
             timeout = 30 if args[0] in {"fetch", "push", "ls-remote", "commit"} else 10
         env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
         if args[0] == "commit" and credentials.configured:
             env.update(self._bot_identity())
+        env.update(environment or {})
         auth: tuple[str, ...] = ()
         if args[0] in {"fetch", "push", "ls-remote"}:
             if credentials.configured and not self._urls:
