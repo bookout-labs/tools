@@ -74,6 +74,7 @@ def _print_run_rows(
 
     checks = result["checks"]
     run_state = result["run"]
+    review_state = result["review"]
     if (limit := run_state.max_budget_usd) is not None:
         spent = claude_spend(result.get("attempts", []))
         amount = "unknown" if spent is None else f"${spent:f}"
@@ -126,7 +127,7 @@ def _print_run_rows(
             fields = [node]
             if model:
                 fields.append(model)
-            if node == "review" and (risk := result["review"].risk):
+            if node == "review" and (risk := review_state.risk):
                 fields.extend(("risk", risk["level"]))
             write(" ".join(fields))
     stop = result.get("stop")

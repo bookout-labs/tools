@@ -52,7 +52,8 @@ OWNERS = (
         risk=DEFAULT_RISK,
         review_run_id="review-run", review_receipt={"id": 12, "commit_id": "b" * 40, "state": "COMMENTED"}),
         frozenset({"review_findings", "settled_rulings", "fact_record", "review_run_id", "review_receipt",
-                   "reviewed_head", "review", "risk", "findings", "detail", "review_change_kind"}), 7, {}),
+                   "reviewed_head", "review", "risk", "findings", "detail", "review_change_kind"}), 7, {},
+        clear_on_head_change=frozenset({"review", "reviewed_head", "review_receipt", "risk", "findings", "detail", "review_change_kind"})),
 
 )
 
@@ -86,6 +87,9 @@ def assert_repaired(test, before, after, *, repair_head):
             defaults = type(owner.value)()
             for field in type(owner.value).model_fields.keys() - durable:
                 test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
+            if owner.name == "review":
+                for field in durable:
+                    test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
             fields = before[owner.name].model_dump(include=durable)
             if owner.repair_head_field is not None and repair_head is not None:
                 fields[owner.repair_head_field] = repair_head

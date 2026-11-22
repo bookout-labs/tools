@@ -867,8 +867,6 @@ def compile_delivery(
             if state.get("pr_size_override"):
                 return "decide_pr_size"
             return "spec"
-        if not state["checks"].verified_head:
-            return "prepare"
         if review_state.review == "approve":
             return "merge"
         if review_count(state) < config.max_review_rounds:
