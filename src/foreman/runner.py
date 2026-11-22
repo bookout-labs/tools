@@ -21,7 +21,7 @@ from foreman.readiness import MergeState
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
-from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path
+from foreman.fixture_manifest import fact_record_path
 from foreman.github import Forge, ForgeError
 from foreman.watch import run_key, watch
 from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
@@ -160,6 +160,12 @@ def run_live_delivery(
         channels = prior["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, checkpoint, thread)
+            saved_record = ReviewState.model_validate(channels["review"]).fact_record
+            if fact_record is not None and fact_record != saved_record:
+                raise ValueError("--fact-record differs from the checkpoint.")
+            fact_record = saved_record
+        if fact_record is not None:
+            fact_record = fact_record_path(fact_record)
         delivery_config = load_config()
         run_state = RunState()
         if prior is not None:
@@ -189,7 +195,7 @@ def run_live_delivery(
                                               token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
                                           "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
                                           "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(check=check, preflight=preflight),
-                                          "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState(fact_record=fact_record or MANIFEST_PATH)}
+                                          "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState(fact_record=fact_record)}
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
             else:
@@ -216,8 +222,6 @@ def run_live_delivery(
         saved_review = saved_values["review"] if saved_values is not None else None
         if presentation is not None and saved.values:
             presentation.restore(saved)
-        if saved_review is not None and fact_record is not None and fact_record != saved_review.fact_record:
-            raise ValueError("--fact-record differs from the checkpoint.")
         saved_workspace = saved_values["run"].workspace if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
@@ -265,7 +269,7 @@ def run_live_delivery(
                 "path": [],
                 "plan": PlanState(issue_kind="slice" if "slice" in loaded["labels"] else "parent"),
                 "review_rounds": 0,
-                "review": ReviewState(fact_record=fact_record or MANIFEST_PATH),
+                "review": ReviewState(fact_record=fact_record),
             }
             if initial["plan"].issue_kind == "slice":
                 try:

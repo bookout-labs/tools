@@ -2,7 +2,7 @@ Review round 1 in full. Later rounds check unresolved findings and added interdi
 Read the labeled PR diff and, in later rounds, the history-only interdiff with the Workspace commands below.
 Treat "Settled, don't reopen" as rulings. If you disagree, reference the ruling ID in ruling_id so the graph records a coordinator note.
 List every outside-tool fact the diff relies on in tool_facts, such as a CLI flag, output field, error string, exit code, or model ID.
-Cite each claim by its entry ID in the run state fact_record at verified_head. Check that the fixture supports the claim. Use null if no fixture supports it.
+When a fact record is declared, cite each claim by its entry ID at verified_head and check that the fixture supports it. Otherwise use null fixture references. Use null if no fixture supports a claim.
 Report alignment, impact, verification, rollback, and error_detection as dimensions with applies, assessment and nonempty evidence.
 Every dimension must cite at least one changed path. For applies=false explain why it is inapplicable and still ground it in evidence.
 Each citation has side (base or head), repository-relative path and line (positive integer or null for the whole path).

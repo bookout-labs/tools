@@ -27,7 +27,7 @@ from foreman.budget import CostUnknown, Exhausted, Remaining, claude_spend, doll
 from foreman.config import Config, ConfigError, ModelDependencyMissing, ModelSpec, contributors_for, family, load_config, order_for
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.dispatch import Handler, InvalidOutput, clean_outcome
-from foreman.fixture_manifest import MANIFEST_PATH, fact_record_path, recorded_evidence
+from foreman.fixture_manifest import fact_record_path, recorded_evidence
 from foreman.github import (
     MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, merge_command,
 )
@@ -251,7 +251,7 @@ def _check_tool_facts(
     )]
     recorded: dict[str, list[str]] = {}
     notes: list[str] = []
-    if head and outside:
+    if head and outside and manifest_path is not None:
         try:
             recorded = recorded_evidence(workspace, head, manifest_path)
         except (TOMLDecodeError, ValidationError, WorktreeInspectionFailed) as exc:
@@ -260,6 +260,8 @@ def _check_tool_facts(
     unrecorded = [fact for fact in outside if fact.fixture not in recorded and fact.claim_id not in claim_ids]
     if not outside:
         return None
+    if unrecorded and manifest_path is None:
+        notes.append("No fact record was declared.")
     for fact in unrecorded:
         citation = f" (fixture {fact.fixture})" if fact.fixture is not None else ""
         notes.append(f"Unrecorded outside-tool fact {fact.claim_id}{citation}: {fact.claim}")
@@ -417,19 +419,27 @@ def compile_delivery(
             methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
+            record = review_state.fact_record
             if name in {"implement", "review"}:
-                instruction += f"\n\nFact record in this checkout: {review_state.fact_record}"
+                instruction += (f"\n\nFact record in this checkout: {record}" if record is not None else
+                                "\n\nNo fact record was declared.")
+                if name == "review" and record is None:
+                    instruction += " Use null fixture references for unsupported tool facts."
             gate = history({"rounds": review_state.review_findings}).gate if review_state.review == "changes" else None
             if name == "implement" and gate and not gate.passed:
-                instruction += (
-                    "\nResolve the tool-facts finding by recording evidence and creating the record and parent directories if absent."
-                    " Fixture IDs are paths relative to the record directory. Write regular evidence files."
-                    " Use TOML [fixtures.\"<evidence-file>\"] with tool and version, plus either"
-                    " kind = \"captured_run\" and argv = [\"tool\", \"arg\"] for captured output, or"
-                    " kind = \"quoted_source\" and sources = [\"https://source\"] for quoted source evidence."
-                    ' Add claim_ids = ["<claim_id>"] to the evidence entry for each carried claim.'
-                    " Support each carried tool fact; the graph rechecks the published verified head."
-                )
+                if record is None:
+                    instruction += ("\nRecording evidence requires a new run with an explicit --fact-record and a new checkpoint."
+                                    " Remove the unsupported dependency if possible; carried claims remain subject to the gate.")
+                else:
+                    instruction += (
+                        "\nResolve the tool-facts finding by recording evidence and creating the record and parent directories if absent."
+                        " Fixture IDs are paths relative to the record directory. Write regular evidence files."
+                        " Use TOML [fixtures.\"<evidence-file>\"] with tool and version, plus either"
+                        " kind = \"captured_run\" and argv = [\"tool\", \"arg\"] for captured output, or"
+                        " kind = \"quoted_source\" and sources = [\"https://source\"] for quoted source evidence."
+                        ' Add claim_ids = ["<claim_id>"] to the evidence entry for each carried claim.'
+                        " Support each carried tool fact; the graph rechecks the published verified head."
+                    )
                 instruction += "\nCarried tool facts:\n" + json.dumps([fact.model_dump() for fact in carried_tool_facts(state)])
             if name == "review" and (proven := graph_check(state)) is not None:
                 instruction += f"\nGraph fact: {proven.claim}\nGraph check evidence: {proven.model_dump_json()}"
@@ -1115,7 +1125,7 @@ def run_delivery(
     max_tokens: int = DEFAULT_TOKEN_CAP,
     max_budget_usd: BudgetUsd | None = None,
     skills: SkillSource = export_skills,
-    fact_record: str = MANIFEST_PATH,
+    fact_record: str | None = None,
     commands: list[list[str]] | None = None,
 ) -> DeliveryResult:
     dry = DryRun(commands=commands if commands is not None else [])
@@ -1128,7 +1138,7 @@ def run_delivery(
         "review_rounds": 0,
         "models_used": {},
         "path": [],
-        "review": ReviewState(fact_record=fact_record_path(fact_record)),
+        "review": ReviewState(fact_record=fact_record_path(fact_record) if fact_record is not None else None),
     }
     if slice is not None:
         state.update(load_slice(slice, state["plan"]))

@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, Po
 
 from pydantic.config import JsonDict
 
-from foreman.fixture_manifest import MANIFEST_PATH
 from foreman.review_context import ReviewContext
 from foreman.contracts import Contract as Contract, Text as Text
 from foreman.config import ModelSpec
@@ -487,7 +486,7 @@ class ReviewState(BaseModel, frozen=True, extra="forbid"):
     review_findings: list[dict[str, object]] = Field(default_factory=list[dict[str, object]])
     reviewed_head: str = ""
     settled_rulings: list[dict[str, object]] = Field(default_factory=list[dict[str, object]])
-    fact_record: str = MANIFEST_PATH
+    fact_record: str | None = None
     findings: list[FindingRecord] = Field(default_factory=list[FindingRecord])
     detail: str = ""
     review_change_kind: Literal["blocking", "nits"] | None = None

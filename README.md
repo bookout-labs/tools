@@ -10,10 +10,11 @@ Design docs hold current design; PR evidence stays in the PR.
 
 Outside-tool facts cited by review need recorded evidence at the verified head.
 `foreman run delivery --fact-record evidence/facts.toml` selects a repository-relative
-TOML record. The default is `tests/fixtures/manifest.toml`. On resume, omit the flag to use the saved path. An explicit path that differs from the saved path is an error. Fixture IDs name regular tracked files relative to the record.
-When evidence is missing, implement receives the claims and recording schema and
-can create the record. Unresolved claims carry stable IDs across reviews. Add each claim ID to the evidence
+TOML record. Without it, no fact record is declared and no evidence is looked up. Unsupported outside-tool claims still block approval. On resume, omit the flag to retain the saved path or null. An explicit path that differs from the saved path is an error. Fixture IDs name regular tracked files relative to the record.
+When declared evidence is missing, implement receives the claims and recording schema and
+can create the declared record. An undeclared run needs an explicit path and a new checkpoint to record evidence. Existing checkpoints at the current schema version retain their saved path, including the former default. Unresolved claims carry stable IDs across reviews. Add each claim ID to the evidence
 entry's `claim_ids` list to resolve it independently of later reviewer wording.
+For this repository, run `foreman run delivery --repo bookout-labs/tools --issue <number> --check "python -m unittest discover -s tests" --fact-record tests/fixtures/manifest.toml`. API callers pass `fact_record="tests/fixtures/manifest.toml"`.
 A typed exact restatement of the graph's verified check result needs no fixture.
 
 
@@ -366,7 +367,7 @@ If the live command prints `paused quota_exhausted`, run it again from the same 
 
 Before review, Foreman fetches the pull request's base branch from `origin` and counts added and deleted lines across every path against the merge base, including root files, docs, and logs. Use Git 2.43 or later.
 
-Reconciliation and size use the merge base with fetched `refs/remotes/origin/<base>`. Reconciliation rejects added or modified deliverable paths matching that base's `.gitignore` files, including staged files and worker commits. Ignored untracked files stay outside the delta; deleting tracked scratch is allowed. Here, `evidence/` declares disposable worker output. The default and configured fact records and their named regular captures remain deliverables, without exempting adjacent files. `implementation_rejected` names rejected paths and preserves the checkout. Remove the scratch and rerun to reconcile again without repeating the implement call.
+Reconciliation and size use the merge base with fetched `refs/remotes/origin/<base>`. Reconciliation rejects added or modified deliverable paths matching that base's `.gitignore` files, including staged files and worker commits. Ignored untracked files stay outside the delta; deleting tracked scratch is allowed. Here, `evidence/` declares disposable worker output. A declared fact record and its named regular captures remain deliverables, without exempting adjacent files. `implementation_rejected` names rejected paths and preserves the checkout. Remove the scratch and rerun to reconcile again without repeating the implement call.
 
 Files marked `linguist-generated` by [`.gitattributes`](.gitattributes) at the merge base do not count. Here, that means fixtures, generated schemas, and lockfiles. Candidate attribute changes cannot exempt their own lines.
 

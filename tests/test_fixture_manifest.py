@@ -6,7 +6,7 @@ from pathlib import Path
 import unittest
 import subprocess
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from pydantic import ValidationError
 from foreman.workspace import LiveWorkspace
@@ -94,10 +94,37 @@ class RecordedEvidenceTest(unittest.TestCase):
             "resolutions": [], "risk": DEFAULT_RISK, "findings": [],
             "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": "result.txt"}],
         }, context=SCRIPTED_REVIEW_CONTEXT)
-        gate = _check_tool_facts(output, self.workspace, {"review": ReviewState(),
+        gate = _check_tool_facts(output, self.workspace, {"review": ReviewState(fact_record=MANIFEST_PATH),
             "run": RunState(repo="example/repo"), "checks": ChecksState(check="", verified_head=head or ""), "path": [], "plan": PlanState()})
         from foreman.review_round import ReviewHistory, accept
         return accept(ReviewHistory(), output, head or "", gate)
+
+    def test_undeclared_record_never_looks_up_matching_evidence(self):
+        from foreman.delivery import _check_tool_facts
+        from foreman.dry_run import DEFAULT_RISK
+        from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
+        from foreman.review_round import ReviewHistory, accept
+        from foreman.stage_output import ReviewOutput
+
+        head = self.commit()
+        state = {"review": ReviewState(fact_record=None), "run": RunState(repo="example/tools"),
+                 "checks": ChecksState(check="", verified_head=head), "plan": PlanState(), "path": []}
+        output = ReviewOutput.model_validate(dict(resolutions=[], risk=DEFAULT_RISK, findings=[],
+            tool_facts=[{"claim": "CLI accepts --debug", "fixture": "result.txt"}]), context=SCRIPTED_REVIEW_CONTEXT)
+        for declared_key in (True, False):
+            if not declared_key:
+                state["review"] = ReviewState()
+            with self.subTest(declared_key=declared_key):
+                with patch("foreman.delivery.recorded_evidence", side_effect=AssertionError("evidence lookup")):
+                    first = accept(ReviewHistory(), output, head, _check_tool_facts(output, self.workspace, state))
+                    self.assertEqual(first.review, "changes")
+                    self.assertIn("No fact record was declared", first.detail)
+                    self.assertEqual(first.change_kind, "blocking")
+                    state["review"] = state["review"].model_copy(update={"review_findings": [entry.model_dump() for entry in first.history.rounds]})
+                    omitted = output.model_copy(update={"tool_facts": []})
+                    self.assertFalse(_check_tool_facts(omitted, self.workspace, state).passed)
+                    state["review"] = state["review"].model_copy(update={"review_findings": []})
+                    self.assertIsNone(_check_tool_facts(omitted, self.workspace, state))
 
     def test_unreadable_manifest_blocks_approval(self):
         cases = {"bad TOML": b"[", "schema failure": b"[fixtures.result]\nkind = 'unknown'",
@@ -139,7 +166,7 @@ class RecordedEvidenceTest(unittest.TestCase):
         from foreman.review_round import GraphCheck, ReviewRound
 
         fact = StoredToolFact.from_fact(ToolFact(claim="CLI accepts --debug", fixture=None))
-        state = {"run": RunState(repo="example/repo"), "checks": ChecksState(check="", verified_head=self.commit()), "path": [], "plan": PlanState(), "review": ReviewState(review_findings=[ReviewRound(round=1, reviewed_head="a" * 40, findings=[], resolutions={},
+        state = {"run": RunState(repo="example/repo"), "checks": ChecksState(check="", verified_head=self.commit()), "path": [], "plan": PlanState(), "review": ReviewState(fact_record=MANIFEST_PATH, review_findings=[ReviewRound(round=1, reviewed_head="a" * 40, findings=[], resolutions={},
                      graph_check=GraphCheck(detail="Unrecorded fact", tool_facts=[fact])).model_dump()])}
         output = ReviewOutput.model_validate(dict(resolutions=[], risk=DEFAULT_RISK, findings=[], tool_facts=[]), context=SCRIPTED_REVIEW_CONTEXT)
         run = LiveRun(Mock(), self.workspace)
@@ -184,23 +211,23 @@ class RecordedEvidenceTest(unittest.TestCase):
             destination = self.fixtures / fixture
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes((source / fixture).read_bytes())
-        self.assertEqual(recorded_evidence(self.workspace, self.commit()), expected)
+        self.assertEqual(recorded_evidence(self.workspace, self.commit(), MANIFEST_PATH), expected)
 
     def test_only_regular_tracked_files_are_recorded(self):
         from foreman.fixture_manifest import recorded_fixtures
 
         head = self.commit()
-        self.assertEqual(recorded_fixtures(self.workspace, head), {"result.txt"})
+        self.assertEqual(recorded_fixtures(self.workspace, head, MANIFEST_PATH), {"result.txt"})
         (self.fixtures / "result.txt").unlink()
         (self.fixtures / "result.txt").symlink_to("target.txt")
         head = self.commit()
-        self.assertEqual(recorded_fixtures(self.workspace, head), set())
+        self.assertEqual(recorded_fixtures(self.workspace, head, MANIFEST_PATH), set())
         self.assertEqual(self.check_approval(head).review, "changes")
         self.git("update-index", "--add", "--cacheinfo", f"160000,{head},{FIXTURE_DIR}/result.txt")
         self.git("-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgSign=false",
                  "commit", "-qm", "Replace fixture with gitlink")
         head = self.git("rev-parse", "HEAD")
-        self.assertEqual(recorded_fixtures(self.workspace, head), set())
+        self.assertEqual(recorded_fixtures(self.workspace, head, MANIFEST_PATH), set())
         self.assertEqual(self.check_approval(head).review, "changes")
 
 
@@ -233,8 +260,8 @@ class GraphFactGateTest(unittest.TestCase):
 
     def test_omission_cannot_resolve_an_unrecorded_fact(self):
         fact = {"claim": "CLI accepts --debug", "fixture": None}
-        first = self.gate([fact], {"review": ReviewState(), "run": RunState(repo="example/repo"), "checks": ChecksState(check="exit 0"), "path": [], "plan": PlanState()})
-        state = {"run": RunState(repo="example/repo"), "checks": ChecksState(check="exit 0"), "path": [], "plan": PlanState(), "review": ReviewState(review_findings=[entry.model_dump() for entry in first.history.rounds])}
+        first = self.gate([fact], {"review": ReviewState(fact_record=MANIFEST_PATH), "run": RunState(repo="example/repo"), "checks": ChecksState(check="exit 0"), "path": [], "plan": PlanState()})
+        state = {"run": RunState(repo="example/repo"), "checks": ChecksState(check="exit 0"), "path": [], "plan": PlanState(), "review": ReviewState(fact_record=MANIFEST_PATH, review_findings=[entry.model_dump() for entry in first.history.rounds])}
         self.assertEqual(self.gate([], state).review, "changes")
 
     def test_record_paths_are_relative_and_normalized(self):

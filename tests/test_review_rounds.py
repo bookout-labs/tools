@@ -371,7 +371,7 @@ class ReviewRoundsTest(unittest.TestCase):
         result = self.run_rounds([{**APPROVE, "tool_facts": [fact]},
             {**APPROVE, "findings": [{**FINDING, "severity": "nit"}]},
             {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}],
-            advance_head=True, gate_heads=["2" * 40, "3" * 40])
+            advance_head=True, gate_heads=["2" * 40, "3" * 40], initial={"review": ReviewState(fact_record="tests/fixtures/manifest.toml")})
         self.assertEqual(result["review_rounds"], 3)
         self.assertEqual(result["merge"].status, "armed")
         self.assertIn("Graph verdict: changes", self.forge.reviews[0][3])
