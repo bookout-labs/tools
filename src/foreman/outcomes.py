@@ -3,9 +3,13 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum, auto
-from typing import Final, Literal
+from typing import Final, Literal, TYPE_CHECKING, cast
 
 from foreman.readiness import Outcome as ReadinessOutcome
+
+
+if TYPE_CHECKING:
+    from foreman.state import DeliveryUpdate
 
 
 class Halt(StrEnum):
@@ -41,6 +45,13 @@ class Halt(StrEnum):
     model_dependency_missing = auto()
     model_family_exhausted = auto()
     publication_model_missing = auto()
+
+
+def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
+    if not detail.strip():
+        raise ValueError(f"{reason} requires a nonempty halt detail")
+    # Checkpoint codes remain strings after validation as Halt members.
+    return {"halt": cast(Halt, reason.value), "halt_detail": detail, "watch": None, "path": [path] if path else []}
 
 
 @dataclass(frozen=True)

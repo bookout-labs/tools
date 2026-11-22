@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 import re
 import textwrap
 
@@ -34,10 +34,10 @@ from foreman.redaction import redact
 from foreman.stage_output import (
     PlanState, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, SliceRecord, StageOutput, PULL_REQUEST_LINES, StoredSlice, parse_output,
 )
-from foreman.stages import STAGES, InvalidSlicePlan, oversized_pr
+from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, oversized_pr
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.readiness import MergeReceipt, MergeState
-from foreman.outcomes import Halt, READINESS_HALTS
+from foreman.outcomes import Halt, READINESS_HALTS, halted
 from foreman.review_round import AcceptedReview, history
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import WorkState, ImplementationRejected, WorkspaceError, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, head_mismatch_detail
@@ -118,13 +118,6 @@ def _last_stage(state: DeliveryState) -> str:
     return state["path"][-1]
 
 
-def halted(reason: Halt, detail: str, path: str | None) -> DeliveryUpdate:
-    if not detail.strip():
-        raise ValueError(f"{reason} requires a nonempty halt detail")
-    # Checkpoint codes remain strings after validation as Halt members.
-    return {"halt": cast(Halt, reason.value), "halt_detail": detail, "watch": None, "path": [path] if path else []}
-
-
 def dollar_detail(run_state: RunState, attempts: list[AttemptRecord]) -> str:
     spend = claude_spend(attempts)
     detail = f"Run Claude spend: ${spend}." if spend is not None else "Run Claude spend: unknown."
@@ -180,7 +173,7 @@ def load_slice(raw: object, plan: PlanState) -> DeliveryUpdate:
 def stage_update(
     name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None, config: Config | None = None, attempt: AttemptRecord | None = None,
 ) -> DeliveryUpdate:
-    update = STAGES[name].accept(output, state, accepted_model or model, workspace, config, attempt)
+    update = STAGES[name].accept(output, Acceptance(state, accepted_model or model, workspace, config, attempt))
     update["path"] = [name]
     if model:
         used = state.get("models_used", {})
@@ -295,9 +288,8 @@ def compile_delivery(
             methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
-            instruction += STAGES[name].prepare(state)
             try:
-                suffix, target, scope = STAGES[name].setup(state, run.workspace, run.forge)
+                suffix, target, scope = STAGES[name].prepare(state, run.workspace, run.forge)
             except InvalidOutput as exc:
                 return halted(Halt.invalid_output, str(exc), name)
             except (ForgeError, WorktreeInspectionFailed) as exc:
@@ -360,10 +352,10 @@ def compile_delivery(
                     quota_model=model if outcome.kind == "quota" else pending["quota_model"],
                 ).record()}
                 if unavailable:
-                    retry["halt_detail"] = unavailable
+                    retry["halt_detail"] = unavailable[1]
                 return retry
             if unavailable:
-                return {**stopped, **halted(Halt.reviewer_unavailable, unavailable, name)}
+                return {**stopped, **halted(*unavailable, name)}
             if outcome.kind == "cli_missing" and pending["quota_model"]:
                 outcome, model = Outcome("quota"), pending["quota_model"]
             if outcome.kind == "failed":
@@ -378,7 +370,7 @@ def compile_delivery(
                 output = parse_output(contract, outcome.output, context=citation_context)
                 update = stage_update(name, output, state, model, workspace=plan_workspace,
                                       accepted_model=accepted_model, config=config, attempt=attempts[0])
-                update.update(attempts=attempts, pending_dispatch=None)
+                update.update(attempts=update.get("attempts", attempts), pending_dispatch=None)
             except InvalidSlicePlan as exc:
                 planning = state["plan"]
                 rounds = planning.spec_failures + 1

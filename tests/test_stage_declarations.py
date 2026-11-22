@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from foreman.delivery import MODEL_STAGES, run_delivery, stage_text
-from foreman.stages import STAGES
+from foreman.stages import STAGES, Acceptance
 from foreman.state import DeliveryState, PlanState
 from foreman.stage_output import ResearchOutput
 from foreman.skill_rules import PstackMethod, SkillRule, SkillMissing, export_skills, stage_methods
@@ -86,32 +86,125 @@ class StageDeclarationsTest(unittest.TestCase):
 
                 def dispatch(stage, model, state, instruction):
                     if stage == name:
-                        self.assertIn("\nRow instruction", instruction)
+                        self.assertTrue(instruction.endswith("\nRow instruction"))
                         seen.append(stage)
                     return script(stage, model, state, instruction)
 
-                def accept(output, state, model, workspace, config=None, attempt=None):
-                    return {**row.accept(output, state, model, workspace, config, attempt), "research": "Row accepted"}
+                def accept(output, context):
+                    return {**row.accept(output, context), "research": "Row accepted"}
 
-                with patch.dict(STAGES, {name: replace(row, prepare=lambda _: "\nRow instruction", accept=accept)}):
+                def prepare(state, workspace, forge):
+                    _, target, scope = row.prepare(state, workspace, forge)
+                    return "\nRow instruction", target, scope
+
+                with patch.dict(STAGES, {name: replace(row, prepare=prepare, accept=accept)}):
                     result = walk(dispatch)
                 self.assertEqual(seen, [name])
                 self.assertEqual(result["research"], "Row accepted")
                 self.assertEqual(result["stop"], "answered" if name == "research" else "verified")
                 self.assertEqual(result["attempts"][-1]["stage"], "research" if name == "research" else "review")
 
+    def assert_no_stage_policy(self, source, module):
+        expected = {"bind", "call", "stage_update"} if module == "delivery.py" else {"clean_outcome"}
+        visited = set()
+        for function in ast.walk(ast.parse(source)):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if module == "delivery.py" and function.name not in expected:
+                continue
+            visited.add(function.name)
+            for branch in ast.walk(function):
+                conditions = []
+                if isinstance(branch, (ast.If, ast.IfExp)):
+                    conditions = [branch.test]
+                elif isinstance(branch, ast.Match):
+                    conditions = [branch.subject, *(case.pattern for case in branch.cases),
+                                  *(case.guard for case in branch.cases if case.guard is not None)]
+                for condition in conditions:
+                    literals = {n.value for n in ast.walk(condition) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+                    # Slice 9d owns the implement re-entry guard; graph routers are outside this seam.
+                    allowed = {"implement"} if module == "delivery.py" and function.name == "bind" else set()
+                    self.assertFalse(literals & (set(STAGES) - allowed), ast.unparse(condition))
+        self.assertTrue(expected <= visited, expected - visited)
+
     def test_dispatch_has_no_stage_policy_branches(self):
         root = Path(__file__).resolve().parents[1] / "src/foreman"
         for name in ("delivery.py", "dispatch.py"):
-            tree = ast.parse((root / name).read_text())
-            for function in ast.walk(tree):
-                if isinstance(function, ast.FunctionDef) and function.name in {"bind", "call", "stage_update", "clean_outcome"}:
-                    for branch in ast.walk(function):
-                        if isinstance(branch, (ast.If, ast.IfExp, ast.Match)):
-                            condition = branch.subject if isinstance(branch, ast.Match) else branch.test
-                            literals = {n.value for n in ast.walk(condition) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-                            # Slice 9d owns the implement re-entry guard; graph routers are outside this seam.
-                            self.assertFalse(literals & (set(STAGES) - ({"implement"} if function.name == "bind" else set())), ast.unparse(condition))
+            self.assert_no_stage_policy((root / name).read_text(), name)
+
+    def test_dispatch_policy_check_rejects_cases_guards_helpers_and_missing_functions(self):
+        for body in ('match name:\n        case "review": pass',
+                     'match name:\n        case _ if name == "review": pass',
+                     'if name == "review": pass'):
+            with self.subTest(body=body), self.assertRaises(AssertionError):
+                self.assert_no_stage_policy("def clean_outcome(): pass\ndef helper(name):\n    " + body, "dispatch.py")
+        for module in ("delivery.py", "dispatch.py"):
+            with self.subTest(module=module), self.assertRaises(AssertionError):
+                self.assert_no_stage_policy("def renamed(): pass", module)
+
+    def test_review_projection_and_citation_context_come_from_row(self):
+        from foreman.adapters import Outcome
+        from foreman.dry_run import SCRIPTED_USAGE
+        from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
+        from test_delivery import walk
+
+        row, script, seen = STAGES["review"], ScriptHandler(), []
+        def project(state, workspace):
+            projected, _ = row.project(state, workspace)
+            projected["research"] = "Row projection"
+            seen.append(True)
+            head = SCRIPTED_REVIEW_CONTEXT.head
+            return projected, replace(SCRIPTED_REVIEW_CONTEXT, head=replace(head,
+                files=head.files | {"row.py"}, lines={**head.lines, "row.py": 7}, changed=head.changed | {"row.py"}))
+        def dispatch(stage, model, state, instruction):
+            outcome = script(stage, model, state, instruction)
+            if stage == "review":
+                self.assertEqual(state["research"], "Row projection")
+                outcome.output["findings"] = [{"id": "row", "kind": "correctness", "severity": "nit",
+                    "fix": "Fix it", "ruling_id": None, "file": "row.py", "line": 7, "summary": "Row citation"}]
+                if len(seen) > 1:
+                    outcome.output.update(findings=[], resolutions=[{"id": "row", "status": "resolved"}])
+                return Outcome("ran", outcome.output, usage=SCRIPTED_USAGE)
+            return outcome
+        with patch.dict(STAGES, review=replace(row, project=project)):
+            result = walk(dispatch)
+        self.assertEqual(seen, [True, True])
+        self.assertEqual(result["stop"], "verified", result.get("halt_detail"))
+        self.assertEqual(result["review"].review_findings[0]["findings"][0]["file"], "row.py")
+
+    def test_review_unavailability_halt_comes_from_row(self):
+        from foreman.adapters import Outcome
+        from foreman.outcomes import Halt
+        from test_delivery import walk
+
+        seen, script = [], ScriptHandler()
+        def unavailable(state, outcome, model):
+            seen.append(outcome.kind)
+            return Halt.failed, "Row unavailable"
+        def dispatch(stage, model, state, instruction):
+            return Outcome("cli_missing") if stage == "review" else script(stage, model, state, instruction)
+        with patch.dict(STAGES, review=replace(STAGES["review"], unavailable=unavailable)):
+            result = walk(dispatch)
+        self.assertTrue(seen)
+        self.assertEqual(result["halt"], "failed")
+        self.assertEqual(result["halt_detail"], "Row unavailable")
+
+    def test_review_denial_retry_comes_from_row(self):
+        from foreman.adapters import Outcome
+        from foreman.dry_run import SCRIPTED_USAGE
+        from test_delivery import walk
+
+        script, seen = ScriptHandler(), []
+        def retry(attempts):
+            seen.append(attempts[-1]["outcome"])
+            return len(seen) < 3
+        def dispatch(stage, model, state, instruction):
+            return Outcome("review_denied", detail="Row denial", usage=SCRIPTED_USAGE) if stage == "review" else script(stage, model, state, instruction)
+        with patch.dict(STAGES, review=replace(STAGES["review"], retry_denied=retry)):
+            result = walk(dispatch)
+        self.assertEqual(seen, ["review_denied"] * 3)
+        self.assertEqual(result["halt"], "invalid_output")
+        self.assertIn("retry exhausted", result["halt_detail"])
 
     def test_implement_acceptance_keeps_proofs_and_model_history(self):
         from foreman.delivery import stage_update
@@ -203,7 +296,7 @@ class StageDeclarationsTest(unittest.TestCase):
         checks = ChecksState(check="test", verify_failures=2, proof_failures=1)
         for verdict, failures in (("pass", 2), ("fail", 3)):
             with self.subTest(verdict=verdict):
-                update = STAGES["verify"].accept(VerifyOutput(verify=verdict), {"checks": checks}, None, None)
+                update = STAGES["verify"].accept(VerifyOutput(verify=verdict), Acceptance({"checks": checks}))
                 self.assertEqual(update["checks"], checks.model_copy(update={"verify": verdict, "verify_failures": failures}))
         self.assertEqual(checks.verify_failures, 2)
 
