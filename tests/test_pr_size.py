@@ -333,7 +333,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.worker = implement_oversized
         self.assertIn("paused needs_human", self.invoke(expected_code=3, from_triage=True)[0])
         history = self.checkpoint_values()["plan"].spec_history
-        before = SpecCandidate.from_record(history["rounds"][0]["candidate"])
+        before = SpecCandidate.from_record(history["rounds"][0].candidate)
         self.assertEqual(before.author.stage, "triage")
         self.assertTrue(before.author.model)
         self.assertEqual(self.forge.created, [])

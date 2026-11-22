@@ -112,6 +112,9 @@ class FakeWorkspace(LiveWorkspace):
         file = self.root / path
         return file.is_file() and not file.is_symlink()
 
+    def contains_commit(self, base, commit):
+        return base == commit or (base, commit) == (HEAD, BASE)
+
     def create_branch(self, branch, base, *, pinned=""):
         self.current = WorktreeState(self.current.head, True, branch)
 
@@ -332,8 +335,8 @@ class FakeGitHub:
         self._fail("create_issue", after_write=True)
         return number
 
-    def is_merged(self, repo, number):
-        return number in self.merged
+    def is_merged(self, repo, number, *, contains=None):
+        return number in self.merged and (contains is None or contains(self.base))
 
     def add_blocker(self, repo, number, blocker):
         self.dependencies.setdefault(number, []).append(blocker)
@@ -834,6 +837,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn("XDG_STATE_HOME", str(raised.exception))
 
     def test_old_checkpoint_refusal_explains_fresh_start_without_affecting_other_issues(self):
+        self.github.labels = ["factory"]
         config = {"configurable": {"thread_id": "example/engine#8"}}
         for version in (None, SCHEMA_VERSION - 1):
             with self.subTest(version=version):
@@ -1206,10 +1210,12 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.github.merge_calls, [])
 
     def test_load_slice_issue(self):
-        result = self.walk([{"triage": "question"}, {"research": "answer"}])
+        result = self.walk([{"triage": "question"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(result["run"].request, "Issue title\n\n" + slice_body(EMPTY_SLICE))
         self.assertEqual(result["plan"].issue_kind, "slice")
-        self.assertEqual(result["plan"].slice, EMPTY_SLICE)
+        self.assertEqual({k: v for k, v in result["plan"].slice.items() if k != "provenance"},
+                         {**EMPTY_SLICE, "depends_on": [], "blocker_numbers": []})
+        self.assertEqual(result["path"][:3], ["triage", "spec_check", "implement"])
 
     def test_missing_or_invalid_slice_stops_before_triage(self):
         for body in ("Issue body", "Issue body\n\n```json\n{\n```", slice_body({"screen": ""})):
@@ -1315,6 +1321,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertIn("triage quota exhausted", stdout.getvalue())
 
     def test_resume_passes_checkpoint_pin_to_the_run_skill_source(self):
+        self.github.labels = ["factory"]
         source = FixtureSkills()
         paused = self.walk([{"triage": "needs_human", "human_question": "Which items?"}], skills=source)
         self.assertEqual(paused["stop"], "needs_human")
@@ -1326,6 +1333,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(source.pins, [self.pin, self.pin])
 
     def test_resume_allocates_fresh_scratch_without_checkpointing_paths(self):
+        self.github.labels = ["factory"]
         paths = []
 
         def quota(args, cwd, env):
@@ -1436,10 +1444,11 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.walk([])
         self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
-        child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
-        self.assertEqual(child["plan"].slice, {**child_payload, "provenance": {"author": result["plan"].spec_candidate["author"], "revision": result["plan"].spec_candidate["revision"]}})
+        child = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE], issue=102)
+        self.assertEqual(child["stop"], "verified", child.get("halt_detail"))
+        self.assertEqual(child["path"][:3], ["triage", "spec_check", "implement"])
+        self.assertEqual({k: v for k, v in child["plan"].slice.items() if k != "provenance"}, child_payload)
         self.assertEqual(child["plan"].work_kind, "bug_fix")
-        self.assertIn("why/SKILL.md", self.prompts[-1])
 
     def test_edit_only_spec_repairs_and_round_trips_to_children(self):
         for count in (1, 2):
@@ -1471,9 +1480,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     self.assertEqual(child.acceptance, edits[index]["acceptance"])
                     self.assertEqual(child.depends_on, [])
                     self.assertEqual(child.provenance.revision, candidate["revision"])
-                child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=101)
+                child = self.walk([{"triage": "question"}, {"implementation": "built"}, APPROVE], issue=101)
                 self.assertEqual(child["plan"].slice["uses"], [seam])
-                self.assertEqual(child["plan"].slice["provenance"]["revision"], candidate["revision"])
+                self.assertEqual(child["path"][:3], ["triage", "spec_check", "implement"])
+                self.assertEqual(child["plan"].slice["provenance"]["author"], candidate["author"])
 
     def test_mislabel_cap_and_mixed_errors_never_file_children(self):
         seam = {"name": "items", "exists": True, "path": "items.py"}
@@ -1774,14 +1784,14 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(repeated.get("stop"), "verified")
         self.assertEqual(repeated["plan"].human_qa, expected_qa)
 
-    def test_non_implement_slice_routes_skip_preflight(self):
+    def test_non_implement_routes_skip_preflight(self):
         for issue, replies, stop in (
             (8, [{"triage": "question"}, {"research": "answer"}], "answered"),
             (9, [{"triage": "spec"}, {"spec": "not ready", "spec_gate": "needs_human",
                                        "questions": [{"question": "Which items?", "why_code_unanswered": "No policy in code.", "checked_paths": []}]}], "needs_human"),
         ):
             with self.subTest(stop=stop):
-                self.github = FakeGitHub(["factory"]) if stop == "needs_human" else FakeGitHub()
+                self.github = FakeGitHub(["factory"])
                 result = self.walk(replies, issue=issue, preflight="touch probed; exit 9")
                 self.assertEqual(result.get("stop"), stop)
                 self.assertFalse((self.cwd / "probed").exists())
@@ -2828,10 +2838,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual((root / "check.log").read_text(), "checked\n")
 
 class HaltExitCodeTest(unittest.TestCase):
-    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", preflight="", hold=None):
+    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", preflight="", hold=None, labels=None):
         directory = self.enterContext(TemporaryDirectory())
         root = Path(directory)
-        forge = FakeGitHub()
+        forge = FakeGitHub(labels)
         forge.hold = hold
         if body is not None:
             forge.body = body
@@ -2910,7 +2920,7 @@ class HaltExitCodeTest(unittest.TestCase):
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
 
     def test_answered_is_success(self):
-        code, output = self.live([{"triage": "question"}, {"research": "The answer."}])
+        code, output = self.live([{"triage": "question"}, {"research": "The answer."}], labels=["factory"])
         self.assertEqual(code, 0, output)
         self.assertIn("done answered\n", output)
 

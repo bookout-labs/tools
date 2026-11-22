@@ -31,7 +31,7 @@ from foreman.github import (
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    PlanState, CandidateSlice, SpecAuthor, SpecCandidate, SpecTarget, SpecCheckOutput, SpecRejection, WorkKind, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, SliceRecord, StageOutput, PULL_REQUEST_LINES, StoredSlice, parse_output, spec_digest,
+    PlanState, CandidateSlice, SpecAuthor, SpecCandidate, SpecTarget, SpecCheckOutput, SpecRejection, WorkKind, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, SliceRecord, StageOutput, PULL_REQUEST_LINES, StoredSlice, load_stored_slice, parse_output, spec_digest,
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, clean_slices, oversized_pr
 from foreman.spec_check import SpecHistory, accept as accept_spec_check
@@ -94,17 +94,16 @@ def spec_target(run: RunState) -> SpecTarget:
     return {"repo": run.repo.lower(), "issue": run.issue, "base": run.base_sha}
 
 
+def spec_cleared(plan: PlanState) -> bool:
+    return plan.spec_candidate is not None and SpecHistory.model_validate(plan.spec_history).clears(plan.spec_candidate["revision"])
+
+
 def spec_effect(state: DeliveryState, run: LiveRun) -> DeliveryUpdate:
     planning = state["plan"]
     raw = planning.spec_candidate
     target = state["run"]
-    if raw is None or raw.get("target") != spec_target(target) or planning.spec_approval != raw["revision"]:
-        return halted(Halt.invalid_output, "The current repository-bound plan has no matching checker approval.", None)
-    checked = SpecHistory.model_validate(planning.spec_history)
-    round_index = next((i for i in range(len(checked.rounds) - 1, -1, -1)
-                        if checked.rounds[i].candidate["revision"] == raw["revision"]), None)
-    if round_index is None or checked.model_copy(update={"rounds": checked.rounds[:round_index + 1]}).accounting().unresolved():
-        return halted(Halt.invalid_output, "The saved checker verdict does not clear the current plan.", None)
+    if raw is None or raw.get("target") != spec_target(target) or not spec_cleared(planning):
+        return halted(Halt.invalid_output, "The saved checker verdict does not clear the current repository-bound plan.", None)
     if run.human_login and target.issue is not None:
         revision = raw["revision"]
         for ruling in human_comments(run, target):
@@ -263,9 +262,9 @@ def stop_reason(state: DeliveryState) -> Halt | Literal[
             return "needs_human"
     if planning.triage == "needs_human" or planning.spec_gate == "needs_human":
         return "needs_human"
-    if planning.spec_approval and state.get("path", [])[-1:] == ["spec_check"]:
+    if state.get("path", [])[-1:] == ["spec_check"] and spec_cleared(planning):
         return "sliced"
-    if planning.triage == "question":
+    if state.get("path", [])[-1:] == ["research"]:
         return "answered"
     if checks.verify == "fail":
         return Halt.verify_cap
@@ -330,11 +329,14 @@ def compile_delivery(
 
     def reject_spec(state: DeliveryState, revision: str, detail: str, reason: SpecRejection | None = None) -> DeliveryUpdate:
         plan = state["plan"]
-        rejected = list(dict.fromkeys([*plan.rejected_revisions, revision]))
-        update: DeliveryUpdate = {"plan": plan.model_copy(update={"rejected_revisions": rejected, "spec_failures": len(rejected),
-            "spec_rejection": reason, "spec_approval": None}), "human_question": ""}
-        if len(rejected) >= config.max_review_rounds:
+        repeated = revision in plan.rejected_revisions
+        rejected = plan.rejected_revisions if repeated else [*plan.rejected_revisions, revision]
+        planning = plan.model_copy(update={"rejected_revisions": rejected, "spec_rejection": reason})
+        update: DeliveryUpdate = {"plan": planning, "human_question": ""}
+        if planning.spec_failures >= config.max_review_rounds:
             update.update(halted(Halt.spec_cap, detail, "spec"))
+        elif repeated:
+            update.update(halted(Halt.invalid_output, f"Revision repeats a rejected plan. {detail}", "spec"))
         return update
 
     def reserve(name: str, state: DeliveryState, runtime: Runtime[LiveRun], guard: Callable[[DeliveryState, LiveRun, str], DeliveryUpdate | None] | None = None) -> DeliveryUpdate:
@@ -441,11 +443,12 @@ def compile_delivery(
                 if isinstance(output, SpecCheckOutput):
                     planning = state["plan"]
                     candidate = SpecCandidate.from_record(planning.spec_candidate)
-                    if output.findings or not output.human_question:
+                    if not output.human_question:
                         past = SpecHistory.model_validate(planning.spec_history)
                         checked = accept_spec_check(past, output, candidate)
-                        planning = planning.model_copy(update={"spec_history": checked.history.model_dump(mode="json"),
-                            "spec_approval": checked.approval.revision if checked.approval else None})
+                        planning = planning.model_copy(update={"spec_history": {
+                            "rounds": checked.history.rounds, "settled": checked.history.settled,
+                        }})
                         if not checked.approval:
                             detail = "\n".join(f.summary for f in checked.history.accounting().unresolved())
                             update.update(reject_spec({**state, "plan": planning}, candidate.revision, detail))
@@ -464,12 +467,28 @@ def compile_delivery(
 
         return node
 
+    def prerequisite_seams(item: StoredSlice, target: SpecTarget) -> set[str]:
+        seams: set[str] = set()
+        repo, base = target["repo"], target["base"]
+        if len(item.depends_on) != len(item.blocker_numbers):
+            raise InvalidSlicePlan("dangling_seam", "The filed slice does not match its planned blockers.")
+        for title, number in zip(item.depends_on, item.blocker_numbers):
+            if not run.forge.is_merged(repo, number, contains=lambda commit: plan_workspace.contains_commit(base, commit)):
+                raise InvalidSlicePlan("dangling_seam", f"Blocker #{number} has no merge in the pinned tree.")
+            issue = run.forge.load_issue(repo, number)
+            if issue["repo"].lower() != repo or issue["number"] != number or "slice" not in issue["labels"]:
+                raise InvalidSlicePlan("dangling_seam", f"Blocker #{number} is not a slice in the target repository.")
+            blocker = load_stored_slice(issue["body"])
+            if blocker.title != title or (blocker.repository and blocker.repository.lower() != repo):
+                raise InvalidSlicePlan("dangling_seam", f"Blocker #{number} does not match the planned slice {title}.")
+            seams.update(seam.name for seam in blocker.builds)
+        return seams
+
     def spec(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
         plan = state["plan"]
-        if plan.spec_candidate is not None and state["path"][-1:] == ["spec_check"] and not plan.spec_approval:
-            if (plan.spec_candidate["revision"] not in plan.rejected_revisions):
-                return reserve("spec_check", state, runtime)
-            return reserve("spec", state, runtime)
+        if plan.spec_candidate is not None and state["path"][-1:] == ["spec_check"] and not spec_cleared(plan):
+            stage = "spec" if plan.spec_candidate["revision"] in plan.rejected_revisions else "spec_check"
+            return reserve(stage, state, runtime)
         size = oversized_pr(state)
         supplied = plan.slice is not None and not plan.spec_gate and not size
         pending = [plan.slice] if supplied and plan.slice is not None else plan.slices
@@ -481,11 +500,18 @@ def compile_delivery(
         split = plan.pr_split if size else None
         scope = split["plan"] if split else plan.spec
         try:
-            slices = clean_slices([parse_output(StoredSlice, item) for item in pending], plan_workspace, target["base"])
+            items = [parse_output(StoredSlice, item) for item in pending]
+            filed = supplied and plan.issue_kind == "slice"
+            seams = prerequisite_seams(items[0], target) if filed else ()
+            slices = clean_slices(items, plan_workspace, target["base"], prerequisite_seams=seams)
+            if filed:
+                slices = pending
         except InvalidSlicePlan as exc:
             revision = spec_digest([target, scope, plan.work_kind, pending])
             return reject_spec(state, revision, str(exc), exc.reason)
-        except WorkspaceError as exc:
+        except InvalidOutput as exc:
+            return halted(Halt.invalid_output, str(exc), "spec")
+        except (ForgeError, WorkspaceError) as exc:
             return halted(Halt.git_failed, str(exc), "spec")
         stage = "triage" if supplied else "spec"
         author_name = state.get("models_used", {}).get(stage)
@@ -501,7 +527,7 @@ def compile_delivery(
             planning = planning.model_copy(update={"spec": plan.spec, "pr_split": {**split, "slices": planning.slices}})
         planning = planning.model_copy(update={"spec_gate": "ready"})
         if candidate.revision in plan.rejected_revisions:
-            return reserve("spec", {**state, "plan": planning}, runtime)
+            return reject_spec(state, candidate.revision, "The checker already rejected this scope.")
         return {**reserve("spec_check", {**state, "plan": planning}, runtime), "plan": planning}
 
     def post_review(state: DeliveryState) -> DeliveryUpdate:
@@ -677,8 +703,13 @@ def compile_delivery(
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
         planning = state["plan"]
         revision = None
-        if stage in {"spec", "spec_check"}:
-            revision = spec_digest([spec_target(state["run"]), planning.spec_candidate, planning.spec, question])
+        if stage == "spec":
+            scope = split["plan"] if split else planning.spec
+            revision = spec_digest([stage, spec_target(state["run"]), scope, planning.work_kind,
+                                    planning.slice, planning.slices, question])
+        elif stage == "spec_check":
+            assert planning.spec_candidate is not None
+            revision = spec_digest([stage, planning.spec_candidate["revision"], question])
         answer = interrupt(HumanPrompt.model_validate({"stage": stage, "question": question, "revision": revision}).model_dump(exclude_none=True))
         if revision and answer == "cancel":
             return {"stop": "cancelled"}
@@ -721,7 +752,7 @@ def compile_delivery(
             history = SpecHistory.model_validate(planning.spec_history)
             checked = next(entry for entry in reversed(history.rounds) if entry.candidate["revision"] == original["revision"])
             candidate = SpecCandidate.from_record(checked.candidate)
-            restored = candidate.update(planning, single=True).model_copy(update={"pr_split": None, "spec_approval": candidate.revision})
+            restored = candidate.update(planning, single=True).model_copy(update={"pr_split": None})
             return {"pr_size_override": size, "plan": restored}
         return {}
 
@@ -755,9 +786,9 @@ def compile_delivery(
         decision = planning.triage
         if decision == "needs_human":
             return "needs_human"
-        if decision == "question":
-            return "research"
-        return "spec" if decision in {"implement", "spec"} else "done"
+        if planning.slice is not None or decision in {"implement", "spec"}:
+            return "spec"
+        return "research" if decision == "question" else "done"
 
     def after_spec(state: DeliveryState) -> str:
         planning = state["plan"]
@@ -767,7 +798,7 @@ def compile_delivery(
             return "spec"
         if state.get("human_question"):
             return "needs_human"
-        if planning.spec_approval is None:
+        if not spec_cleared(planning):
             return "spec"
         if oversized_pr(state):
             return "decide_pr_size"

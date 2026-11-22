@@ -38,7 +38,7 @@ class RejectedStageOutputTest(unittest.TestCase):
                                 return Outcome(kind, {}, usage=usage, detail="" if kind == "ran" else diagnostic)
                             return script(node, model, state, instruction)
 
-                        result = walk(worker, config=config, slice=None) if stage == "spec" else walk(worker, config=config)
+                        result = walk(worker, config=config, slice=None) if stage in {"research", "spec"} else walk(worker, config=config)
                         expected_model = calls[-1] or "no model"
                         self.assertEqual(result["halt"], "invalid_output")
                         self.assertEqual(result["halt_detail"], f"{stage} output from {expected_model}: {diagnostic}")

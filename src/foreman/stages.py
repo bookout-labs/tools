@@ -1,6 +1,6 @@
 """Canonical worker contracts, methods and callbacks. Graph successors stay in delivery."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 import json
@@ -36,9 +36,11 @@ class Acceptance:
 
 
 def clean_slices(
-    raw: list[Slice] | None,
+    raw: Sequence[Slice] | None,
     workspace: Workspace | None,
     base: str = "",
+    *,
+    prerequisite_seams: Collection[str] = (),
 ) -> list[SliceRecord]:
     if not raw:
         raise InvalidOutput("slices: ready parent spec needs at least one slice")
@@ -64,7 +66,7 @@ def clean_slices(
                     raise InvalidSlicePlan("existing_seam_builder", f"{seam.name}: marked existing but built by {builder}.")
                 if builder != item.title:
                     dependencies[builder] = None
-            elif seam.path is None:
+            elif seam.path is None and seam.name not in prerequisite_seams:
                 raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, which has no builder or existing file.")
     try:
         ordered = list(TopologicalSorter(graph).static_order())
@@ -88,6 +90,9 @@ def spec_instructions(state: "DeliveryState", workspace: Workspace, forge: Forge
     run = state["run"]
     pinned = (f"\n\ntarget_repository: {run.repo}\ntarget_checkout: {workspace.root.resolve()}\npinned base: {run.base_sha}"
               f"\nRead the committed tree with git ls-tree {run.base_sha} and git show {run.base_sha}:<path>.")
+    plan = state["plan"]
+    if plan.spec_candidate and plan.slice and plan.slice.get("blocker_numbers"):
+        pinned += "\nThe listed blockers merged into the pinned base. Confirm their pathless seams in that tree."
     if size := oversized_pr(state):
         return (
             pinned + f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."

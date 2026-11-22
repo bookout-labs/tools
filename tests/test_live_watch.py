@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.state import checkpoint_serializer
+from foreman.stage_output import StoredSlice
 from foreman.adapters import Outcome, Usage
 from foreman.cli import main
 from foreman.config import load_config
@@ -136,17 +137,19 @@ class LiveWatchTest(unittest.TestCase):
         self.assertEqual(self.forge.mock_calls, [])
 
     def test_blocked_run_reports_once_without_watching(self):
-        self.fake.create_issue('Example/Engine', 'blocker', '', [])
-        self.fake.dependencies[8] = [101]
-        self.fake.body = slice_body({**EMPTY_SLICE, 'depends_on': ['blocker'], 'blocker_numbers': [101]})
+        seam = {'name': 'items', 'exists': False, 'path': None}
+        blocker = StoredSlice.model_validate({**EMPTY_SLICE, 'title': 'blocker', 'builds': [seam]})
+        number = self.fake.create_issue('Example/Engine', blocker.title, '', ['slice'], child=blocker)
+        self.fake.dependencies[8] = [number]
+        self.fake.body = slice_body({**EMPTY_SLICE, 'uses': [seam], 'depends_on': [blocker.title], 'blocker_numbers': [number]})
         reports = []
         result = self.invoke(report=reports.append)
         self.assertEqual([report['stop'] for report in reports], ['blocked'])
         self.assertEqual(result['stop'], 'blocked')
         self.forge.open_issues.assert_not_called()
         self.forge.create_issue.assert_not_called()
-        self.fake.closed.add(101)
-        self.fake.merged.add(101)
+        self.fake.closed.add(number)
+        self.fake.merged.add(number)
         def dispatch(stage, *args):
             return (Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
                             usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1)) if stage == 'triage' else Outcome('quota', usage=SCRIPTED_USAGE))
@@ -157,7 +160,9 @@ class LiveWatchTest(unittest.TestCase):
         self.assertEqual(again['stop'], 'quota_exhausted')
         self.assertGreater(len(again['attempts']), len(paused['attempts']))
         self.assertEqual([attempt['stage'] for attempt in again['attempts']].count('triage'), 1)
-        self.assertEqual(self.forge.load_issue.call_count, 3)
+        reads = [call.args[-1] for call in self.forge.load_issue.call_args_list]
+        self.assertEqual(reads, [8, 8, number, 8])
+        self.assertEqual({attempt['stage'] for attempt in again['attempts']}, {'triage', 'spec_check'})
 
     def test_skill_failure_preserves_resumable_checkpoints(self):
         for stop in ('git_failed', 'quota_exhausted'):

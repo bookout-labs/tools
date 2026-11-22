@@ -129,7 +129,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
             ),
         )
     elif case == "question":
-        output = _stop(ScriptHandler(triage="question"), slice=FIELD_SLICE)
+        output = _stop(ScriptHandler(triage="question"))
     elif case == "review-fallback":
         output = _review_fallback()
     elif case == "failover":

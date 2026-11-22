@@ -7,11 +7,12 @@ import unittest
 from unittest.mock import patch
 
 from foreman.adapters import Outcome
-from foreman.delivery import LiveRun
+from foreman.delivery import LiveRun, spec_effect
 from foreman.dry_run import CLEAR, SCRIPTED_USAGE, ScriptHandler
 from foreman.github import IssueComment, IssueBlocker
 from foreman.runner import AnswerError, run_live_delivery
 from foreman.skill_rules import git
+from foreman.stage_output import SpecCandidate, StoredSlice
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_skills
 from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, slice_body
@@ -24,6 +25,7 @@ EDIT = {**EMPTY_SLICE, "uses": [{"name": "index", "exists": True, "path": "index
 
 class Checkout(FakeWorkspace):
     has_tracked_file = LiveWorkspace.has_tracked_file
+    contains_commit = LiveWorkspace.contains_commit
     validate_origin = LiveWorkspace.validate_origin
 
     def pin_base(self, base):
@@ -109,6 +111,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.assertEqual(self.forge.builds, [])
 
     def test_explicit_foreign_slice_stops_before_independent_check(self):
+        self.script.triage = "question"
         self.forge.body = slice_body({**EDIT, "repository": OTHER})
         result = self.invoke()
         self.assertEqual(result["halt"], "invalid_output")
@@ -124,6 +127,73 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         for path in ("tool.py", "untracked.py", "link.py", "./index.py", "../index.py", str(self.target / "index.py")):
             with self.subTest(path=path):
                 self.assertFalse(self.workspace.has_tracked_file(self.base, path))
+
+    def test_supplied_seams_fail_in_the_pinned_tree_before_checking(self):
+        folder = self.target / "tracked"
+        folder.mkdir()
+        (folder / "file.py").touch()
+        git(self.target, "add", "tracked/file.py")
+        git(self.target, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "-qm", "Add tracked directory")
+        self.base = self.forge.base = git(self.target, "rev-parse", "HEAD")
+        self.script.triage = "question"
+        self.script.reviews = ["approve"] * 3
+        for path in ("tool.py", "link.py", "tracked"):
+            with self.subTest(path=path):
+                self.checkpoint = self.checkpoint.with_name(f"{path}.sqlite3")
+                self.workspace = Checkout(self.target)
+                self.calls.clear()
+                self.forge.body = slice_body({**EDIT, "uses": [{"name": "required", "exists": True, "path": path}]})
+                result = self.invoke(draft=lambda: {"spec": "Correction", "spec_gate": "ready", "slices": [EDIT], "questions": []})
+                self.assertEqual(self.calls[:3], ["triage", "spec", "spec_check"])
+                self.assertEqual(result["plan"].spec_failures, 1)
+                self.assertEqual(result["merge"].receipt["status"], "MERGED")
+
+    def test_released_child_keeps_its_scope_when_the_blocker_is_in_the_pinned_tree(self):
+        seam = {"name": "provided-api", "exists": False, "path": None}
+        blocker = StoredSlice.model_validate({**EMPTY_SLICE, "title": "Earlier sibling", "builds": [seam]})
+        number = self.forge.create_issue(TARGET, blocker.title, "", ["slice"], child=blocker)
+        supplied = {**EDIT, "uses": [seam, *EDIT["uses"]], "depends_on": [blocker.title], "blocker_numbers": [number]}
+        self.forge.body = slice_body(supplied)
+        self.forge.dependencies[8] = [number]
+        self.forge.closed.add(number)
+        self.forge.merged.add(number)
+        (self.target / "index.py").write_text("def provided_api(): return []\n")
+        git(self.target, "add", "index.py")
+        git(self.target, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "-qm", "Merge provider")
+        self.forge.base = git(self.target, "rev-parse", "HEAD")
+        self.script.reviews = ["approve", "approve"]
+
+        with patch.object(self.workspace, "pin_base", return_value=self.base):
+            rejected = self.invoke(draft=lambda: {"spec": "Repair", "spec_gate": "ready", "slices": [EDIT], "questions": []})
+        self.assertEqual(rejected["plan"].spec_failures, 1)
+        self.assertEqual(self.calls[:3], ["triage", "spec", "spec_check"])
+
+        self.checkpoint = self.checkpoint.with_name("released.sqlite3")
+        self.workspace = Checkout(self.target)
+        self.calls.clear()
+        self.base = self.forge.base
+
+        def check(_model, state, instruction):
+            self.assertIn("listed blockers merged into the pinned base", instruction)
+            self.assertEqual(state["plan"].spec_candidate["slices"], [supplied])
+            return CLEAR.model_dump()
+
+        result = self.invoke(check)
+        self.assertEqual(self.calls[:3], ["triage", "spec_check", "implement"])
+        self.assertEqual(result["plan"].spec_failures, 0)
+        self.assertEqual(result["plan"].spec_candidate["slices"], [supplied])
+        self.assertEqual(result["merge"].receipt["status"], "MERGED")
+
+    def test_changed_origin_on_resume_stops_before_another_dispatch(self):
+        ask = lambda *_: {**CLEAR.model_dump(), "human_question": "What sort order?"}
+        self.assertEqual(self.invoke(ask)["stop"], "needs_human")
+        before = self.calls[:]
+        git(self.target, "remote", "set-url", "origin", f"https://github.com/{OTHER}")
+        self.assertEqual(self.invoke(ask)["halt"], "git_failed")
+        self.assertEqual(self.calls, before)
+        self.assertEqual(self.forge.builds, [])
 
     def test_checker_rejects_implied_foreign_intent_and_correction_merges(self):
         self.forge.body = slice_body({**EDIT, "acceptance": "Update the tool's index."})
@@ -175,18 +245,94 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                 self.assertEqual(self.forge.created, [])
                 self.assertNotIn("implement", self.calls)
 
-    def test_same_rejection_counts_once_and_distinct_defects_reach_the_cap(self):
+    def test_distinct_defects_reach_the_cap(self):
         self.forge.labels = ["factory"]
         self.script.triage = "spec"
         invalid = {**EDIT, "uses": [{"name": "other", "exists": True, "path": "tool.py"}]}
         first = {"spec": "First draft", "spec_gate": "ready", "slices": [invalid], "questions": []}
-        plans = iter([first, first, {**first, "spec": "Second draft"}, {**first, "spec": "Third draft"}])
+        plans = iter([first, {**first, "spec": "Second draft"}, {**first, "spec": "Third draft"}])
         result = self.invoke(draft=lambda: next(plans))
         self.assertEqual(result["halt"], "spec_cap")
         self.assertEqual(result["plan"].spec_failures, 3)
-        self.assertEqual(self.calls.count("spec"), 4)
+        self.assertEqual(self.calls.count("spec"), 3)
         self.assertNotIn("spec_check", self.calls)
         self.assertFalse(any("slice" in labels for _, _, labels in self.forge.created))
+
+    def test_unchanged_invalid_draft_stops_instead_of_drafting_until_recursion_limit(self):
+        self.forge.labels = ["factory"]
+        self.script.triage = "spec"
+        invalid = {**EDIT, "uses": [{"name": "other", "exists": True, "path": "tool.py"}]}
+        draft = {"spec": "Same draft", "spec_gate": "ready", "slices": [invalid], "questions": []}
+        result = self.invoke(draft=lambda: draft)
+        self.assertEqual(result["stop"], "invalid_output")
+        self.assertEqual(result["plan"].spec_failures, 1)
+        self.assertEqual(self.calls, ["triage", "spec", "spec"])
+        self.assertFalse(any("slice" in labels for _, _, labels in self.forge.created))
+        self.assertEqual(self.forge.builds, [])
+
+    def test_checker_cannot_return_both_a_question_and_blocking_findings(self):
+        output = {**CLEAR.model_dump(), "human_question": "Preserve existing order?",
+                  "findings": [{**FINDING, "slice": EDIT["title"], "summary": "Clarify repository ownership."}]}
+        verdicts = iter([output, CLEAR.model_dump()])
+        corrected = {**EDIT, "acceptance": "Update the target index."}
+        result = self.invoke(lambda *_: next(verdicts), draft=lambda: {
+            "spec": "Correction", "spec_gate": "ready", "slices": [corrected], "questions": [],
+        })
+        self.assertEqual(result["stop"], "invalid_output")
+        self.assertEqual(self.calls, ["triage", "spec_check"])
+        self.assertEqual(self.forge.builds, [])
+
+    def test_changed_draft_requires_a_fresh_answer_to_the_same_question(self):
+        self.forge.labels = ["factory"]
+        self.script.triage = "spec"
+        question = {"question": "Use the proposed order?", "why_code_unanswered": "The issue does not specify order.",
+                    "checked_paths": ["index.py"]}
+        initial = {"spec": "Proposed change", "spec_gate": "needs_human", "slices": [EDIT], "questions": [question]}
+        changed = {**initial, "slices": [{**EDIT, "acceptance": "Changed scope for the proposed order."}]}
+        steps = iter([initial, changed, {**changed, "spec_gate": "ready", "questions": []}])
+        draft = lambda: next(steps)
+        first = self.invoke(draft=draft)
+        marker_a = re.search(r"foreman answer [0-9a-f-]{71}", first["halt_detail"])[0]
+        self.forge.ruling(marker_a + "\nNo")
+        self.forge.ruling(marker_a + "\nYes")
+        second = self.invoke(draft=draft)
+        marker_b = re.search(r"foreman answer [0-9a-f-]{71}", second["halt_detail"])[0]
+        self.assertNotEqual(marker_a, marker_b)
+        waiting = self.invoke(draft=draft)
+        self.assertEqual(waiting["stop"], "needs_human")
+        self.assertEqual(self.calls, ["triage", "spec", "spec"])
+        self.forge.ruling(marker_b + "\nUse a stable sort")
+        result = self.invoke(draft=draft)
+        self.assertEqual([qa["answer"] for qa in result["plan"].human_qa], ["Yes", "Use a stable sort"])
+        self.assertEqual(result["stop"], "sliced")
+
+    def test_verdict_for_another_scope_blocks_both_effects(self):
+        for entry in ("stored", "drafted"):
+            with self.subTest(entry=entry):
+                self.checkpoint = self.checkpoint.with_name(f"stale-{entry}.sqlite3")
+                self.calls.clear()
+                if entry == "drafted":
+                    self.forge.labels = ["factory"]
+                    self.script.triage = "spec"
+                    self.script.slices = [EDIT]
+
+                def stale(state, run):
+                    plan = state["plan"]
+                    approved = SpecCandidate.from_record(plan.spec_candidate)
+                    changed = approved.model_copy(update={"spec": "Different scope"})
+                    changed_plan = changed.update(plan, single=entry == "stored")
+                    self.assertNotEqual(changed.revision, approved.revision)
+                    return spec_effect({**state, "plan": changed_plan}, run)
+
+                with patch("foreman.delivery.spec_effect", side_effect=stale) as build_guard, \
+                     patch("foreman.runner.spec_effect", side_effect=stale) as filing_guard:
+                    result = self.invoke()
+                (build_guard if entry == "stored" else filing_guard).assert_called_once()
+                self.assertEqual(result["stop"], "invalid_output")
+                self.assertEqual(self.forge.builds, [])
+                self.assertFalse(any("slice" in labels for _, _, labels in self.forge.created))
+                self.assertNotIn("implement", self.calls)
+                self.assertFalse({"spec_approval", "spec_failures"} & result["plan"].model_dump().keys())
 
     def test_malformed_checker_output_cannot_allocate_a_build(self):
         result = self.invoke(lambda *_: {"findings": [], "notes": [], "verdict": "clear"})

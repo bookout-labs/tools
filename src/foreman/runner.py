@@ -3,9 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
-import json
 from pathlib import Path
-import re
 from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
@@ -23,7 +21,7 @@ from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError
 from foreman.watch import run_key, watch
-from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
+from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output, load_stored_slice as _load_slice
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import WorkState, WorkspaceError
 
@@ -76,18 +74,8 @@ def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
     return state
 
 
-SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
-
-
 class AnswerError(RuntimeError):
     """An answer cannot be applied to this checkpoint's question."""
-
-
-def _load_slice(body: str) -> StoredSlice:
-    blocks = SLICE_FENCE.findall(body)
-    if not blocks:
-        raise InvalidOutput("slice issue needs a fenced JSON object")
-    return parse_output(StoredSlice, json.loads(blocks[-1]))
 
 
 def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice | None) -> str:
@@ -301,7 +289,7 @@ def run_live_delivery(
             elif initial["plan"].issue_kind == "slice":
                 try:
                     item = _load_slice(loaded["body"])
-                except (InvalidOutput, json.JSONDecodeError) as exc:
+                except InvalidOutput as exc:
                     initial.update(halted(Halt.missing_slice, str(exc), None))
                 else:
                     initial["plan"] = initial["plan"].model_copy(update={"slice": item.record(), "work_kind": item.work_kind})
@@ -372,7 +360,6 @@ def run_live_delivery(
             checks = saved_values["checks"].for_attempt() if reset_work else prior_checks
             assert saved_review is not None
             retained: DeliveryUpdate = {"plan": restored["plan"].model_copy(update={
-                                            "spec_failures": saved_values["plan"].spec_failures,
                                             "rejected_revisions": saved_values["plan"].rejected_revisions,
                                         }),
                                         "work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": (

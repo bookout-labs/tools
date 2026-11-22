@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from foreman.readiness import MergeState
 from foreman.state import ChecksState, PlanState, RunState, ReviewState
 from foreman.workspace import WorkState
+from foreman.dry_run import CLEAR
+from foreman.spec_check import SpecHistory, accept
 from test_spec_candidate import CandidateTests, SLICE
 
 
@@ -31,6 +33,10 @@ FINDING = {
 }
 
 
+CANDIDATE = CandidateTests().candidate().model_copy(update={"target": {"repo": "a/b", "issue": 8, "base": "a" * 40}})
+CHECKED = accept(SpecHistory(), CLEAR, CANDIDATE).history
+
+
 OWNERS = (
     OwnerCase("merge", MergeState(status="not_armed", receipt={"status": "QUEUED"},
         observation={"outcome": "ready"}, observed_head="c" * 40, command=["gh", "pr", "merge"]),
@@ -47,9 +53,9 @@ OWNERS = (
     OwnerCase("checks", ChecksState(verify_failures=2, check="true", preflight="env", check_exit_code=0,
         verify="pass", failure_output="stale failure", verified_head="b" * 40),
         frozenset({"check", "preflight", "verify_failures"}), 5, {}),
-    OwnerCase("plan", CandidateTests().candidate().model_copy(update={"target": {"repo": "a/b", "issue": 8, "base": "a" * 40}}).update(PlanState(
-        spec_failures=2, rejected_revisions=["b" * 64, "c" * 64], spec_approval="d" * 64, human_approval="d" * 64,
-        spec_history={"rounds": [{"candidate": {"revision": "d" * 64}}]}, triage="implement", spec_gate="ready",
+    OwnerCase("plan", CANDIDATE.update(PlanState(
+        rejected_revisions=["b" * 64, "c" * 64], human_approval=CANDIDATE.revision,
+        spec_history={"rounds": CHECKED.rounds}, triage="implement", spec_gate="ready",
         issue_kind="parent", work_kind="feature", child_issue_numbers=[9],
         human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}],
         spec_rejection={"kind": "dangling_seam", "detail": "Missing"},
@@ -113,7 +119,10 @@ def historical_channels(version):
 def seed_repair_channels(values, *, head_changed=False):
     for owner in OWNERS:
         fields = (type(owner.value).model_fields.keys() - owner.durable)
-        fields |= {field for _, name, field, _ in COUNTERS if name == owner.name and field != "review_findings"}
+        if owner.name == "plan":
+            fields.add("rejected_revisions")
+        if owner.name == "checks":
+            fields.add("verify_failures")
         if head_changed:
             fields |= owner.clear_on_head_change
         if owner.name == "review":

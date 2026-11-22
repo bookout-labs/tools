@@ -61,7 +61,7 @@ def capture():
                 with patch("foreman.delivery.DryRun", side_effect=lambda **kwargs: DryRun(root=Path("/TARGET"), **kwargs)):
                     # Keep audit hashes independent of the checkout path.
                     result = run_delivery(dispatch, repo="Example/Engine", request="Change items", check="check",
-                    slice=item, scratch=Path("/FIXTURE"), skills=lambda *_: Path("/METHODS"))
+                    slice=None if route == "question" else item, scratch=Path("/FIXTURE"), skills=lambda *_: Path("/METHODS"))
             captures[f"{kind}/{route}"] = {"calls": records, "stop": result["stop"],
                 "attempts": [(a["stage"], a["model"], a["methods"]) for a in result["attempts"]]}
     return captures
@@ -97,7 +97,7 @@ class StageDeclarationsTest(unittest.TestCase):
                     return "\nRow instruction", target, scope
 
                 with patch.dict(STAGES, {name: replace(row, prepare=prepare, accept=accept)}):
-                    result = walk(dispatch, slice=None) if name == "spec" else walk(dispatch)
+                    result = walk(dispatch, slice=None) if name in {"research", "spec"} else walk(dispatch)
                 self.assertEqual(seen, [name])
                 self.assertEqual(result["research"], "Row accepted")
                 self.assertEqual(result["stop"], {"research": "answered", "spec": "sliced"}.get(name, "verified"))

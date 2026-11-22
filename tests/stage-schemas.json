@@ -365,7 +365,7 @@
             "type": "null"
           }
         ],
-        "description": "For a ready parent spec, return one entry per pull request. Use null otherwise.",
+        "description": "Return one entry per proposed pull request, including any tentative slices when asking a question. Use null when no slices are proposed.",
         "title": "Slices"
       },
       "spec": {
@@ -470,13 +470,14 @@
       "human_question": {
         "anyOf": [
           {
+            "pattern": "\\S",
             "type": "string"
           },
           {
             "type": "null"
           }
         ],
-        "description": "When this stage returns needs_human, put the question for the person here. Use null otherwise.",
+        "description": "Ask an unresolved choice on this candidate only when findings is empty.",
         "title": "Human Question"
       },
       "notes": {

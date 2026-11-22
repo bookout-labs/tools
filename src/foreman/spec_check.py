@@ -2,12 +2,12 @@
 
 from typing import Literal, Self
 
-from pydantic import Field, PositiveInt, field_validator, model_validator
+from pydantic import Field, PositiveInt, model_validator
 
 from foreman.dispatch import InvalidOutput
 from foreman.resolution import ResolutionLedger
 from foreman.stage_output import (
-    Contract, FindingResolution, ResolutionStatus, SettledRuling, SpecCandidate, SpecCandidateRecord,
+    Contract, FindingResolution, SettledRuling, SpecCandidate, SpecRound as SpecRound,
     SpecCheckOutput, SpecFinding,
 )
 
@@ -15,18 +15,6 @@ from foreman.stage_output import (
 class SpecInterdiff(Contract):
     slices: list[str]
     sections: list[Literal["slice", "spec", "work_kind"]]
-
-
-class SpecRound(Contract):
-    candidate: SpecCandidateRecord
-    findings: list[SpecFinding]
-    notes: list[SpecFinding]
-    resolutions: dict[str, ResolutionStatus]
-
-    @field_validator("candidate")
-    @classmethod
-    def valid_candidate(cls, value: SpecCandidateRecord) -> SpecCandidateRecord:
-        return SpecCandidate.from_record(value).record()
 
 
 class SpecHistory(Contract):
@@ -47,6 +35,12 @@ class SpecHistory(Contract):
         if previous is None or candidate.work_kind != previous.work_kind:
             sections.append("work_kind")
         return SpecInterdiff(slices=changed, sections=sections)
+
+    def clears(self, revision: str) -> bool:
+        for index in range(len(self.rounds) - 1, -1, -1):
+            if self.rounds[index].candidate["revision"] == revision:
+                return not ResolutionLedger(self.rounds[:index + 1], self.settled).unresolved()
+        return False
 
     def accounting(self) -> ResolutionLedger[SpecFinding]:
         return ResolutionLedger(self.rounds, self.settled)

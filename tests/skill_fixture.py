@@ -63,8 +63,7 @@ def approved_spec(item: Mapping[str, object], target: SpecTarget, spec: str = ""
     candidate = SpecCandidate(slices=[CandidateSlice.model_validate(item)], spec=spec, work_kind="feature",
                               author=AUTHOR, target=target)
     checked = accept(SpecHistory(), CLEAR, candidate, max_rounds=3)
-    return candidate.update(PlanState(spec_gate="ready", spec_approval=candidate.revision,
-        spec_history=checked.history.model_dump(mode="json")), single=True)
+    return candidate.update(PlanState(spec_gate="ready", spec_history={"rounds": checked.history.rounds}), single=True)
 
 
 def checker_reply(args: Sequence[str]) -> dict[str, object] | None:

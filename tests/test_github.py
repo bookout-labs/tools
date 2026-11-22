@@ -220,6 +220,21 @@ class LiveForgeTest(unittest.TestCase):
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], commands)
 
     @patch("foreman.github.subprocess.run")
+    def test_pinned_merge_evidence_comes_from_the_target_repository(self, run):
+        local_pr = {**CLOSING_PR, "repository": {"name": REPO.split("/")[1], "owner": {"login": REPO.split("/")[0]}}}
+        merge = "a" * 40
+        run.side_effect = [
+            gh_result(json.dumps({"closed": True, "closedByPullRequestsReferences": [CLOSING_PR, local_pr]})),
+            gh_result(json.dumps({"state": "MERGED", "baseRefName": "main", "mergeCommit": {"oid": merge}})),
+            gh_result(json.dumps({"defaultBranchRef": {"name": "main"}})),
+        ]
+        seen = []
+        self.assertFalse(LiveForge().is_merged(REPO, 8, contains=lambda commit: seen.append(commit) or False))
+        self.assertEqual(seen, [merge])
+        self.assertEqual(run.call_args_list[1].args[0],
+                         ["gh", "pr", "view", "3", "--repo", REPO, "--json", "state,baseRefName,mergeCommit"])
+
+    @patch("foreman.github.subprocess.run")
     def test_is_merged_rejects_invalid_issue_and_pr_responses(self, run):
         run.side_effect = [
             gh_result('{"closed":"true","closedByPullRequestsReferences":[]}'),

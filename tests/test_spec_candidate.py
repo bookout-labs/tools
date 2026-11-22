@@ -141,14 +141,24 @@ class CandidateTests(unittest.TestCase):
     def test_inherited_slice_author_survives_child_triage_and_spec(self):
         candidate = self.candidate()
         provenance = {"author": candidate.author.record(), "revision": candidate.revision}
+        supplied = {**SLICE, "provenance": provenance, "depends_on": [], "blocker_numbers": []}
         for triage in ("implement", "spec"):
             with skill_fixture() as (config, scratch):
                 result = run_delivery(ScriptHandler(triage=triage), repo="org/repo", request="Save",
-                                      slice={**SLICE, "provenance": provenance}, config=config, scratch=scratch)
+                                      slice=supplied, config=config, scratch=scratch)
             bound = SpecCandidate.from_record(result["plan"].spec_candidate)
             self.assertEqual(bound.author.record(), provenance["author"])
             self.assertEqual(result["plan"].slice["provenance"]["revision"], bound.revision)
             self.assertEqual(bound.target, {"repo": "org/repo", "issue": 0, "base": "<sha>"})
+
+    def test_dry_run_cannot_clear_a_pathless_seam_without_prerequisite_evidence(self):
+        supplied = {**SLICE, "uses": [{"name": "database", "exists": False, "path": None}]}
+        script = ScriptHandler()
+        with skill_fixture() as (config, scratch):
+            result = run_delivery(script, repo="org/repo", request="Save",
+                                  slice=supplied, config=config, scratch=scratch)
+        self.assertEqual(result["halt"], "invalid_output")
+        self.assertNotIn("spec_check", [call["node"] for call in script.calls])
 
     def test_checkpoint_rejects_divergent_candidate_copies(self):
         candidate = self.candidate()

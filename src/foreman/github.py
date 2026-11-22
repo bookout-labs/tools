@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 import re
 import subprocess
@@ -59,8 +60,13 @@ class PullRequestStatus(BaseModel, strict=True):
     state: PullRequestState
 
 
+class MergeCommit(BaseModel, strict=True):
+    oid: str
+
+
 class ClosingPullRequestStatus(PullRequestStatus):
     baseRefName: str
+    mergeCommit: MergeCommit | None = None
 
 
 class DefaultBranch(BaseModel, strict=True):
@@ -324,7 +330,7 @@ class Forge(Protocol):
     ) -> int: ...
     def add_blocker(self, repo: str, number: int, blocker: int) -> None: ...
     def blockers(self, repo: str, number: int) -> list[IssueBlocker]: ...
-    def is_merged(self, repo: str, number: int) -> bool: ...
+    def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt: ...
@@ -641,7 +647,7 @@ class LiveForge:
             ],
         })
 
-    def is_merged(self, repo: str, number: int) -> bool:
+    def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool:
         issue = self._read(
             repo, IssueClosure, ["gh", "issue", "view", str(number), "--repo", repo, "--json",
                            "closed,closedByPullRequestsReferences"],
@@ -650,14 +656,19 @@ class LiveForge:
             return False
         for pr in issue.closedByPullRequestsReferences:
             closing_repo = f"{pr.repository.owner.login}/{pr.repository.name}"
+            if contains is not None and closing_repo.lower() != repo.lower():
+                continue
+            fields = "state,baseRefName,mergeCommit" if contains is not None else "state,baseRefName"
             status = self._read(
-                closing_repo, ClosingPullRequestStatus, ["gh", "pr", "view", str(pr.number), "--repo", closing_repo, "--json", "state,baseRefName"],
+                closing_repo, ClosingPullRequestStatus, ["gh", "pr", "view", str(pr.number), "--repo", closing_repo, "--json", fields],
             )
             if status.state == "MERGED":
                 repository = self._read(
                     closing_repo, RepositoryDefaultBranch, ["gh", "repo", "view", closing_repo, "--json", "defaultBranchRef"],
                 )
-                if status.baseRefName == repository.defaultBranchRef.name:
+                if status.baseRefName == repository.defaultBranchRef.name and (
+                    contains is None or (status.mergeCommit is not None and contains(status.mergeCommit.oid))
+                ):
                     return True
         return False
 

@@ -1,6 +1,6 @@
 """A handler that walks the graph without calling a model."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -169,6 +169,9 @@ class DryRun:
     def has_tracked_file(self, base: str, path: str) -> bool:
         return False
 
+    def contains_commit(self, base: str, commit: str) -> bool:
+        return False
+
     def review_diff(self, base: str, head: str) -> ReviewDiff:
         raise NotImplementedError("Not used by dry delivery")
 
@@ -211,8 +214,8 @@ class DryRun:
     def blockers(self, repo: str, number: int) -> list[IssueBlocker]:
         raise NotImplementedError("Not used by dry delivery")
 
-    def is_merged(self, repo: str, number: int) -> bool:
-        raise NotImplementedError("Not used by dry delivery")
+    def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool:
+        return False
 
     def add_label(self, repo: str, number: int, label: str) -> None:
         raise NotImplementedError("Not used by dry delivery")

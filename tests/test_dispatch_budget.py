@@ -66,7 +66,7 @@ class DispatchBudgetTests(unittest.TestCase):
                     cost = 0.01 if model and model.family == "claude" else 5.0
                     return replace(reply, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
-                result = walk(handler, config=configured(stage), parent=stage == "spec")
+                result = walk(handler, config=configured(stage), parent=stage in {"research", "spec"})
                 self.assertEqual(result["stop"], {"research": "answered", "spec": "sliced"}.get(stage, "verified"))
                 self.assertEqual(calls, [(CLAUDE.name, "0.2"), (NEXT_CLAUDE.name, "0.1")])
                 self.assertTrue(getattr(result["plan"], stage) if stage in {"triage", "spec"} else result["implementation" if stage == "implement" else stage])

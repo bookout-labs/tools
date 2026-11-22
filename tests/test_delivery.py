@@ -242,7 +242,7 @@ class DeliveryTest(unittest.TestCase):
     def test_model_selection_stops_when_its_dependency_is_missing(self):
         config = load_config()
         config.nodes["research"] = replace(config.nodes["research"], other_family_from="implement")
-        result = walk(ScriptHandler(triage="question"), config=config)
+        result = walk(ScriptHandler(triage="question"), config=config, slice=None)
         self.assertEqual(result["stop"], "model_dependency_missing")
 
     def test_open_spec_stops_for_a_person(self):
@@ -252,7 +252,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertNotIn("implement", result["path"])
 
     def test_question_is_answered_without_a_change(self):
-        result = walk(ScriptHandler(triage="question"))
+        result = walk(ScriptHandler(triage="question"), slice=None)
         self.assertEqual(result["path"], ["triage", "research", "done"])
         self.assertEqual(result["stop"], "answered")
 
@@ -386,7 +386,7 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual("tdd/SKILL.md#L9-L31" in methods, kind == "bug_fix")
                 self.assertEqual("benchmark-checklist/SKILL.md#L13-L27" in methods, kind == "perf_issue")
 
-                researched = walk(ScriptHandler(triage="question", work_kind=kind))
+                researched = walk(ScriptHandler(triage="question", work_kind=kind), slice=None)
                 research = researched["attempts"][-1]["methods"]
                 self.assertIn("how/SKILL.md#L17-L17", research)
                 self.assertEqual("why/SKILL.md" in research, kind == "bug_fix")
