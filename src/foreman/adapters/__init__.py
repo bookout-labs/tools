@@ -2,13 +2,15 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import isfinite
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, TypeAdapter, ValidationError, field_validator
+from typing_extensions import TypedDict
+
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, TypeAdapter, ValidationError, field_validator, with_config
 
 from foreman.config import ModelSpec
 from foreman.usd import BudgetUsd, CostUsd
@@ -25,6 +27,24 @@ class Usage(BaseModel):
     total_cost_usd: CostUsd | None = None
 
 
+@with_config(ConfigDict(extra="forbid"))
+class NativeUsageTokens(TypedDict):
+    input_tokens: NonNegativeInt
+    output_tokens: NonNegativeInt
+    cache_read_input_tokens: NonNegativeInt | None
+    cache_creation_input_tokens: NonNegativeInt | None
+    total_cost_usd: CostUsd | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class NativeUsage(TypedDict):
+    """Recorded CLI totals only; never an additional budget ledger."""
+
+    family: str
+    aggregation: Literal["cli_model_totals", "turn_total"]
+    entries: dict[str, NativeUsageTokens]
+
+
 OutcomeKind = Literal["ran", "quota", "cli_missing", "failed", "budget_exhausted"]
 
 
@@ -35,6 +55,8 @@ class Outcome:
     usage: Usage | None = None
     session_id: str | None = None
     detail: str = ""
+    prompt_bytes: int | None = None
+    native_usage: NativeUsage | None = None
 
 
 @dataclass(frozen=True)
@@ -113,7 +135,25 @@ class NativeAdapter:
         except ValidationError as exc:
             detail = process.stderr.strip() or process.stdout.strip() or exc.errors(include_input=False)[0]["msg"]
             return Outcome("failed", detail=detail)
-        return envelope.outcome(process, self.model.model_id, call)
+        outcome = envelope.outcome(process, self.model.model_id, call)
+        if outcome.usage is None:
+            return outcome
+        try:
+            rows = TypeAdapter(dict[str, ModelUsage]).validate_python(envelope.model_usage)
+        except ValidationError:
+            return outcome
+        entries: dict[str, NativeUsageTokens] = {
+            model: NativeUsageTokens(
+                input_tokens=row.input, output_tokens=row.output,
+                cache_read_input_tokens=row.cache_read if "cache_read" in row.model_fields_set else None,
+                cache_creation_input_tokens=row.cache_creation if "cache_creation" in row.model_fields_set else None,
+                total_cost_usd=row.cost,
+            )
+            for model, row in rows.items()
+        }
+        return replace(outcome, native_usage=NativeUsage(
+            family=self.model.family, aggregation="cli_model_totals", entries=entries,
+        ))
 
 
 def build_outcome(

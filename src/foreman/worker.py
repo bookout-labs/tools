@@ -1,6 +1,7 @@
 """Run a pinned worker and read its final stage result."""
 
 from collections.abc import Mapping
+from dataclasses import replace
 from decimal import Decimal
 import json
 import os
@@ -54,7 +55,14 @@ class CliWorker:
         )
         contract = STAGE_OUTPUTS[node]
         schema = json.dumps(contract.model_json_schema())
-        prompt += f"\n\nDelivery state:\n{json.dumps(to_jsonable_python(state))}"
+        projected = to_jsonable_python(state)
+        for attempt in projected.get("attempts", []):
+            attempt.pop("prompt_bytes", None)
+            attempt.pop("native_usage", None)
+        prompt += f"\n\nDelivery state:\n{json.dumps(projected)}"
+        # Counts only the final prompt argument, excluding the separate output schema,
+        # CLI system prompts, tool definitions/results and hidden model work.
+        prompt_bytes = len(prompt.encode("utf-8"))
 
         plan = state.get("dispatch_plan")
         plan = DispatchPlan.model_validate(plan) if plan else None
@@ -80,9 +88,9 @@ class CliWorker:
             try:
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
-                return Outcome("cli_missing", detail=str(exc))
+                return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
             try:
                 process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch)})
             except FileNotFoundError:
-                return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable")
-            return adapter.read(process, call)
+                return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable", prompt_bytes=prompt_bytes)
+            return replace(adapter.read(process, call), prompt_bytes=prompt_bytes)
