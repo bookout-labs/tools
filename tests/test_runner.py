@@ -211,9 +211,6 @@ class FakeGitHub:
     def open_pull_request(self, *args):
         pass
 
-    def pull_request_base(self, repo: str, branch: str) -> str:
-        return self.base_branch
-
     def review_target(self, repo, issue, branch, sha):
         return PullRequest.model_validate({
             "number": 12, "state": "OPEN", "headRefOid": sha, "headRefName": branch,

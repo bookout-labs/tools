@@ -185,7 +185,7 @@ class PullRequestSizeTest(unittest.TestCase):
 
     def test_under_limit_diff_reaches_review(self):
         self.write("src/items.py", "changed\n" * (PULL_REQUEST_LINES - 2))
-        head = self.commit()
+        self.commit()
         stdout, _ = self.invoke()
         self.assertIn(f"pull request lines {PULL_REQUEST_LINES - 1}\n", stdout)
         self.assertIn("done verified", stdout)
@@ -201,7 +201,7 @@ class PullRequestSizeTest(unittest.TestCase):
 
     def test_oversized_diff_goes_to_spec_with_the_measured_count(self):
         self.write("tests/test_items.py", "handwritten\n" * (PULL_REQUEST_LINES + 1))
-        head = self.commit()
+        self.commit()
         stdout, _ = self.invoke(expected_code=3)
         self.assertEqual(self.stages, ["SpecOutput"])
         self.assertEqual(self.spec_state["pr_size"], {
@@ -215,7 +215,7 @@ class PullRequestSizeTest(unittest.TestCase):
 
     def assert_path_pauses_before_review(self, path):
         self.write(path, "handwritten\n" * 700)
-        head = self.commit()
+        self.commit()
         stdout, _ = self.invoke(expected_code=3)
         self.assertIn("paused needs_human", stdout)
         self.assertEqual(self.spec_state["pr_size"], {
@@ -279,7 +279,7 @@ class PullRequestSizeTest(unittest.TestCase):
             "uv.lock", "package-lock.json", "pnpm-lock.yaml",
         ):
             self.write(path, "generated\n" * (PULL_REQUEST_LINES + 1))
-        head = self.commit()
+        self.commit()
         stdout, _ = self.invoke()
         self.assertIn("pull request lines 0\n", stdout)
         self.assertIn("done verified", stdout)
@@ -289,7 +289,7 @@ class PullRequestSizeTest(unittest.TestCase):
         self.forge = FakeGitHub(["factory"])
         self.forge.base = self.base
         self.write("src/items.py", "changed\n" * PULL_REQUEST_LINES)
-        head = self.commit()
+        self.commit()
         stdout, _ = self.invoke(expected_code=3)
         self.assertIn("paused needs_human", stdout)
         self.assertIn("split or override", self.invoke("--answer", "yes", expected_code=1)[1])
@@ -370,7 +370,7 @@ class PullRequestSizeTest(unittest.TestCase):
     def test_split_preserves_spec_and_refuses_changed_candidate(self):
         self.original_spec = "List open items without changing their order."
         self.write("tests/test_items.py", "handwritten\n" * 500)
-        old_head = self.commit()
+        self.commit()
         self.assertIn("500 changed lines", self.invoke(expected_code=3)[0])
         values = self.checkpoint_values()
         self.assertEqual(values["plan"].spec, self.original_spec)

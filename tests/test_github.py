@@ -140,12 +140,6 @@ class LiveForgeTest(unittest.TestCase):
         self.enterContext(patch.object(LiveForge, "default_branch", return_value="main"))
 
     @patch("foreman.github.subprocess.run")
-    def test_pull_request_base_uses_the_forge_base_ref(self, run):
-        run.return_value = pr_result({**PR, "baseRefName": "release/current"})
-        self.assertEqual(LiveForge().pull_request_base(REPO, BRANCH), "release/current")
-        self.assertEqual(run.call_args.args[0], VIEW)
-
-    @patch("foreman.github.subprocess.run")
     def test_merge_hold_reads_the_requested_repository_variable(self, run):
         for stdout, hold in (
             ('[{"name":"REGION","value":"test"},{"name":"FOREMAN_MERGE_HOLD","value":"  Maintenance\\n"}]', "  Maintenance\n"),

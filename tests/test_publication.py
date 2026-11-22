@@ -910,6 +910,7 @@ class PublicationTest(unittest.TestCase):
                         self.assertFalse(checked)
                         self.assertFalse(self.created)
                         self.assertNotIn("publish", resumed["path"])
+                        self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
 
     def test_fix_round_requires_new_size_override_before_publication(self):
         def edit(text):
@@ -935,10 +936,10 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(result["stop"], "insufficient_evidence")
         self.assertFalse(self.created)
         self.assertNotIn("publish", result["path"])
+        self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
 
     def test_first_publication_uses_bound_size_without_pr_lookup(self):
-        with patch.object(LiveForge, "pull_request_base", side_effect=AssertionError("no PR lookup")):
-            result = self.walk(self.edit)
+        result = self.walk(self.edit)
         self.assertEqual(result["stop"], "verified")
         bound = result["work"].candidate["size"]
         self.assertEqual(bound["head"], self.git("rev-parse", "HEAD^{tree}"))

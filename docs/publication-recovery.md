@@ -36,7 +36,7 @@ stateDiagram-v2
     Proving --> Publishing: proof passes
     Verifying --> Preparing: check failure, rounds remain
     Proving --> Preparing: failed proof, rounds remain
-    Proving --> Paused: missing proof
+    Proving --> Rejected: missing proof
     Committing --> Paused: lock, timeout, or candidate mismatch
     Publishing --> Opening: remote already matches or push succeeds
     Publishing --> Paused: push fails or times out
