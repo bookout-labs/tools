@@ -16,7 +16,7 @@ from test_delivery import walk
 
 
 def transcript(text):
-    return re.sub(r"^(?:raw tokens|work tokens|attempt |input tokens|output tokens|cache_read tokens|cache_creation tokens).*\n", "", text, flags=re.M)
+    return re.sub(r"^(?:usage below is cumulative across all invocations|raw tokens|work tokens|attempt |input tokens|output tokens|cache_read tokens|cache_creation tokens).*\n", "", text, flags=re.M)
 
 
 class DryRunTests(unittest.TestCase):
