@@ -1,7 +1,0 @@
-flowchart TD
-  __start__([Dispatch]) --> plan
-  plan["plan<br/>pick the next eligible model, check the budget, save the attempt"] --> run["call<br/>run one model"]
-  run -->|quota or CLI missing: next model| plan
-  run -->|no eligible model now| wait["wait<br/>pause until a model is available"]
-  wait -->|resume| plan
-  run -->|result| __end__([back to the assembly line])

@@ -11,3 +11,21 @@ uv run --python 3.12 python docs/graph/blueprint/gen.py --pstack /path/to/cursor
 To regenerate SVGs with Node and the pinned Mermaid CLI, omit `--no-svg` and pass `--puppeteer /path/to/puppeteer.json` if you need to set the Chrome executable.
 
 The drift test runs when `FOREMAN_PINNED_SKILL_REPO` points to the pstack checkout. If the Foreman baseline is absent, the test fetches it into a temporary Git repository.
+
+## Check the implementation
+
+Run the projector from the repository root to write `actual.yaml` and print the missing, extra, and mismatched elements.
+
+```sh
+uv run --python 3.12 python docs/graph/blueprint/project_actual.py --output actual.yaml
+```
+
+The projector compiles Foreman with inert adapters and reads its graph registrations, stage declarations, and source. The generated YAML is for inspection. CI recomputes the projection in the Python 3.12 unittest suite without network access. This is Foreman's equivalent of Warp's pull request configuration check. [Warp factory definition checks](https://docs.warp.dev/factories/factory-as-code/#pull-request-checks)
+
+Run the same check directly.
+
+```sh
+uv run --python 3.12 python docs/graph/blueprint/project_actual.py --check
+```
+
+Each entry in [`waivers.yaml`](waivers.yaml) names a migration issue and identifies one difference by its scope, expected value, and observed value. After implementing a slice, run the check and delete its stale entries and any empty issue group. Any new or changed difference fails the check. Use the migration issue and the printed diff to investigate before proposing a target change.

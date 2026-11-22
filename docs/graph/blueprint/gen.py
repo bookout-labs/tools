@@ -14,9 +14,6 @@ import xml.etree.ElementTree as ET
 
 import yaml
 
-from page import page
-
-
 BLUEPRINT = Path(__file__).resolve().parent
 ROOT = BLUEPRINT.parents[2]
 PROMPT_DIR = BLUEPRINT.relative_to(ROOT) / "prompts"
@@ -387,6 +384,8 @@ def write_maps(target, files, output):
 
 
 def main():
+    from page import page
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pstack", type=Path, required=True, help="Git repository containing the pinned pstack commit")
     parser.add_argument("--baseline-repo", type=Path, default=ROOT, help="Git repository containing the pinned Foreman commit")

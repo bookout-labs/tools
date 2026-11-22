@@ -1,63 +1,17 @@
-from foreman.dry_run import DryRun
 import ast
-from pathlib import Path
-import re
-import tomllib
-import unittest
 from contextlib import redirect_stderr
 from io import StringIO
+from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
+import unittest
 from unittest.mock import patch
 
 from foreman.cli import main
-from foreman.config import load_config
-from foreman.delivery import LiveRun, compile_delivery
-from foreman.diagrams import LEGEND, drawings, readme_diagrams
-from foreman.dry_run import ScriptHandler
+from foreman.delivery import compile_delivery, diagram
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GRAPH = ROOT / "docs/graph"
-SLICES = frozenset(f"slice_{name}" for name in (
-    "1", "2", "3", "4", "5", "6", "7", "8a", "8b", "9", "10a", "10b",
-    "11a", "11b", "12", "13", "14a", "14b", "15", "16",
-))
-SHAPE = (
-    r'(?:\["[^"\n]*"\]|\(\[(?:"[^"\n]*"|(?:(?!--|-\.|==)[^\]\n])*)\]\)'
-    r'|\((?:"[^"\n]*"|(?:(?!--|-\.|==)[^()\n])*)\)'
-    r'|\{\{"[^"\n]*"\}\}|\{"[^"\n]*"\}|\[/"[^"\n]*"/\])'
-)
-NODE = rf'\w+(?:{SHAPE})?(?::{{3}}\w+)?'
-EDGE = re.compile(
-    rf'\s*({NODE})\s*(?:-->(?:\|([^|]+)\|)?|-\.(?:->| &nbsp;((?:(?!&nbsp;).)+)&nbsp; \.->))'
-    rf'\s*({NODE})\s*;?\s*'
-)
-
-
-def edges(text):
-    result, declared, connected = set(), set(), set()
-    lines = text.splitlines()
-    if lines and lines[0] == "---":
-        lines = lines[lines.index("---", 1) + 1:]
-    for line in lines:
-        if not line.strip() or line.lstrip().startswith("%%"):
-            continue
-        match = EDGE.fullmatch(line)
-        if match is not None:
-            source, label, native_label, target = match.groups()
-            source, target = re.match(r'\w+', source)[0], re.match(r'\w+', target)[0]
-            edge = (source, target, label or native_label or "")
-            if edge in result:
-                raise ValueError(f"Duplicate Mermaid edge: {line}")
-            result.add(edge)
-            connected.update((source, target))
-        elif re.fullmatch(rf'\s*{NODE}\s*;?\s*', line):
-            declared.add(re.match(r'\s*(\w+)', line)[1])
-        elif any(marker in line for marker in ('--', '-.', '==')) or not re.fullmatch(
-            r'\s*(?:(?:graph|flowchart) TD;?|classDef \w+ [^;]+;?)\s*', line,
-        ):
-            raise ValueError(f"Unrecognized Mermaid line: {line}")
-    return result, declared - connected
 
 
 class DiagramTests(unittest.TestCase):
@@ -65,21 +19,6 @@ class DiagramTests(unittest.TestCase):
         tree = ast.parse(Path(compile_delivery.__code__.co_filename).read_text())
         comparisons = (node for node in ast.walk(tree) if isinstance(node, ast.Compare))
         self.assertFalse(any(isinstance(value, ast.Constant) and value.value == "verify" for node in comparisons for value in node.comparators))
-
-    def test_native_drawings_and_readme_are_exact(self):
-        compiled = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=DryRun(), workspace=DryRun()))
-        pictures = drawings()
-        self.assertEqual(pictures["delivery"], compiled.get_graph().draw_mermaid())
-        for name, text in pictures.items():
-            self.assertEqual((GRAPH / f"{name}.mmd").read_bytes(), text.encode())
-        readme = (ROOT / "README.md").read_text()
-        embedded = readme.split("<!-- graph:start -->\n", 1)[1].split("\n<!-- graph:end -->", 1)[0]
-        blueprint = (GRAPH / "target.mmd").read_text()
-        dispatch_blueprint = (GRAPH / "dispatch-target.mmd").read_text()
-        self.assertEqual(embedded, readme_diagrams(pictures, blueprint, dispatch_blueprint))
-        self.assertIn(f"### Blueprint\n\n```mermaid\n{blueprint}```\n\n{LEGEND}", embedded)
-        self.assertIn(f"### Today's code\n\n```mermaid\n{pictures['delivery']}```", embedded)
-        self.assertIn(f"```mermaid\n{dispatch_blueprint}```", embedded)
 
     def test_publication_transition_tests_exist(self):
         module = ast.parse((ROOT / "tests/test_publication.py").read_text())
@@ -106,95 +45,22 @@ class DiagramTests(unittest.TestCase):
             transition, cell = row[1:-1].split("|")
             self.assertIn(cell.strip(), references, transition.strip())
 
-    def test_drift_is_exactly_the_scheduled_gaps(self):
-        path = GRAPH / "gaps.toml"
-        gaps = tomllib.loads(path.read_text()) if path.exists() else {}
-        for name in ("delivery", "dispatch"):
-            actual, actual_isolated = edges((GRAPH / f"{name}.mmd").read_text())
-            target, target_isolated = edges((GRAPH / ("target.mmd" if name == "delivery" else "dispatch-target.mmd")).read_text())
-            # Node labels, shapes and arrow kinds are presentation until #137 agrees stage semantics.
-            self.assertEqual(actual_isolated, target_isolated, f"{name} isolated nodes")
-            for direction, difference in (("extra", actual - target), ("missing", target - actual)):
-                recorded = []
-                for slice_name, sources in gaps.get(name, {}).get(direction, {}).items():
-                    self.assertIn(slice_name, SLICES)
-                    for source, targets in sources.items():
-                        recorded.extend((source, target, label) for target, label in targets)
-                self.assertEqual(len(recorded), len(set(recorded)), "duplicate gap")
-                self.assertEqual(set(recorded), difference, f"{name} {direction}")
+    def test_write_embeds_compiled_delivery_diagram(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            graph = root / "docs/graph"
+            graph.mkdir(parents=True)
+            readme = root / "README.md"
+            readme.write_text("before\n<!-- graph:start -->\nold\n<!-- graph:end -->\nafter\n")
 
-    def test_stage_targets_and_gap_owners(self):
-        targets = {path.name.removesuffix(".target.mmd")
-                   for path in (GRAPH / "stages").glob("*.target.mmd")}
-        blueprint, _ = edges((GRAPH / "target.mmd").read_text())
-        steps = {node for source, target, _ in blueprint for node in (source, target)}
-        steps = (steps - {"__start__", "__end__"}) | {"dispatch_cell"}
-        self.assertEqual(targets, steps, "missing or orphan stage target")
-        gaps = tomllib.loads((GRAPH / "gaps.toml").read_text()).get("stages", {})
-        self.assertLessEqual(set(gaps), targets, "orphan stage gap")
-        for owners in gaps.values():
-            self.assertTrue(owners)
-            self.assertLessEqual(set(owners), SLICES)
-            for lines in owners.values():
-                self.assertTrue(lines)
-                self.assertTrue(all(line.strip() for line in lines))
-        self.assertFalse(any(name.startswith("stages/") for name in drawings()))
+            with patch("foreman.cli.Path.cwd", return_value=root):
+                self.assertEqual(main(["diagram", "--write"]), 0)
 
-    def test_edge_labels_and_invalid_syntax(self):
-        self.assertEqual(edges('a -->|fail: fix| b["step"]\na -. &nbsp;call&nbsp; .-> c;'),
-                         ({("a", "b", "fail: fix"), ("a", "c", "call")}, set()))
-        for line in ("a ==> b", "a --> b --> c", "a-->b-->c", "a --- b", "a -.- c", "a --x d", 'a --> b["step"] --> c["step"]'):
-            with self.subTest(line=line), self.assertRaises(ValueError):
-                edges(line)
-        self.assertEqual(edges("done --> __end__([End])"), ({("done", "__end__", "")}, set()))
-
-    def test_added_isolated_halt_changes_projection(self):
-        original = 'a --> b'
-        self.assertNotEqual(edges(original), edges(original + '\nh["HALT invalid_output"]:::halt'))
-        self.assertEqual(edges('h["HALT"]\na --> b'), ({("a", "b", "")}, {"h"}))
-        self.assertEqual(edges('b["step"]\na --> b'), edges(original))
-        read_text = Path.read_text
-        def mutated(path, *args, **kwargs):
-            return read_text(path, *args, **kwargs) + ('\nh["HALT"]' if path == GRAPH / "delivery.mmd" else '')
-        with patch.object(Path, "read_text", mutated), self.assertRaisesRegex(AssertionError, "delivery isolated nodes"):
-            self.test_drift_is_exactly_the_scheduled_gaps()
-
-    def test_duplicate_edge_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "Duplicate Mermaid edge"):
-            edges('a --> b\na --> b')
-
-    def test_stage_class_syntax_is_presentation(self):
-        for path in (GRAPH / "stages").glob("*.target.mmd"):
-            with self.subTest(path=path.name):
-                text = path.read_text()
-                self.assertEqual(edges(text), edges(re.sub(r':::\w+', '', text)))
-
-    def test_unsupported_syntax_mutation_is_rejected(self):
-        mutations = [
-            'a --> b\na ==> c',
-            'a -. &nbsp;x&nbsp; .-> b -. &nbsp;y&nbsp; .-> c',
-        ]
-        for marker in ('--', '-.', '=='):
-            mutations.extend((
-                f'a --> b\na(x {marker}> y)',
-                f'a --> b\na([x {marker}> y])',
-                f'a --> b\nclassDef x fill:#fff {marker}> y',
-                f'a --> b(x {marker}> y)',
-            ))
-        for text in mutations:
-            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "Unrecognized Mermaid line"):
-                edges(text)
-
-    def test_quoted_arrow_markers_are_presentation(self):
-        for shape in ('["--flag"]', '("--flag")', '(["--flag"])',
-                      '{"--flag"}', '{{"--flag"}}', '[/"--flag"/]'):
-            with self.subTest(shape=shape):
-                self.assertEqual(edges(f'a{shape} --> b["x -. y == z"]\nh{shape}'),
-                                 ({('a', 'b', '')}, {'h'}))
-
-    def test_order_whitespace_comments_and_style_are_presentation(self):
-        self.assertEqual(edges('a["start"] --> b\nb --> c\nh["halt"]'),
-                         edges('%% comment\nh["halt"]:::halt\n  b-->c;\na["new label"] -.-> b'))
+            drawing = diagram()
+            self.assertEqual((graph / "delivery.mmd").read_text(), drawing)
+            self.assertEqual(readme.read_text(),
+                             f"before\n<!-- graph:start -->\n### Today's code\n\n```mermaid\n{drawing}"
+                             "```\n<!-- graph:end -->\nafter\n")
 
     def test_write_rejects_missing_directory_or_markers_without_writes(self):
         with TemporaryDirectory() as directory:
