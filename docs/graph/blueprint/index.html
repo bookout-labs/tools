@@ -1,0 +1,1842 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light"><title>Foreman blueprint · v2</title>
+<style>:root {
+  color-scheme: only light;
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 16px;
+  color: #152433;
+  background: #fff;
+  --ink: #152433;
+  --muted: #4b6071;
+  --line: #d5e0e6;
+  --blue: #184e7b;
+  --wash: #f4f8fb;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: white; line-height: 1.55; }
+a { color: var(--blue); text-underline-offset: .18em; }
+a:hover { color: #0b3456; }
+:focus-visible { outline: 3px solid #236b9b; outline-offset: 3px; }
+.shell { max-width: 1540px; margin: 0 auto; display: grid; grid-template-columns: 225px minmax(0, 1fr); }
+aside { padding: 32px 20px 40px; border-right: 1px solid var(--line); align-self: start; position: sticky; top: 0; max-height: 100vh; overflow: auto; }
+.brand { display: block; color: var(--ink); font-size: 24px; font-weight: 760; text-decoration: none; letter-spacing: -.04em; }
+.brand small { display: block; color: var(--muted); font-size: 13px; letter-spacing: 0; font-weight: 500; }
+nav { margin-top: 24px; }
+nav h2 { font-size: 13px; margin: 18px 0 4px; color: var(--muted); }
+nav a { display: block; border-radius: 6px; padding: 4px 8px; text-decoration: none; font-size: 15px; }
+nav a[aria-current="page"], nav a:hover { background: #e8f1f8; color: #163a59; }
+main { min-width: 0; padding: 40px clamp(20px, 4vw, 60px) 72px; }
+.page { margin-bottom: 56px; }
+.page[hidden] { display: none; }
+.page-head { border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 20px; }
+h1 { font-size: clamp(27px, 4vw, 43px); line-height: 1.1; letter-spacing: -.045em; margin: 0 0 12px; }
+h2 { font-size: 19px; line-height: 1.28; letter-spacing: -.02em; margin: 0 0 8px; }
+h3 { font-size: 16px; }
+p { margin: 0 0 12px; }
+.page-head p { max-width: 62ch; color: var(--muted); margin: 0; }
+.diagram { margin: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.diagram-tools { display: flex; gap: 7px; padding: 10px; align-items: center; background: var(--wash); border-bottom: 1px solid var(--line); }
+.diagram-tools > span { margin-left: auto; color: var(--muted); font-size: 13px; }
+button { font: inherit; color: var(--ink); background: white; border: 1px solid #9eafbc; border-radius: 5px; min-width: 38px; padding: 3px 10px; cursor: pointer; }
+button:hover { background: #eaf2f8; }
+.canvas { position: relative; background: white; height: clamp(300px, 62vh, 690px); overflow: hidden; touch-action: none; cursor: grab; }
+.canvas.dragging { cursor: grabbing; }
+.canvas img { display: block; position: absolute; max-width: none; transform-origin: 0 0; user-select: none; pointer-events: none; }
+.legend { display: flex; gap: 15px; flex-wrap: wrap; color: var(--muted); font-size: 14px; padding: 10px 0; }
+.stage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 7px 0 20px; }
+.stage-grid a { text-decoration: none; border: 1px solid var(--line); background: var(--wash); border-radius: 8px; padding: 11px 13px; }
+.stage-grid a:hover { border-color: #5e81a0; }
+.stage-grid span { display: block; color: var(--muted); font-size: 15px; }
+.baseline { color: var(--muted); }
+.file-panel { margin: 15px 0 22px; padding: 15px; border: 1px solid var(--line); border-radius: 9px; background: var(--wash); }
+.file-list { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 7px; }
+.file-chip { display: flex; align-items: center; border: 1px solid #c7d5df; border-radius: 6px; background: white; padding: 3px 7px; gap: 6px; }
+.file-chip > span { color: var(--muted); }
+.file-details summary { list-style: none; cursor: pointer; color: var(--blue); }
+.file-details summary::-webkit-details-marker { display: none; }
+.file-pop { display: none; position: fixed; inset: auto auto 18px 50%; transform: translateX(-50%); z-index: 3; width: min(540px, calc(100vw - 26px)); max-height: 55vh; overflow: auto; background: white; color: var(--ink); padding: 15px 18px; border: 1px solid #839cac; border-radius: 11px; box-shadow: 0 8px 32px #17283c33; }
+.file-details[open] .file-pop { display: block; }
+@media (hover: hover) {
+  .file-chip:hover .file-pop { display: block; }
+}
+.file-pop pre { margin: 4px 0 10px; font-size: 14px; line-height: 1.35; overflow: auto; }
+.gate-list { display: flex; flex-wrap: wrap; gap: 7px; list-style: none; padding: 0; }
+.gate-pop { width: min(520px, calc(100vw - 26px)); max-height: 80vh; overflow: auto; padding: 15px 18px; border: 1px solid #839cac; border-radius: 11px; box-shadow: 0 8px 32px #17283c33; }
+.gate-pop h3 { margin-top: 0; }
+.kind, dt { font-weight: 650; color: var(--muted); }
+dd { margin: 0 0 8px; overflow-wrap: anywhere; }
+.columns { display: grid; grid-template-columns: 1.25fr 1fr; gap: 24px; margin-top: 18px; }
+.steps { padding-left: 21px; }
+.steps li { margin-bottom: 8px; }
+.steps p { margin: 0; color: var(--muted); }
+.reference, .decision-list article { border-top: 1px solid var(--line); padding: 14px 0; }
+.reference summary { font-weight: 650; cursor: pointer; margin-bottom: 8px; }
+.decision-links { display: flex; flex-wrap: wrap; gap: 10px; }
+.all-files { padding: 0; list-style: none; }
+.all-files li { border-top: 1px solid var(--line); padding: 8px 0; overflow-x: auto; }
+.all-files code { white-space: nowrap; font-size: 14px; }
+.all-files p { color: var(--muted); margin: 2px 0 0; }
+@media (max-width: 760px) {
+  .shell { display: block; }
+  aside { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); padding: 14px 20px; }
+  nav { margin-top: 8px; }
+  nav h2 { margin: 6px 0 0; }
+  .nav-group { display: flex; flex-wrap: wrap; }
+  nav a { padding: 2px 7px; }
+  main { padding-top: 24px; }
+  .stage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .columns { grid-template-columns: 1fr; gap: 7px; }
+  .diagram-tools > span { font-size: 12px; }
+}
+</style></head>
+<body>
+<div class="shell"><aside><a class="brand" href="#overview">Foreman <small>Blueprint v2</small></a>
+<nav aria-label="Blueprint navigation"><div class="nav-group">
+<a href="#overview">Overview</a><a href="#context">System context</a><a href="#decisions">Blueprint decisions</a>
+</div><h2>Stages</h2><div class="nav-group"><a href="#triage">Triage</a><a href="#research">Research</a><a href="#spec">Spec</a><a href="#implement">Implement</a><a href="#review">Review</a><a href="#merge">Merge</a><a href="#dispatch">Shared dispatch</a></div>
+<h2>Workers</h2><div class="nav-group"><a href="#worker-coordinator">Coordinator</a><a href="#worker-checker">Checker</a><a href="#worker-builder">Builder</a><a href="#worker-verifier">Verifier</a></div>
+<h2>Reference</h2><div class="nav-group"><a href="#files">All file paths</a>
+<a href="target.yaml">Blueprint YAML</a><a href="glossary.md">Glossary</a><a href="code-map.md">Code map</a>
+<a href="verification.md">Verification</a><a href="migration.md">Migration</a></div></nav></aside>
+<main>
+<section class="page" id="overview"><header class="page-head"><h1>From issue to merged pull request</h1>
+<p>Specific to issue delivery, shared through GitHub, and scrutinized with scorers, benchmarks and a scorecard for each run. <a href="https://web.archive.org/web/20261121015523/https://www.notion.com/a-new-shape-for-work">Notion’s book ↗</a></p></header>
+<figure class="diagram" aria-label="Foreman workflow diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Foreman workflow. Arrow keys pan, plus and minus zoom.">
+    <img src="views/target.svg" draggable="false" alt="Foreman workflow flow diagram" />
+  </div>
+</figure>
+<p class="legend"><span>▰ Stage</span><span>▱ Step</span><span>◉ Worker call</span><span>◇ Question gate</span><span>○ Result</span></p>
+<p class="legend">The coordinator or personal agent relays the question and posts the answer or cancellation on the issue under the human&#x27;s identity. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on the human. If a valid result has no matching route, Foreman opens the stage's question gate and records a routing defect for the scorers.</p>
+<div class="stage-grid"><a href="#triage"><strong>Route the issue</strong><span>Choose research or planning for one admitted issue.</span></a><a href="#research"><strong>Answer the question</strong><span>Post one sourced answer on the originating issue.</span></a><a href="#spec"><strong>Plan and check the work</strong><span>Clear an exact repository-bound candidate or file its linked child issues.</span></a><a href="#implement"><strong>Build and publish the change</strong><span>Publish exactly the tree that passed the target repository&#x27;s checks.</span></a><a href="#review"><strong>Review the full pull request</strong><span>Post evidence for the current head and route on typed severity.</span></a><a href="#merge"><strong>Queue and confirm the merge</strong><span>Arm only the reviewed checked head and report GitHub&#x27;s observed result.</span></a></div>
+<p class="baseline">Approved blueprint · Baseline <a href="https://github.com/bookout-labs/tools/commit/b96293d6e6403e854097cb8c2c3d94afe747e286"><code>b96293d6</code></a></p>
+</section>
+<section class="page" id="context"><header class="page-head"><h1>Where Foreman works</h1>
+<p>The human works through a coordinator or personal agent. The agent files the GitHub issue and posts the human's answers, comments, plan approvals and stop requests as issue comments under the human's identity.</p></header>
+<figure class="diagram" aria-label="Repository and authority boundaries diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Repository and authority boundaries. Arrow keys pan, plus and minus zoom.">
+    <img src="views/context.svg" draggable="false" alt="Repository and authority boundaries flow diagram" />
+  </div>
+</figure>
+<p>Foreman runs from bookout-labs/tools. Each issue names the repository where its changes belong. The Project board mirrors the run state and shows the result on the card. GitHub, the CARR record layer and T3 hold shared context. Git versions the blueprint.</p></section>
+<section class="page" id="triage">
+      <header class="page-head"><h1>Route the issue</h1><p>Choose research or planning for one admitted issue.</p></header>
+      <figure class="diagram" aria-label="Route the issue diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Route the issue. Arrow keys pan, plus and minus zoom.">
+    <img src="views/stages/triage.svg" draggable="false" alt="Route the issue flow diagram" />
+  </div>
+</figure>
+      <section class="file-panel"><h2>Stage files</h2>
+      <ul class="file-list"><li class="file-chip"><a href="prompts/triage.md">triage.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for triage.md" title="Details for triage.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">target prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── docs
+            └── graph
+                └── blueprint
+                    └── prompts
+                        └── triage.md</pre><p>Classify the issue</p><dl><dt>What it instructs</dt><dd>Classify the admitted issue as a question, plan request or supplied slice. Treat the named
+target repository as fixed. Inspect available context before returning a question about
+missing intent for the coordinator or personal agent to relay. Give a bounded change one
+slice when its behavior and acceptance are clear.
+Foreman validates all supplied slices before a build. Return the typed classification.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/accept.py">accept.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for accept.py" title="Details for accept.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── accept.py</pre><p>Decide whether an outside event enters the graph. This does not call a model.</p><dl><dt>What it does</dt><dd>accept_event</dd><dt>Inputs</dt><dd>accept_event(event: object)</dd><dt>Outputs</dt><dd>accept_event → IgnoreEvent | StartEvent</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py">delivery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for delivery.py" title="Details for delivery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── delivery.py</pre><p>The delivery graph. Edges live here. Models live in models.toml.</p><dl><dt>What it does</dt><dd>unknown_usage • run_tokens • review_count</dd><dt>Inputs</dt><dd>unknown_usage(stage: str, model: str | None) • run_tokens(attempts: list[AttemptRecord]) • review_count(state: DeliveryState | DeliveryResult)</dd><dt>Outputs</dt><dd>unknown_usage → str • run_tokens → int • review_count → int</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/models.toml">models.toml</a>
+      <details class="file-details">
+        <summary aria-label="Details for models.toml" title="Details for models.toml">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">config</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── models.toml</pre><p>Failover order. The first model runs. Quota exhaustion tries the next.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/runner.py">runner.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for runner.py" title="Details for runner.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── runner.py</pre><p>Run one delivery issue against its SQLite checkpoint.</p><dl><dt>What it does</dt><dd>snapshot_result • checkpoint_state • require_same_budget</dd><dt>Inputs</dt><dd>snapshot_result(snapshot: StateSnapshot) • checkpoint_state(values: dict[str, object]) • require_same_budget(stored: str | None, max_budget_usd: BudgetUsd | None)</dd><dt>Outputs</dt><dd>snapshot_result → DeliveryResult • checkpoint_state → DeliveryState | None • require_same_budget → None</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py">stage_output.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for stage_output.py" title="Details for stage_output.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stage_output.py</pre><p>Worker output contracts shared by the CLI prompts and delivery graph.</p><dl><dt>What it does</dt><dd>parse_output</dd><dt>Inputs</dt><dd>parse_output(contract: type[Output], raw: object, *, context: ReviewContext | None=None)</dd><dt>Outputs</dt><dd>parse_output → Output</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/triage.md">triage.md (baseline)</a>
+      <details class="file-details">
+        <summary aria-label="Details for triage.md (baseline)" title="Details for triage.md (baseline)">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">baseline prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stages
+                    └── triage.md</pre><p>Read the request and set `triage` according to the schema. Use these values for informational or unclear requests.</p><dl><dt>What it instructs</dt><dd>Read the request and set `triage` according to the schema. Use these values for informational or unclear requests.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/state.py">state.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for state.py" title="Details for state.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── state.py</pre><p>Delivery graph state channels and their reducers.</p><dl><dt>What it does</dt><dd>checkpoint_serializer • require_schema_version</dd><dt>Inputs</dt><dd>checkpoint_serializer() • require_schema_version(values: Mapping[str, object], checkpoint: Path | None=None, thread: str | None=None)</dd><dt>Outputs</dt><dd>checkpoint_serializer → JsonPlusSerializer • require_schema_version → None</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><span>triage.py</span>
+      <details class="file-details">
+        <summary aria-label="Details for triage.py" title="Details for triage.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">planned script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── steps
+                    └── triage.py</pre><p>Planned owner. File absent at the baseline.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_accept.py">test_accept.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_accept.py" title="Details for test_accept.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_accept.py</pre><p>Description missing from the source file.</p><dl><dt>What it checks</dt><dd>factory label starts a run • other labels are ignored • unknown source is rejected</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_delivery.py">test_delivery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_delivery.py" title="Details for test_delivery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_delivery.py</pre><p>Test delivery.</p><dl><dt>What it checks</dt><dd>graph receives the skill source as an input • passing a slice starts a slice run • clear change skips spec • ready spec is implemented • ready spec keeps the loaded slice proof obligations</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_runner.py">test_runner.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_runner.py" title="Details for test_runner.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_runner.py</pre><p>Live runner behavior with offline workers and forge doubles.</p><dl><dt>What it checks</dt><dd>spec worker receives paired questions once • commands use the configured models and parse the final result • each family can use scratch outside checkout • inherited checkout tmpdir is overridden without changing environment • subprocess merges adapter environment with inherited environment</dd></dl>
+        </div>
+      </details>
+    </li></ul></section>
+      <div class="columns"><section><h2>What happens</h2><ol class="steps"><li><strong>Validate issue and prerequisites</strong><p>Canonical issue identity and pinned base</p></li><li><strong>Classify the admitted issue</strong><p>Typed route and supplied slice when present</p></li></ol></section>
+      <section><h2>Warp equivalent</h2><p><strong>Intake and conditional triage</strong></p>
+      <p>Foreman binds GitHub issue and dependency identity before classification to prevent cross-repository work.</p><p><a href="https://docs.warp.dev/factories/how-factories-work/">Read Warp’s documentation ↗</a></p>
+      <h2>Human gates</h2><ul class="gate-list"><li>
+      <button type="button" popovertarget="triage-gate-route">Clarify issue intent</button>
+      <div class="gate-pop" id="triage-gate-route" popover aria-labelledby="triage-gate-route-title">
+        <h3 id="triage-gate-route-title">Human gate</h3>
+        <p>Decide the missing issue intent.</p><p>The coordinator or personal agent relays the question and posts the answer or cancellation on the issue under the human&#x27;s identity. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on the human.</p>
+        <dl><dt>Accepted</dt><dd>answer or cancel</dd>
+        <dt>Saved</dt><dd>Issue-bound answer</dd>
+        <dt>Resume</dt><dd>route</dd></dl>
+        <button type="button" popovertarget="triage-gate-route" popovertargetaction="hide">Close</button>
+      </div></li></ul></section></div>
+      <details class="reference"><summary>Scope, recovery and checks</summary>
+        <p>Read target_repository issue and dependencies. Update the Project card. No repository edits or PR writes.</p><p>Missing child payload stops admission. An open dependency leaves the issue unadmitted. Worker dispatch failures use shared dispatch. The human&#x27;s answer resumes route.</p><ul><li>GitHub repository identity and run configuration agree.</li><li>Open dependencies prevent admission and later eligibility is read from GitHub.</li></ul>
+        <h3>Cases the implementation must pass</h3><ul class="steps"><li><strong>The requested issue names another repository or a dependency is still open</strong><p>Stop before a paid call or build checkout allocation.</p></li><li><strong>A parent-labelled question and a separately supplied single slice</strong><p>Route the question to research and the supplied slice to spec.validate.</p></li><li><strong>A verified Ready event arrives twice and the App updates the card to Doing</strong><p>One admitted checkpoint and one run with the card showing its state.</p></li></ul>
+        <p class="decision-links"><a href="#decisions">Who approves a plan?</a><a href="#decisions">Which Project board and columns should Foreman use?</a><a href="#decisions">Which paths count as existing seams?</a></p>
+        <a href="target.yaml">Read the full stage contract</a>
+      </details>
+    </section><section class="page" id="research">
+      <header class="page-head"><h1>Answer the question</h1><p>Post one sourced answer on the originating issue.</p></header>
+      <figure class="diagram" aria-label="Answer the question diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Answer the question. Arrow keys pan, plus and minus zoom.">
+    <img src="views/stages/research.svg" draggable="false" alt="Answer the question flow diagram" />
+  </div>
+</figure>
+      <section class="file-panel"><h2>Stage files</h2>
+      <ul class="file-list"><li class="file-chip"><a href="prompts/research.md">research.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for research.md" title="Details for research.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">target prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── docs
+            └── graph
+                └── blueprint
+                    └── prompts
+                        └── research.md</pre><p>Answer the question</p><dl><dt>What it instructs</dt><dd>Answer the originating question from the issue, pinned target checkout and cited sources.
+Distinguish observed behavior from inference. If available sources cannot resolve the request,
+return a grounded question about the missing evidence for the coordinator or personal agent to relay.
+Otherwise, return the typed answer.
+Foreman posts the answer. Leave repository files untouched.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/how/SKILL.md">SKILL.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for SKILL.md" title="Details for SKILL.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">skill</span>
+          <pre>cursor
+    └── plugins
+        └── pstack
+            └── skills
+                └── how
+                    └── SKILL.md</pre><p>Use for &quot;how does X work&quot;, code walkthroughs before changing something, and placement / ownership / layering questions (&quot;where should this live&quot;, &quot;which package owns this&quot;, &quot;is this the right layer&quot;). Explains subsystem architecture, runtime flow, onboarding mental models. Use why for motivation.</p><dl><dt>Method steps</dt><dd>Inspect the code and explain its architecture from source. (lines 17–17)</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/why/SKILL.md">SKILL.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for SKILL.md" title="Details for SKILL.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">skill</span>
+          <pre>cursor
+    └── plugins
+        └── pstack
+            └── skills
+                └── why
+                    └── SKILL.md</pre><p>Use for &#x27;why does X work this way&#x27;, &#x27;why we picked Y&#x27;, design rationale, regressions, postmortems, or data-backed thresholds. Returns a cited read on decisions and tradeoffs. Use how for runtime behavior.</p><dl><dt>Method steps</dt><dd>Read author records and mark inferences. (lines 9–9)</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py">delivery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for delivery.py" title="Details for delivery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── delivery.py</pre><p>The delivery graph. Edges live here. Models live in models.toml.</p><dl><dt>What it does</dt><dd>unknown_usage • run_tokens • review_count</dd><dt>Inputs</dt><dd>unknown_usage(stage: str, model: str | None) • run_tokens(attempts: list[AttemptRecord]) • review_count(state: DeliveryState | DeliveryResult)</dd><dt>Outputs</dt><dd>unknown_usage → str • run_tokens → int • review_count → int</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/github.py">github.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for github.py" title="Details for github.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── github.py</pre><p>GitHub operations for delivery runs.</p><dl><dt>What it does</dt><dd>queue_receipt • pull_request_command • merge_command</dd><dt>Inputs</dt><dd>queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str, base_ref: str, policy: QueuePolicy) • pull_request_command(repo: str, head: str, base: str, title: str, body: str) • merge_command(repo: str, pull_request: str, sha: str)</dd><dt>Outputs</dt><dd>queue_receipt → MergeReceipt | None • pull_request_command → list[str] • merge_command → list[str]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/models.toml">models.toml</a>
+      <details class="file-details">
+        <summary aria-label="Details for models.toml" title="Details for models.toml">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">config</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── models.toml</pre><p>Failover order. The first model runs. Quota exhaustion tries the next.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py">stage_output.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for stage_output.py" title="Details for stage_output.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stage_output.py</pre><p>Worker output contracts shared by the CLI prompts and delivery graph.</p><dl><dt>What it does</dt><dd>parse_output</dd><dt>Inputs</dt><dd>parse_output(contract: type[Output], raw: object, *, context: ReviewContext | None=None)</dd><dt>Outputs</dt><dd>parse_output → Output</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/research.md">research.md (baseline)</a>
+      <details class="file-details">
+        <summary aria-label="Details for research.md (baseline)" title="Details for research.md (baseline)">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">baseline prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stages
+                    └── research.md</pre><p>Answer the question from the repository. Do not change code.</p><dl><dt>What it instructs</dt><dd>Answer the question from the repository. Do not change code.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><span>research.py</span>
+      <details class="file-details">
+        <summary aria-label="Details for research.py" title="Details for research.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">planned script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── steps
+                    └── research.py</pre><p>Planned owner. File absent at the baseline.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_delivery.py">test_delivery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_delivery.py" title="Details for test_delivery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_delivery.py</pre><p>Test delivery.</p><dl><dt>What it checks</dt><dd>graph receives the skill source as an input • passing a slice starts a slice run • clear change skips spec • ready spec is implemented • ready spec keeps the loaded slice proof obligations</dd></dl>
+        </div>
+      </details>
+    </li></ul></section>
+      <div class="columns"><section><h2>What happens</h2><ol class="steps"><li><strong>Return a sourced answer</strong><p>Typed answer for the pinned base</p></li><li><strong>Post the saved answer</strong><p>Observed issue comment</p></li></ol></section>
+      <section><h2>Warp equivalent</h2><p><strong>Research and answer</strong></p>
+      <p>Foreman confirms one issue comment because the source is GitHub.</p><p><a href="https://docs.warp.dev/factories/factory-agents/">Read Warp’s documentation ↗</a></p>
+      <h2>Human gates</h2><ul class="gate-list"><li>
+      <button type="button" popovertarget="research-gate-answer">Supply missing source</button>
+      <div class="gate-pop" id="research-gate-answer" popover aria-labelledby="research-gate-answer-title">
+        <h3 id="research-gate-answer-title">Human gate</h3>
+        <p>Provide the missing external source or clarify the question.</p><p>The coordinator or personal agent relays the question and posts the answer or cancellation on the issue under the human&#x27;s identity. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on the human.</p>
+        <dl><dt>Accepted</dt><dd>source or answer or cancel</dd>
+        <dt>Saved</dt><dd>Issue-bound answer</dd>
+        <dt>Resume</dt><dd>answer</dd></dl>
+        <button type="button" popovertarget="research-gate-answer" popovertargetaction="hide">Close</button>
+      </div></li></ul></section></div>
+      <details class="reference"><summary>Scope, recovery and checks</summary>
+        <p>Read target_checkout at the pinned base and the admitted issue. Write one issue answer.</p><p>At post read the origin issue for the saved marker before another write. Adopt the matching comment. If the write remains ambiguous, stop with publication_unreconciled. Dispatch owns worker failures.</p><ul><li>The worker reads the named repository and cites source evidence.</li><li>Publication cannot allocate a PR.</li></ul>
+        <h3>Cases the implementation must pass</h3><ul class="steps"><li><strong>GitHub accepts the answer before the checkpoint fails</strong><p>Adopt the matching comment once or report publication_unreconciled if the prior write cannot be confirmed.</p></li><li><strong>A question about a revision-sensitive symbol</strong><p>Return a cited answer from the pinned target base and open no PR.</p></li><li><strong>The answer needs external evidence absent from the issue and pinned checkout</strong><p>Pause before posting and resume answer with the human’s clarification.</p></li></ul>
+        <p class="decision-links"><a href="#decisions">Which worker methods belong in each step?</a></p>
+        <a href="target.yaml">Read the full stage contract</a>
+      </details>
+    </section><section class="page" id="spec">
+      <header class="page-head"><h1>Plan and check the work</h1><p>Clear an exact repository-bound candidate or file its linked child issues.</p></header>
+      <figure class="diagram" aria-label="Plan and check the work diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Plan and check the work. Arrow keys pan, plus and minus zoom.">
+    <img src="views/stages/spec.svg" draggable="false" alt="Plan and check the work flow diagram" />
+  </div>
+</figure>
+      <section class="file-panel"><h2>Stage files</h2>
+      <ul class="file-list"><li class="file-chip"><a href="prompts/spec.md">spec.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for spec.md" title="Details for spec.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">target prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── docs
+            └── graph
+                └── blueprint
+                    └── prompts
+                        └── spec.md</pre><p>Draft the plan</p><dl><dt>What it instructs</dt><dd>Read the target checkout at the named base. Draft slices for the admitted repository and
+issue only. Give each slice testable acceptance. Name seams it builds and seams it uses.
+Put edits to tracked seams under uses. Inspect available code and issue evidence. On
+revision, use the saved candidate and defects. Return one typed draft or grounded questions
+about product, repository, architecture or policy for the coordinator or personal agent to relay.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="prompts/spec_check.md">spec_check.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for spec_check.md" title="Details for spec_check.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">target prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── docs
+            └── graph
+                └── blueprint
+                    └── prompts
+                        └── spec_check.md</pre><p>Check and approve the plan</p><dl><dt>What it instructs</dt><dd>Challenge the exact candidate against the originating issue and pinned target checkout.
+Confirm each slice belongs to that repository, including when a matching path exists in
+Foreman&#x27;s repository. Check seam ownership, acceptance and dependencies. Cite concrete
+defects and report unresolved choices for the coordinator or personal agent to relay.
+Keep all repository and GitHub state read-only.
+Approve the checked candidate when no blocking defect or unresolved choice remains. Return empty findings for a clear verdict.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/architect/SKILL.md">SKILL.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for SKILL.md" title="Details for SKILL.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">skill</span>
+          <pre>cursor
+    └── plugins
+        └── pstack
+            └── skills
+                └── architect
+                    └── SKILL.md</pre><p>Sketch types, signatures, and module structure before code, then stay in the loop while implementation fills in. Use for /architect, &#x27;architect this&#x27;, &#x27;design this&#x27;, or non-trivial work where jumping to code would lock in the wrong shape.</p><dl><dt>Method steps</dt><dd>Trace affected systems and sketch two ownership shapes. (lines 9–9)</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/interrogate/SKILL.md">SKILL.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for SKILL.md" title="Details for SKILL.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">skill</span>
+          <pre>cursor
+    └── plugins
+        └── pstack
+            └── skills
+                └── interrogate
+                    └── SKILL.md</pre><p>Use for &quot;interrogate&quot;, &quot;adversarial review&quot;, &quot;multi-model review&quot;, &quot;challenge this&quot;, &quot;stress test this code&quot;, &quot;find blind spots&quot;, or &quot;tear this apart&quot;. Adversaries try to break a change or design, and only findings proven by a run survive.</p><dl><dt>Method steps</dt><dd>Probe the candidate in one independent session and cite verified findings. (lines 19–19)</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/statechart/SKILL.md">SKILL.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for SKILL.md" title="Details for SKILL.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">skill</span>
+          <pre>cursor
+    └── plugins
+        └── pstack
+            └── skills
+                └── statechart
+                    └── SKILL.md</pre><p>Check a TLA+ model of a system that moves between states, such as a product flow, a protocol, or a service, and draw it as a Mermaid statechart. The report gives the shortest path to each state that breaks a rule. Use for /statechart, or to show a bug as a path through states.</p><dl><dt>Method steps</dt><dd>Describe state transitions and invariants. (lines 23–27)</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py">delivery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for delivery.py" title="Details for delivery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── delivery.py</pre><p>The delivery graph. Edges live here. Models live in models.toml.</p><dl><dt>What it does</dt><dd>unknown_usage • run_tokens • review_count</dd><dt>Inputs</dt><dd>unknown_usage(stage: str, model: str | None) • run_tokens(attempts: list[AttemptRecord]) • review_count(state: DeliveryState | DeliveryResult)</dd><dt>Outputs</dt><dd>unknown_usage → str • run_tokens → int • review_count → int</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/github.py">github.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for github.py" title="Details for github.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── github.py</pre><p>GitHub operations for delivery runs.</p><dl><dt>What it does</dt><dd>queue_receipt • pull_request_command • merge_command</dd><dt>Inputs</dt><dd>queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str, base_ref: str, policy: QueuePolicy) • pull_request_command(repo: str, head: str, base: str, title: str, body: str) • merge_command(repo: str, pull_request: str, sha: str)</dd><dt>Outputs</dt><dd>queue_receipt → MergeReceipt | None • pull_request_command → list[str] • merge_command → list[str]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/models.toml">models.toml</a>
+      <details class="file-details">
+        <summary aria-label="Details for models.toml" title="Details for models.toml">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">config</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── models.toml</pre><p>Failover order. The first model runs. Quota exhaustion tries the next.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/runner.py">runner.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for runner.py" title="Details for runner.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── runner.py</pre><p>Run one delivery issue against its SQLite checkpoint.</p><dl><dt>What it does</dt><dd>snapshot_result • checkpoint_state • require_same_budget</dd><dt>Inputs</dt><dd>snapshot_result(snapshot: StateSnapshot) • checkpoint_state(values: dict[str, object]) • require_same_budget(stored: str | None, max_budget_usd: BudgetUsd | None)</dd><dt>Outputs</dt><dd>snapshot_result → DeliveryResult • checkpoint_state → DeliveryState | None • require_same_budget → None</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/spec_check.py">spec_check.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for spec_check.py" title="Details for spec_check.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── spec_check.py</pre><p>Pure candidate-bound spec acceptance over the shared resolution ledger.</p><dl><dt>What it does</dt><dd>accept</dd><dt>Inputs</dt><dd>accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate, *, max_rounds: int)</dd><dt>Outputs</dt><dd>accept → AcceptedSpecCheck</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py">stage_output.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for stage_output.py" title="Details for stage_output.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stage_output.py</pre><p>Worker output contracts shared by the CLI prompts and delivery graph.</p><dl><dt>What it does</dt><dd>parse_output</dd><dt>Inputs</dt><dd>parse_output(contract: type[Output], raw: object, *, context: ReviewContext | None=None)</dd><dt>Outputs</dt><dd>parse_output → Output</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages.py">stages.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for stages.py" title="Details for stages.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stages.py</pre><p>Canonical worker contracts, methods and callbacks. Graph successors stay in delivery.</p><dl><dt>What it does</dt><dd>clean_slices • oversized_pr • no_preparation</dd><dt>Inputs</dt><dd>clean_slices(raw: list[Slice] | None, workspace: Workspace | None) • oversized_pr(state: &#x27;DeliveryState&#x27;) • no_preparation(state: &#x27;DeliveryState&#x27;, workspace: Workspace, forge: Forge)</dd><dt>Outputs</dt><dd>clean_slices → list[SliceRecord] • oversized_pr → PullRequestSize | None • no_preparation → tuple[str, PullRequest | None, ReviewScope | None]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/spec.md">spec.md (baseline)</a>
+      <details class="file-details">
+        <summary aria-label="Details for spec.md (baseline)" title="Details for spec.md (baseline)">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">baseline prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stages
+                    └── spec.md</pre><p>Write the spec. Cover the behavior, the product decisions, and the technical design.</p><dl><dt>What it instructs</dt><dd>Write the spec. Cover the behavior, the product decisions, and the technical design.
+Set `spec_gate` to `ready` when a person could implement from the spec.
+Read the target checkout before asking a person. Use Read, Glob and Grep to inspect
+existing behavior and answer questions the code and issue can settle yourself.
+Reserve `needs_human` for intent, product or policy choices, or external facts absent
+from the code and issue. Return non-empty `questions`, each with `question`,
+`why_code_unanswered` and workspace-relative `checked_paths` naming files you read.
+Use empty `checked_paths` only if no checkout file covers the topic, explaining why
+in `why_code_unanswered`. On `ready`, return `questions: []`.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/spec_check.md">spec_check.md (baseline)</a>
+      <details class="file-details">
+        <summary aria-label="Details for spec_check.md (baseline)" title="Details for spec_check.md (baseline)">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">baseline prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stages
+                    └── spec_check.md</pre><p>Check only the supplied candidate and its proof obligations, seams, contracts, scope and failure paths. Read the repository as needed. Do not edit files, repair the candidate, start subagents or publish issues.</p><dl><dt>What it instructs</dt><dd>Check only the supplied candidate and its proof obligations, seams, contracts, scope and failure paths. Read the repository as needed. Do not edit files, repair the candidate, start subagents or publish issues.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><span>spec.py</span>
+      <details class="file-details">
+        <summary aria-label="Details for spec.py" title="Details for spec.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">planned script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── steps
+                    └── spec.py</pre><p>Planned owner. File absent at the baseline.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/workspace.py">workspace.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for workspace.py" title="Details for workspace.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── workspace.py</pre><p>Local checkout operations used by delivery runs.</p><dl><dt>What it does</dt><dd>commit_sha • head_mismatch_detail • added_lines</dd><dt>Inputs</dt><dd>commit_sha(value: str) • head_mismatch_detail(observed: str, verified: str) • added_lines(patch: str)</dd><dt>Outputs</dt><dd>commit_sha → CommitSHA | None • head_mismatch_detail → str • added_lines → frozenset[tuple[str, int]]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_runner.py">test_runner.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_runner.py" title="Details for test_runner.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_runner.py</pre><p>Live runner behavior with offline workers and forge doubles.</p><dl><dt>What it checks</dt><dd>spec worker receives paired questions once • commands use the configured models and parse the final result • each family can use scratch outside checkout • inherited checkout tmpdir is overridden without changing environment • subprocess merges adapter environment with inherited environment</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_spec_candidate.py">test_spec_candidate.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_spec_candidate.py" title="Details for test_spec_candidate.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_spec_candidate.py</pre><p>Description missing from the source file.</p><dl><dt>What it checks</dt><dd>grounded question contract and checkpoint • revision binds all content and ignores mapping order • optional stored provenance round trips through issue and checkpoint • actual accepted failover authors • inherited slice author survives child triage and spec</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_spec_check.py">test_spec_check.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_spec_check.py" title="Details for test_spec_check.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_spec_check.py</pre><p>Description missing from the source file.</p><dl><dt>What it checks</dt><dd>native fixture and contradictions • clear approval is bound and round history roundtrips • interdiff is derived and forged scope is rejected • targets missing renamed and duplicate titles • accounting missing duplicate unknown and reused ids</dd></dl>
+        </div>
+      </details>
+    </li></ul></section>
+      <div class="columns"><section><h2>What happens</h2><ol class="steps"><li><strong>Draft repository-bound slices</strong><p>Candidate and grounded questions when present</p></li><li><strong>Validate repository and seam paths</strong><p>Ordered exact candidate or typed defect</p></li><li><strong>Check and approve the plan</strong><p>Model approval or findings for the checked candidate</p></li><li><strong>File and link child issues</strong><p>Observed children and dependency links</p></li></ol></section>
+      <section><h2>Warp equivalent</h2><p><strong>Planning and plan gate</strong></p>
+      <p>Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and the human&#x27;s review is optional.</p><p><a href="https://docs.warp.dev/factories/blueprints/gates/">Read Warp’s documentation ↗</a></p>
+      <h2>Human gates</h2><ul class="gate-list"><li>
+      <button type="button" popovertarget="spec-gate-draft">Resolve planning choice</button>
+      <div class="gate-pop" id="spec-gate-draft" popover aria-labelledby="spec-gate-draft-title">
+        <h3 id="spec-gate-draft-title">Human gate</h3>
+        <p>Decide the unresolved product, repository, architecture or policy choice.</p><p>The coordinator or personal agent relays the question and posts the answer or cancellation on the issue under the human&#x27;s identity. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on the human.</p>
+        <dl><dt>Accepted</dt><dd>explicit choice or cancel</dd>
+        <dt>Saved</dt><dd>Answer scoped to the candidate and choice</dd>
+        <dt>Resume</dt><dd>draft</dd></dl>
+        <button type="button" popovertarget="spec-gate-draft" popovertargetaction="hide">Close</button>
+      </div></li><li>
+      <button type="button" popovertarget="spec-gate-check">Resolve checker question</button>
+      <div class="gate-pop" id="spec-gate-check" popover aria-labelledby="spec-gate-check-title">
+        <h3 id="spec-gate-check-title">Human gate</h3>
+        <p>Resolve an intent choice identified by the independent checker.</p><p>The coordinator or personal agent relays the question and posts the answer or cancellation on the issue under the human&#x27;s identity. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on the human.</p>
+        <dl><dt>Accepted</dt><dd>explicit choice or cancel</dd>
+        <dt>Saved</dt><dd>Answer scoped to the candidate and choice</dd>
+        <dt>Resume</dt><dd>check</dd></dl>
+        <button type="button" popovertarget="spec-gate-check" popovertargetaction="hide">Close</button>
+      </div></li></ul></section></div>
+      <details class="reference"><summary>Scope, recovery and checks</summary>
+        <p>Read-only target_checkout at pinned base until filing. GitHub child writes stay in target_repository.</p><p>Explicit foreign scope reports invalid_output before the checker. Other candidate defects save evidence, count each rejected digest once, and return to draft only while rejections remain below max_review_rounds. Dispatch reconciles paid calls before any repeat. At file_children, inspect the issue marker and links before repeating an ambiguous write. If the outcome stays ambiguous, stop with publication_unreconciled.</p><ul><li>The candidate digest binds target_repository, pinned base, issue and approved content scope. A changed digest needs fresh validation and checking.</li><li>Validate explicit repository and path identity before a paid plan check. The checker independently assesses ambiguous issue intent and repository ownership.</li><li>Every existing seam is a Git-tracked regular file in the pinned target_checkout. Reject directories and symlinks for all slices, including directly supplied and edit-only slices. A built seam has a single provider. Slice titles are unique. Dependencies are acyclic. Existing edits use existing seams without inventing a new seam.</li><li>The independent model checker can approve the plan after validation. Ready is the drafter&#x27;s claim of completeness.</li><li>The human may comment on, approve or stop a plan through their coordinator or personal agent. The agent posts each response as an issue comment under the human&#x27;s identity. Record “we&#x27;re good” as approval of the identified plan. Continue after the validator and model check clear the plan even without the human&#x27;s review. A recorded stop prevents further filing or building. A separate clarification gate only asks the human to resolve an open choice.</li><li>File children from the cleared candidate only. Adoption verifies marker, repository, parent, body and links. Release only eligible children.</li></ul>
+        <h3>Cases the implementation must pass</h3><ul class="steps"><li><strong>The issue names a seam also present in Foreman&#x27;s installation</strong><p>Brief names target_repository and pinned target_checkout.</p></li><li><strong>Valid typed draft</strong><p>Save one digest scoped to issue, base and repo before independent check.</p></li><li><strong>A slice names a foreign repository or a seam available only in foreman_repository</strong><p>Explicit mismatch stops and wrong root rejects before any builder call.</p></li><li><strong>Synthetic wrong-repository issue with matching seam names in both repositories</strong><p>Checker rejects implied foreign intent and no build or child filing occurs.</p></li><li><strong>The human answers a choice on candidate A then candidate B changes scope</strong><p>Validate and check B and ask any unresolved choice again.</p></li><li><strong>Invalid singleton seam or cyclic parent dependencies</strong><p>Common validator rejects both and the final allowed rejection reports spec_cap.</p></li><li><strong>The model clears a validated plan with no human response or after the agent posts optional human approval on the issue</strong><p>Proceed without a manual approval step. Honor a stop the agent posts under the human&#x27;s identity before implementing or filing.</p></li><li><strong>A child issue or link write times out</strong><p>Adopt the matching result once and complete missing links. Report publication_unreconciled if the write cannot be confirmed.</p></li></ul>
+        <p class="decision-links"><a href="#decisions">Who approves a plan?</a><a href="#decisions">Which worker methods belong in each step?</a><a href="#decisions">Where should checks and evidence live?</a><a href="#decisions">Which paths count as existing seams?</a></p>
+        <a href="target.yaml">Read the full stage contract</a>
+      </details>
+    </section><section class="page" id="implement">
+      <header class="page-head"><h1>Build and publish the change</h1><p>Publish exactly the tree that passed the target repository&#x27;s checks.</p></header>
+      <figure class="diagram" aria-label="Build and publish the change diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Build and publish the change. Arrow keys pan, plus and minus zoom.">
+    <img src="views/stages/implement.svg" draggable="false" alt="Build and publish the change flow diagram" />
+  </div>
+</figure>
+      <section class="file-panel"><h2>Stage files</h2>
+      <ul class="file-list"><li class="file-chip"><a href="prompts/implement.md">implement.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for implement.md" title="Details for implement.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">target prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── docs
+            └── graph
+                └── blueprint
+                    └── prompts
+                        └── implement.md</pre><p>Implement the slice</p><dl><dt>What it instructs</dt><dd>Edit the owned worktree within the cleared slice and acceptance. Run the target repository
+checks and fix concrete failures within the allowance. On a repair, address the evidenced
+blocking defects on the existing PR. Keep evidence requested by the issue or repository.
+Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/benchmark-checklist/SKILL.md">SKILL.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for SKILL.md" title="Details for SKILL.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">skill</span>
+          <pre>cursor
+    └── plugins
+        └── pstack
+            └── skills
+                └── benchmark-checklist
+                    └── SKILL.md</pre><p>Vet a perf measurement (limiter, tuning, limits, errors, repeatability, relevance, and whether the work happened) before you report or act on it. Use when you run a benchmark or report a speedup or regression you measured.</p><dl><dt>Method steps</dt><dd>Verify benchmark conditions (lines 13–27)</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/tdd/SKILL.md">SKILL.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for SKILL.md" title="Details for SKILL.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">skill</span>
+          <pre>cursor
+    └── plugins
+        └── pstack
+            └── skills
+                └── tdd
+                    └── SKILL.md</pre><p>Use only when the user explicitly asks for TDD, a failing test, or a regression test, OR when the bug has an obvious cheap local test target. Skip when the test path is unclear, expensive, integration-heavy, or not requested.</p><dl><dt>Method steps</dt><dd>Reproduce cheaply and rerun the focused regression check. (lines 9–31)</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/check_output.py">check_output.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for check_output.py" title="Details for check_output.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── check_output.py</pre><p>Bounded, sanitized verifier diagnostics. Raw output is never retained.</p><dl><dt>What it does</dt><dd>text</dd><dt>Inputs</dt><dd>text(self)</dd><dt>Outputs</dt><dd>text → str</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py">delivery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for delivery.py" title="Details for delivery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── delivery.py</pre><p>The delivery graph. Edges live here. Models live in models.toml.</p><dl><dt>What it does</dt><dd>unknown_usage • run_tokens • review_count</dd><dt>Inputs</dt><dd>unknown_usage(stage: str, model: str | None) • run_tokens(attempts: list[AttemptRecord]) • review_count(state: DeliveryState | DeliveryResult)</dd><dt>Outputs</dt><dd>unknown_usage → str • run_tokens → int • review_count → int</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/github.py">github.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for github.py" title="Details for github.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── github.py</pre><p>GitHub operations for delivery runs.</p><dl><dt>What it does</dt><dd>queue_receipt • pull_request_command • merge_command</dd><dt>Inputs</dt><dd>queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str, base_ref: str, policy: QueuePolicy) • pull_request_command(repo: str, head: str, base: str, title: str, body: str) • merge_command(repo: str, pull_request: str, sha: str)</dd><dt>Outputs</dt><dd>queue_receipt → MergeReceipt | None • pull_request_command → list[str] • merge_command → list[str]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/models.toml">models.toml</a>
+      <details class="file-details">
+        <summary aria-label="Details for models.toml" title="Details for models.toml">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">config</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── models.toml</pre><p>Failover order. The first model runs. Quota exhaustion tries the next.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py">stage_output.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for stage_output.py" title="Details for stage_output.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stage_output.py</pre><p>Worker output contracts shared by the CLI prompts and delivery graph.</p><dl><dt>What it does</dt><dd>parse_output</dd><dt>Inputs</dt><dd>parse_output(contract: type[Output], raw: object, *, context: ReviewContext | None=None)</dd><dt>Outputs</dt><dd>parse_output → Output</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/implement.md">implement.md (baseline)</a>
+      <details class="file-details">
+        <summary aria-label="Details for implement.md (baseline)" title="Details for implement.md (baseline)">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">baseline prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stages
+                    └── implement.md</pre><p>Implement the change in the repository. Fix every unresolved finding in findings, including nits.</p><dl><dt>What it instructs</dt><dd>Implement the change in the repository. Fix every unresolved finding in findings, including nits.
+Foreman owns commits and publishing. Write edits and evidence files; do not commit or publish.
+Edit the files in the provided checkout. Follow the spec when one is present.
+Summarize the changes in `implementation`.
+A test must check a behavior the change can break. Do not add a test that restates the code.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><span>implement.py</span>
+      <details class="file-details">
+        <summary aria-label="Details for implement.py" title="Details for implement.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">planned script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── steps
+                    └── implement.py</pre><p>Planned owner. File absent at the baseline.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/workspace.py">workspace.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for workspace.py" title="Details for workspace.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── workspace.py</pre><p>Local checkout operations used by delivery runs.</p><dl><dt>What it does</dt><dd>commit_sha • head_mismatch_detail • added_lines</dd><dt>Inputs</dt><dd>commit_sha(value: str) • head_mismatch_detail(observed: str, verified: str) • added_lines(patch: str)</dd><dt>Outputs</dt><dd>commit_sha → CommitSHA | None • head_mismatch_detail → str • added_lines → frozenset[tuple[str, int]]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_delivery.py">test_delivery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_delivery.py" title="Details for test_delivery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_delivery.py</pre><p>Test delivery.</p><dl><dt>What it checks</dt><dd>graph receives the skill source as an input • passing a slice starts a slice run • clear change skips spec • ready spec is implemented • ready spec keeps the loaded slice proof obligations</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_dispatch_recovery.py">test_dispatch_recovery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_dispatch_recovery.py" title="Details for test_dispatch_recovery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_dispatch_recovery.py</pre><p>Description missing from the source file.</p><dl><dt>What it checks</dt><dd>fresh process crash after success or quota never replays</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_publication.py">test_publication.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_publication.py" title="Details for test_publication.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_publication.py</pre><p>Description missing from the source file.</p><dl><dt>What it checks</dt><dd>new branch uses origin with stale missing or detached local base • creation uses resolved sha even if shared remote ref moves • prepare crash and checkpoint resume keep selected parent • incompatible existing branch is not adopted • existing branch at origin is adopted from divergent detached head</dd></dl>
+        </div>
+      </details>
+    </li></ul></section>
+      <div class="columns"><section><h2>What happens</h2><ol class="steps"><li><strong>Prepare and reconcile the worktree</strong><p>Trusted checkout and attempt parent</p></li><li><strong>Edit and run target repository checks</strong><p>Checked candidate tree, exact command failure, or the shared optional human_question for the acceptance gate</p></li><li><strong>Commit or adopt the checked tree</strong><p>Exact commit with tested tree</p></li><li><strong>Publish the checked commit</strong><p>Confirmed repository, PR, branch, base and head</p></li></ol></section>
+      <section><h2>Warp equivalent</h2><p><strong>Building and revisions</strong></p>
+      <p>Foreman owns Git integrity and exact publication recovery across local CLI interruptions.</p><p><a href="https://docs.warp.dev/guides/agent-workflows/running-an-issue-to-pr-blueprint/">Read Warp’s documentation ↗</a></p>
+      <h2>Human gates</h2><ul class="gate-list"><li>
+      <button type="button" popovertarget="implement-gate-edit">Resolve acceptance choice</button>
+      <div class="gate-pop" id="implement-gate-edit" popover aria-labelledby="implement-gate-edit-title">
+        <h3 id="implement-gate-edit-title">Human gate</h3>
+        <p>Decide an unresolved acceptance choice before further editing.</p><p>The coordinator or personal agent relays the question and posts the answer or cancellation on the issue under the human&#x27;s identity. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on the human.</p>
+        <dl><dt>Accepted</dt><dd>explicit choice or cancel</dd>
+        <dt>Saved</dt><dd>Answer bound to issue and current attempt</dd>
+        <dt>Resume</dt><dd>edit</dd></dl>
+        <button type="button" popovertarget="implement-gate-edit" popovertargetaction="hide">Close</button>
+      </div></li></ul></section></div>
+      <details class="reference"><summary>Scope, recovery and checks</summary>
+        <p>Exclusive target_checkout, candidate issue, attempt parent, owned branch and matching PR. No direct base-branch writes.</p><p>Save failed command and exit evidence and increment the check-failure count before comparison. Below the existing cap resume edit on the reconciled candidate. At the cap report verify_cap. Re-enter commit by validating the recorded parent and expected tree. Re-enter publish by reading the remote branch and matching PR before any repeated write. If the outcome remains ambiguous, stop with publication_unreconciled. Dispatch owns paid attempt accounting.</p><ul><li>Preserve the tree on branch, ancestry or fingerprint mismatch. Reject scratch files and unexpected outside edits before commit. No force push.</li><li>Run the deterministic required repository command in edit against the final candidate. Capture the candidate tree before and after a successful command. Commit may publish only the unchanged checked tree. Receipt binds command, result and tree.</li><li>Use the owned PR branch for repairs. Only a confirmed GitHub conflict allows a base merge.</li><li>Publication validates repository, issue marker, branch, base and exact head. A moved head loses prior check and review authority. Unrecognized work is preserved and never adopted.</li><li>Report the changed-line count for the checked tree. Change size does not block publication. Acceptance-specific evidence stays in the issue and tests.</li></ul>
+        <h3>Cases the implementation must pass</h3><ul class="steps"><li><strong>A saved session and partial edits with unexpected branch or fingerprint</strong><p>Preserve work and refuse unsafe resume.</p></li><li><strong>A local check fails then passes within the allowance</strong><p>Return exact failure to edit and publish only the tested tree.</p></li><li><strong>Detached HEAD, unrelated history, scratch inclusion or tree changes after checks</strong><p>Stop before push and preserve evidence.</p></li><li><strong>Commit succeeded before checkpoint failure with recorded parent and expected tree</strong><p>Adopt the matching clean commit once.</p></li><li><strong>Timed-out push already placed the checked head on the remote</strong><p>Adopt without a second push.</p></li><li><strong>A PR open times out</strong><p>Adopt the verified matching PR once or report publication_unreconciled if observation cannot establish the outcome.</p></li></ul>
+        <p class="decision-links"><a href="#decisions">Keep the 400-line cap?</a><a href="#decisions">Which conversation continues?</a><a href="#decisions">Which worker methods belong in each step?</a><a href="#decisions">Where should checks and evidence live?</a></p>
+        <a href="target.yaml">Read the full stage contract</a>
+      </details>
+    </section><section class="page" id="review">
+      <header class="page-head"><h1>Review the full pull request</h1><p>Post evidence for the current head and route on typed severity.</p></header>
+      <figure class="diagram" aria-label="Review the full pull request diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Review the full pull request. Arrow keys pan, plus and minus zoom.">
+    <img src="views/stages/review.svg" draggable="false" alt="Review the full pull request flow diagram" />
+  </div>
+</figure>
+      <section class="file-panel"><h2>Stage files</h2>
+      <ul class="file-list"><li class="file-chip"><a href="prompts/review.md">review.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for review.md" title="Details for review.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">target prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── docs
+            └── graph
+                └── blueprint
+                    └── prompts
+                        └── review.md</pre><p>Review the full pull request</p><dl><dt>What it instructs</dt><dd>Assess the complete current PR at its named diff base and head on every round. Read committed
+files through the supplied read-only view. Honor settled rulings while their evidence applies.
+Give findings with a location, severity, impact and concrete evidence. Reserve P0 and P1 for
+substantive correctness, security or scope defects. Report other observations as advisory.
+Return questions about unresolved intent that changes the review verdict for the coordinator or
+personal agent to relay. Foreman posts findings and routes.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py">delivery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for delivery.py" title="Details for delivery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── delivery.py</pre><p>The delivery graph. Edges live here. Models live in models.toml.</p><dl><dt>What it does</dt><dd>unknown_usage • run_tokens • review_count</dd><dt>Inputs</dt><dd>unknown_usage(stage: str, model: str | None) • run_tokens(attempts: list[AttemptRecord]) • review_count(state: DeliveryState | DeliveryResult)</dd><dt>Outputs</dt><dd>unknown_usage → str • run_tokens → int • review_count → int</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/github.py">github.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for github.py" title="Details for github.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── github.py</pre><p>GitHub operations for delivery runs.</p><dl><dt>What it does</dt><dd>queue_receipt • pull_request_command • merge_command</dd><dt>Inputs</dt><dd>queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str, base_ref: str, policy: QueuePolicy) • pull_request_command(repo: str, head: str, base: str, title: str, body: str) • merge_command(repo: str, pull_request: str, sha: str)</dd><dt>Outputs</dt><dd>queue_receipt → MergeReceipt | None • pull_request_command → list[str] • merge_command → list[str]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/models.toml">models.toml</a>
+      <details class="file-details">
+        <summary aria-label="Details for models.toml" title="Details for models.toml">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">config</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── models.toml</pre><p>Failover order. The first model runs. Quota exhaustion tries the next.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/review_context.py">review_context.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for review_context.py" title="Details for review_context.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── review_context.py</pre><p>Immutable facts about the two committed trees in a pull request review.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/review_round.py">review_round.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for review_round.py" title="Details for review_round.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── review_round.py</pre><p>Review history, PR scope and graph-check adapter over ResolutionLedger.</p><dl><dt>What it does</dt><dd>accept • history • graph_check</dd><dt>Inputs</dt><dd>accept(past: ReviewHistory, output: ReviewOutput, head: str, gate: GraphCheck | None) • history(raw: object) • graph_check(state: &#x27;DeliveryState&#x27;)</dd><dt>Outputs</dt><dd>accept → AcceptedReview • history → ReviewHistory • graph_check → GraphEvidence | None</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/skills/review-quality.md">review-quality.md</a>
+      <details class="file-details">
+        <summary aria-label="Details for review-quality.md" title="Details for review-quality.md">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">skill</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── skills
+                    └── review-quality.md</pre><p>Review quality</p><dl><dt>Method steps</dt><dd>Cite evidence and assign severity. (lines 3–7)</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py">stage_output.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for stage_output.py" title="Details for stage_output.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stage_output.py</pre><p>Worker output contracts shared by the CLI prompts and delivery graph.</p><dl><dt>What it does</dt><dd>parse_output</dd><dt>Inputs</dt><dd>parse_output(contract: type[Output], raw: object, *, context: ReviewContext | None=None)</dd><dt>Outputs</dt><dd>parse_output → Output</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages.py">stages.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for stages.py" title="Details for stages.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stages.py</pre><p>Canonical worker contracts, methods and callbacks. Graph successors stay in delivery.</p><dl><dt>What it does</dt><dd>clean_slices • oversized_pr • no_preparation</dd><dt>Inputs</dt><dd>clean_slices(raw: list[Slice] | None, workspace: Workspace | None) • oversized_pr(state: &#x27;DeliveryState&#x27;) • no_preparation(state: &#x27;DeliveryState&#x27;, workspace: Workspace, forge: Forge)</dd><dt>Outputs</dt><dd>clean_slices → list[SliceRecord] • oversized_pr → PullRequestSize | None • no_preparation → tuple[str, PullRequest | None, ReviewScope | None]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/review.md">review.md (baseline)</a>
+      <details class="file-details">
+        <summary aria-label="Details for review.md (baseline)" title="Details for review.md (baseline)">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">baseline prompt</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stages
+                    └── review.md</pre><p>Review round 1 in full. Later rounds check unresolved findings and added interdiff lines also in the PR diff.</p><dl><dt>What it instructs</dt><dd>Review round 1 in full. Later rounds check unresolved findings and added interdiff lines also in the PR diff.
+Read the labeled PR diff and, in later rounds, the history-only interdiff with the Workspace commands below.
+Run each granted command on its own. Do not chain commands or add pipes, formatters, or flags.
+Use the labeled tree listings and blob commands for committed content, including unchanged dependencies.
+If an earlier attempt was denied, redo the complete required review at this same scope. Its output was discarded.
+Treat &quot;Settled, don&#x27;t reopen&quot; as rulings. If you disagree, reference the ruling ID in ruling_id so the graph records a coordinator note.
+List every outside-tool fact the diff relies on in tool_facts, such as a CLI flag, output field, error string, exit code, or model ID.
+When a fact record is declared, cite each claim by its entry ID at verified_head and check that the fixture supports it. Otherwise use null fixture references. Use null if no fixture supports a claim.
+Report alignment, impact, verification, rollback, and error_detection as dimensions with applies, assessment and nonempty evidence.
+Every dimension must cite at least one changed path. For applies=false explain why it is inapplicable and still ground it in evidence.
+Each citation has side (base or head), repository-relative path and line (positive integer or null for the whole path).
+Paths and text lines must exist in that committed tree. Use base for deletions or rename sources in the full PR diff from the merge-base, never for deletions only in the interdiff from previous. Binary and mode-only changes permit whole-path citations; binaries have no text lines.
+A previous-only path is never risk evidence, even with line=null. Resolve its earlier finding by ID and ground dimensions in the remaining net PR changes. Previous is for navigation only and is not a citation side.
+Unchanged dependency evidence is allowed alongside changed-path evidence. Findings may cite any existing head text line, regardless of inline posting eligibility.
+These rules apply in every round even with no findings or new added lines. The schema checks structural grounding, not prose truth or completeness.
+Set level to low, medium, or high. The graph derives the verdict from findings and resolutions.</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><span>review.py</span>
+      <details class="file-details">
+        <summary aria-label="Details for review.py" title="Details for review.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">planned script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── steps
+                    └── review.py</pre><p>Planned owner. File absent at the baseline.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_review_availability.py">test_review_availability.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_review_availability.py" title="Details for test_review_availability.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_review_availability.py</pre><p>Reviewer eligibility and checkpoint recovery across independent processes.</p><dl><dt>What it checks</dt><dd>selection matrix and full history • fresh process availability and recovery • failover recovers but invalid or failed reviews are terminal • mixed history completes and single family can run • budget and indeterminate usage stop before same family call</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_review_context.py">test_review_context.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_review_context.py" title="Details for test_review_context.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_review_context.py</pre><p>Description missing from the source file.</p><dl><dt>What it checks</dt><dd>statuses assign paths to the side where they exist • nul delimiters preserve path characters • unknown or incomplete records fail closed • captured git records • malformed line counts fail closed</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_review_rounds.py">test_review_rounds.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_review_rounds.py" title="Details for test_review_rounds.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_review_rounds.py</pre><p>Test review rounds.</p><dl><dt>What it checks</dt><dd>three pinned trees across rounds and unavailable dispatch • claude grants each rendered review command • worker refuses scratch root inside checkout • review payload stays off exec argv • denied review retry resume quota and budget</dd></dl>
+        </div>
+      </details>
+    </li></ul></section>
+      <div class="columns"><section><h2>What happens</h2><ol class="steps"><li><strong>Assess the complete current PR</strong><p>Typed findings pinned to head and base</p></li><li><strong>Post exact-head findings</strong><p>Observed GitHub report and typed severity</p></li><li><strong>Route by finding severity</strong><p>Repair or merge or named stop</p></li></ol></section>
+      <section><h2>Warp equivalent</h2><p><strong>Reviewing and revision routing</strong></p>
+      <p>Foreman uses a separate reviewer and a typed P0 or P1 route while GitHub retains approval authority.</p><p><a href="https://docs.warp.dev/factories/blueprints/routes/">Read Warp’s documentation ↗</a></p>
+      <h2>Human gates</h2><ul class="gate-list"><li>
+      <button type="button" popovertarget="review-gate-inspect">Resolve scope or rule</button>
+      <div class="gate-pop" id="review-gate-inspect" popover aria-labelledby="review-gate-inspect-title">
+        <h3 id="review-gate-inspect-title">Human gate</h3>
+        <p>Decide a disputed scope or product rule for the reviewed head.</p><p>The coordinator or personal agent relays the question and posts the answer or cancellation on the issue under the human&#x27;s identity. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on the human.</p>
+        <dl><dt>Accepted</dt><dd>scoped ruling or cancel</dd>
+        <dt>Saved</dt><dd>Ruling bound to finding and head</dd>
+        <dt>Resume</dt><dd>inspect</dd></dl>
+        <button type="button" popovertarget="review-gate-inspect" popovertargetaction="hide">Close</button>
+      </div></li></ul></section></div>
+      <details class="reference"><summary>Scope, recovery and checks</summary>
+        <p>Full PR diff at current head and recorded diff base. Review worker has read-only access.</p><p>Before posting, re-read the current head. Adopt the exact saved report marker if publication was ambiguous. If the outcome stays ambiguous, stop with publication_unreconciled. Use git_failed for a definitive PR or diff read failure. Count each completed blocking round once before comparison. At the cap report review_cap without another repair. Reconcile an owned moved head before re-review. Dispatch owns worker availability.</p><ul><li>Every round starts a fresh session and assesses the full current PR. Prior diffs or rulings are context and cannot carry review authority across heads.</li><li>Prefer a qualified model from a different family from the builders. If none is available, use the next available qualified model in models.toml order, including the builder&#x27;s family. Review has no separate availability wait.</li><li>Severity is an enum with P0 then P1 then none. Only concrete correctness, security or scope defects qualify. P2 and lower remain comments.</li><li>The missing optional tool record alone cannot be classified as a defect. A reviewer cannot approve or merge.</li></ul>
+        <h3>Cases the implementation must pass</h3><ul class="steps"><li><strong>A later revision retains a defective unchanged hunk</strong><p>Detect it in the full pinned diff and discard earlier clearance.</p></li><li><strong>A correct change lacks an optional tool record</strong><p>Post an advisory note and route none with zero repair calls for that note.</p></li><li><strong>A repairable P1 and an advisory note both exist</strong><p>Record P1 ahead of none and repair the same PR below cap.</p></li><li><strong>A legitimate repair completes and a previous optional evidence note reappears</strong><p>No second repair for that note and fresh full review at the current head.</p></li><li><strong>Preferred reviewers run out of quota or have no installed CLI</strong><p>Start a fresh session with the next available qualified model. Pause in the shared quota wait only if all qualified models are unavailable. Resume selection there. Review emits no availability halt.</p></li><li><strong>Posting a review times out</strong><p>Adopt only the exact saved report marker or report publication_unreconciled when the write cannot be reconciled.</p></li></ul>
+        <p class="decision-links"><a href="#decisions">What sends a pull request back?</a><a href="#decisions">Which conversation continues?</a><a href="#decisions">Which worker methods belong in each step?</a><a href="#decisions">Where should checks and evidence live?</a></p>
+        <a href="target.yaml">Read the full stage contract</a>
+      </details>
+    </section><section class="page" id="merge">
+      <header class="page-head"><h1>Queue and confirm the merge</h1><p>Arm only the reviewed checked head and report GitHub&#x27;s observed result.</p></header>
+      <figure class="diagram" aria-label="Queue and confirm the merge diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Queue and confirm the merge. Arrow keys pan, plus and minus zoom.">
+    <img src="views/stages/merge.svg" draggable="false" alt="Queue and confirm the merge flow diagram" />
+  </div>
+</figure>
+      <section class="file-panel"><h2>Stage files</h2>
+      <ul class="file-list"><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py">delivery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for delivery.py" title="Details for delivery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── delivery.py</pre><p>The delivery graph. Edges live here. Models live in models.toml.</p><dl><dt>What it does</dt><dd>unknown_usage • run_tokens • review_count</dd><dt>Inputs</dt><dd>unknown_usage(stage: str, model: str | None) • run_tokens(attempts: list[AttemptRecord]) • review_count(state: DeliveryState | DeliveryResult)</dd><dt>Outputs</dt><dd>unknown_usage → str • run_tokens → int • review_count → int</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/github.py">github.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for github.py" title="Details for github.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── github.py</pre><p>GitHub operations for delivery runs.</p><dl><dt>What it does</dt><dd>queue_receipt • pull_request_command • merge_command</dd><dt>Inputs</dt><dd>queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str, base_ref: str, policy: QueuePolicy) • pull_request_command(repo: str, head: str, base: str, title: str, body: str) • merge_command(repo: str, pull_request: str, sha: str)</dd><dt>Outputs</dt><dd>queue_receipt → MergeReceipt | None • pull_request_command → list[str] • merge_command → list[str]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/outcomes.py">outcomes.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for outcomes.py" title="Details for outcomes.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── outcomes.py</pre><p>One policy row per delivery halt, independent of graph execution.</p><dl><dt>What it does</dt><dd>halted • exit_code</dd><dt>Inputs</dt><dd>halted(reason: Halt, detail: str, path: str | None) • exit_code(code: str | None)</dd><dt>Outputs</dt><dd>halted → &#x27;DeliveryUpdate&#x27; • exit_code → int</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/readiness.py">readiness.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for readiness.py" title="Details for readiness.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── readiness.py</pre><p>Typed GitHub policy and commit evidence for a single PR observation.</p><dl><dt>What it does</dt><dd>detail</dd><dt>Inputs</dt><dd>detail(self)</dd><dt>Outputs</dt><dd>detail → str</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/runner.py">runner.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for runner.py" title="Details for runner.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── runner.py</pre><p>Run one delivery issue against its SQLite checkpoint.</p><dl><dt>What it does</dt><dd>snapshot_result • checkpoint_state • require_same_budget</dd><dt>Inputs</dt><dd>snapshot_result(snapshot: StateSnapshot) • checkpoint_state(values: dict[str, object]) • require_same_budget(stored: str | None, max_budget_usd: BudgetUsd | None)</dd><dt>Outputs</dt><dd>snapshot_result → DeliveryResult • checkpoint_state → DeliveryState | None • require_same_budget → None</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><span>merge.py</span>
+      <details class="file-details">
+        <summary aria-label="Details for merge.py" title="Details for merge.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">planned script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── steps
+                    └── merge.py</pre><p>Planned owner. File absent at the baseline.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_delivery.py">test_delivery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_delivery.py" title="Details for test_delivery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_delivery.py</pre><p>Test delivery.</p><dl><dt>What it checks</dt><dd>graph receives the skill source as an input • passing a slice starts a slice run • clear change skips spec • ready spec is implemented • ready spec keeps the loaded slice proof obligations</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_merge_receipt.py">test_merge_receipt.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_merge_receipt.py" title="Details for test_merge_receipt.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_merge_receipt.py</pre><p>Description missing from the source file.</p><dl><dt>What it checks</dt><dd>captures establish schema and queue contract • normal success requires observed receipt and policy method • replay existing admission or merged never writes • timeout confirmation and rejected write stderr • locked and advanced base are eligible</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_readiness.py">test_readiness.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_readiness.py" title="Details for test_readiness.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_readiness.py</pre><p>Description missing from the source file.</p><dl><dt>What it checks</dt><dd>every outcome has an explicit halt policy • source and synthetic merge success • missing wrong app wrong head and unrelated merge • pending red skipped and latest rerun • conflict unknown policy and race</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_runner.py">test_runner.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_runner.py" title="Details for test_runner.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_runner.py</pre><p>Live runner behavior with offline workers and forge doubles.</p><dl><dt>What it checks</dt><dd>spec worker receives paired questions once • commands use the configured models and parse the final result • each family can use scratch outside checkout • inherited checkout tmpdir is overridden without changing environment • subprocess merges adapter environment with inherited environment</dd></dl>
+        </div>
+      </details>
+    </li></ul></section>
+      <div class="columns"><section><h2>What happens</h2><ol class="steps"><li><strong>Queue the exact reviewed head</strong><p>Observed queue or arm receipt</p></li><li><strong>Read the GitHub merge outcome</strong><p>Matching merge receipt or typed alternate outcome</p></li><li><strong>Recheck Ready dependent issues</strong><p>Eligible issues return to admission without another Ready transition</p></li><li><strong>Record the typed merge outcome</strong><p>Persisted run result or repair route</p></li></ol></section>
+      <section><h2>Warp equivalent</h2><p><strong>Handoff and completion after merge</strong></p>
+      <p>Foreman arms a checked head to meet the autonomous finish line</p><p><a href="https://docs.warp.dev/factories/how-factories-work/">Read Warp’s documentation ↗</a></p>
+      <h2>Human gates</h2><ul class="gate-list"><li>
+      <button type="button" popovertarget="merge-gate-observe">Confirm revision ownership</button>
+      <div class="gate-pop" id="merge-gate-observe" popover aria-labelledby="merge-gate-observe-title">
+        <h3 id="merge-gate-observe-title">Human gate</h3>
+        <p>Provide evidence for the ownership of the unexpected PR revision.</p><p>The coordinator or personal agent relays the question and posts the answer or cancellation on the issue under the human&#x27;s identity. Only an answer to the open question continues the run. Silence keeps the gate open. An unrelated reply does not count. Gates are only for unresolved questions. Plan approval never waits on the human.</p>
+        <dl><dt>Accepted</dt><dd>scoped evidence or cancel</dd>
+        <dt>Saved</dt><dd>Evidence bound to PR and observed head</dd>
+        <dt>Resume</dt><dd>observe</dd></dl>
+        <button type="button" popovertarget="merge-gate-observe" popovertargetaction="hide">Close</button>
+      </div></li></ul></section></div>
+      <details class="reference"><summary>Scope, recovery and checks</summary>
+        <p>Exact target repository PR, branch, base, checked head and GitHub merge receipt.</p><p>Pending checks or approvals pause arm. Pending queue pauses observe. Reconcile the saved PR and arm receipt before a repeated write. A fixable owned head, queue or CI failure routes to implement. A known already checked head routes to review. Preserve an unrecognized head and open the head_unverified gate. Report a mismatched merge revision without credit or dependency release.</p><p>The GitHub PR record captured at merge must show merged=true and head.sha equal to the reviewed head. Record merge_commit_sha separately because a squash or queue merge can produce a different SHA. <a href="https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request">GitHub PR API ↗</a></p><ul><li>Required CI is green and GitHub eligibility is fresh for the assessed head before arm. GitHub enforces approvals, rulesets and merge-group checks.</li><li>Expand queue authority through synthetic replays, live smoke, about three real issues and normal volume.</li><li>Keep merge_held until a synthetic repository probe proves that neither an outside writer nor the App can move the source branch while the arm is open. The exact-head arm argument protects only the request.</li><li>A queue acknowledgment stays pending. An authenticated relevant GitHub event wakes the checkpoint and Foreman re-reads GitHub.</li><li>After a matching merge, recheck admission for every dependent already in Ready. Admit only when all of its prerequisites merged. Reuse intake deduplication and keep the card in Ready until admitted.</li><li>Foreman verifies the repository, PR, issue and owned branch from GitHub evidence and verifies Git ancestry against the saved owned revision. The human&#x27;s ruling supplies evidence. Keep the head_unverified gate open until Foreman verifies both. Only verified heads can route to review or repair.</li></ul>
+        <h3>Cases the implementation must pass</h3><ul class="steps"><li><strong>The PR moves before arm or source policy has no accepted probe</strong><p>Stale evidence cannot arm and unproven policy reports merge_held.</p></li><li><strong>GitHub reports a squash or queue merge with a distinct merge commit SHA</strong><p>Record both SHAs and accept the merge only when the PR head at merge matches the reviewed head.</p></li><li><strong>Queue pending and rejection precede the matching merge of the last prerequisite for an already-Ready issue, with duplicate wakes</strong><p>Wait, repair, then recheck admission and admit the dependent once without another Ready transition.</p></li><li><strong>The human says an unexpected head belongs to the run but lineage has no verification</strong><p>Stay at head_unverified without adopting or repairing the revision.</p></li><li><strong>GitHub arms the PR before interruption or reports a merge of an unreviewed head</strong><p>Adopt the existing arm once and give no delivery credit or dependent release to the unreviewed head.</p></li><li><strong>An answer, child issue plan, cancellation, queued PR, closed PR and confirmed merge</strong><p>Distinct typed exits with no completion for a queued PR.</p></li></ul>
+        <p class="decision-links"><a href="#decisions">Who queues the pull request?</a><a href="#decisions">What happens after an interruption?</a></p>
+        <a href="target.yaml">Read the full stage contract</a>
+      </details>
+    </section><section class="page" id="dispatch">
+      <header class="page-head"><h1>Run or resume a worker attempt</h1><p>Bound each paid attempt and recover its result once.</p></header>
+      <figure class="diagram" aria-label="Run or resume a worker attempt diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Run or resume a worker attempt. Arrow keys pan, plus and minus zoom.">
+    <img src="views/dispatch.svg" draggable="false" alt="Run or resume a worker attempt flow diagram" />
+  </div>
+</figure>
+      <section class="file-panel"><h2>Stage files</h2>
+      <ul class="file-list"><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/adapters/claude.py">claude.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for claude.py" title="Details for claude.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── adapters
+                    └── claude.py</pre><p>Description missing from the source file.</p><dl><dt>What it does</dt><dd>read_usage • outcome • command</dd><dt>Inputs</dt><dd>read_usage(self) • outcome(self, process: CompletedProcess[str], model_id: str, call: Call) • command(self, call: Call)</dd><dt>Outputs</dt><dd>read_usage → Usage | None • outcome → Outcome • command → list[str]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/adapters/codex.py">codex.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for codex.py" title="Details for codex.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── adapters
+                    └── codex.py</pre><p>Run one Codex turn and read its JSONL result.</p><dl><dt>What it does</dt><dd>read_usage</dd><dt>Inputs</dt><dd>read_usage(report: object)</dd><dt>Outputs</dt><dd>read_usage → Usage | None</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/adapters/grok.py">grok.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for grok.py" title="Details for grok.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── adapters
+                    └── grok.py</pre><p>Description missing from the source file.</p><dl><dt>What it does</dt><dd>outcome • command</dd><dt>Inputs</dt><dd>outcome(self, process: CompletedProcess[str], model_id: str, call: Call) • command(self, call: Call)</dd><dt>Outputs</dt><dd>outcome → Outcome • command → list[str]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/budget.py">budget.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for budget.py" title="Details for budget.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── budget.py</pre><p>Pure work-token and Claude dollar accounting over a run&#x27;s attempt history.</p><dl><dt>What it does</dt><dd>claude_spend • dollar_admission • Charge canonical fresh input, cache creation and output once.</dd><dt>Inputs</dt><dd>claude_spend(attempts: Sequence[AttemptRecord]) • dollar_admission(limit: BudgetUsd, attempts: Sequence[AttemptRecord]) • work_tokens(attempts: Sequence[AttemptRecord])</dd><dt>Outputs</dt><dd>claude_spend → Decimal | None • dollar_admission → Remaining | Exhausted | CostUnknown • work_tokens → int | None</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/config.py">config.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for config.py" title="Details for config.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── config.py</pre><p>Model assignment. This is data. A node does not get to rewrite it.</p><dl><dt>What it does</dt><dd>family • parse_config • load_config</dd><dt>Inputs</dt><dd>family(model: str) • parse_config(data: object) • load_config(path: Path | None=None)</dd><dt>Outputs</dt><dd>family → str • parse_config → Config • load_config → Config</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/dispatch.py">dispatch.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for dispatch.py" title="Details for dispatch.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── dispatch.py</pre><p>Model handler and dispatch errors.</p><dl><dt>What it does</dt><dd>clean_outcome</dd><dt>Inputs</dt><dd>clean_outcome(outcome: Outcome)</dd><dt>Outputs</dt><dd>clean_outcome → Outcome</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/models.toml">models.toml</a>
+      <details class="file-details">
+        <summary aria-label="Details for models.toml" title="Details for models.toml">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">config</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── models.toml</pre><p>Failover order. The first model runs. Quota exhaustion tries the next.</p><dl></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/runner.py">runner.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for runner.py" title="Details for runner.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── runner.py</pre><p>Run one delivery issue against its SQLite checkpoint.</p><dl><dt>What it does</dt><dd>snapshot_result • checkpoint_state • require_same_budget</dd><dt>Inputs</dt><dd>snapshot_result(snapshot: StateSnapshot) • checkpoint_state(values: dict[str, object]) • require_same_budget(stored: str | None, max_budget_usd: BudgetUsd | None)</dd><dt>Outputs</dt><dd>snapshot_result → DeliveryResult • checkpoint_state → DeliveryState | None • require_same_budget → None</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/skill_rules.py">skill_rules.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for skill_rules.py" title="Details for skill_rules.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── skill_rules.py</pre><p>Worker methods selected by delivery state.</p><dl><dt>What it does</dt><dd>principle • git • export_skills</dd><dt>Inputs</dt><dd>principle(name: str) • git(root: Path, *args: str) • export_skills(pin: PstackPin, scratch: Path)</dd><dt>Outputs</dt><dd>principle → SkillRule • git → str • export_skills → Path</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages.py">stages.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for stages.py" title="Details for stages.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── stages.py</pre><p>Canonical worker contracts, methods and callbacks. Graph successors stay in delivery.</p><dl><dt>What it does</dt><dd>clean_slices • oversized_pr • no_preparation</dd><dt>Inputs</dt><dd>clean_slices(raw: list[Slice] | None, workspace: Workspace | None) • oversized_pr(state: &#x27;DeliveryState&#x27;) • no_preparation(state: &#x27;DeliveryState&#x27;, workspace: Workspace, forge: Forge)</dd><dt>Outputs</dt><dd>clean_slices → list[SliceRecord] • oversized_pr → PullRequestSize | None • no_preparation → tuple[str, PullRequest | None, ReviewScope | None]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/worker.py">worker.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for worker.py" title="Details for worker.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── worker.py</pre><p>Run a pinned worker and read its final stage result.</p><dl><dt>What it does</dt><dd>run_worker_command</dd><dt>Inputs</dt><dd>run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str])</dd><dt>Outputs</dt><dd>run_worker_command → subprocess.CompletedProcess[str]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/worker_auth.py">worker_auth.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for worker_auth.py" title="Details for worker_auth.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">script</span>
+          <pre>bookout-labs
+    └── tools
+        └── src
+            └── foreman
+                └── worker_auth.py</pre><p>Per-command App authentication for factory network commands.</p><dl><dt>What it does</dt><dd>environment • validate_config • git_command</dd><dt>Inputs</dt><dd>environment(studio: str | None) • validate_config(url: str) • git_command(args: list[str])</dd><dt>Outputs</dt><dd>environment → dict[str, str] • validate_config → None • git_command → list[str]</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_dispatch_budget.py">test_dispatch_budget.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_dispatch_budget.py" title="Details for test_dispatch_budget.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_dispatch_budget.py</pre><p>Dollar limits at the delivery and subprocess boundaries.</p><dl><dt>What it checks</dt><dd>every dispatching stage recomputes the budget for each claude attempt • cli worker sends one exact remainder flag only to claude • bounded dry run records remainders and zero cost • quota or success at the limit stops before fallback or output • spent or unknown allowance never starts a candidate</dd></dl>
+        </div>
+      </details>
+    </li><li class="file-chip"><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_dispatch_recovery.py">test_dispatch_recovery.py</a>
+      <details class="file-details">
+        <summary aria-label="Details for test_dispatch_recovery.py" title="Details for test_dispatch_recovery.py">ⓘ</summary>
+        <div class="file-pop">
+          <span class="kind">test</span>
+          <pre>bookout-labs
+    └── tools
+        └── tests
+            └── test_dispatch_recovery.py</pre><p>Description missing from the source file.</p><dl><dt>What it checks</dt><dd>fresh process crash after success or quota never replays</dd></dl>
+        </div>
+      </details>
+    </li></ul></section>
+      <div class="columns"><section><h2>What happens</h2><ol class="steps"><li><strong>Save the paid-call reservation</strong><p>Durable authorized attempt identity</p></li><li><strong>Reconcile or run the worker call</strong><p>Typed output and usage record or a pause or halt</p></li></ol></section>
+      <section><h2>Warp equivalent</h2><p><strong>Worker invocation and conversation reuse</strong></p>
+      <p>Local CLIs need crash recovery and token and dollar accounting at one shared boundary.</p><p><a href="https://docs.warp.dev/factories/factory-agents/">Read Warp’s documentation ↗</a></p>
+      </section></div>
+      <details class="reference"><summary>Scope, recovery and checks</summary>
+        <ul><li>Runner acquires a per-repository and issue OS lock before loading the LangGraph checkpoint. Release on pause or process exit.</li><li>Save run, worker procedure, candidate or head, attempt id, allowance and worktree identity before every paid call.</li><li>Resolve worker model and CLI configuration independently of the stage procedure. The procedure owns instructions and typed outputs.</li><li>Resume at the interrupted step and reconcile before any repeat. A reservation alone does not establish whether the call launched. Charge each attempt once. If usage is ambiguous, charge the worst case to the budget, log usage unknown, and continue within the remaining allowance.</li><li>Try available qualified models within the token and dollar allowance. Review prefers another model family and falls back in configured order once that preference cannot be met. A quota or missing CLI moves to the next qualified model. Use the shared quota wait only when none is available. Retain the caller&#x27;s continuation and recheck branch, parent and fingerprint before continuing partial edits.</li></ul>
+        <h3>Cases the implementation must pass</h3><ul class="steps"><li><strong>The charged result is replayed</strong><p>One ledger row and accepted response.</p></li><li><strong>Crash before launch, after ambiguous send, or after a durable result</strong><p>Reconcile at the interrupted step before repeating. Adopt a finished result. When usage is ambiguous, log usage unknown, charge the worst case once, and continue within the remaining allowance.</p></li><li><strong>Quota exhaustion after partial edits</strong><p>Verified caller and fingerprint resume under remaining allowance.</p></li><li><strong>Two wakes for one issue checkpoint</strong><p>At most one active writer, no duplicate charge or external write.</p></li></ul>
+        <p class="decision-links"></p>
+        <a href="target.yaml">Read the full stage contract</a>
+      </details>
+    </section><section class="page" id="worker-coordinator">
+        <header class="page-head"><h1>Investigate and plan</h1><p>Inspect the repository or issue assigned to the run and report a typed route, sourced answer or candidate.</p></header>
+        <figure class="diagram" aria-label="Investigate and plan diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Investigate and plan. Arrow keys pan, plus and minus zoom.">
+    <img src="views/workers/coordinator.svg" draggable="false" alt="Investigate and plan flow diagram" />
+  </div>
+</figure><div class="columns"><section>
+        <h2>Assignments</h2><ul class="steps"><li><a href="#triage">Route the issue</a>
+            <p><a href="prompts/triage.md">Target prompt</a>
+            <span> · Model policy <code>nodes.triage</code></span></p>
+            <details><summary>Complete worker instructions</summary>
+              <p>Classify the admitted issue as a question, plan request or supplied slice. Treat the named
+target repository as fixed. Inspect available context before returning a question about
+missing intent for the coordinator or personal agent to relay. Give a bounded change one
+slice when its behavior and acceptance are clear.
+Foreman validates all supplied slices before a build. Return the typed classification.
+</p></details>
+            </li><li><a href="#research">Answer the question</a>
+            <p><a href="prompts/research.md">Target prompt</a>
+            <span> · Model policy <code>nodes.research</code></span></p>
+            <details><summary>Complete worker instructions</summary>
+              <p>Answer the originating question from the issue, pinned target checkout and cited sources.
+Distinguish observed behavior from inference. If available sources cannot resolve the request,
+return a grounded question about the missing evidence for the coordinator or personal agent to relay.
+Otherwise, return the typed answer.
+Foreman posts the answer. Leave repository files untouched.
+</p></details>
+            <ul><li>Inspect the code and explain its architecture from source. Applied always.</li><li>Read author records and mark inferences. Applied bug fix.</li></ul></li><li><a href="#spec">Plan and check the work</a>
+            <p><a href="prompts/spec.md">Target prompt</a>
+            <span> · Model policy <code>nodes.spec</code></span></p>
+            <details><summary>Complete worker instructions</summary>
+              <p>Read the target checkout at the named base. Draft slices for the admitted repository and
+issue only. Give each slice testable acceptance. Name seams it builds and seams it uses.
+Put edits to tracked seams under uses. Inspect available code and issue evidence. On
+revision, use the saved candidate and defects. Return one typed draft or grounded questions
+about product, repository, architecture or policy for the coordinator or personal agent to relay.
+</p></details>
+            <ul><li>Trace affected systems and sketch two ownership shapes. Applied always.</li><li>Describe state transitions and invariants. Applied stateful.</li></ul></li></ul></section>
+        <section><h2>Permissions</h2><p>Read issue and pinned target_checkout.</p>
+        <h2>Conversation</h2><p>Use a fresh assignment with saved questions and candidate evidence when revising.</p></section></div></section><section class="page" id="worker-checker">
+        <header class="page-head"><h1>Challenge the plan</h1><p>Probe issue fit and each slice in the target repository, including when both repositories contain the named path.</p></header>
+        <figure class="diagram" aria-label="Challenge the plan diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Challenge the plan. Arrow keys pan, plus and minus zoom.">
+    <img src="views/workers/checker.svg" draggable="false" alt="Challenge the plan flow diagram" />
+  </div>
+</figure><div class="columns"><section>
+        <h2>Assignments</h2><ul class="steps"><li><a href="#spec">Plan and check the work</a>
+            <p><a href="prompts/spec_check.md">Target prompt</a>
+            <span> · Model policy <code>nodes.spec</code></span></p>
+            <details><summary>Complete worker instructions</summary>
+              <p>Challenge the exact candidate against the originating issue and pinned target checkout.
+Confirm each slice belongs to that repository, including when a matching path exists in
+Foreman&#x27;s repository. Check seam ownership, acceptance and dependencies. Cite concrete
+defects and report unresolved choices for the coordinator or personal agent to relay.
+Keep all repository and GitHub state read-only.
+Approve the checked candidate when no blocking defect or unresolved choice remains. Return empty findings for a clear verdict.
+</p></details>
+            <ul><li>Probe the candidate in one independent session and cite verified findings. Applied always.</li></ul></li></ul></section>
+        <section><h2>Permissions</h2><p>Read pinned target_checkout and exact candidate. Return typed findings.</p>
+        <h2>Conversation</h2><p>Use a fresh independent session per candidate, with a qualified different family preferred.</p></section></div></section><section class="page" id="worker-builder">
+        <header class="page-head"><h1>Build and check the change</h1><p>Edit within acceptance, run the target repository checks and report the result.</p></header>
+        <figure class="diagram" aria-label="Build and check the change diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Build and check the change. Arrow keys pan, plus and minus zoom.">
+    <img src="views/workers/builder.svg" draggable="false" alt="Build and check the change flow diagram" />
+  </div>
+</figure><div class="columns"><section>
+        <h2>Assignments</h2><ul class="steps"><li><a href="#implement">Build and publish the change</a>
+            <p><a href="prompts/implement.md">Target prompt</a>
+            <span> · Model policy <code>nodes.implement</code></span></p>
+            <details><summary>Complete worker instructions</summary>
+              <p>Edit the owned worktree within the cleared slice and acceptance. Run the target repository
+checks and fix concrete failures within the allowance. On a repair, address the evidenced
+blocking defects on the existing PR. Keep evidence requested by the issue or repository.
+Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.
+</p></details>
+            <ul><li>Reproduce cheaply and rerun the focused regression check. Applied bug fix.</li><li>Verify benchmark conditions Applied perf issue.</li></ul></li></ul></section>
+        <section><h2>Permissions</h2><p>Write exclusive target_checkout and its attempt scratch. Foreman commits and publishes.</p>
+        <h2>Conversation</h2><p>Resume the verified native session for the same run, issue, target repository, PR lineage and CLI. If unavailable, start fresh from durable artifacts after reconciliation.</p></section></div></section><section class="page" id="worker-verifier">
+        <header class="page-head"><h1>Review the full change</h1><p>Review the complete current PR against acceptance and cite each finding.</p></header>
+        <figure class="diagram" aria-label="Review the full change diagram">
+  <div class="diagram-tools" aria-label="Diagram controls">
+    <button data-view="out" type="button" aria-label="Zoom out">−</button>
+    <button data-view="in" type="button" aria-label="Zoom in">+</button>
+    <button data-view="reset" type="button">Fit</button>
+    <span>Drag to pan · Scroll or pinch to zoom</span>
+  </div>
+  <div class="canvas" tabindex="0" aria-label="Review the full change. Arrow keys pan, plus and minus zoom.">
+    <img src="views/workers/verifier.svg" draggable="false" alt="Review the full change flow diagram" />
+  </div>
+</figure><div class="columns"><section>
+        <h2>Assignments</h2><ul class="steps"><li><a href="#review">Review the full pull request</a>
+            <p><a href="prompts/review.md">Target prompt</a>
+            <span> · Model policy <code>nodes.review</code></span></p>
+            <details><summary>Complete worker instructions</summary>
+              <p>Assess the complete current PR at its named diff base and head on every round. Read committed
+files through the supplied read-only view. Honor settled rulings while their evidence applies.
+Give findings with a location, severity, impact and concrete evidence. Reserve P0 and P1 for
+substantive correctness, security or scope defects. Report other observations as advisory.
+Return questions about unresolved intent that changes the review verdict for the coordinator or
+personal agent to relay. Foreman posts findings and routes.
+</p></details>
+            <ul><li>Cite evidence and assign severity. Applied always.</li></ul></li></ul></section>
+        <section><h2>Permissions</h2><p>Read pinned diff evidence for the exact PR head and diff base. Foreman posts the report.</p>
+        <h2>Conversation</h2><p>Start a fresh session every round. Prefer a qualified model family that did not build the change when one is available. Use the next available qualified model in models.toml order when needed, including the builder&#x27;s family.</p></section></div></section>
+<section class="page" id="decisions"><header class="page-head"><h1>Blueprint decisions</h1>
+<p>Agreed decisions record the owner’s rulings. Open decisions include a recommendation.</p></header>
+<section class="reference"><h2>Agreed direction</h2><p>Agreed by the owner 2026-11-22. “i agree with all of your take aways from this book” and “if I didn&#x27;t comment on any of those takeaways, then I&#x27;m good with them”.</p>
+<ul><li>Roll out each version and its merge authority through synthetic replays, smoke repositories, about three real issues, then normal volume.</li><li>Start a run when an issue enters Ready on a GitHub Project board. A webhook delivers the trigger and the board mirrors the run&#x27;s state.</li><li>Use GitHub, the CARR record layer and T3 as the shared context system. Git versions the blueprint.</li><li>Keep worker configuration separate from stage procedures. Agreed by the owner 2026-11-22.</li><li>Add scorers, benchmarks and fix PRs driven by observed failures. Agreed by the owner 2026-11-22.</li><li>Complete delivery on an observed merge. Agreed by the owner 2026-11-22.</li><li>Keep typed outputs, budgets and exact-head checks. Agreed by the owner 2026-11-22.</li></ul><p><a href="https://web.archive.org/web/20261121015523/https://www.notion.com/a-new-shape-for-work">Notion’s book (archived) ↗</a></p></section>
+<div class="decision-list"><article><h2>D1. What sends a pull request back?</h2><p>Agreed by the owner 2026-11-22. Only a concrete P0 or P1 correctness, security or scope defect in the full current pull request sends it back. All other findings are comments. Every review uses a fresh session. Another model family is a preference. If that family is unavailable, dispatch uses the next qualified model in models.toml order, including the builder&#x27;s family. Only the shared quota wait applies when no qualified model is available. Warp workers advise and can suggest revisions. <a href="https://docs.warp.dev/factories/blueprints/routes/">Warp transitions ↗</a></p></article><article><h2>D2. Who queues the pull request?</h2><p>Agreed by the owner 2026-11-22. “I&#x27;m good with the trust ladder”. Foreman queues the exact reviewed revision after required checks pass, under the authority earned through synthetic replays, live smoke, a limited batch of about three real issues and normal volume. GitHub enforces approvals and queue rules. Keep merge_held until a synthetic repository test proves the App and outside writers cannot move the branch during an open merge request. Release dependents only after GitHub confirms the observed merge. A person decides when to merge in Warp. <a href="https://docs.warp.dev/factories/how-factories-work/">Warp lifecycle ↗</a></p></article><article><h2>D3. Who approves a plan?</h2><p>Agreed by the owner 2026-11-22. The checking model can approve the plan once Foreman validates the repository and seams. The plan proceeds when the independent check clears it. The human may comment on, approve or stop a plan through their coordinator or personal agent. The agent posts each response as an issue comment under the human&#x27;s identity. Record the human’s “we&#x27;re good” as approval of the plan they identified. The human&#x27;s review is optional. Ask the human through the agent when an unresolved choice needs their judgment. Warp&#x27;s default planning flow asks for human approval. <a href="https://docs.warp.dev/factories/blueprints/gates/">Warp gates ↗</a></p></article><article><h2>D4. Keep the 400-line cap?</h2><p>Agreed by the owner 2026-11-22. Remove the 400-line gate and its override. Report the changed-line count for the checked tree. Split work at real dependencies while planning. Warp&#x27;s default flow encourages scoped work without a universal threshold. <a href="https://docs.warp.dev/factories/how-factories-work/">Warp lifecycle ↗</a></p></article><article><h2>D5. Which conversation continues?</h2><p>Agreed by the owner 2026-11-22. Resume the builder&#x27;s conversation when the same verified run and PR lineage continue on a compatible CLI. A fresh review session reads the full current PR each round. Warp can continue a worker&#x27;s conversation during revisions. <a href="https://docs.warp.dev/factories/factory-agents/">Warp workers ↗</a></p></article><article><h2>D6. Which Project board and columns should Foreman use?</h2><p>The Ready webhook and visible run state are agreed. Pilot on one team-owned GitHub Project. Use Ready for to-do, Doing for active work, Needs answer while the human&#x27;s decision is pending, and Done for typed terminal outcomes. Show the result on the card so a halt remains distinct from a merge. The human chooses the Project and exact column mapping. Reusing an existing board saves setup and may require mapping its status names. The App needs Projects access and a webhook subscription, and the board needs tests for duplicate delivery and updates from Foreman itself. Warp can start runs from filtered GitHub events and custom webhooks. Its documented native GitHub events do not list Project status changes. <a href="https://web.archive.org/web/20261121015523/https://www.notion.com/a-new-shape-for-work">Notion’s book (archived) ↗</a> · <a href="https://docs.warp.dev/factories/automation-triggers/">Warp triggers ↗</a> · <a href="https://docs.github.com/en/webhooks/webhook-events-and-payloads#projects_v2_item">GitHub Projects webhook ↗</a></p></article><article><h2>D7. Which worker methods belong in each step?</h2><p>Warp assigns reusable skills to workers. Use the pinned how and why excerpts for research, architect for planning, statechart for stateful work and interrogate&#x27;s evidence probe for the independent plan review. Use practical TDD for bug fixes and benchmark-checklist for performance work. Keep review-quality&#x27;s evidence rubric. The pinned interrogate file has no Lead Judgment section. Using the current skill rules would retain more general guidance, including duplicate review instructions and universal proof methods. Measure the narrower selection using the synthetic benchmarks. <a href="https://docs.warp.dev/factories/factory-skills/">Warp skills ↗</a></p></article><article><h2>D8. Where should checks and evidence live?</h2><p>Agreed by the owner 2026-11-22. Delete the proof step and universal tool-fact veto. Run Foreman&#x27;s exact-tree check inside the editing loop, keep evidence the issue asks for, and let GitHub run its required checks. Warp&#x27;s builder runs repository checks. <a href="https://docs.warp.dev/guides/agent-workflows/running-an-issue-to-pr-blueprint/">Warp issue-to-PR guide ↗</a></p></article><article><h2>D9. Which paths count as existing seams?</h2><p>Agreed by the owner 2026-11-22: (a). Only Git-tracked regular files in the pinned target checkout qualify as existing seams. Reject directories and symlinks. Apply the same rule to directly supplied and edit-only slices before the independent plan check. Warp exposes a plan gate. Foreman validates exact paths to bind the plan to the pinned checkout. <a href="https://docs.warp.dev/factories/blueprints/gates/">Warp gates ↗</a></p></article><article><h2>D10. What happens after an interruption?</h2><p>Agreed by the owner 2026-11-22: (a) with (ii). Resume at the interrupted step and reconcile before repeating a model call or remote write. If a model call&#x27;s usage is ambiguous, charge the worst case to the budget, log usage unknown, and continue within the remaining allowance. Foreman reconciles calls and writes at the saved step because its local CLIs and GitHub effects can outlive the process. <a href="https://docs.warp.dev/factories/how-factories-work/">Warp lifecycle ↗</a></p></article></div></section>
+<section class="page" id="files"><header class="page-head"><h1>All file paths</h1>
+<p>Target prompts open from this package. Baseline source links open the pinned GitHub revision. Planned owner paths become links when the files exist.</p></header>
+<p><a href="files.txt">Plain-text index</a> · <a href="files.yaml">File metadata</a> · <a href="missing-descriptions.txt">Missing descriptions</a></p>
+<ul class="all-files"><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/.github/workflows/ci.yml">bookout-labs/tools/.github/workflows/ci.yml</a></code><p>Source description unavailable</p></li><li><code><a href="prompts/implement.md">bookout-labs/tools/docs/graph/blueprint/prompts/implement.md</a></code><p>Implement the slice</p></li><li><code><a href="prompts/research.md">bookout-labs/tools/docs/graph/blueprint/prompts/research.md</a></code><p>Answer the question</p></li><li><code><a href="prompts/review.md">bookout-labs/tools/docs/graph/blueprint/prompts/review.md</a></code><p>Review the full pull request</p></li><li><code><a href="prompts/spec.md">bookout-labs/tools/docs/graph/blueprint/prompts/spec.md</a></code><p>Draft the plan</p></li><li><code><a href="prompts/spec_check.md">bookout-labs/tools/docs/graph/blueprint/prompts/spec_check.md</a></code><p>Check and approve the plan</p></li><li><code><a href="prompts/triage.md">bookout-labs/tools/docs/graph/blueprint/prompts/triage.md</a></code><p>Classify the issue</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/docs/graph/gaps.toml">bookout-labs/tools/docs/graph/gaps.toml</a></code><p>Exact edge differences. Each slice maps a source to [target, label] pairs.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/docs/graph/target.mmd">bookout-labs/tools/docs/graph/target.mmd</a></code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/evals/corpus/README.md">bookout-labs/tools/evals/corpus/README.md</a></code><p>Known-answer corpus v1</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/evals/eval.sh">bookout-labs/tools/evals/eval.sh</a></code><p>Promptfoo&#x27;s worker does not use the uv environment unless told which interpreter to start.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/evals/promptfooconfig.yaml">bookout-labs/tools/evals/promptfooconfig.yaml</a></code><p>yaml-language-server: $schema=https://promptfoo.dev/config-schema.json</p></li><li><code><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/architect/SKILL.md">cursor/plugins/pstack/skills/architect/SKILL.md</a></code><p>Sketch types, signatures, and module structure before code, then stay in the loop while implementation fills in. Use for /architect, &#x27;architect this&#x27;, &#x27;design this&#x27;, or non-trivial work where jumping to code would lock in the wrong shape.</p></li><li><code><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/benchmark-checklist/SKILL.md">cursor/plugins/pstack/skills/benchmark-checklist/SKILL.md</a></code><p>Vet a perf measurement (limiter, tuning, limits, errors, repeatability, relevance, and whether the work happened) before you report or act on it. Use when you run a benchmark or report a speedup or regression you measured.</p></li><li><code><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/how/SKILL.md">cursor/plugins/pstack/skills/how/SKILL.md</a></code><p>Use for &quot;how does X work&quot;, code walkthroughs before changing something, and placement / ownership / layering questions (&quot;where should this live&quot;, &quot;which package owns this&quot;, &quot;is this the right layer&quot;). Explains subsystem architecture, runtime flow, onboarding mental models. Use why for motivation.</p></li><li><code><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/interrogate/SKILL.md">cursor/plugins/pstack/skills/interrogate/SKILL.md</a></code><p>Use for &quot;interrogate&quot;, &quot;adversarial review&quot;, &quot;multi-model review&quot;, &quot;challenge this&quot;, &quot;stress test this code&quot;, &quot;find blind spots&quot;, or &quot;tear this apart&quot;. Adversaries try to break a change or design, and only findings proven by a run survive.</p></li><li><code><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/statechart/SKILL.md">cursor/plugins/pstack/skills/statechart/SKILL.md</a></code><p>Check a TLA+ model of a system that moves between states, such as a product flow, a protocol, or a service, and draw it as a Mermaid statechart. The report gives the shortest path to each state that breaks a rule. Use for /statechart, or to show a bug as a path through states.</p></li><li><code><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/tdd/SKILL.md">cursor/plugins/pstack/skills/tdd/SKILL.md</a></code><p>Use only when the user explicitly asks for TDD, a failing test, or a regression test, OR when the bug has an obvious cheap local test target. Skip when the test path is unclear, expensive, integration-heavy, or not requested.</p></li><li><code><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/why/SKILL.md">cursor/plugins/pstack/skills/why/SKILL.md</a></code><p>Use for &#x27;why does X work this way&#x27;, &#x27;why we picked Y&#x27;, design rationale, regressions, postmortems, or data-backed thresholds. Returns a cited read on decisions and tradeoffs. Use how for runtime behavior.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/accept.py">bookout-labs/tools/src/foreman/accept.py</a></code><p>Decide whether an outside event enters the graph. This does not call a model.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/adapters/claude.py">bookout-labs/tools/src/foreman/adapters/claude.py</a></code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/adapters/codex.py">bookout-labs/tools/src/foreman/adapters/codex.py</a></code><p>Run one Codex turn and read its JSONL result.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/adapters/grok.py">bookout-labs/tools/src/foreman/adapters/grok.py</a></code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/budget.py">bookout-labs/tools/src/foreman/budget.py</a></code><p>Pure work-token and Claude dollar accounting over a run&#x27;s attempt history.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/check_output.py">bookout-labs/tools/src/foreman/check_output.py</a></code><p>Bounded, sanitized verifier diagnostics. Raw output is never retained.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/config.py">bookout-labs/tools/src/foreman/config.py</a></code><p>Model assignment. This is data. A node does not get to rewrite it.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py">bookout-labs/tools/src/foreman/delivery.py</a></code><p>The delivery graph. Edges live here. Models live in models.toml.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/dispatch.py">bookout-labs/tools/src/foreman/dispatch.py</a></code><p>Model handler and dispatch errors.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/github.py">bookout-labs/tools/src/foreman/github.py</a></code><p>GitHub operations for delivery runs.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/models.toml">bookout-labs/tools/src/foreman/models.toml</a></code><p>Failover order. The first model runs. Quota exhaustion tries the next.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/outcomes.py">bookout-labs/tools/src/foreman/outcomes.py</a></code><p>One policy row per delivery halt, independent of graph execution.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/readiness.py">bookout-labs/tools/src/foreman/readiness.py</a></code><p>Typed GitHub policy and commit evidence for a single PR observation.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/review_context.py">bookout-labs/tools/src/foreman/review_context.py</a></code><p>Immutable facts about the two committed trees in a pull request review.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/review_round.py">bookout-labs/tools/src/foreman/review_round.py</a></code><p>Review history, PR scope and graph-check adapter over ResolutionLedger.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/runner.py">bookout-labs/tools/src/foreman/runner.py</a></code><p>Run one delivery issue against its SQLite checkpoint.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/skill_rules.py">bookout-labs/tools/src/foreman/skill_rules.py</a></code><p>Worker methods selected by delivery state.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/skills/review-quality.md">bookout-labs/tools/src/foreman/skills/review-quality.md</a></code><p>Review quality</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/spec_check.py">bookout-labs/tools/src/foreman/spec_check.py</a></code><p>Pure candidate-bound spec acceptance over the shared resolution ledger.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py">bookout-labs/tools/src/foreman/stage_output.py</a></code><p>Worker output contracts shared by the CLI prompts and delivery graph.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages.py">bookout-labs/tools/src/foreman/stages.py</a></code><p>Canonical worker contracts, methods and callbacks. Graph successors stay in delivery.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/implement.md">bookout-labs/tools/src/foreman/stages/implement.md</a></code><p>Implement the change in the repository. Fix every unresolved finding in findings, including nits.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/research.md">bookout-labs/tools/src/foreman/stages/research.md</a></code><p>Answer the question from the repository. Do not change code.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/review.md">bookout-labs/tools/src/foreman/stages/review.md</a></code><p>Review round 1 in full. Later rounds check unresolved findings and added interdiff lines also in the PR diff.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/spec.md">bookout-labs/tools/src/foreman/stages/spec.md</a></code><p>Write the spec. Cover the behavior, the product decisions, and the technical design.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/spec_check.md">bookout-labs/tools/src/foreman/stages/spec_check.md</a></code><p>Check only the supplied candidate and its proof obligations, seams, contracts, scope and failure paths. Read the repository as needed. Do not edit files, repair the candidate, start subagents or publish issues.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/triage.md">bookout-labs/tools/src/foreman/stages/triage.md</a></code><p>Read the request and set `triage` according to the schema. Use these values for informational or unclear requests.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/state.py">bookout-labs/tools/src/foreman/state.py</a></code><p>Delivery graph state channels and their reducers.</p></li><li><code>bookout-labs/tools/src/foreman/steps/implement.py</code><p>Source description unavailable</p></li><li><code>bookout-labs/tools/src/foreman/steps/merge.py</code><p>Source description unavailable</p></li><li><code>bookout-labs/tools/src/foreman/steps/research.py</code><p>Source description unavailable</p></li><li><code>bookout-labs/tools/src/foreman/steps/review.py</code><p>Source description unavailable</p></li><li><code>bookout-labs/tools/src/foreman/steps/spec.py</code><p>Source description unavailable</p></li><li><code>bookout-labs/tools/src/foreman/steps/triage.py</code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/worker.py">bookout-labs/tools/src/foreman/worker.py</a></code><p>Run a pinned worker and read its final stage result.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/worker_auth.py">bookout-labs/tools/src/foreman/worker_auth.py</a></code><p>Per-command App authentication for factory network commands.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/workspace.py">bookout-labs/tools/src/foreman/workspace.py</a></code><p>Local checkout operations used by delivery runs.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_accept.py">bookout-labs/tools/tests/test_accept.py</a></code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_delivery.py">bookout-labs/tools/tests/test_delivery.py</a></code><p>Test delivery.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_dispatch_budget.py">bookout-labs/tools/tests/test_dispatch_budget.py</a></code><p>Dollar limits at the delivery and subprocess boundaries.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_dispatch_recovery.py">bookout-labs/tools/tests/test_dispatch_recovery.py</a></code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_merge_receipt.py">bookout-labs/tools/tests/test_merge_receipt.py</a></code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_publication.py">bookout-labs/tools/tests/test_publication.py</a></code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_readiness.py">bookout-labs/tools/tests/test_readiness.py</a></code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_review_availability.py">bookout-labs/tools/tests/test_review_availability.py</a></code><p>Reviewer eligibility and checkpoint recovery across independent processes.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_review_context.py">bookout-labs/tools/tests/test_review_context.py</a></code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_review_rounds.py">bookout-labs/tools/tests/test_review_rounds.py</a></code><p>Test review rounds.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_runner.py">bookout-labs/tools/tests/test_runner.py</a></code><p>Live runner behavior with offline workers and forge doubles.</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_spec_candidate.py">bookout-labs/tools/tests/test_spec_candidate.py</a></code><p>Source description unavailable</p></li><li><code><a href="https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_spec_check.py">bookout-labs/tools/tests/test_spec_check.py</a></code><p>Source description unavailable</p></li></ul></section>
+</main></div><script>const pages = [...document.querySelectorAll(".page")];
+const links = [...document.querySelectorAll("nav a[href^='#']")];
+
+function showPage() {
+  const active = pages.find(page => "#" + page.id === location.hash) || pages[0];
+  pages.forEach(page => { page.hidden = page !== active; });
+  links.forEach(link => {
+    if (link.hash === "#" + active.id) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
+  document.querySelectorAll(".file-details[open]").forEach(item => { item.open = false; });
+  window.scrollTo(0, 0);
+}
+
+window.addEventListener("hashchange", showPage);
+showPage();
+
+document.querySelectorAll(".file-chip").forEach(chip => {
+  const details = chip.querySelector("details");
+  const link = chip.querySelector("a");
+  const trigger = chip.querySelector("summary");
+  const open = () => {
+    document.querySelectorAll(".file-details[open]").forEach(item => {
+      if (item !== details) item.open = false;
+    });
+  };
+  trigger.addEventListener("click", open);
+  chip.addEventListener("pointerenter", event => {
+    if (event.pointerType === "mouse") {
+      open();
+      details.open = true;
+    }
+  });
+  chip.addEventListener("pointerleave", event => {
+    if (event.pointerType === "mouse" && !details.contains(document.activeElement)) details.open = false;
+  });
+  if (!link) return;
+  let pointerType = "";
+  link.addEventListener("pointerdown", event => { pointerType = event.pointerType; });
+  link.addEventListener("click", event => {
+    if (event.detail && pointerType === "touch" && !details.open) {
+      event.preventDefault();
+      open();
+      details.open = true;
+    }
+  });
+});
+
+document.addEventListener("pointerdown", event => {
+  document.querySelectorAll(".file-details[open]").forEach(item => {
+    if (!item.closest(".file-chip").contains(event.target)) item.open = false;
+  });
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") {
+    document.querySelectorAll(".file-details[open]").forEach(item => { item.open = false; });
+  }
+});
+
+document.querySelectorAll(".diagram").forEach(figure => {
+  const canvas = figure.querySelector(".canvas");
+  const image = canvas.querySelector("img");
+  const pointers = new Map();
+  let scale = 1, x = 0, y = 0, fitted = 0, changed = false;
+  const paint = () => { image.style.transform = `translate(${x}px, ${y}px) scale(${scale})`; };
+
+  function fit() {
+    if (!image.naturalWidth || !canvas.clientWidth) return;
+    image.style.width = `${image.naturalWidth}px`;
+    fitted = Math.min((canvas.clientWidth - 24) / image.naturalWidth,
+                      (canvas.clientHeight - 24) / image.naturalHeight, 1.25);
+    scale = fitted;
+    x = (canvas.clientWidth - image.naturalWidth * scale) / 2;
+    y = (canvas.clientHeight - image.naturalHeight * scale) / 2;
+    changed = false;
+    paint();
+  }
+
+  function zoom(factor, cx = canvas.clientWidth / 2, cy = canvas.clientHeight / 2, dx = 0, dy = 0) {
+    if (!fitted) return;
+    const next = Math.max(fitted / 2, Math.min(fitted * 12, scale * factor));
+    x = cx - (cx - x) * next / scale + dx;
+    y = cy - (cy - y) * next / scale + dy;
+    scale = next;
+    changed = true;
+    paint();
+  }
+
+  image.addEventListener("load", fit);
+  new ResizeObserver(() => { if (!changed) fit(); }).observe(canvas);
+  if (image.complete) fit();
+  figure.querySelectorAll("[data-view]").forEach(button => {
+    button.addEventListener("click", () => {
+      if (button.dataset.view === "reset") fit();
+      else zoom(button.dataset.view === "in" ? 1.3 : 1 / 1.3);
+    });
+  });
+  const point = event => {
+    const box = canvas.getBoundingClientRect();
+    return { x: event.clientX - box.left, y: event.clientY - box.top };
+  };
+  canvas.addEventListener("wheel", event => {
+    event.preventDefault();
+    const location = point(event);
+    zoom(event.deltaY < 0 ? 1.13 : 1 / 1.13, location.x, location.y);
+  }, { passive: false });
+  canvas.addEventListener("pointerdown", event => {
+    if ((event.pointerType !== "touch" && event.button !== 0) || pointers.size === 2) return;
+    pointers.set(event.pointerId, point(event));
+    canvas.setPointerCapture(event.pointerId);
+    canvas.classList.add("dragging");
+  });
+  canvas.addEventListener("pointermove", event => {
+    const previous = pointers.get(event.pointerId);
+    if (!previous) return;
+    const next = point(event);
+    pointers.set(event.pointerId, next);
+    if (pointers.size === 1) {
+      x += next.x - previous.x;
+      y += next.y - previous.y;
+      changed = true;
+      paint();
+      return;
+    }
+    const other = [...pointers.entries()].find(([id]) => id !== event.pointerId)[1];
+    const before = Math.hypot(previous.x - other.x, previous.y - other.y);
+    if (!before) return;
+    const after = Math.hypot(next.x - other.x, next.y - other.y);
+    zoom(after / before, (previous.x + other.x) / 2, (previous.y + other.y) / 2,
+         (next.x - previous.x) / 2, (next.y - previous.y) / 2);
+  });
+  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    canvas.addEventListener(name, event => {
+      pointers.delete(event.pointerId);
+      if (!pointers.size) canvas.classList.remove("dragging");
+    });
+  }
+  canvas.addEventListener("keydown", event => {
+    const shift = { ArrowLeft: [40, 0], ArrowRight: [-40, 0], ArrowUp: [0, 40], ArrowDown: [0, -40] }[event.key];
+    if (shift) {
+      event.preventDefault();
+      x += shift[0];
+      y += shift[1];
+      changed = true;
+      paint();
+    } else if (["+", "=", "-", "0"].includes(event.key)) {
+      event.preventDefault();
+      if (event.key === "0") fit();
+      else zoom(event.key === "-" ? 1 / 1.3 : 1.3);
+    }
+  });
+});
+</script>
+</body></html>

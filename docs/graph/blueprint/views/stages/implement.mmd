@@ -1,0 +1,31 @@
+flowchart TD
+    n0(["Enter stage"]):::terminal
+    n1["Foreman · Prepare and reconcile the worktree"]:::step
+    n2(["Builder · Edit and run target repository checks"]):::worker
+    n3["Foreman · Commit or adopt the checked tree"]:::step
+    n4["Foreman · Publish the checked commit"]:::step
+    n5(["Run stops<br/>Reported on Project card"]):::terminal
+    n6(["Cancelled<br/>Reported on Project card"]):::terminal
+    n7(["No change<br/>Reported on Project card"]):::terminal
+    n8["Continue to Review stage"]:::stage
+    n9{{"Human<br/>• Resolve acceptance choice<br/>• Choose or cancel<br/>• Resume editing"}}:::gate
+    n0 --> n1
+    n1 --> n5
+    n1 -->|"Prepared"| n2
+    n2 --> n6
+    n2 --> n7
+    n2 --> n5
+    n2 -->|"Check failed"| n2
+    n2 -->|"Checked"| n3
+    n3 --> n5
+    n3 -->|"Committed"| n4
+    n4 --> n5
+    n4 -->|"Owned head moved"| n1
+    n4 -->|"Published"| n8
+    n2 -.->|"Unresolved choice"| n9
+    n9 -.-> n2
+    classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
+    classDef step fill:#edf3f8,stroke:#597187,color:#132638
+    classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36
+    classDef gate fill:#fff0c9,stroke:#89641f,color:#3f2b0b
+    classDef terminal fill:#f0f0f0,stroke:#666666,color:#202020

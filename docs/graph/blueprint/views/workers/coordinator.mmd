@@ -1,0 +1,13 @@
+flowchart LR
+    n0(["Investigate and plan"]):::worker
+    n1["Classify the admitted issue"]:::step
+    n2["Return a sourced answer"]:::step
+    n3["Draft repository-bound slices"]:::step
+    n0 -->|"Assignment"| n1
+    n0 -->|"Assignment"| n2
+    n0 -->|"Assignment"| n3
+    classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
+    classDef step fill:#edf3f8,stroke:#597187,color:#132638
+    classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36
+    classDef gate fill:#fff0c9,stroke:#89641f,color:#3f2b0b
+    classDef terminal fill:#f0f0f0,stroke:#666666,color:#202020
