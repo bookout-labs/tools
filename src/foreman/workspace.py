@@ -324,16 +324,15 @@ class LiveWorkspace:
         ignored = self._ignored_at(merge_base, paths)
         facts: set[bytes] = set()
         if fact_record is not None and self.has_file(fact_record) and not (self.root / fact_record).is_symlink():
-            record = fact_record
-            facts.add(os.fsencode(record))
+            facts.add(os.fsencode(fact_record))
             try:
-                manifest = FixtureManifest.from_toml((self.root / record).read_text())
+                manifest = FixtureManifest.from_toml((self.root / fact_record).read_text())
                 for capture in manifest.fixtures:
-                    path = (PurePosixPath(record).parent / fact_record_path(capture)).as_posix()
+                    path = (PurePosixPath(fact_record).parent / fact_record_path(capture)).as_posix()
                     if self.has_file(path) and not (self.root / path).is_symlink():
                         facts.add(os.fsencode(path))
             except (ValueError, OSError) as exc:
-                raise ImplementationRejected(f"Invalid fact record {record}: {exc}. Checkout preserved.") from exc
+                raise ImplementationRejected(f"Invalid fact record {fact_record}: {exc}. Checkout preserved.") from exc
         rejected = ignored - facts
         if rejected:
             names = ", ".join(repr(os.fsdecode(path)) for path in sorted(rejected))

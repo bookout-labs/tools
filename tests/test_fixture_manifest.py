@@ -111,16 +111,20 @@ class RecordedEvidenceTest(unittest.TestCase):
                  "checks": ChecksState(check="", verified_head=head), "plan": PlanState(), "path": []}
         output = ReviewOutput.model_validate(dict(resolutions=[], risk=DEFAULT_RISK, findings=[],
             tool_facts=[{"claim": "CLI accepts --debug", "fixture": "result.txt"}]), context=SCRIPTED_REVIEW_CONTEXT)
-        with patch("foreman.delivery.recorded_evidence", side_effect=AssertionError("evidence lookup")):
-            first = accept(ReviewHistory(), output, head, _check_tool_facts(output, self.workspace, state))
-            self.assertEqual(first.review, "changes")
-            self.assertIn("No fact record was declared", first.detail)
-            self.assertEqual(first.change_kind, "blocking")
-            state["review_findings"] = [entry.model_dump() for entry in first.history.rounds]
-            omitted = output.model_copy(update={"tool_facts": []})
-            self.assertFalse(_check_tool_facts(omitted, self.workspace, state).passed)
-            state.pop("review_findings")
-            self.assertIsNone(_check_tool_facts(omitted, self.workspace, state))
+        for declared_key in (True, False):
+            if not declared_key:
+                state.pop("fact_record")
+            with self.subTest(declared_key=declared_key):
+                with patch("foreman.delivery.recorded_evidence", side_effect=AssertionError("evidence lookup")):
+                    first = accept(ReviewHistory(), output, head, _check_tool_facts(output, self.workspace, state))
+                    self.assertEqual(first.review, "changes")
+                    self.assertIn("No fact record was declared", first.detail)
+                    self.assertEqual(first.change_kind, "blocking")
+                    state["review_findings"] = [entry.model_dump() for entry in first.history.rounds]
+                    omitted = output.model_copy(update={"tool_facts": []})
+                    self.assertFalse(_check_tool_facts(omitted, self.workspace, state).passed)
+                    state.pop("review_findings")
+                    self.assertIsNone(_check_tool_facts(omitted, self.workspace, state))
 
     def test_unreadable_manifest_blocks_approval(self):
         cases = {"bad TOML": b"[", "schema failure": b"[fixtures.result]\nkind = 'unknown'",

@@ -413,13 +413,15 @@ def compile_delivery(
             methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
+            record = state.get("fact_record")
             if name in {"implement", "review"}:
-                record = state.get("fact_record")
                 instruction += (f"\n\nFact record in this checkout: {record}" if record is not None else
-                                "\n\nNo fact record was declared. Use null fixture references for unsupported tool facts.")
+                                "\n\nNo fact record was declared.")
+                if name == "review" and record is None:
+                    instruction += " Use null fixture references for unsupported tool facts."
             gate = history({"rounds": state.get("review_findings", [])}).gate if state.get("review") == "changes" else None
             if name == "implement" and gate and not gate.passed:
-                if state.get("fact_record") is None:
+                if record is None:
                     instruction += ("\nRecording evidence requires a new run with an explicit --fact-record and a new checkpoint."
                                     " Remove the unsupported dependency if possible; carried claims remain subject to the gate.")
                 else:
