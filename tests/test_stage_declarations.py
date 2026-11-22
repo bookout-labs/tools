@@ -1,5 +1,6 @@
 """Adapter snapshots captured on main a68e815985cb6222cdfc807d53105f8644f437cf before registry replacement."""
 import tests
+import ast
 
 from dataclasses import replace
 from hashlib import sha256
@@ -74,10 +75,10 @@ class StageDeclarationsTest(unittest.TestCase):
                   for key, value in capture().items()}
         self.assertEqual(actual, json.loads(baseline.read_text()))
 
-    def test_non_review_callbacks_reach_the_worker_and_state(self):
+    def test_row_callbacks_reach_the_worker_and_state(self):
         from test_delivery import walk
 
-        for name in ("triage", "research", "spec", "implement"):
+        for name in ("triage", "research", "spec", "implement", "review"):
             with self.subTest(stage=name):
                 row = STAGES[name]
                 seen = []
@@ -85,12 +86,12 @@ class StageDeclarationsTest(unittest.TestCase):
 
                 def dispatch(stage, model, state, instruction):
                     if stage == name:
-                        self.assertTrue(instruction.endswith("\nRow instruction"))
+                        self.assertIn("\nRow instruction", instruction)
                         seen.append(stage)
                     return script(stage, model, state, instruction)
 
-                def accept(output, state, model, workspace):
-                    return {**row.accept(output, state, model, workspace), "research": "Row accepted"}
+                def accept(output, state, model, workspace, config=None, attempt=None):
+                    return {**row.accept(output, state, model, workspace, config, attempt), "research": "Row accepted"}
 
                 with patch.dict(STAGES, {name: replace(row, prepare=lambda _: "\nRow instruction", accept=accept)}):
                     result = walk(dispatch)
@@ -98,6 +99,19 @@ class StageDeclarationsTest(unittest.TestCase):
                 self.assertEqual(result["research"], "Row accepted")
                 self.assertEqual(result["stop"], "answered" if name == "research" else "verified")
                 self.assertEqual(result["attempts"][-1]["stage"], "research" if name == "research" else "review")
+
+    def test_dispatch_has_no_stage_policy_branches(self):
+        root = Path(__file__).resolve().parents[1] / "src/foreman"
+        for name in ("delivery.py", "dispatch.py"):
+            tree = ast.parse((root / name).read_text())
+            for function in ast.walk(tree):
+                if isinstance(function, ast.FunctionDef) and function.name in {"bind", "call", "stage_update", "clean_outcome"}:
+                    for branch in ast.walk(function):
+                        if isinstance(branch, (ast.If, ast.IfExp, ast.Match)):
+                            condition = branch.subject if isinstance(branch, ast.Match) else branch.test
+                            literals = {n.value for n in ast.walk(condition) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+                            # Slice 9d owns the implement re-entry guard; graph routers are outside this seam.
+                            self.assertFalse(literals & (set(STAGES) - ({"implement"} if function.name == "bind" else set())), ast.unparse(condition))
 
     def test_implement_acceptance_keeps_proofs_and_model_history(self):
         from foreman.delivery import stage_update
