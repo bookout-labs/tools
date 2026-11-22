@@ -112,6 +112,11 @@ class ReviewScope:
     command: str
     inline: frozenset[tuple[str, int]]
 
+    @property
+    def commands(self) -> tuple[str, ...]:
+        return tuple(line.strip() for line in self.command.splitlines()
+                     if line.strip() and not line.lstrip().startswith("#"))
+
     def record(self) -> ReviewScopeRecord:
         return {"command": self.command, "inline": sorted(self.inline)}
 

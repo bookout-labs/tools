@@ -17,7 +17,7 @@ from foreman.fixture_manifest import MANIFEST_PATH
 from foreman.review_context import ReviewContext
 from foreman.contracts import Contract as Contract, Text as Text
 from foreman.config import ModelSpec
-from foreman.adapters import OutcomeKind
+from foreman.adapters import NativeUsage, OutcomeKind
 from foreman.usd import CostUsd
 from foreman.github import PullRequest, PullRequestRecord, ReviewReceipt
 from foreman.workspace import ReviewScopeRecord
@@ -199,6 +199,8 @@ class AttemptRecord(TypedDict):
     methods: list[str]
     outcome: OutcomeKind | Literal["interrupted"]
     usage: AttemptUsageRecord | None
+    prompt_bytes: NotRequired[NonNegativeInt | None]
+    native_usage: NotRequired[NativeUsage | None]
     provenance: NotRequired[ReviewSelectionRecord]
 
 
@@ -216,6 +218,8 @@ class AttemptUsage(RecordContract[AttemptUsageRecord]):
 
 
 class Attempt(RecordContract[AttemptRecord]):
+    optional_record_fields: ClassVar[set[str]] = RecordContract.optional_record_fields | {"prompt_bytes", "native_usage"}
+
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[AttemptRecord]:
@@ -227,6 +231,8 @@ class Attempt(RecordContract[AttemptRecord]):
     methods: list[str]
     outcome: OutcomeKind | Literal["interrupted"]
     usage: AttemptUsage | None
+    prompt_bytes: NonNegativeInt | None = None
+    native_usage: NativeUsage | None = None
     provenance: ReviewSelection | None = None
 
 

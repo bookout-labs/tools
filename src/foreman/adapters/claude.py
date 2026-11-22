@@ -68,20 +68,20 @@ class ClaudeEnvelope(NativeEnvelope):
         elif self.structured_output is None:
             kind = "failed"
             detail = detail or "missing structured output"
-        if kind == "ran" and call.check:
+        if kind == "ran" and call.checks:
             try:
                 denials = TypeAdapter(list[PermissionDenial]).validate_python(self.permission_denials, strict=True)
             except ValidationError:
-                kind, detail = "failed", f"Claude denied-check evidence malformed: {call.check}"
+                kind, detail = "failed", f"Claude denied-check evidence malformed: {call.checks}"
             else:
                 for denial in denials:
                     command = denial.tool_input.get("command")
                     if denial.tool_name == "Bash" and (
                         not isinstance(command, str) or not command.strip()
-                        or call.check in command or command in call.check
+                        or any(check in command or command in check for check in call.checks)
                     ):
                         kind = "failed"
-                        detail = f"Claude denied the granted check: {call.check}; denied command: {command!r}"
+                        detail = f"Claude denied the granted check: {call.checks}; denied command: {command!r}"
                         break
         return build_outcome(
             kind, output=self.structured_output, usage=self.read_usage(),
@@ -96,7 +96,7 @@ class ClaudeAdapter(NativeAdapter):
     def command(self, call: Call) -> list[str]:
         effort = ["--effort", self.model.effort] if self.model.effort else []
         budget = ["--max-budget-usd", usd_text(call.budget_usd)] if call.budget_usd is not None else []
-        allow = [f"Bash({call.check})"] if call.check else []
+        allow = [f"Bash({command})" for command in call.checks]
         if call.edit:
             allow += ["Edit", "Write"]
         settings = {"permissions": {"allow": allow, "deny": [

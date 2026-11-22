@@ -52,7 +52,7 @@ OWNERS = (
         risk=DEFAULT_RISK,
         review_run_id="review-run", review_receipt={"id": 12, "commit_id": "b" * 40, "state": "COMMENTED"}),
         frozenset({"review_findings", "settled_rulings", "fact_record", "review_run_id", "review_receipt",
-                   "reviewed_head", "review", "risk", "findings", "detail", "review_change_kind"}), 7, {},
+                   "reviewed_head", "review", "risk", "findings", "detail", "review_change_kind"}), 8, {},
         clear_on_head_change=frozenset({"review", "reviewed_head", "review_receipt", "risk", "findings", "detail", "review_change_kind"})),
 
 )

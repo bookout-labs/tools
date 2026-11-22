@@ -1,6 +1,7 @@
 """Run a pinned worker and read its final stage result."""
 
 from collections.abc import Mapping
+from dataclasses import replace
 from decimal import Decimal
 import json
 import os
@@ -10,6 +11,7 @@ import tempfile
 from tempfile import TemporaryDirectory
 from typing import Callable
 
+from pydantic import TypeAdapter
 from pydantic_core import to_jsonable_python
 
 from foreman.adapters import Call, CapabilityUnavailable, CliAdapter, Outcome
@@ -20,6 +22,7 @@ from foreman.config import ConfigError, ModelSpec
 from foreman.state import ChecksState
 from foreman.stage_output import STAGE_OUTPUTS, DispatchPlan
 from foreman.usd import BudgetUsd
+from foreman.workspace import ReviewScope
 
 CommandRunner = Callable[[list[str], Path, Mapping[str, str]], subprocess.CompletedProcess[str]]
 
@@ -52,13 +55,25 @@ class CliWorker:
         )
         contract = STAGE_OUTPUTS[node]
         schema = json.dumps(contract.model_json_schema())
-        prompt += f"\n\nDelivery state:\n{json.dumps(to_jsonable_python(state))}"
+        projected = to_jsonable_python(state)
+        for attempt in projected.get("attempts", []):
+            attempt.pop("prompt_bytes", None)
+            attempt.pop("native_usage", None)
+        prompt += f"\n\nDelivery state:\n{json.dumps(projected)}"
+        # Counts only the final prompt argument, excluding the separate output schema,
+        # CLI system prompts, tool definitions/results and hidden model work.
+        prompt_bytes = len(prompt.encode("utf-8"))
 
         plan = state.get("dispatch_plan")
         plan = DispatchPlan.model_validate(plan) if plan else None
         budget = plan.budget_usd if plan else None
         edit = node == "implement"
-        check = ChecksState.model_validate(state["checks"]).check if edit else plan.scope["command"] if plan and plan.scope else None
+        checks: tuple[str, ...] = ()
+        if edit:
+            check = ChecksState.model_validate(state["checks"]).check
+            checks = (check,) if check else ()
+        elif node == "review" and plan and plan.scope:
+            checks = TypeAdapter(ReviewScope).validate_python(plan.scope).commands
         adapter = ADAPTERS[model.family](model)
         checkout = self.cwd.resolve()
         temp_root = Path(tempfile.gettempdir()).resolve()
@@ -67,15 +82,15 @@ class CliWorker:
         with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
             scratch = Path(directory) / "scratch"
             scratch.mkdir()
-            call = Call(prompt, schema, edit=edit, check=check,
+            call = Call(prompt, schema, edit=edit, checks=checks,
                         read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                         temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None)
             try:
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
-                return Outcome("cli_missing", detail=str(exc))
+                return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
             try:
                 process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch)})
             except FileNotFoundError:
-                return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable")
-            return adapter.read(process, call)
+                return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable", prompt_bytes=prompt_bytes)
+            return replace(adapter.read(process, call), prompt_bytes=prompt_bytes)

@@ -24,7 +24,7 @@ COMPOUND = 'touch first && touch second'
 MODEL = ModelSpec.parse('claude-opus-5-5-high')
 
 def read(envelope, check=CHECK):
-    return ClaudeAdapter(MODEL).read(subprocess.CompletedProcess(['claude'], 0, json.dumps(envelope), ''), replace(CALL, check=check))
+    return ClaudeAdapter(MODEL).read(subprocess.CompletedProcess(['claude'], 0, json.dumps(envelope), ''), replace(CALL, checks=(check,) if check else ()))
 
 def denied(command):
     return {**json.loads(fixture_process(['claude'], 'success', 0).stdout),

@@ -1,7 +1,7 @@
 """Run one Codex turn and read its JSONL result."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from subprocess import CompletedProcess
 from typing import ClassVar
@@ -9,7 +9,7 @@ from typing import ClassVar
 from pydantic import TypeAdapter, ValidationError
 
 from foreman._raw import is_dict
-from foreman.adapters import Call, Outcome, OutcomeKind, Usage, build_outcome
+from foreman.adapters import Call, NativeUsage, NativeUsageTokens, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.config import ModelSpec
 
 EVENT = TypeAdapter(dict[str, object])
@@ -112,10 +112,24 @@ class CodexAdapter:
             return Outcome("failed", session_id=turn.session_id, detail="Codex emitted invalid JSONL")
 
         kind, output, detail = self._result(process.returncode, turn)
-        return build_outcome(
+        outcome = build_outcome(
             kind, output=output, usage=turn.usage,
             session_id=turn.session_id, detail=detail,
         )
+
+        if outcome.usage is None:
+            return outcome
+        return replace(outcome, native_usage=NativeUsage(
+            family=self.model.family, aggregation="turn_total", entries={
+                "turn": NativeUsageTokens(
+                    input_tokens=outcome.usage.input_tokens,
+                    output_tokens=outcome.usage.output_tokens,
+                    cache_read_input_tokens=outcome.usage.cache_read_input_tokens,
+                    cache_creation_input_tokens=outcome.usage.cache_creation_input_tokens,
+                    total_cost_usd=outcome.usage.total_cost_usd,
+                ),
+            },
+        ))
 
     def _result(self, returncode: int, turn: CodexTurn) -> tuple[OutcomeKind, dict[str, object] | None, str]:
         if turn.reroute:
