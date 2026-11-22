@@ -20,6 +20,7 @@ from unittest.mock import Mock, patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 from unidiff.errors import UnidiffParseError
 
+from test_dry_run import transcript
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome, Usage
 from foreman.cli import _print_run, _write_check_log, main, run_exit_code
@@ -27,7 +28,7 @@ from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
 from foreman.delivery import compile_delivery, LiveRun, carried_tool_facts, halted, run_delivery
 from foreman.dispatch import InvalidOutput
-from foreman.dry_run import DEFAULT_RISK, ScriptHandler
+from foreman.dry_run import DEFAULT_RISK, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, render_slice_body
 
@@ -133,6 +134,15 @@ class FakeWorkspace(LiveWorkspace):
 
     def review_diff(self, base, head, *, interdiff=False):
         return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
+
+
+def quota_with_usage(args):
+    process = fixture_process(args, "quota", 1)
+    if args[0] == "codex":
+        events = fixture_process(args, "success", 0).stdout.splitlines()
+        receipt = next(line for line in events if '"turn.completed"' in line)
+        return subprocess.CompletedProcess(args, 1, process.stdout + "\n" + receipt, "")
+    return process
 
 
 def worker_reply(args, reply):
@@ -474,7 +484,7 @@ assert dict(os.environ) == inherited
 
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
         cases = [("quota", "needs_human"), ("cli_missing", "needs_human"),
-                 ("is_error", "invalid_output"), ("missing_model_usage", "invalid_output")]
+                 ("is_error", "usage_unknown"), ("missing_model_usage", "usage_unknown")]
         cases.append(("wrong_model", "invalid_output"))
         for case, stop in cases:
             with self.subTest(case=case):
@@ -495,7 +505,7 @@ assert dict(os.environ) == inherited
                 expected = [case, "ran"] if stop == "needs_human" else ["failed"]
                 self.assertEqual([item["outcome"] for item in result["attempts"]], expected)
                 if case == "is_error":
-                    self.assertIn("turn_handoff:", result["halt_detail"])
+                    self.assertIn("unknown work charge", result["halt_detail"])
 
     def test_delivery_stops_for_an_incomplete_native_stage_reply(self):
         def run(args, cwd, env):
@@ -1097,7 +1107,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
-                worker_runner=lambda args, cwd, env: fixture_process(args, "quota", 1),
+                worker_runner=lambda args, cwd, env: quota_with_usage(args),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
             )
         self.assertEqual(code, 75)
@@ -1120,12 +1130,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         first = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", fact_record="evidence/facts.toml",
             checkpoint=self.checkpoint, run=run,
-            dispatcher=lambda *args: Outcome("quota"),
+            dispatcher=lambda *args: Outcome("quota", usage=SCRIPTED_USAGE),
         )
         self.assertEqual(first["review"].fact_record, "evidence/facts.toml")
         resumed = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, run=run,
-            dispatcher=lambda *args: Outcome("quota"),
+            dispatcher=lambda *args: Outcome("quota", usage=SCRIPTED_USAGE),
         )
         self.assertEqual(resumed["review"].fact_record, "evidence/facts.toml")
 
@@ -1143,7 +1153,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with self.subTest(record=record, stop=stop), TemporaryDirectory() as directory:
                 checkpoint = Path(directory) / "run.sqlite3"
                 run = LiveRun(self.github, FakeWorkspace(self.cwd))
-                dispatcher = (lambda *args: Outcome("quota")) if stop == "quota" else ScriptHandler(triage="needs_human" if stop == "needs_human" else "implement")
+                dispatcher = (lambda *args: Outcome("quota", usage=SCRIPTED_USAGE)) if stop == "quota" else ScriptHandler(triage="needs_human" if stop == "needs_human" else "implement")
                 first = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=checkpoint,
                                           fact_record=record, run=run, dispatcher=dispatcher)
                 self.assertEqual(first["review"].fact_record, record)
@@ -1211,7 +1221,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             self.assertTrue(all(not path.exists() for path in paths))
             (scratch / "scratch.txt").write_text("discard on quota")
             paths.append(scratch)
-            return fixture_process(args, "quota", 1)
+            return quota_with_usage(args)
 
         paused = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
@@ -1243,8 +1253,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
         def exhaust(node, model, state, instruction):
             if node == "triage":
-                return Outcome("ran", {"triage": "implement", "work_kind": "feature", "human_question": None, "slice": None}, usage=Usage(input_tokens=1, output_tokens=1))
-            return Outcome("quota")
+                return Outcome("ran", {"triage": "implement", "work_kind": "feature", "human_question": None, "slice": None}, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1))
+            return Outcome("quota", usage=SCRIPTED_USAGE)
 
         paused = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
@@ -1301,7 +1311,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 worker_runner=lambda *_: self.fail("An open blocker must prevent dispatch."),
             )
         self.assertEqual(code, 1)
-        self.assertEqual(stdout.getvalue(), "tokens 0 of 20000000\ndone blocked\nOpen blockers: https://github.com/Example/Engine/issues/101\n")
+        self.assertEqual(transcript(stdout.getvalue()), "done blocked\nOpen blockers: https://github.com/Example/Engine/issues/101\n")
         self.github.closed.add(101)
         self.assertIn("no merged pull request", self.walk([], issue=102)["halt_detail"])
         self.github.merged.add(101)
@@ -1953,7 +1963,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
         def interrupted_run(node, model, state, instruction):
             if node == "triage":
-                return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None}, usage=Usage(input_tokens=1, output_tokens=1))
+                return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None}, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1))
             self.assertEqual(node, "implement")
             raise RuntimeError("worker stopped")
 
@@ -2316,7 +2326,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             )
         self.assertEqual(code, 75)
         self.assertEqual(arm.call_args.args[:4], ("Example/Target", 8, BRANCH, HEAD))
-        self.assertIn(f"merge not armed\ncheck exit 0\ntokens 47606 of 20000000\ndone merge_not_armed\n{detail}", stdout.getvalue())
+        self.assertIn(f"merge not armed\ncheck exit 0\ndone merge_not_armed\n{detail}", transcript(stdout.getvalue()))
 
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["factory"])
@@ -2339,8 +2349,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(code, 0)
         self.assertIn(
             "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --squash --match-head-commit '<sha>'\n"
-            "check exit 0\ntokens 6 of 20000000\ndone verified",
-            stdout.getvalue(),
+            "check exit 0\ndone verified",
+            transcript(stdout.getvalue()),
         )
         self.assertIn("pstack pin not checked (dry run)", stdout.getvalue())
         worker.assert_not_called()
@@ -2373,7 +2383,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         armed = invoke()
         self.assertIn("merge armed\ndone verified", armed)
         terminal = invoke()
-        self.assertIn("restored tokens 47606 of 20000000", terminal)
+        self.assertIn("restored raw tokens 47606", terminal)
         self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
         self.assertEqual(self.github.hold_reads, [repo, repo, repo])
         self.assertEqual(self.github.merge_calls, [(repo, 8, BRANCH, HEAD)])
@@ -2469,7 +2479,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         restored, current = completed.split("this invocation:\n")
         self.assertEqual(restored.count("restored triage "), 1)
         self.assertEqual(restored.count("restored spec "), 1)
-        self.assertNotIn("triage", current)
+        self.assertNotIn("\ntriage ", current)
         self.assertEqual(sum(line.startswith("spec ") for line in current.splitlines()), 1)
         self.assertIn("merge armed", completed)
         self.assertIn("done verified", completed)
@@ -2530,7 +2540,7 @@ from unittest.mock import patch
 from foreman.cli import main
 from foreman.config import PstackPin, load_config
 from foreman.delivery import LiveRun
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, worker_reply, fixture_process
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, worker_reply, fixture_process, quota_with_usage
 
 phase = sys.argv[3]
 
@@ -2567,7 +2577,7 @@ def worker(args, cwd, env):
         return worker_reply(args, {"triage": "implement"})
     if stage == "ImplementOutput":
         if phase == "quota":
-            return fixture_process(args, "quota", 1)
+            return quota_with_usage(args)
         return workspace.reply(args, {"implementation": "built"})
     assert stage == "ReviewOutput", stage
     return worker_reply(args, APPROVE)
@@ -2626,12 +2636,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
                 resumed = invoke("ready", 0)
                 restored, current = resumed.split("this invocation:\n")
-                self.assertNotIn("triage", current)
+                self.assertNotIn("\ntriage ", current)
                 if scenario == "held":
                     self.assertEqual(current, "merge armed\ndone verified\n")
                     expected_workers = ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"]
                 else:
-                    self.assertRegex(restored, r"restored implement\nrestored tokens \d+ of 20000000\nrestored paused quota_exhausted")
+                    self.assertRegex(transcript(restored.replace("restored ", "")), r"implement\npaused quota_exhausted")
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
                     self.assertEqual(saved_path(), ["triage", "implement", "implement", "publish", "verify", "review", "merge", "done"])
                     expected_workers = (["TriageOutput"] + ["ImplementOutput"] * attempts
@@ -2705,7 +2715,7 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_missing_slice_has_no_fake_stage(self):
         result = self.live(body="No JSON")
         self.assert_halt(result, "missing_slice", "slice issue needs a fenced JSON object")
-        self.assertEqual(result[1], "tokens 0 of 20000000\ndone missing_slice\nslice issue needs a fenced JSON object\n")
+        self.assertEqual(transcript(result[1]), "done missing_slice\nslice issue needs a fenced JSON object\n")
 
     def test_resumable_halts(self):
         replies = [{"triage": "implement"}, {"implementation": "built"}, APPROVE]

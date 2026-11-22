@@ -61,10 +61,10 @@ class DispatchBudgetTests(unittest.TestCase):
                     if node == stage:
                         calls.append((model.name, state["dispatch_plan"]["budget_usd"]))
                         if len(calls) == 1:
-                            return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=0.1))
+                            return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.1))
                     reply = script(node, model, state, instruction)
                     cost = 0.01 if model and model.family == "claude" else 5.0
-                    return replace(reply, usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=cost))
+                    return replace(reply, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
                 result = walk(handler, config=configured(stage))
                 self.assertEqual(result["stop"], "answered" if stage == "research" else "verified")
@@ -126,7 +126,7 @@ class DispatchBudgetTests(unittest.TestCase):
                     def handler(node, model, state, instruction):
                         calls.append(state["dispatch_plan"]["budget_usd"])
                         return Outcome(kind if len(calls) == 1 else "ran", NEEDS_HUMAN,
-                                       usage=Usage(input_tokens=1, output_tokens=0,
+                                       usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0,
                                                    total_cost_usd=cost if len(calls) == 1 else 0.0))
 
                     result = walk(handler)
@@ -164,15 +164,15 @@ class DispatchBudgetTests(unittest.TestCase):
                     def handler(node, model, state, instruction):
                         calls.append(model.name)
                         if len(calls) > 1:
-                            return Outcome("ran", NEEDS_HUMAN, usage=Usage(input_tokens=1, output_tokens=0))
+                            return Outcome("ran", NEEDS_HUMAN, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0))
                         return Outcome(kind, NEEDS_HUMAN,
-                                       usage=Usage(input_tokens=1, output_tokens=0) if has_usage else None)
+                                       usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0) if has_usage else None)
 
                     result = walk(handler, limit=limit)
-                    expected = "usage_unknown" if limit else ("invalid_output" if kind == "failed" else "needs_human")
+                    expected = "usage_unknown" if limit or not has_usage else ("invalid_output" if kind == "failed" else "needs_human")
                     self.assertEqual(result["stop"], expected)
-                    self.assertEqual(len(calls), 2 if limit is None and kind == "quota" else 1)
-                    if limit:
+                    self.assertEqual(len(calls), 2 if limit is None and kind == "quota" and has_usage else 1)
+                    if limit and has_usage:
                         self.assertIn("without a dollar cost", result["halt_detail"])
                         self.assertIn("Dollar allowance: $1.", result["halt_detail"])
                         self.assertEqual(run_exit_code(result), 1)
@@ -185,7 +185,7 @@ class DispatchBudgetTests(unittest.TestCase):
 
                 def handler(node, model, state, instruction):
                     calls.append(state["dispatch_plan"]["budget_usd"])
-                    usage = Usage(input_tokens=7, output_tokens=0, total_cost_usd=0.0)
+                    usage = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=7, output_tokens=0, total_cost_usd=0.0)
                     return Outcome(kind if len(calls) == 1 else "ran", NEEDS_HUMAN,
                                    usage=None if kind == "cli_missing" and len(calls) == 1 else usage)
 
@@ -196,13 +196,13 @@ class DispatchBudgetTests(unittest.TestCase):
 
     def test_stop_precedence_and_budget_stop_detail(self):
         cases = (
-            (Outcome("budget_exhausted"), 100, "budget_exceeded", "spend: unknown"),
-            (Outcome("budget_exhausted", usage=Usage(input_tokens=99, output_tokens=0)), 100, "budget_exceeded", "spend: unknown"),
-            (Outcome("budget_exhausted", usage=Usage(input_tokens=99, output_tokens=0, total_cost_usd=0.1)),
+            (Outcome("budget_exhausted"), 100, "usage_unknown", "unknown work charge"),
+            (Outcome("budget_exhausted", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=99, output_tokens=0)), 100, "budget_exceeded", "spend: unknown"),
+            (Outcome("budget_exhausted", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=99, output_tokens=0, total_cost_usd=0.1)),
              100, "budget_exceeded", "spend: $0.9"),
             (Outcome("ran", NEEDS_HUMAN), 100, "usage_unknown", "without a usage report"),
-            (Outcome("ran", NEEDS_HUMAN, usage=Usage(input_tokens=99, output_tokens=0, total_cost_usd=0.2)),
-             100, "budget_exceeded", "Run used 100 tokens; cap is 100"),
+            (Outcome("ran", NEEDS_HUMAN, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=99, output_tokens=0, total_cost_usd=0.2)),
+             100, "budget_exceeded", "Run used 100 work tokens; cap is 100"),
         )
         for reply, cap, expected, detail in cases:
             with self.subTest(reply=reply):
@@ -227,9 +227,9 @@ class DispatchBudgetTests(unittest.TestCase):
             budget_usd = state["dispatch_plan"]["budget_usd"]
             calls.append((node, model.name if model else None, budget_usd))
             if model in (GPT, GROK) and node == "triage":
-                return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=5.0))
+                return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=5.0))
             reply = script(node, model, state, instruction)
-            return replace(reply, usage=Usage(input_tokens=1, output_tokens=0,
+            return replace(reply, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0,
                                               total_cost_usd=0.01 if model == CLAUDE else 5.0))
 
         result = walk(handler, config=configured(models=(GPT, GROK, CLAUDE)))

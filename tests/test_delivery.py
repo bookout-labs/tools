@@ -12,7 +12,7 @@ from foreman.adapters import Outcome, Usage
 from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
 from foreman.delivery import run_delivery, stage_text
 from unittest.mock import patch
-from foreman.dry_run import DryRun, ScriptHandler
+from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from skill_fixture import FixtureSkills, skill_fixture
 
 
@@ -107,7 +107,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(
             lambda *_: Outcome("ran", {
                 "triage": "implement", "work_kind": "feature", "human_question": None, "slice": {**SLICES[0], "depends_on": ["Other"]},
-            }, usage=Usage(input_tokens=1, output_tokens=1)),
+            }, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1)),
             slice=None,
         )
         self.assertEqual(result["path"], ["triage", "done"])
@@ -230,7 +230,7 @@ class DeliveryTest(unittest.TestCase):
 
                 def switch_builder(node, model, state, instruction):
                     if node == "implement" and state["review"].review == "changes" and model and model.family == "gpt":
-                        return Outcome("quota")
+                        return Outcome("quota", usage=SCRIPTED_USAGE)
                     return handler(node, model, state, instruction)
 
                 result = walk(switch_builder, config=config)
@@ -293,7 +293,7 @@ class DeliveryTest(unittest.TestCase):
         def exhaust_review(node, model, state, instruction):
             if node == "review":
                 offered.append(model.name)
-                return Outcome("quota")
+                return Outcome("quota", usage=SCRIPTED_USAGE)
             return handler(node, model, state, instruction)
 
         config = load_config()
@@ -309,7 +309,7 @@ class DeliveryTest(unittest.TestCase):
 
         def exhaust_claude(node, model, state, instruction):
             if node == "triage" and model and model.name == "claude-opus-5-5-high":
-                return Outcome("quota")
+                return Outcome("quota", usage=SCRIPTED_USAGE)
             return handler(node, model, state, instruction)
 
         result = walk(exhaust_claude)
@@ -323,7 +323,7 @@ class DeliveryTest(unittest.TestCase):
 
     def test_every_model_exhausted_halts(self):
         def exhaust(node, model, state, instruction):
-            return Outcome("quota")
+            return Outcome("quota", usage=SCRIPTED_USAGE)
 
         result = walk(exhaust)
         self.assertEqual(result["stop"], "quota_exhausted")

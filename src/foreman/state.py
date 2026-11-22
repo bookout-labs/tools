@@ -44,7 +44,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     proof_labels: dict[str, str] = Field(default_factory=dict)
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:

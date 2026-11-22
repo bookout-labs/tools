@@ -13,7 +13,7 @@ from foreman.adapters import Outcome  # noqa: E402
 from foreman.config import ModelSpec  # noqa: E402
 from foreman.delivery import DeliveryState, run_delivery  # noqa: E402
 from foreman.dispatch import Handler  # noqa: E402
-from foreman.dry_run import ScriptHandler  # noqa: E402
+from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE  # noqa: E402
 from tests.skill_fixture import skill_fixture  # noqa: E402
 
 
@@ -45,7 +45,7 @@ def _with_quota_gap() -> str:
 
     def exhaust_claude(node: str, model: ModelSpec | None, state: DeliveryState, instruction: str) -> Outcome:
         if node == "triage" and model and model.name == "claude-opus-5-5-high":
-            return Outcome("quota")
+            return Outcome("quota", usage=SCRIPTED_USAGE)
         return handler(node, model, state, instruction)
 
     result = _walk(exhaust_claude, slice=FIELD_SLICE)
@@ -60,7 +60,7 @@ def _review_fallback() -> str:
         if node == "review" and model:
             offered.append(model.name)
             if model.family == "claude":
-                return Outcome("quota")
+                return Outcome("quota", usage=SCRIPTED_USAGE)
         return handler(node, model, state, instruction)
 
     result = _walk(review, slice=FIELD_SLICE)

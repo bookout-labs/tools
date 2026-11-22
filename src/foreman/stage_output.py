@@ -162,8 +162,8 @@ class RecordContract(Contract, Generic[Record]):
 class AttemptUsageRecord(TypedDict):
     input: NonNegativeInt
     output: NonNegativeInt
-    cache_read: NonNegativeInt
-    cache_creation: NonNegativeInt
+    cache_read: NonNegativeInt | None
+    cache_creation: NonNegativeInt | None
     cost_usd: CostUsd | None
 
 
@@ -212,8 +212,8 @@ class AttemptUsage(RecordContract[AttemptUsageRecord]):
 
     input: NonNegativeInt
     output: NonNegativeInt
-    cache_read: NonNegativeInt
-    cache_creation: NonNegativeInt
+    cache_read: NonNegativeInt | None
+    cache_creation: NonNegativeInt | None
     cost_usd: CostUsd | None
 
 

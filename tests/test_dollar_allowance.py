@@ -17,7 +17,7 @@ from foreman.adapters import Outcome, Usage
 from foreman.budget import CostUnknown, Exhausted, Remaining, dollar_admission
 from foreman.cli import _print_run, main
 from foreman.delivery import LiveRun, compile_delivery, run_delivery, run_tokens
-from foreman.dry_run import DryRun, ScriptHandler
+from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from foreman.runner import run_live_delivery
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 from foreman.usd import BudgetUsd
@@ -73,7 +73,7 @@ from unittest.mock import patch
 from foreman.cli import main
 from foreman.config import PstackPin, load_config
 from foreman.delivery import LiveRun
-from test_runner import FakeGitHub, FakeWorkspace, fixture_process, worker_reply
+from test_runner import FakeGitHub, FakeWorkspace, fixture_process, worker_reply, quota_with_usage
 
 checkpoint, raw_pin, phase = sys.argv[1:4]
 def worker(args, cwd, env):
@@ -81,7 +81,7 @@ def worker(args, cwd, env):
         log.write(json.dumps(args) + "\n")
     if phase == "needs_human":
         return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
-    process = fixture_process(args, "quota", 1)
+    process = quota_with_usage(args)
     if args[0] == "claude":
         envelope = json.loads(process.stdout)
         envelope["total_cost_usd"] = 0.01
@@ -192,8 +192,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     def handler(node, model, state, instruction):
                         calls.append(node)
                         if pause == "needs_human" and len(calls) == 1:
-                            return Outcome("ran", NEEDS_HUMAN, usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=0.1))
-                        return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=0.0))
+                            return Outcome("ran", NEEDS_HUMAN, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.1))
+                        return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.0))
 
                     kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=Path(folder) / "allowance.sqlite",
                                   run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))), dispatcher=handler)
@@ -219,7 +219,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
             def quota(node, model, state, instruction):
                 calls.append(node)
-                return Outcome("quota")
+                return Outcome("quota", usage=SCRIPTED_USAGE)
 
             root = Path(folder)
             kwargs = dict(repo="a/b", issue=8, check="exit 0", run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
@@ -284,9 +284,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     calls.append(node)
                     if node == "triage":
                         return Outcome("ran", {**NEEDS_HUMAN, "triage": "implement", "human_question": None},
-                                       usage=Usage(input_tokens=1, output_tokens=1, total_cost_usd=0.2))
+                                       usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.2))
                     cost = next(claude_cost) if model.family == "claude" else 5.0
-                    return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0, total_cost_usd=cost))
+                    return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
                 checkpoint = root / "replay.sqlite"
                 kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=LiveRun(FakeGitHub(), workspace),

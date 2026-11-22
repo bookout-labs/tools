@@ -33,7 +33,7 @@ class TokenCapTests(unittest.TestCase):
                     calls.append(model.name)
                     kind, tokens = next(outcomes)
                     return Outcome(kind, {"triage": "needs_human", "work_kind": "feature", "slice": None,
-                                          "human_question": "Which?"}, usage=Usage(input_tokens=tokens, output_tokens=0))
+                                          "human_question": "Which?"}, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=tokens, output_tokens=0))
                 dispatch = handler
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
                     saver.serde = checkpoint_serializer()
@@ -54,7 +54,7 @@ class TokenCapTests(unittest.TestCase):
                 self.assertEqual(len(result["attempts"]), 1 + len(replies))
                 if expected == "budget_exceeded":
                     self.assertEqual(result["plan"].triage, "")
-                    self.assertIn(f"Run used {total} tokens; cap is 100. Last attempt: triage", result["halt_detail"])
+                    self.assertIn(f"Run used {total} work tokens; cap is 100. Last attempt: triage", result["halt_detail"])
                     self.assertEqual(run_exit_code(result), 1)
 
     def test_reached_cap_never_calls_handler_and_unknown_never_applies_output(self):
@@ -80,7 +80,7 @@ class TokenCapTests(unittest.TestCase):
             calls = []
             def quota(node, model, state, instruction):
                 calls.append(node)
-                return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0))
+                return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0))
             kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint,
                           run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))
             first = run_live_delivery(**kwargs, max_tokens=100, dispatcher=quota)
@@ -105,7 +105,7 @@ class TokenCapTests(unittest.TestCase):
     def test_legacy_unfinished_checkpoint_with_missing_skill(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
             def quota(*args):
-                return Outcome("quota", usage=Usage(input_tokens=1, output_tokens=0))
+                return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0))
             kwargs = dict(repo="a/b", issue=8, check="exit 0",
                           run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))
             first = run_live_delivery(**kwargs, checkpoint=Path(folder) / "a.sqlite", dispatcher=quota)
@@ -128,7 +128,7 @@ class TokenCapTests(unittest.TestCase):
         self.assertEqual(result["stop"], "budget_exceeded")
         with contextlib.redirect_stdout(io.StringIO()) as output:
             _print_run(result)
-        self.assertIn("tokens 2 of 1", output.getvalue())
+        self.assertIn("work tokens used / work cap: 2 / 1", output.getvalue())
         self.assertIn("overshoot", output.getvalue())
         self.assertEqual(run_delivery(ScriptHandler(), repo="a/b", request="x")["run"].token_cap, DEFAULT_TOKEN_CAP)
 

@@ -18,7 +18,8 @@ from foreman.workspace import LiveWorkspace
 from foreman.review_round import GraphCheck, ReviewHistory, accept
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
 from foreman.config import ModelSpec, load_config
-from foreman.adapters import Outcome
+from foreman.adapters import Outcome, Usage
+from foreman.budget import work_tokens
 from foreman.dry_run import SCRIPTED_USAGE
 from foreman.stage_output import ReviewOutput, parse_output
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
@@ -143,7 +144,7 @@ class ReviewRoundsTest(unittest.TestCase):
                         raise RuntimeError("process lost")
                     if review_quota and not quota_returned and len([p for p in self.prompts if p[0] == "review"]) == quota_after + 1:
                         quota_returned = True
-                        return Outcome("quota")
+                        return Outcome("quota", usage=SCRIPTED_USAGE)
                     raw = next(replies)
                     return raw if isinstance(raw, Outcome) else Outcome("ran", raw, usage=SCRIPTED_USAGE)
                 if crash and state["review"].review_findings and not crashed:
@@ -374,6 +375,34 @@ class ReviewRoundsTest(unittest.TestCase):
                 if mode == "resume":
                     self.assertEqual(self.interrupted["attempts"][-1]["outcome"], "review_denied")
                     self.assertFalse(self.interrupted["review"].review_findings)
+
+    def test_denial_retry_charges_both_attempts_as_fresh_work(self):
+        usage = Usage(input_tokens=10, output_tokens=20, cache_creation_input_tokens=30,
+                      cache_read_input_tokens=10_000, total_cost_usd=0.1)
+        denial = Outcome("review_denied", APPROVE, usage=usage, detail="denied read")
+        retry = Outcome("ran", APPROVE, usage=usage)
+        for cap, expected in ((125, None), (124, "budget_exceeded")):
+            with self.subTest(cap=cap):
+                result = self.run_rounds([denial, retry], initial={"run": RunState(
+                    repo="Example/Repo", issue=8, token_cap=cap, max_budget_usd=None)})
+                attempts = [a for a in result["attempts"] if a["stage"] == "review"]
+                self.assertEqual([a["outcome"] for a in attempts], ["review_denied", "ran"])
+                self.assertEqual(work_tokens(attempts), 120)
+                self.assertEqual(work_tokens(result["attempts"]), 124)
+                self.assertEqual(result.get("halt"), expected)
+                self.assertEqual(len(self.forge.reviews), int(expected is None))
+                self.assertEqual(bool(self.forge.merge_calls), expected is None)
+        for unknown in (None, usage.model_copy(update={"cache_creation_input_tokens": None})):
+            with self.subTest(unknown=unknown):
+                result = self.run_rounds([Outcome("review_denied", APPROVE, usage=unknown)])
+                attempts = [a for a in result["attempts"] if a["stage"] == "review"]
+                self.assertEqual([a["outcome"] for a in attempts], ["review_denied"])
+                self.assertEqual(attempts[0]["usage"], None if unknown is None else {
+                    "input": 10, "output": 20, "cache_read": 10_000,
+                    "cache_creation": None, "cost_usd": 0.1})
+                self.assertEqual(result["halt"], "usage_unknown")
+                self.assertFalse(self.forge.reviews)
+                self.assertFalse(self.forge.merge_calls)
 
     def test_retry_preserves_unresolved_findings_and_settled_rulings(self):
         denial = Outcome("review_denied", usage=SCRIPTED_USAGE, detail="denied chain")

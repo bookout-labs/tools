@@ -13,7 +13,7 @@ from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
 from foreman.delivery import run_delivery
-from foreman.dry_run import ScriptHandler
+from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from skill_fixture import skill_fixture
 from foreman.outcomes import Halt
 from foreman.readiness import MergeState
@@ -225,7 +225,7 @@ class SmokeTest(unittest.TestCase):
                                   ("review", "cli_missing", Halt.reviewer_unavailable)):
             handler = ScriptHandler()
             def dispatch(node, model, state, instruction):
-                return Outcome(kind) if node == stage else handler(node, model, state, instruction)
+                return Outcome(kind, usage=SCRIPTED_USAGE if kind == "quota" else None) if node == stage else handler(node, model, state, instruction)
             with self.subTest(stage=stage, kind=kind), skill_fixture() as (config, scratch):
                 state = run_delivery(dispatch, repo="bookout-labs/foreman-smoke", request="Add a field",
                                      config=config, scratch=scratch)
