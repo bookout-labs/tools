@@ -17,7 +17,7 @@ from unittest.mock import patch
 from foreman.workspace import LiveWorkspace
 from foreman.review_round import GraphCheck, ReviewHistory, accept
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
-from foreman.config import ConfigError, ModelSpec, load_config
+from foreman.config import ModelSpec, load_config
 from foreman.adapters import Outcome
 from foreman.dry_run import SCRIPTED_USAGE
 from foreman.stage_output import ReviewOutput, parse_output
@@ -286,10 +286,16 @@ class ReviewRoundsTest(unittest.TestCase):
             nested.mkdir()
             for scratch_root in (checkout, nested):
                 with self.subTest(scratch_root=scratch_root):
-                    worker = CliWorker(checkout, lambda *_: self.fail("CLI must not run"),
-                                       scratch_root=scratch_root)
-                    with self.assertRaisesRegex(ConfigError, "scratch root must be outside the checkout"):
-                        worker("review", ModelSpec.parse("claude-opus-5-5-high"), {}, "Review.")
+                    def runner(args, cwd, env):
+                        self.assertFalse(Path(env["TMPDIR"]).resolve().is_relative_to(checkout.resolve()))
+                        settings = Path(args[args.index("--settings") + 1])
+                        self.assertFalse(settings.resolve().is_relative_to(checkout.resolve()))
+                        return fixture_process(args, "success", 0)
+                    outcome = CliWorker(checkout, runner, scratch_root=scratch_root)(
+                        "review", ModelSpec.parse("claude-opus-5-5-high"), {}, "Review.")
+                    self.assertEqual(outcome.kind, "ran")
+            self.assertEqual(list(checkout.iterdir()), [nested])
+            self.assertEqual(list(nested.iterdir()), [])
 
     def test_review_payload_stays_off_exec_argv(self):
         with review_trees() as (workspace, tip, _, previous, head), TemporaryDirectory() as scratch:

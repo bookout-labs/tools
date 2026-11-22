@@ -86,8 +86,6 @@ class CliWorker:
         checkout = self.cwd.resolve()
         temp_root = (self.scratch_root or Path(tempfile.gettempdir())).resolve()
         if temp_root.is_relative_to(checkout):
-            if self.scratch_root is not None:
-                raise ConfigError("Worker scratch root must be outside the checkout")
             temp_root = checkout.parent
         with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
             scratch = Path(directory) / "scratch"
