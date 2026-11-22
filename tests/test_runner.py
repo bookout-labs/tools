@@ -37,7 +37,7 @@ from foreman.runner import _load_slice, AnswerError, RunPresentation, run_live_d
 from foreman.review_round import carried_tool_facts
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
-from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, parse_output
+from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
@@ -1504,6 +1504,31 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertIsNone(result["plan"].spec_candidate)
                     self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
                     self.assertTrue(all(a["usage"] for a in result["attempts"]))
+
+    def test_mislabels_with_invalid_questions_are_terminal(self):
+        seam = {"name": "items", "exists": True, "path": "items.py"}
+        question = {"question": "Which policy applies?", "why_code_unanswered": "A policy decision is needed.",
+                    "checked_paths": ["items.py"]}
+        for count in (1, 2):
+            for gate, questions in (("ready", [question]), ("needs_human", [])):
+                with self.subTest(count=count, gate=gate):
+                    self.checkpoint = self.cwd / f"mixed-questions-{count}-{gate}.sqlite3"
+                    self.github = FakeGitHub(["factory"])
+                    slices = [{**EMPTY_SLICE, "title": f"Edit {i}", "builds": [seam]} for i in range(count)]
+                    spec = {"spec": "Edit items", "spec_gate": gate, "questions": questions, "slices": slices}
+                    with self.assertRaises(InvalidOutput) as raised:
+                        parse_output(SpecOutput, spec)
+                    self.assertIs(type(raised.exception), InvalidOutput)
+                    self.assertIn("questions must be non-empty on needs_human and empty on ready", str(raised.exception))
+                    result = self.walk([{"triage": "spec"}, spec, spec, spec])
+                    self.assertEqual(result["stop"], "invalid_output")
+                    self.assertEqual(result["path"], ["triage", "spec", "done"])
+                    self.assertEqual(result["plan"].spec_failures, 0)
+                    self.assertIsNone(result["plan"].spec_candidate)
+                    self.assertEqual(self.github.created, [])
+                    attempts = [a for a in result["attempts"] if a["stage"] == "spec"]
+                    self.assertEqual(len(attempts), 1)
+                    self.assertTrue(attempts[0]["usage"])
 
     def test_existing_seam_resolves_in_workspace_and_skips_a_dependency(self):
         self.github = FakeGitHub(["factory"])
