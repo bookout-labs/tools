@@ -2,6 +2,8 @@
 import tests
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 import json
+import os
+import shlex
 import subprocess
 from contextlib import contextmanager
 from dataclasses import replace
@@ -22,7 +24,7 @@ from foreman.config import ModelSpec
 from foreman.adapters import Outcome
 from foreman.dry_run import SCRIPTED_USAGE
 from skill_fixture import skill_fixture
-from test_adapters import codex_events, fixture_process
+from test_adapters import codex_events, codex_process, fixture_process
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
@@ -441,27 +443,59 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertFalse(self.forge.reviews)
         self.assertFalse(self.forge.merge_calls)
 
-    def test_codex_failed_committed_read_cannot_clear_review(self):
+    def test_codex_review_accepts_no_match_after_required_reads(self):
+        self.check_codex_review_reads(None)
+
+    def test_codex_review_rejects_failed_denied_or_missing_reads(self):
+        for status in ("failed", "declined", "missing"):
+            with self.subTest(status=status):
+                self.check_codex_review_reads(status)
+
+    def check_codex_review_reads(self, read_status):
         with review_trees() as trees:
             workspace = trees[0]
 
             def review(state, instruction):
-                command = next(line for line in instruction.splitlines() if "cat-file blob" in line)
+                required = [line for line in instruction.splitlines() if line.startswith("git ")]
+                blob = next(command for command in required if "cat-file blob" in command)
+                head = state["dispatch_plan"]["target"]["headRefOid"]
+                search = f"git --no-replace-objects grep -n FOREMAN_REMOVED_PATH {head} -- items.txt"
+                commands = []
+                for command in [*required, search]:
+                    status = read_status if command == blob else None
+                    if status == "missing":
+                        continue
+                    code, output = None, ""
+                    if status != "declined":
+                        env = {**os.environ, "GIT_DIR": str(workspace.root / "missing.git")} if status == "failed" else None
+                        completed = subprocess.run(shlex.split(command), cwd=workspace.root, env=env,
+                                                   text=True, capture_output=True)
+                        code, output = completed.returncode, completed.stdout + completed.stderr
+                        status = "failed" if code else "completed"
+                    if command == search:
+                        self.assertEqual((code, output), (1, ""))
+                    commands.append({"type": "item.completed", "item": {
+                        "id": f"read_{len(commands)}", "type": "command_execution",
+                        "command": f"/bin/zsh -lc {shlex.quote(command)}",
+                        "exit_code": code, "status": status, "aggregated_output": output,
+                    }})
                 events = codex_events()
                 events[-2]["item"]["text"] = json.dumps(APPROVE)
-                events.insert(-2, {"type": "item.completed", "item": {
-                    "type": "command_execution", "command": command,
-                    "exit_code": 128, "status": "failed", "aggregated_output": "fatal: missing blob",
-                }})
-                worker = CliWorker(workspace.root, lambda args, *_:
-                    subprocess.CompletedProcess(args, 0, "\n".join(map(json.dumps, events)), ""))
+                events[-2:-2] = commands
+                worker = CliWorker(workspace.root, lambda *_: codex_process(events))
                 return worker("review", ModelSpec.parse("gpt-6.1-sol-high"), state, instruction)
 
             result = self.run_rounds([review], trees=trees)
-        self.assertEqual(result.get("halt"), "invalid_output")
-        self.assertIn("128", result["halt_detail"])
-        self.assertFalse(self.forge.reviews)
-        self.assertFalse(self.forge.merge_calls)
+        if read_status is None:
+            self.assertEqual(result["stop"], "verified")
+            self.assertEqual(len(self.forge.merge_calls), 1)
+        else:
+            self.assertEqual(result.get("halt"), "invalid_output")
+            self.assertIn({
+                "failed": "exit 128", "declined": "command failed", "missing": "required read",
+            }[read_status], result["halt_detail"])
+            self.assertFalse(self.forge.reviews)
+            self.assertFalse(self.forge.merge_calls)
 
     def test_resuming_after_base_move_reviews_same_checked_head_again(self):
         new_base = "d" * 40
