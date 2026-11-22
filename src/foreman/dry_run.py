@@ -70,7 +70,9 @@ class ScriptHandler:
         if node == "spec":
             return Outcome("ran", {
                 "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices,
-                "human_question": None,
+                "questions": [{"question": "Which policy should apply?",
+                    "why_code_unanswered": "The issue supplies no policy and no checkout file covers it.",
+                    "checked_paths": []}] if self.spec_gate == "needs_human" else [],
             }, usage=SCRIPTED_USAGE)
         if node == "spec_check":
             return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)

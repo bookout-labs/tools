@@ -79,15 +79,29 @@ class PermissionsTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             args = adapter.command(Call("prompt", "{}", False, Path(directory)))
             permissions = json.loads(Path(args[args.index("--settings") + 1]).read_text())
-        self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep,Bash")
+        self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep")
         self.assertEqual(permissions["permissions"]["allow"], [])
         self.assertIn("--restricted", args)
         self.assertIn("--strict-mcp-config", args)
         self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
 
+    def test_spec_read_first_rule_reaches_worker(self):
+        instructions = []
+        script = ScriptHandler(triage="spec", spec_gate="needs_human")
+        def handler(node, model, state, instruction):
+            if node == "spec":
+                instructions.append(instruction)
+            return script(node, model, state, instruction)
+        with skill_fixture() as (config, scratch):
+            run_delivery(handler, repo="org/repo", request="Change", config=config, scratch=scratch)
+        for rule in ("Read the target checkout before asking a person", "existing behavior",
+                     "external facts absent", "why_code_unanswered", "checked_paths"):
+            self.assertIn(rule, instructions[0])
+
     def test_review_grants_only_the_bound_scope_command(self):
         args_seen = []
         def runner(args, cwd, env):
+            self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep,Bash")
             args_seen.append(json.loads(Path(args[args.index("--settings") + 1]).read_text()))
             return fixture_process(args, "success", 0)
         plan = {"models": [], "instruction": "review", "methods": [], "read_roots": [],
@@ -101,6 +115,7 @@ class PermissionsTest(unittest.TestCase):
     def test_multiline_implementation_check_stays_one_grant(self):
         check = "# implementation check\npython check.py\npython other.py"
         def runner(args, cwd, env):
+            self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep,Bash,Edit,Write")
             permissions = json.loads(Path(args[args.index("--settings") + 1]).read_text())["permissions"]
             self.assertEqual(permissions["allow"], [f"Bash({check})", "Edit", "Write"])
             return fixture_process(args, "success", 0)

@@ -568,21 +568,40 @@ class ResearchOutput(StageOutput):
         return {"research": self.research}
 
 
-class SpecOutput(HumanQuestionOutput):
+class SpecQuestion(Contract):
+    question: TrimmedText
+    why_code_unanswered: TrimmedText
+    checked_paths: list[TrimmedText]
+
+
+class SpecOutput(StageOutput):
     spec: Text
     spec_gate: Literal["ready", "needs_human"]
+    questions: list[SpecQuestion]
     slices: list[Slice] | None = Field(
         description="For a ready parent spec, return one entry per pull request. Use null otherwise.",
     )
+
+    @model_validator(mode="after")
+    def grounded_questions(self) -> Self:
+        if bool(self.questions) != (self.spec_gate == "needs_human"):
+            raise ValueError("questions must be non-empty on needs_human and empty on ready")
+        return self
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
         plan = context.plan
         slices = context.slices
+        question = "\n\n".join(
+            f"{item.question}\nWhy code cannot answer: {item.why_code_unanswered}\n"
+            f"Checked paths: {', '.join(item.checked_paths) or '(none)'}" for item in self.questions
+        )
         if context.oversized:
             return {"plan": plan.model_copy(update={"pr_split": {"plan": self.spec, "gate": self.spec_gate,
-                "question": self.human_question, "slices": slices}, "spec_rejection": None})}
+                "question": question or None, "slices": slices}, "spec_rejection": None})}
         current = plan.model_copy(update={"spec": self.spec, "spec_gate": self.spec_gate, "spec_rejection": None})
+        if self.spec_gate == "needs_human":
+            current = current.model_copy(update={"spec_candidate": None})
         if plan.issue_kind == "parent" and self.spec_gate == "ready":
             if context.model is not None and plan.work_kind is not None:
                 current = SpecCandidate(slices=[CandidateSlice.model_validate(item) for item in slices],
@@ -590,7 +609,7 @@ class SpecOutput(HumanQuestionOutput):
                     model=context.model.name, family=context.model.family)).update(current, single=False)
             else:
                 current = current.model_copy(update={"slices": slices})
-        return {"plan": current, "human_question": self.human_question or ""}
+        return {"plan": current, "human_question": question}
 
 
 class BrowserProof(RecordContract[BrowserProofRecord]):
