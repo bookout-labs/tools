@@ -321,22 +321,40 @@
         ],
         "title": "SliceProperty",
         "type": "object"
+      },
+      "SpecQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "question": {
+            "pattern": "\\S",
+            "title": "Question",
+            "type": "string"
+          },
+          "why_code_unanswered": {
+            "pattern": "\\S",
+            "title": "Why Code Unanswered",
+            "type": "string"
+          },
+          "checked_paths": {
+            "items": {
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "title": "Checked Paths",
+            "type": "array"
+          }
+        },
+        "required": [
+          "question",
+          "why_code_unanswered",
+          "checked_paths"
+        ],
+        "title": "SpecQuestion",
+        "type": "object"
       }
     },
     "additionalProperties": false,
     "properties": {
-      "human_question": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "description": "When this stage returns needs_human, put the question for the person here. Use null otherwise.",
-        "title": "Human Question"
-      },
       "spec": {
         "pattern": "\\S",
         "title": "Spec",
@@ -349,6 +367,13 @@
         ],
         "title": "Spec Gate",
         "type": "string"
+      },
+      "questions": {
+        "items": {
+          "$ref": "#/$defs/SpecQuestion"
+        },
+        "title": "Questions",
+        "type": "array"
       },
       "slices": {
         "anyOf": [
@@ -367,9 +392,9 @@
       }
     },
     "required": [
-      "human_question",
       "spec",
       "spec_gate",
+      "questions",
       "slices"
     ],
     "title": "SpecOutput",

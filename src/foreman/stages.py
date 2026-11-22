@@ -131,6 +131,11 @@ def accept_output(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
 def accept_spec(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     state, model, workspace = context.state, context.model, context.workspace
     assert isinstance(output, SpecOutput)
+    if workspace is not None:
+        for question in output.questions:
+            for path in question.checked_paths:
+                if not workspace.has_file(path):
+                    raise InvalidOutput(f"checked_paths: {path} is not a workspace file")
     plan = state["plan"]
     slices = clean_slices(output.slices, workspace) if plan.issue_kind == "parent" and output.spec_gate == "ready" else []
     return {**output.update(UpdateContext(plan, state["review"], bool(oversized_pr(state)), slices, model if isinstance(model, ModelSpec) else None))}

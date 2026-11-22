@@ -171,7 +171,7 @@ class AttemptMetricsTests(unittest.TestCase):
                 {"triage": "spec", "work_kind": "feature", "slice": None, "human_question": None}
                 if len(prompts) == 1 else
                 {"spec": "Needs item definitions.", "spec_gate": "needs_human", "slices": [],
-                 "human_question": "Which items?"}
+                 "questions": [{"question": "Which items?", "why_code_unanswered": "No policy in code.", "checked_paths": []}]}
             )
             return CompletedProcess(args, 0, json.dumps(envelope), "")
         worker = CliWorker(Path("."), run)

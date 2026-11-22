@@ -111,6 +111,7 @@ class ClaudeAdapter(NativeAdapter):
         scope = [arg for directory in directories for arg in ("--add-dir", directory)]
         return ["claude", "--model", self.model.model_id, *effort, "--restricted",
                 "--strict-mcp-config", "--permission-mode", "dontAsk",
-                "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else "Read,Glob,Grep,Bash",
+                "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else
+                "Read,Glob,Grep,Bash" if call.checks else "Read,Glob,Grep",
                 *scope, "--settings", str(settings_path),
                 *budget, "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]
