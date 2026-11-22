@@ -319,8 +319,7 @@ def run_live_delivery(
             if not reset_work and (partial := saved_values.get("work", WorkState()).partial_edits):
                 work = work.model_copy(update={"partial_edits": partial})
             prior_checks = restored["checks"]
-            checks = ChecksState(check=prior_checks.check, preflight=prior_checks.preflight,
-                                 verify_failures=saved_values["checks"].verify_failures, proof_failures=saved_values["checks"].proof_failures) if reset_work else prior_checks
+            checks = saved_values["checks"].for_attempt() if reset_work else prior_checks
             assert saved_review is not None
             retained: DeliveryUpdate = {"plan": restored["plan"].model_copy(update={"spec_failures": saved_values["plan"].spec_failures}),
                                         "work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": (

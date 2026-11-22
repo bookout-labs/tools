@@ -42,6 +42,7 @@ from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS
 from foreman.review_round import AcceptedReview, GraphCheck, ReviewHistory, accept, history
 from foreman.usd import BudgetUsd, usd_text
+from foreman.check_output import CheckOutput
 from foreman.workspace import WorkState, ImplementationRejected, WorkspaceError, CheckLog, PullRequestSize, ReviewScope, Workspace, WorktreeInspectionFailed, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
@@ -553,8 +554,7 @@ def compile_delivery(
             ready = run.workspace.inspect()
             checks = state["checks"]
             return {"work": WorkState(branch=branch, base=base, attempt_head=ready.head),
-                    "checks": ChecksState(check=checks.check, preflight=checks.preflight,
-                                          verify_failures=checks.verify_failures, proof_failures=checks.proof_failures)}
+                    "checks": checks.for_attempt()}
         except (WorkspaceError, ForgeError) as exc:
             return halted(Halt.git_failed, str(exc), "prepare")
 
@@ -658,13 +658,14 @@ def compile_delivery(
             return halted(Halt.dirty_worktree, "The worktree has changes.", "verify")
         checks = state["checks"]
         command = checks.check
-        exit_code = workspace.run(command, log=check_log)
+        output = CheckOutput(check_log)
+        exit_code = workspace.run(command, log=output)
         detail = None
         if reason := CHECK_START_FAILURES.get(exit_code):
             detail = f"Check {command!r} exited with {exit_code} ({reason})"
         elif exit_code:
             detail = failed_preflight(workspace, checks.preflight, log=check_log)
-        checked = checks.model_copy(update={"check_exit_code": exit_code, "proof_labels": {},
+        checked = checks.model_copy(update={"check_exit_code": exit_code, "failure_output": output.text if exit_code else "", "proof_labels": {},
             "verify": "" if detail else "pass" if exit_code == 0 else "fail", "verified_head": worktree.head if exit_code == 0 else ""})
         if detail:
             return {**halted(Halt.env_unavailable, detail, "verify"), "checks": checked}

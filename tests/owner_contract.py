@@ -36,7 +36,7 @@ OWNERS = (
             "candidate": "implementation_candidate"}, repair_head_field="repair_head"),
     OwnerCase("run", RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
         token_cap=100, max_budget_usd="1.5"), frozenset(RunState.model_fields), 4, {}),
-    OwnerCase("checks", ChecksState(verify_failures=2, proof_failures=1, check="true", preflight="env", check_exit_code=0, verify="pass",
+    OwnerCase("checks", ChecksState(verify_failures=2, proof_failures=1, check="true", preflight="env", check_exit_code=0, verify="pass", failure_output="stale failure",
         verified_head="b" * 40, browser_proof={"screen": "page", "trace": "trace", "passed": True},
         formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
         proof_labels={"browser": "block"}), frozenset({"check", "preflight", "verify_failures", "proof_failures"}), 5, {}),

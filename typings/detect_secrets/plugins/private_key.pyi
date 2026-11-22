@@ -1,0 +1,3 @@
+from detect_secrets.plugins.base import RegexBasedDetector
+
+class PrivateKeyDetector(RegexBasedDetector): ...
