@@ -111,7 +111,7 @@ class DryRun:
 
     def create_branch(self, branch: str, base: str) -> None:
         if self.branch != branch:
-            self.commands.append(branch_command(branch, base))
+            self.commands.append(branch_command(branch, f"refs/remotes/origin/{base}"))
         self.branch = branch
 
     def reconcile(self, parent: str, branch: str, base_branch: str, fact_record: str | None) -> ImplementationCandidate:

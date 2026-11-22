@@ -30,6 +30,7 @@ SMOKE_SECONDS = 900  # Two review rounds took 260 s and 241 s; allow CI observat
 
 FIXTURE_CHECK = '''import pathlib, subprocess, sys
 issue, base = sys.argv[1:]
+base = subprocess.check_output(["git", "merge-base", "HEAD", base]).decode().strip()
 path = f"smoke_{issue}.txt"
 assert pathlib.Path(path).read_bytes() == f"smoke {issue}\\n".encode()
 status = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=all"]).decode()
@@ -62,7 +63,7 @@ def _run_smoke(directory: Path, deadline: float) -> int:
         if env is None:
             raise CredentialFailure("Smoke requires Studio App credentials; personal credentials are not supported.")
         forge = LiveForge()
-        forge.default_branch(SMOKE_REPO)
+        base_branch = forge.default_branch(SMOKE_REPO)
         verdict = SmokeVerdict(78, "cleanup", "prerequisite")
         forge.ensure_smoke_label(SMOKE_REPO)
         cleanup_smoke(forge, SMOKE_REPO)
@@ -76,12 +77,11 @@ def _run_smoke(directory: Path, deadline: float) -> int:
         os.environ["PATH"] = str(directory / "python/bin") + os.pathsep + os.environ.get("PATH", "")
         subprocess.run(["python", "-c", "import sys; assert sys.version_info[:2] == (3, 12)"],
                        stdin=subprocess.DEVNULL, capture_output=True, check=True)
-        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
         script = directory / "acceptance.py"
         script.write_text(FIXTURE_CHECK)
         issue = create_smoke_issue(forge, SMOKE_REPO)
         request = f"Add smoke_{issue}.txt containing exactly 'smoke {issue}\\n'. Change no other files."
-        check = "python -m unittest discover -s tests && " + shlex.join(["python", str(script), str(issue), base])
+        check = "python -m unittest discover -s tests && " + shlex.join(["python", str(script), str(issue), f"refs/remotes/origin/{base_branch}"])
         print(f"smoke issue {issue}; tokens {SMOKE_TOKEN_CAP}; Claude ${SMOKE_CLAUDE_USD.amount}; deadline {SMOKE_SECONDS}s. "
               "Other providers have no dollar cap.", flush=True)
         verdict = SmokeVerdict(1, "live_run", "checkpoint")

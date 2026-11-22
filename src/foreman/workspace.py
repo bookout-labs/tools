@@ -193,7 +193,7 @@ class Workspace(Protocol):
 
 
 def branch_command(branch: str, base: str) -> list[str]:
-    return ["git", "switch", "-c", redact(branch), f"refs/heads/{base}"]
+    return ["git", "switch", "-c", redact(branch), base]
 
 
 def commit_commands(message: str) -> list[list[str]]:
@@ -243,10 +243,18 @@ class LiveWorkspace:
         branch = redact(branch)
         refs = self._git("for-each-ref", "--format=%(refname)", f"refs/heads/{branch}")
         if f"refs/heads/{branch}" in os.fsdecode(refs).splitlines():
-            self._git("merge-base", "--is-ancestor", f"refs/heads/{base}", f"refs/heads/{branch}")
+            self._git("merge-base", "--is-ancestor", "HEAD", f"refs/heads/{branch}")
             self._git("switch", branch)
         else:
-            self._git(*branch_command(branch, base)[1:])
+            base_ref = f"refs/remotes/origin/{base}"
+            self._git(
+                "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
+                f"+refs/heads/{base}:{base_ref}",
+            )
+            head = os.fsdecode(self._git("rev-parse", "--verify", f"{base_ref}^{{commit}}")).strip()
+            if commit_sha(head) is None:
+                raise WorktreeInspectionFailed("Fetched base must resolve to a full commit SHA.")
+            self._git(*branch_command(branch, head)[1:])
 
     def refresh(self, branch: str, head: str) -> None:
         current = self.inspect()
@@ -299,12 +307,20 @@ class LiveWorkspace:
             "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
             f"+refs/heads/{base_branch}:{base_ref}",
         )
-        return os.fsdecode(self._git("--no-replace-objects", "merge-base", base_ref, head)).strip()
+        try:
+            return os.fsdecode(self._git("--no-replace-objects", "merge-base", base_ref, head)).strip()
+        except WorktreeInspectionFailed as exc:
+            raise WorktreeInspectionFailed(
+                f"Cannot establish ancestry with origin/{base_branch}. Checkout preserved. "
+                "Fetch the needed history (git fetch --unshallow origin for a shallow clone), "
+                f"or restore related base history, then resume. {exc}"
+            ) from exc
 
     def reconcile(self, parent: str, branch: str, base_branch: str,
                   fact_record: str | None) -> ImplementationCandidate | None:
         observed = self.inspect()
-        recovery = f" Checkout preserved. Restore branch {branch} at {parent}, keep the intended edits, then rerun."
+        recovery = (f" Checkout preserved. Restore branch {branch} at {parent}, keep the intended edits, then rerun. "
+                    "If history is shallow, fetch the needed history with git fetch --unshallow origin before resuming.")
         if observed.branch != branch:
             raise ImplementationRejected(f"HEAD {observed.head} is not attached to delivery branch {branch}." + recovery)
         merge_base = self._base_merge_base(base_branch, parent)

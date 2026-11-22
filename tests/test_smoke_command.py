@@ -37,6 +37,7 @@ class SmokeCommandTest(unittest.TestCase):
                 forge.return_value.smoke_issues.return_value = []
                 forge.return_value.smoke_pull_requests.return_value = []
                 forge.return_value.create_issue.return_value = 17
+                forge.return_value.default_branch.return_value = "main"
                 forge.return_value.smoke_identity.return_value = (True, True, True)
                 yield root, forge.return_value, process, runner, credentials, errors
 
@@ -151,7 +152,8 @@ class SmokeCommandTest(unittest.TestCase):
             git('init')
             git('add', '.')
             git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'base')
-            base = git('rev-parse', 'HEAD')
+            base = 'refs/remotes/origin/main'
+            git('update-ref', base, 'HEAD')
             def provision(args, **kwargs):
                 if args[0] == 'python3.12':
                     bin_dir = root / 'python/bin'
@@ -159,6 +161,10 @@ class SmokeCommandTest(unittest.TestCase):
                     (bin_dir / 'python').symlink_to(sys.executable)
             process.side_effect = provision
             def delivery(**kwargs):
+                (checkout / 'origin.txt').write_text('Intervening origin change')
+                git('add', 'origin.txt')
+                git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'Origin moved')
+                git('update-ref', base, 'HEAD')
                 command = kwargs['check']
                 env = {**os.environ, 'PATH': str(root / 'python/bin') + os.pathsep + os.defpath}
                 def check(code):
