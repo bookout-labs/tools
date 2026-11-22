@@ -4,6 +4,7 @@ from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_
 from foreman.dry_run import DryRun, SCRIPTED_USAGE
 
 import json
+import subprocess
 import unittest
 from dataclasses import replace
 
@@ -63,8 +64,14 @@ class CandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(InvalidOutput, "checked_paths"):
                 accept_spec(SpecOutput.model_validate(raw), Acceptance(state, workspace=workspace))
             (root / "policy.py").write_text("# Mechanics only\n")
+            for args in (("init", "-q"), ("add", "policy.py"),
+                         ("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                          "-c", "commit.gpgsign=false", "commit", "-qm", "Fixture")):
+                subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
             update = accept_spec(SpecOutput.model_validate(raw), Acceptance(state, workspace=workspace))
             restored = checkpoint_state(json.loads(json.dumps({**state, **update}, default=lambda x: x.model_dump())))
+            self.assertTrue(restored["plan"].spec_draft_clean)
+            self.assertEqual(restored["plan"].spec_draft_head, workspace.inspect().head)
             self.assertIsNone(restored["plan"].spec_candidate)
             self.assertEqual(restored["plan"].spec, raw["spec"])
             for text in (question["question"], question["why_code_unanswered"], "policy.py"):
