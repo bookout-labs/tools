@@ -121,7 +121,7 @@ def require_same_budget(stored: str | None, max_budget_usd: BudgetUsd | None) ->
 
 def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: BudgetUsd | None) -> None:
     if run_state.token_cap is None:
-        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run with a new checkpoint path.")
+        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run without --answer and with XDG_STATE_HOME set to a new directory.")
     require_same_budget(run_state.max_budget_usd, max_budget_usd)
 
 
@@ -150,7 +150,8 @@ def run_live_delivery(
     if fact_record is not None:
         fact_record = fact_record_path(fact_record)
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    config: RunnableConfig = {"configurable": {"thread_id": f"{repo.lower()}#{issue}"}}
+    thread = f"{repo.lower()}#{issue}"
+    config: RunnableConfig = {"configurable": {"thread_id": thread}}
     workspace = str(run.workspace.root.resolve())
     client = run.forge
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver, TemporaryDirectory(prefix="foreman-skills-") as scratch:
@@ -158,7 +159,7 @@ def run_live_delivery(
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
         if prior is not None:
-            require_schema_version(channels, checkpoint)
+            require_schema_version(channels, checkpoint, thread)
         delivery_config = load_config()
         run_state = RunState()
         if prior is not None:
@@ -295,7 +296,7 @@ def run_live_delivery(
                 elif observed is None or observed.outcome not in {"closed", "retargeted"}:
                     repaired = worktree.head != head
             before = _checkpoint_before_halt(graph, config, saved_values["path"], "prepare" if repaired else None)
-            require_schema_version(before.values, checkpoint)
+            require_schema_version(before.values, checkpoint, thread)
             require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_budget_usd)
             restored = checkpoint_state(before.values)
             assert restored is not None
