@@ -29,7 +29,7 @@ Its read-only sandbox also permits temp writes, including method exports, on Lin
 and macOS. macOS additionally lacks child network isolation. Until native controls
 meet the boundary, every Grok Call returns `cli_missing` with its platform and
 missing capability. The dispatcher tries the next model. No Grok process, prefix
-grant, custom profile or new halt is introduced. `models.toml` remains Joe's decision.
+grant, custom profile or new halt is introduced. The human decides changes to `models.toml`.
 
 Run `.venv/bin/python tests/capture-native-permissions.py codex edit` and `codex readonly`
 to reproduce Codex captures. `grok readonly-gap` captures the native boundary gap

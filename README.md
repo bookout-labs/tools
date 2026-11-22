@@ -142,7 +142,7 @@ graph TD;
 <!-- graph:end -->
 
 Regenerate the compiled delivery drawing and this README with `foreman diagram --write`.
-Changes to `docs/graph/` require Joe's written approval on the PR before merge.
+Changes to `docs/graph/` require the code owner's written approval on the PR before merge.
 
 The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. Review uses only the configured Opus and Sol list, preferring models outside all successful implementation families. Grok remains in the other model orders. A node does not edit the list, and it does not decide the next node.
 
