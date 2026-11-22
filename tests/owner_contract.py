@@ -42,6 +42,7 @@ OWNERS = (
         proof_labels={"browser": "block"}), frozenset({"check", "preflight", "verify_failures", "proof_failures"}), 5, {}),
     OwnerCase("plan", CandidateTests().candidate().update(PlanState(spec_failures=2, triage="implement", spec_gate="ready",
         issue_kind="parent", work_kind="feature", child_issue_numbers=[9],
+        human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}],
         spec_rejection={"kind": "dangling_seam", "detail": "Missing"},
         pr_split={"plan": "Split", "gate": "ready", "question": "Keep?", "slices": [SLICE]}), single=True),
         frozenset(PlanState.model_fields) - {"pr_split"}, 6, {}),
