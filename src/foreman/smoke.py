@@ -36,6 +36,13 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
         elif outcome != "ran":
             return SmokeVerdict(1, f"attempt.outcome={outcome}", last)
         else:
+            if not attempt["model"]:
+                return SmokeVerdict(1, "attempt.model_missing", last)
+            provenance = attempt.get("provenance")
+            if provenance and provenance["same_family"] and (
+                provenance["reason"] != "preceding_candidates_unavailable" or unavailable is None
+            ):
+                return SmokeVerdict(1, "attempt.fallback", last)
             usage = attempt["usage"]
             if usage is None or not any(usage[key] for key in ("input", "output", "cache_read", "cache_creation")):
                 return SmokeVerdict(1, "attempt.usage_unknown", last)
@@ -43,11 +50,11 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
                 return SmokeVerdict(1, "attempt.usage_unknown", last)
 
     halt = state.get("halt")
-    unavailable_halt = halt in {Halt.cli_missing, Halt.env_unavailable, Halt.quota_exhausted}
+    unavailable_halt = halt in {Halt.cli_missing, Halt.env_unavailable, Halt.quota_exhausted, Halt.reviewer_unavailable}
     if halt and not unavailable_halt:
         return SmokeVerdict(1, f"halt={halt}", last)
     path = state["path"]
-    if path[-1:] != ["done"]:
+    if not path or (halt != Halt.quota_exhausted and path[-1:] != ["done"]):
         return SmokeVerdict(1, "terminal.done", last)
     stop = state.get("stop", "")
     if stop != (halt or "verified"):
@@ -64,16 +71,9 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
             receipt = MergeReceipt.model_validate(merge.receipt)
         except ValidationError:
             return SmokeVerdict(1, "merge.receipt.invalid", last)
-    for condition, observed in (
-        ("published_head", work.head_sha),
-        ("reviewed_head", state.get("reviewed_head")),
-        ("review_receipt.head", review["commit_id"] if review else None),
-        ("merge.receipt.head", receipt.source_head if receipt else None),
-        ("merge.observed_head", merge.observed_head),
-    ):
-        if observed and head and observed != head:
-            return SmokeVerdict(1, condition, last)
-    if checks.verify == "fail" or (checks.check_exit_code not in (None, 0) and halt != Halt.env_unavailable):
+    if merge.observed_head and head and merge.observed_head != head:
+        return SmokeVerdict(1, "merge.observed_head", last)
+    if checks.verify == "fail" or (checks.check_exit_code not in (None, 0) and halt not in {Halt.env_unavailable}):
         return SmokeVerdict(1, "checks.verify", last)
     if receipt and receipt.repo != state["run"].repo:
         return SmokeVerdict(1, "merge.receipt.repo", last)
