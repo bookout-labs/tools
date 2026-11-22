@@ -8,6 +8,8 @@ The generator reads the Foreman baseline and the [pstack revision](https://githu
 uv run --python 3.12 python docs/graph/blueprint/gen.py --pstack /path/to/cursor/plugins --no-svg
 ```
 
-To regenerate SVGs with Node and the pinned Mermaid CLI, omit `--no-svg` and pass `--puppeteer /path/to/puppeteer.json` if you need to set the Chrome executable.
+To regenerate SVGs and their checksums with Node and the pinned Mermaid CLI, omit `--no-svg` and pass `--puppeteer /path/to/puppeteer.json` if you need to set the Chrome executable.
 
-The drift test runs when `FOREMAN_PINNED_SKILL_REPO` points to the pstack checkout. If the Foreman baseline is absent, the test fetches it into a temporary Git repository.
+CI checks out the Foreman history before the tests run. Set `FOREMAN_PINNED_SKILL_REPO` to your pstack checkout to run text regeneration locally. The SVG check verifies the published Mermaid sources and SVGs against `views/SHA256SUMS` without a browser.
+
+The projection guide (`actual-projection.md`), projector (`project_actual.py`), and its outputs (`actual.yaml`, `diff.txt`, and `waivers.yaml`) belong to the projection check described in the [migration](migration.md). The design package's `synthesis-notes.md` records the rationale for combining earlier proposals. The [decisions](decisions.md) and [migration](migration.md) describe the choices that apply to this blueprint.

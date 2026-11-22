@@ -3,6 +3,7 @@
 import argparse
 import ast
 from collections import defaultdict
+from hashlib import sha256
 import os
 from pathlib import Path
 import re
@@ -235,6 +236,12 @@ def render(drawings, output, puppeteer):
         rendered = rendered.replace('width="100%"', f'width="{width}" height="{height}"', 1)
         (output / "views" / f"{name}.svg").write_text(rendered.rstrip() + "\n")
 
+    view_dir = output / "views"
+    paths = sorted(f"{name}.{extension}" for name in drawings for extension in ("mmd", "svg"))
+    (view_dir / "SHA256SUMS").write_text("".join(
+        f"{sha256((view_dir / path).read_bytes()).hexdigest()}  {path}\n" for path in paths
+    ))
+
 
 def baseline_file(repo, revision, path):
     result = subprocess.run(["git", "show", f"{revision}:{path}"], cwd=repo,
@@ -242,14 +249,14 @@ def baseline_file(repo, revision, path):
     return result.stdout if result.returncode == 0 else None
 
 
-def inventory(target, pin, baseline_repo):
+def inventory(target, pin):
     specs = defaultdict(list)
     sections = defaultdict(set)
     planned = set()
     target_prompts, runtime_prompts = set(), set()
     pstack = target["repositories"]["pstack"]
     subprocess.run(["git", "cat-file", "-e", f"{target['baseline']}^{{commit}}"],
-                   cwd=baseline_repo, check=True)
+                   cwd=ROOT, check=True)
     actual_pin = subprocess.check_output(["git", "rev-parse", "--verify", f"{pstack['revision']}^{{commit}}"],
                                          cwd=pin, text=True).strip()
     if actual_pin != pstack["revision"]:
@@ -291,7 +298,7 @@ def inventory(target, pin, baseline_repo):
                          url=Path(path).relative_to(BLUEPRINT.relative_to(ROOT)).as_posix())
             files[path] = entry
             continue
-        source = baseline_file(pin if external else baseline_repo, revision, path)
+        source = baseline_file(pin if external else ROOT, revision, path)
         if source is None and path not in planned:
             raise ValueError(f"Missing pinned source: {path}")
         entry = describe(path, source, specs[path])
@@ -389,14 +396,13 @@ def write_maps(target, files, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pstack", type=Path, required=True, help="Git repository containing the pinned pstack commit")
-    parser.add_argument("--baseline-repo", type=Path, default=ROOT, help="Git repository containing the pinned Foreman commit")
     parser.add_argument("--output", type=Path, default=BLUEPRINT, help="Output directory (defaults to the blueprint directory)")
     rendering = parser.add_mutually_exclusive_group()
     rendering.add_argument("--no-svg", action="store_true", help="Generate text and Mermaid source without a browser")
     rendering.add_argument("--puppeteer", type=Path, help="Mermaid CLI browser configuration for rendering SVGs")
     args = parser.parse_args()
     target = load_target()
-    files, sections = inventory(target, args.pstack, args.baseline_repo)
+    files, sections = inventory(target, args.pstack)
     drawings = views(target)
     write_mermaid(drawings, args.output)
     if not args.no_svg:
