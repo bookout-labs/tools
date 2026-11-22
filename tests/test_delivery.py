@@ -80,7 +80,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "implement", "publish", "verify", "review", "merge", "done"],
+            ["triage", "implement", "verify", "proof", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["review"].risk["level"], "low")
@@ -94,13 +94,13 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="spec", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec", "implement", "publish", "verify", "review", "merge", "done"],
+            ["triage", "spec", "implement", "verify", "proof", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
     def test_ready_spec_keeps_the_loaded_slice_proof_obligations(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec", "implement", "publish", "verify", "proof", "done"])
+        self.assertEqual(result["path"], ["triage", "spec", "implement", "verify", "proof", "done"])
         self.assertEqual(result["stop"], "insufficient_evidence")
 
     def test_worker_cannot_declare_depends_on(self):
@@ -216,7 +216,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "implement", "publish", "verify", "review", "implement", "publish", "verify", "review", "merge", "done"],
+            ["triage", "implement", "verify", "proof", "publish", "review", "implement", "verify", "proof", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 

@@ -82,10 +82,10 @@ class FakeWorkspace(LiveWorkspace):
         super().__init__(cwd)
         self.snapshots = iter(snapshots)
         self.current = CLEAN_WORKTREE
-        self.published = False
+        self.committed = False
 
     def inspect(self):
-        snapshot = next(self.snapshots, self.current) if self.published else self.current
+        snapshot = next(self.snapshots, self.current) if self.committed else self.current
         if isinstance(snapshot, WorktreeInspectionFailed):
             raise snapshot
         return snapshot
@@ -106,13 +106,15 @@ class FakeWorkspace(LiveWorkspace):
     def commit(self, message):
         head = HEAD
         self.current = WorktreeState(head, True, self.current.branch)
+        self.snapshots = iter((self.current, *self.snapshots))
+        self.committed = True
 
     def push(self, branch, repo):
-        self.published = True
+        pass
 
     def reply(self, args, reply):
         if "implementation" in reply:
-            self.published = False
+            self.committed = False
             self.current = WorktreeState(self.current.head, False, self.current.branch)
         return worker_reply(args, reply)
 
@@ -1521,7 +1523,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             check="test -f expected",
         )
         self.assertEqual(self.calls, ["claude", "codex", "claude"])
-        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "proof", "publish", "review", "merge", "done"])
         self.assertEqual(result["checks"].check_exit_code, 0)
         self.assertEqual(result["checks"].verified_head, HEAD)
         self.assertEqual(result["work"].head_sha, HEAD)
@@ -1649,7 +1651,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertEqual(result["path"].count("verify"), 2)
                     self.assertEqual(result["path"].count("review"), 2)
                     self.assertEqual(result["path"].count("proof"), 2)
-                    self.assertEqual(result["pr_size"]["head"], result["checks"].verified_head)
+                    self.assertEqual(result["pr_size"], result["work"].candidate["size"])
                     self.assertEqual(rounds[-1]["reviewed_head"], result["checks"].verified_head)
                     self.assertEqual(self.github.merge_calls[-1][-1], result["checks"].verified_head)
                     self.assertEqual(result["work"].candidate["disposition"], "adopted" if committed else "edits")
@@ -1800,7 +1802,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             {"implementation": "built", "browser_proof": BROWSER, "formal_proof": FORMAL},
             APPROVE,
         ])
-        self.assertEqual(result["path"][-5:], ["verify", "proof", "review", "merge", "done"])
+        self.assertEqual(result["path"][-6:], ["verify", "proof", "publish", "review", "merge", "done"])
         self.assertEqual(result["plan"].slice, SLICE)
         self.assertEqual(result["checks"].proof_labels, {})
         self.assertEqual(result["merge"].status, "armed")
@@ -1821,7 +1823,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_parent_stops_before_review_when_its_proof_is_missing(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "proof", "done"])
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "proof", "done"])
         self.assertEqual(result["stop"], "insufficient_evidence")
         self.assertEqual(result["checks"].proof_labels, {"browser": "insufficient_evidence", "formal": "insufficient_evidence"})
 
@@ -1845,7 +1847,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         fixed = {**blocked, "browser_proof": BROWSER}
         result = self.walk([{"triage": "implement"}, blocked, fixed, APPROVE])
         self.assertEqual(result["path"], [
-            "triage", "implement", "publish", "verify", "proof", "implement", "publish", "verify", "proof", "review", "merge", "done",
+            "triage", "implement", "verify", "proof", "implement", "verify", "proof", "publish", "review", "merge", "done",
         ])
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(result["merge"].status, "armed")
@@ -1927,7 +1929,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertNotIn("halt_detail", result)
-        self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "review", "merge", "done"])
+        self.assertEqual(result.get("path"), ["triage", "implement", "verify", "proof", "publish", "review", "merge", "done"])
 
     def test_answer_resume_is_idempotent_after_environment_halt(self):
         preflight = "test -f ready"
@@ -2020,7 +2022,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["checks"].verify, "")
         self.assertIn("test -f ready", result.get("halt_detail", ""))
         self.assertIn("exited with 1", result.get("halt_detail", ""))
-        self.assertEqual(result.get("path"), ["triage", "implement", "publish", "verify", "done"])
+        self.assertEqual(result.get("path"), ["triage", "implement", "verify", "done"])
 
         (self.cwd / "ready").touch()
         resumed = self.walk([APPROVE])
@@ -2109,7 +2111,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     check="touch ran", snapshots=(snapshot,),
                 )
                 self.assertEqual(result["stop"], "dirty_worktree")
-                self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "done"])
+                self.assertEqual(result["path"], ["triage", "implement", "verify", "done"])
                 self.assertFalse((self.cwd / "ran").exists())
                 self.assertIsNone(result["checks"].check_exit_code)
                 self.assertEqual(self.github.merge_calls, [])
@@ -2137,7 +2139,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_head_moved_before_review_uses_the_existing_merge_stop(self):
         moved = WorktreeState("b" * 40, True, BRANCH)
-        for snapshots in ((CLEAN_WORKTREE, moved), (CLEAN_WORKTREE, CLEAN_WORKTREE, moved)):
+        for snapshots in ((CLEAN_WORKTREE, CLEAN_WORKTREE, moved),):
             with self.subTest(snapshots=snapshots), TemporaryDirectory(dir=self.cwd) as directory:
                 self.checkpoint = Path(directory) / "run.sqlite3"
                 result = self.walk([{"triage": "implement"}, {"implementation": "built"}], snapshots=snapshots)
@@ -2450,7 +2452,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "implement", "publish", "verify", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "proof", "publish", "review", "merge", "done"])
         self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
@@ -2728,7 +2730,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             saver.serde = checkpoint_serializer()
             stored = saver.get({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(stored["channel_values"]["path"],
-                         ["triage", "spec", "spec", "implement", "publish", "verify", "review", "merge", "done"])
+                         ["triage", "spec", "spec", "implement", "verify", "proof", "publish", "review", "merge", "done"])
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
 
     def test_restored_snapshot_matches_result_for_merge_and_interrupts(self):
@@ -2876,7 +2878,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 else:
                     self.assertRegex(transcript(restored.replace("restored ", "")), r"implement\npaused quota_exhausted")
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
-                    self.assertEqual(saved_path(), ["triage", "implement", "implement", "publish", "verify", "review", "merge", "done"])
+                    self.assertEqual(saved_path(), ["triage", "implement", "implement", "verify", "proof", "publish", "review", "merge", "done"])
                     expected_workers = (["TriageOutput"] + ["ImplementOutput"] * attempts
                                         + ["ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"])
                 terminal = invoke("ready", 0)
@@ -2913,7 +2915,7 @@ class HaltExitCodeTest(unittest.TestCase):
         self.assert_halt(self.live(
             [{"triage": "implement"}, {"implementation": "built"}],
             snapshots=(WorktreeState(HEAD, False, BRANCH),),
-        ), "dirty_worktree", "The worktree has changes.")
+        ), "dirty_worktree", "Restore the clean implementation commit before verification.")
 
     def test_dirty_worktree_inspection(self):
         self.assert_halt(self.live(

@@ -89,6 +89,7 @@ graph TD;
 	verify(verify)
 	prepare(prepare)
 	reconcile(reconcile)
+	size(size)
 	commit(commit)
 	publish(publish)
 	proof(proof)
@@ -102,9 +103,9 @@ graph TD;
 	__start__ -.-> done;
 	__start__ -.-> triage;
 	commit -.-> done;
-	commit -.-> publish;
+	commit -.-> verify;
 	decide_pr_size -.-> done;
-	decide_pr_size -.-> verify;
+	decide_pr_size -.-> size;
 	implement -.-> done;
 	implement -. &nbsp;call&nbsp; .-> implement_call;
 	implement -.-> quota_wait;
@@ -121,22 +122,21 @@ graph TD;
 	prepare -.-> implement;
 	proof -.-> done;
 	proof -.-> prepare;
-	proof -.-> review;
+	proof -. &nbsp;pass&nbsp; .-> publish;
 	publish -.-> done;
-	publish -.-> verify;
+	publish -.-> review;
 	quota_wait -.-> implement;
 	quota_wait -.-> research;
 	quota_wait -.-> review;
 	quota_wait -.-> spec;
 	quota_wait -.-> triage;
-	reconcile -.-> commit;
 	reconcile -.-> done;
+	reconcile -.-> size;
 	research -.-> done;
 	research -.-> quota_wait;
 	research -. &nbsp;call&nbsp; .-> research_call;
 	research_call -.-> done;
 	research_call -.-> quota_wait;
-	review -.-> decide_pr_size;
 	review -.-> done;
 	review -.-> merge;
 	review -.-> needs_human;
@@ -144,21 +144,19 @@ graph TD;
 	review -.-> quota_wait;
 	review -. &nbsp;call&nbsp; .-> review_call;
 	review -.-> review_post;
-	review -.-> spec;
-	review_call -.-> decide_pr_size;
 	review_call -.-> done;
 	review_call -.-> merge;
 	review_call -.-> needs_human;
 	review_call -.-> prepare;
 	review_call -.-> quota_wait;
 	review_call -.-> review_post;
-	review_call -.-> spec;
-	review_post -.-> decide_pr_size;
 	review_post -.-> done;
 	review_post -.-> merge;
 	review_post -.-> needs_human;
 	review_post -.-> prepare;
-	review_post -.-> spec;
+	size -. &nbsp;fits&nbsp; .-> commit;
+	size -.-> decide_pr_size;
+	size -. &nbsp;too big: re-plan&nbsp; .-> spec;
 	spec -.-> decide_pr_size;
 	spec -.-> done;
 	spec -.-> needs_human;
@@ -187,7 +185,6 @@ graph TD;
 	verify -.-> done;
 	verify -.-> prepare;
 	verify -.-> proof;
-	verify -.-> review;
 	done --> __end__;
 	implement_call -. &nbsp;call&nbsp; .-> implement_call;
 	research_call -. &nbsp;call&nbsp; .-> research_call;
@@ -218,9 +215,9 @@ reviewer findings. Rulings exist only within a run. The failure cap stays unchan
 
 An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every configured reviewer is out of quota or its CLI is missing, review stops with `reviewer_unavailable` (exit 75). Rerun the same command without `--answer` to select from the current review order again. Other stages retain `cli_missing` for missing CLIs. Missing implementation provenance still stops with `no_reviewer`. The future spec checker uses the same ordering rule against its actual author; its separate checker-unavailability contract is unchanged. The record includes `halt_detail` for these stops.
 
-Foreman creates an `<issue>-<slug>` branch from the repository default branch before the first edit and commits each successful implementation. An attempt with no file changes stops with `failed`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
+Foreman creates an `<issue>-<slug>` branch from the repository default branch before the first edit. It sizes the reconciled candidate before committing, then verifies and proves the commit before publishing. An attempt with no file changes stops with `failed`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
-Live verify stops with `dirty_worktree` if the checkout has changes or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs skip preflight and use a scripted verdict.
+Live verify stops with `dirty_worktree` if the checkout has changes, HEAD differs from the saved implementation commit, or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs skip preflight and use a scripted verdict.
 
 Use `--preflight <command>` to check environment readiness in the engine checkout. Each new or resumed invocation checks readiness once, just before its first implement dispatch. Routes that never reach implement skip the probe. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
 
@@ -365,7 +362,7 @@ and other issue threads in the old file remain available under the old state dir
 
 If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota returns. Foreman retries the same stage and retains its earlier attempt records. Review instead prints `done reviewer_unavailable` (exit 75) when all eligible reviewers are unavailable. Rerun after restoring quota or the missing CLI; review reselects from the current model table.
 
-Before review, Foreman fetches the pull request's base branch from `origin` and counts added and deleted lines across every path against the merge base, including root files, docs, and logs. Use Git 2.43 or later.
+Before commit, Foreman uses the reconciled candidate's saved size against the work base's merge base, including root files, docs, and logs. Use Git 2.43 or later.
 
 Reconciliation and size use the merge base with fetched `refs/remotes/origin/<base>`. Reconciliation rejects added or modified deliverable paths matching that base's `.gitignore` files, including staged files and worker commits. Ignored untracked files stay outside the delta; deleting tracked scratch is allowed. Here, `evidence/` declares disposable worker output. A declared fact record and its named regular captures remain deliverables, without exempting adjacent files. `implementation_rejected` names rejected paths and preserves the checkout. Remove the scratch and rerun to reconcile again without repeating the implement call.
 
