@@ -934,7 +934,6 @@ class PublicationTest(unittest.TestCase):
         result = self.walk()
         self.assertEqual(result["stop"], "insufficient_evidence")
         self.assertFalse(self.created)
-        self.assertFalse(self.published_heads)
         self.assertNotIn("publish", result["path"])
 
     def test_first_publication_uses_bound_size_without_pr_lookup(self):

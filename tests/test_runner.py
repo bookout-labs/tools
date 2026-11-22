@@ -85,7 +85,7 @@ class FakeWorkspace(LiveWorkspace):
         self.committed = False
 
     def inspect(self):
-        snapshot = next(self.snapshots, self.current) if self.committed else self.current
+        snapshot = (next(self.snapshots, self.current) or self.current) if self.committed else self.current
         if isinstance(snapshot, WorktreeInspectionFailed):
             raise snapshot
         return snapshot
@@ -106,7 +106,7 @@ class FakeWorkspace(LiveWorkspace):
     def commit(self, message):
         head = HEAD
         self.current = WorktreeState(head, True, self.current.branch)
-        self.snapshots = iter((self.current, *self.snapshots))
+        self.snapshots = iter((None, *self.snapshots))
         self.committed = True
 
     def push(self, branch, repo):
