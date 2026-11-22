@@ -2401,6 +2401,120 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(code, 75)
         self.assertIn("done merge_held\nFOREMAN_MERGE_HOLD is set.\n", stdout.getvalue())
 
+    def test_resumed_report_covers_all_receipts_in_fresh_processes(self):
+        script = r'''
+import json
+import sys
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
+from foreman.cli import main
+from foreman.config import PstackPin, load_config
+from foreman.delivery import LiveRun
+from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, worker_reply
+from tests.skill_fixture import checker_reply
+
+checkpoint, pin, mode = sys.argv[1:4]
+
+def worker(args, cwd, env):
+    if args[0] == "claude":
+        schema = json.loads(args[args.index("--json-schema") + 1])
+    else:
+        schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
+    title = schema["title"]
+    with Path("calls.log").open("a") as log:
+        log.write(title + "\n")
+    state = json.loads(args[-1].split("Delivery state:\n")[1])
+    if title == "TriageOutput":
+        reply = {"triage": "spec"}
+    elif title == "SpecOutput":
+        if not state.get("human_answers") or mode == "pause":
+            reply = {"spec": "Need decision", "spec_gate": "needs_human", "human_question": "Which?"}
+        else:
+            reply = {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}
+    else:
+        reply = checker_reply(args)
+    result = worker_reply(args, reply)
+    if args[0] == "claude":
+        envelope = json.loads(result.stdout)
+        envelope["modelUsage"] = {"claude-opus-5-5": {
+            "inputTokens": 10, "outputTokens": 3, "cacheReadInputTokens": 100,
+            "cacheCreationInputTokens": 2, "costUSD": 0.1,
+        }}
+        envelope["total_cost_usd"] = 0.1
+        if mode == "unknown" and state.get("human_answers"):
+            envelope.pop("modelUsage")
+            envelope.pop("usage")
+        result = type(result)(args, result.returncode, json.dumps(envelope), result.stderr)
+    return result
+
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=PstackPin.model_validate_json(pin))):
+    sys.exit(main(sys.argv[4:], worker_runner=worker, checkpoint=Path(checkpoint),
+                  live_run=LiveRun(FakeGitHub(["factory"]), FakeWorkspace(Path.cwd()))))
+'''
+        bootstrap = (f"import sys; sys.path[:0] = {[str(Path(__file__).resolve().parents[1]), str(Path(__file__).parent.resolve())]!r}\n")
+        for case, cap, mode, code in (("complete", 1000000, "success", 0), ("cap", 45, "success", 1),
+                                      ("repaused", 1000000, "pause", 3), ("unknown", 1000000, "unknown", 1)):
+            with self.subTest(case=case):
+                root = self.cwd / case
+                root.mkdir()
+                checkpoint = root / "run.sqlite"
+
+                def invoke(*flags, expected):
+                    process = subprocess.run(
+                        [sys.executable, "-c", bootstrap + script, str(checkpoint), self.pin.model_dump_json(), mode,
+                         "run", "delivery", "--repo", "a/b", "--issue", "8", "--check", "exit 0", *flags],
+                        cwd=root, text=True, capture_output=True,
+                    )
+                    self.assertEqual(process.returncode, expected, process.stderr + process.stdout)
+                    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                        saver.serde = checkpoint_serializer()
+                        stored = saver.get({"configurable": {"thread_id": "a/b#8"}})
+                    return process.stdout, stored["channel_values"]["attempts"]
+
+                first, initial = invoke("--max-tokens", str(cap), "--max-budget-usd", "100", expected=3)
+                self.assertIn(f"work tokens used / work cap: 30 / {cap}; complete; unknown attempts 0", first)
+                resumed, attempts = invoke("--answer", "Open items", expected=code)
+                restored, current = resumed.split("this invocation:\n")
+                self.assertIn("restored raw tokens 230", restored)
+                self.assertIn("usage below is cumulative across all invocations", restored)
+                self.assertNotIn("\ntriage ", current)
+                self.assertEqual(sum(line.startswith("spec ") for line in current.splitlines()),
+                                 0 if case in {"cap", "unknown"} else 1)
+                self.assertEqual(len(attempts), 3)
+                self.assertEqual(attempts[:2], initial)
+                partial = case == "unknown"
+                self.assertIn(f"raw tokens {230 if partial else 345} (known subtotal)", current)
+                self.assertIn(f"work tokens used / work cap: {30 if partial else 45} / {cap}; "
+                              f"{'partial' if partial else 'complete'}; unknown attempts {int(partial)}", current)
+                for index, stage in enumerate(("triage", "spec", "spec"), 1):
+                    lines = [line for line in current.splitlines() if line.startswith(f"attempt {index} ")]
+                    self.assertEqual(len(lines), 1)
+                    self.assertIn(f" {stage} ", lines[0])
+                    self.assertIn("work=unknown" if partial and index == 3 else
+                                  "input=10 output=3 cache_read=100 cache_creation=2; work=15", lines[0])
+                for bucket, total in (("input", 10), ("output", 3), ("cache_read", 100), ("cache_creation", 2)):
+                    available = 2 if partial else 3
+                    self.assertIn(f"{bucket} tokens {total * available}; available {available}/3", current)
+                if case == "cap":
+                    self.assertIn("Run used 45 work tokens; cap is 45", current)
+                    self.assertIn("Measured work overshoot: 0.", current)
+                if partial:
+                    self.assertIn("done usage_unknown", current)
+                    self.assertNotIn("45 /", current)
+                if case == "repaused":
+                    self.assertIn("paused needs_human", current)
+                calls = (root / "calls.log").read_text()
+                terminal, reopened = invoke(expected=code)
+                self.assertEqual(reopened, attempts)
+                self.assertEqual((root / "calls.log").read_text(), calls)
+                self.assertEqual(calls.splitlines(), ["TriageOutput", "SpecOutput", "SpecOutput"])
+                self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
+                for line in current.splitlines():
+                    if line.startswith(("raw tokens", "work tokens", "attempt ", "input tokens", "output tokens",
+                                        "cache_read tokens", "cache_creation tokens")):
+                        self.assertIn("restored " + line, terminal)
+
     def test_second_process_sees_the_saved_stop_and_answer_resumes_spec(self):
         script = """
 import json

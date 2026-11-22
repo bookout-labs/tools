@@ -57,8 +57,10 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     current["path"] = [node for node, _ in rows]
     current["stop"] = result["stop"]
     current["attempts"] = result.get("attempts", [])
+    current["run"] = run_state
     if result["stop"] in {"needs_human", Halt.quota_exhausted}:
         current["halt_detail"] = result.get("halt_detail", "")
+    _write_run_log("usage below is cumulative across all invocations")
     _write_run_log("this invocation:")
     _print_run_rows(current, rows=rows)
 
