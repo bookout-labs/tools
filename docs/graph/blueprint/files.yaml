@@ -30,11 +30,13 @@ docs/graph/blueprint/prompts/research.md:
     What it instructs: 'Answer the originating question from the issue, pinned target
       checkout and cited sources.
 
-      Distinguish observed behavior from inference. Ask for missing external evidence
-      when
+      Distinguish observed behavior from inference. If available sources cannot resolve
+      the request,
 
-      available sources cannot resolve the request. Return the typed answer or grounded
-      question.
+      return a grounded question about the missing evidence for the coordinator or
+      personal agent to relay.
+
+      Otherwise, return the typed answer.
 
       Foreman posts the answer. Leave repository files untouched.'
   repository: bookout-labs/tools
@@ -56,8 +58,10 @@ docs/graph/blueprint/prompts/review.md:
       substantive correctness, security or scope defects. Report other observations
       as advisory.
 
-      Ask the human about unresolved intent that changes the review verdict. Foreman
-      posts findings and routes.'
+      Return questions about unresolved intent that changes the review verdict for
+      the coordinator or
+
+      personal agent to relay. Foreman posts findings and routes.'
   repository: bookout-labs/tools
   revision: target
   url: prompts/review.md
@@ -71,13 +75,14 @@ docs/graph/blueprint/prompts/spec.md:
       issue only. Give each slice testable acceptance. Name seams it builds and seams
       it uses.
 
-      Put edits to tracked seams under uses. Inspect available code and issue evidence
-      before
+      Put edits to tracked seams under uses. Inspect available code and issue evidence.
+      On
 
-      asking the human a grounded product, repository, architecture or policy question.
-      On revision,
+      revision, use the saved candidate and defects. Return one typed draft or grounded
+      questions
 
-      use the saved candidate and defects. Return one typed draft or grounded questions.'
+      about product, repository, architecture or policy for the coordinator or personal
+      agent to relay.'
   repository: bookout-labs/tools
   revision: target
   url: prompts/spec.md
@@ -94,8 +99,10 @@ docs/graph/blueprint/prompts/spec_check.md:
       Foreman''s repository. Check seam ownership, acceptance and dependencies. Cite
       concrete
 
-      defects and report unresolved choices for the human. Keep all repository and
-      GitHub state read-only.
+      defects and report unresolved choices for the coordinator or personal agent
+      to relay.
+
+      Keep all repository and GitHub state read-only.
 
       Approve the checked candidate when no blocking defect or unresolved choice remains.
       Return empty findings for a clear verdict.'
@@ -109,11 +116,13 @@ docs/graph/blueprint/prompts/triage.md:
     What it instructs: 'Classify the admitted issue as a question, plan request or
       supplied slice. Treat the named
 
-      target repository as fixed. Inspect available context before asking the human
-      about missing
+      target repository as fixed. Inspect available context before returning a question
+      about
 
-      intent. Give a bounded change one slice when its behavior and acceptance are
-      clear.
+      missing intent for the coordinator or personal agent to relay. Give a bounded
+      change one
+
+      slice when its behavior and acceptance are clear.
 
       Foreman validates all supplied slices before a build. Return the typed classification.'
   repository: bookout-labs/tools

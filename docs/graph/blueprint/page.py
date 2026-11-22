@@ -187,7 +187,7 @@ def page(directory, target, files, sections):
 <p class="baseline">{text(target["status"].capitalize())} blueprint · Baseline <a href="https://github.com/{text(target["repositories"]["foreman_repository"])}/commit/{text(target["baseline"])}"><code>{text(target["baseline"][:8])}</code></a></p>
 </section>
 <section class="page" id="context"><header class="page-head"><h1>Where Foreman works</h1>
-<p>The human works through a coordinator or personal agent. The agent files the GitHub issue and relays gate answers and stop requests to Foreman.</p></header>
+<p>The human works through a coordinator or personal agent. The agent files the GitHub issue and posts the human's answers, comments, plan approvals and stop requests as issue comments under the human's identity.</p></header>
 {diagram("context", "Repository and authority boundaries")}
 <p>Foreman runs from bookout-labs/tools. Each issue names the repository where its changes belong. The Project board mirrors the run state and shows the result on the card. GitHub, the CARR record layer and T3 hold shared context. Git versions the blueprint.</p></section>
 {stage_pages}{"".join(worker_pages)}

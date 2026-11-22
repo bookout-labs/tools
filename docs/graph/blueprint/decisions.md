@@ -26,7 +26,7 @@ Agreed by the owner 2026-11-22. “I'm good with the trust ladder”. Foreman qu
 
 ## D3. Who approves a plan?
 
-Agreed by the owner 2026-11-22. The checking model can approve the plan once Foreman validates the repository and seams. The plan proceeds when the independent check clears it. The human may comment, bless or stop a plan through the issue or the coordinator. Record the human’s “we're good” as approval of the plan they identified. The human's review is optional. Ask the human when an unresolved choice needs their judgment. Warp's default planning flow asks for human approval. [Warp gates](https://docs.warp.dev/factories/blueprints/gates/)
+Agreed by the owner 2026-11-22. The checking model can approve the plan once Foreman validates the repository and seams. The plan proceeds when the independent check clears it. The human may comment on, approve or stop a plan through their coordinator or personal agent. The agent posts each response as an issue comment under the human's identity. Record the human’s “we're good” as approval of the plan they identified. The human's review is optional. Ask the human through the agent when an unresolved choice needs their judgment. Warp's default planning flow asks for human approval. [Warp gates](https://docs.warp.dev/factories/blueprints/gates/)
 
 ## D4. Keep the 400-line cap?
 
