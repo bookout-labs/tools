@@ -206,6 +206,8 @@ from pathlib import Path
 from unittest.mock import patch
 from foreman.github import SmokeIssue, SmokeOpenPull
 from foreman.smoke_command import run_smoke
+from foreman import smoke_command
+smoke_command.SMOKE_TARGETS = (smoke_command.SMOKE_REPO,)
 from tests.test_smoke import passing
 from tests.test_smoke_ownership import fixture, pull
 path, phase = Path(sys.argv[1]), sys.argv[2]
