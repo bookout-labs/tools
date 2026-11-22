@@ -7,7 +7,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
-from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from tomllib import TOMLDecodeError
 from typing import Literal, Protocol, cast
@@ -35,9 +34,9 @@ from foreman.proof import browser_proof_label, browser_required, formal_proof_la
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    SpecRejection, SpecRejectionKind, PlanState, ImplementOutput, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, UpdateContext, SpecOutput, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, Slice, StoredSlice, VerifyOutput, parse_output,
+    PlanState, ReviewSelection, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, SliceRecord, StoredToolFact, GraphCheck as GraphEvidence, StageOutput, PULL_REQUEST_LINES, ReviewOutput, StoredSlice, parse_output,
 )
-from foreman.stages import STAGES
+from foreman.stages import STAGES, InvalidSlicePlan, oversized_pr
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS
@@ -91,12 +90,6 @@ def unknown_usage(stage: str, model: str | None) -> str:
 def run_tokens(attempts: list[AttemptRecord]) -> int:
     return sum(usage["input"] + usage["output"] + (usage["cache_read"] or 0) + (usage["cache_creation"] or 0)
                for attempt in attempts if (usage := attempt["usage"]) is not None)
-
-
-class InvalidSlicePlan(InvalidOutput):
-    def __init__(self, kind: SpecRejectionKind, detail: str):
-        super().__init__(detail)
-        self.reason: SpecRejection = {"kind": kind, "detail": detail}
 
 
 class PullRequestSizeDecision(StrEnum):
@@ -181,43 +174,6 @@ def stage_text(name: str) -> str:
     return (PACKAGE / "stages" / prompt).read_text().strip()
 
 
-def clean_slices(
-    raw: list[Slice] | None,
-    workspace: Workspace | None,
-) -> list[SliceRecord]:
-    if not raw:
-        raise InvalidOutput("slices: ready parent spec needs at least one slice")
-    if len(raw) == 1:
-        return [{**raw[0].record(), "depends_on": []}]
-    slices = {item.title: item for item in raw}
-    if len(slices) != len(raw):
-        raise InvalidSlicePlan("duplicate_title", "Slice titles must be unique.")
-    builders: dict[str, str] = {}
-    for item in raw:
-        for seam in item.builds:
-            if seam.name in builders and builders[seam.name] != item.title:
-                raise InvalidSlicePlan("duplicate_builder", f"{seam.name}: built by {builders[seam.name]} and {item.title}.")
-            builders[seam.name] = item.title
-    graph: dict[str, dict[str, None]] = {}
-    for item in raw:
-        dependencies = graph[item.title] = {}
-        for seam in item.uses:
-            if seam.path is not None and (workspace is None or not workspace.has_file(seam.path)):
-                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, but {seam.path} is not a workspace file.")
-            if builder := builders.get(seam.name):
-                if seam.exists:
-                    raise InvalidSlicePlan("existing_seam_builder", f"{seam.name}: marked existing but built by {builder}.")
-                if builder != item.title:
-                    dependencies[builder] = None
-            elif seam.path is None:
-                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, which has no builder or existing file.")
-    try:
-        ordered = list(TopologicalSorter(graph).static_order())
-    except CycleError as exc:
-        raise InvalidSlicePlan("dependency_cycle", "Dependency cycle: " + " -> ".join(exc.args[1])) from exc
-    return [{**slices[title].record(), "depends_on": list(graph[title])} for title in ordered]
-
-
 def load_slice(raw: object, plan: PlanState) -> DeliveryUpdate:
     stored = parse_output(StoredSlice, raw)
     return {"plan": plan.model_copy(update={"slice": stored.record(), "work_kind": stored.work_kind})}
@@ -273,30 +229,11 @@ def _check_tool_facts(
 def stage_update(
     name: str, output: StageOutput, state: DeliveryState, model: str | None = None, *, workspace: Workspace | None = None, accepted_model: ModelSpec | None = None,
 ) -> DeliveryUpdate:
-    review_state = state["review"]
-    plan = state["plan"]
-    slices = clean_slices(output.slices, workspace) if isinstance(output, SpecOutput) and plan.issue_kind == "parent" and output.spec_gate == "ready" else []
-    context = UpdateContext(plan, review_state, bool(oversized_pr(state)), slices, accepted_model)
-    checks = state["checks"]
-    update: DeliveryUpdate
-    if isinstance(output, ImplementOutput):
-        update = {"implementation": output.implementation, "checks": checks.model_copy(update={
-            "browser_proof": output.browser_proof.record() if output.browser_proof else None,
-            "formal_proof": output.formal_proof.record() if output.formal_proof else None,
-        })}
-    elif isinstance(output, VerifyOutput):
-        update = {"checks": checks.model_copy(update={"verify": output.verify,
-            "verify_failures": checks.verify_failures + (output.verify == "fail")})}
-    else:
-        update = {**output.update(context)}
+    update = STAGES[name].accept(output, state, accepted_model or model, workspace)
     update["path"] = [name]
     if model:
         used = state.get("models_used", {})
         update["models_used"] = {**used, name: model}
-        if name == "implement":
-            latest = used.get("implement")
-            history = state.get("implement_models", [latest] if latest else [])
-            update["implement_models"] = [*history, model]
     return update
 
 
@@ -350,13 +287,6 @@ def stop_reason(state: DeliveryState) -> Halt | Literal[
 def failed_preflight(workspace: Workspace, command: str, *, log: CheckLog | None = None) -> str | None:
     if command and (exit_code := workspace.run(command, log=log)):
         return f"Preflight {command!r} exited with {exit_code}"
-    return None
-
-
-def oversized_pr(state: DeliveryState) -> PullRequestSize | None:
-    size = state.get("pr_size")
-    if size is not None and size["lines"] > PULL_REQUEST_LINES and size != state.get("pr_size_override"):
-        return size
     return None
 
 
@@ -414,37 +344,15 @@ def compile_delivery(
             methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
             if methods_text:
                 instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
+            instruction += STAGES[name].prepare(state)
             record = review_state.fact_record
-            if name in {"implement", "review"}:
+            if name == "review":
                 instruction += (f"\n\nFact record in this checkout: {record}" if record is not None else
                                 "\n\nNo fact record was declared.")
-                if name == "review" and record is None:
-                    instruction += " Use null fixture references for unsupported tool facts."
-            gate = history({"rounds": review_state.review_findings}).gate if review_state.review == "changes" else None
-            if name == "implement" and gate and not gate.passed:
                 if record is None:
-                    instruction += ("\nRecording evidence requires a new run with an explicit --fact-record and a new checkpoint."
-                                    " Remove the unsupported dependency if possible; carried claims remain subject to the gate.")
-                else:
-                    instruction += (
-                        "\nResolve the tool-facts finding by recording evidence and creating the record and parent directories if absent."
-                        " Fixture IDs are paths relative to the record directory. Write regular evidence files."
-                        " Use TOML [fixtures.\"<evidence-file>\"] with tool and version, plus either"
-                        " kind = \"captured_run\" and argv = [\"tool\", \"arg\"] for captured output, or"
-                        " kind = \"quoted_source\" and sources = [\"https://source\"] for quoted source evidence."
-                        ' Add claim_ids = ["<claim_id>"] to the evidence entry for each carried claim.'
-                        " Support each carried tool fact; the graph rechecks the published verified head."
-                    )
-                instruction += "\nCarried tool facts:\n" + json.dumps([fact.model_dump() for fact in carried_tool_facts(state)])
+                    instruction += " Use null fixture references for unsupported tool facts."
             if name == "review" and (proven := graph_check(state)) is not None:
                 instruction += f"\nGraph fact: {proven.claim}\nGraph check evidence: {proven.model_dump_json()}"
-            if name == "spec" and (size := oversized_pr(state)):
-                instruction += (
-                    f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."
-                    " Split the work into independently shippable pull requests."
-                    " For a slice issue, describe the split in spec."
-                )
-
             past = ReviewHistory()
             if name == "review":
                 try:

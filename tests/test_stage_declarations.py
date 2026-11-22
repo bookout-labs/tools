@@ -74,6 +74,125 @@ class StageDeclarationsTest(unittest.TestCase):
                   for key, value in capture().items()}
         self.assertEqual(actual, json.loads(baseline.read_text()))
 
+    def test_non_review_callbacks_reach_the_worker_and_state(self):
+        from test_delivery import walk
+
+        for name in ("triage", "research", "spec", "implement"):
+            with self.subTest(stage=name):
+                row = STAGES[name]
+                seen = []
+                script = ScriptHandler(triage="question" if name == "research" else "spec")
+
+                def dispatch(stage, model, state, instruction):
+                    if stage == name:
+                        self.assertTrue(instruction.endswith("\nRow instruction"))
+                        seen.append(stage)
+                    return script(stage, model, state, instruction)
+
+                def accept(output, state, model, workspace):
+                    return {**row.accept(output, state, model, workspace), "research": "Row accepted"}
+
+                with patch.dict(STAGES, {name: replace(row, prepare=lambda _: "\nRow instruction", accept=accept)}):
+                    result = walk(dispatch)
+                self.assertEqual(seen, [name])
+                self.assertEqual(result["research"], "Row accepted")
+                self.assertEqual(result["stop"], "answered" if name == "research" else "verified")
+                self.assertEqual(result["attempts"][-1]["stage"], "research" if name == "research" else "review")
+
+    def test_implement_acceptance_keeps_proofs_and_model_history(self):
+        from foreman.delivery import stage_update
+        from foreman.stage_output import ImplementOutput, BrowserProof, FormalProof
+        from foreman.state import ChecksState, ReviewState, RunState
+
+        browser = BrowserProof(screen="screen.png", trace="trace.zip", passed=True)
+        formal = FormalProof(ran=True, constraints=[], typecheck=True)
+        state = {"plan": PlanState(), "review": ReviewState(), "run": RunState(repo="org/repo"),
+                 "checks": ChecksState(check="test", verify_failures=2, proof_failures=1), "path": []}
+        for used, prior, model, expected in (
+            ({}, None, "first", ["first"]),
+            ({"implement": "first"}, None, "second", ["first", "second"]),
+            ({"implement": "second"}, ["first", "second"], "third", ["first", "second", "third"]),
+            ({"implement": "second"}, [], "third", ["third"]),
+            ({}, None, None, None),
+        ):
+            with self.subTest(model=model, prior=prior):
+                current = {**state, "models_used": used}
+                if prior is not None:
+                    current["implement_models"] = prior
+                for present in (True, False):
+                    output = ImplementOutput(implementation="Done", browser_proof=browser if present else None,
+                                             formal_proof=formal if present else None)
+                    update = stage_update("implement", output, current, model)
+                    self.assertEqual(update["implementation"], "Done")
+                    self.assertEqual(update["checks"].browser_proof, browser.record() if present else None)
+                    self.assertEqual(update["checks"].formal_proof, formal.record() if present else None)
+                    self.assertEqual(update["checks"].verify_failures, 2)
+                    self.assertEqual(update["checks"].proof_failures, 1)
+                    self.assertEqual(update.get("implement_models"), expected)
+                    self.assertEqual(update.get("models_used"), {**used, "implement": model} if model else None)
+                    self.assertEqual(update["path"], ["implement"])
+                self.assertEqual(state["checks"].browser_proof, None)
+
+    def test_spec_split_instructions_reach_the_worker(self):
+        from langgraph.checkpoint.memory import InMemorySaver
+        from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery
+        from foreman.dry_run import DryRun
+        from foreman.stage_output import PULL_REQUEST_LINES
+        from foreman.state import ChecksState, ReviewState, RunState, checkpoint_serializer
+
+        for lines, override in ((PULL_REQUEST_LINES + 1, False), (PULL_REQUEST_LINES - 1, False),
+                                (PULL_REQUEST_LINES, False),
+                                (PULL_REQUEST_LINES + 1, True)):
+            with self.subTest(lines=lines, override=override), skill_fixture() as (config, scratch):
+                script, instructions = ScriptHandler(), []
+                def dispatch(stage, model, state, instruction):
+                    if stage == "spec":
+                        instructions.append(instruction)
+                    return script(stage, model, state, instruction)
+                dry = DryRun()
+                graph = compile_delivery(dispatch, config, run=LiveRun(dry, dry),
+                                         scratch=scratch, checkpointer=InMemorySaver(serde=checkpoint_serializer()))
+                size = {"head": "head", "base": "base", "lines": lines}
+                state = {"plan": PlanState(triage="spec", issue_kind="parent"), "review": ReviewState(),
+                         "checks": ChecksState(), "run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP),
+                         "pr_size": size, "path": ["triage"]}
+                if override:
+                    state["pr_size_override"] = size
+                thread = {"configurable": {"thread_id": "spec-instructions"}}
+                graph.update_state(thread, state, as_node="triage")
+                graph.invoke(None, thread)
+                self.assertEqual(len(instructions), 1)
+                suffix = (f"\n\nThe pull request has {lines} changed lines. The limit is {PULL_REQUEST_LINES}."
+                          " Split the work into independently shippable pull requests."
+                          " For a slice issue, describe the split in spec.")
+                if lines > PULL_REQUEST_LINES and not override:
+                    self.assertTrue(instructions[0].endswith(suffix))
+                else:
+                    self.assertNotIn("Split the work into independently shippable pull requests.", instructions[0])
+
+    def test_implement_acceptance_records_accepted_model_without_model_name(self):
+        from foreman.config import ModelSpec
+        from foreman.delivery import stage_update
+        from foreman.stage_output import ImplementOutput
+        from foreman.state import ChecksState
+
+        model = ModelSpec.parse("gpt-6.1-sol-high")
+        output = ImplementOutput(implementation="Done", browser_proof=None, formal_proof=None)
+        update = stage_update("implement", output, {"checks": ChecksState(), "implement_models": ["first"]},
+                              accepted_model=model)
+        self.assertEqual(update["implement_models"], ["first", model.name])
+
+    def test_verify_row_preserves_checks_and_counts_failures(self):
+        from foreman.stage_output import VerifyOutput
+        from foreman.state import ChecksState
+
+        checks = ChecksState(check="test", verify_failures=2, proof_failures=1)
+        for verdict, failures in (("pass", 2), ("fail", 3)):
+            with self.subTest(verdict=verdict):
+                update = STAGES["verify"].accept(VerifyOutput(verify=verdict), {"checks": checks}, None, None)
+                self.assertEqual(update["checks"], checks.model_copy(update={"verify": verdict, "verify_failures": failures}))
+        self.assertEqual(checks.verify_failures, 2)
+
     def test_contract_change_reaches_the_adapter(self):
         with patch.dict(STAGES, triage=replace(STAGES["triage"], output=ResearchOutput)):
             calls = capture()["feature/question"]["calls"]
