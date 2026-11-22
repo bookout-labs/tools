@@ -120,8 +120,14 @@ class CodexAdapter:
         if outcome.usage is None:
             return outcome
         return replace(outcome, native_usage=NativeUsage(
-            family="gpt", aggregation="turn_total", entries={
-                "turn": TypeAdapter(NativeUsageTokens).validate_python(outcome.usage.model_dump()),
+            family=self.model.family, aggregation="turn_total", entries={
+                "turn": NativeUsageTokens(
+                    input_tokens=outcome.usage.input_tokens,
+                    output_tokens=outcome.usage.output_tokens,
+                    cache_read_input_tokens=outcome.usage.cache_read_input_tokens,
+                    cache_creation_input_tokens=outcome.usage.cache_creation_input_tokens,
+                    total_cost_usd=outcome.usage.total_cost_usd,
+                ),
             },
         ))
 

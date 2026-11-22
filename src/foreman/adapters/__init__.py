@@ -10,7 +10,7 @@ from typing import ClassVar, Literal, Protocol
 
 from typing_extensions import TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, TypeAdapter, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, TypeAdapter, ValidationError, field_validator, with_config
 
 from foreman.config import ModelSpec
 from foreman.usd import BudgetUsd, CostUsd
@@ -27,6 +27,7 @@ class Usage(BaseModel):
     total_cost_usd: CostUsd | None = None
 
 
+@with_config(ConfigDict(extra="forbid"))
 class NativeUsageTokens(TypedDict):
     input_tokens: NonNegativeInt
     output_tokens: NonNegativeInt
@@ -35,6 +36,7 @@ class NativeUsageTokens(TypedDict):
     total_cost_usd: CostUsd | None
 
 
+@with_config(ConfigDict(extra="forbid"))
 class NativeUsage(TypedDict):
     """Recorded CLI totals only; never an additional budget ledger."""
 
