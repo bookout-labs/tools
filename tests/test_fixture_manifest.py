@@ -159,6 +159,7 @@ class RecordedEvidenceTest(unittest.TestCase):
         self.assertEqual(recorded_fixtures(self.workspace, self.commit(), "evidence/facts.toml"), {"result.txt"})
 
     def test_carried_claim_requires_committed_evidence_for_its_id(self):
+        from foreman.delivery import LiveRun
         from foreman.review_round import check_tool_facts as _check_tool_facts
         from foreman.dry_run import DEFAULT_RISK
         from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
