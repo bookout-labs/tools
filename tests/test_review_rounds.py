@@ -241,12 +241,13 @@ class ReviewRoundsTest(unittest.TestCase):
                 self.assertIn(f"{tip}...{current} --", commands[0])
                 if index:
                     self.assertIn(f"{previous}..{head} --", commands[1])
-                outside = ("git status", "git diff --output=escape", "exit 0", commands[0] + " --stat")
+                outside = ("git status", "git diff --output=escape", "exit 0", "head", "history", "base")
+                denied_commands = ()
 
                 def runner(args, cwd, env):
                     permissions = json.loads(args[args.index("--settings") + 1])["permissions"]
                     self.assertEqual(permissions["allow"], [f"Bash({c})" for c in commands])
-                    for command in outside:
+                    for command in (*outside, commands[0] + " --stat"):
                         self.assertNotIn(f"Bash({command})", permissions["allow"])
                     self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
                     for command in commands:
@@ -254,13 +255,19 @@ class ReviewRoundsTest(unittest.TestCase):
                     process = fixture_process(args, "success", 0)
                     envelope = json.loads(process.stdout)
                     envelope["permission_denials"] = [
-                        {"tool_name": "Bash", "tool_input": {"command": c}} for c in outside
+                        {"tool_name": "Bash", "tool_input": {"command": c}} for c in denied_commands
                     ]
                     return subprocess.CompletedProcess(args, 0, json.dumps(envelope), "")
 
-                outcome = CliWorker(workspace.root, runner)(
-                    node, ModelSpec.parse("claude-opus-5-5-high"), state, instruction)
-                self.assertEqual(outcome.kind, "ran", outcome.detail)
+                cases = [((), "ran"), (outside, "ran")]
+                for command in commands:
+                    cases.extend(((denied,), "failed") for denied in
+                                 (command, f"bash -lc '{command}'", f"cd . && {command}", command + " --stat"))
+                for denied_commands, expected in cases:
+                    with self.subTest(round=index + 1, denials=denied_commands):
+                        outcome = CliWorker(workspace.root, runner)(
+                            node, ModelSpec.parse("claude-opus-5-5-high"), state, instruction)
+                        self.assertEqual(outcome.kind, expected, outcome.detail)
 
     def test_missing_duplicate_unknown_resolutions_and_reused_ids_fail_closed(self):
         resolved = {"id": "f1", "status": "resolved"}

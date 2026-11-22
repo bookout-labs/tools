@@ -86,7 +86,7 @@ class PermissionsTest(unittest.TestCase):
             args_seen.append(args)
             return fixture_process(args, "success", 0)
         plan = {"models": [], "instruction": "review", "methods": [], "read_roots": [],
-                "target": None, "scope": {"command": "git diff --no-color abc...def --", "inline": []}}
+                "target": None, "scope": {"command": "  # head history base\n  git diff --no-color abc...def --  \n\n", "inline": []}}
         CliWorker(Path.cwd(), runner)("review", ModelSpec.parse("claude-opus-5-5-high"),
                                      {"checks": ChecksState(check="sh check.sh"), "dispatch_plan": plan}, "review")
         args = args_seen[0]

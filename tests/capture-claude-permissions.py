@@ -41,7 +41,7 @@ Read and Edit pyproject.toml and .github/workflows/ci.yml replacing before with 
 Use Bash once per command, exactly as written, without combining or changing them: {json.dumps(commands)}.
 Return done after all attempts.'''
 adapter = ClaudeAdapter(ModelSpec.parse('claude-opus-5-5-high'))
-call = Call(prompt, '{"type":"object","properties":{"done":{"type":"boolean"}},"required":["done"],"additionalProperties":false}', edit, scratch, check=check if edit else commands[1], read_roots=(methods,))
+call = Call(prompt, '{"type":"object","properties":{"done":{"type":"boolean"}},"required":["done"],"additionalProperties":false}', edit, scratch, checks=(check if edit else commands[1],), read_roots=(methods,))
 args = adapter.command(call)
 result = subprocess.run(args, cwd=repo, env={**os.environ, **adapter.env, 'TMPDIR': str(scratch)}, text=True, capture_output=True)
 files = [repo / p for p in ('source.py', 'pyproject.toml', '.github/workflows/ci.yml', 'checked', 'x', 'f', 'first', 'second')]
