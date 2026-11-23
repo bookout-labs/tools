@@ -2,6 +2,7 @@
 waivers:
   251:
     V2-063170af35697f53: missing [steps/verify] edge post -> __end__
+    V2-0887c4733a79c3e1: mismatched [procedure/review] prompt
     V2-0a7de2f23324161e: mismatched [procedure/review] inputs
     V2-0fd210fef8c34232: extra [top/delivery] edge implement -> review
     V2-11020c5b7a20e85d: missing [steps/verify] edge drive -> post
@@ -14,7 +15,6 @@ waivers:
     V2-5a2231ff8acbc9ce: missing [steps/verify] edge __start__ -> drive
     V2-5c5f837efd9fc317: missing [steps/verify] retries
     V2-6439bd0435be7357: missing [top/delivery] edge implement -> verify
-    V2-7b7596f3beb99681: mismatched [procedure/review] prompt
     V2-a14d48b4c65f3320: missing [steps/verify] halts
     V2-ac636dc8c297e271: mismatched [procedure/implement] skills
     V2-af51f2a4ed383782: missing [top/delivery] node verify

@@ -433,7 +433,7 @@ stages:
     implementation: {module: src/foreman/steps/verify.py, entry: compile_stage, max_lines: 160, allowed_imports: [github, dispatch, workspace, stage_output], shared: [Forge, Workspace, dispatch], never_does: [edit implementation, route a failed criterion to implement, approve or merge]}
     checks: {VF1: tests/test_verify.py, VF2: tests/test_verify.py, VF3: tests/test_verify.py, VF4: tests/test_verify.py, VF5: tests/test_verify.py}
     scenarios:
-      VF1: {given: The target repository has no verify skill, expect: Record no_skill with no worker call and no comment and hand the head to review.}
+      VF1: {given: The target repository has no verify skill, expect: Record no_skill in the run state with no worker call and no comment and hand the head to review. Review's report names it.}
       VF2: {given: A criterion fails in the driven app, expect: Post it as failed with its evidence and hand the head to review with no direct repair route.}
       VF3: {given: The PR head moves during the drive, expect: Post the evidence marked stale for the tested head and exit head_moved without presenting it as current.}
       VF4: {given: Posting the evidence times out, expect: Adopt only the exact saved marker or report publication_unreconciled.}

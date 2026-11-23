@@ -67,7 +67,12 @@ docs/graph/blueprint/prompts/review.md:
       when it shows a
 
       correctness or scope defect. Treat unverified criteria and evidence for another
-      head as advisory.'
+      head as advisory.
+
+      When Verify recorded no_skill, say in your report that the change was not verified
+      because the
+
+      repository has no verify skill.'
   repository: bookout-labs/tools
   revision: target
   url: prompts/review.md

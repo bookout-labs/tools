@@ -8,3 +8,5 @@ Return questions about unresolved intent that changes the review verdict for the
 personal agent to relay. Foreman posts findings and routes.
 Read the verify evidence for this head. A failed criterion is a P0 or P1 only when it shows a
 correctness or scope defect. Treat unverified criteria and evidence for another head as advisory.
+When Verify recorded no_skill, say in your report that the change was not verified because the
+repository has no verify skill.
