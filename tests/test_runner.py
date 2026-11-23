@@ -1603,6 +1603,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         source = FixtureSkills()
         paused = self.walk([{"triage": "needs_human", "human_question": "Which items?"}], skills=source)
         self.assertEqual(paused["stop"], "needs_human")
+        # An admitted run keeps its checkpoint, so resuming it never needs Ready on the live issue.
+        self.github.labels = []
         changed = self.pin.model_copy(update={"commit": "f" * 40})
         with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=changed, matt_skills=changed.model_copy(update={"directory": "skills"}))):
             resumed = self.walk([{"triage": "question"}, {"research": "Only open items."}],
