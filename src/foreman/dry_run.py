@@ -1,6 +1,6 @@
 """A handler that walks the graph without calling a model."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -109,6 +109,9 @@ class DryRun:
 
     def pin_base(self, base: str) -> str:
         return self.head
+
+    def release(self, heads: Collection[str]) -> bool:
+        return False
 
     def create_branch(self, branch: str, base: str, *, pinned: str = "") -> None:
         if self.branch != branch:

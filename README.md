@@ -154,7 +154,9 @@ foreman start --repo Example/Engine --issue 7
   - `FOREMAN_PREFLIGHT` is optional.
   - `FOREMAN_MAX_TOKENS` defaults to the standard token cap.
   - `FOREMAN_MAX_BUDGET_USD` defaults to $3.
-- A missing check, a malformed value or an unreadable variable list stops with exit 1 before any run. The checkpoint pins the settings when the run starts. Resume with `foreman run --answer` as usual.
+- A missing check, a malformed value or an unreadable variable list stops with exit 1 before any run. The checkpoint pins the settings when the run starts.
+- The run works in its own checkout, not the current directory. Each repository has one shared clone at `$XDG_STATE_HOME/foreman/checkouts/<owner>/<name>`. Admission adds the issue's worktree at `$XDG_STATE_HOME/foreman/runs/<owner>/<name>/<issue>`, detached at the pinned base, so an issue that isn't admitted gets no checkout. A finished run removes a clean worktree. A halted run keeps it as evidence.
+- Resume with `foreman run --repo <owner>/<name> --issue <n> --answer ...` from any directory. It uses the issue's checkout and the saved checks, so `--check` is needed only for a new run.
 
 Promptfoo runs the same contract without a model:
 

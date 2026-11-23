@@ -1,9 +1,12 @@
 """Local checkout operations used by delivery runs."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Generator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+import fcntl
 import hashlib
 from io import BytesIO
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -12,7 +15,7 @@ import shutil
 import subprocess
 import tarfile
 from tempfile import TemporaryDirectory
-from typing import Annotated, Literal, NewType, Protocol
+from typing import Annotated, Literal, NewType, Protocol, TextIO
 from typing_extensions import NotRequired, TypedDict
 from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
@@ -191,6 +194,7 @@ class Workspace(Protocol):
     def soft_reset(self, parent: str) -> None: ...
     def uncommit(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
+    def release(self, heads: Collection[str]) -> bool: ...
     def remote_head(self, branch: str) -> str | None: ...
     def push(self, branch: str, repo: str) -> None: ...
     def has_tracked_file(self, base: str, path: str) -> bool: ...
@@ -213,12 +217,51 @@ def push_command(remote: str, branch: str) -> list[str]:
     return ["git", "push", "--no-follow-tags", remote, f"{ref}:{ref}"]
 
 
+def lock_file(*key: str) -> Path:
+    """One lock file per key for this user, in the XDG runtime directory, which neither TMPDIR nor XDG_STATE_HOME moves."""
+    locks = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "foreman-locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    return locks / hashlib.sha256(json.dumps(list(key), separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+# Git commands that write the shared clone's objects, refs or worktree list.
+SHARED_WRITES = frozenset({"fetch", "push", "worktree", "init", "config"})
+
+
 class LiveWorkspace:
-    def __init__(self, root: Path, repo: str = ""):
+    def __init__(self, root: Path, repo: str = "", *, clone: Path | None = None):
         self.root = root
         self.repo = repo
+        self.clone = clone
         self._urls: list[str] = []
         self._identity: dict[str, str] | None = None
+        self._lock: TextIO | None = None
+
+    @classmethod
+    def managed(cls, state_home: Path, repo: str, issue: int) -> "LiveWorkspace":
+        """The issue's own worktree of one shared clone per repository. Admission creates the worktree at the pinned base."""
+        owner, name = repo.lower().split("/")
+        home = (state_home / "foreman").resolve()
+        return cls(home / "runs" / owner / name / str(issue), repo, clone=home / "checkouts" / owner / name)
+
+    @property
+    def _home(self) -> Path:
+        # Before admission and after release, a managed workspace reads its repository through the shared clone.
+        return self.clone if self.clone is not None and not self.root.exists() else self.root
+
+    @contextmanager
+    def _shared(self) -> Generator[None]:
+        """Hold the repository lock while writing the shared clone. It is short, blocking and never passed to workers."""
+        if self.clone is None or self._lock is not None:
+            yield
+            return
+        with lock_file("repo", self.repo.lower()).open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self._lock = lock
+            try:
+                yield
+            finally:
+                self._lock = None
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int:
         with subprocess.Popen(
@@ -254,15 +297,43 @@ class LiveWorkspace:
         ).strip() == os.fsencode(commit.lower())
 
     def validate_origin(self, repo: str) -> None:
+        if self.clone is not None:
+            # Foreman owns the shared clone. Init and configuration are idempotent, so an interrupted creation completes.
+            with self._shared():
+                self.clone.mkdir(parents=True, exist_ok=True)
+                self._git("init", "--quiet", "--template=", cwd=self.clone)
+                self._git("config", "remote.origin.url", f"https://github.com/{repo}", cwd=self.clone)
+                self._git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*", cwd=self.clone)
         self._urls = self._validate_remote(repo)
 
     def pin_base(self, base: str) -> str:
         base_ref = f"refs/remotes/origin/{base}"
-        self._git(
-            "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
-            f"+refs/heads/{base}:{base_ref}",
-        )
-        return os.fsdecode(self._git("rev-parse", "--verify", f"{base_ref}^{{commit}}")).strip()
+        with self._shared():
+            self._git(
+                "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
+                f"+refs/heads/{base}:{base_ref}", cwd=self._home,
+            )
+            pinned = os.fsdecode(self._git("rev-parse", "--verify", f"{base_ref}^{{commit}}", cwd=self._home)).strip()
+            if self.clone is not None:
+                # Only admission pins a base, so this allocates the issue's checkout exactly once.
+                if self.root.exists():
+                    # A crash before the admission checkpoint left the worktree. Nothing has edited it yet.
+                    self._git("checkout", "--quiet", "--detach", pinned)
+                else:
+                    self._git("worktree", "prune", cwd=self.clone)
+                    self._git("worktree", "add", "--quiet", "--detach", str(self.root), pinned, cwd=self.clone)
+        return pinned
+
+    def release(self, heads: Collection[str]) -> bool:
+        """Remove a finished run's managed worktree when it is clean at a head the run recorded."""
+        if self.clone is None or not self.root.exists():
+            return False
+        observed = self.inspect()
+        if not observed.clean or observed.head not in heads:
+            return False
+        with self._shared():
+            self._git("worktree", "remove", str(self.root), cwd=self.clone)
+        return True
 
     def create_branch(self, branch: str, base: str, *, pinned: str = "") -> None:
         branch = redact(branch)
@@ -431,7 +502,7 @@ class LiveWorkspace:
 
     def _validate_remote(self, repo: str) -> list[str]:
         try:
-            return validate_remote(repo, self.root, app=credentials.configured)
+            return validate_remote(repo, self._home, app=credentials.configured)
         except CredentialFailure as exc:
             raise WorktreeInspectionFailed(str(exc)) from None
         except (OSError, subprocess.SubprocessError, UnicodeError):
@@ -608,7 +679,8 @@ class LiveWorkspace:
         )
 
     def _git(self, *args: str, input_paths: bytes | None = None, timeout: float | None = None,
-             allowed_returncodes: tuple[int, ...] = (0,), environment: dict[str, str] | None = None) -> bytes:
+             allowed_returncodes: tuple[int, ...] = (0,), environment: dict[str, str] | None = None,
+             cwd: Path | None = None) -> bytes:
         operation = f"git {args[0]}"
         if timeout is None:
             timeout = 30 if args[0] in {"fetch", "push", "ls-remote", "commit"} else 10
@@ -629,11 +701,12 @@ class LiveWorkspace:
                 auth = git_auth(self._urls)
                 env = app_env
         try:
-            result = subprocess.run(
-                ["git", *auth, *args], cwd=self.root, capture_output=True, input=input_paths,
-                env=env,
-                stdin=subprocess.DEVNULL if input_paths is None else None, timeout=timeout,
-            )
+            with self._shared() if args[0] in SHARED_WRITES else nullcontext():
+                result = subprocess.run(
+                    ["git", *auth, *args], cwd=cwd or self.root, capture_output=True, input=input_paths,
+                    env=env,
+                    stdin=subprocess.DEVNULL if input_paths is None else None, timeout=timeout,
+                )
         except subprocess.TimeoutExpired as exc:
             raise WorktreeInspectionFailed(f"{operation} timed out after {timeout} seconds; rerun to resume.") from exc
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:

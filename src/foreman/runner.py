@@ -7,7 +7,6 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 import fcntl
-import os
 from typing import Any
 import sqlite3
 from tempfile import TemporaryDirectory
@@ -28,10 +27,10 @@ from foreman.dispatch import Handler, QuotaPause
 from foreman.skill_rules import SkillMissing
 from foreman.github import ForgeError, human_comments
 from foreman.watch import run_key, watch
-from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, spec_digest, parse_output
+from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.steps import implement
 from foreman.usd import BudgetUsd, usd_text
-from foreman.workspace import WorkState, WorkspaceError
+from foreman.workspace import WorkState, WorkspaceError, lock_file
 from foreman.worker import AttemptJournal, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
@@ -137,6 +136,10 @@ def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: Bu
     require_same_budget(run_state.max_budget_usd, max_budget_usd)
 
 
+# The drawing's terminal outcomes other than halted.
+RELEASED_STOPS = frozenset({"answered", "children_filed", "merged", "closed", "cancelled", "no_change"})
+
+
 class IssueLocked(ValueError):
     """Another Foreman process holds this issue's lock."""
 
@@ -152,15 +155,12 @@ def issue_thread(repo: str, issue: int) -> str:
 def issue_lock(thread: str) -> Generator[None]:
     """Hold one writer per repository and issue for this user, whichever checkpoint it uses. The worker inherits the lock.
 
-    Locks live in the XDG runtime directory, which neither TMPDIR nor XDG_STATE_HOME moves.
     A holder that enters again keeps its lock, so a start can check and run under one hold.
     """
     if thread in _held_locks.get():
         yield
         return
-    locks = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "foreman-locks"
-    locks.mkdir(parents=True, exist_ok=True)
-    with (locks / spec_digest([thread])).open("a") as lock:
+    with lock_file(thread).open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -274,7 +274,8 @@ def run_live_delivery(
         saved_workspace = saved_values["run"].workspace if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
-        if early_result is None and saved_values is not None and saved_values["run"].base_sha:
+        finished = bool(saved_values and saved_values.get("stop") and saved_values.get("halt") not in RESUMABLE_HALTS)
+        if early_result is None and saved_values is not None and saved_values["run"].base_sha and not finished:
             # A resumed run keeps the identity triage admitted, in a checkout of the same repository.
             saved_run = saved_values["run"]
             loaded = client.load_issue(repo, issue)
@@ -387,6 +388,14 @@ def run_live_delivery(
         if result.get("stop") == "blocked":
             # Open prerequisites leave the issue unadmitted, so a later Ready recheck starts it fresh.
             saver.delete_thread(thread)
+        elif result.get("stop") in RELEASED_STOPS and early_result is None:
+            # A finished run's clean checkout is removed. A halted run keeps its checkout as evidence.
+            heads = {head for head in (result["run"].base_sha, result.get("work", WorkState()).published_head) if head}
+            try:
+                if run.workspace.release(heads):
+                    log(f"released {run.workspace.root}")
+            except WorkspaceError as exc:
+                log(f"checkout kept: {exc}")
         report(result)
         if (halt := result.get("halt")) is not None:
             if HALTS[halt].watch is None:
