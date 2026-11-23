@@ -58,6 +58,12 @@ class ManagedCheckoutTest(unittest.TestCase):
         self.assertEqual(LiveWorkspace.managed(Path(self.temp.name, "state"), REPO, 7).pin_base("main"), self.base)
         self.assertEqual(self.workspace.inspect().head, self.base)
 
+    def test_an_unregistered_empty_directory_becomes_the_worktree(self):
+        # A crash between creating the directory and registering the worktree leaves an empty directory.
+        self.workspace.root.mkdir(parents=True)
+        self.assertEqual(self.admit(), self.base)
+        self.assertEqual(self.workspace.inspect().head, self.base)
+
     def test_release_removes_only_a_clean_worktree_at_a_recorded_head(self):
         self.admit()
         (self.workspace.root / "scratch.txt").write_text("evidence\n")

@@ -173,13 +173,17 @@ def issue_lock(thread: str) -> Generator[None]:
             worker_lock.reset(token)
 
 
-def started(checkpoint: Path, thread: str) -> bool:
-    """Whether the issue already has a run. Blocked admission deletes its checkpoint, so a later Ready starts fresh."""
+def saved_workspace(checkpoint: Path, thread: str) -> str | None:
+    """The checkout of the issue's saved run, or None when it has none. Blocked admission deletes its checkpoint, so a later Ready starts fresh."""
     if not checkpoint.exists():
-        return False
+        return None
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         saver.serde = checkpoint_serializer()
-        return saver.get_tuple({"configurable": {"thread_id": thread}}) is not None
+        saved = saver.get({"configurable": {"thread_id": thread}})
+    if saved is None:
+        return None
+    run = saved["channel_values"].get("run")
+    return RunState.model_validate(run).workspace if run is not None else ""
 
 
 def run_live_delivery(
@@ -274,7 +278,8 @@ def run_live_delivery(
         saved_workspace = saved_values["run"].workspace if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
-        finished = bool(saved_values and saved_values.get("stop") and saved_values.get("halt") not in RESUMABLE_HALTS)
+        finished = bool(saved_values and (saved_values.get("stop") in RELEASED_STOPS or (
+            saved_values.get("halt") is not None and saved_values.get("halt") not in RESUMABLE_HALTS)))
         if early_result is None and saved_values is not None and saved_values["run"].base_sha and not finished:
             # A resumed run keeps the identity triage admitted, in a checkout of the same repository.
             saved_run = saved_values["run"]

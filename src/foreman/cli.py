@@ -26,7 +26,7 @@ from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import Halt, exit_code
-from foreman.runner import PAUSES, AnswerError, IssueLocked, RunPresentation, issue_lock, issue_thread, run_live_delivery, started
+from foreman.runner import PAUSES, AnswerError, IssueLocked, RunPresentation, issue_lock, issue_thread, run_live_delivery, saved_workspace
 from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
@@ -354,7 +354,7 @@ def main(
             if credentials.environment(args.repo) is None:
                 raise CredentialFailure("Configure FOREMAN_APP_ID before starting runs from Ready.")
             with issue_lock(thread):
-                if started(store, thread):
+                if saved_workspace(store, thread) is not None:
                     # A repeated delivery never resumes a paused, waiting or finished run.
                     print(f"already started {thread}")
                     return 0
@@ -391,14 +391,21 @@ def main(
         run.error("--repo must be OWNER/NAME")
     if args.issue is None or args.issue < 1:
         run.error("a live run requires a positive --issue")
-    if not args.check.strip() and not started(store, issue_thread(args.repo, args.issue)):
-        run.error("a new live run requires a --check command")
-    # A run that start admitted resumes in its own checkout. A resume uses its saved checks.
-    managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
-    workspace = managed if managed.root.exists() else LiveWorkspace(Path.cwd(), args.repo)
-    return live(args.repo, args.issue, RunSettings(check=args.check, preflight=args.preflight, max_tokens=args.max_tokens,
-                                                   max_budget_usd=args.max_budget_usd), workspace,
-                answer=args.answer, request=args.request)
+    thread = issue_thread(args.repo, args.issue)
+    try:
+        with issue_lock(thread):
+            # A resume uses its saved checks, in the checkout start gave it, even before admission created it.
+            saved = saved_workspace(store, thread)
+            if saved is None and not args.check.strip():
+                run.error("a new live run requires a --check command")
+            managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
+            workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo)
+            return live(args.repo, args.issue, RunSettings(check=args.check, preflight=args.preflight, max_tokens=args.max_tokens,
+                                                           max_budget_usd=args.max_budget_usd), workspace,
+                        answer=args.answer, request=args.request)
+    except IssueLocked as exc:
+        _write_run_log(str(exc), file=sys.stderr)
+        return 1
 
 
 def run_exit_code(result: DeliveryResult) -> int:

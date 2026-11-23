@@ -247,7 +247,7 @@ class LiveWorkspace:
     @property
     def _home(self) -> Path:
         # Before admission and after release, a managed workspace reads its repository through the shared clone.
-        return self.clone if self.clone is not None and not self.root.exists() else self.root
+        return self.clone if self.clone is not None and not (self.root / ".git").exists() else self.root
 
     @contextmanager
     def _shared(self) -> Generator[None]:
@@ -316,10 +316,12 @@ class LiveWorkspace:
             pinned = os.fsdecode(self._git("rev-parse", "--verify", f"{base_ref}^{{commit}}", cwd=self._home)).strip()
             if self.clone is not None:
                 # Only admission pins a base, so this allocates the issue's checkout exactly once.
-                if self.root.exists():
+                listed = self._git("worktree", "list", "--porcelain", "-z", cwd=self.clone).split(b"\0")
+                if os.fsencode(f"worktree {self.root}") in listed:
                     # A crash before the admission checkpoint left the worktree. Nothing has edited it yet.
                     self._git("checkout", "--quiet", "--detach", pinned)
                 else:
+                    # Git adds into a missing or empty directory and refuses anything else, which is preserved.
                     self._git("worktree", "prune", cwd=self.clone)
                     self._git("worktree", "add", "--quiet", "--detach", str(self.root), pinned, cwd=self.clone)
         return pinned

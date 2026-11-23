@@ -901,6 +901,17 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIsNotNone(halted.get("halt"))
         self.assertEqual(len(released), 1)
 
+    def test_a_waiting_run_rechecks_its_origin_before_resuming(self):
+        pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending", "recovery": "Wait."})
+        with patch.object(self.github, "readiness", return_value=pending):
+            self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+
+        class Moved(FakeWorkspace):
+            def validate_origin(self, repo):
+                raise WorktreeInspectionFailed("origin moved")
+
+        self.assertEqual(self.walk([], workspace=Moved(self.cwd)).get("halt"), "git_failed")
+
     def test_failed_checks_or_conflict_route_to_repair_with_github_evidence(self):
         original = self.github.readiness
         for outcome, step in [("red", "arm"), ("conflict", "arm"), ("red", "observe")]:
