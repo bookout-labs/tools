@@ -27,6 +27,8 @@ class NpmSmokeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
             fake = FakeGitHub()
+            # A queued merge stays armed until GitHub merges it, which a release smoke doesn't wait for.
+            fake.queue_merges = mutation != 'queued'
             forge = Mock(wraps=fake)
             forge.create_issue = Mock(return_value=17)
             forge.smoke_identity = Mock(return_value=(True, True, True))
@@ -150,6 +152,12 @@ class NpmSmokeTest(unittest.TestCase):
                     self.assertIn('check npm run check', output)
                     self.assertEqual(len(reconciled), 1)
                     self.assertIn('aggregate work tokens', output)
+
+    def test_armed_queue_entry_is_the_end_point(self):
+        # The merge stage holds the armed merge in its own state while it waits on GitHub's queue.
+        code, output, _, _ = self.exercise('queued')
+        self.assertEqual(code, 0, output)
+        self.assertIn("merge status='armed'", output)
 
     def test_contract_mutants_and_broken_suite(self):
         for mutation in ('missing suite', 'broken suite'):

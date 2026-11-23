@@ -18,9 +18,9 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.budget import claude_spend, work_tokens
 from foreman.cli import main
-from foreman.state import SCHEMA_VERSION, checkpoint_serializer
+from foreman.state import SCHEMA_VERSION, DeliveryResult, checkpoint_serializer
 from foreman.credentials import CredentialFailure, credentials, git_auth
-from foreman.delivery import LiveRun, read_delivery_state
+from foreman.delivery import LiveRun
 from foreman.github import BOT_LOGIN, ForgeError, LiveForge
 from foreman.process_group import owned_group, signals_end_foreman
 from foreman.redaction import redact
@@ -193,13 +193,12 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
         used, spent = None, None
         while True:
             if npm:
-                main(command, live_run=live)
-                with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-                    saver.serde = checkpoint_serializer()
-                    saved = saver.get({"configurable": {"thread_id": f"{repo.lower()}#{issue}"}})
-                    if saved is None:
-                        raise ValueError("CLI produced no delivery checkpoint")
-                    result = read_delivery_state(saved["channel_values"])
+                # The CLI reports the run as the runner reads it, including state a paused stage holds.
+                reported: list[DeliveryResult] = []
+                main(command, live_run=live, report=reported.append)
+                if not reported:
+                    raise ValueError("CLI produced no delivery result")
+                result = reported[-1]
             else:
                 result = run_live_delivery(repo=repo, issue=issue, request=request, check=check,
                                            checkpoint=directory / "checkpoint.sqlite3", dispatcher=CliWorker(root, scratch_root=directory),
