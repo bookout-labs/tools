@@ -27,8 +27,8 @@ def passing() -> DeliveryResult:
     return DeliveryResult(
         run=RunState(repo="bookout-labs/foreman-smoke", issue=1), plan=PlanState(),
         checks=ChecksState(verify="pass", check_exit_code=0, verified_head="abc"),
-        path=["implement", "publish", "verify", "review", "merge", "done"], stop="verified",
-        work=WorkState(head_sha="abc"),
+        path=["prepare", "implement", "check", "commit", "publish", "review", "merge", "done"], stop="verified",
+        work=WorkState(head_sha="abc", published_head="abc"),
         review=ReviewState(reviewed_head="abc", review_receipt={"id": 1, "state": "COMMENTED", "commit_id": "abc"}),
         merge=MergeState(status="armed", receipt={
             "repo": "bookout-labs/foreman-smoke", "pr": 2, "source_head": "abc",
@@ -62,7 +62,7 @@ class SmokeTest(unittest.TestCase):
             ({"checks": ChecksState(verified_head="abc")}, "checks.verify"),
             ({"checks": ChecksState(verify="pass", check_exit_code=0)}, "verified_head"),
             ({"work": WorkState()}, "published_head"),
-            ({"path": ["verify", "done"]}, "published_head"),
+            ({"work": WorkState(head_sha="abc")}, "published_head"),
             ({"review": passing()["review"].model_copy(update={"reviewed_head": ""})}, "reviewed_head"),
             ({"review": passing()["review"].model_copy(update={"review_receipt": None})}, "review_receipt"),
             ({"merge": MergeState(status="armed")}, "merge.receipt"),

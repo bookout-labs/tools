@@ -78,9 +78,6 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(restored["plan"].spec, raw["spec"])
             for text in (question["question"], question["why_code_unanswered"], "policy.py"):
                 self.assertIn(text, update["human_question"])
-            state["pr_size"] = {"head": "a", "merge_base": "b", "lines": 401}
-            split = accept_spec(SpecOutput.model_validate(raw), Acceptance(state, workspace=workspace))["plan"].pr_split
-            self.assertEqual(split["question"], update["human_question"])
             empty = SpecOutput.model_validate({**raw, "questions": [{**question, "checked_paths": []}]})
             accept_spec(empty, Acceptance(state, workspace=workspace))
 

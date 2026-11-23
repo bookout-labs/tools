@@ -1,76 +1,7 @@
 # IDs bind each exact difference to its migration issue. Delete the entry when the difference closes.
 waivers:
-  235:
-    V2-0b19e86a0a4e216c: missing [steps/dispatch] edge __start__ -> reserve
-    V2-ffce5bbfe186b434: missing [steps/dispatch] edge reconcile -> __end__
-    V2-25eab3c665b6718f: missing [steps/dispatch] edge reconcile -> reserve
-    V2-4826c2e4c082a58f: missing [steps/dispatch] edge reserve -> __end__
-    V2-a17d4884bb19096e: missing [steps/dispatch] edge reserve -> reconcile
-    V2-3b5b1488d9bc6487: missing [steps/dispatch] halts
-    V2-88b8c20634c89d04: missing [steps/dispatch] node reconcile
-    V2-544b6bc18ed0d9f6: missing [steps/dispatch] node reserve
-    V2-6708d12b1bf35b15: missing [steps/dispatch] retries
-    V2-f92638735ca3e122: missing [steps/dispatch] subgraph endpoints
-    V2-cf41c5d5e274b2cf: missing [steps/dispatch] call from implement.edit
-    V2-2dfe3e3b0499180c: mismatched [procedure/implement] output_fields
-    V2-8095e350e882fe03: extra [top/delivery] edge verify -> publish
-    V2-3c83ff3a89e487d1: missing [procedure/implement] step
-    V2-96fba37eb404814b: extra [procedure/verify] declaration
-    V2-0c0d2b8bd0152622: extra [shared/halts] failed
-    V2-292b54d17fe27b2c: extra [shared/halts] pr_size_unavailable
-    V2-108171be7a0e69c3: missing [shared/halts] publication_unreconciled
-    V2-95f8f32efefefbc5: missing [steps/implement] edge __start__ -> prepare
-    V2-2e80a3901369d57b: missing [steps/implement] edge commit -> __end__
-    V2-dc7e65aa3d486bee: missing [steps/implement] edge commit -> publish
-    V2-9a06063d5ce4b220: missing [steps/implement] edge edit -> __end__
-    V2-75992dd55036ed36: missing [steps/implement] edge edit -> commit
-    V2-a405696e8ef48783: missing [steps/implement] edge edit -> edit
-    V2-8ccb7ab15a98d415: missing [steps/implement] edge prepare -> __end__
-    V2-e02aacb96000c913: missing [steps/implement] edge prepare -> edit
-    V2-5595eda3ec556688: missing [steps/implement] edge publish -> __end__
-    V2-e01d987977dc83ba: missing [steps/implement] edge publish -> prepare
-    V2-6d2244c09fdf69d1: missing [steps/implement] halts
-    V2-2bd42dd49a8cbcbd: missing [steps/implement] node commit
-    V2-80cee159ff85b1e0: missing [steps/implement] node edit
-    V2-e611ba4d2b9c3af5: missing [steps/implement] node prepare
-    V2-d30171cd50b1d232: missing [steps/implement] node publish
-    V2-6ba18c0f89fd586a: missing [steps/implement] owner src/foreman/steps/implement.py::commit
-    V2-eae049fe856c89df: missing [steps/implement] owner src/foreman/steps/implement.py::compile_stage
-    V2-615e6e20dbd996d7: missing [steps/implement] owner src/foreman/steps/implement.py::edit
-    V2-bff8beb5dfd6a70c: missing [steps/implement] owner src/foreman/steps/implement.py::prepare
-    V2-c2b9aabc4af4bd1f: missing [steps/implement] owner src/foreman/steps/implement.py::publish
-    V2-3dff85f05e5aacf3: missing [steps/implement] retries
-    V2-a8afcd34de6276ac: missing [steps/implement] subgraph endpoints
-    V2-d3d61a63cd563d8c: extra [top/delivery] edge commit -> done
-    V2-7a7b234d8180b716: extra [top/delivery] edge commit -> verify
-    V2-4b3e1b7e853761b4: extra [top/delivery] edge decide_pr_size -> done
-    V2-0b4a46efbf86097a: extra [top/delivery] edge decide_pr_size -> size
-    V2-4a51f821f99e9800: missing [top/delivery] edge implement -> __end__
-    V2-3e511e4f7b239f3c: extra [top/delivery] edge implement -> done
-    V2-b7cddfabef7ec9a1: extra [top/delivery] edge implement -> reconcile
-    V2-a0e8af80aaccb533: missing [top/delivery] edge implement -> review
-    V2-de98578758d1c3ff: extra [top/delivery] edge prepare -> done
-    V2-b154983935653d14: extra [top/delivery] edge prepare -> implement
-    V2-a156c2f85ad0c17b: extra [top/delivery] edge publish -> done
-    V2-acde425cf965619d: extra [top/delivery] edge publish -> review
-    V2-658032c1702dff69: extra [top/delivery] edge reconcile -> done
-    V2-84089972873e384a: extra [top/delivery] edge reconcile -> size
-    V2-cc29823a7e195340: extra [top/delivery] edge size -> commit
-    V2-b700af50bab3dc90: extra [top/delivery] edge size -> decide_pr_size
-    V2-314e4d1b2247be61: extra [top/delivery] edge size -> spec
-    V2-856f0e62a40d7227: extra [top/delivery] edge verify -> done
-    V2-a7d94d53939555c5: extra [top/delivery] edge verify -> prepare
-    V2-30290861dc14aa64: extra [top/delivery] node commit
-    V2-df801846ce28b104: extra [top/delivery] node decide_pr_size
-    V2-df0f83e6a55a696d: extra [top/delivery] node prepare
-    V2-381baa256230dba9: extra [top/delivery] node publish
-    V2-126a3ea73ab1e45a: extra [top/delivery] node reconcile
-    V2-adeea79d6722b70f: extra [top/delivery] node size
-    V2-065fa8600ba9f22d: extra [top/delivery] node verify
-    V2-5132467121aaf85a: extra [top/delivery] edge spec -> prepare
-    V2-01893da438521b27: mismatched [top/delivery] node implement
-    V2-882f3e4484a41ce2: mismatched [procedure/implement] skills
   236:
+    V2-51e575cbbe432110: mismatched [procedure/spec] inputs
     V2-69bf95b93e669d2b: missing [steps/dispatch] call from triage.route
     V2-afb68dac233b845c: missing [steps/dispatch] call from spec.draft
     V2-7e04400433afc3a7: missing [steps/dispatch] call from spec.check
@@ -80,7 +11,6 @@ waivers:
     V2-990b11b9cfd08efd: mismatched [procedure/research] prompt
     V2-e90f641767d4380a: mismatched [procedure/research] skills
     V2-fcdd68b495a06252: missing [procedure/research] step
-    V2-fc6cd8e3c6c2795a: mismatched [procedure/spec] inputs
     V2-98c8eda9fcec6c93: mismatched [procedure/spec] skills
     V2-5695273c30b5719d: missing [procedure/spec] step
     V2-3b552330fdf9655f: mismatched [procedure/triage] inputs
@@ -142,9 +72,7 @@ waivers:
     V2-ac16f3a053beebac: missing [top/delivery] edge research -> __end__
     V2-db2a805b6a3e2ac8: extra [top/delivery] edge research -> done
     V2-bc67dad1b64ae568: missing [top/delivery] edge spec -> __end__
-    V2-e867248ebd0874a1: extra [top/delivery] edge spec -> decide_pr_size
     V2-451406bb1397c038: extra [top/delivery] edge spec -> done
-    V2-1dc13abe71d6024a: missing [top/delivery] edge spec -> implement
     V2-38832a13395f39f7: extra [top/delivery] edge spec -> needs_human
     V2-8d4ab4268d8f3f26: extra [top/delivery] edge spec -> spec
     V2-ef323666fac76132: missing [top/delivery] edge triage -> __end__
@@ -157,6 +85,8 @@ waivers:
     V2-541d00ec10c8c0e3: mismatched [top/delivery] node spec
     V2-f69e2ef4269b6a28: mismatched [top/delivery] node triage
   237:
+    V2-7c62a8648f0ec8ad: mismatched [top/delivery] edge review -> implement
+    V2-8dc9875d45361cbd: extra [top/delivery] edge review_post -> implement
     V2-40350fdb552ab149: mismatched [procedure/review] skills
     V2-ac5a720ea744df66: missing [steps/dispatch] call from review.inspect
     V2-66f3c36d0dcb14da: missing [procedure/review] step
@@ -207,15 +137,12 @@ waivers:
     V2-dde78abb7321c90f: missing [top/delivery] edge merge -> review
     V2-29dfbacdee7cbddf: missing [top/delivery] edge review -> __end__
     V2-c0082ed968e05680: extra [top/delivery] edge review -> done
-    V2-da09a4f677a480fb: missing [top/delivery] edge review -> implement
     V2-86a11305697dfe87: mismatched [top/delivery] edge review -> merge
     V2-a5f8bd94957a561a: extra [top/delivery] edge review -> needs_human
-    V2-40fe2a1cbe5563b9: extra [top/delivery] edge review -> prepare
     V2-23e310e1d747fbd1: extra [top/delivery] edge review -> review_post
     V2-beb253e75c342eb4: extra [top/delivery] edge review_post -> done
     V2-08262c71a13d8666: extra [top/delivery] edge review_post -> merge
     V2-fc50f345cc2b993d: extra [top/delivery] edge review_post -> needs_human
-    V2-9b2b9df835f5eb6b: extra [top/delivery] edge review_post -> prepare
     V2-15317eed1e8a3824: extra [top/delivery] node done
     V2-3f31c4a5ff3be692: mismatched [top/delivery] node merge
     V2-5a41012e57491487: mismatched [top/delivery] node review

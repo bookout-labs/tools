@@ -47,6 +47,7 @@ class Forge(FakeGitHub):
 
     def open_pull_request(self, repo, head, base, title, body):
         self.builds.append((repo, head, base))
+        super().open_pull_request(repo, head, base, title, body)
 
     def arm_auto_merge(self, *args):
         receipt = super().arm_auto_merge(*args)

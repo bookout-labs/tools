@@ -34,12 +34,13 @@ class NpmSmokeTest(unittest.TestCase):
             forge.smoke_pull_requests = Mock(return_value=[])
             forge.ensure_smoke_label = Mock()
             real_run, real_main = subprocess.run, cli.main
-            commands, reconciled = [], []
+            commands, reconciled, checkouts = [], [], []
             pins = {name: subprocess.check_output([name, '--version'], text=True).strip().removeprefix('v') for name in ('node', 'npm')}
             def process(args, **kwargs):
                 if 'clone' in args:
                     checkout = Path(args[-1])
                     checkout.mkdir()
+                    checkouts.append(checkout)
                     (checkout / 'tests').mkdir()
                     (checkout / 'src').mkdir()
                     package = {'name': 'unlike', 'version': '1.0.0', 'type': 'module',
@@ -91,6 +92,14 @@ class NpmSmokeTest(unittest.TestCase):
                 if node:
                     return worker_reply(args, APPROVE)
                 return worker_reply(args, {'triage': 'implement'})
+            def pull_request_for(repo, branch):
+                # Origin is the checkout itself, so the PR shows the branch head that publish observes there.
+                listed = real_run(['git', 'ls-remote', '.', f'refs/heads/{branch}'], cwd=checkouts[-1],
+                                  capture_output=True, check=True, text=True).stdout.split()
+                if listed:
+                    fake.branches[branch] = listed[0]
+                return fake.pull_request_for(repo, branch)
+            forge.pull_request_for = Mock(side_effect=pull_request_for)
             original_reconcile = LiveWorkspace.reconcile
             def reconcile(workspace, parent, branch, base):
                 reconciled.append(parent)
@@ -138,7 +147,7 @@ class NpmSmokeTest(unittest.TestCase):
                     self.assertIn('checkpoint.refusal_guidance', output)
                 else:
                     self.assertIn(['npm', 'ci'], commands)
-                    self.assertIn('verify npm run check', output)
+                    self.assertIn('check npm run check', output)
                     self.assertEqual(len(reconciled), 1)
                     self.assertIn('aggregate work tokens', output)
 

@@ -20,13 +20,15 @@ Condition = WorkKind | Literal["stateful"]
 SkillFailureReason = Literal["pin_unavailable", "method_missing"]
 LineNumber = Annotated[int, Field(ge=1)]
 PACKAGE_SKILLS = Path(__file__).resolve().with_name("skills")
+# pstack create-verification-skill writes the target repository's own skill under one of these.
+TARGET_SKILL_DIRECTORIES = (".cursor/skills", ".claude/skills")
 
 
 class SkillMethod(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     path: str
-    kind: Literal["principle", "skill", "leaf_prompt", "repository_skill"]
+    kind: Literal["principle", "skill", "leaf_prompt", "repository_skill", "target_skill"]
     lines: tuple[LineNumber, LineNumber] | None = None
 
     def source(self, root: Path) -> Path:
@@ -93,7 +95,7 @@ def export_skills(pin: PstackPin, scratch: Path) -> Path:
     except (OSError, subprocess.CalledProcessError, tarfile.TarError) as exc:
         raise SkillMissing(pin) from exc
 
-    for rule in (rule for stage in STAGES.values() for rule in stage.skills):
+    for rule in (rule for stage in STAGES.values() for rule in stage.skills if rule.skill.kind != "target_skill"):
         method = rule.skill
         path = method.source(root)
         try:
@@ -125,6 +127,13 @@ def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, 
         if not rule.applies(state):
             continue
         method = rule.skill
+        if method.kind == "target_skill":
+            if workspace := state["run"].workspace:
+                checkout, pattern = Path(workspace), method.path.replace("<app>", "*")
+                for found in sorted(path for directory in TARGET_SKILL_DIRECTORIES for path in checkout.glob(f"{directory}/{pattern}")):
+                    methods.append(found.relative_to(checkout).as_posix())
+                    instructions.append(f"Read {found} in full and follow it to verify the change.")
+            continue
         path = method.source(root)
         read_root = str((PACKAGE_SKILLS if method.kind == "repository_skill" else root).resolve())
         if read_root not in roots:

@@ -30,6 +30,8 @@ class SkillRulesTest(unittest.TestCase):
             for stage, row in STAGES.items():
                 for rule in row.skills:
                     method = rule.skill
+                    if method.kind == "target_skill":
+                        continue  # The target repository supplies its own skill, not the pin.
                     path = method.source(root)
                     with self.subTest(stage=stage, path=path.name):
                         content = path.read_text(encoding="utf-8")

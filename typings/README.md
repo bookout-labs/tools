@@ -20,6 +20,9 @@ the installed distribution. They cover dictionary state updates, dataclass run
 contexts, string channel versions for SQLite, version v1 and v2 invocation results,
 and version v2 stream updates used to identify the current invocation's path entries.
 The update_state declaration includes as_node for dispatch recovery in #64.
+A compiled subgraph with no run context can be a node, and a graph without a
+run context omits context_schema, for the implement stage in #235. get_state
+takes subgraphs so a pause inside implement reports the attempt it reached.
 They deliberately expose only the used API. Add declarations from upstream when
 adding another graph operation. Recheck these signatures when upgrading LangGraph.
 

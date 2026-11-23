@@ -2,6 +2,19 @@
   "implement": {
     "additionalProperties": false,
     "properties": {
+      "human_question": {
+        "anyOf": [
+          {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Ask only when an unresolved acceptance choice blocks further editing. Otherwise null.",
+        "title": "Human Question"
+      },
       "implementation": {
         "pattern": "\\S",
         "title": "Implementation",
@@ -9,6 +22,7 @@
       }
     },
     "required": [
+      "human_question",
       "implementation"
     ],
     "title": "ImplementOutput",
@@ -214,7 +228,7 @@
       },
       "Slice": {
         "additionalProperties": false,
-        "description": "One pull request's outcome, about 400 changed lines or fewer, and its proof obligations.",
+        "description": "One pull request's outcome and its proof obligations.",
         "properties": {
           "acceptance": {
             "description": "State how to check the outcome, including response and other behavior checks.",
@@ -537,7 +551,7 @@
       },
       "Slice": {
         "additionalProperties": false,
-        "description": "One pull request's outcome, about 400 changed lines or fewer, and its proof obligations.",
+        "description": "One pull request's outcome and its proof obligations.",
         "properties": {
           "acceptance": {
             "description": "State how to check the outcome, including response and other behavior checks.",
@@ -663,7 +677,7 @@
         "description": "For a parent issue that triages as implement, return its single slice. Use null otherwise, including for slice issues."
       },
       "triage": {
-        "description": "Use implement when the behavior is decided and the change fits in one pull request of about 400 changed lines or fewer. For other changes, use spec.",
+        "description": "Use implement when the behavior is decided and the work ships as one pull request. Use spec when it needs a plan or splits at a real dependency.",
         "enum": [
           "implement",
           "spec",
@@ -692,24 +706,6 @@
       "slice"
     ],
     "title": "TriageOutput",
-    "type": "object"
-  },
-  "verify": {
-    "additionalProperties": false,
-    "properties": {
-      "verify": {
-        "enum": [
-          "pass",
-          "fail"
-        ],
-        "title": "Verify",
-        "type": "string"
-      }
-    },
-    "required": [
-      "verify"
-    ],
-    "title": "VerifyOutput",
     "type": "object"
   }
 }

@@ -80,7 +80,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "implement", "verify", "publish", "review", "merge", "done"],
+            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["merge"].status, "skipped")
@@ -93,13 +93,13 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="spec", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "implement", "verify", "publish", "review", "merge", "done"],
+            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
     def test_ready_spec_retains_acceptance_specific_evidence(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec_check", "implement", "verify", "publish", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"])
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["plan"].slice["properties"], SLICES[0]["properties"])
 
@@ -125,7 +125,7 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler(slice=SLICES[1], slices=[EMPTY_SLICE])
         result = walk(handler, slice=None)
         self.assertEqual(result["plan"].spec_failures, 1)
-        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "implement", "verify", "publish", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES
@@ -260,7 +260,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "implement", "verify", "publish", "review", "implement", "verify", "publish", "review", "merge", "done"],
+            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
@@ -291,14 +291,14 @@ class DeliveryTest(unittest.TestCase):
     def test_review_cap_stops_without_arming(self):
         result = walk(ScriptHandler(reviews=[]))
         self.assertEqual(result["path"].count("implement"), 3)
-        self.assertEqual(result["path"].count("verify"), 3)
+        self.assertEqual(result["path"].count("check"), 3)
         self.assertNotIn("merge", result["path"])
         self.assertEqual(result["stop"], "review_cap")
 
     def test_verify_cap_stops_without_review(self):
         with patch.object(DryRun, "run", return_value=1):
             result = walk(ScriptHandler())
-        self.assertEqual(result["path"].count("verify"), 3)
+        self.assertEqual(result["path"].count("check"), 3)
         self.assertNotIn("review", result["path"])
         self.assertNotIn("merge", result["path"])
         self.assertEqual(result["stop"], "verify_cap")

@@ -53,12 +53,12 @@ class DispatchResult(TypedDict, total=False):
     halt: Halt
     detail: str
     plan: DispatchPlanRecord
+    fingerprint: str
 
 
 class DispatchState(DispatchInput, DispatchResult):
     index: NotRequired[int]
     reservation: NotRequired[Reservation | None]
-    fingerprint: NotRequired[str]
     sessions: NotRequired[dict[str, str]]
 
 
@@ -70,6 +70,7 @@ class DispatchRun:
     commit: str
     edits: bool
     prepare: Callable[[], DispatchPlanRecord]
+    owned: str = ""
 
     @cached_property
     def plan(self) -> DispatchPlanRecord:
@@ -166,7 +167,7 @@ def reserve(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, ob
             worktree, expected = run.workspace.inspect(), caller.get("work", WorkState())
             if (worktree.branch, worktree.head) != (expected.branch, expected.attempt_head):
                 return {"halt": Halt.dirty_worktree, "detail": "Restore the saved branch and parent before continuing edits."}
-            if not worktree.clean and fingerprint != (saved := state.get("fingerprint")):
+            if not worktree.clean and fingerprint not in (saved := {state.get("fingerprint"), run.owned} - {None, ""}):
                 detail = "The worktree edits differ from the saved attempt." if saved else "Unowned edits exist before this attempt."
                 return {"halt": Halt.dirty_worktree, "detail": detail}
     except ModelDependencyMissing as exc:
@@ -227,13 +228,10 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
             return {**update, "index": state.get("index", 0) + 1, "fingerprint": evidence.fingerprint, "sessions": sessions}
     except WorkspaceError as exc:
         return {**update, "halt": Halt.git_failed, "detail": str(exc)}
-    return {**update, "output": outcome.output}
+    return {**update, "output": outcome.output, "fingerprint": evidence.fingerprint}
 
 
 def compile_dispatch() -> CompiledStateGraph[DispatchState, DispatchRun, DispatchInput, DispatchResult]:
-    def after_reserve(state: DispatchState) -> str:
-        return "halted" if "halt" in state else "admitted"
-
     def after_reconcile(state: DispatchState) -> str:
         return "halted" if "halt" in state else "accepted" if "output" in state else "eligible_fallback"
 
@@ -241,6 +239,12 @@ def compile_dispatch() -> CompiledStateGraph[DispatchState, DispatchRun, Dispatc
             .add_node("reserve", reserve)
             .add_node("reconcile", reconcile)
             .add_edge(START, "reserve")
-            .add_conditional_edges("reserve", after_reserve, {"admitted": "reconcile", "halted": END})
+            .add_conditional_edges("reserve", lambda state: "halted" if "halt" in state else "admitted", {"admitted": "reconcile", "halted": END})
             .add_conditional_edges("reconcile", after_reconcile, {"eligible_fallback": "reserve", "accepted": END, "halted": END})
-            .compile())
+            .compile().with_config({"metadata": {"contract_id": "dispatch", "stage_declarations": DECLARATIONS}}))
+
+
+DECLARATIONS = {"halts": [Halt.budget_exceeded, Halt.invalid_output, Halt.skill_missing, Halt.model_dependency_missing, Halt.dirty_worktree],
+                "retries": {"provider_fallback": "eligible configured model order and remaining allowance", "quota_resume": "explicit wake or known provider reset and remaining allowance"}}
+# Calling steps hold this one compiled graph, so introspection finds it nested under each caller.
+DISPATCH = compile_dispatch()

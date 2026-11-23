@@ -23,7 +23,6 @@ from foreman.github import PullRequest, PullRequestRecord, ReviewReceipt
 from foreman.workspace import ReviewScopeRecord
 from foreman.contracts import InvalidOutput
 
-PULL_REQUEST_LINES = 400
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Output = TypeVar("Output", bound=BaseModel)
@@ -258,7 +257,7 @@ class Seam(RecordContract[SeamRecord]):
 
 
 def _describe_slice(schema: dict[str, JsonValue]) -> None:
-    schema["description"] = f"One pull request's outcome, about {PULL_REQUEST_LINES} changed lines or fewer, and its proof obligations."
+    schema["description"] = "One pull request's outcome and its proof obligations."
     required, properties = schema.get("required"), schema.get("properties")
     if isinstance(required, list) and isinstance(properties, dict) and isinstance(repository := properties.get("repository"), dict):
         repository.pop("default", None)
@@ -441,13 +440,6 @@ def load_stored_slice(body: str) -> StoredSlice:
         raise InvalidOutput(str(exc)) from exc
 
 
-class PullRequestSplit(TypedDict):
-    plan: str
-    gate: Literal["ready", "needs_human"]
-    question: str | None
-    slices: list[SliceRecord]
-
-
 SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle", "existing_seam_builder"]
 
 
@@ -464,11 +456,22 @@ class InvalidSlicePlan(InvalidOutput):
 
 @with_config(ConfigDict(extra="forbid"))
 class HumanAnswer(TypedDict):
-    stage: Literal["triage", "spec", "spec_check", "pr_size", "review"]
+    stage: Literal["triage", "spec", "spec_check", "implement", "review"]
     question: str
     answer: str
     revision: NotRequired[str]
     candidate: NotRequired[str]
+
+
+class HumanPrompt(Contract):
+    stage: Literal["triage", "spec", "spec_check", "implement", "review"]
+    question: str
+    revision: str | None = None
+
+    @property
+    def answer_marker(self) -> str:
+        assert self.revision is not None
+        return "foreman answer " + "-".join(self.revision[i:i + 8] for i in range(0, len(self.revision), 8))
 
 
 class SettledRuling(Contract):
@@ -522,7 +525,6 @@ class PlanState(BaseModel, frozen=True, extra="forbid"):
     slice: SliceRecord | None = None
     issue_kind: Literal["parent", "slice"] | None = None
     work_kind: WorkKind | None = None
-    pr_split: PullRequestSplit | None = None
 
     @property
     def spec_failures(self) -> int:
@@ -557,7 +559,6 @@ class StageUpdate(TypedDict, total=False):
 class UpdateContext:
     plan: PlanState
     review: ReviewState
-    oversized: bool
     slices: list[SliceRecord]
     model: ModelSpec | None = None
 
@@ -580,8 +581,8 @@ class TriageOutput(HumanQuestionOutput):
     )
     triage: Literal["implement", "spec", "question", "needs_human"] = Field(
         description=(
-            "Use implement when the behavior is decided and the change fits in one pull request "
-            f"of about {PULL_REQUEST_LINES} changed lines or fewer. For other changes, use spec."
+            "Use implement when the behavior is decided and the work ships as one pull request. "
+            "Use spec when it needs a plan or splits at a real dependency."
         ),
     )
     slice: Slice | None = Field(
@@ -639,16 +640,15 @@ class SpecOutput(StageOutput):
             f"{item.question}\nWhy code cannot answer: {item.why_code_unanswered}\n"
             f"Checked paths: {', '.join(item.checked_paths) or '(none)'}" for item in self.questions
         )
-        current = plan.model_copy(update={"spec": plan.spec if context.oversized else self.spec, "spec_gate": self.spec_gate, "spec_rejection": None,
+        current = plan.model_copy(update={"spec": self.spec, "spec_gate": self.spec_gate, "spec_rejection": None,
             "slices": slices, "spec_candidate": None, "human_approval": None})
-        if context.oversized:
-            current = current.model_copy(update={"pr_split": {"plan": self.spec, "gate": self.spec_gate,
-                "question": question or None, "slices": slices}})
         return {"plan": current, "human_question": question}
 
 
-class ImplementOutput(StageOutput):
+class ImplementOutput(HumanQuestionOutput):
     implementation: Text
+    human_question: TrimmedText | None = Field(
+        description="Ask only when an unresolved acceptance choice blocks further editing. Otherwise null.")
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
@@ -725,14 +725,6 @@ class SpecCheckOutput(HumanQuestionOutput):
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
         return {"human_question": self.human_question or ""}
-
-
-class VerifyOutput(StageOutput):
-    verify: Literal["pass", "fail"]
-
-    @override
-    def update(self, context: UpdateContext) -> StageUpdate:
-        raise NotImplementedError("verify: use checks-bound stage_update")
 
 
 def parse_output(contract: type[Output], raw: object, *, context: ReviewContext | None = None) -> Output:

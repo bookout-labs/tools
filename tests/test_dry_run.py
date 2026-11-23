@@ -57,8 +57,10 @@ dry run: git push --no-follow-tags origin 'refs/heads/<issue>-board-saves-a-move
 dry run: gh pr create --repo DoctorCRE/doctorcre-engine --base '<default-branch>' --head '<issue>-board-saves-a-move' --title 'Board saves a move' --body 'Closes #<issue>'
 triage claude-opus-5-5-high
 spec_check grok-4.7-high
+prepare
 implement gpt-6.1-sol-high
-verify npm run check
+check npm run check
+commit
 publish
 review claude-opus-5-5-high
 merge skipped (dry run): gh pr merge '<number>' --repo DoctorCRE/doctorcre-engine --auto --squash --match-head-commit '<sha>'

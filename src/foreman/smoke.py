@@ -90,7 +90,7 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
         ("attempts.nonempty", bool(attempts)),
         ("checks.verify", checks.verify == "pass" and checks.check_exit_code == 0),
         ("verified_head", bool(head)),
-        ("published_head", "publish" in path and work.head_sha == head),
+        ("published_head", work.published_head == head),
         ("reviewed_head", review.reviewed_head == head),
         ("review_receipt", review_receipt is not None and review_receipt["commit_id"] == head),
         ("merge.receipt", receipt is not None and receipt.source_head == head),
