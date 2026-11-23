@@ -47,6 +47,28 @@ class StageRecoveryTest(unittest.TestCase):
                     self.assertEqual(len(self.calls), paid)
                     self.assert_children_filed()
 
+    def test_a_child_hidden_from_the_lagging_issue_list_is_adopted_once(self):
+        # Found by engine #1048: GitHub listed no issue for the marker right after a successful create.
+        github = self.github = FakeGitHub(["factory"])
+        create, listed = github.create_issue, github.marked_issues
+        fresh: set[int] = set()
+
+        def create_issue(*args, **kwargs):
+            number = create(*args, **kwargs)
+            fresh.add(number)
+            return number
+
+        def marked_issues(repo, marker):
+            seen = [number for number in listed(repo, marker) if number not in fresh]
+            fresh.clear()  # The list catches up by the next read.
+            return seen
+
+        github.create_issue, github.marked_issues = create_issue, marked_issues
+        self.assertEqual(self.walk(PLAN)["stop"], "children_filed")
+        self.assert_children_filed()
+        self.assertEqual(self.walk([])["stop"], "children_filed")
+        self.assertEqual(len(github.created), 2)
+
     def test_crash_around_the_answer_comment_replays_twice_with_one_comment(self):
         for after_write in (False, True):
             with self.subTest(after_write=after_write):

@@ -143,8 +143,12 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             item = parse_output(StoredSlice, {**raw, "work_kind": plan.work_kind})
             child = item.model_copy(update={"blocker_numbers": [numbers[title] for title in item.depends_on]})
             marker = f"<!-- foreman slice {spec_digest([repo.lower(), parent, child.title])} -->"
-            found = ensure(lambda: forge.marked_issues(repo, marker),
-                           lambda: forge.create_issue(repo, child.title, "", ["slice"], marker=marker, child=child))
+            if not (found := forge.marked_issues(repo, marker)):
+                # GitHub's issue list can lag a fresh write, so a created child is confirmed by its own number below.
+                try:
+                    found = [forge.create_issue(repo, child.title, "", ["slice"], marker=marker, child=child)]
+                except ForgeError:  # A failed write may have landed, so the marker decides.
+                    found = forge.marked_issues(repo, marker)
             if len(found) != 1:
                 return unreconciled(f"{len(found)} issues carry the marker for {child.title}." if found
                                     else f"GitHub does not show the child issue for {child.title} yet.")
