@@ -34,7 +34,7 @@ class ReadinessTest(unittest.TestCase):
             with self.subTest(outcome=outcome):
                 observed = Observation(repo=REPO, pr=PullSnapshot.model_validate({**READINESS, "merged": False}), checks=[],
                                        outcome=outcome, recovery="Synthetic.", queue_policy={"merge_method": "SQUASH"})
-                forge = Mock(**{"merge_hold.return_value": None, "readiness.return_value": observed, "arm_auto_merge.return_value": None})
+                forge = Mock(**{"variables.return_value": {}, "readiness.return_value": observed, "arm_auto_merge.return_value": None})
                 run = StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, human_login="", dispatch=None, apply=None)
                 with patch("foreman.steps.merge.interrupt", side_effect=LookupError("wait")):
                     try:

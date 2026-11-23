@@ -31,7 +31,7 @@ from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
-from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body
+from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery, snapshot_result
@@ -283,9 +283,9 @@ class FakeGitHub:
             raise HandoffChanged(f"PR #{receipt.pr} base changed from {receipt.base} to {self.base}")
         return receipt
 
-    def merge_hold(self, repo):
+    def variables(self, repo):
         self.hold_reads.append(repo)
-        return self.hold
+        return {} if self.hold is None else {"FOREMAN_MERGE_HOLD": self.hold}
 
     def arm_auto_merge(self, repo, issue, branch, sha, observation):
         self.merge_calls.append((repo, issue, branch, sha))
@@ -2277,7 +2277,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
-        with patch.object(self.github, "merge_hold", side_effect=MergeHoldUnreadable(reason)):
+        with patch.object(self.github, "variables", side_effect=VariablesUnreadable(reason)):
             held = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(held["stop"], "merge_held")
         self.assertEqual(held["merge"].status, "not_armed")

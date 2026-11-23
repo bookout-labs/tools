@@ -8,7 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from foreman.contracts import InvalidOutput
-from foreman.github import (MERGE_HOLD_VARIABLE, READY_LABEL, ForgeError, HandoffChanged, MergeHoldUnreadable, MergeNotArmed, QueueRejected,
+from foreman.github import (MERGE_HOLD_VARIABLE, READY_LABEL, ForgeError, HandoffChanged, VariablesUnreadable, MergeNotArmed, QueueRejected,
                             merge_command, unmet_prerequisites)
 from foreman.outcomes import Halt, stopped
 from foreman.readiness import MergeReceipt, MergeState, MergeWait, Observation
@@ -100,8 +100,8 @@ def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         else:
             return {"stop": "already_armed", "merge": merge.model_copy(update={"status": "armed", "receipt": confirmed.model_dump(mode="json")})}
     try:
-        hold = forge.merge_hold(repo)
-    except MergeHoldUnreadable as exc:
+        hold = forge.variables(repo).get(MERGE_HOLD_VARIABLE)
+    except VariablesUnreadable as exc:
         return pull.halt(merge, Halt.merge_held, f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
     if hold:
         return pull.halt(merge, Halt.merge_held, f"{MERGE_HOLD_VARIABLE} is set" + (f": {hold}" if hold.strip() else "."))

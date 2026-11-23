@@ -162,8 +162,8 @@ class DryRun:
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt:
         return {"id": 1, "state": "COMMENTED", "commit_id": target.headRefOid}
 
-    def merge_hold(self, repo: str) -> str | None:
-        return None
+    def variables(self, repo: str) -> dict[str, str]:
+        return {}
 
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation:
         return Observation(repo=repo, pr=PullSnapshot(number=1, state="OPEN", draft=False,

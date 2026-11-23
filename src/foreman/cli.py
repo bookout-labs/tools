@@ -1,8 +1,8 @@
 """Command line for the foreman tool."""
 
 import argparse
-from collections.abc import Callable
-from dataclasses import replace
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from importlib.resources import files
 import json
@@ -15,6 +15,7 @@ from typing import TextIO, assert_never
 
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
+from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
 from foreman.state import ReviewState, ChecksState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
@@ -25,7 +26,7 @@ from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import Halt, exit_code
-from foreman.runner import PAUSES, AnswerError, RunPresentation, run_live_delivery
+from foreman.runner import PAUSES, AnswerError, IssueLocked, RunPresentation, issue_lock, issue_thread, run_live_delivery, started
 from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
@@ -177,6 +178,32 @@ def positive_budget(raw: str) -> BudgetUsd:
         raise argparse.ArgumentTypeError("--max-budget-usd must be finite and positive") from exc
 
 
+# Joe, 2026-11-23 on #26: "Cap 3". A repository raises it with FOREMAN_MAX_BUDGET_USD.
+DEFAULT_BUDGET_USD = "3"
+
+
+@dataclass(frozen=True)
+class RunSettings:
+    """An unattended run's settings, from the target repository's GitHub Actions variables."""
+    check: str
+    preflight: str
+    max_tokens: int | None
+    max_budget_usd: BudgetUsd | None
+
+    @classmethod
+    def from_variables(cls, variables: Mapping[str, str]) -> "RunSettings":
+        check = variables.get("FOREMAN_CHECK", "")
+        if not check.strip():
+            raise ValueError("Set the FOREMAN_CHECK repository variable before starting runs from Ready.")
+        try:
+            tokens = variables.get("FOREMAN_MAX_TOKENS")
+            max_tokens = positive_tokens(tokens) if tokens is not None else DEFAULT_TOKEN_CAP
+            max_budget_usd = positive_budget(variables.get("FOREMAN_MAX_BUDGET_USD", DEFAULT_BUDGET_USD))
+        except (argparse.ArgumentTypeError, ValueError) as exc:
+            raise ValueError("FOREMAN_MAX_TOKENS must be a positive integer and FOREMAN_MAX_BUDGET_USD a positive amount.") from exc
+        return cls(check=check, preflight=variables.get("FOREMAN_PREFLIGHT", ""), max_tokens=max_tokens, max_budget_usd=max_budget_usd)
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -211,6 +238,11 @@ def main(
     run.add_argument("--answer")
     run.add_argument("--max-tokens", type=positive_tokens, help="cap uncached input + cache creation + output work tokens")
     run.add_argument("--max-budget-usd", type=positive_budget)
+
+    start = commands.add_parser("start", help="start an issue's run from Ready with its repository's settings")
+    start.add_argument("--repo", required=True)
+    start.add_argument("--issue", type=int, required=True)
+    start.add_argument("--watch-repo", default="bookout-labs/tools")
 
     accept = commands.add_parser("accept", help="decide whether a GitHub delivery starts a run")
     accept.add_argument("--event", required=True, help="the delivery's X-GitHub-Event header")
@@ -270,12 +302,70 @@ def main(
             return 0
         print(f"start {decision['repo']}#{decision['issue']}")
         return 0
-    if args.graph != GRAPH_NAME:
+    if args.command == "run" and args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
         return 2
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.watch_repo):
-        run.error("--watch-repo must be OWNER/NAME")
+        parser.error("--watch-repo must be OWNER/NAME")
     presentation = RunPresentation()
+    state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+    store = checkpoint or state_home / "foreman" / "checkpoints.sqlite3"
+
+    def live(repo: str, issue: int, settings: RunSettings, *, answer: str | None = None, request: str | None = None) -> int:
+        target = live_run or LiveRun(LiveForge(), LiveWorkspace(Path.cwd(), repo))
+        target = replace(target, check_log=_write_check_log)
+        dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
+
+        def reported(result: DeliveryResult) -> None:
+            _print_run(result, presentation)
+            report(result)
+
+        try:
+            with signals_end_foreman():
+                result = run_live_delivery(
+                    repo=repo,
+                    issue=issue,
+                    check=settings.check,
+                    preflight=settings.preflight,
+                    checkpoint=store,
+                    dispatcher=dispatcher,
+                    request=request,
+                    run=target,
+                    answer=answer,
+                    presentation=presentation,
+                    max_tokens=settings.max_tokens,
+                    watch_repo=args.watch_repo,
+                    report=reported,
+                    log=lambda message: _write_run_log(message, file=sys.stderr),
+                    max_budget_usd=settings.max_budget_usd,
+                )
+        except (AnswerError, ForgeError, OSError, ValueError) as exc:
+            _write_run_log(str(exc), file=sys.stderr)
+            return 1
+        return run_exit_code(result)
+
+    if args.command == "start":
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo) or args.issue < 1:
+            start.error("start requires --repo OWNER/NAME and a positive --issue")
+        thread = issue_thread(args.repo, args.issue)
+        try:
+            # Unattended runs act only as the App installed on the repository, never as a personal gh login.
+            if credentials.environment(args.repo) is None:
+                raise CredentialFailure("Configure FOREMAN_APP_ID before starting runs from Ready.")
+            with issue_lock(thread):
+                if started(store, thread):
+                    # A repeated delivery never resumes a paused, waiting or finished run.
+                    print(f"already started {thread}")
+                    return 0
+                forge = live_run.forge if live_run is not None else LiveForge()
+                settings = RunSettings.from_variables(forge.variables(args.repo))
+                return live(args.repo, args.issue, settings)
+        except IssueLocked:
+            print(f"already running {thread}")
+            return 0
+        except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
+            _write_run_log(str(exc), file=sys.stderr)
+            return 1
     if args.dry_run:
         if args.answer is not None:
             run.error("--answer requires a live run")
@@ -295,47 +385,13 @@ def main(
         if result["stop"] == "merge_pending":
             # A dry run ends where a live run waits for GitHub to merge the queued pull request.
             return 0
-    else:
-        if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
-            run.error("--repo must be OWNER/NAME")
-        if args.issue is None or args.issue < 1 or not args.check.strip():
-            run.error("a live run requires a positive --issue and a --check command")
-        if checkpoint is None:
-            state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
-            checkpoint = state_home / "foreman" / "checkpoints.sqlite3"
-        if live_run is None:
-            live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd(), args.repo))
-        live_run = replace(live_run, check_log=_write_check_log)
-        dispatcher = CliWorker(live_run.workspace.root, worker_runner, scratch_root=checkpoint.parent)
-
-        def reported(result: DeliveryResult) -> None:
-            _print_run(result, presentation)
-            report(result)
-
-        try:
-            with signals_end_foreman():
-                result = run_live_delivery(
-                    repo=args.repo,
-                    issue=args.issue,
-                    check=args.check,
-                    preflight=args.preflight,
-                    checkpoint=checkpoint,
-                    dispatcher=dispatcher,
-                    request=args.request,
-                    run=live_run,
-                    answer=args.answer,
-                    presentation=presentation,
-                    max_tokens=args.max_tokens,
-                    watch_repo=args.watch_repo,
-                    report=reported,
-                    log=lambda message: _write_run_log(message, file=sys.stderr),
-                    max_budget_usd=args.max_budget_usd,
-                )
-        except (AnswerError, ForgeError, OSError, ValueError) as exc:
-            _write_run_log(str(exc), file=sys.stderr)
-            return 1
-
-    return run_exit_code(result)
+        return run_exit_code(result)
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
+        run.error("--repo must be OWNER/NAME")
+    if args.issue is None or args.issue < 1 or not args.check.strip():
+        run.error("a live run requires a positive --issue and a --check command")
+    return live(args.repo, args.issue, RunSettings(check=args.check, preflight=args.preflight, max_tokens=args.max_tokens,
+                                                   max_budget_usd=args.max_budget_usd), answer=args.answer, request=args.request)
 
 
 def run_exit_code(result: DeliveryResult) -> int:

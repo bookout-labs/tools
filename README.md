@@ -143,7 +143,18 @@ A delivery starts a run when its `X-GitHub-Event` is `issues`, its action is `la
 ```sh
 foreman accept --event issues delivery.json
 # start Example/Engine#7
+foreman start --repo Example/Engine --issue 7
 ```
+
+`foreman start` begins an accepted issue's run with nobody at the keyboard:
+- It acts only as the GitHub App installed on that repository and never falls back to a personal `gh` login.
+- It takes the issue's lock first. A held lock, or an existing checkpoint for that issue, prints `already running` or `already started` and exits 0, so a repeated delivery never resumes a paused, waiting or finished run.
+- It reads the run settings from the repository's GitHub Actions variables:
+  - `FOREMAN_CHECK` is required.
+  - `FOREMAN_PREFLIGHT` is optional.
+  - `FOREMAN_MAX_TOKENS` defaults to the standard token cap.
+  - `FOREMAN_MAX_BUDGET_USD` defaults to $3.
+- A missing check, a malformed value or an unreadable variable list stops with exit 1 before any run. The checkpoint pins the settings when the run starts. Resume with `foreman run --answer` as usual.
 
 Promptfoo runs the same contract without a model:
 
