@@ -1161,6 +1161,81 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(self.walk([])["stop"], "merged")
         self.assertEqual(self.github.label_calls, [("Example/Engine", dependent, "factory")])
 
+    def test_each_merge_wake_reads_github_once(self):
+        # A wake restarts the waiting stage, so it never replays the reads of earlier wakes.
+        for step in ("arm", "observe"):
+            with self.subTest(step=step), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint, self.github.merge_calls = Path(directory) / "runs.sqlite3", []
+                self.github.queue_merges = False
+                observe = self.github.readiness
+                pending = (lambda *args: observe(*args).model_copy(update={"outcome": "pending"})) if step == "arm" else observe
+                with patch.object(self.github, "readiness", side_effect=pending) as read:
+                    first = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+                    self.assertEqual((first["stop"], first.get("merge", MergeState()).status), ("merge_pending", None if step == "arm" else "armed"))
+                    reads = []
+                    for _ in range(4):
+                        before = read.call_count
+                        self.assertEqual(self.walk([])["stop"], "merge_pending")
+                        reads.append(read.call_count - before)
+                self.assertEqual(reads, [1] * 4)
+                self.assertEqual(len(self.github.merge_calls), 0 if step == "arm" else 1)
+        self.github.queue_merges = True
+
+    def test_conflict_on_a_moved_base_repairs_without_an_extra_review(self):
+        observe = self.github.readiness
+
+        def conflict(*args):
+            reading = observe(*args)
+            moved = reading.pr.model_copy(update={"base": reading.pr.base.model_copy(update={"sha": "c" * 40})})
+            return reading.model_copy(update={"outcome": "conflict", "pr": moved})
+        readings = iter([conflict])
+        with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, observe)(*args)):
+            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["stop"], "merged")
+        self.assertIn(": conflict;", json.loads(self.prompts[-2].split("Delivery state:\n")[1])["checks"]["failure_output"])
+        self.assertEqual(len(self.github.reviews), 2)
+
+    def test_release_waits_for_every_prerequisite_including_other_repositories(self):
+        self.github.parents[("Example/Engine", 8)] = 7
+        held = self.github.create_issue("Example/Engine", "Held", "Also needs another repository.", ["slice"])
+        released = self.github.create_issue("Example/Engine", "Released", "Its other prerequisite closed.", ["slice"])
+        for number in (held, released):
+            self.github.parents[("Example/Engine", number)] = 7
+        self.github.dependencies = {held: [8], released: [8]}
+        listed = self.github.blockers
+
+        def blockers(repo, number):
+            foreign = IssueBlocker(number=3, title="Prerequisite", repository_url="https://api.github.com/repos/Example/Other",
+                                   html_url="https://github.com/Example/Other/issues/3", state="open" if number == held else "closed")
+            return [*listed(repo, number), *([foreign] if number in (held, released) else [])]
+        with patch.object(self.github, "blockers", side_effect=blockers):
+            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["stop"], "merged")
+        self.assertEqual(self.github.label_calls, [("Example/Engine", released, "factory")])
+
+    def test_unverified_head_answer_is_saved_and_never_answers_the_next_question(self):
+        observe, foreign = self.github.readiness, "c" * 40
+        self.github.foreign_heads.add(foreign)
+
+        def moved(*args):
+            reading = observe(*args)
+            head = reading.pr.head.model_copy(update={"sha": foreign})
+            return reading.model_copy(update={"outcome": "head_changed", "pr": reading.pr.model_copy(update={"head": head})})
+        with patch.object(self.github, "readiness", side_effect=moved) as read:
+            asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual(asked["stop"], "needs_human")
+            answered = self.walk([], answer="The revision is mine.")
+            # Ancestry is still unverified, so the gate stays open with a new question.
+            self.assertEqual(answered["stop"], "needs_human")
+            self.assertNotEqual(re.search(r"foreman answer \S+", answered["halt_detail"])[0], re.search(r"foreman answer \S+", asked["halt_detail"])[0])
+            before = read.call_count
+            # The earlier reply never answers the new question, so a later run neither resumes nor reads GitHub.
+            self.assertEqual((self.walk([])["stop"], read.call_count), ("needs_human", before))
+            cancelled = self.walk([], answer="cancel")
+        self.assertEqual(cancelled["stop"], "cancelled")
+        self.assertEqual([(saved["stage"], saved["answer"]) for saved in cancelled["plan"].human_qa], [("merge", "The revision is mine.")])
+        self.assertFalse(self.github.merge_calls)
+
     def test_pull_request_closed_without_merge_exits_closed(self):
         self.github.parents[("Example/Engine", 8)] = 7
         self.github.queue_merges = False

@@ -34,7 +34,7 @@ from foreman.worker import AttemptJournal, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
-# A paused run waits for worker capacity or for GitHub, and a later run resumes the same step.
+# A paused run waits for worker capacity or for GitHub. A later run resumes the same step, or restarts a waiting merge stage.
 PAUSES = frozenset({"quota_exhausted", "merge_pending"})
 STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size")
 # Each step a stage records in the path, so a halt inside a stage resumes that stage.
@@ -257,6 +257,7 @@ def run_live_delivery(
                                                     "stop": Halt.git_failed})
         pause: object = saved.interrupts[0].value if saved.interrupts else None
         waiting = is_dict(pause) and pause.get("reason") in PAUSES
+        merge_wait = is_dict(pause) and pause.get("reason") == "merge_pending"
         if saved.interrupts and not waiting and saved_values is not None and early_result is None:
             prompt = parse_output(HumanPrompt, saved.interrupts[0].value)
             if prompt.revision is not None:
@@ -299,10 +300,14 @@ def run_live_delivery(
                 "plan": PlanState(),
                 "review": ReviewState(),
             })
-        elif waiting:
+        elif waiting and not merge_wait:
             invoke(Command(resume=True))
-        elif saved_values.get("halt") in RESUMABLE_HALTS:
-            stage = STEP_STAGES.get(next(iter(saved_values["path"][-1:]), ""))
+        elif merge_wait or saved_values.get("halt") in RESUMABLE_HALTS:
+            # A merge wait restarts its stage with the progress it reached, so each GitHub event reads GitHub once.
+            if merge_wait:
+                saved_values = checkpoint_state(paused_values(saved))
+                assert saved_values is not None
+            stage = "merge" if merge_wait else STEP_STAGES.get(next(iter(saved_values["path"][-1:]), ""))
             inside = stage is not None
             before = _checkpoint_before_halt(graph, config, saved_values["path"], stage)
             require_schema_version(before.values, checkpoint, thread)

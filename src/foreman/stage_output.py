@@ -459,7 +459,7 @@ GateStage = Literal["triage", "research", "spec", "spec_check", "implement", "re
 
 @with_config(ConfigDict(extra="forbid"))
 class HumanAnswer(TypedDict):
-    stage: GateStage
+    stage: GateStage | Literal["merge"]
     question: str
     answer: str
     revision: NotRequired[str]
