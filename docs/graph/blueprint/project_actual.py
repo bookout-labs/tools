@@ -5,7 +5,7 @@ import ast
 from collections import defaultdict
 from dataclasses import dataclass
 from hashlib import sha256
-from inspect import getsourcefile
+from inspect import getsourcefile, unwrap
 import json
 from pathlib import Path
 import sys
@@ -63,7 +63,8 @@ def graph_snapshot(compiled):
     for name, registration in builder.nodes.items():
         runnable = registration.runnable
         node = {"kind": "subgraph" if isinstance(runnable, Pregel) else "node"}
-        function = getattr(runnable, "func", None)
+        # A bound step keeps its identity through functools.wraps, so the owner is the step, not the binding helper.
+        function = unwrap(func) if (func := getattr(runnable, "func", None)) is not None else None
         if function is not None and (filename := getsourcefile(function)):
             path = Path(filename).resolve()
             if path.is_relative_to(ROOT):

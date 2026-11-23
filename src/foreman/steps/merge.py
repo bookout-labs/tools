@@ -1,24 +1,23 @@
 """Merge: arm the reviewed checked head, observe GitHub's merge result, release dependents and report it."""
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from functools import wraps
+from typing import NoReturn
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from foreman.github import (
-    MERGE_HOLD_VARIABLE, RELEASE_LABEL, ForgeError, HandoffChanged, MergeHoldUnreadable, MergeNotArmed, QueueRejected, merge_command,
-)
+from foreman.contracts import InvalidOutput
+from foreman.github import (MERGE_HOLD_VARIABLE, RELEASE_LABEL, ForgeError, HandoffChanged, MergeHoldUnreadable, MergeNotArmed, QueueRejected,
+                            merge_command, unmet_prerequisites)
 from foreman.outcomes import Halt, stopped
 from foreman.readiness import MergeReceipt, MergeState, MergeWait, Observation
 from foreman.review_round import ReviewRound, history
-from foreman.stage_output import HumanPrompt, spec_digest
+from foreman.stage_output import HumanPrompt, load_stored_slice, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate, ReviewState, WorkState
 from foreman.steps import StageInput, StageRun
 
-HALTS = [Halt.merge_held, Halt.merge_not_armed, Halt.readiness_unavailable]
+HALTS = [Halt.merge_held, Halt.merge_not_armed, Halt.readiness_unavailable, Halt.merged_unreviewed]
 # GitHub reports a failure that the owning run repairs on the same pull request.
 REPAIRS = ("red", "conflict", "queue_rejected")
 
@@ -32,8 +31,8 @@ class Reviewed:
 
     @property
     def target(self) -> tuple[str, int | None, str, str]:
-        state = self.state
-        return state["run"].repo, state["run"].issue, state.get("work", WorkState()).branch, state["checks"].verified_head
+        run, state = self.state["run"], self.state
+        return run.repo, run.issue, state.get("work", WorkState()).branch, state["checks"].verified_head
 
     @property
     def report(self) -> tuple[ReviewRound | None, int | None]:
@@ -41,6 +40,10 @@ class Reviewed:
         rounds = history({"rounds": self.state["review"].review_findings}).rounds
         target = (self.state.get("dispatch_plan") or {}).get("target")
         return (rounds[-1] if rounds else None), (target["number"] if target else None)
+
+    @property
+    def answers(self) -> list[str]:  # The human's saved answers at the head_unverified gate. The last one may cancel the run.
+        return [saved["answer"] for saved in self.state["plan"].human_qa if saved["stage"] == "merge"]
 
     def observe(self, merge: MergeState) -> tuple[Observation | None, MergeState]:
         repo, issue, branch, head = self.target
@@ -50,6 +53,12 @@ class Reviewed:
         except ForgeError:
             return None, merge
         return observation, merge.model_copy(update={"observation": observation.model_dump(mode="json")})
+
+    @staticmethod
+    def wait(pause: MergeWait | HumanPrompt) -> NoReturn:
+        """Pause for a GitHub event or the human's answer. The runner restarts the stage with the answer saved, so a wake reads GitHub once."""
+        interrupt(pause.model_dump())
+        raise AssertionError("A paused merge stage restarts instead of resuming.")
 
     @staticmethod
     def halt(merge: MergeState, code: Halt, detail: str) -> DeliveryUpdate:
@@ -67,21 +76,18 @@ class Reviewed:
 
 
 def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
-    pull, review, forge = Reviewed(state, run), state["review"], run.forge
+    pull, receipt, forge, saved_merge = Reviewed(state, run), state["review"].review_receipt, run.forge, state.get("merge", MergeState())
     (repo, issue, branch, head), (report, number) = pull.target, pull.report
-    merge = MergeState(status="not_armed", receipt=state.get("merge", MergeState()).receipt,
-                       command=merge_command(repo, "<number>", head or "<sha>"))
-    receipt = review.review_receipt
+    merge = MergeState(status="not_armed", receipt=saved_merge.receipt, command=merge_command(repo, "<number>", head or "<sha>"))
     if (not head or issue is None or not branch or report is None or number is None or report.severity or report.reviewed_head != head
             or not receipt or receipt["state"] != "COMMENTED" or receipt["commit_id"] != head):
         return pull.halt(merge, Halt.merge_not_armed, "Renew review and its posted receipt at the verified head.")
-    try:
-        hold = forge.merge_hold(repo)
-    except MergeHoldUnreadable as exc:
-        return pull.halt(merge, Halt.merge_held, f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
-    if hold:
-        return pull.halt(merge, Halt.merge_held, f"{MERGE_HOLD_VARIABLE} is set" + (f": {hold}" if hold.strip() else "."))
+    if pull.answers[-1:] == ["cancel"]:  # A cancellation saved at the head_unverified gate ends the run there.
+        return {"stop": "head_unverified", "merge": merge}
     if merge.receipt and (saved := MergeReceipt.model_validate(merge.receipt)).source_head == head and (saved.repo, saved.pr) == (repo, number):
+        if saved_merge.status == "armed":
+            # A wake restarts the stage at a confirmed arm, which observe reconciles at the current base.
+            return {"stop": "already_armed", "merge": saved_merge}
         # An arm that may have landed before an interruption is adopted once and never written again.
         try:
             confirmed = forge.reconcile_merge(saved)
@@ -92,33 +98,33 @@ def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         except MergeNotArmed as exc:
             return pull.halt(merge, Halt.merge_not_armed, str(exc))
         else:
-            merge = merge.model_copy(update={"status": "armed", "receipt": confirmed.model_dump(mode="json")})
-            return {"stop": "already_armed", "merge": merge}
-    while True:
-        observation, merge = pull.observe(merge)
-        if observation is None:
-            return pull.halt(merge, Halt.readiness_unavailable, "GitHub merge readiness could not be read.")
-        pr, route = observation.pr, ""
-        if pr.merged or observation.outcome == "closed":
-            route = "closed_or_merged"
-        elif observation.outcome == "head_changed":
-            route = "head_unverified"
-        elif observation.outcome == "retargeted" or pr.number != number:
-            return pull.halt(merge, Halt.merge_not_armed, observation.detail())
-        elif observation.outcome == "policy":
-            return pull.halt(merge, Halt.readiness_unavailable, observation.detail())
-        elif pr.base.sha != report.base:
-            # The checked head stands, but its review read an older base.
-            route = "reviewable_head"
-        elif observation.outcome in REPAIRS:
-            return pull.repair(merge, observation.detail())
-        elif observation.outcome == "pending":
-            # A GitHub event resumes the wait, and the step reads GitHub again.
-            interrupt(MergeWait(step="arm", detail=observation.detail()).model_dump())
-            continue
-        if route:
-            return {"stop": route, "merge": merge}
-        break
+            return {"stop": "already_armed", "merge": merge.model_copy(update={"status": "armed", "receipt": confirmed.model_dump(mode="json")})}
+    try:
+        hold = forge.merge_hold(repo)
+    except MergeHoldUnreadable as exc:
+        return pull.halt(merge, Halt.merge_held, f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
+    if hold:
+        return pull.halt(merge, Halt.merge_held, f"{MERGE_HOLD_VARIABLE} is set" + (f": {hold}" if hold.strip() else "."))
+    observation, merge = pull.observe(merge)
+    if observation is None:
+        return pull.halt(merge, Halt.readiness_unavailable, "GitHub merge readiness could not be read.")
+    pr = observation.pr
+    if pr.merged or observation.outcome == "closed":
+        return {"stop": "closed_or_merged", "merge": merge}
+    if observation.outcome == "head_changed":
+        return {"stop": "head_unverified", "merge": merge}
+    if observation.outcome == "retargeted" or pr.number != number:
+        return pull.halt(merge, Halt.merge_not_armed, observation.detail())
+    if observation.outcome == "policy":
+        return pull.halt(merge, Halt.readiness_unavailable, observation.detail())
+    # A failure goes to its repair before a moved base buys a review that the repair would discard.
+    if observation.outcome in REPAIRS:
+        return pull.repair(merge, observation.detail())
+    if pr.base.sha != report.base:
+        # The checked head stands, but its review read an older base.
+        return {"stop": "reviewable_head", "merge": merge}
+    if observation.outcome == "pending":
+        pull.wait(MergeWait(step="arm", detail=observation.detail()))
     try:
         armed = forge.arm_auto_merge(repo, issue, branch, head, observation)
     except QueueRejected as exc:
@@ -133,54 +139,53 @@ def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 def observe(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     pull, forge, merge = Reviewed(state, run), run.forge, state.get("merge", MergeState())
     (repo, _, _, head), (_, number) = pull.target, pull.report
-    while True:
-        observation, merge = pull.observe(merge)
-        if observation is None:
-            return pull.halt(merge, Halt.readiness_unavailable, "GitHub could not report the pull request.")
-        pr = observation.pr
-        if pr.merged:
-            if (pr.number, pr.head.sha) != (number, head):
-                return pull.halt(merge.model_copy(update={"observed_head": pr.head.sha}), Halt.merge_not_armed,
-                                 f"GitHub merged PR #{pr.number} at {pr.head.sha}, not the reviewed head {head}. "
-                                 "No delivery credit or dependent release.")
-            return {"stop": "merged", "merge": merge.model_copy(update={"status": "merged", "merge_commit_sha": pr.merge_commit_sha or ""})}
-        if observation.outcome == "closed":
-            return {"stop": "closed", "merge": merge.model_copy(update={"status": "closed"})}
-        if observation.outcome == "retargeted" or pr.number != number:
-            return pull.halt(merge, Halt.merge_not_armed, observation.detail())
-        if observation.outcome == "head_changed":
-            try:
-                owned = forge.descends(repo, head, pr.head.sha)
-            except ForgeError as exc:
-                return pull.halt(merge, Halt.readiness_unavailable, f"GitHub could not compare {pr.head.sha} with {head}: {exc}")
-            if owned:
-                return pull.repair(merge, f"The owned pull request moved to {pr.head.sha}.", pr.head.sha)
-            # Only Git ancestry from the checked head adopts a revision, so the human restores it or cancels.
-            question = (f"PR #{pr.number} moved to {pr.head.sha}, which does not descend from the checked head {head}. "
-                        "Make the PR head descend from it, or cancel.")
-            prompt = HumanPrompt(stage="merge", question=question, revision=spec_digest(["merge", repo, pr.number, pr.head.sha]), path=["merge"])
-            if interrupt(prompt.model_dump()) == "cancel":
-                return {"stop": "cancelled", "merge": merge}
-            continue
-        if observation.outcome in REPAIRS:
-            return pull.repair(merge, observation.detail())
-        if observation.outcome == "policy":
-            return pull.halt(merge, Halt.readiness_unavailable, observation.detail())
-        if merge.receipt is None:
-            if merge.status != "skipped":
-                return pull.halt(merge, Halt.merge_not_armed, f"PR #{pr.number} is open and not armed.")
-            status = "dry run, so Foreman did not arm it"
-        else:
-            # The queue tests the head on top of the latest base, so the head and queue entry bind the receipt now.
-            try:
-                status = forge.reconcile_merge(MergeReceipt.model_validate(merge.receipt).model_copy(update={"base": pr.base.sha})).status
-            except QueueRejected as exc:
-                return pull.repair(merge, str(exc))
-            except HandoffChanged as exc:
-                status = str(exc)
-            except MergeNotArmed as exc:
-                return pull.halt(merge, Halt.readiness_unavailable, str(exc))
-        interrupt(MergeWait(step="observe", detail=f"PR #{pr.number} at {head}: {status}. Waiting for GitHub to report the merge.").model_dump())
+    if pull.answers[-1:] == ["cancel"]:
+        return {"stop": "cancelled", "merge": merge}
+    observation, merge = pull.observe(merge)
+    if observation is None:
+        return pull.halt(merge, Halt.readiness_unavailable, "GitHub could not report the pull request.")
+    pr = observation.pr
+    if pr.merged:
+        if (pr.number, pr.head.sha) != (number, head):
+            return pull.halt(merge.model_copy(update={"observed_head": pr.head.sha}), Halt.merged_unreviewed,
+                             f"GitHub merged PR #{pr.number} at {pr.head.sha}, not the reviewed head {head}. No delivery credit or dependent release.")
+        return {"stop": "merged", "merge": merge.model_copy(update={"status": "merged", "merge_commit_sha": pr.merge_commit_sha or ""})}
+    if observation.outcome == "closed":
+        return {"stop": "closed", "merge": merge.model_copy(update={"status": "closed"})}
+    if observation.outcome == "retargeted" or pr.number != number:
+        return pull.halt(merge, Halt.merge_not_armed, observation.detail())
+    if observation.outcome == "head_changed":
+        try:
+            owned = forge.descends(repo, head, pr.head.sha)
+        except ForgeError as exc:
+            return pull.halt(merge, Halt.readiness_unavailable, f"GitHub could not compare {pr.head.sha} with {head}: {exc}")
+        if owned:
+            return pull.repair(merge, f"The owned pull request moved to {pr.head.sha}.", pr.head.sha)
+        # Only Git ancestry from the checked head adopts a revision, so the human restores it or cancels. The runner saves each
+        # answer bound to its question, so a saved answer opens a new question and never answers it.
+        question = (f"PR #{pr.number} moved to {pr.head.sha}, which does not descend from the checked head {head}. "
+                    "Make the PR head descend from it, or cancel.")
+        revision = spec_digest(["merge", repo, pr.number, pr.head.sha, *pull.answers])
+        pull.wait(HumanPrompt(stage="merge", question=question, revision=revision, path=["merge"]))
+    if observation.outcome in REPAIRS:
+        return pull.repair(merge, observation.detail())
+    if observation.outcome == "policy":
+        return pull.halt(merge, Halt.readiness_unavailable, observation.detail())
+    if merge.receipt is None:
+        if merge.status != "skipped":
+            return pull.halt(merge, Halt.merge_not_armed, f"PR #{pr.number} is open and not armed.")
+        status = "dry run, so Foreman did not arm it"
+    else:
+        # The queue tests the head on top of the latest base, so the head and queue entry bind the receipt now.
+        try:
+            status = forge.reconcile_merge(MergeReceipt.model_validate(merge.receipt).model_copy(update={"base": pr.base.sha})).status
+        except QueueRejected as exc:
+            return pull.repair(merge, str(exc))
+        except HandoffChanged as exc:
+            status = str(exc)
+        except MergeNotArmed as exc:
+            return pull.halt(merge, Halt.readiness_unavailable, str(exc))
+    pull.wait(MergeWait(step="observe", detail=f"PR #{pr.number} at {head}: {status}. Waiting for GitHub to report the merge."))
 
 
 def release(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -191,10 +196,14 @@ def release(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         for sibling in forge.sub_issues(repo, parent.number) if parent else []:
             if sibling.number == issue or sibling.state != "open":
                 continue
-            blockers = [blocker.number for blocker in forge.blockers(repo, sibling.number) if blocker.in_repo(repo)]
-            # A dependent starts once every prerequisite merged. Its label marks the release, so a replay adds nothing.
-            if (issue in blockers and all(number == issue or forge.is_merged(repo, number) for number in blockers)
-                    and RELEASE_LABEL not in forge.load_issue(repo, sibling.number)["labels"]):
+            blockers, dependent = forge.blockers(repo, sibling.number), forge.load_issue(repo, sibling.number)
+            try:  # Triage cannot admit a slice issue without a loadable slice either.
+                item = load_stored_slice(dependent["body"]) if "slice" in dependent["labels"] else None
+            except InvalidOutput:
+                continue
+            # A dependent starts once triage would admit it. Its label marks the release, so a replay adds nothing.
+            if (any(blocker.in_repo(repo) and blocker.number == issue for blocker in blockers) and RELEASE_LABEL not in dependent["labels"]
+                    and not unmet_prerequisites(forge, repo, blockers, item, issue)):
                 forge.add_label(repo, sibling.number, RELEASE_LABEL)
     except ForgeError as exc:
         return Reviewed.halt(state.get("merge", MergeState()), Halt.readiness_unavailable, f"Dependent release could not read or label GitHub: {exc}")
@@ -205,29 +214,19 @@ def report(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if state.get("halt"):
         return {}
     # Released dependents follow a confirmed merge, which is the run's typed result.
-    update: DeliveryUpdate = {"path": ["merge"]}
-    if state.get("stop") == "released":
-        update["stop"] = "merged"
-    return update
+    return {"path": ["merge"], "stop": "merged"} if state.get("stop") == "released" else {"path": ["merge"]}
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
-    def bind(step: Callable[[DeliveryState, StageRun], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
-        # The bound node keeps the step's identity, so introspection names the step as its owner.
-        @wraps(step)
-        def node(state: DeliveryState) -> DeliveryUpdate:
-            return step(state, run)
-        return node
-
     def route(state: DeliveryState) -> str:
         return "halted" if state.get("halt") else state.get("stop", "")
 
     declarations: dict[str, object] = {"halts": [halt.value for halt in HALTS], "retries": {}}
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
-            .add_node("arm", bind(arm))
-            .add_node("observe", bind(observe))
-            .add_node("release", bind(release))
-            .add_node("report", bind(report))
+            .add_node("arm", run.bind(arm))
+            .add_node("observe", run.bind(observe))
+            .add_node("release", run.bind(release))
+            .add_node("report", run.bind(report))
             .add_edge(START, "arm")
             .add_conditional_edges("arm", route, {
                 "halted": "report", "reviewable_head": "report", "repair": "report",

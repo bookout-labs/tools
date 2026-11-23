@@ -1,8 +1,5 @@
 """Review: assess the full current pull request, post one exact-head report and route on its severity."""
 
-from collections.abc import Callable
-from functools import wraps
-
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import TypeAdapter
@@ -107,13 +104,6 @@ def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
-    def bind(step: Callable[[DeliveryState, StageRun], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
-        # The bound node keeps the step's identity, so introspection names the step as its owner.
-        @wraps(step)
-        def node(state: DeliveryState) -> DeliveryUpdate:
-            return step(state, run)
-        return node
-
     def ended(state: DeliveryState) -> str | None:
         if state.get("halt"):
             return "halted"
@@ -123,9 +113,9 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
     declarations: dict[str, object] = {"halts": [halt.value for halt in HALTS],
                                        "retries": {"blocking_rounds": "src/foreman/models.toml#max_review_rounds"}}
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
-            .add_node("inspect", bind(inspect))
-            .add_node("post", bind(post))
-            .add_node("route", bind(route))
+            .add_node("inspect", run.bind(inspect))
+            .add_node("post", run.bind(post))
+            .add_node("route", run.bind(route))
             .add_edge(START, "inspect")
             .add_conditional_edges("inspect", lambda state: ended(state) or "assessed",
                                    {"assessed": "post", HEAD_MOVED: END, "cancelled": END, "halted": END})

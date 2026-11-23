@@ -1,7 +1,6 @@
 """Spec: clear one repository-bound candidate with an independent check, then build it or file its children."""
 
 from collections.abc import Callable
-from functools import wraps
 from typing import TypeVar
 
 from langgraph.graph import END, START, StateGraph
@@ -174,13 +173,6 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
-    def bind(step: Callable[[DeliveryState, StageRun], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
-        # The bound node keeps the step's identity, so introspection names the step as its owner.
-        @wraps(step)
-        def node(state: DeliveryState) -> DeliveryUpdate:
-            return step(state, run)
-        return node
-
     def ended(state: DeliveryState) -> str | None:
         if halt := state.get("halt"):
             return "exhausted" if halt == Halt.spec_cap else "halted"
@@ -201,10 +193,10 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
 
     declarations = {"halts": [halt.value for halt in HALTS], "retries": {"plan_revisions": "src/foreman/models.toml#max_review_rounds"}}
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
-            .add_node("draft", bind(draft))
-            .add_node("validate", bind(validate))
-            .add_node("check", bind(check))
-            .add_node("file_children", bind(file_children))
+            .add_node("draft", run.bind(draft))
+            .add_node("validate", run.bind(validate))
+            .add_node("check", run.bind(check))
+            .add_node("file_children", run.bind(file_children))
             .add_conditional_edges(START, lambda state: state["plan"].triage, {"supplied_slice": "validate", "plan": "draft"})
             .add_conditional_edges("draft", lambda state: "halted" if state.get("halt") else ended(state) or "ready",
                                    {"ready": "validate", "cancelled": END, "halted": END})

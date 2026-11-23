@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import wraps
 
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
@@ -36,6 +37,13 @@ class StageRun:
     human_login: str
     dispatch: Callable[[GateStage, DeliveryState, str], DispatchRun]
     apply: Callable[[GateStage, DeliveryState, DispatchResult], DeliveryUpdate]
+
+    def bind(self, step: Callable[[DeliveryState, "StageRun"], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
+        """The step as a graph node. The node keeps the step's identity, so introspection names the step as its owner."""
+        @wraps(step)
+        def node(state: DeliveryState) -> DeliveryUpdate:
+            return step(state, self)
+        return node
 
     def consult(
         self, graph: DispatchGraph, name: GateStage, state: DeliveryState, scope: Callable[[PlanState], list[object]] | None,

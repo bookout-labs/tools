@@ -1,8 +1,5 @@
 """Research: answer the issue's question from the pinned base and confirm one answer comment."""
 
-from collections.abc import Callable
-from functools import wraps
-
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -54,20 +51,13 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
-    def bind(step: Callable[[DeliveryState, StageRun], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
-        # The bound node keeps the step's identity, so introspection names the step as its owner.
-        @wraps(step)
-        def node(state: DeliveryState) -> DeliveryUpdate:
-            return step(state, run)
-        return node
-
     def after_answer(state: DeliveryState) -> str:
         return "halted" if state.get("halt") else "cancelled" if state.get("stop") == "cancelled" else "answer"
 
     declarations: dict[str, object] = {"halts": [halt.value for halt in HALTS], "retries": {}}
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
-            .add_node("answer", bind(answer))
-            .add_node("post", bind(post))
+            .add_node("answer", run.bind(answer))
+            .add_node("post", run.bind(post))
             .add_edge(START, "answer")
             .add_conditional_edges("answer", after_answer, {"answer": "post", "cancelled": END, "halted": END})
             .add_conditional_edges("post", lambda state: "halted" if state.get("halt") else "answered",

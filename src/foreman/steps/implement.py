@@ -1,7 +1,6 @@
 """Implement: publish exactly the tree that passed the target repository's checks."""
 
 from collections.abc import Callable
-from functools import wraps
 import re
 import textwrap
 
@@ -246,13 +245,6 @@ def publish(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
-    def bind(step: Callable[[DeliveryState, StageRun], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
-        # The bound node keeps the step's identity, so introspection names the step as its owner.
-        @wraps(step)
-        def node(state: DeliveryState) -> DeliveryUpdate:
-            return step(state, run)
-        return node
-
     def after(step: str) -> Callable[[DeliveryState], str]:
         def route(state: DeliveryState) -> str:
             if state.get("halt"):
@@ -270,10 +262,10 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
     declarations = {"halts": [halt.value for halt in HALTS],
                     "retries": {"failed_checks": "src/foreman/models.toml#max_review_rounds"}}
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
-            .add_node("prepare", bind(prepare))
-            .add_node("edit", bind(edit))
-            .add_node("commit", bind(commit))
-            .add_node("publish", bind(publish))
+            .add_node("prepare", run.bind(prepare))
+            .add_node("edit", run.bind(edit))
+            .add_node("commit", run.bind(commit))
+            .add_node("publish", run.bind(publish))
             .add_edge(START, "prepare")
             .add_conditional_edges("prepare", after("prepare"), {"prepared": "edit", "halted": END})
             .add_conditional_edges("edit", after("edit"), {"checked": "commit", "check_failed": "edit", "no_change": END,
