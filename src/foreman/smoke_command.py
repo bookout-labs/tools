@@ -8,7 +8,6 @@ import re
 import os
 from pathlib import Path
 import shlex
-import signal
 import subprocess
 import sys
 import tempfile
@@ -23,6 +22,7 @@ from foreman.state import SCHEMA_VERSION, checkpoint_serializer
 from foreman.credentials import CredentialFailure, credentials, git_auth
 from foreman.delivery import LiveRun, read_delivery_state
 from foreman.github import BOT_LOGIN, ForgeError, LiveForge
+from foreman.process_group import owned_group, signals_end_foreman
 from foreman.redaction import redact
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.runner import run_live_delivery
@@ -241,41 +241,16 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
 def smoke_command() -> int:
     """Own the scratch directory and worker process group across every exit."""
     deadline = time.monotonic() + SMOKE_SECONDS
-    with tempfile.TemporaryDirectory(prefix="foreman-smoke-") as directory:
-        def stop(signum: int, frame: object) -> None:
-            raise SystemExit(128 + signum)
-        previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
-        process: subprocess.Popen[bytes] | None = None
+    with (tempfile.TemporaryDirectory(prefix="foreman-smoke-") as directory, signals_end_foreman(),
+          owned_group([sys.executable, "-m", "foreman.smoke_command", directory, str(deadline)], grace=1) as process):
         try:
-            process = subprocess.Popen(
-                [sys.executable, "-m", "foreman.smoke_command", directory, str(deadline)],
-                start_new_session=True,
-            )
-            try:
-                code = process.wait(timeout=max(0, deadline - time.monotonic()))
-                return code if code >= 0 else 1
-            except subprocess.TimeoutExpired:
-                print("smoke exit 1 wall_clock_deadline attempt live run", flush=True)
-                return 1
-        finally:
-            if process is not None:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        process.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        pass
-                    # Workers can ignore TERM even after their parent exits.
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                except ProcessLookupError:
-                    pass
-                process.wait()
-            for sig, handler in previous.items():
-                signal.signal(sig, handler)
+            code = process.wait(timeout=max(0, deadline - time.monotonic()))
+            return code if code >= 0 else 1
+        except subprocess.TimeoutExpired:
+            print("smoke exit 1 wall_clock_deadline attempt live run", flush=True)
+            return 1
 
 
 if __name__ == "__main__":
-    sys.exit(run_smoke(Path(sys.argv[1]), float(sys.argv[2])))
+    with signals_end_foreman():
+        sys.exit(run_smoke(Path(sys.argv[1]), float(sys.argv[2])))

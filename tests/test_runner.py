@@ -531,13 +531,13 @@ assert dict(os.environ) == inherited
     def test_subprocess_merges_adapter_environment_with_inherited_environment(self):
         inherited = {"PATH": "/bin", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0"}
         adapter_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
-        with patch.dict("os.environ", inherited, clear=True), worker_process() as (popen, process):
+        with patch.dict("os.environ", inherited, clear=True), worker_process() as popen:
             run_worker_command(["claude"], Path("engine"), adapter_env)
-        popen.assert_called_once_with(
-            ["claude"], cwd=Path("engine"), env={**inherited, **adapter_env}, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, pass_fds=(), start_new_session=True,
-        )
-        process.communicate.assert_called_once_with(None)
+        popen.assert_called_once()
+        self.assertEqual(popen.call_args.args[0], ["claude"])
+        self.assertEqual(popen.call_args.kwargs["env"], {**inherited, **adapter_env})
+        self.assertEqual((popen.call_args.kwargs["cwd"], popen.call_args.kwargs["pass_fds"]), (Path("engine"), ()))
+        self.assertIsNone(popen.prompt)
 
     def test_worker_without_a_model_raises_a_config_error(self):
         worker = CliWorker(Path("."), lambda *_: self.fail("CLI must not run"))
@@ -772,9 +772,9 @@ class LiveRunnerTest(unittest.TestCase):
                     self.assertIn("Network and database connections are unavailable", prompt)
                     return quota_with_usage(args)
                 self.assertIn("exact check command", prompt)
-                with worker_process(worker_reply(args, {"implementation": "retry"})) as (_, process):
+                with worker_process(worker_reply(args, {"implementation": "retry"})) as popen:
                     run_worker_command(args, cwd, env)
-                process.communicate.assert_called_once_with(prompt)
+                self.assertEqual(popen.prompt, prompt)
                 return active.reply(args, {"implementation": "retry"})
             return active.reply(args, checker_reply(args) or next(replies, {"implementation": "first"}))
         def invoke(stop=None):

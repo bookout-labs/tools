@@ -162,9 +162,9 @@ stages:
     effects: [Foreman reads GitHub and saves admission and route records., Foreman uses the GitHub adapter to mirror checkpoint state as the issue's run label and status comment.]
     invariants: [GitHub repository identity and run configuration agree., Open dependencies prevent admission and later eligibility is read from GitHub.]
     failure_and_resume:
-      halts: [missing_slice, skill_missing]
+      halts: [missing_slice, skill_missing, invalid_output, git_failed]
       retries: {}
-      recovery: Missing child payload stops admission. A pstack pin that can't be fetched or exported stops admission with skill_missing. An open dependency leaves the issue unadmitted. Worker dispatch failures use shared dispatch. The human's answer resumes route.
+      recovery: Missing child payload stops admission. A pstack pin that can't be fetched or exported stops admission with skill_missing, an issue whose identity differs from the assignment with invalid_output, and a GitHub or checkout failure with git_failed. An open dependency leaves the issue unadmitted. Worker dispatch failures use shared dispatch. The human's answer resumes route.
     implementation: {module: src/foreman/steps/triage.py, entry: compile_stage, max_lines: 110, allowed_imports: [state, stage_output, github, dispatch], shared: [Forge, dispatch], never_does: [create child issues, edit source]}
     checks: {TR1: tests/test_runner.py, TR2: tests/test_delivery.py, TR3: tests/test_accept.py}
     scenarios:

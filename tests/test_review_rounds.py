@@ -296,9 +296,9 @@ class ReviewRoundsTest(unittest.TestCase):
                     settings = Path(args[args.index("--settings") + 1])
                     self.assertTrue(settings.resolve().is_relative_to(Path(scratch).resolve()))
                     self.assertFalse(Path(env["TMPDIR"]).resolve().is_relative_to(workspace.root.resolve()))
-                    with worker_process(fixture_process(args, "success", 0)) as (execute, process):
+                    with worker_process(fixture_process(args, "success", 0)) as execute:
                         result = run_worker_command(args, cwd, env)
-                    prompt = process.communicate.call_args.args[0]
+                    prompt = execute.prompt
                     self.assertEqual(prompt.count(instruction), 1)
                     projected_plan = json.loads(prompt.split("Delivery state:\n")[1])["dispatch_plan"]
                     self.assertFalse({"instruction", "scope"} & projected_plan.keys())

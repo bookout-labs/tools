@@ -6,9 +6,10 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 import fcntl
+import os
 from typing import Any
 import sqlite3
-from tempfile import TemporaryDirectory, gettempdir
+from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -137,8 +138,11 @@ def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: Bu
 
 @contextmanager
 def issue_lock(thread: str) -> Generator[None]:
-    """Hold one writer per repository and issue on this machine, whichever checkpoint it uses. The worker inherits the lock."""
-    locks = Path(gettempdir()) / "foreman-locks"
+    """Hold one writer per repository and issue for this user, whichever checkpoint it uses. The worker inherits the lock.
+
+    Locks live in the XDG runtime directory, which neither TMPDIR nor XDG_STATE_HOME moves.
+    """
+    locks = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "foreman-locks"
     locks.mkdir(parents=True, exist_ok=True)
     with (locks / spec_digest([thread])).open("a") as lock:
         try:

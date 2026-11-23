@@ -266,7 +266,7 @@ class SmokeCommandTest(unittest.TestCase):
                     f"child={child_code!r}; "
                     "launch=lambda args, **kw: original([args[0], '-c', child], **kw); "
                     f"patch('foreman.smoke_command.SMOKE_SECONDS', {0.7 if stop == 'deadline' else 30}).start(); "
-                    "patch('foreman.smoke_command.subprocess.Popen', side_effect=launch).start(); "
+                    "patch('foreman.process_group.subprocess.Popen', side_effect=launch).start(); "
                     "raise SystemExit(m.smoke_command())"
                 )
                 parent = real_popen([sys.executable, '-c', parent_code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -296,8 +296,11 @@ class SmokeCommandTest(unittest.TestCase):
     def test_parent_uses_new_session_and_cleans_temp_directory(self):
         process = Mock(pid=99999999)
         process.wait.side_effect = [subprocess.TimeoutExpired('child', 0), 0, 0]
-        with patch('foreman.smoke_command.subprocess.Popen', return_value=process) as launch, \
-             patch('foreman.smoke_command.os.killpg') as kill, redirect_stdout(io.StringIO()):
+        def signal_group(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+        with patch('foreman.process_group.subprocess.Popen', return_value=process) as launch, \
+             patch('foreman.process_group.os.killpg', side_effect=signal_group) as kill, redirect_stdout(io.StringIO()):
             self.assertEqual(smoke_command(), 1)
         self.assertTrue(launch.call_args.kwargs['start_new_session'])
         self.assertFalse(Path(launch.call_args.args[0][3]).exists())

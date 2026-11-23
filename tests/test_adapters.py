@@ -3,6 +3,7 @@ import tests
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import subprocess
 from subprocess import CompletedProcess
 import unittest
 from unittest.mock import MagicMock, patch
@@ -27,15 +28,19 @@ def fixture_process(args, name, exit_code):
 
 @contextmanager
 def worker_process(completed=None):
-    """Stand in for the worker's process: yields the Popen mock and the process whose communicate got the prompt."""
+    """Stand in for the worker's process group. Yields the Popen mock; its `prompt` is what the worker read on stdin."""
     completed = completed or CompletedProcess([], 0, "", "")
-    process = MagicMock(returncode=completed.returncode)
-    process.__enter__.return_value = process
-    process.communicate.return_value = (completed.stdout, completed.stderr)
-    with patch("foreman.worker.subprocess.Popen", return_value=process) as popen, \
-         patch("foreman.worker.os.killpg", side_effect=ProcessLookupError):
-        yield popen, process
 
+    def start(command, **kwargs):
+        stdin = kwargs["stdin"]
+        popen.prompt = None if stdin == subprocess.DEVNULL else stdin.read()
+        kwargs["stdout"].write(completed.stdout)
+        kwargs["stderr"].write(completed.stderr)
+        return MagicMock(pid=-1, **{"wait.return_value": completed.returncode})
+
+    with patch("foreman.process_group.subprocess.Popen", side_effect=start) as popen, \
+         patch("foreman.process_group.os.killpg", side_effect=ProcessLookupError):
+        yield popen
 
 class NativeAdaptersTest(unittest.TestCase):
     def test_claude_budget_stop_takes_precedence_and_keeps_usage(self):
