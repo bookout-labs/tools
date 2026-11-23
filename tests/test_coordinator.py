@@ -149,10 +149,10 @@ class CoordinatorTest(unittest.TestCase):
             instruction = args[1]
             for required in (
                 "- title: the outcome in plain words.", "- body: holds the decisions already made",
-                "The factory label triggers the delivery graph.",
+                "The Ready label starts the delivery graph.",
                 "builds that issue as one pull request when it fits, or slices it",
                 "When you agree on an outcome, file one parent issue.",
-                "Add the factory label after the person agrees to file it.",
+                "Add the Ready label after the person agrees to file it.",
                 "arms the merge. This session does not.",
                 "When the person asks, or when a run is waiting on a decision",
                 "A suggestion stays in the conversation until the person says to file it.",

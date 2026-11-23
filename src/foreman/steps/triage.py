@@ -5,7 +5,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.github import ForgeError, unmet_prerequisites
+from foreman.github import READY_LABEL, ForgeError, unmet_prerequisites
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import load_stored_slice
 from foreman.state import DeliveryState, DeliveryUpdate
@@ -28,6 +28,9 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         issue = forge.load_issue(repo, number)
         if (issue["repo"].lower(), issue["number"]) != (repo.lower(), number):
             return stopped(Halt.invalid_output, "foreign_repository: issue identity differs from the requested assignment.", "admit")
+        if READY_LABEL not in issue["labels"]:
+            # Only an issue that carries Ready is admitted, so a delivery that outlived its label leaves it unadmitted.
+            return {"stop": "blocked", "halt_detail": f"#{number} does not carry the {READY_LABEL} label.", "path": ["admit"]}
         plan = state["plan"].model_copy(update={"issue_kind": "slice" if "slice" in issue["labels"] else "parent"})
         item = None
         if plan.issue_kind == "slice":

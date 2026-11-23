@@ -21,8 +21,8 @@ from foreman.workspace import commit_sha
 
 BOT_LOGIN = "bookout-labs-foreman[bot]"
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
-# Labeling an issue starts its run, so Spec and Merge release issues by adding it.
-RELEASE_LABEL = "factory"
+# A Ready label event starts an issue run, so Spec and Merge release issues by adding it.
+READY_LABEL = "Ready"
 Model = TypeVar("Model", bound=BaseModel)
 
 

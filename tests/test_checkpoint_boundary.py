@@ -216,7 +216,7 @@ root = Path(root)
 _, owner, field, stop = next(row for row in COUNTERS if row[0] == stage)
 workspace = FakeWorkspace(root)
 workspace.current = WorktreeState(workspace.current.head, True, BRANCH)
-forge = FakeGitHub(["factory"] if stage == "spec" else ["slice"])
+forge = FakeGitHub(["Ready"] if stage == "spec" else ["slice", "Ready"])
 handler = ScriptHandler(triage="plan" if stage == "spec" else "supplied_slice", reviews=["changes"] * 3, slices=[SLICE])
 calls = []
 def count(state):

@@ -8,7 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from foreman.contracts import InvalidOutput
-from foreman.github import (MERGE_HOLD_VARIABLE, RELEASE_LABEL, ForgeError, HandoffChanged, MergeHoldUnreadable, MergeNotArmed, QueueRejected,
+from foreman.github import (MERGE_HOLD_VARIABLE, READY_LABEL, ForgeError, HandoffChanged, MergeHoldUnreadable, MergeNotArmed, QueueRejected,
                             merge_command, unmet_prerequisites)
 from foreman.outcomes import Halt, stopped
 from foreman.readiness import MergeReceipt, MergeState, MergeWait, Observation
@@ -202,9 +202,9 @@ def release(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             except InvalidOutput:
                 continue
             # A dependent starts once triage would admit it. Its label marks the release, so a replay adds nothing.
-            if (any(blocker.in_repo(repo) and blocker.number == issue for blocker in blockers) and RELEASE_LABEL not in dependent["labels"]
+            if (any(blocker.in_repo(repo) and blocker.number == issue for blocker in blockers) and READY_LABEL not in dependent["labels"]
                     and not unmet_prerequisites(forge, repo, blockers, item, issue)):
-                forge.add_label(repo, sibling.number, RELEASE_LABEL)
+                forge.add_label(repo, sibling.number, READY_LABEL)
     except ForgeError as exc:
         return Reviewed.halt(state.get("merge", MergeState()), Halt.readiness_unavailable, f"Dependent release could not read or label GitHub: {exc}")
     return {"stop": "released"}

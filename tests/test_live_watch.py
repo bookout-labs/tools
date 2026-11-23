@@ -122,7 +122,7 @@ class LiveWatchTest(unittest.TestCase):
     def test_skipped_halt_and_dry_run_never_call_forge(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as log:
             self.fake.body = 'Issue body'
-            self.fake.labels = []
+            self.fake.labels = ['Ready']
             code = main(self.flags, checkpoint=self.checkpoint, live_run=self.run,
                         worker_runner=Mock(side_effect=FileNotFoundError('missing CLI')))
         # With no CLI installed, dispatch pauses for a qualified worker; a pause files nothing.
@@ -199,7 +199,7 @@ class LiveWatchTest(unittest.TestCase):
             endpoint = args[2]
             fields = dict(arg.split('=', 1) for arg in args if '=' in arg and not arg.startswith('repos/'))
             if endpoint == 'repos/Example/Engine/issues/8':
-                result = {'number': 8, 'repository_url': 'https://api.github.com/repos/Example/Engine', 'title': 'Issue', 'body': self.fake.body, 'labels': [{'name': 'slice'}]}
+                result = {'number': 8, 'repository_url': 'https://api.github.com/repos/Example/Engine', 'title': 'Issue', 'body': self.fake.body, 'labels': [{'name': 'slice'}, {'name': 'Ready'}]}
             elif args[1] == 'repo':
                 result = {'defaultBranchRef': {'name': 'main'}}
             elif '--method' in args:

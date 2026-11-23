@@ -99,7 +99,7 @@ class PublicationFixture(unittest.TestCase):
             case ["api", "repos/Example/Engine/issues/8/comments?per_page=100"]:
                 response = [[{"user": {"login": "fixture-owner"}, "body": body} for body in self.comments]]
             case ["api", "repos/Example/Engine/issues/8"]:
-                response = {"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}", "title": self.slice["title"], "body": slice_body(self.slice), "labels": [{"name": "slice"}]}
+                response = {"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}", "title": self.slice["title"], "body": slice_body(self.slice), "labels": [{"name": "slice"}, {"name": "Ready"}]}
             case ["pr", "create"]:
                 self.assertEqual(command[3:], [
                     "--repo", REPO, "--base", self.base, "--head", self.branch,

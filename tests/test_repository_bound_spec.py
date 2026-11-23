@@ -94,7 +94,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
             self.assertEqual(self.invoke()["halt"], "invalid_output")
         self.assertEqual(self.calls, [])
         self.checkpoint = self.checkpoint.with_name("blocked.sqlite3")
-        self.forge.labels = ["factory"]
+        self.forge.labels = ["Ready"]
         blocker = IssueBlocker(number=7, title="Prerequisite", repository_url=f"https://api.github.com/repos/{TARGET}",
             html_url=f"https://github.com/{TARGET}/issues/7", state="open")
         with patch.object(self.forge, "blockers", return_value=[blocker]):
@@ -223,7 +223,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
             with self.subTest(entry=entry):
                 self.checkpoint = self.checkpoint.with_name(f"{entry}.sqlite3")
                 if entry == "drafted":
-                    self.forge.labels = ["factory"]
+                    self.forge.labels = ["Ready"]
                     self.script.triage = "plan"
                     self.script.slices = [EDIT]
 
@@ -238,7 +238,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                 self.assertNotIn("implement", self.calls)
 
     def test_distinct_defects_reach_the_cap(self):
-        self.forge.labels = ["factory"]
+        self.forge.labels = ["Ready"]
         self.script.triage = "plan"
         invalid = {**EDIT, "uses": [{"name": "other", "exists": True, "path": "tool.py"}]}
         first = {"spec": "First draft", "spec_gate": "ready", "slices": [invalid], "questions": []}
@@ -251,7 +251,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.assertFalse(any("slice" in labels for _, _, labels in self.forge.created))
 
     def test_unchanged_invalid_draft_stops_instead_of_drafting_until_recursion_limit(self):
-        self.forge.labels = ["factory"]
+        self.forge.labels = ["Ready"]
         self.script.triage = "plan"
         invalid = {**EDIT, "uses": [{"name": "other", "exists": True, "path": "tool.py"}]}
         draft = {"spec": "Same draft", "spec_gate": "ready", "slices": [invalid], "questions": []}
@@ -275,7 +275,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.assertEqual(self.forge.builds, [])
 
     def test_changed_draft_requires_a_fresh_answer_to_the_same_question(self):
-        self.forge.labels = ["factory"]
+        self.forge.labels = ["Ready"]
         self.script.triage = "plan"
         question = {"question": "Use the proposed order?", "why_code_unanswered": "The issue does not specify order.",
                     "checked_paths": ["index.py"]}
@@ -304,7 +304,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                 self.checkpoint = self.checkpoint.with_name(f"stale-{entry}.sqlite3")
                 self.calls.clear()
                 if entry == "drafted":
-                    self.forge.labels = ["factory"]
+                    self.forge.labels = ["Ready"]
                     self.script.triage = "plan"
                     self.script.slices = [EDIT]
 

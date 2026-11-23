@@ -9,7 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.config import family
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.github import RELEASE_LABEL, ForgeError, human_comments, render_slice_body
+from foreman.github import READY_LABEL, ForgeError, human_comments, render_slice_body
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
@@ -168,8 +168,8 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # Runs start only after every child and link is confirmed.
         for number, child in children:
             if all(forge.is_merged(repo, blocker) for blocker in child.blocker_numbers) and not ensure(
-                    lambda: RELEASE_LABEL in forge.load_issue(repo, number)["labels"],
-                    lambda: forge.add_label(repo, number, RELEASE_LABEL)):
+                    lambda: READY_LABEL in forge.load_issue(repo, number)["labels"],
+                    lambda: forge.add_label(repo, number, READY_LABEL)):
                 return unreconciled(f"GitHub does not show #{number} released.")
     except ForgeError as exc:
         return unreconciled(f"GitHub could not confirm the children of #{parent} for {revision} ({exc}).")
