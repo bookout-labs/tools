@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from foreman.redaction import redact
 from foreman.stage_output import spec_digest
 from foreman.github import (
-    CommandFailed, CommandTimedOut, ForgeError, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, ReviewComment,
+    CommandFailed, CommandTimedOut, ForgeError, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, OpenIssue, ReviewComment,
 )
 from test_runner import FakeGitHub
 
@@ -142,43 +142,43 @@ class LiveForgeTest(unittest.TestCase):
         self.enterContext(patch.object(LiveForge, "default_branch", return_value="main"))
 
     @patch("foreman.github.subprocess.run")
-    def test_merge_hold_reads_the_requested_repository_variable(self, run):
-        for stdout, hold in (
-            ('[{"name":"REGION","value":"test"},{"name":"FOREMAN_MERGE_HOLD","value":"  Maintenance\\n"}]', "  Maintenance\n"),
-            ('[{"name":"FOREMAN_MERGE_HOLD","value":""}]', ""),
-            ('[{"name":"REGION","value":"test"}]', None),
-            ("[]", None),
+    def test_variables_read_the_requested_repository(self, run):
+        for stdout, variables in (
+            ('[{"name":"REGION","value":"test"},{"name":"FOREMAN_MERGE_HOLD","value":"  Maintenance\\n"}]',
+             {"REGION": "test", "FOREMAN_MERGE_HOLD": "  Maintenance\n"}),
+            ('[{"name":"FOREMAN_MERGE_HOLD","value":""}]', {"FOREMAN_MERGE_HOLD": ""}),
+            ("[]", {}),
         ):
-            with self.subTest(hold=hold):
+            with self.subTest(variables=variables):
                 run.return_value = gh_result(stdout)
-                self.assertEqual(LiveForge().merge_hold(REPO), hold)
+                self.assertEqual(LiveForge().variables(REPO), variables)
                 self.assertEqual(run.call_args.args[0], [
                     "gh", "variable", "list", "--repo", REPO, "--json", "name,value",
                 ])
 
     @patch("foreman.github.subprocess.run")
-    def test_merge_hold_fails_closed_on_command_and_validation_errors(self, run):
+    def test_variables_fail_closed_on_command_and_validation_errors(self, run):
         reason = "failed to get variables: HTTP 404: Not Found (https://api.github.com/repos/Example/Missing/actions/variables?per_page=100)"
         run.side_effect = [
             subprocess.CompletedProcess([], 1, "", reason),
             gh_result('[{"name":"FOREMAN_MERGE_HOLD","value":123}]'),
             subprocess.TimeoutExpired(["gh", "variable", "list"], 30),
         ]
-        with self.assertRaises(MergeHoldUnreadable) as error:
-            LiveForge().merge_hold("Example/Missing")
+        with self.assertRaises(VariablesUnreadable) as error:
+            LiveForge().variables("Example/Missing")
         self.assertEqual(str(error.exception), reason)
         self.assertIsInstance(error.exception.__cause__, CommandFailed)
-        with self.assertRaisesRegex(MergeHoldUnreadable, "Invalid ActionsVariables response"):
-            LiveForge().merge_hold(REPO)
-        with self.assertRaisesRegex(MergeHoldUnreadable, "gh variable list timed out"):
-            LiveForge().merge_hold(REPO)
+        with self.assertRaisesRegex(VariablesUnreadable, "Invalid ActionsVariables response"):
+            LiveForge().variables(REPO)
+        with self.assertRaisesRegex(VariablesUnreadable, "gh variable list timed out"):
+            LiveForge().variables(REPO)
 
     @patch("foreman.github.subprocess.run")
-    def test_app_hold_permission_denial_is_fail_closed(self, run):
+    def test_app_variables_permission_denial_is_fail_closed(self, run):
         with patch("foreman.github.credentials.environment", return_value={"GH_TOKEN": "synthetic"}):
             run.return_value = subprocess.CompletedProcess([], 1, "", "HTTP 403")
-            with self.assertRaisesRegex(MergeHoldUnreadable, "permission denied"):
-                LiveForge().merge_hold(REPO)
+            with self.assertRaisesRegex(VariablesUnreadable, "permission denied"):
+                LiveForge().variables(REPO)
 
     @patch("foreman.github.subprocess.run")
     def test_load_issue_validates_labels_and_normalizes_an_empty_body(self, run):

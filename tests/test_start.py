@@ -1,0 +1,118 @@
+import contextlib
+from decimal import Decimal
+import fcntl
+import io
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+from unittest.mock import patch
+
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+from foreman.cli import main
+from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun
+from foreman.github import VariablesUnreadable
+from foreman.runner import IssueLocked, issue_lock
+from foreman.stage_output import spec_digest
+from foreman.state import checkpoint_serializer
+from foreman.usd import BudgetUsd
+from skill_fixture import checker_reply, fixture_skills
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace
+
+THREAD = "example/engine#8"
+SETTINGS = {"FOREMAN_CHECK": "exit 0"}
+
+
+class StartTest(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(TemporaryDirectory()))
+        self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.root / "runtime")}))
+        self.app = self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
+        self.forge = FakeGitHub()
+        self.workspace = FakeWorkspace(self.root)
+        self.worker_calls = 0
+
+    def start(self, variables=SETTINGS, replies=()):
+        outputs = iter(replies)
+
+        def worker(args, cwd, env):
+            self.worker_calls += 1
+            return self.workspace.reply(args, checker_reply(args) or next(outputs))
+
+        with patch.object(self.forge, "variables", side_effect=lambda repo: dict(variables)), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+            code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.root / "runs.sqlite3",
+                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills), worker_runner=worker)
+        return code, out.getvalue(), err.getvalue()
+
+    def stored(self):
+        with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
+            saver.serde = checkpoint_serializer()
+            values = saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]
+        return values["run"], values["checks"]
+
+    def test_starts_once_with_the_repository_settings_pinned(self):
+        variables = {**SETTINGS, "FOREMAN_PREFLIGHT": "exit 0", "FOREMAN_MAX_TOKENS": "900000"}
+        code, out, err = self.start(variables, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertNotEqual(code, 1, out + err)
+        run, checks = self.stored()
+        self.assertEqual((checks.check, checks.preflight), ("exit 0", "exit 0"))
+        self.assertEqual((run.token_cap, run.max_budget_usd), (900000, "3"))
+        calls = self.worker_calls
+        # A repeated delivery is a no-op, whatever stop the run reached.
+        self.assertEqual(self.start(variables)[:2], (0, f"already started {THREAD}\n"))
+        self.assertEqual(self.worker_calls, calls)
+
+    def test_settings_default_and_parse(self):
+        seen = []
+        with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: seen.append(kwargs) or {"stop": "merged"}):
+            self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "4.50"})[0], 0)
+            self.assertEqual(self.start()[0], 0)
+        self.assertEqual([(s["check"], s["preflight"], s["max_tokens"], s["max_budget_usd"]) for s in seen], [
+            ("exit 0", "", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("4.50"))),
+            ("exit 0", "", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("3"))),
+        ])
+
+    def test_missing_or_malformed_settings_fail_closed_before_any_run(self):
+        for variables in ({}, {"FOREMAN_CHECK": " "}, {**SETTINGS, "FOREMAN_MAX_TOKENS": "many"},
+                          {**SETTINGS, "FOREMAN_MAX_TOKENS": "0"}, {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "-1"},
+                          {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": ""}):
+            with self.subTest(variables=variables), patch("foreman.cli.run_live_delivery") as run:
+                code, _, err = self.start(variables)
+                self.assertEqual(code, 1)
+                self.assertRegex(err, "FOREMAN_CHECK|FOREMAN_MAX_TOKENS")
+                run.assert_not_called()
+        with patch.object(self.forge, "variables", side_effect=VariablesUnreadable("HTTP 403")), \
+                patch("foreman.cli.run_live_delivery") as run, contextlib.redirect_stderr(io.StringIO()) as err:
+            code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.root / "runs.sqlite3",
+                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills))
+        self.assertEqual((code, "HTTP 403" in err.getvalue()), (1, True))
+        run.assert_not_called()
+
+    def test_without_app_credentials_nothing_is_read_or_run(self):
+        self.app.return_value = None
+        with patch.object(self.forge, "variables") as variables, patch("foreman.cli.run_live_delivery") as run:
+            code, _, err = self.start()
+        self.assertEqual(code, 1)
+        self.assertIn("FOREMAN_APP_ID", err)
+        variables.assert_not_called()
+        run.assert_not_called()
+
+    def test_a_held_lock_is_a_no_op(self):
+        locks = self.root / "runtime" / "foreman-locks"
+        locks.mkdir(parents=True)
+        with (locks / spec_digest([THREAD])).open("a") as other:
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch("foreman.cli.run_live_delivery") as run:
+                self.assertEqual(self.start()[:2], (0, f"already running {THREAD}\n"))
+            run.assert_not_called()
+            with self.assertRaises(IssueLocked), issue_lock(THREAD):
+                pass
+
+    def test_the_holder_reenters_its_own_lock(self):
+        with issue_lock(THREAD), issue_lock(THREAD):
+            with (self.root / "runtime" / "foreman-locks" / spec_digest([THREAD])).open("a") as other:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with issue_lock(THREAD):
+            pass

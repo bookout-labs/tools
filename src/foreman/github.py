@@ -42,7 +42,7 @@ class QueueRejected(MergeNotArmed):
     pass
 
 
-class MergeHoldUnreadable(ForgeError):
+class VariablesUnreadable(ForgeError):
     pass
 
 
@@ -348,7 +348,7 @@ class Forge(Protocol):
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt: ...
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation: ...
     def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt: ...
-    def merge_hold(self, repo: str) -> str | None: ...
+    def variables(self, repo: str) -> dict[str, str]: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str, observation: Observation) -> MergeReceipt | None: ...
 
 
@@ -743,12 +743,13 @@ class LiveForge:
         )
         return posted.receipt(target.headRefOid)
 
-    def merge_hold(self, repo: str) -> str | None:
+    def variables(self, repo: str) -> dict[str, str]:
+        """The repository's GitHub Actions variables, which hold its merge hold and run settings."""
         try:
             variables = self._read(repo, ActionsVariables, ["gh", "variable", "list", "--repo", repo, "--json", "name,value"])
         except ForgeError as exc:
-            raise MergeHoldUnreadable(str(exc)) from exc
-        return next((variable.value for variable in variables.root if variable.name == MERGE_HOLD_VARIABLE), None)
+            raise VariablesUnreadable(str(exc)) from exc
+        return {variable.name: variable.value for variable in variables.root}
 
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation:
         target = self._view_pr(repo, branch)

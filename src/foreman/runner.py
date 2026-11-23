@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
@@ -136,24 +137,49 @@ def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: Bu
     require_same_budget(run_state.max_budget_usd, max_budget_usd)
 
 
+class IssueLocked(ValueError):
+    """Another Foreman process holds this issue's lock."""
+
+
+_held_locks: ContextVar[frozenset[str]] = ContextVar("held_issue_locks", default=frozenset())
+
+
+def issue_thread(repo: str, issue: int) -> str:
+    return f"{repo.lower()}#{issue}"
+
+
 @contextmanager
 def issue_lock(thread: str) -> Generator[None]:
     """Hold one writer per repository and issue for this user, whichever checkpoint it uses. The worker inherits the lock.
 
     Locks live in the XDG runtime directory, which neither TMPDIR nor XDG_STATE_HOME moves.
+    A holder that enters again keeps its lock, so a start can check and run under one hold.
     """
+    if thread in _held_locks.get():
+        yield
+        return
     locks = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "foreman-locks"
     locks.mkdir(parents=True, exist_ok=True)
     with (locks / spec_digest([thread])).open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise ValueError(f"Foreman is already running {thread}.") from exc
-        token = worker_lock.set(lock.fileno())
+            raise IssueLocked(f"Foreman is already running {thread}.") from exc
+        token, held = worker_lock.set(lock.fileno()), _held_locks.set(_held_locks.get() | {thread})
         try:
             yield
         finally:
+            _held_locks.reset(held)
             worker_lock.reset(token)
+
+
+def started(checkpoint: Path, thread: str) -> bool:
+    """Whether the issue already has a run. Blocked admission deletes its checkpoint, so a later Ready starts fresh."""
+    if not checkpoint.exists():
+        return False
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+        saver.serde = checkpoint_serializer()
+        return saver.get_tuple({"configurable": {"thread_id": thread}}) is not None
 
 
 def run_live_delivery(
@@ -178,7 +204,7 @@ def run_live_delivery(
         presentation.restored = None
         presentation.updates.clear()
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    thread = f"{repo.lower()}#{issue}"
+    thread = issue_thread(repo, issue)
     config: RunnableConfig = {"configurable": {"thread_id": thread}}
     workspace = str(run.workspace.root.resolve())
     client = run.forge

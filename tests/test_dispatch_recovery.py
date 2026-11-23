@@ -77,10 +77,14 @@ print(json.dumps({"result": result, "calls": calls}, default=lambda value: value
 
 class IssueLockTests(unittest.TestCase):
     def test_one_writer_per_repository_and_issue_whatever_the_checkpoint(self):
+        other = "from foreman.runner import issue_lock\nwith issue_lock({!r}): pass"
         with issue_lock("example/lock-test#8"):
-            with self.assertRaisesRegex(ValueError, "already running example/lock-test#8"), issue_lock("example/lock-test#8"):
-                pass
-            with issue_lock("example/lock-test#9"):
+            # Another process is refused. The holder itself may enter again, as foreman start does.
+            refused = subprocess.run([sys.executable, "-c", other.format("example/lock-test#8")], capture_output=True, text=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("IssueLocked: Foreman is already running example/lock-test#8", refused.stderr)
+            self.assertEqual(subprocess.run([sys.executable, "-c", other.format("example/lock-test#9")]).returncode, 0)
+            with issue_lock("example/lock-test#8"):
                 pass
 
     def test_processes_a_worker_leaves_behind_end_with_it_and_release_the_lock(self):
