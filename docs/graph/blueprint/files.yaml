@@ -52,6 +52,11 @@ docs/graph/blueprint/prompts/review.md:
       files through the supplied read-only view. Honor settled rulings while their
       evidence applies.
 
+      Run each read command by itself. The read-only view grants each command alone,
+      and a chained or
+
+      piped command is denied.
+
       Give findings with a location, severity, impact and concrete evidence. Reserve
       P0 and P1 for
 
