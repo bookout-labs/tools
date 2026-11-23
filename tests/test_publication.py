@@ -26,7 +26,8 @@ REPO = "Example/Engine"
 REF = f"refs/heads/{BRANCH}"
 run_subprocess = subprocess.run
 
-class PublicationTest(unittest.TestCase):
+class PublicationFixture(unittest.TestCase):
+    """A real checkout and bare origin, with GitHub faked at the subprocess boundary."""
     @classmethod
     def setUpClass(cls):
         root = Path(cls.enterClassContext(TemporaryDirectory()))
@@ -155,7 +156,7 @@ class PublicationTest(unittest.TestCase):
         self.fail("completed worker must not repeat")
 
     def walk(self, edit=None, reviews=None, family=None,
-             answer=None, preflight="", check_log=None, check="test -f items.txt", ask=None):
+             answer=None, preflight="", check_log=None, check="test -f items.txt", ask=None, model_edit=None):
         script = ScriptHandler(reviews=reviews)
         workspace = LiveWorkspace(self.checkout)
 
@@ -165,7 +166,7 @@ class PublicationTest(unittest.TestCase):
                 self.assertEqual(instruction.count("Foreman verifies the final tree, commits and publishes"), 1)
                 if family and model.family != family:
                     return Outcome("cli_missing")
-                outcome = (edit or self.edit)()
+                outcome = model_edit(model, state, instruction) if model_edit else (edit or self.edit)()
                 if isinstance(outcome, Outcome):
                     return outcome
             if node == "review":
@@ -187,6 +188,8 @@ class PublicationTest(unittest.TestCase):
         self.git("push", "origin", f"{head}:refs/heads/main")
         return head
 
+
+class PublicationTest(PublicationFixture):
     def test_new_branch_uses_origin_with_stale_missing_or_detached_local_base(self):
         for kind in ("stale", "missing", "newer", "divergent"):
             with self.subTest(kind=kind):
