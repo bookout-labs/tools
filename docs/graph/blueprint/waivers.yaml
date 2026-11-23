@@ -1,13 +1,6 @@
 # IDs bind each exact difference to its migration issue. Delete the entry when the difference closes.
 waivers:
-  234:
-    V2-8c03538569dd3058: extra [shared/halts] usage_unknown
-    V2-69ddd346c649b1a5: extra [procedure/review] unavailability_halt
-    V2-a804004e89ff1d18: extra [shared/halts] cli_missing
-    V2-cf73d422ff07f1b9: extra [shared/halts] model_family_exhausted
-    V2-d01511ae13d502d5: extra [shared/halts] quota_exhausted
-    V2-9ab1f91a88a71cac: extra [shared/halts] review_unavailable
-    V2-924010bb2349a623: extra [shared/halts] reviewer_unavailable
+  235:
     V2-0b19e86a0a4e216c: missing [steps/dispatch] edge __start__ -> reserve
     V2-ffce5bbfe186b434: missing [steps/dispatch] edge reconcile -> __end__
     V2-25eab3c665b6718f: missing [steps/dispatch] edge reconcile -> reserve
@@ -16,61 +9,8 @@ waivers:
     V2-3b5b1488d9bc6487: missing [steps/dispatch] halts
     V2-88b8c20634c89d04: missing [steps/dispatch] node reconcile
     V2-544b6bc18ed0d9f6: missing [steps/dispatch] node reserve
-    V2-5673b8200a189540: extra [steps/dispatch] owner src/foreman/dispatch.py::clean_outcome
-    V2-475609af344f7dfc: missing [steps/dispatch] owner src/foreman/dispatch.py::compile_dispatch
-    V2-93430e6fe0f8668d: missing [steps/dispatch] owner src/foreman/dispatch.py::reconcile
-    V2-7d836d57689c62b9: missing [steps/dispatch] owner src/foreman/dispatch.py::reserve
     V2-6708d12b1bf35b15: missing [steps/dispatch] retries
     V2-f92638735ca3e122: missing [steps/dispatch] subgraph endpoints
-    V2-473fc2f8695d2ff1: extra [top/delivery] edge implement -> implement_call
-    V2-5456ebf9a78770cb: extra [top/delivery] edge implement -> quota_wait
-    V2-876ee41e7df16b4a: extra [top/delivery] edge implement_call -> done
-    V2-b7af989c5da36c5a: extra [top/delivery] edge implement_call -> implement_call
-    V2-b9448768ac11e272: extra [top/delivery] edge implement_call -> quota_wait
-    V2-bd0fe9177e4198ed: extra [top/delivery] edge implement_call -> reconcile
-    V2-54a104b66b49e8da: extra [top/delivery] edge quota_wait -> implement
-    V2-96cae6d421503bcf: extra [top/delivery] edge quota_wait -> research
-    V2-2e8d8020918b4174: extra [top/delivery] edge quota_wait -> review
-    V2-b57b177529914a56: extra [top/delivery] edge quota_wait -> spec
-    V2-5fa25f1f595989fd: extra [top/delivery] edge quota_wait -> triage
-    V2-141a6cd219daef97: extra [top/delivery] edge research -> quota_wait
-    V2-94cc32691b589cc2: extra [top/delivery] edge research -> research_call
-    V2-9a5517e5fb044b5a: extra [top/delivery] edge research_call -> done
-    V2-9b8f277aa925b9fc: extra [top/delivery] edge research_call -> quota_wait
-    V2-82f862cdf236d3bc: extra [top/delivery] edge research_call -> research_call
-    V2-fa5e4b71d58f17d0: extra [top/delivery] edge review -> quota_wait
-    V2-da9e59596a1d5843: extra [top/delivery] edge review -> review_call
-    V2-575aebd2225d2cc1: extra [top/delivery] edge review_call -> done
-    V2-5a6cb244732794b3: extra [top/delivery] edge review_call -> merge
-    V2-b2ee5ff3a8d016ca: extra [top/delivery] edge review_call -> needs_human
-    V2-433648786a01a735: extra [top/delivery] edge review_call -> prepare
-    V2-d4673dec8c63ac25: extra [top/delivery] edge review_call -> quota_wait
-    V2-ba73096b25051376: extra [top/delivery] edge review_call -> review_call
-    V2-b97706f1d219e9ca: extra [top/delivery] edge review_call -> review_post
-    V2-d4ea02dcdecd30b3: extra [top/delivery] edge spec -> quota_wait
-    V2-13ec9264c0351dc6: extra [top/delivery] edge spec -> spec_call
-    V2-2b284195e38038db: extra [top/delivery] edge spec_call -> decide_pr_size
-    V2-8f0449422cbf2af5: extra [top/delivery] edge spec_call -> done
-    V2-bba759a8684bc5a2: extra [top/delivery] edge spec_call -> needs_human
-    V2-26e06a5ee5aa6be0: extra [top/delivery] edge spec_call -> prepare
-    V2-b9f0be268abf9dd0: extra [top/delivery] edge spec_call -> quota_wait
-    V2-39638e29853c510d: extra [top/delivery] edge spec_call -> spec
-    V2-3afe0b3a9539464a: extra [top/delivery] edge spec_call -> spec_call
-    V2-c1990347456a4a1d: extra [top/delivery] edge triage -> quota_wait
-    V2-6286d36f34001f6f: extra [top/delivery] edge triage -> triage_call
-    V2-72b0b8a31aeb342c: extra [top/delivery] edge triage_call -> done
-    V2-74e4e86b04b6b0b3: extra [top/delivery] edge triage_call -> needs_human
-    V2-cbc2b02e08d87d91: extra [top/delivery] edge triage_call -> quota_wait
-    V2-21bc802787c3f331: extra [top/delivery] edge triage_call -> research
-    V2-ff10dcca2514fb03: extra [top/delivery] edge triage_call -> spec
-    V2-3b81ceaff9dc13ab: extra [top/delivery] edge triage_call -> triage_call
-    V2-63194d451acce7fe: extra [top/delivery] node implement_call
-    V2-d9ae45977175e4fc: extra [top/delivery] node quota_wait
-    V2-37535d700f5d7d8e: extra [top/delivery] node research_call
-    V2-578a600828853b3b: extra [top/delivery] node review_call
-    V2-f025b8c45304fcb4: extra [top/delivery] node spec_call
-    V2-18db07ab98860f22: extra [top/delivery] node triage_call
-  235:
     V2-cf41c5d5e274b2cf: missing [steps/dispatch] call from implement.edit
     V2-2dfe3e3b0499180c: mismatched [procedure/implement] output_fields
     V2-8095e350e882fe03: extra [top/delivery] edge verify -> publish
@@ -122,12 +62,13 @@ waivers:
     V2-a7d94d53939555c5: extra [top/delivery] edge verify -> prepare
     V2-30290861dc14aa64: extra [top/delivery] node commit
     V2-df801846ce28b104: extra [top/delivery] node decide_pr_size
-    V2-b30ef0866ec5811b: mismatched [top/delivery] node implement
     V2-df0f83e6a55a696d: extra [top/delivery] node prepare
     V2-381baa256230dba9: extra [top/delivery] node publish
     V2-126a3ea73ab1e45a: extra [top/delivery] node reconcile
     V2-adeea79d6722b70f: extra [top/delivery] node size
     V2-065fa8600ba9f22d: extra [top/delivery] node verify
+    V2-5132467121aaf85a: extra [top/delivery] edge spec -> prepare
+    V2-01893da438521b27: mismatched [top/delivery] node implement
   236:
     V2-69bf95b93e669d2b: missing [steps/dispatch] call from triage.route
     V2-afb68dac233b845c: missing [steps/dispatch] call from spec.draft
@@ -211,9 +152,9 @@ waivers:
     V2-2820be55b1b14599: mismatched [top/delivery] edge triage -> research
     V2-eecb34b96bf99930: mismatched [top/delivery] edge triage -> spec
     V2-7633d289e8f3c3d1: extra [top/delivery] node needs_human
-    V2-405c60cf22878fae: mismatched [top/delivery] node research
-    V2-883c2e884445e755: mismatched [top/delivery] node spec
-    V2-033b77ac69c6ba6e: mismatched [top/delivery] node triage
+    V2-8cd7e1945add0fe3: mismatched [top/delivery] node research
+    V2-541d00ec10c8c0e3: mismatched [top/delivery] node spec
+    V2-f69e2ef4269b6a28: mismatched [top/delivery] node triage
   237:
     V2-ac5a720ea744df66: missing [steps/dispatch] call from review.inspect
     V2-66f3c36d0dcb14da: missing [procedure/review] step

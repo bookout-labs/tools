@@ -44,7 +44,8 @@ class BlueprintProjectionTests(unittest.TestCase):
         compile_graph = StateGraph.compile
 
         def with_new_route(builder, *args, **kwargs):
-            builder.add_conditional_edges("triage", lambda _: "unplanned", {"unplanned": "research"})
+            if "triage" in builder.nodes:
+                builder.add_conditional_edges("triage", lambda _: "unplanned", {"unplanned": "research"})
             return compile_graph(builder, *args, **kwargs)
 
         with patch.object(StateGraph, "compile", with_new_route):

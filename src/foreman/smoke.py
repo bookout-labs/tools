@@ -49,15 +49,16 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
             if (attempt["model"] or "").startswith("claude-") and usage["cost_usd"] is None:
                 return SmokeVerdict(1, "attempt.usage_unknown", last)
 
-    halt = state.get("halt")
-    unavailable_halt = halt in {Halt.cli_missing, Halt.env_unavailable, Halt.quota_exhausted, Halt.reviewer_unavailable}
+    halt, stop = state.get("halt"), state.get("stop", "")
+    # A shared quota wait pauses the run instead of halting it.
+    paused = not halt and stop == "quota_exhausted"
+    unavailable_halt = halt == Halt.env_unavailable or paused
     if halt and not unavailable_halt:
         return SmokeVerdict(1, f"halt={halt}", last)
     path = state["path"]
-    if not path or (halt != Halt.quota_exhausted and path[-1:] != ["done"]):
+    if not path or (not paused and path[-1:] != ["done"]):
         return SmokeVerdict(1, "terminal.done", last)
-    stop = state.get("stop", "")
-    if stop != (halt or "verified"):
+    if stop != (halt or ("quota_exhausted" if paused else "verified")):
         return SmokeVerdict(1, f"stop={stop or 'missing'}", last)
 
     checks = state["checks"]
@@ -83,7 +84,7 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
     if unavailable_halt:
         if merge.status == "armed":
             return SmokeVerdict(1, "merge.armed_with_halt", last)
-        return unavailable or SmokeVerdict(78, f"halt={halt}", last)
+        return unavailable or SmokeVerdict(78, f"halt={halt or stop}", last)
 
     for condition, passed in (
         ("attempts.nonempty", bool(attempts)),

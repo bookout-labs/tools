@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
 
 from foreman.adapters import Outcome
-from foreman.dispatch import clean_outcome
+from foreman.dispatch import DispatchRun
 from foreman.credentials import AppCredentials, CredentialFailure, GIT_AUTH, TOKEN_MARGIN
 from foreman.github import CommandFailed, LiveForge
 from foreman.redaction import redact
@@ -157,7 +157,7 @@ class CredentialsTest(CredentialFixture):
         names = ['legacy installation', 'stateless installation', 'App JWT', 'basic header', 'bearer header', 'encoded HTTPS password', 'PEM']
         for name, secret in zip(names, secrets):
             with self.subTest(shape=name):
-                outcome = clean_outcome(Outcome("ran", output={"detail": secret}, detail=secret))
+                outcome = DispatchRun.clean(Outcome("ran", output={"detail": secret}, detail=secret))
                 self.assertNotIn(secret, json.dumps(outcome.output))
                 self.assertNotIn(secret, outcome.detail)
                 clean = redact(secret)
@@ -182,7 +182,7 @@ class CredentialsTest(CredentialFixture):
     def test_quoted_auth_header_and_nested_strings_preserve_structure(self):
         text = 'Run: curl -H "Authorization: Bearer abc123" https://api.github.com'
         output = {'spec': text, 'nested': [text, {'pem': '-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----'}], 'number': 3}
-        outcome = clean_outcome(Outcome('ran', output=output))
+        outcome = DispatchRun.clean(Outcome('ran', output=output))
         self.assertEqual(outcome.output['spec'], 'Run: curl -H "[redacted:Credential]" https://api.github.com')
         self.assertNotIn('abc123', str(outcome.output))
         self.assertNotIn('BEGIN PRIVATE KEY', str(outcome.output))

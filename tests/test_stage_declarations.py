@@ -104,7 +104,7 @@ class StageDeclarationsTest(unittest.TestCase):
                 self.assertEqual(result["attempts"][-1]["stage"], {"research": "research", "spec": "spec_check"}.get(name, "review"))
 
     def assert_no_stage_policy(self, source, module):
-        expected = {"bind", "call", "stage_update"} if module == "delivery.py" else {"clean_outcome"}
+        expected = {"call", "stage_update"} if module == "delivery.py" else {"clean", "reserve", "launch", "charge", "reconcile"}
         visited = set()
         for function in ast.walk(ast.parse(source)):
             if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -134,9 +134,10 @@ class StageDeclarationsTest(unittest.TestCase):
                      'match name:\n        case _ if name == "review": pass',
                      'if name == "review": pass', 'if name == "implement": pass'):
             with self.subTest(body=body), self.assertRaises(AssertionError):
-                self.assert_no_stage_policy("def clean_outcome(): pass\ndef helper(name):\n    " + body, "dispatch.py")
+                self.assert_no_stage_policy("def clean(): pass\ndef reserve(): pass\ndef launch(): pass\ndef charge(): pass\n"
+                                            "def reconcile(): pass\ndef helper(name):\n    " + body, "dispatch.py")
         with self.assertRaises(AssertionError):
-            self.assert_no_stage_policy('def bind(name):\n    if name == "implement": pass\ndef call(): pass\ndef stage_update(): pass', "delivery.py")
+            self.assert_no_stage_policy('def call(name):\n    if name == "implement": pass\ndef stage_update(): pass', "delivery.py")
         for module in ("delivery.py", "dispatch.py"):
             with self.subTest(module=module), self.assertRaises(AssertionError):
                 self.assert_no_stage_policy("def renamed(): pass", module)
@@ -167,26 +168,10 @@ class StageDeclarationsTest(unittest.TestCase):
             return outcome
         with patch.dict(STAGES, review=replace(row, project=project)):
             result = walk(dispatch)
-        self.assertEqual(seen, [True])
+        # Dispatch projects the worker's state; acceptance projects the citation context.
+        self.assertEqual(seen, [True, True])
         self.assertEqual(result["stop"], "verified", result.get("halt_detail"))
         self.assertEqual(result["review"].review_findings[0]["findings"][0]["location"]["path"], "row.py")
-
-    def test_review_unavailability_halt_comes_from_row(self):
-        from foreman.adapters import Outcome
-        from foreman.outcomes import Halt
-        from test_delivery import walk
-
-        seen, script = [], ScriptHandler()
-        def unavailable(state, outcome, model):
-            seen.append(outcome.kind)
-            return Halt.failed, "Row unavailable"
-        def dispatch(stage, model, state, instruction):
-            return Outcome("cli_missing") if stage == "review" else script(stage, model, state, instruction)
-        with patch.dict(STAGES, review=replace(STAGES["review"], unavailable=unavailable)):
-            result = walk(dispatch)
-        self.assertTrue(seen)
-        self.assertEqual(result["halt"], "failed")
-        self.assertEqual(result["halt_detail"], "Row unavailable")
 
     def test_implement_acceptance_keeps_model_history(self):
         from foreman.delivery import stage_update

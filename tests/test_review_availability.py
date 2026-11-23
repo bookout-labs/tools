@@ -103,7 +103,7 @@ if legacy == "single":
     for name, node in config.nodes.items():
         if node.models:
             config.nodes[name] = replace(node, models=(ModelSpec.parse("gpt-6.1-sol-high"),))
-if legacy in {"pause", "pending"}:
+if legacy == "pending":
     names = [m.name for m in config.nodes["review"].models]
     if legacy == "pending":
         # An older custom table puts Grok at the third eligible position.
@@ -112,11 +112,9 @@ if legacy in {"pause", "pending"}:
     config.nodes["review"] = replace(config.nodes["review"], models=tuple(ModelSpec.parse(m) for m in names))
 def legacy_order(node, config, used, implement_models=None):
     models = order_for(node, config, used, implement_models)
-    return [m for m in models if m.family != author] if node == "review" and legacy in {"pause", "pending"} else models
-def legacy_halt(reason, detail, stage):
-    return halted(Halt.quota_exhausted if reason == "reviewer_unavailable" else Halt(reason), detail, stage)
+    return [m for m in models if m.family != author] if node == "review" and legacy == "pending" else models
 run = LiveRun(forge, workspace)
-with patch("foreman.runner.load_config", return_value=config), patch("foreman.stages.order_for", legacy_order), patch("foreman.delivery.halted", legacy_halt if legacy == "pause" else halted):
+with patch("foreman.runner.load_config", return_value=config), patch("foreman.stages.order_for", legacy_order):
     try:
         result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
             checkpoint=root / "run.sqlite3", run=run, dispatcher=worker)
@@ -126,9 +124,8 @@ with patch("foreman.runner.load_config", return_value=config), patch("foreman.st
             saver.serde = checkpoint_serializer()
             graph = compile_delivery(worker, config, run=run, checkpointer=saver)
             snapshot = graph.get_state({"configurable": {"thread_id": "example/engine#8"}})
-            assert snapshot.next == ("review_call",), snapshot.next
+            assert snapshot.next == ("review",), snapshot.next
             assert not snapshot.values.get("halt")
-            assert snapshot.values["pending_dispatch"]["index"] == 2
         print(json.dumps({"calls": calls}))
         sys.exit(99)
 
@@ -169,12 +166,13 @@ class ReviewerAvailabilityTest(unittest.TestCase):
             with self.subTest(author=author, outcomes=outcomes), TemporaryDirectory(dir=self.root) as directory:
                 root = Path(directory)
                 first = self.invoke(root, author, outcomes, 75)
-                self.assertEqual(first["result"]["halt"], "reviewer_unavailable")
+                self.assertEqual(first["result"]["stop"], "quota_exhausted")
+                self.assertNotIn("halt", first["result"])
                 self.assertEqual([a["outcome"] for a in first["result"]["attempts"] if a["stage"] == "review"], outcomes)
                 expected = ["gpt-6.1-sol-high", "claude-opus-5-5-high"] if author == "claude" else ["claude-opus-5-5-high", "gpt-6.1-sol-high"]
                 self.assertEqual(first["calls"], expected)
                 for model, kind in zip(expected, outcomes):
-                    self.assertIn(f"review {model}: {kind}. review fixture", first["result"]["halt_detail"])
+                    self.assertIn(f"{model}: {kind}. review fixture", first["result"]["halt_detail"])
                 again = self.invoke(root, author, outcomes, 75)
                 self.assertEqual(again["calls"], expected)
                 self.assertEqual(len(again["result"]["review"].review_findings), 0)
@@ -207,7 +205,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 self.assertEqual(len(result["result"]["review"].review_findings), rounds)
                 self.assertEqual(result["posts"], posts)
                 if not code:
-                    self.assertEqual(result["result"]["halt_detail"], "")
+                    self.assertEqual(result["result"].get("halt_detail", ""), "")
                     provenance = result["result"]["review"].review_findings[-1]["provenance"]
                     self.assertEqual(provenance, attempts[-1]["provenance"])
                     self.assertEqual(provenance["reviewer"], models[-1])
@@ -237,7 +235,8 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 self.assertIn(f"Reviewer {provenance['reviewer']}; implemented by {', '.join(provenance['contributors'])}; same-family fallback: no other family configured.", result["posted"][-1]["body"])
 
     def test_budget_and_indeterminate_usage_stop_before_same_family_call(self):
-        for outcome, halt in (("quota_budget", "budget_exceeded"), ("unknown", "usage_unknown")):
+        # D10: unknown usage is charged at the remaining allowance, which stops the run.
+        for outcome, halt in (("quota_budget", "budget_exceeded"), ("unknown", "budget_exceeded")):
             with self.subTest(outcome=outcome), TemporaryDirectory(dir=self.root) as directory:
                 result = self.invoke(Path(directory), "gpt", [outcome], 1)
                 self.assertEqual(result["calls"], ["claude-opus-5-5-high"])
@@ -279,26 +278,20 @@ class ReviewerAvailabilityTest(unittest.TestCase):
             self.assertEqual(len(ready["review"].review_findings), 2)
             self.assertEqual(ready["review"].review_findings[0], first["review"].review_findings[0])
 
-    def test_old_checkpoint_reselects_and_indeterminate_call_never_replays(self):
-        for pending in (False, True):
-            with self.subTest(pending=pending), TemporaryDirectory(dir=self.root) as directory:
-                root = Path(directory)
-                if pending:
-                    old = self.invoke(root, "claude", ["quota", "cli_missing", "interrupt"], 99, "pending")
-                    self.assertEqual(old["calls"], ["gpt-6.1-sol-high", "gpt-6.1-terra-high", "grok-4.7-high"])
-                else:
-                    old = self.invoke(root, "claude", ["quota", "quota"], 75, "pause")
-                    self.assertEqual(old["calls"], ["gpt-6.1-sol-high", "grok-4.7-high"])
-                    self.assertEqual(old["result"]["stop"], "quota_exhausted")
-                    with SqliteSaver.from_conn_string(str(root / "run.sqlite3")) as saver:
-                        saver.serde = checkpoint_serializer()
-                        saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
-                        self.assertTrue(any(channel == "__interrupt__" for _, channel, _ in saved.pending_writes))
-                result = self.invoke(root, "claude", ["ran"], 1 if pending else 0)
-                self.assertEqual(result["calls"], [] if pending else ["gpt-6.1-sol-high"])
-                if pending:
-                    self.assertEqual(result["result"]["halt"], "usage_unknown")
-                    self.assertEqual(result["result"]["attempts"][-1]["model"], "grok-4.7-high")
+    def test_interrupted_call_is_charged_once_and_never_replays(self):
+        with TemporaryDirectory(dir=self.root) as directory:
+            root = Path(directory)
+            old = self.invoke(root, "claude", ["quota", "cli_missing", "interrupt"], 99, "pending")
+            self.assertEqual(old["calls"], ["gpt-6.1-sol-high", "gpt-6.1-terra-high", "grok-4.7-high"])
+            result = self.invoke(root, "claude", ["ran"], 1)
+            self.assertEqual(result["calls"], [])
+            self.assertEqual(result["result"]["halt"], "budget_exceeded")
+            self.assertIn("usage_unknown", result["result"]["halt_detail"])
+            last = result["result"]["attempts"][-1]
+            self.assertEqual((last["model"], last["outcome"]), ("grok-4.7-high", "interrupted"))
+            self.assertIn("work_charge", last)
+            again = self.invoke(root, "claude", ["ran"], 1)
+            self.assertEqual((again["calls"], again["result"]["attempts"]), ([], result["result"]["attempts"]))
 
     def test_rejected_reviews_preserve_accepted_state_and_resume_terminally(self):
         fields = ("review",)
@@ -316,14 +309,15 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                     self.assertEqual(field in result, field in before, field)
                     self.assertEqual(result.get(field), before.get(field), field)
                 self.assertEqual(result["models_used"], before["models_used"])
-                self.assertEqual(result["attempts"][:-1], before["attempts"])
+                # The final dispatch's fallback attempts reach the run state with its result.
+                self.assertEqual(result["attempts"][:len(before["attempts"])], before["attempts"])
+                self.assertEqual(len(result["attempts"]) - len(before["attempts"]), len(outcomes) - rounds)
                 self.assertEqual(result["path"][-2:], ["review", "done"])
                 self.assertEqual(result["path"].count("implement"), rounds + 1)
                 self.assertEqual(result["path"].count("verify"), rounds + 1)
                 self.assertEqual(len(result["review"].review_findings), rounds)
                 self.assertEqual(first["posted"], first["posts_before_rejection"])
                 self.assertEqual((first["posts"], first["merges"]), (rounds, 0))
-                self.assertIsNone(result["pending_dispatch"])
                 self.assertEqual(result["halt"], "invalid_output")
                 attempt = result["attempts"][-1]
                 self.assertEqual(attempt["stage"], "review")

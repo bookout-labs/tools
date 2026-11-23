@@ -69,6 +69,7 @@ class Call:
     checks: tuple[str, ...] = ()
     read_roots: tuple[Path, ...] = ()
     review: bool = False
+    resume_session: str | None = None
 
 
 class CapabilityUnavailable(ValueError):

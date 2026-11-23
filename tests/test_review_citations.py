@@ -89,7 +89,6 @@ class CitationGraphTests(unittest.TestCase):
             with self.subTest(value=value), patch.object(FakeWorkspace, 'review_context',
                     side_effect=value if isinstance(value, Exception) else None, return_value=value):
                 result = self.run_rounds([], rerun=True)
-                self.assertEqual(result['halt'], Halt.review_unavailable)
-                self.assertIsNone(result.get('pending_dispatch'))
+                self.assertEqual(result['halt'], Halt.git_failed)
                 self.assertFalse([a for a in result['attempts'] if a['stage'] == 'review'])
                 self.assertEqual((self.forge.reviews, self.forge.merge_calls), ([], []))

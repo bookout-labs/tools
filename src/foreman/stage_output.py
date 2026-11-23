@@ -21,7 +21,7 @@ from foreman.adapters import NativeUsage, OutcomeKind
 from foreman.usd import CostUsd
 from foreman.github import PullRequest, PullRequestRecord, ReviewReceipt
 from foreman.workspace import ReviewScopeRecord
-from foreman.dispatch import InvalidOutput
+from foreman.contracts import InvalidOutput
 
 PULL_REQUEST_LINES = 400
 
@@ -98,7 +98,8 @@ Record = TypeVar("Record")
 
 
 class RecordContract(Contract, Generic[Record]):
-    optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance", "repository"}
+    optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance", "repository",
+                                                  "resume_session", "attempt_id", "work_charge", "dollar_charge"}
     @classmethod
     @abstractmethod
     def record_adapter(cls) -> TypeAdapter[Record]:
@@ -154,6 +155,9 @@ class AttemptRecord(TypedDict):
     native_usage: NotRequired[NativeUsage | None]
     detail: NotRequired[str | None]
     provenance: NotRequired[ReviewSelectionRecord]
+    attempt_id: NotRequired[str]
+    work_charge: NotRequired[NonNegativeInt]
+    dollar_charge: NotRequired[str]
 
 
 class AttemptUsage(RecordContract[AttemptUsageRecord]):
@@ -187,29 +191,23 @@ class Attempt(RecordContract[AttemptRecord]):
     native_usage: NativeUsage | None = None
     detail: str | None = None
     provenance: ReviewSelection | None = None
+    attempt_id: str | None = None
+    work_charge: NonNegativeInt | None = None
+    dollar_charge: str | None = None
 
 
-@with_config(ConfigDict(extra="forbid"))
-class PendingDispatchRecord(TypedDict):
-    stage: str
-    index: NonNegativeInt
-    quota_model: str | None
-
-
-class PendingDispatch(RecordContract[PendingDispatchRecord]):
-    @classmethod
-    @override
-    def record_adapter(cls) -> TypeAdapter[PendingDispatchRecord]:
-        return TypeAdapter(PendingDispatchRecord)
-
-    stage: str
-    index: NonNegativeInt
-    quota_model: str | None
+class Reservation(TypedDict):
+    id: str
+    model: str
+    work_allowance: int
+    dollar_allowance: str | None
+    fingerprint: str
 
 
 @with_config(ConfigDict(extra="forbid"))
 class DispatchPlanRecord(TypedDict):
     budget_usd: NotRequired[str | None]
+    resume_session: NotRequired[str | None]
     models: list[str]
     instruction: str
     methods: list[str]
@@ -225,6 +223,7 @@ class DispatchPlan(RecordContract[DispatchPlanRecord]):
         return TypeAdapter(DispatchPlanRecord)
 
     budget_usd: str | None = None
+    resume_session: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
     models: list[str]
     instruction: str
     methods: list[str]

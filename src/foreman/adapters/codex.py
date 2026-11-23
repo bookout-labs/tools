@@ -95,8 +95,11 @@ class CodexTurn:
     stream_error: str | None = None
     reroute: str | None = None
     command_failure: str | None = None
+    worked: bool = False
 
     def record(self, event: dict[str, object]) -> None:
+        if str(event.get("type", "")).startswith("item."):
+            self.worked = True
         match event:
             case {"type": "thread.started", "thread_id": str(session_id)}:
                 self.session_id = session_id
@@ -152,10 +155,11 @@ class CodexAdapter:
         policy = ["--ignore-user-config", "--ignore-rules", "-c", "approval_policy=never",
                   "-c", "default_permissions=foreman", "-c", "permissions.foreman=" + profile]
         effort = ["-c", f"model_reasoning_effort={self.model.effort}"] if self.model.effort else []
-        return [
-            "codex", "exec", "-m", self.model.model_id, *effort, "--ephemeral",
-            "--json", "--output-schema", str(schema_path), "--color", "never", *policy, call.prompt,
-        ]
+        # Builders keep their session so a verified quota fallback can resume it; `exec resume` has no --color.
+        session = [call.resume_session] if call.edit and call.resume_session else []
+        return ["codex", "exec", *(["resume"] if session else []), "-m", self.model.model_id, *effort,
+                *([] if call.edit else ["--ephemeral"]), "--json", "--output-schema", str(schema_path),
+                *([] if session else ["--color", "never"]), *policy, *session, call.prompt]
 
     def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
         turn = CodexTurn(set(call.checks) if call.review else set())
@@ -172,6 +176,10 @@ class CodexAdapter:
             session_id=turn.session_id, detail=detail,
         )
 
+        if outcome.usage is None and kind == "quota" and not turn.worked:
+            # A quota stop before any model item did no paid work. Later quota stops keep usage unknown.
+            outcome = replace(outcome, usage=Usage(input_tokens=0, output_tokens=0, cache_read_input_tokens=0,
+                                                   cache_creation_input_tokens=0))
         if outcome.usage is None:
             return outcome
         return replace(outcome, native_usage=NativeUsage(

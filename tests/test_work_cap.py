@@ -33,7 +33,7 @@ class WorkCapTests(unittest.TestCase):
                       cache_read_input_tokens=3460352, cache_creation_input_tokens=0)
         for kind, cap, stop in (("ran", 200000, "needs_human"), ("ran", 169396, "needs_human"),
                                 ("ran", 169395, "budget_exceeded"), ("ran", 169394, "budget_exceeded"),
-                                ("quota", 169395, "budget_exceeded"), ("failed", 169395, "budget_exceeded")):
+                                ("quota", 169395, "budget_exceeded"), ("failed", 169395, "invalid_output")):
             with self.subTest(cap=cap):
                 result, calls = self.walk(Outcome(kind, QUESTION, usage=usage), cap)
                 self.assertEqual(result["stop"], stop)
@@ -63,7 +63,8 @@ class WorkCapTests(unittest.TestCase):
         for outcome, raw, known, work in cases:
             result, calls = self.walk(outcome)
             self.assertEqual(len(calls), 1)
-            self.assertEqual(result["stop"], "usage_unknown" if work == "unknown" else "needs_human")
+            self.assertEqual(result["stop"], "invalid_output" if outcome.kind == "failed" else
+                             "budget_exceeded" if work == "unknown" else "needs_human")
             with contextlib.redirect_stdout(io.StringIO()) as output:
                 _print_run(result)
             report = output.getvalue()

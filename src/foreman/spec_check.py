@@ -4,7 +4,7 @@ from typing import Literal, Self
 
 from pydantic import Field, PositiveInt, model_validator
 
-from foreman.dispatch import InvalidOutput
+from foreman.contracts import InvalidOutput
 from foreman.resolution import ResolutionLedger
 from foreman.stage_output import (
     Contract, FindingResolution, SettledRuling, SpecCandidate, SpecRound as SpecRound,

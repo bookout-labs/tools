@@ -3,7 +3,6 @@
 from textwrap import indent
 from typing import NewType
 
-from foreman.config import family
 from foreman.state import DeliveryResult, WatchRecord
 from foreman.github import Forge
 from foreman.outcomes import HALTS, Halt
@@ -23,10 +22,6 @@ def watch(state: DeliveryResult, forge: Forge, repo: str, run_key: RunKey) -> Wa
     values: dict[str, str] = {}
     if "{node}" in row.file:
         values["node"] = next(node for node in reversed(state["path"]) if node != "done")
-    if "{adapter}" in row.file:
-        model = state.get("attempts", [])[-1]["model"]
-        adapter = family(model or "")
-        values["adapter"] = "codex" if adapter == "gpt" else adapter
     file = row.file.format(**values)
     title = row.title.format(**values)
     marker = f"<!-- foreman-watch: {halt}@{file} -->"

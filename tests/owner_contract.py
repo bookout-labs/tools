@@ -46,7 +46,7 @@ OWNERS = (
     OwnerCase("work", WorkState(branch="8-change", base="main", attempt_head="a" * 40,
         candidate={"disposition": "adopted", "head": "b" * 40, "tree": "c" * 40, "fingerprint": "tree",
                    "size": {"head": "c" * 40, "merge_base": "a" * 40, "lines": 1}},
-        partial_edits="partial", head_sha="b" * 40, repair_head="d" * 40), frozenset({"branch", "base"}), 3, {"branch": "delivery_branch", "base": "delivery_base",
+        head_sha="b" * 40, repair_head="d" * 40), frozenset({"branch", "base"}), 3, {"branch": "delivery_branch", "base": "delivery_base",
             "candidate": "implementation_candidate"}, repair_head_field="repair_head"),
     OwnerCase("run", RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
         base_branch="main", base_sha="a" * 40, token_cap=100, max_budget_usd="1.5"), frozenset(RunState.model_fields), 4, {}),

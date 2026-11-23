@@ -77,7 +77,6 @@ class WorkState(BaseModel, frozen=True, extra="forbid"):
     base: str = ""
     attempt_head: str = ""
     candidate: ImplementationCandidate | None = None
-    partial_edits: str = ""
     head_sha: str | None = None
     repair_head: str | None = None
 

@@ -19,15 +19,11 @@ class Halt(StrEnum):
     spec_cap = auto()
     dirty_worktree = auto()
     missing_slice = auto()
-    review_unavailable = auto()
     review_not_posted = auto()
     # Schema-12 checkpoints from before pre-commit sizing can still carry this halt.
     pr_size_unavailable = auto()
     git_failed = auto()
-    usage_unknown = auto()
     skill_missing = auto()
-    reviewer_unavailable = auto()
-    cli_missing = auto()
     merge_held = auto()
     merge_not_armed = auto()
     pr_conflict = auto()
@@ -37,12 +33,10 @@ class Halt(StrEnum):
     readiness_unavailable = auto()
     budget_exceeded = auto()
     env_unavailable = auto()
-    quota_exhausted = auto()
     publish_failed = auto()
     implementation_rejected = auto()
     failed = auto()
     model_dependency_missing = auto()
-    model_family_exhausted = auto()
     publication_model_missing = auto()
 
 
@@ -87,9 +81,6 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.missing_slice: Policy("The issue has no loadable slice.", "terminal",
         Watch("Slice issues carry a loadable slice",
               "The issue did not carry a loadable slice.", "src/foreman/github.py")),
-    Halt.review_unavailable: Policy("The pull request cannot be loaded for review.", "terminal",
-        Watch("Review finds its pull request",
-              "The pull request could not be loaded for review.", "src/foreman/github.py")),
     Halt.review_not_posted: Policy("The accepted review could not be posted.", "retry",
         Watch("Reviews post to the pull request",
               "The accepted review could not be posted.", "src/foreman/github.py")),
@@ -99,14 +90,9 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.git_failed: Policy("A workspace git operation failed.", "retry",
         Watch("Git operations complete before publication",
               "A workspace git operation failed.", "src/foreman/workspace.py")),
-    Halt.usage_unknown: Policy("A model run did not report its token usage or dollar cost.", "terminal",
-        Watch("{adapter} attempts report usage",
-              "The {adapter} attempt did not report usage.", "src/foreman/adapters/{adapter}.py")),
     Halt.skill_missing: Policy("A required instruction file is unavailable at the selected version.", "terminal",
         Watch("Pinned skills are available before dispatch",
               "A required skill was unavailable at the pinned commit.", "src/foreman/skill_rules.py")),
-    Halt.reviewer_unavailable: Policy("Independent reviewer models are temporarily unavailable.", "retry", None),
-    Halt.cli_missing: Policy("The program that runs the model could not be found.", "terminal", None),
     Halt.merge_held: Policy("Repository policy holds merge arming.", "recheck_merge", None),
     Halt.merge_not_armed: Policy("Auto-merge is not switched on for the reviewed version.", "recheck_merge",
         None, readiness=("ready", "head_changed", "closed", "retargeted")),
@@ -120,13 +106,11 @@ HALTS: Final[Mapping[Halt, Policy]] = {
         None, readiness=("policy",)),
     Halt.budget_exceeded: Policy("The run reached its token or dollar budget.", "terminal", None),
     Halt.env_unavailable: Policy("The implementation environment is unavailable.", "retry", None),
-    Halt.quota_exhausted: Policy("Eligible models have no available quota.", "retry", None),
     Halt.publish_failed: Policy("The branch or pull request could not be published.", "retry", None),
     Halt.implementation_rejected: Policy("The code changes did not match what the step reported.", "retry", None),
     Halt.failed: Policy("The worker failed or produced no usable change.", "terminal", None),
     Halt.model_dependency_missing: Policy(
         "This step needs a model from an earlier step that never ran. Fix models.toml.", "terminal", None),
-    Halt.model_family_exhausted: Policy("No model from a different company is left to review.", "terminal", None),
     Halt.publication_model_missing: Policy(
         "No model was recorded for the build step, so the commit cannot credit it. Fix models.toml.", "terminal",
         None),

@@ -56,7 +56,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     current["path"] = [node for node, _ in rows]
     current["stop"] = result["stop"]
     current["attempts"] = result.get("attempts", [])
-    if result["stop"] in {"needs_human", Halt.quota_exhausted}:
+    if result["stop"] in {"needs_human", "quota_exhausted"}:
         current["halt_detail"] = result.get("halt_detail", "")
     _write_run_log("this invocation:")
     _write_run_log("usage below is cumulative across all invocations")
@@ -83,7 +83,8 @@ def _print_run_rows(
             buckets = " ".join(f"{key}={value if value is not None else 'unknown'}"
                                for key, value in usage.items() if key != "cost_usd") if usage else "all buckets unknown"
             work = work_tokens([attempt])
-            write_literal(f"attempt {index} {attempt['stage']} {attempt['model']} {attempt['outcome']}: {buckets}; work={work if work is not None else 'unknown'}")
+            shown = f"unknown (charged {work})" if "work_charge" in attempt else work if work is not None else "unknown"
+            write_literal(f"attempt {index} {attempt['stage']} {attempt['model']} {attempt['outcome']}: {buckets}; work={shown}")
         for bucket, (total, available) in summary.buckets.items():
             write_literal(f"{bucket} tokens {total}; available {available}/{summary.charged}")
 
@@ -141,7 +142,7 @@ def _print_run_rows(
                 fields.append(model)
             write(" ".join(fields))
     stop = result.get("stop")
-    if stop in {"needs_human", Halt.quota_exhausted} and "done" not in result["path"]:
+    if stop in {"needs_human", "quota_exhausted"} and "done" not in result["path"]:
         if run_state.token_cap is not None:
             write_tokens()
         label = "done" if stop == "needs_human" and dry_run else "paused"
@@ -320,6 +321,8 @@ def run_exit_code(result: DeliveryResult) -> int:
     stop = result.get("stop")
     if stop == "needs_human":
         return 3
+    if stop == "quota_exhausted":
+        return 75
     if stop in ("verified", "sliced", "answered") and result.get("path", [])[-1:] == ["done"]:
         return 0
     return exit_code(result.get("halt"))

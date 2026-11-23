@@ -203,7 +203,10 @@ class PermissionsTest(unittest.TestCase):
                 root = Path(folder).resolve()
                 roots = tuple(root / name for name in ('methods', 'scratch/methods', 'repo/methods'))
                 call = Call(capture['argv'][-1].replace('<probe>', str(root)), '{}', mode == 'edit', root, read_roots=roots)
-                self.assertEqual([arg.replace(str(root), '<probe>') for arg in adapter.command(call)], capture['argv'])
+                # Builders keep their Codex session so a quota fallback can resume it (#234). Session
+                # persistence is not a sandbox control; re-record edit.json when the capture is refreshed.
+                captured = [arg for arg in capture['argv'] if mode == 'readonly' or arg != '--ephemeral']
+                self.assertEqual([arg.replace(str(root), '<probe>') for arg in adapter.command(call)], captured)
             outcome = adapter.read(CompletedProcess(capture['argv'], capture['returncode'], capture['stdout'], capture['stderr']), call)
             self.assertEqual((outcome.kind, outcome.output), ('ran', {'done': True}))
             roots = ('methods', 'scratch/methods', 'repo/methods')

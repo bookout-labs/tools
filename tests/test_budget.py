@@ -89,7 +89,6 @@ class DollarBudgetTests(unittest.TestCase):
                 self.assertEqual(attempts[0]["outcome"], "budget_exhausted")
                 self.assertEqual(attempts[0]["usage"], {"input": 7, "output": 3, "cache_read": 0,
                                                         "cache_creation": 0, "cost_usd": 0.1})
-                self.assertIsNone(state["pending_dispatch"])
                 self.assertEqual((state["halt"], state["stop"]), ("budget_exceeded", "budget_exceeded"))
                 self.assertIn("dollar", state["halt_detail"])
                 self.assertEqual(run_exit_code(state), 1)

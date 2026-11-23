@@ -24,15 +24,10 @@ config:
 graph TD;
 	__start__([<p>__start__</p>]):::first
 	triage(triage)
-	triage_call(triage_call)
 	research(research)
-	research_call(research_call)
 	spec(spec)
-	spec_call(spec_call)
 	implement(implement)
-	implement_call(implement_call)
 	review(review)
-	review_call(review_call)
 	verify(verify)
 	prepare(prepare)
 	reconcile(reconcile)
@@ -41,7 +36,6 @@ graph TD;
 	publish(publish)
 	review_post(review_post)
 	needs_human(needs_human)
-	quota_wait(quota_wait)
 	decide_pr_size(decide_pr_size)
 	merge(merge)
 	done(done)
@@ -53,12 +47,7 @@ graph TD;
 	decide_pr_size -.-> done;
 	decide_pr_size -.-> size;
 	implement -.-> done;
-	implement -. &nbsp;call&nbsp; .-> implement_call;
-	implement -.-> quota_wait;
 	implement -.-> reconcile;
-	implement_call -.-> done;
-	implement_call -.-> quota_wait;
-	implement_call -.-> reconcile;
 	merge --> done;
 	needs_human -.-> done;
 	needs_human -.-> review;
@@ -68,31 +57,14 @@ graph TD;
 	prepare -.-> implement;
 	publish -.-> done;
 	publish -.-> review;
-	quota_wait -.-> implement;
-	quota_wait -.-> research;
-	quota_wait -.-> review;
-	quota_wait -.-> spec;
-	quota_wait -.-> triage;
 	reconcile -.-> done;
 	reconcile -.-> size;
 	research -.-> done;
-	research -.-> quota_wait;
-	research -. &nbsp;call&nbsp; .-> research_call;
-	research_call -.-> done;
-	research_call -.-> quota_wait;
 	review -.-> done;
 	review -.-> merge;
 	review -.-> needs_human;
 	review -.-> prepare;
-	review -.-> quota_wait;
-	review -. &nbsp;call&nbsp; .-> review_call;
 	review -.-> review_post;
-	review_call -.-> done;
-	review_call -.-> merge;
-	review_call -.-> needs_human;
-	review_call -.-> prepare;
-	review_call -.-> quota_wait;
-	review_call -.-> review_post;
 	review_post -.-> done;
 	review_post -.-> merge;
 	review_post -.-> needs_human;
@@ -103,35 +75,16 @@ graph TD;
 	spec -.-> decide_pr_size;
 	spec -.-> done;
 	spec -.-> needs_human;
-	spec -.-> quota_wait;
-	spec -. &nbsp;call&nbsp; .-> spec_call;
-	spec_call -.-> decide_pr_size;
-	spec_call -.-> done;
-	spec_call -.-> needs_human;
-	spec_call -.-> prepare;
-	spec_call -.-> quota_wait;
-	spec_call -.-> spec;
+	spec -.-> prepare;
 	triage -.-> done;
 	triage -.-> needs_human;
-	triage -.-> quota_wait;
 	triage -.-> research;
 	triage -.-> spec;
-	triage -. &nbsp;call&nbsp; .-> triage_call;
-	triage_call -.-> done;
-	triage_call -.-> needs_human;
-	triage_call -.-> quota_wait;
-	triage_call -.-> research;
-	triage_call -.-> spec;
 	verify -.-> done;
 	verify -.-> prepare;
 	verify -.-> publish;
 	done --> __end__;
-	implement_call -. &nbsp;call&nbsp; .-> implement_call;
-	research_call -. &nbsp;call&nbsp; .-> research_call;
-	review_call -. &nbsp;call&nbsp; .-> review_call;
 	spec -.-> spec;
-	spec_call -. &nbsp;call&nbsp; .-> spec_call;
-	triage_call -. &nbsp;call&nbsp; .-> triage_call;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
@@ -151,7 +104,7 @@ each finding. Foreman posts a COMMENT for each report. Only concrete P0 or P1 co
 security or scope defects send the same PR back for repair. Other findings remain advisory.
 Honor applicable settled rulings.
 
-An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every configured reviewer is out of quota or its CLI is missing, review stops with `reviewer_unavailable` (exit 75). Rerun the same command without `--answer` to select from the current review order again. Other stages retain `cli_missing` for missing CLIs. Missing implementation provenance still stops with `no_reviewer`. The independent spec checker prefers a different model family from the accepted draft author. The record includes `halt_detail` for these stops.
+A PR or diff that cannot be read stops the run with `git_failed`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. Every stage shares one dispatch: a quota stop or missing CLI moves to the next qualified model, and the run pauses with `paused quota_exhausted` (exit 75) only when none is left. Missing implementation provenance still stops with `no_reviewer`. The independent spec checker prefers a different model family from the accepted draft author. The record includes `halt_detail` for these stops.
 
 Foreman creates an `<issue>-<slug>` branch from the repository default branch before the first edit. It sizes the reconciled candidate before committing, then verifies the commit before publishing. An attempt with no file changes stops with `failed`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
@@ -217,7 +170,7 @@ route GitHub label events through `foreman accept` and launch accepted runs;
 
 After reporting a halted live run, Foreman watches eligible failures by filing a proposed fix or commenting on the existing open proposal for that cause. It records the watch in SQLite and uses a run marker to avoid duplicate writes after a crash; a new halt can add fresh evidence. `--watch-repo OWNER/NAME` selects the proposal repository (default `bookout-labs/tools`). Skipped halts and watch failures are logged without changing the run's exit code; failures retry on the next invocation. Dry runs never contact Forge.
 
-`foreman run` exits 0 for successful stops (`done verified`, `done sliced`, or `done answered`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a resumable halt (`merge_held`, `merge_not_armed`, `env_unavailable`, or `reviewer_unavailable`), and 1 for every other halt.
+`foreman run` exits 0 for successful stops (`done verified`, `done sliced`, or `done answered`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a quota pause or a resumable halt (`merge_held`, `merge_not_armed`, or `env_unavailable`), and 1 for every other halt.
 
 ## What enters the graph
 
@@ -300,7 +253,7 @@ The new checkpoint is `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`. Keep using 
 same `XDG_STATE_HOME` value to resume the fresh run. The old file stays untouched,
 and other issue threads in the old file remain available under the old state directory.
 
-If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota returns. Foreman retries the same stage and retains its earlier attempt records. Review instead prints `done reviewer_unavailable` (exit 75) when all eligible reviewers are unavailable. Rerun after restoring quota or the missing CLI; review reselects from the current model table.
+If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota or the missing CLI returns. Foreman resumes the paused call, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 
 Before commit, Foreman uses the reconciled candidate's saved size against the work base's merge base, including root files, docs, and logs. Use Git 2.43 or later.
 

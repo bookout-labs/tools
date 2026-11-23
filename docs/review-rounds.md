@@ -24,5 +24,5 @@ prepares the next implementation attempt and becomes a design:N ruling in the ne
 Without a checkpointer the run stops for the design fix.
 
 Workspace parses the PR diff and interdiff once. Round 1 falls back to body comments
-when its diff is malformed. Later parse or fetch failures halt as review_unavailable.
+when its diff is malformed. Later parse or fetch failures halt as git_failed.
 Inline comments always use the PR diff, including after main merges into the branch.

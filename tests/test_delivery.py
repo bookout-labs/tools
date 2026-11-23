@@ -235,8 +235,8 @@ class DeliveryTest(unittest.TestCase):
         config.nodes["implement"] = NodeConfig(role="check", models=())
         handler = ScriptHandler()
         result = walk(handler, config=config)
-        self.assertEqual(result["stop"], "publication_model_missing")
-        self.assertIn("implement model", result["halt_detail"])
+        self.assertEqual(result["stop"], "model_dependency_missing")
+        self.assertIn("No model is configured for implement", result["halt_detail"])
         self.assertNotIn("review", [call["node"] for call in handler.calls])
 
     def test_model_selection_stops_when_its_dependency_is_missing(self):
@@ -337,7 +337,7 @@ class DeliveryTest(unittest.TestCase):
         config.nodes["review"] = replace(config.nodes["review"], other_family_from=None)
         result = walk(exhaust_review, config=config)
         self.assertEqual(offered, ["claude-opus-5-5-high", "gpt-6.1-sol-high"])
-        self.assertEqual(result["stop"], "reviewer_unavailable")
+        self.assertEqual(result["stop"], "quota_exhausted")
         self.assertIn("quota", result["halt_detail"])
         self.assertNotIn("merge", result["path"])
 

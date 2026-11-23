@@ -184,6 +184,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
                         graph.invoke(state, config)
                     self.interrupted = read_delivery_state({"stop": "interrupted", **graph.get_state(config).values})
+                    self.interrupted_next = graph.get_state(config).next
                     if review_crash:
                         self.assertEqual(self.forge.reviews, [])
                     (scratch / "resume").mkdir()
@@ -324,7 +325,7 @@ class ReviewRoundsTest(unittest.TestCase):
 
     def test_review_dispatch_crash_resumes_with_one_accepted_round(self):
         result = self.run_rounds([APPROVE], review_crash=True)
-        self.assertEqual(self.interrupted["pending_dispatch"]["stage"], "review")
+        self.assertEqual(self.interrupted_next, ("review",))
         self.assertEqual(len(self.interrupted["review"].review_findings), 0)
         self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(len(result["review"].review_findings), 1)

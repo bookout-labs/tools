@@ -136,7 +136,6 @@ class DispatchBudgetTests(unittest.TestCase):
                     if expected == "budget_exceeded":
                         self.assertEqual(run_exit_code(result), 1)
                         self.assertEqual(result["plan"].triage, "")
-                        self.assertIsNone(result["pending_dispatch"])
                         self.assertEqual(result["halt_detail"], {
                             0.2: "Run Claude spend: $1.0. Dollar allowance: $1.",
                             0.25: "Run Claude spend: $1.05. Dollar allowance: $1.",
@@ -145,7 +144,7 @@ class DispatchBudgetTests(unittest.TestCase):
                         self.assertEqual(result["plan"].triage, "needs_human")
 
     def test_spent_or_unknown_allowance_never_starts_a_candidate(self):
-        for prior, expected in ((1.0, "budget_exceeded"), (1.05, "budget_exceeded"), (None, "usage_unknown")):
+        for prior, expected in ((1.0, "budget_exceeded"), (1.05, "budget_exceeded"), (None, "budget_exceeded")):
             with self.subTest(prior=prior):
                 def unexpected(*args, **kwargs):
                     self.fail("a candidate ran without a known positive allowance")
@@ -169,11 +168,13 @@ class DispatchBudgetTests(unittest.TestCase):
                                        usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0) if has_usage else None)
 
                     result = walk(handler, limit=limit)
-                    expected = "usage_unknown" if limit or not has_usage else ("invalid_output" if kind == "failed" else "needs_human")
+                    # D10: unknown usage is charged at the remaining allowance, so a bounded run stops.
+                    expected = ("invalid_output" if kind == "failed" else
+                                "needs_human" if limit is None and has_usage else "budget_exceeded")
                     self.assertEqual(result["stop"], expected)
                     self.assertEqual(len(calls), 2 if limit is None and kind == "quota" and has_usage else 1)
-                    if limit and has_usage:
-                        self.assertIn("without a dollar cost", result["halt_detail"])
+                    if limit and has_usage and kind != "failed":
+                        self.assertIn("usage_unknown", result["halt_detail"])
                         self.assertIn("Dollar allowance: $1.", result["halt_detail"])
                         self.assertEqual(run_exit_code(result), 1)
                         self.assertEqual(result["plan"].triage, "")
@@ -196,11 +197,11 @@ class DispatchBudgetTests(unittest.TestCase):
 
     def test_stop_precedence_and_budget_stop_detail(self):
         cases = (
-            (Outcome("budget_exhausted"), 100, "usage_unknown", "unknown work charge"),
-            (Outcome("budget_exhausted", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=99, output_tokens=0)), 100, "budget_exceeded", "spend: unknown"),
+            (Outcome("budget_exhausted"), 100, "budget_exceeded", "usage_unknown"),
+            (Outcome("budget_exhausted", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=99, output_tokens=0)), 100, "budget_exceeded", "usage_unknown"),
             (Outcome("budget_exhausted", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=99, output_tokens=0, total_cost_usd=0.1)),
              100, "budget_exceeded", "spend: $0.9"),
-            (Outcome("ran", NEEDS_HUMAN), 100, "usage_unknown", "without a usage report"),
+            (Outcome("ran", NEEDS_HUMAN), 100, "budget_exceeded", "usage_unknown"),
             (Outcome("ran", NEEDS_HUMAN, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=99, output_tokens=0, total_cost_usd=0.2)),
              100, "budget_exceeded", "Run used 100 work tokens; cap is 100"),
         )
