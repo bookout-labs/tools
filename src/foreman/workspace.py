@@ -18,7 +18,6 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, with_c
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
-from foreman.fixture_manifest import FixtureManifest, fact_record_path
 from foreman.credentials import CredentialFailure, COMMAND_TIMEOUT, credentials, failure, git_auth, validate_remote
 from foreman.redaction import redact
 from foreman.review_context import ReviewContext, ReviewSide
@@ -182,18 +181,15 @@ class Workspace(Protocol):
     def refresh(self, branch: str, head: str) -> None: ...
     def commit(self, message: str) -> None: ...
     def committed(self, parent: str, message: str) -> bool: ...
-    def reconcile(self, parent: str, branch: str, base_branch: str,
-                  fact_record: str | None) -> ImplementationCandidate | None: ...
+    def reconcile(self, parent: str, branch: str, base_branch: str) -> ImplementationCandidate | None: ...
     def tree(self, head: str | None) -> str: ...
     def soft_reset(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
     def push(self, branch: str, repo: str) -> None: ...
-    def files_at(self, head: str, directory: str) -> set[str]: ...
-    def read_file_at(self, head: str, path: str) -> str: ...
     def has_file(self, path: str) -> bool: ...
     def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize: ...
-    def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff: ...
-    def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope: ...
+    def review_diff(self, base: str, head: str) -> ReviewDiff: ...
+    def review_scope(self, base: str, head: str) -> ReviewScope: ...
 
 
 def branch_command(branch: str, base: str) -> list[str]:
@@ -342,8 +338,7 @@ class LiveWorkspace:
             )
         return ancestor
 
-    def reconcile(self, parent: str, branch: str, base_branch: str,
-                  fact_record: str | None) -> ImplementationCandidate | None:
+    def reconcile(self, parent: str, branch: str, base_branch: str) -> ImplementationCandidate | None:
         observed = self.inspect()
         recovery = (f" Checkout preserved. Restore branch {branch} at {parent}, keep the intended edits, then rerun. "
                     "If history is shallow, fetch the needed history with git fetch --unshallow origin before resuming.")
@@ -363,29 +358,9 @@ class LiveWorkspace:
                 if b"R" in entry[:2] or b"C" in entry[:2]:
                     next(status)
         paths.discard(b"")
-        ignored = self._ignored_at(merge_base, paths)
-        facts: set[bytes] = set()
-        if fact_record is not None and self.has_file(fact_record) and not (self.root / fact_record).is_symlink():
-            facts.add(os.fsencode(fact_record))
-            try:
-                manifest = FixtureManifest.from_toml((self.root / fact_record).read_text())
-                for capture in manifest.fixtures:
-                    path = (PurePosixPath(fact_record).parent / fact_record_path(capture)).as_posix()
-                    if self.has_file(path) and not (self.root / path).is_symlink():
-                        facts.add(os.fsencode(path))
-            except (ValueError, OSError) as exc:
-                raise ImplementationRejected(f"Invalid fact record {fact_record}: {exc}. Checkout preserved.") from exc
-        rejected = ignored - facts
-        if rejected:
+        if rejected := self._ignored_at(merge_base, paths):
             names = ", ".join(repr(os.fsdecode(path)) for path in sorted(rejected))
             raise ImplementationRejected(f"Disposable paths rejected: {names}. Remove them, keep intended edits, then rerun. Checkout preserved.")
-        ignored_facts = self._inspection_git(
-            merge_base, "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--",
-            *(os.fsdecode(path) for path in sorted(facts)),
-        ).split(b"\0") if facts else []
-        if any(ignored_facts):
-            self._git("--literal-pathspecs", "add", "--force", "--", *(os.fsdecode(path) for path in ignored_facts if path))
-            observed = self.inspect()
         if observed.head == parent:
             return None if observed.clean else {"disposition": "edits", "fingerprint": self.fingerprint(),
                 "size": self.pull_request_size(None, base_branch, merge_base=merge_base)}
@@ -450,20 +425,6 @@ class LiveWorkspace:
         if not observed or observed[0] != head:
             self._git(*push_command("origin", branch)[1:])
 
-    def files_at(self, head: str, directory: str) -> set[str]:
-        tree = os.fsdecode(self._git("--no-replace-objects", "ls-tree", "-rz", "--full-tree", head, "--", directory))
-        files: set[str] = set()
-        for entry in tree.split("\0"):
-            metadata, _, path = entry.partition("\t")
-            if metadata.startswith(("100644 blob ", "100755 blob ")):
-                files.add(path)
-        return files
-
-    def read_file_at(self, head: str, path: str) -> str:
-        try:
-            return self._git("--no-replace-objects", "show", f"{head}:{path}").decode("utf-8")
-        except UnicodeError as exc:
-            raise WorktreeInspectionFailed(f"Could not decode {path}: {exc}") from exc
     def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
         merge_base = merge_base or self._base_merge_base(base_branch, head or "HEAD")
         head = self.tree(None) if head is None else head
@@ -521,40 +482,30 @@ class LiveWorkspace:
             raise WorktreeInspectionFailed("Review requires full base and head SHAs.")
         self._git("fetch", "--no-tags", "origin", base, head, timeout=30)
 
-    def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff:
+    def review_diff(self, base: str, head: str) -> ReviewDiff:
         self._fetch_review(base, head)
         args = (
             "--no-replace-objects", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
-            "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}..{head}" if interdiff else f"{base}...{head}", "--",
+            "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", f"{base}...{head}", "--",
         )
         command = shlex.join(("git", *args))
-        merge_base = None
-        if interdiff:
-            command = f"# previous = last accepted reviewed head {base} (history only)\n# Interdiff: old = previous; new = head\n{command}"
-        else:
-            merge_base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base, head)).strip()
-            if not FULL_SHA.fullmatch(merge_base):
-                raise WorktreeInspectionFailed("Git did not report a full merge-base SHA.")
-            command = f"# base = PR merge-base {merge_base}\n# head = current verified head {head}\n# Full PR diff: old = merge-base (base); new = head\n{command}"
+        merge_base = os.fsdecode(self._git("--no-replace-objects", "merge-base", base, head)).strip()
+        if not FULL_SHA.fullmatch(merge_base):
+            raise WorktreeInspectionFailed("Git did not report a full merge-base SHA.")
+        command = f"# base = PR merge-base {merge_base}\n# head = current verified head {head}\n# Full PR diff: old = merge-base (base); new = head\n{command}"
         return ReviewDiff(command, os.fsdecode(self._git(*args)), merge_base)
 
-    def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope:
+    def review_scope(self, base: str, head: str) -> ReviewScope:
         pr = self.review_diff(base, head)
         try:
             inline = added_lines(pr.patch)
-        except UnidiffParseError as exc:
-            if previous is not None:
-                raise WorktreeInspectionFailed("PR diff could not be parsed for scoping.") from exc
+        except UnidiffParseError:
             inline = frozenset[tuple[str, int]]()
         commands = [pr.command]
         merge_base = pr.merge_base
         assert merge_base is not None
-        if previous is not None:
-            commands.append(self.review_diff(previous, head, interdiff=True).command)
         blobs: dict[str, list[str]] = {}
-        for side, sha in (("base", merge_base), ("head", head), ("previous (history only)", previous)):
-            if sha is None:
-                continue
+        for side, sha in (("base", merge_base), ("head", head)):
             args = ("--no-replace-objects", "ls-tree", "-rz", "--full-tree", sha, "--")
             commands.append(f"# {side} tree {sha}\n{shlex.join(('git', *args))}")
             for entry in self._git(*args).split(b"\0"):

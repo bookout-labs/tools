@@ -80,10 +80,9 @@ class DeliveryTest(unittest.TestCase):
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "implement", "verify", "proof", "publish", "review", "merge", "done"],
+            ["triage", "implement", "verify", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
-        self.assertEqual(result["review"].risk["level"], "low")
         self.assertEqual(result["merge"].status, "skipped")
         self.assertEqual(result["work"].head_sha, result["checks"].verified_head)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
@@ -94,14 +93,15 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="spec", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec", "implement", "verify", "proof", "publish", "review", "merge", "done"],
+            ["triage", "spec", "implement", "verify", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
-    def test_ready_spec_keeps_the_loaded_slice_proof_obligations(self):
+    def test_ready_spec_retains_acceptance_specific_evidence(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec", "implement", "verify", "proof", "done"])
-        self.assertEqual(result["stop"], "insufficient_evidence")
+        self.assertEqual(result["path"], ["triage", "spec", "implement", "verify", "publish", "review", "merge", "done"])
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["plan"].slice["properties"], SLICES[0]["properties"])
 
     def test_worker_cannot_declare_depends_on(self):
         result = walk(
@@ -258,7 +258,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "implement", "verify", "proof", "publish", "review", "implement", "verify", "proof", "publish", "review", "merge", "done"],
+            ["triage", "implement", "verify", "publish", "review", "implement", "verify", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
@@ -306,27 +306,20 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["path"], ["triage"])
         self.assertEqual(result["stop"], "needs_human")
 
-    def test_review_without_risk_is_rejected(self):
+    def test_review_without_findings_is_rejected(self):
         handler = ScriptHandler()
 
-        def drop_risk(node, model, state, instruction):
+        def drop_findings(node, model, state, instruction):
             raw = handler(node, model, state, instruction)
             if node == "review":
-                raw.output.pop("risk")
+                raw.output.pop("findings")
             return raw
 
-        result = walk(drop_risk)
+        result = walk(drop_findings)
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertIn("review output from claude-opus-5-5-high: risk:", result["halt_detail"])
+        self.assertIn("review output from claude-opus-5-5-high: findings:", result["halt_detail"])
         self.assertEqual(result["path"].count("review"), 1)
         self.assertNotIn("merge", result["path"])
-
-    def test_non_string_risk_level_stops_as_invalid_output(self):
-        handler = ScriptHandler()
-        handler.risk["level"] = ["low"]
-        result = walk(handler)
-        self.assertEqual(result["stop"], "invalid_output")
-        self.assertIn("review output from claude-opus-5-5-high: risk.level:", result["halt_detail"])
 
     def test_review_exhausts_the_whole_configured_list(self):
         handler = ScriptHandler()
@@ -378,11 +371,8 @@ class DeliveryTest(unittest.TestCase):
         for instruction in by_node.values():
             self.assertNotIn("Talk through the work with the person.", instruction)
             self.assertNotIn("The factory label triggers the delivery graph.", instruction)
-        self.assertIn("Do not edit it.", by_node["implement"])
-        self.assertIn("Do not add a test that restates the code.", by_node["implement"])
+        self.assertTrue(by_node["implement"].startswith(stage_text("implement")))
         self.assertIn("review-quality.md", by_node["review"])
-        self.assertNotIn("insufficient_evidence", by_node["implement"])
-        self.assertIn("merge-risk.md", by_node["review"])
         self.assertNotIn("verify", by_node)
         self.assertNotIn("gpt-6.1-sol-high", " ".join(by_node.values()))
 
@@ -391,9 +381,8 @@ class DeliveryTest(unittest.TestCase):
             with self.subTest(kind=kind):
                 built = walk(ScriptHandler(work_kind=kind))
                 methods = next(record["methods"] for record in built["attempts"] if record["stage"] == "implement")
-                self.assertEqual("tdd/SKILL.md" in methods, kind == "bug_fix")
-                self.assertEqual("benchmark-checklist/SKILL.md" in methods, kind == "perf_issue")
-                self.assertIn("principle-prove-it-works/SKILL.md", methods)
+                self.assertEqual("tdd/SKILL.md#L9-L31" in methods, kind == "bug_fix")
+                self.assertEqual("benchmark-checklist/SKILL.md#L13-L27" in methods, kind == "perf_issue")
 
                 researched = walk(ScriptHandler(triage="question", work_kind=kind))
                 research = researched["attempts"][-1]["methods"]
@@ -407,21 +396,12 @@ class DeliveryTest(unittest.TestCase):
                 methods = next(record["methods"] for record in result["attempts"] if record["stage"] == "spec")
                 self.assertEqual("statechart/SKILL.md" in methods, item is not None and item["stateful"])
 
-    def test_local_proof_methods_keep_independent_conditions(self):
-        for screen in ("", SLICES[0]["screen"]):
-            for properties in ([], SLICES[0]["properties"]):
-                with self.subTest(screen=screen, properties=properties):
-                    result = walk(ScriptHandler(), slice={**EMPTY_SLICE, "screen": screen, "properties": properties})
-                    methods = next(record["methods"] for record in result["attempts"] if record["stage"] == "implement")
-                    self.assertEqual("foreman/skills/browser-proof.md" in methods, bool(screen))
-                    self.assertEqual("foreman/skills/formal-proof.md" in methods, bool(properties))
-
     def test_worker_gets_absolute_read_only_method_paths(self):
         script = ScriptHandler(triage="spec")
 
         def read_methods(node, model, state, instruction):
             paths = re.findall(r"^(?:Read |Use only lines \d+ through \d+ of )(/.*?\.md) ", instruction, re.M)
-            if node != "verify":
+            if node != "implement":
                 self.assertTrue(paths)
             for path in paths:
                 method = Path(path)

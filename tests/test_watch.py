@@ -23,10 +23,9 @@ MARKER = "<!-- foreman-watch: invalid_output@src/foreman/stages/review.md -->"
 FILING = {
     "invalid_output": ("Fix invalid output on review", "stages/review.md"),
     "verify_cap": ("Investigate repeated verify failures reaching cap", "stages/implement.md"),
-    "review_cap": ("Investigate repeated review or proof blocks reaching cap", "stages/implement.md"),
+    "review_cap": ("Investigate repeated review blocks reaching cap", "stages/implement.md"),
     "spec_cap": ("Investigate rejected slice plans reaching cap", "stages/spec.md"),
     "dirty_worktree": ("Handle dirty worktree before verify", "stages/implement.md"),
-    "insufficient_evidence": ("Required proof is missing after implement", "stages/implement.md"),
     "missing_slice": ("Slice issues carry a loadable slice", "github.py"),
     "review_unavailable": ("Review finds its pull request", "github.py"),
     "review_not_posted": ("Reviews post to the pull request", "github.py"),
@@ -37,7 +36,7 @@ FILING = {
 }
 SKIPPED = {"reviewer_unavailable", "model_dependency_missing", "model_family_exhausted", "publication_model_missing", "cli_missing", "merge_held", "merge_not_armed", "budget_exceeded",
            "env_unavailable", "quota_exhausted", "publish_failed", "failed",
-           "design_rethink", "implementation_rejected", "pr_conflict", "ci_pending", "ci_red",
+           "implementation_rejected", "pr_conflict", "ci_pending", "ci_red",
            "readiness_unavailable", "queue_rejected"}
 
 

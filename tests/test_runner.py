@@ -28,13 +28,12 @@ from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
 from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery
 from foreman.dispatch import InvalidOutput
-from foreman.dry_run import DEFAULT_RISK, ScriptHandler, SCRIPTED_USAGE
+from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, render_slice_body
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import _load_slice, AnswerError, RunPresentation, run_live_delivery
-from foreman.review_round import carried_tool_facts
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output
@@ -63,13 +62,16 @@ SLICE = {
     "stateful": False,
 }
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
-BROWSER = {"screen": SLICE["screen"], "trace": "traces/items.zip", "passed": True}
-FORMAL = {"ran": True, "constraints": [{"constraint": "unique_item_id", "rejected": True}], "typecheck": None}
 SEAM = {"name": "item-list", "exists": False, "path": None}
 BUILDER = {**SLICE, "builds": [SEAM]}
 CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "uses": [SEAM]}
-APPROVE = {"resolutions": [], "risk": DEFAULT_RISK, "findings": [], "tool_facts": []}
-FINDING = {"id": "f1", "kind": "correctness", "fix": "Add a check.", "ruling_id": None, "file": "items.txt", "line": 2, "severity": "blocking", "summary": "Add a check."}
+APPROVE = {"findings": [], "human_question": None}
+FINDING = {
+    "id": "f1", "kind": "correctness", "severity": "P1", "ruling_id": None,
+    "location": {"side": "head", "path": "items.txt", "line": 2},
+    "summary": "Add a check.", "evidence": "A duplicate item bypasses validation.",
+    "impact": "The duplicate is counted twice.",
+}
 DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
 
@@ -93,7 +95,7 @@ class FakeWorkspace(LiveWorkspace):
     def fingerprint(self):
         return "synthetic-edits"
 
-    def reconcile(self, parent, branch, base_branch, fact_record):
+    def reconcile(self, parent, branch, base_branch):
         return None if self.current.clean else {"disposition": "edits", "fingerprint": self.fingerprint(),
             "size": self.pull_request_size(self.tree(None), base_branch)}
 
@@ -124,19 +126,16 @@ class FakeWorkspace(LiveWorkspace):
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT
 
-    def review_scope(self, base, head, previous):
+    def review_scope(self, base, head):
         pr = self.review_diff(base, head)
         try:
             inline = added_lines(pr.patch)
         except UnidiffParseError:
-            if previous is not None:
-                raise WorktreeInspectionFailed("PR diff could not be parsed for scoping.")
             inline = frozenset()
-        return ReviewScope(pr.command if previous is None else
-                           pr.command + "\n" + self.review_diff(previous, head, interdiff=True).command, inline)
+        return ReviewScope(pr.command, inline)
 
-    def review_diff(self, base, head, *, interdiff=False):
-        return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
+    def review_diff(self, base, head):
+        return ReviewDiff(f"git diff {base}...{head}", DIFF)
 
 
 def quota_with_usage(args):
@@ -154,8 +153,6 @@ def worker_reply(args, reply):
             reply = {"work_kind": "feature", "slice": None, "human_question": None, **reply}
         if "spec" in reply:
             reply = {"slices": None, "questions": [], **reply}
-        if "implementation" in reply and args[0] == "codex":
-            reply = {"browser_proof": None, "formal_proof": None, **reply}
     if args[0] == "codex":
         events = codex_events()
         events[-2]["item"]["text"] = json.dumps(reply) if isinstance(reply, dict) else reply
@@ -179,8 +176,8 @@ class FixtureWorkspace(LiveWorkspace):
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT
 
-    def review_diff(self, base, head, *, interdiff=False):
-        return ReviewDiff(f"git diff {base}{'..' if interdiff else '...'}{head}", DIFF)
+    def review_diff(self, base, head):
+        return ReviewDiff(f"git diff {base}...{head}", DIFF)
 
 
 class FakeGitHub:
@@ -564,11 +561,6 @@ assert dict(os.environ) == inherited
 
 
 class StageOutputTest(unittest.TestCase):
-    def test_cli_rejects_invalid_fact_record_before_running(self):
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-            main(["run", "delivery", "--repo", "Example/Engine", "--fact-record", "../facts.toml"])
-        self.assertEqual(raised.exception.code, 2)
-
     def test_worker_schemas_deliver_the_shared_edit_contract(self):
         for node in ("triage", "spec"):
             def run(args, cwd, env):
@@ -600,34 +592,14 @@ class StageOutputTest(unittest.TestCase):
             self.assertNotIn("oneOf", schema)
             json.loads(json.dumps(schema), object_hook=check)
 
-    def test_extra_field_reports_its_nested_path(self):
-        raw = {
-            "implementation": "Done", "formal_proof": None,
-            "browser_proof": {"screen": None, "trace": None, "passed": None, "extra": True},
-        }
-        with self.assertRaisesRegex(InvalidOutput, r"^browser_proof\.extra:"):
-            parse_output(ImplementOutput, raw)
-
     def test_screen_rejects_control_characters_and_subdirectories(self):
         for screen in ("docs/screens/na\x01me.md", "docs/screens/a/b.md"):
             with self.subTest(screen=screen), self.assertRaisesRegex(InvalidOutput, r"^screen:"):
                 parse_output(Slice, {**SLICE, "screen": screen})
 
-    def test_formal_rejection_requires_a_boolean(self):
-        for fields in ({}, {"rejected": "true"}, {"rejected": 1}):
-            with self.subTest(fields=fields):
-                raw = {
-                    "implementation": "Done",
-                    "browser_proof": None,
-                    "formal_proof": {"ran": None, "typecheck": None,
-                                     "constraints": [{"constraint": "unique_item_id", **fields}]},
-                }
-                with self.assertRaisesRegex(InvalidOutput, r"^formal_proof\.constraints\.0\.rejected:"):
-                    parse_output(ImplementOutput, raw)
-
     def test_implementation_rejects_worker_head(self):
         with self.assertRaisesRegex(InvalidOutput, r"^head_sha:"):
-            parse_output(ImplementOutput, {"implementation": "Done", "head_sha": HEAD, "browser_proof": None, "formal_proof": None})
+            parse_output(ImplementOutput, {"implementation": "Done", "head_sha": HEAD})
 
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
@@ -711,10 +683,10 @@ class LiveRunnerTest(unittest.TestCase):
                     self.assertIn("Network and database connections are unavailable", prompt)
                     return quota_with_usage(args)
                 self.assertIn("exact check command", prompt)
-                with patch("foreman.worker.subprocess.run", return_value=worker_reply(args, {"implementation": "retry", "browser_proof": None, "formal_proof": None})) as run:
+                with patch("foreman.worker.subprocess.run", return_value=worker_reply(args, {"implementation": "retry"})) as run:
                     run_worker_command(args, cwd, env)
                     self.assertEqual(run.call_args.kwargs["input"], prompt)
-                return active.reply(args, {"implementation": "retry", "browser_proof": None, "formal_proof": None})
+                return active.reply(args, {"implementation": "retry"})
             return active.reply(args, next(replies))
         def invoke(stop=None):
             def compile(*args, **kwargs):
@@ -780,6 +752,9 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertNotIn("failure attempt 1", states[3]["checks"]["failure_output"])
         self.assertEqual(result["checks"].verify, "pass")
         self.assertEqual(result["checks"].failure_output, "")
+        self.assertEqual(result["path"].count("publish"), 1)
+        self.assertEqual(result["path"][-5:], ["verify", "publish", "review", "merge", "done"])
+        self.assertEqual(self.github.reviews[-1][2], result["checks"].verified_head)
 
     def test_preflight_output_never_replaces_failed_check_context(self):
         active = FakeWorkspace(self.cwd)
@@ -928,11 +903,11 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(run_exit_code(result), 75)
                 self.assertIn(receipt.identity, result["halt_detail"])
 
-    def test_changed_saved_handoff_invalidates_receipt_for_renewed_proof(self):
+    def test_changed_saved_handoff_invalidates_receipt_for_renewed_review(self):
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
         with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
             self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-        with patch.object(self.github, "reconcile_merge", side_effect=HandoffChanged("PR head changed; resume to renew proof")):
+        with patch.object(self.github, "reconcile_merge", side_effect=HandoffChanged("PR head changed; resume to renew review")):
             result = self.walk([])
         self.assertEqual(result["stop"], "merge_not_armed")
         self.assertIsNone(result["merge"].receipt)
@@ -1014,7 +989,72 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         changed.pr.base.sha = "c" * 40
         changed.pr.merge_commit_sha = "d" * 40
         with patch.object(self.github, "readiness", side_effect=[ready, changed]):
-            self.assertEqual(self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])["stop"], "verified")
+            result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["stop"], "merge_not_armed")
+        self.assertIsNone(result["merge"].receipt)
+
+    def test_review_answer_survives_failed_post_and_fresh_process(self):
+        script = r"""
+import json, sys
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
+from foreman.config import PstackPin, load_config
+from foreman.delivery import LiveRun
+from foreman.github import ForgeError
+from foreman.runner import run_live_delivery
+from foreman.worker import CliWorker
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace
+
+phase, pin = sys.argv[1:]
+answer = "Active items only."
+question = "Should the list include archived items?"
+forge = FakeGitHub()
+workspace = FakeWorkspace(Path.cwd())
+replies = iter({
+    "initial": [{"triage": "implement"}, {"implementation": "built"}, {**APPROVE, "human_question": question}],
+    "answer": [APPROVE],
+    "resume": [],
+}[phase])
+
+def worker(args, cwd, env):
+    if phase == "answer":
+        assert answer in args[-1]
+    return workspace.reply(args, next(replies))
+
+def unavailable(*args, **kwargs):
+    raise ForgeError("Review post temporarily unavailable")
+
+if phase == "answer":
+    forge.post_review = unavailable
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=PstackPin.model_validate_json(pin))):
+    result = run_live_delivery(
+        repo="Example/Engine", issue=8, check="exit 0", checkpoint=Path("review.sqlite3"),
+        run=LiveRun(forge, workspace), dispatcher=CliWorker(workspace.root, worker),
+        answer=None if phase == "initial" else answer,
+    )
+print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path": result["path"],
+                  "answers": result.get("human_answers"), "rulings": result["review"].settled_rulings}))
+"""
+        paths = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
+        bootstrap = f"import sys; sys.path[:0] = {paths!r}\n"
+
+        def invoke(phase):
+            process = subprocess.run([sys.executable, "-c", bootstrap + script, phase, self.pin.model_dump_json()],
+                                     cwd=self.cwd, text=True, capture_output=True)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            return json.loads(process.stdout)
+
+        self.assertEqual(invoke("initial")["stop"], "needs_human")
+        interrupted = invoke("answer")
+        self.assertEqual(interrupted["stop"], "review_not_posted")
+        resumed = invoke("resume")
+        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["answers"], ["Active items only."])
+        self.assertEqual(resumed["qa"], [{"stage": "review", "question": "Should the list include archived items?",
+                                           "answer": "Active items only."}])
+        self.assertEqual(resumed["rulings"], interrupted["rulings"])
+        self.assertEqual(resumed["path"].count("implement"), 1)
 
     def test_unavailable_and_policy_outcomes_fail_closed(self):
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
@@ -1026,21 +1066,18 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             self.assertEqual((result["stop"], run_exit_code(result)), ("readiness_unavailable", 75))
             self.assertEqual(result["merge"].status, "armed" if index == 1 else "not_armed")
 
-    def test_receipt_and_ledger_guard_prevent_arming(self):
-        from foreman.review_round import ReviewHistory
-        for kind in ["receipt", "ledger"]:
-            self.checkpoint = self.cwd / (kind + ".sqlite3")
-            def posted(*args, **kwargs):
-                if kind == "ledger":
-                    self.enterContext(patch.object(ReviewHistory, "unresolved", return_value=[FINDING]))
-                return {"id": 1, "state": "COMMENTED", "commit_id": "d"*40 if kind == "receipt" else HEAD}
-            with patch.object(self.github, "post_review", side_effect=posted), patch.object(self.github, "arm_auto_merge", wraps=self.github.arm_auto_merge) as arm:
-                result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-            self.assertEqual(result["stop"], "merge_not_armed")
-            self.assertIn("Renew review", result["halt_detail"])
-            arm.assert_not_called()
+    def test_receipt_must_match_comment_and_verified_head(self):
+        for state, commit in (("COMMENTED", "d" * 40), ("APPROVED", HEAD)):
+            with self.subTest(state=state, commit=commit), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint = Path(directory) / "run.sqlite3"
+                receipt = {"id": 1, "state": state, "commit_id": commit}
+                with patch.object(self.github, "post_review", return_value=receipt):
+                    result = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
+                self.assertEqual(result["stop"], "review_not_posted")
+                self.assertIsNone(result["review"].review_receipt)
+                self.assertFalse(self.github.merge_calls)
 
-    def test_remote_only_repair_fetches_and_renews_proof(self):
+    def test_remote_only_repair_fetches_and_renews_review(self):
         workspace = FakeWorkspace(self.cwd)
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
         with patch.object(self.github, "readiness", return_value=ready.model_copy(update={"outcome": "conflict"})):
@@ -1075,36 +1112,30 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(resumed["review"].review_receipt["commit_id"], repaired)
         self.assertEqual(len(self.github.reviews), 2)
 
-    def test_findings_and_change_kind_reach_the_next_implement_prompt(self):
+    def test_blocking_findings_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
-        changes = dict(APPROVE)
-        for severity, kind in (("nit", "nits"), ("blocking", "blocking")):
-            with self.subTest(severity=severity):
-                self.checkpoint = self.cwd / f"{severity}.sqlite3"
-                finding = {**FINDING, "severity": severity}
-                self.walk([{"triage": "implement"}, built, {**changes, "findings": [finding]}, built, {**APPROVE, "resolutions": [{"id": finding["id"], "status": "resolved"}]}])
-                state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
-                state["review"] = ReviewState.model_validate(state["review"])
-                self.assertEqual(state["review"].findings, [finding])
-                self.assertEqual(state["review"].detail, ReviewOutput.model_validate(changes, context=SCRIPTED_REVIEW_CONTEXT).risk.render())
-                self.assertEqual(state["review"].review_change_kind, kind)
+        advisory = {**FINDING, "id": "advice", "severity": "P2"}
+        self.walk([{"triage": "implement"}, built, {**APPROVE, "findings": [advisory, FINDING]}, built, APPROVE])
+        state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
+        self.assertEqual(ReviewState.model_validate(state["review"]).findings, [FINDING])
 
     def test_review_posts_only_changed_lines_inline(self):
         findings = [
             FINDING,
-            {**FINDING, "id": "f2", "line": 1, "summary": "Untouched context."},
-            {**FINDING, "id": "f3", "file": "README.md", "line": 1, "summary": "Unchanged dependency."},
+            {**FINDING, "id": "f2", "location": {**FINDING["location"], "line": 1}, "summary": "Untouched context."},
+            {**FINDING, "id": "f3", "location": {"side": "head", "path": "README.md", "line": 1}, "summary": "Unchanged dependency."},
         ]
         built = {"implementation": "Built."}
-        changes = {**APPROVE, "findings": findings}
-        self.walk([{"triage": "implement"}, built, changes, built, {**APPROVE, "resolutions": [{"id": f["id"], "status": "resolved"} for f in findings]}])
+        result = self.walk([{"triage": "implement"}, built, {**APPROVE, "findings": findings}, built, APPROVE])
+        self.assertEqual(result["merge"].status, "armed")
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
-        selection = '\n\nReviewer claude-opus-5-5-high; implemented by gpt-6.1-sol-high; same-family fallback: not needed.'
-        self.assertEqual(self.github.reviews, [(
-            "Example/Engine", 12, HEAD,
-            "Graph verdict: changes. Review event: COMMENT (Foreman authors this PR).\n\n" + ReviewOutput.model_validate(APPROVE, context=SCRIPTED_REVIEW_CONTEXT).risk.render() + selection + "\n\nitems.txt:1 [blocking] Untouched context.\n\nREADME.md:1 [blocking] Unchanged dependency.",
-            [{"path": "items.txt", "line": 2, "side": "RIGHT", "body": "[blocking] Add a check."}],
-        ), ("Example/Engine", 12, HEAD, "Graph verdict: approve. Review event: COMMENT (Foreman authors this PR).\n\n" + ReviewOutput.model_validate(APPROVE, context=SCRIPTED_REVIEW_CONTEXT).risk.render() + selection, [])])
+        _, _, head, body, comments = self.github.reviews[0]
+        self.assertEqual(head, HEAD)
+        self.assertIn("head items.txt:1 [P1] Untouched context.", body)
+        self.assertIn("head README.md:1 [P1] Unchanged dependency.", body)
+        self.assertEqual(len(comments), 1)
+        self.assertEqual((comments[0]["path"], comments[0]["line"], comments[0]["side"]), ("items.txt", 2, "RIGHT"))
+        self.assertIn(FINDING["evidence"], comments[0]["body"])
 
     def test_review_failures_halt_without_merging(self):
         changes = {**APPROVE, "findings": [FINDING]}
@@ -1226,11 +1257,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             result = self.walk([], preflight="exit 9")
         self.assertEqual(result["checks"], ChecksState(check="exit 0", preflight="exit 9"))
         self.assertEqual(result["stop"], "skill_missing")
-        self.assertIsNone(result["review"].fact_record)
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             saved = saver.get({"configurable": {"thread_id": "example/engine#8"}})
-            self.assertIsNone(saved["channel_values"]["review"].fact_record)
         self.assertEqual(run_exit_code(result), 1)
         self.assertEqual(result["skill_reason"], "pin_unavailable")
         self.assertEqual(result["halt_detail"], f"pstack pin unavailable, commit {commit}")
@@ -1240,7 +1269,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending"})
         with patch.object(self.github, "readiness", return_value=pending):
             halted = self.walk([{"triage": "implement"},
-                {"implementation": "built", "browser_proof": BROWSER, "formal_proof": FORMAL}, APPROVE], preflight="exit 0")
+                {"implementation": "built"}, APPROVE], preflight="exit 0")
         self.assertEqual(halted["stop"], "ci_pending")
         result = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
         assert_channels(self, result, halted, names={"run", "checks", "plan", "review"})
@@ -1270,91 +1299,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                                 answer="Only open items", skills=source)
         self.assertEqual(resumed["stop"], "answered")
         self.assertEqual(source.pins, [self.pin, self.pin])
-
-    def test_resume_uses_saved_custom_fact_record_when_omitted(self):
-        run = LiveRun(self.github, FakeWorkspace(self.cwd))
-        first = run_live_delivery(
-            repo="Example/Engine", issue=8, check="exit 0", fact_record="evidence/facts.toml",
-            checkpoint=self.checkpoint, run=run,
-            dispatcher=lambda *args: Outcome("quota", usage=SCRIPTED_USAGE),
-        )
-        self.assertEqual(first["review"].fact_record, "evidence/facts.toml")
-        resumed = run_live_delivery(
-            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint, run=run,
-            dispatcher=lambda *args: Outcome("quota", usage=SCRIPTED_USAGE),
-        )
-        self.assertEqual(resumed["review"].fact_record, "evidence/facts.toml")
-
-    def test_resume_rejects_a_different_fact_record(self):
-        self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
-        with self.assertRaisesRegex(ValueError, "--fact-record differs"):
-            run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
-                              fact_record="evidence/other.toml", checkpoint=self.checkpoint, dispatcher=ScriptHandler(),
-                              run=LiveRun(self.github, FakeWorkspace(self.cwd)))
-        self.assertEqual(self.walk([])["stop"], "verified")
-
-    def test_resume_freezes_nullable_record_before_compilation(self):
-        for record, stop in ((None, "quota"), ("evidence/facts.toml", "quota"),
-                             (None, "needs_human"), ("tests/fixtures/manifest.toml", "terminal")):
-            with self.subTest(record=record, stop=stop), TemporaryDirectory() as directory:
-                checkpoint = Path(directory) / "run.sqlite3"
-                run = LiveRun(self.github, FakeWorkspace(self.cwd))
-                dispatcher = (lambda *args: Outcome("quota", usage=SCRIPTED_USAGE)) if stop == "quota" else ScriptHandler(triage="needs_human" if stop == "needs_human" else "implement")
-                first = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=checkpoint,
-                                          fact_record=record, run=run, dispatcher=dispatcher)
-                self.assertEqual(first["review"].fact_record, record)
-                before = checkpoint.read_bytes()
-                with patch("foreman.runner.compile_delivery", side_effect=AssertionError("compiled before validation")):
-                    with self.assertRaisesRegex(ValueError, "--fact-record differs"):
-                        run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=checkpoint,
-                                          fact_record="other.toml", run=run, dispatcher=dispatcher)
-                self.assertEqual(checkpoint.read_bytes(), before)
-                for argument in (None, record):
-                    resumed = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=checkpoint,
-                                               fact_record=argument, run=run, dispatcher=dispatcher)
-                    self.assertEqual(resumed["review"].fact_record, record)
-
-    def test_missing_owner_record_resumes_as_undeclared(self):
-        self.walk([{"triage": "needs_human", "human_question": "Which?"}])
-        config = {"configurable": {"thread_id": "example/engine#8"}}
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saver.serde = checkpoint_serializer()
-            saved = saver.get_tuple(config)
-            owner = saved.checkpoint["channel_values"]["review"].model_dump()
-            owner.pop("fact_record")
-            saved.checkpoint["channel_values"]["review"] = ReviewState.model_validate(owner)
-            saver.put(saved.config, saved.checkpoint, saved.metadata, {})
-        before = self.checkpoint.read_bytes()
-        with self.assertRaisesRegex(ValueError, "--fact-record differs"):
-            run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-                              fact_record="tests/fixtures/manifest.toml", dispatcher=ScriptHandler(),
-                              run=LiveRun(self.github, FakeWorkspace(self.cwd)))
-        self.assertEqual(self.checkpoint.read_bytes(), before)
-        result = self.walk([{"triage": "question"}, {"research": "Open items."}], answer="Open items")
-        self.assertIsNone(result["review"].fact_record)
-
-    def test_direct_run_delivery_defaults_to_undeclared_and_validates_record(self):
-        for kwargs, expected in (({}, None), ({"fact_record": "evidence/facts.toml"}, "evidence/facts.toml")):
-            with self.subTest(kwargs=kwargs), skill_fixture(load_config()) as (config, scratch):
-                result = run_delivery(ScriptHandler(triage="question"), repo="Example/Engine",
-                                      request="List items", config=config, scratch=scratch, **kwargs)
-                self.assertEqual(result["review"].fact_record, expected)
-        with self.assertRaisesRegex(ValueError, "normalized repository-relative"):
-            run_delivery(ScriptHandler(), repo="Example/Engine", request="List items",
-                         fact_record="evidence/./facts.toml")
-
-    def test_cli_forwards_declared_and_undeclared_records(self):
-        for record in (None, "tests/fixtures/manifest.toml"):
-            for dry in (False, True):
-                with self.subTest(record=record, dry=dry), patch("foreman.cli.run_live_delivery", side_effect=RuntimeError("forwarded")) as live, patch("foreman.cli.run_delivery", side_effect=RuntimeError("forwarded")) as dry_run:
-                    args = ["run", "delivery", "--repo", "bookout-labs/tools", "--issue", "200", "--check", "exit 0"]
-                    if record:
-                        args += ["--fact-record", record]
-                    if dry:
-                        args += ["--dry-run"]
-                    with self.assertRaisesRegex(RuntimeError, "forwarded"):
-                        main(args, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
-                    self.assertEqual((dry_run if dry else live).call_args.kwargs["fact_record"], record)
 
     def test_resume_allocates_fresh_scratch_without_checkpointing_paths(self):
         paths = []
@@ -1626,194 +1570,13 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             check="test -f expected",
         )
         self.assertEqual(self.calls, ["claude", "codex", "claude"])
-        self.assertEqual(result["path"], ["triage", "implement", "verify", "proof", "publish", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "publish", "review", "merge", "done"])
         self.assertEqual(result["checks"].check_exit_code, 0)
         self.assertEqual(result["checks"].verified_head, HEAD)
         self.assertEqual(result["work"].head_sha, HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(result["merge"].status, "armed")
 
-    def review_tool_fact(self, fixture: str | None, *, entry: str | None = None, record_during_review: bool = False, recover: bool = False, no_changes: bool = False, record_path: str = "tests/fixtures/manifest.toml", paraphrase: bool = False, worker_commits: bool = False, residual: bool = False, declared: bool = True):
-        root = self.cwd / "checkout"
-        root.mkdir()
-        subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=root, check=True)
-        subprocess.run(["git", "init", "-q", "--bare", str(self.cwd / "remote.git")], check=True)
-        subprocess.run(["git", "remote", "add", "origin", str(self.cwd / "remote.git")], cwd=root, check=True)
-        fixtures = (root / record_path).parent
-        fixtures.mkdir(parents=True)
-        (fixtures / "result.txt").write_text("debug output\n")
-
-        def manifest(path: str) -> str:
-            return (
-                f'[fixtures."{path}"]\n'
-                'kind = "captured_run"\n'
-                'tool = "example"\n'
-                'version = "1"\n'
-                'argv = ["example", "--debug"]\n'
-            )
-
-        manifest_path = root / record_path
-        if entry is not None or not (recover or no_changes):
-            manifest_path.write_text(manifest(entry) if entry is not None else "[fixtures]\n")
-            self.assertTrue(manifest_path.is_file())
-        subprocess.run(["git", "add", "."], cwd=root, check=True)
-        subprocess.run(
-            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgSign=false",
-             "commit", "-qm", "Add fixture"],
-            cwd=root, check=True,
-        )
-        subprocess.run(["git", "branch", "main"], cwd=root, check=True)
-        subprocess.run(["git", "push", "origin", "main"], cwd=root, check=True)
-        subprocess.run(["git", "config", "user.name", "Synthetic Test"], cwd=root, check=True)
-        subprocess.run(["git", "config", "user.email", "synthetic@example.invalid"], cwd=root, check=True)
-        subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=root, check=True)
-        self.github.base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-        built = {"implementation": "Built.", "browser_proof": BROWSER, "formal_proof": FORMAL}
-        review = {
-            **APPROVE,
-            "tool_facts": [{"claim": "The CLI accepts --debug.", "fixture": fixture}],
-        }
-        replies = iter([{"triage": "implement"}] + [built, review] * 3)
-
-        implementations = 0
-        undeclared_prompts = []
-
-        def worker(args, cwd, env):
-            nonlocal implementations
-            reply = next(replies)
-            if "implementation" in reply:
-                implementations += 1
-                if not declared:
-                    undeclared_prompts.append(("implement", args[-1]))
-                if implementations > 1 and (recover or no_changes):
-                    if recover:
-                        self.assertIn("captured_run", args[-1])
-                        self.assertIn("quoted_source", args[-1])
-                        self.assertIn("The CLI accepts --debug.", args[-1])
-                        worker_state = json.loads(args[-1].split("Delivery state:\n", 1)[1])
-                        self.assertNotIn("tool_facts", worker_state)
-                        worker_state["review"] = ReviewState.model_validate(worker_state["review"])
-                        claims = carried_tool_facts(worker_state)
-                        self.assertIn("Carried tool facts:\n" + json.dumps([fact.model_dump() for fact in claims]), args[-1])
-                        self.assertIn("claim_ids", args[-1])
-                        self.assertIn("Foreman owns commits and publishing", args[-1])
-                        self.assertIn(record_path, args[-1])
-                        manifest_path.write_text(manifest("result.txt") + f'claim_ids = {json.dumps([] if residual else [f.claim_id for f in claims])}\n# round {implementations}\n')
-                        if worker_commits:
-                            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
-                            subprocess.run(["git", "commit", "-qm", "Record evidence\n\nCo-Authored-By: gpt-6.1-sol-high <noreply@openai.com>"], cwd=root, check=True)
-                    return worker_reply(args, reply)
-                file = root / "items.txt"
-                file.write_text((file.read_text() if file.exists() else "") + "synthetic edit\n")
-            if not declared and "tool_facts" in reply:
-                undeclared_prompts.append(("review", args[-1]))
-            if paraphrase and implementations > 1 and "tool_facts" in reply:
-                reply = {**reply, "tool_facts": [{"claim": "The debug flag is accepted.", "fixture": "result.txt"}]}
-            if record_during_review and "tool_facts" in reply:
-                manifest_path.write_text(manifest("result.txt"))
-            return worker_reply(args, reply)
-
-        result = run_live_delivery(
-            repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-            fact_record=record_path if declared else None,
-            dispatcher=CliWorker(root, worker),
-            run=LiveRun(self.github, FixtureWorkspace(root)),
-        )
-        if not declared:
-            self.assertEqual({stage for stage, _ in undeclared_prompts}, {"implement", "review"})
-            for stage, prompt in undeclared_prompts:
-                self.assertIn("No fact record was declared", prompt)
-                self.assertNotIn("Fact record in this checkout:", prompt)
-                if stage == "review":
-                    self.assertIn("No fact record was declared. Use null fixture references for unsupported tool facts.", prompt)
-                else:
-                    self.assertNotIn("null fixture references", prompt)
-            if no_changes:
-                self.assertIn("new checkpoint", undeclared_prompts[-1][1])
-                self.assertNotIn("creating the record and parent directories", undeclared_prompts[-1][1])
-        return result
-
-    def test_fact_repair_adopts_worker_commits_and_rechecks_exact_head(self):
-        for committed, record, residual in ((False, "tests/fixtures/manifest.toml", False),
-                                             (True, "tests/fixtures/manifest.toml", False),
-                                             (True, "evidence/facts.toml", False),
-                                             (True, "evidence/facts.toml", True)):
-            with self.subTest(committed=committed, record=record, residual=residual), TemporaryDirectory() as directory:
-                self.cwd = Path(directory)
-                self.checkpoint = self.cwd / "runs.sqlite3"
-                self.github.body = slice_body(SLICE)
-                result = self.review_tool_fact(None, recover=True, record_path=record,
-                                               worker_commits=committed, residual=residual)
-                self.assertEqual(result["stop"], "review_cap" if residual else "verified")
-                rounds = result["review"].review_findings
-                self.assertFalse(rounds[0]["graph_check"]["passed"])
-                self.assertEqual(rounds[-1]["graph_check"]["passed"], not residual)
-                self.assertIn(rounds[0]["reviewed_head"], rounds[-1]["graph_check"]["failing_heads"])
-                if not residual:
-                    self.assertEqual(result["path"].count("implement"), 2)
-                    self.assertEqual(result["path"].count("verify"), 2)
-                    self.assertEqual(result["path"].count("review"), 2)
-                    self.assertEqual(result["path"].count("proof"), 2)
-                    self.assertEqual(result["pr_size"], result["work"].candidate["size"])
-                    self.assertEqual(rounds[-1]["reviewed_head"], result["checks"].verified_head)
-                    self.assertEqual(self.github.merge_calls[-1][-1], result["checks"].verified_head)
-                    self.assertEqual(result["work"].candidate["disposition"], "adopted" if committed else "edits")
-
-    def test_missing_manifest_can_be_recorded_by_implement(self):
-        result = self.review_tool_fact("result.txt", recover=True)
-        self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(result.get("merge", MergeState()).status, "armed")
-        self.assertEqual(result["review"].fact_record, "tests/fixtures/manifest.toml")
-        self.assertNotIn("tool_facts", result)
-
-    def test_null_claim_resolves_by_id_when_reviewer_paraphrases(self):
-        result = self.review_tool_fact(None, recover=True, paraphrase=True)
-        self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(result.get("merge", MergeState()).status, "armed")
-        self.assertEqual(result["path"].count("review"), 2)
-
-    def test_custom_fact_record_reaches_approval(self):
-        result = self.review_tool_fact("result.txt", recover=True, record_path="evidence/facts.toml")
-        self.assertEqual(result.get("stop"), "verified")
-        self.assertEqual(result["review"].fact_record, "evidence/facts.toml")
-
-    def test_undeclared_matching_record_still_blocks_with_recovery_guidance(self):
-        result = self.review_tool_fact("result.txt", entry="result.txt", no_changes=True, declared=False)
-        self.assertIsNone(result["review"].fact_record)
-        self.assertIn("tool-facts", result["halt_detail"])
-        self.assertEqual(self.github.merge_calls, [])
-
-    def test_no_changes_names_unresolved_fact_gate(self):
-        result = self.review_tool_fact(None, no_changes=True)
-        self.assertIn("tool-facts", result.get("halt_detail", ""))
-
-    def test_approve_with_unrecorded_tool_fact_becomes_changes(self):
-        result = self.review_tool_fact("result.txt", record_during_review=True)
-        self.assertEqual(result["review"].review, "changes")
-        self.assertIn("The CLI accepts --debug.", result["review"].detail or "")
-        self.assertEqual(len(result["review"].review_findings), 1)
-        self.assertEqual(self.github.merge_calls, [])
-
-    def test_approve_with_recorded_tool_fact_stays_approve(self):
-        result = self.review_tool_fact("result.txt", entry="result.txt")
-        self.assertEqual(result["review"].review, "approve")
-        self.assertEqual(result["review"].findings, [])
-        self.assertEqual(result.get("work", WorkState()).head_sha, result["checks"].verified_head)
-        self.assertNotEqual(result["checks"].verified_head, HEAD)
-        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, result["checks"].verified_head)])
-
-    def test_dangling_tool_fact_citation_blocks_approval(self):
-        result = self.review_tool_fact("absent.txt", entry="absent.txt")
-        self.assertEqual(result["review"].review, "changes")
-        self.assertIn("absent.txt", result["review"].detail or "")
-        self.assertEqual(result.get("stop"), "review_cap")
-        self.assertEqual(self.github.merge_calls, [])
-
-    def test_tool_fact_without_citation_blocks_approval(self):
-        result = self.review_tool_fact(None, entry="result.txt")
-        self.assertEqual(result["review"].review, "changes")
-        self.assertIn("The CLI accepts --debug.", result["review"].detail or "")
-        self.assertEqual(self.github.merge_calls, [])
     def test_cli_redacts_the_check_subprocess_stdout_and_stderr(self):
         check = self.cwd / "verify.sh"
         check.write_text(
@@ -1897,39 +1660,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(self.calls, ["claude", "codex", "codex", "codex"])
         self.assertNotIn("merge", result["path"])
 
-    def test_both_proofs_pass_before_review_and_merge(self):
-        self.github.body = slice_body(SLICE)
-        result = self.walk([
-            {"triage": "spec"},
-            {"spec_gate": "ready", "spec": "Make IDs unique"},
-            {"implementation": "built", "browser_proof": BROWSER, "formal_proof": FORMAL},
-            APPROVE,
-        ])
-        self.assertEqual(result["path"][-6:], ["verify", "proof", "publish", "review", "merge", "done"])
-        self.assertEqual(result["plan"].slice, SLICE)
-        self.assertEqual(result["checks"].proof_labels, {})
-        self.assertEqual(result["merge"].status, "armed")
-        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
-
-    def test_missing_proof_stops_before_review(self):
-        self.github.body = slice_body(SLICE)
-        for field, artifact, missing in (("formal_proof", FORMAL, "browser"), ("browser_proof", BROWSER, "formal")):
-            with self.subTest(missing=missing), TemporaryDirectory(dir=self.cwd) as directory:
-                self.checkpoint = Path(directory) / "runs.sqlite3"
-                result = self.walk([
-                    {"triage": "implement", "slice": EMPTY_SLICE}, {"implementation": "built", field: artifact},
-                ])
-                self.assertEqual(result["stop"], "insufficient_evidence")
-                self.assertEqual(result["checks"].proof_labels, {missing: "insufficient_evidence"})
-                self.assertNotIn("review", result["path"])
-
-    def test_parent_stops_before_review_when_its_proof_is_missing(self):
-        self.github = FakeGitHub(["factory"])
-        result = self.walk([{"triage": "implement", "slice": SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "implement", "verify", "proof", "done"])
-        self.assertEqual(result["stop"], "insufficient_evidence")
-        self.assertEqual(result["checks"].proof_labels, {"browser": "insufficient_evidence", "formal": "insufficient_evidence"})
-
     def test_parent_cannot_implement_without_a_slice(self):
         self.github = FakeGitHub(["factory"])
         for triage in ({"triage": "implement"}, {"triage": "implement", "slice": None}):
@@ -1943,31 +1673,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual(len(self.calls), 1)
                 self.assertEqual(self.github.merge_calls, [])
                 self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
-
-    def test_browser_block_rebuilds_and_rechecks_before_review(self):
-        self.github.body = slice_body(SLICE)
-        blocked = {"implementation": "built", "formal_proof": FORMAL, "browser_proof": {**BROWSER, "passed": False}}
-        fixed = {**blocked, "browser_proof": BROWSER}
-        result = self.walk([{"triage": "implement"}, blocked, fixed, APPROVE])
-        self.assertEqual(result["path"], [
-            "triage", "implement", "verify", "proof", "implement", "verify", "proof", "publish", "review", "merge", "done",
-        ])
-        self.assertEqual(len(result["review"].review_findings), 1)
-        self.assertEqual(result["merge"].status, "armed")
-        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
-
-    def test_formal_block_consumes_the_review_cap(self):
-        self.github.body = slice_body(SLICE)
-        blocked = {
-            "implementation": "built", "browser_proof": BROWSER,
-            "formal_proof": {**FORMAL, "constraints": [{"constraint": "unique_item_id", "rejected": False}]},
-        }
-        result = self.walk([{"triage": "implement"}] + [blocked] * 3)
-        self.assertEqual(result["stop"], "review_cap")
-        self.assertEqual(result["checks"].proof_labels, {"formal": "block"})
-        self.assertEqual(len(result["review"].review_findings), 0)
-        self.assertEqual(result["checks"].proof_failures, 3)
-        self.assertNotIn("review", result["path"])
 
     def test_cli_preflight_stops_before_dispatch_and_uses_engine_checkout(self):
         root = self.cwd / "checkout"
@@ -2032,7 +1737,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertNotIn("halt_detail", result)
-        self.assertEqual(result.get("path"), ["triage", "implement", "verify", "proof", "publish", "review", "merge", "done"])
+        self.assertEqual(result.get("path"), ["triage", "implement", "verify", "publish", "review", "merge", "done"])
 
     def test_answer_resume_is_idempotent_after_environment_halt(self):
         preflight = "test -f ready"
@@ -2193,72 +1898,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertFalse((self.cwd / "preflight_ran").exists())
         self.assertEqual([a["stage"] for a in resumed["attempts"]], ["triage"])
 
-    def test_fresh_process_design_answer_survives_failed_prepare(self):
-        script = r'''
-import json
-from dataclasses import replace
-from pathlib import Path
-import sys
-from unittest.mock import patch
-from foreman.config import PstackPin, load_config
-from foreman.delivery import LiveRun
-from foreman.runner import run_live_delivery
-from foreman.worker import CliWorker
-from test_runner import APPROVE, FINDING, FakeGitHub, FakeWorkspace, worker_reply
-
-phase = sys.argv[2]
-workspace = FakeWorkspace(Path.cwd())
-reviews = iter([{**APPROVE, "findings": [FINDING]},
-                {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}],
-                 "findings": [{**FINDING, "id": "again"}]}] if phase == "initial" else
-               [{**APPROVE, "resolutions": [{"id": "again", "status": "resolved"}]}])
-def worker(args, cwd, env):
-    if args[0] == "codex":
-        schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
-    else:
-        schema = json.loads(args[args.index("--json-schema") + 1])
-    stage = schema["title"]
-    if stage == "TriageOutput":
-        return worker_reply(args, {"triage": "implement"})
-    if stage == "ImplementOutput":
-        return workspace.reply(args, {"implementation": "built"})
-    return worker_reply(args, next(reviews))
-pin = PstackPin.model_validate_json(sys.argv[1])
-with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
-    result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
-        preflight="test ! -f blocked", answer=None if phase == "initial" else "Use option B",
-        checkpoint=Path("runs.sqlite3"), run=LiveRun(FakeGitHub(), workspace),
-        dispatcher=CliWorker(Path.cwd(), worker))
-Path(phase + ".json").write_text(json.dumps({
-    "stop": result["stop"], "answers": result.get("human_answers"),
-    "models": result["implement_models"], "path": result["path"],
-    "attempts": result["attempts"], "rulings": result["review"].settled_rulings}))
-'''
-        bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
-                     f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
-        def invoke(phase):
-            process = subprocess.run([sys.executable, "-c", bootstrap + script,
-                                      self.pin.model_dump_json(), phase],
-                                     cwd=self.cwd, text=True, capture_output=True)
-            self.assertEqual(process.returncode, 0, process.stderr)
-            return json.loads((self.cwd / (phase + ".json")).read_text())
-        initial = invoke("initial")
-        self.assertEqual(initial["stop"], "needs_human")
-        self.assertEqual(len(initial["models"]), 2)
-        (self.cwd / "blocked").touch()
-        failed = invoke("failed")
-        self.assertEqual(failed["stop"], "env_unavailable")
-        self.assertEqual(failed["answers"], ["Use option B"])
-        self.assertEqual(failed["models"], initial["models"])
-        (self.cwd / "blocked").unlink()
-        resumed = invoke("resumed")
-        self.assertEqual(resumed["stop"], "verified")
-        self.assertEqual(resumed["answers"], ["Use option B"])
-        self.assertEqual(resumed["models"][:2], initial["models"])
-        self.assertEqual(len(resumed["models"]), 3)
-        self.assertEqual(resumed["attempts"][:len(initial["attempts"])], initial["attempts"])
-        self.assertEqual(resumed["rulings"], failed["rulings"])
-
     def test_env_unavailable_resumes_before_implement(self):
         with patch("foreman.delivery.EnvironmentProbe.error", new_callable=unittest.mock.PropertyMock,
                    return_value="temporarily unavailable"):
@@ -2387,15 +2026,13 @@ Path(phase + ".json").write_text(json.dumps({
             workspace.current = WorktreeState(next(heads), True, BRANCH)
 
         changes = {**APPROVE, "findings": [FINDING]}
-        resolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "resolved"}]}
+        resolved = APPROVE
         ready = self.github.readiness("Example/Engine", 8, BRANCH, "2" * 40)
         with patch.object(workspace, "commit", side_effect=commit), patch.object(
             self.github, "readiness", return_value=ready.model_copy(update={"outcome": "conflict"}),
         ):
-            halted = self.walk([{"triage": "implement"}, {"implementation": "first", "browser_proof": BROWSER, "formal_proof": FORMAL}, changes,
-                                {"implementation": "second", "browser_proof": BROWSER, "formal_proof": FORMAL}, resolved], workspace=workspace, preflight="exit 0")
-        self.assertEqual(halted["checks"].browser_proof, BROWSER)
-        self.assertEqual(halted["checks"].formal_proof, FORMAL)
+            halted = self.walk([{"triage": "implement"}, {"implementation": "first"}, changes,
+                                {"implementation": "second"}, resolved], workspace=workspace, preflight="exit 0")
         self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "pr_conflict")
         self.assertEqual(halted["work"].head_sha, "2" * 40)
@@ -2433,9 +2070,7 @@ Path(phase + ".json").write_text(json.dumps({
 
         changes = {**APPROVE, "findings": [FINDING]}
         with patch.object(workspace, "create_branch", side_effect=prepare_branch):
-            halted = self.walk([{"triage": "implement"}, {"implementation": "first", "browser_proof": BROWSER, "formal_proof": FORMAL}, changes], workspace=workspace, preflight="exit 0")
-        self.assertEqual(halted["checks"].browser_proof, BROWSER)
-        self.assertEqual(halted["checks"].formal_proof, FORMAL)
+            halted = self.walk([{"triage": "implement"}, {"implementation": "first"}, changes], workspace=workspace, preflight="exit 0")
         self.assertEqual(halted["checks"].preflight, "exit 0")
         self.assertEqual(halted["stop"], "git_failed")
         self.assertIsNotNone(halted["work"].candidate)
@@ -2602,10 +2237,6 @@ Path(phase + ".json").write_text(json.dumps({
         self.assertIn(f"{base}...{head}", reviewed.command)
         self.assertIn("-old\n+new\n", reviewed.patch)
         self.assertNotIn("main.txt", reviewed.patch)
-        interdiff = LiveWorkspace(checkout).review_diff(base, head, interdiff=True)
-        self.assertIn(f"{base}..{head}", interdiff.command)
-        self.assertIn("main.txt", interdiff.patch)
-        self.assertEqual(LiveWorkspace(checkout).review_diff(head, head, interdiff=True).patch, "")
 
     def test_live_workspace_rejects_invalid_head_before_the_remaining_inspection(self):
         for head in ("", "abc123", "z" * 40):
@@ -2638,7 +2269,7 @@ Path(phase + ".json").write_text(json.dumps({
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "implement", "verify", "proof", "publish", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "implement", "verify", "publish", "review", "merge", "done"])
         self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
@@ -3022,7 +2653,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             saver.serde = checkpoint_serializer()
             stored = saver.get({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(stored["channel_values"]["path"],
-                         ["triage", "spec", "spec", "implement", "verify", "proof", "publish", "review", "merge", "done"])
+                         ["triage", "spec", "spec", "implement", "verify", "publish", "review", "merge", "done"])
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
 
     def test_restored_snapshot_matches_result_for_merge_and_interrupts(self):
@@ -3035,27 +2666,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual(self.walk([], presentation=presentation), expected)
                 self.assertEqual(presentation.restored, expected)
                 self.assertEqual(presentation.updates, [])
-
-    def test_terminal_proof_failure_is_entirely_restored(self):
-        self.github.body = slice_body(SLICE)
-        self.walk([{"triage": "implement"}, {"implementation": "built"}])
-        worker = Mock(side_effect=AssertionError("terminal checkpoint dispatched a worker"))
-        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as output:
-            code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
-                worker_runner=worker, checkpoint=self.checkpoint,
-                live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
-            )
-        self.assertEqual(code, 1)
-        lines = output.getvalue().splitlines()
-        self.assertEqual(lines[-1], "this invocation: no nodes executed")
-        self.assertTrue(all(line.startswith("restored ") for line in lines[:-1]))
-        self.assertIn("restored browser proof insufficient_evidence", lines)
-        self.assertIn("restored formal proof insufficient_evidence", lines)
-        self.assertIn("restored check exit 0", lines)
-        self.assertIn("restored done insufficient_evidence", lines)
-        worker.assert_not_called()
-        self.assertEqual(self.github.merge_calls, [])
 
     def test_fresh_process_retries_quota_and_an_older_merge_checkpoint(self):
         script = r'''
@@ -3149,7 +2759,6 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     restored, current = retried.split("this invocation:\n")
                     self.assertEqual(saved_path(), previous_path)
                     self.assertIn("restored review ", restored)
-                    self.assertIn("risk low", restored)
                     self.assertEqual(transcript(current), "merge not armed\ndone merge_held\nFOREMAN_MERGE_HOLD is set: Maintenance\n")
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
                                      ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review"])
@@ -3170,7 +2779,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 else:
                     self.assertRegex(transcript(restored.replace("restored ", "")), r"implement\npaused quota_exhausted")
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
-                    self.assertEqual(saved_path(), ["triage", "implement", "implement", "verify", "proof", "publish", "review", "merge", "done"])
+                    self.assertEqual(saved_path(), ["triage", "implement", "implement", "verify", "publish", "review", "merge", "done"])
                     expected_workers = (["TriageOutput"] + ["ImplementOutput"] * attempts
                                         + ["ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"])
                 terminal = invoke("ready", 0)
@@ -3215,17 +2824,6 @@ class HaltExitCodeTest(unittest.TestCase):
             snapshots=(WorktreeInspectionFailed("Invalid HEAD"),),
         ), "dirty_worktree", "Invalid HEAD")
 
-    def test_insufficient_evidence(self):
-        self.assert_halt(self.live(
-            [{"triage": "implement"}, {"implementation": "built"}], body=slice_body(SLICE),
-        ), "insufficient_evidence", "Required proof is missing.")
-
-    def test_proof_review_cap(self):
-        blocked = {"implementation": "built", "browser_proof": {**BROWSER, "passed": False}, "formal_proof": FORMAL}
-        self.assert_halt(self.live(
-            [{"triage": "implement"}] + [blocked] * 3, body=slice_body(SLICE),
-        ), "review_cap", "Proof failed after 3 rounds: {'browser': 'block'}.")
-
     def test_verify_cap(self):
         self.assert_halt(self.live(
             [{"triage": "implement"}] + [{"implementation": "built"}] * 3, check="exit 7",
@@ -3233,11 +2831,11 @@ class HaltExitCodeTest(unittest.TestCase):
 
     def test_review_cap(self):
         changes = {**APPROVE, "findings": [FINDING]}
-        unresolved = {**APPROVE, "resolutions": [{"id": "f1", "status": "unresolved"}]}
+        unresolved = changes
         self.assert_halt(self.live(
             [{"triage": "implement"}] + [{"implementation": "built"}, changes]
             + [{"implementation": "built"}, unresolved] * 2,
-        ), "review_cap", "Review requested changes after 3 rounds. Last review: " + ReviewOutput.model_validate(APPROVE, context=SCRIPTED_REVIEW_CONTEXT).risk.render())
+        ), "review_cap", "Review requested changes after 3 rounds. Last review: " + "P1 Add a check.")
 
     def test_missing_slice_has_no_fake_stage(self):
         result = self.live(body="No JSON")

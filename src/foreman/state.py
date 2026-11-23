@@ -6,15 +6,14 @@ from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-from pydantic import BaseModel, Field, PlainValidator
+from pydantic import BaseModel, PlainValidator
 from typing_extensions import TypedDict
 
 from foreman.outcomes import Halt
 from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
-    AttemptRecord, BrowserProofRecord, DispatchPlanRecord,
-    FormalProofRecord, PendingDispatchRecord,
+    AttemptRecord, DispatchPlanRecord, PendingDispatchRecord,
     PlanState as PlanState, ReviewState as ReviewState,
 )
 from foreman.workspace import PullRequestSize, WorkState
@@ -32,27 +31,22 @@ class RunState(BaseModel, frozen=True, extra="forbid"):
 class ChecksState(BaseModel, frozen=True, extra="forbid"):
     # Failed checks cannot be recovered after attempt observations are reset.
     verify_failures: int = 0
-    # Blocking proof verdicts cannot be recovered after attempt observations are reset.
-    proof_failures: int = 0
     check: str = ""
     preflight: str = ""
     check_exit_code: int | None = None
     verify: Literal["", "pass", "fail"] = ""
     failure_output: str = ""
     verified_head: str = ""
-    browser_proof: BrowserProofRecord | None = None
-    formal_proof: FormalProofRecord | None = None
-    proof_labels: dict[str, str] = Field(default_factory=dict)
 
     def for_attempt(self) -> "ChecksState":
         return ChecksState(check=self.check, preflight=self.preflight,
-                           verify_failures=self.verify_failures, proof_failures=self.proof_failures,
+                           verify_failures=self.verify_failures,
                            verify="fail" if self.verify == "fail" else "",
                            check_exit_code=self.check_exit_code if self.verify == "fail" else None,
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:

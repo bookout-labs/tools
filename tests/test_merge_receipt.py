@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from pydantic import ValidationError
-from foreman.github import LiveForge, MergeNotArmed, QueueRejected, CommandTimedOut, CommandFailed, queue_receipt
+from foreman.github import HandoffChanged, LiveForge, MergeNotArmed, QueueRejected, CommandTimedOut, CommandFailed, queue_receipt
 from foreman.readiness import Observation, PullSnapshot, QueuePolicy, QueueSnapshot
 
 FIXTURES = Path(__file__).with_name("fixtures") / "github"
@@ -25,7 +25,7 @@ OBSERVATION = Observation(repo=REPO, pr=PullSnapshot(number=NUMBER, state="open"
 
 
 def interpret(snapshot):
-    return queue_receipt(QueueSnapshot.model_validate(snapshot), REPO, NUMBER, HEAD, "main", POLICY)
+    return queue_receipt(QueueSnapshot.model_validate(snapshot), REPO, NUMBER, HEAD, BASE, "main", POLICY)
 
 
 class MergeReceiptTest(unittest.TestCase):
@@ -81,10 +81,26 @@ class MergeReceiptTest(unittest.TestCase):
             self.arm(error=CommandFailed("GraphQL: admission rejected"))
         self.assertIsInstance(error.exception.__cause__, CommandFailed)
 
-    def test_locked_and_advanced_base_are_eligible(self):
-        locked = {**QUEUED, "baseRefOid": "d"*40, "mergeQueueEntry": {**QUEUED["mergeQueueEntry"], "state": "LOCKED"}}
+    def test_locked_at_reviewed_base_is_eligible(self):
+        locked = {**QUEUED, "mergeQueueEntry": {**QUEUED["mergeQueueEntry"], "state": "LOCKED"}}
         receipt = interpret(locked)
-        self.assertEqual((receipt.status, receipt.base), ("LOCKED", "d"*40))
+        self.assertEqual((receipt.status, receipt.base), ("LOCKED", BASE))
+
+    def test_changed_base_at_queue_readback_cannot_clear_review(self):
+        moved = {**SNAPSHOT, "baseRefOid": "d" * 40}
+        for state in (moved, {**moved, "mergeQueueEntry": QUEUED["mergeQueueEntry"]},
+                      {**moved, "state": "MERGED"}):
+            with self.subTest(state=state), self.assertRaises(HandoffChanged):
+                self.arm(before=state)
+            self.assertEqual(self.writes(), [])
+        with self.assertRaises(HandoffChanged):
+            self.arm(after={**moved, "state": "MERGED"})
+        self.assertEqual(len(self.writes()), 1)
+
+        saved = interpret(QUEUED)
+        with patch.object(LiveForge, "_queue_snapshot", return_value=QueueSnapshot.model_validate(moved)):
+            with self.assertRaises(HandoffChanged):
+                LiveForge().reconcile_merge(saved)
 
     def test_saved_receipt_missing_entry_is_rejection_not_reenqueue(self):
         receipt = interpret(QUEUED)

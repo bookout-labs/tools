@@ -6,7 +6,7 @@ from pathlib import Path
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
-from foreman.stage_output import ReviewState, PlanState, DispatchPlan, MergeRiskRecord, SpecCheckOutput, StoredSlice, WorkKind
+from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import PullRequest, Issue, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt, pull_request_command
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
@@ -14,16 +14,6 @@ from foreman.workspace import WorktreeState, ReviewDiff, ImplementationCandidate
 
 SCRIPTED_USAGE = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)
 CLEAR = SpecCheckOutput(findings=[], notes=[], resolutions=[])
-
-DEFAULT_RISK: MergeRiskRecord = {
-    "alignment": {"applies": True, "assessment": "Items are listed once.", "evidence": [{"side": "head", "path": "items.txt", "line": 1}]},
-    "impact": {"applies": True, "assessment": "The item list changes.", "evidence": [{"side": "head", "path": "items.txt", "line": 1}]},
-    "verification": {"applies": True, "assessment": "The item check covers this edit.", "evidence": [{"side": "head", "path": "items.txt", "line": 1}]},
-    "rollback": {"applies": True, "assessment": "Revert the item edit.", "evidence": [{"side": "head", "path": "items.txt", "line": 1}]},
-    "error_detection": {"applies": True, "assessment": "The item check detects duplicates.", "evidence": [{"side": "head", "path": "items.txt", "line": 1}]},
-    "level": "low",
-}
-
 
 class ScriptHandler:
     def __init__(
@@ -35,7 +25,6 @@ class ScriptHandler:
         slices: list[object] | None = None,
         implementation: str = "diff",
         research: str = "answer",
-        risk: Mapping[str, object] | None = None,
         slice: Mapping[str, object] | None = None,
         work_kind: WorkKind = "feature",
     ):
@@ -56,7 +45,6 @@ class ScriptHandler:
         }
         self.implementation = implementation
         self.research = research
-        self.risk = dict(DEFAULT_RISK if risk is None else risk)
         self.calls: list[dict[str, str | None]] = []
 
     def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
@@ -77,22 +65,18 @@ class ScriptHandler:
         if node == "spec_check":
             return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
         if node == "implement":
-            return Outcome("ran", {
-                "implementation": self.implementation,
-                "browser_proof": None, "formal_proof": None,
-            }, usage=SCRIPTED_USAGE)
+            return Outcome("ran", {"implementation": self.implementation}, usage=SCRIPTED_USAGE)
         if node == "research":
             return Outcome("ran", {"research": self.research}, usage=SCRIPTED_USAGE)
         if node == "review":
-            review_state = ReviewState.model_validate(state["review"])
             verdict = self.reviews.pop(0) if self.reviews else "changes"
-            findings = (
-                [{"id": "check", "kind": "untested-path", "fix": "Add a check.", "ruling_id": None, "file": "items.txt", "line": 1, "severity": "blocking", "summary": "Add a check."}]
-                if verdict == "changes" and not review_state.review else []
-            )
-            return Outcome("ran", {
-                "resolutions": [{"id": "check", "status": "resolved" if verdict == "approve" else "unresolved"}] if review_state.review else [], "risk": dict(self.risk), "findings": findings, "tool_facts": [],
-            }, usage=SCRIPTED_USAGE)
+            findings = [{
+                "id": "check", "kind": "correctness", "severity": "P1", "ruling_id": None,
+                "location": {"side": "head", "path": "items.txt", "line": 1},
+                "summary": "The first item is listed twice.",
+                "impact": "The item is counted twice.", "evidence": "The first two entries have the same ID.",
+            }] if verdict == "changes" else []
+            return Outcome("ran", {"findings": findings, "human_question": None}, usage=SCRIPTED_USAGE)
         raise ValueError(f"no script for {node}")
 
 
@@ -116,7 +100,7 @@ class DryRun:
             self.commands.append(branch_command(branch, f"refs/remotes/origin/{base}"))
         self.branch = branch
 
-    def reconcile(self, parent: str, branch: str, base_branch: str, fact_record: str | None) -> ImplementationCandidate:
+    def reconcile(self, parent: str, branch: str, base_branch: str) -> ImplementationCandidate:
         self.clean = False
         return {"disposition": "edits", "fingerprint": self.fingerprint(),
                 "size": self.pull_request_size(self.tree(None), base_branch)}
@@ -144,7 +128,7 @@ class DryRun:
         return PullRequest(state="OPEN", number=1, headRefOid=sha, headRefName=branch,
                            baseRefName=self.default_branch(repo), baseRefOid="<base>", autoMergeRequest=None)
 
-    def review_scope(self, base: str, head: str, previous: str | None) -> ReviewScope:
+    def review_scope(self, base: str, head: str) -> ReviewScope:
         return ReviewScope("", frozenset({("example.txt", 1)}))
 
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt:
@@ -176,16 +160,10 @@ class DryRun:
     def soft_reset(self, parent: str) -> None:
         raise NotImplementedError("Not used by dry delivery")
 
-    def files_at(self, head: str, directory: str) -> set[str]:
-        return set()
-
-    def read_file_at(self, head: str, path: str) -> str:
-        raise NotImplementedError("Not used by dry delivery")
-
     def has_file(self, path: str) -> bool:
         return False
 
-    def review_diff(self, base: str, head: str, *, interdiff: bool = False) -> ReviewDiff:
+    def review_diff(self, base: str, head: str) -> ReviewDiff:
         raise NotImplementedError("Not used by dry delivery")
 
     def load_issue(self, repo: str, number: int) -> Issue:

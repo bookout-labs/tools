@@ -8,15 +8,7 @@ Design docs hold current design; PR evidence stays in the PR.
 
 ## Delivery graph
 
-Outside-tool facts cited by review need recorded evidence at the verified head.
-`foreman run delivery --fact-record evidence/facts.toml` selects a repository-relative
-TOML record. Without it, no fact record is declared and no evidence is looked up. Unsupported outside-tool claims still block approval. On resume, omit the flag to retain the saved path or null. An explicit path that differs from the saved path is an error. Fixture IDs name regular tracked files relative to the record.
-When declared evidence is missing, implement receives the claims and recording schema and
-can create the declared record. An undeclared run needs an explicit path and a new checkpoint to record evidence. Existing checkpoints at the current schema version retain their saved path, including the former default. Unresolved claims carry stable IDs across reviews. Add each claim ID to the evidence
-entry's `claim_ids` list to resolve it independently of later reviewer wording.
-For this repository, run `foreman run delivery --repo bookout-labs/tools --issue <number> --check "python -m unittest discover -s tests" --fact-record tests/fixtures/manifest.toml`. API callers pass `fact_record="tests/fixtures/manifest.toml"`.
-A typed exact restatement of the graph's verified check result needs no fixture.
-
+For this repository, run `foreman run delivery --repo bookout-labs/tools --issue <number> --check "python -m unittest discover -s tests"`.
 
 [The v2 blueprint](docs/graph/blueprint/README.md) defines the target and explains the projection check.
 
@@ -47,7 +39,6 @@ graph TD;
 	size(size)
 	commit(commit)
 	publish(publish)
-	proof(proof)
 	review_post(review_post)
 	needs_human(needs_human)
 	quota_wait(quota_wait)
@@ -70,14 +61,11 @@ graph TD;
 	implement_call -.-> reconcile;
 	merge --> done;
 	needs_human -.-> done;
-	needs_human -.-> prepare;
+	needs_human -.-> review;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
 	prepare -.-> done;
 	prepare -.-> implement;
-	proof -.-> done;
-	proof -.-> prepare;
-	proof -. &nbsp;pass&nbsp; .-> publish;
 	publish -.-> done;
 	publish -.-> review;
 	quota_wait -.-> implement;
@@ -139,7 +127,7 @@ graph TD;
 	triage_call -.-> spec;
 	verify -.-> done;
 	verify -.-> prepare;
-	verify -.-> proof;
+	verify -.-> publish;
 	done --> __end__;
 	implement_call -. &nbsp;call&nbsp; .-> implement_call;
 	research_call -. &nbsp;call&nbsp; .-> research_call;
@@ -158,17 +146,17 @@ Changes to `docs/graph/` require the code owner's written approval on the PR bef
 
 The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. Review uses only the configured Opus and Sol list, preferring models outside all successful implementation families. Grok remains in the other model orders. A node does not edit the list, and it does not decide the next node.
 
-Review keeps configured order within the preferred and contributing-family groups. A fresh invocation may review with the builder's own model, including a one-model configuration. The accepted attempt and round record the reviewer, contributing models, same-family flag, and fallback reason. The posted review includes that saved evidence, including after a posting retry. A review reports alignment, impact, verification, rollback, and error detection. It rates merge risk as low, medium, or high. Each dimension must cite the diff; an ungrounded review halts `invalid_output`.
+Review keeps configured order within the preferred and contributing-family groups. A fresh invocation may review with the builder's own model, including a one-model configuration. The accepted attempt and round record the reviewer, contributing models, same-family flag, and fallback reason. The posted review includes that saved evidence, including after a posting retry.
 
-Round 1 reviews the full PR diff. Later rounds check unresolved findings and added
-interdiff lines also in the PR diff. Out-of-scope findings become coordinator notes. Typed findings have stable IDs, kinds, fixes and
-explicit resolutions. Resolved findings become settled rulings. Disagreements with
-rulings become coordinator notes. The graph owns tool-fact checks separately from
-reviewer findings. Rulings exist only within a run. The failure cap stays unchanged.
+Every round reviews the full PR diff from its pinned merge base to its checked head.
+The reviewer cites committed locations and gives the severity, impact and evidence for
+each finding. Foreman posts a COMMENT for each report. Only concrete P0 or P1 correctness,
+security or scope defects send the same PR back for repair. Other findings remain advisory.
+Honor applicable settled rulings.
 
 An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every configured reviewer is out of quota or its CLI is missing, review stops with `reviewer_unavailable` (exit 75). Rerun the same command without `--answer` to select from the current review order again. Other stages retain `cli_missing` for missing CLIs. Missing implementation provenance still stops with `no_reviewer`. The future spec checker uses the same ordering rule against its actual author; its separate checker-unavailability contract is unchanged. The record includes `halt_detail` for these stops.
 
-Foreman creates an `<issue>-<slug>` branch from the repository default branch before the first edit. It sizes the reconciled candidate before committing, then verifies and proves the commit before publishing. An attempt with no file changes stops with `failed`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
+Foreman creates an `<issue>-<slug>` branch from the repository default branch before the first edit. It sizes the reconciled candidate before committing, then verifies the commit before publishing. An attempt with no file changes stops with `failed`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
 Live verify stops with `dirty_worktree` if the checkout has changes, HEAD differs from the saved implementation commit, or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs skip preflight and use a scripted verdict.
 
@@ -176,9 +164,9 @@ Use `--preflight <command>` to check environment readiness in the engine checkou
 
 Restore the environment and rerun the same command to resume from the saved checkpoint.
 
-When the check passes, the graph evaluates the browser and formal evidence required by the slice. Missing evidence stops the run. A failed proof consumes a round and sends the slice back to implement while rounds remain.
-
-The cap is three failures across slice planning, verify, proof, and review. It is config. A node cannot raise it.
+A passing repository check goes directly to publication at the checked head. Keep any
+additional evidence required by the slice in the issue or repository checks. Each of
+slice planning, verification and blocking review uses the configured failure cap.
 
 After approval, Foreman looks up the pull request for the checked-out branch and arms it with `gh pr merge <pull-request> --repo <repo> --squash --auto --match-head-commit <sha>`. The worktree and pull request must still be at the verified SHA, the worktree must be clean, and the open pull request must target `main` from a branch starting with the issue number and a hyphen.
 
@@ -192,7 +180,7 @@ Stage prompts live in `src/foreman/stages/`. The graph selects worker methods fr
 
 Before live dispatch, Foreman exports the pstack skills from the repository and commit pinned in `src/foreman/config.py`. It records that pin in the checkpoint and reuses it on resume. A failed fetch or export stops with `skill_missing` and reports `pin unavailable` with the commit. A missing method in a successful export reports `method missing at pin` with the path and commit. Dry runs print `pstack pin not checked (dry run)`.
 
-A parent or slice goes straight to implement when the behavior is decided and the change fits in one pull request. A parent on this route is its own slice. It carries the same proof obligations as any slice and files no child issues. Changes that need more than one pull request or leave a product choice open go to spec. An informational request goes to spec on a parent and to research on a slice. An open product choice pauses a live run for a person's answer.
+A parent or slice goes straight to implement when the behavior is decided and the change fits in one pull request. A parent on this route is its own slice. It carries the slice acceptance and files no child issues. Changes that need more than one pull request or leave a product choice open go to spec. An informational request goes to spec on a parent and to research on a slice. An open product choice pauses a live run for a person's answer.
 
 A ready parent spec lists the seams each slice builds and uses. Foreman checks existing seam paths in the workspace and orders the slices so builders come first. A cycle, dangling seam, duplicate builder, or seam marked existing that a slice also builds sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children. Single-slice parents skip ordering.
 
@@ -317,7 +305,7 @@ If the live command prints `paused quota_exhausted`, run it again from the same 
 
 Before commit, Foreman uses the reconciled candidate's saved size against the work base's merge base, including root files, docs, and logs. Use Git 2.43 or later.
 
-Reconciliation and size use the merge base with fetched `refs/remotes/origin/<base>`. Reconciliation rejects added or modified deliverable paths matching that base's `.gitignore` files, including staged files and worker commits. Ignored untracked files stay outside the delta; deleting tracked scratch is allowed. Here, `evidence/` declares disposable worker output. A declared fact record and its named regular captures remain deliverables, without exempting adjacent files. `implementation_rejected` names rejected paths and preserves the checkout. Remove the scratch and rerun to reconcile again without repeating the implement call.
+Reconciliation and size use the merge base with fetched `refs/remotes/origin/<base>`. Reconciliation rejects added or modified deliverable paths matching that base's `.gitignore` files, including staged files and worker commits. Ignored untracked files stay outside the delta; deleting tracked scratch is allowed. Here, `evidence/` declares disposable worker output. `implementation_rejected` names rejected paths and preserves the checkout. Remove the scratch and rerun to reconcile again without repeating the implement call.
 
 Files marked `linguist-generated` by [`.gitattributes`](.gitattributes) at the merge base do not count. Here, that means fixtures, generated schemas, and lockfiles. Candidate attribute changes cannot exempt their own lines.
 

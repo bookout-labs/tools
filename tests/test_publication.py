@@ -1,5 +1,4 @@
 import tests
-from foreman.fixture_manifest import FixtureManifest
 
 from contextlib import ExitStack
 from dataclasses import replace
@@ -139,7 +138,7 @@ class PublicationTest(unittest.TestCase):
     def no_worker(self):
         self.fail("completed worker must not repeat")
 
-    def walk(self, edit=None, reviews=None, family=None, fact_record="tests/fixtures/manifest.toml",
+    def walk(self, edit=None, reviews=None, family=None,
              answer=None, preflight="", check_log=None):
         script = ScriptHandler(reviews=reviews)
         workspace = LiveWorkspace(self.checkout)
@@ -147,7 +146,7 @@ class PublicationTest(unittest.TestCase):
         def handler(node, model, state, instruction):
             if node == "implement":
                 self.assertEqual(workspace.inspect().branch, self.branch)
-                self.assertEqual(instruction.count("Foreman owns commits and publishing"), 1)
+                self.assertEqual(instruction.count("Foreman verifies the final tree, commits and publishes"), 1)
                 if family and model.family != family:
                     return Outcome("cli_missing")
                 outcome = (edit or self.edit)()
@@ -159,7 +158,7 @@ class PublicationTest(unittest.TestCase):
 
         return run_live_delivery(
             repo=REPO, issue=8, check="test -f items.txt", preflight=preflight, checkpoint=self.checkpoint,
-            fact_record=fact_record, answer=answer,
+            answer=answer,
             run=LiveRun(LiveForge(), workspace, check_log=check_log), dispatcher=handler,
         )
 
@@ -330,7 +329,7 @@ class PublicationTest(unittest.TestCase):
         self.git("--git-dir", str(self.remote), "update-ref", "refs/heads/main", old)
         before = workspace.inspect()
         with self.assertRaisesRegex(WorkspaceError, "git fetch --unshallow origin"):
-            workspace.reconcile(tip, self.branch, "main", None)
+            workspace.reconcile(tip, self.branch, "main")
         self.assertEqual(workspace.inspect(), before)
 
     def test_rewritten_and_rewound_origin_keep_checkout_and_comparison_semantics(self):
@@ -341,14 +340,14 @@ class PublicationTest(unittest.TestCase):
         before = workspace.inspect()
         old = self.git("rev-parse", "main")
         self.git("--git-dir", str(self.remote), "update-ref", "refs/heads/main", old)
-        candidate = workspace.reconcile(parent, self.branch, "main", None)
+        candidate = workspace.reconcile(parent, self.branch, "main")
         self.assertIsNotNone(candidate)
         self.assertEqual(workspace._base_merge_base("main", parent), old)
         unrelated = self.git("commit-tree", "HEAD^{tree}", "-m", "Unrelated")
         self.git("--git-dir", str(self.remote), "fetch", str(self.checkout), unrelated)
         self.git("--git-dir", str(self.remote), "update-ref", "refs/heads/main", unrelated)
         with self.assertRaisesRegex(WorkspaceError, "restore related base history"):
-            workspace.reconcile(parent, self.branch, "main", None)
+            workspace.reconcile(parent, self.branch, "main")
         self.assertEqual(workspace.inspect(), before)
 
     def test_refresh_adopts_only_the_observed_remote_repair(self):
@@ -649,64 +648,6 @@ class PublicationTest(unittest.TestCase):
                     self.assertNotIn(name, files)
                     self.assertTrue((self.checkout / name).is_file())
 
-    def test_reconcile_parses_only_the_declared_record(self):
-        for record in (None, "evidence/facts.toml"):
-            with self.subTest(record=record):
-                self.reset_fixture()
-                def edit():
-                    self.edit()
-                    old = self.checkout / "tests/fixtures/manifest.toml"
-                    old.parent.mkdir(parents=True)
-                    old.write_text("issue = 1116\n")
-                    if record:
-                        selected = self.checkout / record
-                        selected.parent.mkdir()
-                        selected.write_text("[fixtures]\n")
-                original = FixtureManifest.from_toml
-                parsed = []
-                def parse(content):
-                    parsed.append(content)
-                    return original(content)
-                with patch.object(FixtureManifest, "from_toml", side_effect=parse):
-                    result = self.walk(edit, fact_record=record)
-                self.assertEqual(result["stop"], "verified")
-                self.assertEqual(parsed, ["[fixtures]\n"] if record else [])
-
-    def test_undeclared_old_manifest_cannot_exempt_ignored_capture(self):
-        for record in (None, "evidence/facts.toml"):
-            with self.subTest(record=record):
-                self.reset_fixture()
-                self.scratch_policy()
-                def edit():
-                    self.edit()
-                    old = self.checkout / "tests/fixtures/manifest.toml"
-                    old.parent.mkdir(parents=True)
-                    old.write_text('[fixtures."capture.log"]\nkind="captured_run"\n'
-                                   'tool="tool"\nversion="1"\nargv=["tool"]\n')
-                    (self.checkout / "evidence").mkdir()
-                    (old.parent / "capture.log").write_text("unselected capture")
-                    self.git("add", "-f", "tests/fixtures/capture.log")
-                    if record:
-                        (self.checkout / record).write_text("[fixtures]\n")
-                result = self.walk(edit, fact_record=record)
-                self.assertEqual(result["stop"], "implementation_rejected")
-                self.assertIn("tests/fixtures/capture.log", result["halt_detail"])
-                self.assertNotIn("Invalid fact record", result["halt_detail"])
-
-    def test_malformed_fact_records_fail_closed(self):
-        for content in ('[broken', '[fixtures."../bad"]\nkind="captured_run"\ntool="tool"\nversion="1"\nargv=["tool"]\n'):
-            with self.subTest(content=content):
-                self.reset_fixture()
-                def edit():
-                    self.edit()
-                    path = self.checkout / "evidence/facts.toml"
-                    path.parent.mkdir()
-                    path.write_text(content)
-                result = self.walk(edit, fact_record="evidence/facts.toml")
-                self.assertEqual(result["stop"], "implementation_rejected")
-                self.assertIn("evidence/facts.toml", result["halt_detail"])
-                self.assertFalse(self.created)
-
     def test_reconcile_uses_remote_base_when_local_base_differs(self):
         self.scratch_policy()
         self.git("switch", "-c", self.branch)
@@ -758,26 +699,8 @@ class PublicationTest(unittest.TestCase):
         self.assertNotIn("items.txt", rejected["halt_detail"])
         (directory / "drop.tmp").unlink()
         self.git("add", "--all")
-        with patch.dict("foreman.dry_run.DEFAULT_RISK", {name: {**dimension, "evidence": [dict(side="head", path="nested/keep.tmp", line=1)]} for name, dimension in ScriptHandler().risk.items() if name != "level"}):
-            self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
+        self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
         self.assertNotIn("items.txt", self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines())
-
-    def test_fact_capture_does_not_authorize_adjacent_scratch(self):
-        self.scratch_policy()
-        def edit():
-            self.edit()
-            directory = self.checkout / "evidence"
-            directory.mkdir()
-            (directory / "facts.toml").write_text('[fixtures."capture.txt"]\nkind="captured_run"\ntool="tool"\nversion="1"\nargv=["tool"]\n')
-            (directory / "capture.txt").write_text("capture")
-            (directory / "scratch.txt").write_text("scratch")
-            self.git("add", "-f", "evidence/scratch.txt")
-        result = self.walk(edit, fact_record="evidence/facts.toml")
-        self.assertEqual(result["stop"], "implementation_rejected")
-        self.assertIn("evidence/scratch.txt", result["halt_detail"])
-        self.assertNotIn("evidence/capture.txt", result["halt_detail"])
-        self.assertNotIn("evidence/facts.toml", result["halt_detail"])
-        self.assertFalse(self.created)
 
     def test_ignore_policy_comes_from_merge_base_and_handles_odd_paths(self):
         self.scratch_policy()
@@ -792,32 +715,6 @@ class PublicationTest(unittest.TestCase):
         self.assertIn(repr("odd\nname.log"), result["halt_detail"])
         self.assertIn(":!x.log", result["halt_detail"])
         self.assertNotIn("'items.txt'", result["halt_detail"])
-
-    def test_fact_captures_are_exact_deliverables_under_ignored_directory(self):
-        for committed in (False, True):
-            for record in ("tests/fixtures/manifest.toml", "evidence/facts.toml"):
-                with self.subTest(committed=committed, record=record):
-                    self.reset_fixture()
-                    self.scratch_policy()
-                    def edit():
-                        self.edit()
-                        path = self.checkout / record
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_text('[fixtures."capture.log"]\nkind="captured_run"\ntool="tool"\nversion="1"\nargv=["tool"]\n')
-                        (path.parent / "capture.log").write_text("captured output\n")
-                        for name in ("src/new.py", "tests/test_new.py", "docs/new.md"):
-                            file = self.checkout / name
-                            file.parent.mkdir(parents=True, exist_ok=True)
-                            file.write_text("deliverable\n")
-                        if committed:
-                            self.git("add", "-f", record, str(path.parent / "capture.log"))
-                            self.worker_commit()
-                    result = self.walk(edit, fact_record=record)
-                    self.assertEqual(result["stop"], "verified")
-                    files = self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines()
-                    self.assertIn(record, files)
-                    self.assertIn(str(Path(record).parent / "capture.log"), files)
-                    self.assertEqual(result["checks"].verified_head, self.remote_head())
 
     def test_reconciled_candidate_mutation_is_rejected_before_publication(self):
         original = LiveWorkspace.reconcile
@@ -904,7 +801,7 @@ class PublicationTest(unittest.TestCase):
                         self.assertEqual(len(checked), 1)
                         self.assertEqual(resumed["pr_size_override"], candidate["size"])
                         self.assertEqual(self.git("rev-parse", "HEAD^{tree}"), candidate["size"]["head"])
-                        self.assertEqual(resumed["path"][-5:], ["proof", "publish", "review", "merge", "done"])
+                        self.assertEqual(resumed["path"][-5:], ["verify", "publish", "review", "merge", "done"])
                     else:
                         self.assertEqual(resumed["stop"], "pr_split_required")
                         self.assertEqual(resumed["plan"].pr_split, paused["plan"].pr_split)
@@ -929,16 +826,8 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(len(self.created), 1)
         self.assertEqual(self.git("rev-parse", "HEAD^"), published)
         self.assertEqual(self.remote_head(), second["checks"].verified_head)
-        self.assertEqual(second["path"].count("proof"), 2)
+        self.assertEqual(second["path"].count("verify"), 2)
         self.assertEqual(second["path"].count("publish"), 2)
-
-    def test_missing_proof_never_publishes(self):
-        self.slice = {**EMPTY_SLICE, "screen": "docs/screens/items.md"}
-        result = self.walk()
-        self.assertEqual(result["stop"], "insufficient_evidence")
-        self.assertFalse(self.created)
-        self.assertNotIn("publish", result["path"])
-        self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
 
     def test_first_publication_uses_bound_size_without_pr_lookup(self):
         result = self.walk(self.edit)

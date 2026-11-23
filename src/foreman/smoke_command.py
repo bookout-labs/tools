@@ -13,7 +13,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 
 from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -100,10 +99,8 @@ def seed_old_state(home: Path, repo: str, *issues: int) -> Path:
 
 def npm_contract(root: Path) -> None:
     """Fail closed if maintenance erases the unlike-target regression probes."""
-    manifest = tomllib.loads((root / "tests/fixtures/manifest.toml").read_text())
     package = json.loads((root / "package.json").read_text())
     lock = json.loads((root / "package-lock.json").read_text())
-    assert "fixtures" not in manifest, "collision is a Foreman fact record"
     assert package["type"] == "module" and package["scripts"]["check"] == "node --test", "npm suite command drift"
     assert lock["lockfileVersion"] == 3 and not package.get("dependencies"), "npm dependency contract drift"
     for name in ("node", "npm"):

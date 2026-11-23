@@ -21,7 +21,6 @@ from foreman.readiness import MergeState
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
-from foreman.fixture_manifest import fact_record_path
 from foreman.github import Forge, ForgeError
 from foreman.watch import run_key, watch
 from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
@@ -138,7 +137,6 @@ def run_live_delivery(
     answer: str | None = None,
     max_tokens: int | None = None,
     max_budget_usd: BudgetUsd | None = None,
-    fact_record: str | None = None,
     presentation: RunPresentation | None = None,
     watch_repo: str = "bookout-labs/tools",
     report: Callable[[DeliveryResult], None] = lambda result: None,
@@ -147,8 +145,6 @@ def run_live_delivery(
     if presentation is not None:
         presentation.restored = None
         presentation.updates.clear()
-    if fact_record is not None:
-        fact_record = fact_record_path(fact_record)
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     thread = f"{repo.lower()}#{issue}"
     config: RunnableConfig = {"configurable": {"thread_id": thread}}
@@ -160,12 +156,6 @@ def run_live_delivery(
         channels = prior["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, checkpoint, thread)
-            saved_record = ReviewState.model_validate(channels["review"]).fact_record
-            if fact_record is not None and fact_record != saved_record:
-                raise ValueError("--fact-record differs from the checkpoint.")
-            fact_record = saved_record
-        if fact_record is not None:
-            fact_record = fact_record_path(fact_record)
         delivery_config = load_config()
         run_state = RunState()
         if prior is not None:
@@ -195,7 +185,7 @@ def run_live_delivery(
                                               token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
                                           "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
                                           "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(check=check, preflight=preflight),
-                                          "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState(fact_record=fact_record)}
+                                          "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState()}
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
             else:
@@ -268,7 +258,7 @@ def run_live_delivery(
                 "pstack_pin": pin.model_dump(),
                 "path": [],
                 "plan": PlanState(issue_kind="slice" if "slice" in loaded["labels"] else "parent"),
-                "review": ReviewState(fact_record=fact_record),
+                "review": ReviewState(),
             }
             if initial["plan"].issue_kind == "slice":
                 try:
@@ -287,6 +277,7 @@ def run_live_delivery(
             invoke(Command(resume=True), saved_values)
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             repaired = False
+            renew_review = False
             repair_head: str | None = None
             if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge", MergeState()).receipt and (head := saved_values["checks"].verified_head) and (branch := saved_values.get("work", WorkState()).branch):
                 worktree = run.workspace.inspect()
@@ -299,7 +290,16 @@ def run_live_delivery(
                     repaired = True
                 elif observed is None or observed.outcome not in {"closed", "retargeted"}:
                     repaired = worktree.head != head
-            before = _checkpoint_before_halt(graph, config, saved_values["path"], "prepare" if repaired else None)
+                    plan = saved_values.get("dispatch_plan")
+                    target = plan["target"] if plan else None
+                    if observed is not None and target is not None:
+                        pr = observed.pr
+                        renew_review = (pr.number, pr.head.sha, pr.base.ref) == (
+                            target["number"], head, target["baseRefName"],
+                        ) and pr.base.sha != target["baseRefOid"]
+            before = _checkpoint_before_halt(
+                graph, config, saved_values["path"], "prepare" if repaired else "review" if renew_review else None,
+            )
             require_schema_version(before.values, checkpoint, thread)
             require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_budget_usd)
             restored = checkpoint_state(before.values)
@@ -324,11 +324,11 @@ def run_live_delivery(
             retained: DeliveryUpdate = {"plan": restored["plan"].model_copy(update={"spec_failures": saved_values["plan"].spec_failures}),
                                         "work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": (
                 ReviewState(review_findings=saved_review.review_findings, settled_rulings=saved_review.settled_rulings,
-                            fact_record=saved_review.fact_record, review_run_id=saved_review.review_run_id)
+                            review_run_id=saved_review.review_run_id)
                 if repaired else saved_review)}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
-            if repaired:
+            if repaired or renew_review:
                 invoke(Command(update=retained), restored, replay)
             else:
                 replay = graph.update_state(replay, retained)

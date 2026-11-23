@@ -59,11 +59,11 @@ class ClaudeCheckTest(unittest.TestCase):
         capture = json.loads((FIXTURES / "claude/review-denial.json").read_text())
         first, retry = capture["calls"]
         call = replace(CALL, review=True)
-        for captured, kind in ((first, "review_denied"), (retry, "ran")):
+        for captured, kind in ((first, "failed"), (retry, "ran")):
             outcome = ClaudeAdapter(MODEL).read(subprocess.CompletedProcess(
                 ["claude"], captured["returncode"], json.dumps(captured["envelope"]), ""), call)
             self.assertEqual(outcome.kind, kind)
-            if kind == "review_denied":
+            if kind == "failed":
                 self.assertEqual(outcome.output, {})
             self.assertIsNotNone(outcome.usage)
         self.assertLess(sum(c["envelope"]["total_cost_usd"] for c in capture["calls"]), 1)
@@ -81,14 +81,14 @@ class ClaudeCheckTest(unittest.TestCase):
         self.assertEqual(partial["files"]["repo/second"], "")
         result = ClaudeAdapter(MODEL).read(subprocess.CompletedProcess(
             ["claude"], 0, json.dumps(partial["stdout"]), ""), call)
-        self.assertEqual(result.kind, "review_denied")
+        self.assertEqual(result.kind, "failed")
         self.assertEqual(result.output, {})
 
     def test_reviewer_never_accepts_denial_bearing_output(self):
         for evidence, kind in ((None, "failed"), ({}, "failed"),
                 ([{"tool_name": "Bash", "tool_input": None}], "failed"),
-                (denied("git commit -m x")["permission_denials"], "review_denied"),
-                (denied(CHECK + " && git show HEAD:x | od -c")["permission_denials"], "review_denied")):
+                (denied("git commit -m x")["permission_denials"], "failed"),
+                (denied(CHECK + " && git show HEAD:x | od -c")["permission_denials"], "failed")):
             envelope = {**denied(CHECK), "permission_denials": evidence}
             process = subprocess.CompletedProcess(["claude"], 0, json.dumps(envelope), "")
             result = ClaudeAdapter(MODEL).read(process, replace(CALL, review=True))
@@ -101,7 +101,7 @@ class ClaudeCheckTest(unittest.TestCase):
         script = ScriptHandler()
         def handler(node, model, state, instruction):
             result = script(node, model, state, instruction)
-            return replace(result, kind="review_denied") if node == "implement" else result
+            return replace(result, kind="failed") if node == "implement" else result
         result = walk(handler)
         self.assertEqual(result["halt"], "invalid_output")
         self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement"])
@@ -157,7 +157,7 @@ class ClaudeCheckTest(unittest.TestCase):
                     process = subprocess.run(args, cwd=cwd, env={**live_env, **env}, capture_output=True, text=True, stdin=subprocess.DEVNULL)
                     captured.update(argv=args, envelope=json.loads(process.stdout), returncode=process.returncode)
                     return process
-                result = CliWorker(repo, run=run)('implement', MODEL, {"checks": ChecksState(check=check), "plan": PlanState()}, f'Use Bash separately for each command exactly once, including denials: {json.dumps(commands)}. Then return implementation "done", browser_proof null, formal_proof null.')
+                result = CliWorker(repo, run=run)('implement', MODEL, {"checks": ChecksState(check=check), "plan": PlanState()}, f'Use Bash separately for each command exactly once, including denials: {json.dumps(commands)}. Then return implementation "done".')
                 self.assertEqual(result.kind, 'ran' if check == CHECK else 'failed', result.detail)
                 transcript = Path.home() / '.claude/projects' / re.sub(r'[^a-zA-Z0-9-]', '-', str(repo)) / f"{captured['envelope']['session_id']}.jsonl"
                 rows = [json.loads(line) for line in transcript.read_text().splitlines()]

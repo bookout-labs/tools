@@ -12,7 +12,7 @@ from foreman.delivery import stage_text
 from foreman.dry_run import CLEAR
 from foreman.spec_check import SpecHistory, accept
 from foreman.stage_output import PlanState, CandidateSlice, SliceProvenanceRecord, SpecCandidate, SpecAuthor
-from foreman.skill_rules import PstackMethod, export_skills, git
+from foreman.skill_rules import export_skills, git
 
 
 AUTHOR = SpecAuthor(stage="spec", model="gpt-author", family="gpt")
@@ -24,7 +24,7 @@ def fixture_pin(root: Path) -> PstackPin:
     git(root, "init", "--quiet")
     for rule in (rule for stage in STAGES.values() for rule in stage.skills):
         method = rule.skill
-        if isinstance(method, PstackMethod):
+        if method.kind != "repository_skill":
             path = root / "pstack" / "skills" / method.path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("Synthetic method.\n" * (method.lines[1] if method.lines else 1), encoding="utf-8")

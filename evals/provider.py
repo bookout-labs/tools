@@ -68,25 +68,25 @@ def _review_fallback() -> str:
     return f"{result['stop']} {','.join(offered)} rounds={len(result['review'].review_findings)} same_family={selection['same_family']} reason={selection['reason']}"
 
 
-def _settled_review() -> str:
-    handler = ScriptHandler(reviews=["changes", "approve", "approve"])
-    count = 0
+def _review_converges() -> str:
+    handler = ScriptHandler(reviews=["changes", "approve"])
+    note = {
+        "id": "optional-record", "kind": "other", "severity": "P2", "ruling_id": None,
+        "location": {"side": "head", "path": "items.txt", "line": 1},
+        "summary": "Consider adding a diagnostic record.", "impact": "Easier troubleshooting.",
+        "evidence": "The edit has no optional trace.",
+    }
 
     def review(node, model, state, instruction):
-        nonlocal count
         reply = handler(node, model, state, instruction)
         if node == "review":
-            count += 1
-            finding = {"id": "check" if count == 1 else "next", "kind": "docs", "fix": "Add a check",
-                       "ruling_id": None, "file": "items.txt", "line": 1, "severity": "nit", "summary": "Add a check"}
-            if count == 3:
-                finding.update(id="repeat", ruling_id="finding:check")
-            return Outcome("ran", {**reply.output, "findings": [finding],
-                                   "resolutions": [] if count == 1 else [{"id": "check" if count == 2 else "next", "status": "resolved"}]}, usage=reply.usage)
+            reply.output["findings"].append(note)
         return reply
 
     result = _walk(review, slice=FIELD_SLICE)
-    return f"{result['stop']} {result.get('merge', MergeState()).status} {result['review'].detail}"
+    edits = result["path"].count("implement")
+    reports = len(result["review"].review_findings)
+    return f"{result['stop']} {result.get('merge', MergeState()).status} edits={edits} reports={reports}"
 
 
 def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, object]]) -> dict[str, str]:
@@ -94,7 +94,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
     if case == "clear":
         output = _stop(ScriptHandler(triage="implement"), slice=FIELD_SLICE)
     elif case == "review-converges":
-        output = _settled_review()
+        output = _review_converges()
     elif case == "spec-ready":
         output = _stop(ScriptHandler(triage="spec", spec_gate="ready"), slice=FIELD_SLICE)
     elif case == "spec-gate":

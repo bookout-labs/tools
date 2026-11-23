@@ -16,7 +16,7 @@ from foreman.delivery import MODEL_STAGES, run_delivery, stage_text
 from foreman.stages import STAGES, Acceptance
 from foreman.state import DeliveryState, PlanState
 from foreman.stage_output import ResearchOutput
-from foreman.skill_rules import PstackMethod, SkillRule, SkillMissing, export_skills, stage_methods
+from foreman.skill_rules import SkillMethod, SkillRule, SkillMissing, export_skills, stage_methods
 from skill_fixture import skill_fixture
 from foreman.dry_run import ScriptHandler
 from foreman.worker import CliWorker
@@ -26,12 +26,10 @@ from test_delivery import EMPTY_SLICE
 def capture():
     captures = {}
     for kind in ("feature", "bug_fix", "refactoring", "perf_issue"):
-        for route in ("spec", "question", "proof"):
+        for route in ("spec", "question", "implement"):
             records = []
             item = {**EMPTY_SLICE, "stateful": True}
-            if route == "proof":
-                item.update(screen="docs/screens/items.md", properties=[{"name": "Unique", "constraint": "unique"}])
-            script = ScriptHandler(triage="implement" if route == "proof" else route,
+            script = ScriptHandler(triage=route,
                                    work_kind=kind, reviews=["changes", "approve"])
 
             def dispatch(node, model, state, instruction):
@@ -160,17 +158,17 @@ class StageDeclarationsTest(unittest.TestCase):
             outcome = script(stage, model, state, instruction)
             if stage == "review":
                 self.assertEqual(state["research"], "Row projection")
-                outcome.output["findings"] = [{"id": "row", "kind": "correctness", "severity": "nit",
-                    "fix": "Fix it", "ruling_id": None, "file": "row.py", "line": 7, "summary": "Row citation"}]
-                if len(seen) > 1:
-                    outcome.output.update(findings=[], resolutions=[{"id": "row", "status": "resolved"}])
+                outcome.output["findings"] = [{"id": "row", "kind": "correctness", "severity": "P2",
+                    "location": {"side": "head", "path": "row.py", "line": 7}, "ruling_id": None,
+                    "evidence": "Current row accepts a blank label.", "impact": "The display has no label.",
+                    "summary": "Row citation"}]
                 return Outcome("ran", outcome.output, usage=SCRIPTED_USAGE)
             return outcome
         with patch.dict(STAGES, review=replace(row, project=project)):
             result = walk(dispatch)
-        self.assertEqual(seen, [True, True])
+        self.assertEqual(seen, [True])
         self.assertEqual(result["stop"], "verified", result.get("halt_detail"))
-        self.assertEqual(result["review"].review_findings[0]["findings"][0]["file"], "row.py")
+        self.assertEqual(result["review"].review_findings[0]["findings"][0]["location"]["path"], "row.py")
 
     def test_review_unavailability_halt_comes_from_row(self):
         from foreman.adapters import Outcome
@@ -189,32 +187,13 @@ class StageDeclarationsTest(unittest.TestCase):
         self.assertEqual(result["halt"], "failed")
         self.assertEqual(result["halt_detail"], "Row unavailable")
 
-    def test_review_denial_retry_comes_from_row(self):
-        from foreman.adapters import Outcome
-        from foreman.dry_run import SCRIPTED_USAGE
-        from test_delivery import walk
-
-        script, seen = ScriptHandler(), []
-        def retry(attempts):
-            seen.append(attempts[-1]["outcome"])
-            return len(seen) < 3
-        def dispatch(stage, model, state, instruction):
-            return Outcome("review_denied", detail="Row denial", usage=SCRIPTED_USAGE) if stage == "review" else script(stage, model, state, instruction)
-        with patch.dict(STAGES, review=replace(STAGES["review"], retry_denied=retry)):
-            result = walk(dispatch)
-        self.assertEqual(seen, ["review_denied"] * 3)
-        self.assertEqual(result["halt"], "invalid_output")
-        self.assertIn("retry exhausted", result["halt_detail"])
-
-    def test_implement_acceptance_keeps_proofs_and_model_history(self):
+    def test_implement_acceptance_keeps_model_history(self):
         from foreman.delivery import stage_update
-        from foreman.stage_output import ImplementOutput, BrowserProof, FormalProof
+        from foreman.stage_output import ImplementOutput
         from foreman.state import ChecksState, ReviewState, RunState
 
-        browser = BrowserProof(screen="screen.png", trace="trace.zip", passed=True)
-        formal = FormalProof(ran=True, constraints=[], typecheck=True)
         state = {"plan": PlanState(), "review": ReviewState(), "run": RunState(repo="org/repo"),
-                 "checks": ChecksState(check="test", verify_failures=2, proof_failures=1), "path": []}
+                 "checks": ChecksState(check="test", verify_failures=2), "path": []}
         for used, prior, model, expected in (
             ({}, None, "first", ["first"]),
             ({"implement": "first"}, None, "second", ["first", "second"]),
@@ -226,19 +205,10 @@ class StageDeclarationsTest(unittest.TestCase):
                 current = {**state, "models_used": used}
                 if prior is not None:
                     current["implement_models"] = prior
-                for present in (True, False):
-                    output = ImplementOutput(implementation="Done", browser_proof=browser if present else None,
-                                             formal_proof=formal if present else None)
-                    update = stage_update("implement", output, current, model)
-                    self.assertEqual(update["implementation"], "Done")
-                    self.assertEqual(update["checks"].browser_proof, browser.record() if present else None)
-                    self.assertEqual(update["checks"].formal_proof, formal.record() if present else None)
-                    self.assertEqual(update["checks"].verify_failures, 2)
-                    self.assertEqual(update["checks"].proof_failures, 1)
-                    self.assertEqual(update.get("implement_models"), expected)
-                    self.assertEqual(update.get("models_used"), {**used, "implement": model} if model else None)
-                    self.assertEqual(update["path"], ["implement"])
-                self.assertEqual(state["checks"].browser_proof, None)
+                update = stage_update("implement", ImplementOutput(implementation="Done"), current, model)
+                self.assertEqual(update["implementation"], "Done")
+                self.assertNotIn("checks", update)
+                self.assertEqual(update.get("implement_models"), expected)
 
     def test_spec_split_instructions_reach_the_worker(self):
         from langgraph.checkpoint.memory import InMemorySaver
@@ -284,7 +254,7 @@ class StageDeclarationsTest(unittest.TestCase):
         from foreman.state import ChecksState
 
         model = ModelSpec.parse("gpt-6.1-sol-high")
-        output = ImplementOutput(implementation="Done", browser_proof=None, formal_proof=None)
+        output = ImplementOutput(implementation="Done")
         update = stage_update("implement", output, {"checks": ChecksState(), "implement_models": ["first"]},
                               accepted_model=model)
         self.assertEqual(update["implement_models"], ["first", model.name])
@@ -293,7 +263,7 @@ class StageDeclarationsTest(unittest.TestCase):
         from foreman.stage_output import VerifyOutput
         from foreman.state import ChecksState
 
-        checks = ChecksState(check="test", verify_failures=2, proof_failures=1)
+        checks = ChecksState(check="test", verify_failures=2)
         for verdict, failures in (("pass", 2), ("fail", 3)):
             with self.subTest(verdict=verdict):
                 update = STAGES["verify"].accept(VerifyOutput(verify=verdict), Acceptance({"checks": checks}))
@@ -307,7 +277,7 @@ class StageDeclarationsTest(unittest.TestCase):
 
     def test_export_checks_methods_from_the_canonical_row(self):
         with skill_fixture() as (config, scratch):
-            missing = SkillRule(skill=PstackMethod(path="absent/SKILL.md", kind="skill"))
+            missing = SkillRule(skill=SkillMethod(path="absent/SKILL.md", kind="skill"))
             with patch.dict(STAGES, spec_check=replace(STAGES["spec_check"], skills=(missing,))):
                 with self.assertRaises(SkillMissing):
                     export_skills(config.pstack, scratch)
@@ -332,10 +302,8 @@ class StageDeclarationsTest(unittest.TestCase):
             if row.prompt is not None:
                 with self.subTest(stage=name):
                     self.assertTrue(stage_text(name))
-        for name in ("verify", "proof"):
-            self.assertEqual(STAGES[name].kind, "deterministic")
-            self.assertIsNone(STAGES[name].prompt)
-        self.assertIsNone(STAGES["proof"].output)
+        self.assertEqual(STAGES["verify"].kind, "deterministic")
+        self.assertIsNone(STAGES["verify"].prompt)
 
     def test_condition_change_reaches_runtime_methods(self):
         row = STAGES["research"]

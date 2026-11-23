@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import json
+import shlex
 from subprocess import CompletedProcess
 from typing import ClassVar
 
@@ -23,6 +24,41 @@ QUOTA_PREFIXES = (
     "You hit your spend cap set in your workspace.",
     "You hit your spend cap set by the owner of your workspace.",
 )
+
+
+def _shell_command(command: str) -> str:
+    # Codex can render exec commands with the login shell it used to run them.
+    if command.startswith(("/bin/bash ", "/bin/sh ", "/bin/zsh ")):
+        try:
+            shell = shlex.split(command)
+        except ValueError:
+            return command
+        if len(shell) == 3 and shell[1] in {"-c", "-lc"}:
+            return shell[2].strip()
+    return command.strip()
+
+
+def _search_found_no_match(command: str, output: object) -> bool:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    # Treat shell punctuation as whitespace outside quotes and escapes. Only
+    # unquoted operators change the tokens compared to ordinary word splitting.
+    lexer.whitespace += lexer.punctuation_chars
+    try:
+        args = shlex.split(command)
+        if "\n" in command or args != list(lexer):
+            return False
+    except ValueError:
+        return False
+    match args:
+        case ["grep" | "rg", *_]:
+            return True
+        case ["git", "grep", *_] | ["git", "--no-replace-objects", "grep", *_]:
+            # Git can also return 1 after reporting a read error.
+            return output == ""
+        case _:
+            return False
 
 
 def read_usage(report: object) -> Usage | None:
@@ -50,6 +86,7 @@ def read_usage(report: object) -> Usage | None:
 
 @dataclass
 class CodexTurn:
+    unread: set[str]
     session_id: str | None = None
     message: str | None = None
     completed: bool = False
@@ -57,6 +94,7 @@ class CodexTurn:
     failure: str | None = None
     stream_error: str | None = None
     reroute: str | None = None
+    command_failure: str | None = None
 
     def record(self, event: dict[str, object]) -> None:
         match event:
@@ -64,6 +102,10 @@ class CodexTurn:
                 self.session_id = session_id
             case {"type": "item.completed", "item": {"type": "agent_message", "text": str(text)}}:
                 self.message = text
+            case {"type": "item.completed", "item": item} if (
+                self.command_failure is None and is_dict(item) and item.get("type") == "command_execution"
+            ):
+                self.record_command(item)
             case {"type": "item.completed", "item": {"type": "error", "message": str(message)}}:
                 if message.startswith("model rerouted: "):
                     self.reroute = message
@@ -78,6 +120,19 @@ class CodexTurn:
                 self.usage = read_usage(event.get("usage"))
             case _:
                 pass
+
+    def record_command(self, result: Mapping[object, object]) -> None:
+        raw = result.get("command")
+        command = _shell_command(raw) if isinstance(raw, str) else ""
+        code, status = result.get("exit_code"), result.get("status")
+        if (status == "completed" and code == 0) or (
+            status in ("completed", "failed") and code == 1
+            and _search_found_no_match(command, result.get("aggregated_output"))
+        ):
+            self.unread.discard(command)
+        else:
+            suffix = f" (exit {code})" if isinstance(code, int) else ""
+            self.command_failure = f"Codex reviewer command failed{suffix}"
 
 
 @dataclass(frozen=True)
@@ -103,7 +158,7 @@ class CodexAdapter:
         ]
 
     def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
-        turn = CodexTurn()
+        turn = CodexTurn(set(call.checks) if call.review else set())
         try:
             for line in process.stdout.split("\n"):
                 if line.strip():
@@ -111,7 +166,7 @@ class CodexAdapter:
         except ValidationError:
             return Outcome("failed", session_id=turn.session_id, detail="Codex emitted invalid JSONL")
 
-        kind, output, detail = self._result(process.returncode, turn)
+        kind, output, detail = self._result(process.returncode, turn, review=call.review)
         outcome = build_outcome(
             kind, output=output, usage=turn.usage,
             session_id=turn.session_id, detail=detail,
@@ -131,7 +186,7 @@ class CodexAdapter:
             },
         ))
 
-    def _result(self, returncode: int, turn: CodexTurn) -> tuple[OutcomeKind, dict[str, object] | None, str]:
+    def _result(self, returncode: int, turn: CodexTurn, *, review: bool) -> tuple[OutcomeKind, dict[str, object] | None, str]:
         if turn.reroute:
             return "failed", None, turn.reroute
         if returncode or turn.failure or not turn.completed:
@@ -140,6 +195,10 @@ class CodexAdapter:
                 return "quota", None, error
             detail = error or (f"Codex exited {returncode}" if returncode else "Codex did not complete the turn")
             return "failed", None, detail
+        if review and turn.command_failure:
+            return "failed", None, turn.command_failure
+        if review and turn.unread:
+            return "failed", None, f"Codex reviewer did not complete required read: {min(turn.unread)}"
         if turn.message is None:
             return "failed", None, "Codex did not return a final agent message"
         try:

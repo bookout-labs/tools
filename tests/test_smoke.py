@@ -52,29 +52,6 @@ class SmokeTest(unittest.TestCase):
         self.assert_verdict(state, 0, "pass")
         self.assertEqual(state, before)
 
-    def test_recovered_review_denial(self):
-        state = passing()
-        denied = {**state["attempts"][0], "stage": "review", "outcome": "review_denied",
-                  "model": "claude-opus-5-5-high", "usage": dict(input=1, output=1,
-                  cache_read=0, cache_creation=0, cost_usd=0.1)}
-        state["attempts"] += [denied, {**denied, "outcome": "ran"}]
-        last = "3 review claude-opus-5-5-high"
-        self.assert_verdict(state, 0, "pass", last)
-        for usage in (None, {**denied["usage"], "cost_usd": None},
-                      {**denied["usage"], "input": 0, "output": 0}):
-            broken = deepcopy(state)
-            broken["attempts"][1]["usage"] = usage
-            self.assert_verdict(broken, 1, "attempt.usage_unknown", "2 review claude-opus-5-5-high")
-        broken = deepcopy(state)
-        broken["attempts"][1]["model"] = None
-        self.assert_verdict(broken, 1, "attempt.model_missing", "2 review no model")
-        broken = deepcopy(state)
-        broken["attempts"][1]["stage"] = "implement"
-        self.assert_verdict(broken, 1, "attempt.outcome=review_denied", "2 implement claude-opus-5-5-high")
-        state.update(halt=Halt.invalid_output, stop=Halt.invalid_output)
-        state["attempts"][-1]["outcome"] = "review_denied"
-        self.assert_verdict(state, 1, "halt=invalid_output", last)
-
     def test_each_completion_predicate(self):
         fixtures = [
             ({"attempts": []}, "attempts.nonempty"),

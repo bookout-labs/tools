@@ -1,8 +1,6 @@
 """Two-target smoke with real CLI, graph, reconcile, check commands and SQLite."""
 import tests
 
-import argparse
-
 from contextlib import ExitStack, redirect_stdout, redirect_stderr
 from dataclasses import replace
 import io
@@ -17,7 +15,6 @@ from unittest.mock import Mock, patch
 
 from foreman import cli, smoke_command as smoke
 from foreman.delivery import LiveRun
-from foreman.fixture_manifest import MANIFEST_PATH
 from foreman.state import CheckpointVersionError
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_skills
@@ -42,11 +39,8 @@ class NpmSmokeTest(unittest.TestCase):
                 if 'clone' in args:
                     checkout = Path(args[-1])
                     checkout.mkdir()
-                    (checkout / 'tests/fixtures').mkdir(parents=True)
+                    (checkout / 'tests').mkdir()
                     (checkout / 'src').mkdir()
-                    (checkout / 'evidence').mkdir()
-                    (checkout / 'evidence/facts.toml').write_text('[fixtures]\n')
-                    (checkout / MANIFEST_PATH).write_text('[inventory]\nquantity = 12\n')
                     package = {'name': 'unlike', 'version': '1.0.0', 'type': 'module',
                                'scripts': {'check': 'node --test'}, 'engines': pins}
                     (checkout / 'package.json').write_text(json.dumps(package))
@@ -68,11 +62,7 @@ class NpmSmokeTest(unittest.TestCase):
                     git('remote', 'add', 'origin', '.')
                     git('update-ref', 'refs/remotes/origin/main', 'HEAD')
                     fake.base = git('rev-parse', 'HEAD')
-                    if mutation == 'missing collision':
-                        (checkout / MANIFEST_PATH).unlink()
-                    elif mutation == 'valid record':
-                        (checkout / MANIFEST_PATH).write_text('[fixtures]\n')
-                    elif mutation == 'missing suite':
+                    if mutation == 'missing suite':
                         (checkout / 'tests/text.test.js').unlink()
                     return subprocess.CompletedProcess(args, 0, '', '')
                 if mutation == 'npm missing' and args == ['npm', 'ci']:
@@ -96,32 +86,16 @@ class NpmSmokeTest(unittest.TestCase):
                         (cwd / 'src/text.js').write_text('export const normalize = s => s;\n')
                     return worker_reply(args, {'implementation': 'added exact fixture'})
                 if node:
-                    return worker_reply(args, json.loads(json.dumps(APPROVE).replace("items.txt", "smoke_17.txt")))
+                    return worker_reply(args, APPROVE)
                 return worker_reply(args, {'triage': 'implement'})
             original_reconcile = LiveWorkspace.reconcile
-            def reconcile(workspace, parent, branch, base, fact_record):
-                reconciled.append(fact_record)
-                if mutation == 'reconcile union':
-                    fact_record = fact_record or MANIFEST_PATH
-                return original_reconcile(workspace, parent, branch, base, fact_record)
+            def reconcile(workspace, parent, branch, base):
+                reconciled.append(parent)
+                return original_reconcile(workspace, parent, branch, base)
             def boundary(command, **kwargs):
-                if mutation == 'custom record':
-                    command = [*command, '--fact-record', 'evidence/facts.toml']
                 kwargs['live_run'] = replace(kwargs['live_run'], skills=fixture_skills)
                 kwargs.setdefault('worker_runner', worker)
                 return real_main(command, **kwargs)
-            add_argument = argparse.ArgumentParser.add_argument
-            def argument(parser, *args, **kwargs):
-                if args == ('--fact-record',):
-                    kwargs['default'] = MANIFEST_PATH
-                return add_argument(parser, *args, **kwargs)
-            if mutation == 'CLI default':
-                stack.enter_context(patch.object(argparse.ArgumentParser, 'add_argument', argument))
-            original_delivery = cli.run_live_delivery
-            def delivery(**kwargs):
-                if mutation == 'runner default':
-                    kwargs['fact_record'] = kwargs.get('fact_record') or MANIFEST_PATH
-                return original_delivery(**kwargs)
             stack.enter_context(patch('foreman.smoke_command.SMOKE_TARGETS', targets or (smoke.SMOKE_TARGETS[1],)))
             stack.enter_context(patch('foreman.smoke_command.credentials.environment', return_value=dict(os.environ)))
             stack.enter_context(patch('foreman.smoke_command.git_auth', return_value=[]))
@@ -129,7 +103,6 @@ class NpmSmokeTest(unittest.TestCase):
             stack.enter_context(patch('foreman.smoke_command.smoke_lock'))
             stack.enter_context(patch('foreman.smoke_command.subprocess.run', side_effect=process))
             stack.enter_context(patch('foreman.smoke_command.main', side_effect=boundary))
-            stack.enter_context(patch('foreman.cli.run_live_delivery', side_effect=delivery))
             stack.enter_context(patch.object(LiveWorkspace, 'push'))
             stack.enter_context(patch.object(LiveWorkspace, 'reconcile', reconcile))
             if mutation == 'bare refusal':
@@ -148,26 +121,21 @@ class NpmSmokeTest(unittest.TestCase):
                         self.assertEqual(old['channel_values']['schema_version'], SCHEMA_VERSION - 1)
             return code, output.getvalue() + errors.getvalue(), commands, reconciled
 
-    def test_baseline_and_named_mutants(self):
-        for mutation in ('', 'CLI default', 'runner default', 'reconcile union', 'bare refusal'):
+    def test_baseline_and_checkpoint_guidance_mutant(self):
+        for mutation in ('', 'bare refusal'):
             with self.subTest(mutation=mutation):
                 code, output, commands, reconciled = self.exercise(mutation)
                 self.assertEqual(code, 1 if mutation else 0, output)
-                if mutation == 'bare refusal':
+                if mutation:
                     self.assertIn('checkpoint.refusal_guidance', output)
                 else:
-                    self.assertTrue(reconciled, output)
-                    if mutation:
-                        self.assertIn('Invalid fact record tests/fixtures/manifest.toml', output)
-                if not mutation:
                     self.assertIn(['npm', 'ci'], commands)
                     self.assertIn('verify npm run check', output)
-                    self.assertEqual(reconciled, [None])
+                    self.assertEqual(len(reconciled), 1)
                     self.assertIn('aggregate work tokens', output)
-                print(f'{mutation or "baseline"}: exit {code}; ' + next(line for line in output.splitlines() if line.startswith('smoke exit ')))
 
     def test_contract_mutants_and_broken_suite(self):
-        for mutation in ('missing collision', 'valid record', 'missing suite', 'broken suite'):
+        for mutation in ('missing suite', 'broken suite'):
             with self.subTest(mutation=mutation):
                 code, output, _, _ = self.exercise(mutation)
                 self.assertEqual(code, 1, output)
@@ -216,8 +184,3 @@ class NpmSmokeTest(unittest.TestCase):
         self.assertIn('target bookout-labs/foreman-smoke-npm', output)
         self.assertIn('package.json', output)
         self.assertIn('package-lock.json', output)
-
-    def test_explicit_custom_record_ignores_collision(self):
-        code, output, _, reconciled = self.exercise('custom record')
-        self.assertEqual(code, 0, output)
-        self.assertEqual(reconciled, ['evidence/facts.toml'])

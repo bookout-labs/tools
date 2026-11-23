@@ -5,7 +5,6 @@ import tests
 from dataclasses import dataclass
 from pydantic import BaseModel
 
-from foreman.dry_run import DEFAULT_RISK
 from foreman.readiness import MergeState
 from foreman.state import ChecksState, PlanState, RunState, ReviewState
 from foreman.workspace import WorkState
@@ -23,6 +22,15 @@ class OwnerCase:
     repair_head_field: str | None = None
 
 
+FINDING = {
+    "id": "owner", "kind": "scope", "severity": "P1", "ruling_id": None,
+    "location": {"side": "head", "path": "items.txt", "line": 1},
+    "summary": "A fixture changed outside scope.",
+    "impact": "The parser reads an unintended input.",
+    "evidence": "The fixture's path is outside the acceptance.",
+}
+
+
 OWNERS = (
     OwnerCase("merge", MergeState(status="not_armed", receipt={"status": "QUEUED"},
         observation={"outcome": "ready"}, observed_head="c" * 40, command=["gh", "pr", "merge"]),
@@ -36,10 +44,9 @@ OWNERS = (
             "candidate": "implementation_candidate"}, repair_head_field="repair_head"),
     OwnerCase("run", RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
         token_cap=100, max_budget_usd="1.5"), frozenset(RunState.model_fields), 4, {}),
-    OwnerCase("checks", ChecksState(verify_failures=2, proof_failures=1, check="true", preflight="env", check_exit_code=0, verify="pass", failure_output="stale failure",
-        verified_head="b" * 40, browser_proof={"screen": "page", "trace": "trace", "passed": True},
-        formal_proof={"ran": True, "typecheck": True, "constraints": [{"constraint": "unique", "rejected": True}]},
-        proof_labels={"browser": "block"}), frozenset({"check", "preflight", "verify_failures", "proof_failures"}), 5, {}),
+    OwnerCase("checks", ChecksState(verify_failures=2, check="true", preflight="env", check_exit_code=0,
+        verify="pass", failure_output="stale failure", verified_head="b" * 40),
+        frozenset({"check", "preflight", "verify_failures"}), 5, {}),
     OwnerCase("plan", CandidateTests().candidate().update(PlanState(spec_failures=2, triage="implement", spec_gate="ready",
         issue_kind="parent", work_kind="feature", child_issue_numbers=[9],
         human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}],
@@ -47,21 +54,17 @@ OWNERS = (
         pr_split={"plan": "Split", "gate": "ready", "question": "Keep?", "slices": [SLICE]}), single=True),
         frozenset(PlanState.model_fields) - {"pr_split"}, 6, {}),
     OwnerCase("review", ReviewState(review="changes", review_findings=[{
-        "round": 1, "reviewed_head": "b" * 40, "findings": [], "resolutions": {},
-        "graph_check": None, "coordinator_notes": [], "provenance": None}],
+        "reviewed_head": "b" * 40, "base": "a" * 40, "findings": [FINDING], "provenance": None}],
         reviewed_head="b" * 40, settled_rulings=[{"id": "design:1", "text": "Keep the seam"}],
-        fact_record="evidence/facts.toml", findings=[{"id": "nit", "kind": "untested-path", "fix": "Add coverage", "ruling_id": None, "file": "items.txt", "line": 1, "severity": "nit", "summary": "Cover the edge"}], detail="Review complete", review_change_kind="nits",
-        risk=DEFAULT_RISK,
+        findings=[FINDING], detail="Review complete",
         review_run_id="review-run", review_receipt={"id": 12, "commit_id": "b" * 40, "state": "COMMENTED"}),
-        frozenset({"review_findings", "settled_rulings", "fact_record", "review_run_id", "review_receipt",
-                   "reviewed_head", "review", "risk", "findings", "detail", "review_change_kind"}), 8, {},
-        clear_on_head_change=frozenset({"review", "reviewed_head", "review_receipt", "risk", "findings", "detail", "review_change_kind"})),
+        frozenset(ReviewState.model_fields), 8, {},
+        clear_on_head_change=frozenset({"review", "reviewed_head", "review_receipt", "findings", "detail"})),
 
 )
 
 
 COUNTERS = (("verify", "checks", "verify_failures", "verify_cap"),
-            ("proof", "checks", "proof_failures", "review_cap"),
             ("spec", "plan", "spec_failures", "spec_cap"),
             ("review", "review", "review_findings", "review_cap"))
 
@@ -112,7 +115,7 @@ def seed_repair_channels(values, *, head_changed=False):
         if head_changed:
             fields |= owner.clear_on_head_change
         if owner.name == "review":
-            fields |= {"settled_rulings", "fact_record"}
+            fields |= {"settled_rulings"}
         values[owner.name] = values.get(owner.name, type(owner.value)()).model_copy(update=owner.value.model_dump(include=fields))
 
 

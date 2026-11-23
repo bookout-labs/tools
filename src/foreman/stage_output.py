@@ -11,7 +11,6 @@ from typing_extensions import NotRequired, TypedDict, override
 
 from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, with_config, field_validator, model_validator, computed_field
 
-from pydantic.config import JsonDict
 from pydantic_core import PydanticCustomError
 
 from foreman.review_context import ReviewContext
@@ -28,7 +27,9 @@ PULL_REQUEST_LINES = 400
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Output = TypeVar("Output", bound=BaseModel)
 WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
-Severity = Literal["blocking", "nit"]
+Severity = Literal["P0", "P1", "P2", "P3", "P4"]
+BlockingSeverity = Literal["P0", "P1"]
+FindingKind = Literal["correctness", "security", "scope", "other"]
 ResolutionStatus = Literal["resolved", "unresolved"]
 
 
@@ -72,72 +73,21 @@ class SliceRecord(TypedDict):
     provenance: NotRequired[SliceProvenanceRecord]
 
 
-@with_config(ConfigDict(extra="forbid"))
-class BrowserProofRecord(TypedDict):
-    screen: str | None
-    trace: str | None
-    passed: bool | None
-
-
-@with_config(ConfigDict(extra="forbid"))
-class ConstraintResultRecord(TypedDict):
-    constraint: str
-    rejected: bool
-
-
-@with_config(ConfigDict(extra="forbid"))
-class FormalProofRecord(TypedDict):
-    ran: bool | None
-    constraints: list[ConstraintResultRecord] | None
-    typecheck: str | bool | None
-
-
-@with_config(ConfigDict(extra="forbid"))
+@with_config(ConfigDict(extra="forbid", strict=True))
 class CitationRecord(TypedDict):
     side: Literal["head", "base"]
-    path: str
-    line: int | None
-
-
-@with_config(ConfigDict(extra="forbid"))
-class DimensionRecord(TypedDict):
-    applies: bool
-    assessment: str
-    evidence: list[CitationRecord]
-
-
-@with_config(ConfigDict(extra="forbid"))
-class MergeRiskRecord(TypedDict):
-    alignment: DimensionRecord
-    impact: DimensionRecord
-    verification: DimensionRecord
-    rollback: DimensionRecord
-    error_detection: DimensionRecord
-    level: Literal["low", "medium", "high"]
-
-
-@with_config(ConfigDict(extra="forbid"))
-class GraphCheckRecord(TypedDict):
-    head: str
-    command: str
-    exit_code: int
-
-
-@with_config(ConfigDict(extra="forbid"))
-class ToolFactRecord(TypedDict):
-    graph_check: GraphCheckRecord | None
-    claim: str
-    fixture: str | None
+    path: TrimmedText
+    line: PositiveInt | None
 
 
 @with_config(ConfigDict(extra="forbid"))
 class FindingRecord(TypedDict):
     id: str
-    kind: Literal["correctness", "contract-unenforced", "duplicate-owner", "hand-built-parsing", "untested-path", "docs"]
-    fix: str
+    kind: FindingKind
+    location: CitationRecord
     ruling_id: str | None
-    file: str
-    line: int
+    impact: str
+    evidence: str
     severity: Severity
     summary: str
 
@@ -508,11 +458,8 @@ class ReviewState(BaseModel, frozen=True, extra="forbid"):
     review_findings: list[dict[str, object]] = Field(default_factory=list[dict[str, object]])
     reviewed_head: str = ""
     settled_rulings: list[dict[str, object]] = Field(default_factory=list[dict[str, object]])
-    fact_record: str | None = None
     findings: list[FindingRecord] = Field(default_factory=list[FindingRecord])
     detail: str = ""
-    review_change_kind: Literal["blocking", "nits"] | None = None
-    risk: MergeRiskRecord | None = None
     review_run_id: str = ""
     review_receipt: ReviewReceipt | None = None
 
@@ -632,139 +579,12 @@ class SpecOutput(StageOutput):
         return {"plan": current, "human_question": question}
 
 
-class BrowserProof(RecordContract[BrowserProofRecord]):
-    """For a required screen, report only browser evidence you actually collected."""
-
-    @classmethod
-    @override
-    def record_adapter(cls) -> TypeAdapter[BrowserProofRecord]:
-        return TypeAdapter(BrowserProofRecord)
-
-    screen: str | None
-    trace: str | None
-    passed: bool | None
-
-
-class ConstraintResult(RecordContract[ConstraintResultRecord]):
-    @classmethod
-    @override
-    def record_adapter(cls) -> TypeAdapter[ConstraintResultRecord]:
-        return TypeAdapter(ConstraintResultRecord)
-    constraint: Text
-    rejected: bool
-
-
-class FormalProof(RecordContract[FormalProofRecord]):
-    """For required properties, report only formal evidence you actually collected."""
-
-    @classmethod
-    @override
-    def record_adapter(cls) -> TypeAdapter[FormalProofRecord]:
-        return TypeAdapter(FormalProofRecord)
-
-    ran: bool | None
-    constraints: list[ConstraintResult] | None
-    typecheck: str | bool | None
-
-
 class ImplementOutput(StageOutput):
     implementation: Text
-    browser_proof: BrowserProof | None
-    formal_proof: FormalProof | None
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
         raise NotImplementedError("implement: use checks-bound stage_update")
-
-
-class Citation(Contract):
-    side: Literal["head", "base"]
-    path: TrimmedText
-    line: PositiveInt | None
-
-    @model_validator(mode="after")
-    def resolve(self, info: ValidationInfo) -> Self:
-        if not isinstance(info.context, ReviewContext):
-            raise ValueError("trusted review context required")
-        tree = getattr(info.context, self.side)
-        if self.path not in tree.files:
-            raise ValueError(f"{self.side} path {self.path!r} does not exist")
-        if self.line is not None and not 1 <= self.line <= tree.lines.get(self.path, 0):
-            raise ValueError(f"{self.side} {self.path}:{self.line} is not a text line")
-        return self
-
-
-class Dimension(Contract):
-    applies: bool
-    assessment: TrimmedText
-    evidence: list[Citation] = Field(min_length=1)
-
-    @field_validator("evidence")
-    @classmethod
-    def cites_diff(cls, value: list[Citation], info: ValidationInfo) -> list[Citation]:
-        assert isinstance(info.context, ReviewContext)
-        if not any(c.path in getattr(info.context, c.side).changed for c in value):
-            raise ValueError("evidence must cite a changed path")
-        return value
-
-
-class MergeRisk(RecordContract[MergeRiskRecord]):
-    @classmethod
-    @override
-    def record_adapter(cls) -> TypeAdapter[MergeRiskRecord]:
-        return TypeAdapter(MergeRiskRecord)
-    alignment: Dimension
-    impact: Dimension
-    verification: Dimension
-    rollback: Dimension
-    error_detection: Dimension
-    level: Literal["low", "medium", "high"]
-
-    def render(self) -> str:
-        sections = [f"Merge risk: {self.level}"]
-        for name in ("alignment", "impact", "verification", "rollback", "error_detection"):
-            dimension = getattr(self, name)
-            evidence = ", ".join(f"{c.side} {c.path}" + (f":{c.line}" if c.line else "") for c in dimension.evidence)
-            sections.append(f"{name}: " + ("" if dimension.applies else "Not applicable. ") + f"{dimension.assessment} ({evidence})")
-        return "\n\n".join(sections)
-
-
-class GraphCheck(Contract):
-    head: Text
-    command: Text
-    exit_code: int
-
-    @property
-    def claim(self) -> str:
-        return f"Check {self.command!r} exited {self.exit_code} at {self.head}."
-
-
-def _require_properties(schema: JsonDict) -> None:
-    properties = schema["properties"]
-    assert isinstance(properties, dict)
-    schema["required"] = list(properties)
-
-
-class ToolFact(RecordContract[ToolFactRecord]):
-    @classmethod
-    @override
-    def record_adapter(cls) -> TypeAdapter[ToolFactRecord]:
-        return TypeAdapter(ToolFactRecord)
-
-    model_config = ConfigDict(json_schema_extra=_require_properties)
-    claim: TrimmedText = Field(description="State the outside-tool behavior the diff relies on.")
-    graph_check: GraphCheck | None = Field(default=None, description="Only for an exact graph check restatement. Copy its claim verbatim and its structured evidence; otherwise null.")
-    fixture: TrimmedText | None = Field(
-        description="Give the exact entry ID in the run state fact_record. Use null when the claim has no recorded evidence.",
-    )
-
-
-class StoredToolFact(ToolFact):
-    claim_id: Text
-
-    @classmethod
-    def from_fact(cls, fact: ToolFact) -> "StoredToolFact":
-        return cls(**fact.model_dump(), claim_id="tool-fact-" + sha256(fact.claim.encode()).hexdigest())
 
 
 class Finding(RecordContract[FindingRecord]):
@@ -772,14 +592,20 @@ class Finding(RecordContract[FindingRecord]):
     @override
     def record_adapter(cls) -> TypeAdapter[FindingRecord]:
         return TypeAdapter(FindingRecord)
-    id: TrimmedText = Field(description="Unique finding ID. Never reuse an earlier finding ID.")
-    kind: Literal["correctness", "contract-unenforced", "duplicate-owner", "hand-built-parsing", "untested-path", "docs"]
-    fix: Text = Field(description="State the requested fix.")
-    ruling_id: str | None = Field(description="If this contradicts a settled ruling, give its ID so it becomes a coordinator note. Otherwise null.")
-    file: Text = Field(description="Give the path relative to the repository root.")
-    line: PositiveInt = Field(description="Give the line number in the reviewed commit.")
+    id: TrimmedText
+    kind: FindingKind
+    ruling_id: str | None = Field(description="Give the applicable settled ruling ID, or null.")
     severity: Severity
     summary: Text = Field(max_length=200)
+    location: CitationRecord
+    impact: Text
+    evidence: Text
+
+    @property
+    def blocking_severity(self) -> BlockingSeverity | None:
+        if self.ruling_id is None and self.severity in ("P0", "P1"):
+            return self.severity
+        return None
 
 
 class FindingResolution(Contract):
@@ -793,26 +619,33 @@ class SettledRuling(Contract):
 
 
 class ReviewFinding(Finding):
+    @field_validator("location")
+    @classmethod
+    def validate_location(cls, value: CitationRecord, info: ValidationInfo) -> CitationRecord:
+        if not isinstance(info.context, ReviewContext):
+            raise ValueError("trusted review context required")
+        tree = getattr(info.context, value["side"])
+        path, line = value["path"], value["line"]
+        if path not in tree.files:
+            raise ValueError(f"{value['side']} path {path!r} does not exist")
+        if line is not None and line > tree.lines.get(path, 0):
+            raise ValueError(f"{value['side']} {path}:{line} is not a text line")
+        return value
+
     @model_validator(mode="after")
-    def resolve(self, info: ValidationInfo) -> Self:
-        Citation.model_validate(dict(side="head", path=self.file, line=self.line), context=info.context)
+    def validate_priority(self) -> Self:
+        if self.severity in ("P0", "P1") and self.kind == "other":
+            raise ValueError("P0 and P1 require a correctness, security or scope defect.")
         return self
 
 
-class ReviewOutput(StageOutput):
-    resolutions: list[FindingResolution] = Field(description="Mark every earlier unresolved reviewer finding once. The graph resolves tool-fact gate findings. Return an empty list in round 1.")
-    risk: MergeRisk
-    findings: list[ReviewFinding] = Field(
-        description="List each new requested fix, including nits. Return an empty list when there are none.",
-    )
-    tool_facts: list[ToolFact] = Field(
-        description="List every outside-tool fact the diff relies on, including unrecorded facts. Use an empty list if there are none.",
-    )
+class ReviewOutput(HumanQuestionOutput):
+    findings: list[ReviewFinding] = Field(description="List evidenced findings in the full current PR.")
+    human_question: Text | None = Field(description="Ask only if unresolved intent changes the verdict, otherwise null.")
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        return {"review": context.review.model_copy(update={"risk": self.risk.record(),
-                "findings": [finding.record() for finding in self.findings]})}
+        raise NotImplementedError("review: use exact-head stage acceptance")
 
 
 class SpecFinding(Contract):

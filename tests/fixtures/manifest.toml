@@ -760,13 +760,6 @@ kind = "captured_run"
 derived_from = "grok/success.json"
 argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mode", "plan", "--no-subagents", "--output-format", "json", "--json-schema", "{\"type\":\"object\",\"properties\":{\"triage\":{\"type\":\"string\",\"enum\":[\"needs_human\"]},\"slice\":{\"type\":\"null\"},\"human_question\":{\"type\":\"string\"}},\"required\":[\"triage\",\"slice\",\"human_question\"],\"additionalProperties\":false}", "-p", "Do not use any tools. Return triage needs_human, slice null, and human_question \"Which items?\" per the schema."]
 notes = "Synthetic zero_tokens_with_cost ledger derived from the captured success."
-[fixtures."review-interdiff.diff"]
-tool = "git"
-version = "git version 2.56.0"
-kind = "captured_run"
-argv = ["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--find-renames", "HEAD^..HEAD", "--"]
-notes = "Synthetic repository replacing the middle line in items.txt and deleting deleted.txt. Two-dot interdiff capture."
-
 [fixtures."git/origin.txt"]
 tool = "git"
 version = "2.56.0"
@@ -1084,42 +1077,7 @@ kind = "captured_run"
 argv = ["gh", "api", "graphql", "-f", "query=query {repository(owner:\"bookout-labs\",name:\"tools\"){pullRequest(number:119){number state headRefOid baseRefOid baseRefName isDraft autoMergeRequest{enabledAt mergeMethod} mergeQueueEntry{id state headCommit{oid}}}}}", "--jq", ".data.repository.pullRequest"]
 notes = "Live PR 119 later OPEN with no entry or auto request after the recorded QUEUED/AWAITING_CHECKS states. The source head is unchanged. This captures departure, not a cause or CI conclusion. Source https://docs.github.com/en/graphql/reference/objects#pullrequest."
 
-[fixtures."review/grounded.json"]
-kind = "quoted_source"
-tool = "Foreman ReviewOutput"
-version = "issue 108"
-sources = ["https://github.com/bookout-labs/tools/issues/108"]
-notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
-
 [fixtures."review/placeholder-99.json"]
-kind = "quoted_source"
-tool = "Foreman ReviewOutput"
-version = "issue 108"
-sources = ["https://github.com/bookout-labs/tools/issues/108"]
-notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
-
-[fixtures."review/padded.json"]
-kind = "quoted_source"
-tool = "Foreman ReviewOutput"
-version = "issue 108"
-sources = ["https://github.com/bookout-labs/tools/issues/108"]
-notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
-
-[fixtures."review/unrelated.json"]
-kind = "quoted_source"
-tool = "Foreman ReviewOutput"
-version = "issue 108"
-sources = ["https://github.com/bookout-labs/tools/issues/108"]
-notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
-
-[fixtures."review/stale.json"]
-kind = "quoted_source"
-tool = "Foreman ReviewOutput"
-version = "issue 108"
-sources = ["https://github.com/bookout-labs/tools/issues/108"]
-notes = "Synthetic contract case specified by issue 108, checked against SCRIPTED_REVIEW_CONTEXT. Not a captured model review."
-
-[fixtures."review/invented-finding.json"]
 kind = "quoted_source"
 tool = "Foreman ReviewOutput"
 version = "issue 108"
@@ -1152,13 +1110,6 @@ argv = ["grok", "-m", "grok-4.7", "--reasoning-effort", "high", "--permission-mo
 returncode = 0
 claim_ids = ["tool-fact-2a9a216d957eeb93fab68597f145c04c8bf20d36b3973d9ffb555e3fdb3dd24f"]
 notes = "grok CLI grok 1.0.89 (28be5bb1bf65) [stable] accepts a strict schema containing minItems and exclusiveMinimum. Live probe on 2026-11-21. Strict schema, argv, stdout and stderr are in the fixture. Session IDs, checkout paths and credential expiry are scrubbed. Schema acceptance only; no claim about model enforcement of invalid answers."
-
-[fixtures."review/escaped-smoke.json"]
-kind = "quoted_source"
-tool = "claude"
-version = "2.1.329 / claude-opus-5-5 high"
-sources = ["https://github.com/bookout-labs/foreman-smoke/pull/29"]
-notes = "Exact StructuredOutput tool input from the 2026-11-21 T1 smoke, session 10647253-43b2-4668-8548-6395fadc3dd9. The captured pre-escaped detail is rejected by the current review contract after #142."
 
 [fixtures."claude/permissions/edit.json"]
 tool = "claude"

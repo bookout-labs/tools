@@ -20,7 +20,6 @@ from foreman.state import ReviewState, ChecksState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.dry_run import ScriptHandler
-from foreman.fixture_manifest import fact_record_path
 from foreman.github import ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
@@ -90,7 +89,6 @@ def _print_run_rows(
 
     checks = result["checks"]
     run_state = result["run"]
-    review_state = result["review"]
     if (limit := run_state.max_budget_usd) is not None:
         spent = claude_spend(result.get("attempts", []))
         amount = "unknown" if spent is None else f"${spent:f}"
@@ -108,8 +106,6 @@ def _print_run_rows(
         elif node == "done":
             if checks.check_exit_code is not None:
                 write_literal(f"check exit {checks.check_exit_code}")
-            for proof, label in checks.proof_labels.items():
-                write(f"{proof} proof {label}")
             if run_state.token_cap is not None:
                 write_tokens()
             write(f"done {result['stop']}")
@@ -143,8 +139,6 @@ def _print_run_rows(
             fields = [node]
             if model:
                 fields.append(model)
-            if node == "review" and (risk := review_state.risk):
-                fields.extend(("risk", risk["level"]))
             write(" ".join(fields))
     stop = result.get("stop")
     if stop in {"needs_human", Halt.quota_exhausted} and "done" not in result["path"]:
@@ -199,7 +193,6 @@ def main(
     run.add_argument("--request")
     run.add_argument("--check", default="")
     run.add_argument("--preflight", default="")
-    run.add_argument("--fact-record", type=fact_record_path, default=None)
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
     run.add_argument("--max-tokens", type=positive_tokens, help="cap uncached input + cache creation + output work tokens")
@@ -282,7 +275,6 @@ def main(
             check=args.check,
             max_tokens=args.max_tokens if args.max_tokens is not None else DEFAULT_TOKEN_CAP,
             max_budget_usd=args.max_budget_usd,
-            fact_record=args.fact_record,
             commands=presentation.commands,
         )
         print("pstack pin not checked (dry run)")
@@ -305,7 +297,6 @@ def main(
                 issue=args.issue,
                 check=args.check,
                 preflight=args.preflight,
-                fact_record=args.fact_record,
                 checkpoint=checkpoint,
                 dispatcher=dispatcher,
                 request=args.request,

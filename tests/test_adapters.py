@@ -10,7 +10,6 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
-from foreman.fixture_manifest import CapturedRun, FixtureManifest
 
 CALL = Call("", "{}", False, Path("."))
 FIXTURES = Path(__file__).with_name("fixtures")
@@ -27,9 +26,7 @@ def fixture_process(args, name, exit_code):
 class NativeAdaptersTest(unittest.TestCase):
     def test_claude_budget_stop_takes_precedence_and_keeps_usage(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
-        source = FixtureManifest.from_toml((FIXTURES / "manifest.toml").read_text()).fixtures["claude/max_budget.json"]
-        codes = [source.returncode] if isinstance(source, CapturedRun) else [0, 1]
-        for code in codes:
+        for code in (0, 1):
             recorded = fixture_process(["claude"], "max_budget", code)
             original = json.loads(recorded.stdout)
             for changes in ({}, {"is_error": False}, {"api_error": "usage_limit_reached", "api_error_status": 429},

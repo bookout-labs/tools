@@ -1,20 +1,5 @@
 # IDs bind each exact difference to its migration issue. Delete the entry when the difference closes.
 waivers:
-  232:
-    V2-a84571dba5286e94: mismatched [procedure/implement] prompt
-    V2-6bc519c6dc6c0cec: mismatched [procedure/implement] skills
-    V2-7ccf17f9b80e0a2a: extra [procedure/proof] declaration
-    V2-cd6b52df9aa54a21: mismatched [procedure/review] inputs
-    V2-9509e553a2f38d9c: mismatched [procedure/review] output_fields
-    V2-3f688dd68161472d: mismatched [procedure/review] prompt
-    V2-8521f746f1c929ae: mismatched [procedure/review] skills
-    V2-d78ccda46832c3a0: extra [shared/halts] design_rethink
-    V2-37a251de4395de5e: extra [shared/halts] insufficient_evidence
-    V2-ac56d99147f7c553: extra [top/delivery] edge proof -> done
-    V2-556cf3c58dd020bd: extra [top/delivery] edge proof -> prepare
-    V2-a4d9e1ad3f5b9132: extra [top/delivery] edge proof -> publish
-    V2-b422c14f49bb06a6: extra [top/delivery] edge verify -> proof
-    V2-c3a69fb6f8e02d18: extra [top/delivery] node proof
   233:
     V2-2ccc581c949a2cc8: mismatched [procedure/spec] prompt
     V2-1758e49cc682d76c: mismatched [procedure/spec_check] inputs
@@ -101,7 +86,8 @@ waivers:
     V2-18db07ab98860f22: extra [top/delivery] node triage_call
   235:
     V2-cf41c5d5e274b2cf: missing [steps/dispatch] call from implement.edit
-    V2-1debfbdb835fbdd8: mismatched [procedure/implement] output_fields
+    V2-2dfe3e3b0499180c: mismatched [procedure/implement] output_fields
+    V2-8095e350e882fe03: extra [top/delivery] edge verify -> publish
     V2-3c83ff3a89e487d1: missing [procedure/implement] step
     V2-96fba37eb404814b: extra [procedure/verify] declaration
     V2-0c0d2b8bd0152622: extra [shared/halts] failed
@@ -222,7 +208,7 @@ waivers:
     V2-9ab4ebb59968902e: missing [steps/triage] subgraph endpoints
     V2-8f35d7f70507cf0c: mismatched [top/delivery] edge __start__ -> triage
     V2-5060bad7ad743fe1: extra [top/delivery] edge needs_human -> done
-    V2-26fc7836f9790458: extra [top/delivery] edge needs_human -> prepare
+    V2-fb25843cf90eaa92: extra [top/delivery] edge needs_human -> review
     V2-e95c028e381dbe08: extra [top/delivery] edge needs_human -> spec
     V2-51cdd27d0e88f52e: extra [top/delivery] edge needs_human -> triage
     V2-ac16f3a053beebac: missing [top/delivery] edge research -> __end__

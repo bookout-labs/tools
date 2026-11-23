@@ -7,7 +7,7 @@ from unittest.mock import patch
 from langgraph.graph import StateGraph
 
 from docs.graph.blueprint import project_actual as projection
-from foreman.skill_rules import SkillRule
+from foreman.skill_rules import SkillMethod, SkillRule
 
 
 class BlueprintProjectionTests(unittest.TestCase):
@@ -84,7 +84,7 @@ class BlueprintProjectionTests(unittest.TestCase):
 
     def test_unwaived_skill_on_existing_procedure(self):
         stage = projection.STAGES["triage"]
-        extra_skill = SkillRule(skill="review-quality")
+        extra_skill = SkillRule(skill=SkillMethod(path="unplanned/SKILL.md", kind="skill"))
         with patch.dict(projection.STAGES, triage=replace(stage, skills=(*stage.skills, extra_skill))):
             self.assert_unwaived("[procedure/triage] skills")
 
