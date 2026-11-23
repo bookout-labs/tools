@@ -27,15 +27,13 @@ FILING = {
     "spec_cap": ("Investigate rejected slice plans reaching cap", "stages/spec.md"),
     "dirty_worktree": ("Handle dirty worktree before verify", "stages/implement.md"),
     "missing_slice": ("Slice issues carry a loadable slice", "github.py"),
-    "review_unavailable": ("Review finds its pull request", "github.py"),
     "review_not_posted": ("Reviews post to the pull request", "github.py"),
     "pr_size_unavailable": ("Pull request size is measurable before review", "workspace.py"),
     "git_failed": ("Git operations complete before publication", "workspace.py"),
-    "usage_unknown": ("codex attempts report usage", "adapters/codex.py"),
     "skill_missing": ("Pinned skills are available before dispatch", "skill_rules.py"),
 }
-SKIPPED = {"reviewer_unavailable", "model_dependency_missing", "model_family_exhausted", "publication_model_missing", "cli_missing", "merge_held", "merge_not_armed", "budget_exceeded",
-           "env_unavailable", "quota_exhausted", "publish_failed", "failed",
+SKIPPED = {"model_dependency_missing", "publication_model_missing", "merge_held", "merge_not_armed", "budget_exceeded",
+           "env_unavailable", "publish_failed", "failed",
            "implementation_rejected", "pr_conflict", "ci_pending", "ci_red",
            "readiness_unavailable", "queue_rejected"}
 
@@ -81,18 +79,6 @@ class WatchTest(unittest.TestCase):
     def test_no_halt_makes_no_forge_calls(self):
         self.assertIsNone(watch(state(None), self.forge, TARGET, KEY))
         self.assertEqual(self.forge.mock_calls, [])
-
-    def test_adapter_comes_from_the_last_attempt(self):
-        for adapter, model in (("codex", "gpt-6.1-sol-high"), ("claude", "claude-opus-5-5-high"), ("grok", "grok-4.7-high")):
-            with self.subTest(adapter=adapter):
-                halted = state("usage_unknown", model=model)
-                halted["attempts"].insert(0, state(model="gpt-6.1-sol-high")["attempts"][0])
-                forge = FakeGitHub()
-                watch(halted, forge, TARGET, KEY)
-                title, body, _ = forge.created[0]
-                self.assertEqual(title, f"{adapter} attempts report usage")
-                self.assertIn(f"File to change: src/foreman/adapters/{adapter}.py", body.splitlines())
-                self.assertEqual(redact(body.splitlines()[-1]), body.splitlines()[-1])
 
     def test_new_cause_and_repeated_runs_write_once_each(self):
         self.assertEqual(watch(state(), self.forge, TARGET, KEY), {"issue": 101, "action": "filed"})

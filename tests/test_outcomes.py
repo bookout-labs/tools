@@ -43,7 +43,7 @@ class HaltPolicyTest(unittest.TestCase):
                  "readiness_unavailable", "queue_rejected"}
         self.assertEqual({code for code, row in HALTS.items() if row.recovery == "recheck_merge"}, merge)
         self.assertEqual(RESUMABLE_HALTS, merge | {"env_unavailable", "publish_failed", "git_failed",
-                         "implementation_rejected", "quota_exhausted", "review_not_posted", "reviewer_unavailable"})
+                         "implementation_rejected", "review_not_posted"})
 
     def test_readiness_outcomes_appear_in_exactly_one_row(self):
         outcomes = [outcome for row in HALTS.values() for outcome in row.readiness]

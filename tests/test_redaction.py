@@ -229,8 +229,7 @@ class RedactionTest(unittest.TestCase):
             visit(tree)
         self.assertEqual(references, {
             ("check_output.py", "CheckOutput.__call__"): 1,
-            ("dispatch.py", "clean_outcome"): 1,
-            ("dispatch.py", "clean_outcome.clean"): 1,
+            ("dispatch.py", "DispatchRun.clean.scrub"): 1,
             ("cli.py", "_write_run_log"): 1,
             ("smoke_command.py", "run_smoke"): 1,
             ("smoke_command.py", "_run_smoke"): 3,

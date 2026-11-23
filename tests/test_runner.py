@@ -26,6 +26,7 @@ from foreman.adapters import Outcome, Usage
 from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
+import foreman.delivery as delivery_module
 from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
@@ -486,7 +487,7 @@ assert dict(os.environ) == inherited
             run_worker_command(["claude"], Path("engine"), adapter_env)
         run.assert_called_once_with(
             ["claude"], cwd=Path("engine"), env={**inherited, **adapter_env},
-            stdin=subprocess.DEVNULL, input=None, capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, input=None, capture_output=True, text=True, pass_fds=(),
         )
 
     def test_worker_without_a_model_raises_a_config_error(self):
@@ -525,7 +526,7 @@ assert dict(os.environ) == inherited
 
     def test_delivery_falls_through_only_for_quota_or_missing_cli(self):
         cases = [("quota", "needs_human"), ("cli_missing", "needs_human"),
-                 ("is_error", "usage_unknown"), ("missing_model_usage", "usage_unknown")]
+                 ("is_error", "invalid_output"), ("missing_model_usage", "invalid_output")]
         cases.append(("wrong_model", "invalid_output"))
         for case, stop in cases:
             with self.subTest(case=case):
@@ -545,8 +546,9 @@ assert dict(os.environ) == inherited
                 self.assertEqual(calls, ["claude", "codex"] if stop == "needs_human" else ["claude"])
                 expected = [case, "ran"] if stop == "needs_human" else ["failed"]
                 self.assertEqual([item["outcome"] for item in result["attempts"]], expected)
-                if case == "is_error":
-                    self.assertIn("unknown work charge", result["halt_detail"])
+                if case in {"is_error", "missing_model_usage"}:
+                    # Invalid output stays stopped and is charged at the remaining allowance.
+                    self.assertIn("work_charge", result["attempts"][-1])
 
     def test_delivery_stops_for_an_incomplete_native_stage_reply(self):
         def run(args, cwd, env):
@@ -569,7 +571,8 @@ assert dict(os.environ) == inherited
 
         result = self.walk_triage(("claude-test", "grok-test", "gpt-test"), run)
         self.assertEqual(calls, ["claude", "codex"])
-        self.assertEqual(result["stop"], "cli_missing")
+        # No qualified CLI is installed: dispatch waits for one rather than ending the run.
+        self.assertEqual(result["stop"], "quota_exhausted")
         self.assertIn("codex executable is unavailable", result["halt_detail"])
 
     def test_codex_cli_missing_removes_the_schema_file(self):
@@ -743,7 +746,8 @@ class LiveRunnerTest(unittest.TestCase):
                 invoke()
             crash = False
             interrupted = invoke()
-            self.assertEqual(interrupted["stop"], "usage_unknown")
+            self.assertEqual(interrupted["stop"], "budget_exceeded")
+            self.assertIn("usage_unknown", interrupted["halt_detail"])
             self.assertEqual(interrupted["checks"].failure_output, evidence)
             self.checkpoint.write_bytes(backup)
             result = invoke()
@@ -756,14 +760,15 @@ class LiveRunnerTest(unittest.TestCase):
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             checkpoints = list(saver.list({"configurable": {"thread_id": "example/engine#8"}}))
-            pending = [c for c in checkpoints if c.checkpoint["channel_values"].get("pending_dispatch")
-                       and c.checkpoint["channel_values"]["checks"].verify_failures]
+            # Dispatch reservations are saved in the nested graph's namespace with the caller's state.
+            pending = [c for c in checkpoints if c.checkpoint["channel_values"].get("reservation")
+                       and c.checkpoint["channel_values"]["caller"]["checks"].verify_failures]
             self.assertTrue(pending)
             for saved in checkpoints:
                 for secret in sensitive:
                     self.assertNotIn(secret, str(saved.checkpoint))
             for saved in pending:
-                self.assertEqual(saved.checkpoint["channel_values"]["checks"].failure_output, evidence)
+                self.assertEqual(saved.checkpoint["channel_values"]["caller"]["checks"].failure_output, evidence)
         self.assertEqual(ChecksState().failure_output, "")
         self.assertEqual(ChecksState(verify="pass", verified_head=HEAD, failure_output=evidence).for_attempt(), ChecksState())
 
@@ -1169,7 +1174,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_review_failures_halt_without_merging(self):
         changes = {**APPROVE, "findings": [FINDING]}
         for method, stop, replies in (
-            ("review_target", "review_unavailable", []),
+            ("review_target", "git_failed", []),
             ("post_review", "review_not_posted", [changes]),
         ):
             with self.subTest(method=method), patch.object(self.github, method, side_effect=ForgeError("Unavailable")):
@@ -1204,7 +1209,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         workspace.review_diff = lambda base, head: LiveWorkspace(self.cwd).review_diff(base, head)
         with patch("foreman.workspace.subprocess.run", side_effect=fetch):
             result = self.walk([{"triage": "implement"}, {"implementation": "Built."}], workspace=workspace)
-        self.assertEqual(result.get("stop"), "review_unavailable")
+        self.assertEqual(result.get("stop"), "git_failed")
         self.assertRegex(result.get("halt_detail", ""), r"^git fetch timed out after 30 seconds")
         self.assertEqual(self.github.reviews, [])
         self.assertEqual(self.github.merge_calls, [])
@@ -1318,7 +1323,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             )
         self.assertEqual(code, 75)
         self.assertIn("paused quota_exhausted", stdout.getvalue())
-        self.assertIn("triage quota exhausted", stdout.getvalue())
+        self.assertIn("No qualified worker available for triage.", stdout.getvalue())
 
     def test_resume_passes_checkpoint_pin_to_the_run_skill_source(self):
         self.github.labels = ["factory"]
@@ -1911,10 +1916,18 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertNotIn("interrupted", [a["outcome"] for a in result["attempts"]])
 
     def test_crash_after_prepare_rejects_unowned_edits_before_preflight(self):
-        with patch("foreman.delivery.EnvironmentProbe.error", new_callable=unittest.mock.PropertyMock,
-                   side_effect=[None, SystemExit("crash after prepare")]):
+        real_guard = delivery_module.spec_effect
+
+        def crash_after_prepare(state, run):
+            if state.get("work") is not None:  # Prepare has saved the attempt; implement is next.
+                raise SystemExit("crash after prepare")
+            return real_guard(state, run)
+
+        with patch("foreman.delivery.spec_effect", side_effect=crash_after_prepare):
             with self.assertRaisesRegex(SystemExit, "crash after prepare"):
                 self.walk([{"triage": "implement"}], preflight="touch preflight_ran")
+        self.assertTrue((self.cwd / "preflight_ran").exists())
+        (self.cwd / "preflight_ran").unlink()
         workspace = FakeWorkspace(self.cwd)
         workspace.current = WorktreeState(HEAD, False, BRANCH)
         resumed = self.walk([{"implementation": "built"}, APPROVE], workspace=workspace)
@@ -1928,7 +1941,6 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                    return_value="temporarily unavailable"):
             result = self.walk([{"triage": "implement"}])
         self.assertEqual(result["stop"], "env_unavailable")
-        self.assertIsNone(result.get("pending_dispatch"))
         self.assertEqual(self.walk([{"implementation": "built"}, APPROVE])["stop"], "verified")
 
     def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
@@ -1950,7 +1962,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             )
         ready.unlink()
         result = self.walk([])
-        self.assertEqual(result.get("stop"), "usage_unknown")
+        self.assertEqual(result.get("stop"), "budget_exceeded")
+        self.assertIn("usage_unknown", result["halt_detail"])
         self.assertEqual(len(result["review"].review_findings), 0)
         self.assertEqual(self.calls, [])
 
@@ -2454,7 +2467,7 @@ with patch("foreman.runner.load_config", return_value=config):
                 self.assertIn("restored raw tokens 230", restored)
                 self.assertIn("usage below is cumulative across all invocations", current)
                 self.assertNotIn("\ntriage ", current)
-                self.assertEqual(sum(line.startswith("spec ") for line in current.splitlines()),
+                self.assertEqual(sum(bool(re.fullmatch(r"spec \S+", line)) for line in current.splitlines()),
                                  0 if case in {"cap", "unknown"} else 1)
                 count = 4 if case == "complete" else 3
                 self.assertEqual(len(attempts), count)
@@ -2476,7 +2489,9 @@ with patch("foreman.runner.load_config", return_value=config):
                     self.assertIn("Run used 45 work tokens; cap is 45", current)
                     self.assertIn("Measured work overshoot: 0.", current)
                 if partial:
-                    self.assertIn("done usage_unknown", current)
+                    # A missing usage envelope is invalid output, charged at the remaining allowance (D10).
+                    self.assertIn("done invalid_output", current)
+                    self.assertIn(f"work=unknown (charged {cap - 30})", current)
                     self.assertNotIn("45 /", current)
                 if case == "repaused":
                     self.assertIn("paused needs_human", current)
@@ -2542,7 +2557,7 @@ if case == "split" and not checkpoint.exists():
             "plan": PlanState(triage="spec", issue_kind="parent", spec="PRE-SPLIT"),
             "pr_size": {"head": workspace.inspect().head, "merge_base": "a" * 40, "lines": 401},
             "path": ["triage"],
-        }, as_node="triage_call")
+        }, as_node="triage")
 with patch("foreman.runner.load_config", return_value=config), patch.object(LiveWorkspace, "validate_origin"):
     result = run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint,
     dispatcher=dispatch, run=live, answer=answer or None)
@@ -2826,7 +2841,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 else:
                     self.assertRegex(transcript(restored.replace("restored ", "")), r"implement\npaused quota_exhausted")
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
-                    self.assertEqual(saved_path(), ["triage", "spec_check", "implement", "implement", "verify", "publish", "review", "merge", "done"])
+                    # The quota wait pauses inside implement's dispatch, so implement completes once.
+                    self.assertEqual(saved_path(), ["triage", "spec_check", "implement", "verify", "publish", "review", "merge", "done"])
                     expected_workers = (["TriageOutput", "SpecCheckOutput"] + ["ImplementOutput"] * attempts
                                         + ["ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"])
                 terminal = invoke("ready", 0)

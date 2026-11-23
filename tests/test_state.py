@@ -57,14 +57,14 @@ class StateTests(unittest.TestCase):
                 graph = compile_delivery(ScriptHandler(), load_config(),
                                          run=LiveRun(forge=DryRun(), workspace=DryRun()),
                                          checkpointer=saver)
-                graph.update_state(config, original, as_node="triage_call")
+                graph.update_state(config, original, as_node="triage")
                 before = graph.get_state(config)
                 self.assertEqual(before.values, original)
                 self.assertIsNotNone(checkpoint_state(before.values))
                 self.assertEqual(before.next, ("done",))
                 attempt = {**original["attempts"][0], "stage": "research"}
                 graph.update_state(config, {"path": ["research"], "attempts": [attempt],
-                                            "halt_detail": "after move"}, as_node="triage_call")
+                                            "halt_detail": "after move"}, as_node="triage")
                 after = graph.get_state(config).values
                 self.assertEqual(after["path"], ["triage", "research"])
                 self.assertEqual(after["attempts"], [*original["attempts"], attempt])

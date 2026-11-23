@@ -13,7 +13,7 @@ from foreman.outcomes import Halt
 from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
-    AttemptRecord, DispatchPlanRecord, PendingDispatchRecord,
+    AttemptRecord, DispatchPlanRecord,
     PlanState as PlanState, ReviewState as ReviewState,
 )
 from foreman.workspace import PullRequestSize, WorkState
@@ -48,7 +48,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -84,7 +84,6 @@ class WatchRecord(TypedDict):
 
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
-    pending_dispatch: PendingDispatchRecord | None
     dispatch_plan: DispatchPlanRecord
     pstack_pin: dict[str, str]
     skill_reason: SkillFailureReason

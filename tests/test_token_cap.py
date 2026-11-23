@@ -64,7 +64,9 @@ class TokenCapTests(unittest.TestCase):
                 calls.append(node)
                 return Outcome("ran", {"triage": "implement"})
             result = run_delivery(unknown, repo="a/b", request="x", config=config, scratch=scratch)
-            self.assertEqual(result["stop"], "usage_unknown")
+            # D10: unknown usage is charged at the remaining allowance and its output is not applied.
+            self.assertEqual(result["stop"], "budget_exceeded")
+            self.assertIn("usage_unknown", result["halt_detail"])
             self.assertEqual(result["plan"].triage, "")
             self.assertIsNone(result["attempts"][0]["usage"])
             self.assertEqual(run_exit_code(result), 1)

@@ -1011,7 +1011,7 @@ class PublicationTest(unittest.TestCase):
                 paused = self.walk(stop, preflight=preflight, check_log=logs.append)
                 self.assertEqual(paused["stop"], "quota_exhausted")
                 work, attempts = paused["work"], paused["attempts"]
-                self.assertTrue(work.partial_edits)
+                self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
                 self.assertEqual([a["outcome"] for a in attempts], ["ran", "ran"] + ["quota"] * 4)
                 self.assertEqual("".join(logs).count("probe"), 1)
                 if change == "cleared":
@@ -1024,14 +1024,16 @@ class PublicationTest(unittest.TestCase):
                     self.git("commit", "--allow-empty", "-m", "Foreign HEAD")
                 elif change == "preflight":
                     (self.checkout / ".git/block-preflight").touch()
-                accepted = change in {"unchanged", "cleared"}
+                # A quota wake resumes the interrupted dispatch, which rechecks branch, parent and fingerprint.
+                # Prepare owns preflight, so it does not run again; a broken environment surfaces at verify.
+                accepted = change in {"unchanged", "cleared", "preflight"}
                 def finish():
                     if change == "unchanged":
                         self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
                     self.edit()
                 resumed = self.walk(finish if accepted else self.no_worker,
                                     preflight=preflight, check_log=logs.append)
-                self.assertEqual("".join(logs).count("probe"), 2 if accepted or change == "preflight" else 1)
+                self.assertEqual("".join(logs).count("probe"), 1)
                 self.assertEqual(resumed["attempts"][:len(attempts)], attempts)
                 self.assertEqual(resumed["work"].attempt_head, work.attempt_head)
                 if accepted:
@@ -1040,7 +1042,7 @@ class PublicationTest(unittest.TestCase):
                                      ["implement", "review"])
                 else:
                     self.assertEqual(resumed["attempts"], attempts)
-                    self.assertEqual(resumed["stop"], "env_unavailable" if change == "preflight" else "dirty_worktree")
+                    self.assertEqual(resumed["stop"], "dirty_worktree")
                     self.assertEqual(resumed["work"], work)
 
     def test_dirty_initial_worktree_has_specific_detail(self):
@@ -1214,4 +1216,8 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
         def unexpected():
             self.fail("Recovery dispatched a worker with unknown usage")
-        self.assertEqual(self.walk(unexpected).get("stop"), "usage_unknown")
+        # D10: unknown usage is charged at the remaining allowance, which leaves none for another worker.
+        recovered = self.walk(unexpected)
+        self.assertEqual(recovered.get("stop"), "budget_exceeded")
+        self.assertIn("usage_unknown", recovered["halt_detail"])
+        self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")

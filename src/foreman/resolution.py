@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
 
-from foreman.dispatch import InvalidOutput
+from foreman.contracts import InvalidOutput
 from foreman.stage_output import FindingResolution, ResolutionStatus, SettledRuling
 
 

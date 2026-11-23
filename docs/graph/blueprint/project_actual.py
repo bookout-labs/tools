@@ -14,7 +14,6 @@ import yaml
 from langgraph.pregel import Pregel
 
 from foreman import accept
-from foreman.adapters import Outcome
 from foreman.config import family, load_config
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun
@@ -159,11 +158,6 @@ def project():
                 expected_orders.append([model.name for model in ordered])
             if expected_orders != [example["order"] for example in procedure["model_orders"]]:
                 procedure["policy_orders"] = expected_orders
-        if (unavailable := getattr(stage, "unavailable", None)) is not None:
-            for kind in ("quota", "cli_missing"):
-                stop = unavailable({"pending_dispatch": {"index": 0}}, Outcome(kind), "synthetic")
-                if stop is not None:
-                    procedure.setdefault("unavailability_halt", {})[kind] = stop[0].value
         procedures[name] = procedure
 
     envelope = {"source": "github", "title": "Synthetic scope", "body": "",

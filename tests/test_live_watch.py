@@ -125,8 +125,9 @@ class LiveWatchTest(unittest.TestCase):
             self.fake.labels = []
             code = main(self.flags, checkpoint=self.checkpoint, live_run=self.run,
                         worker_runner=Mock(side_effect=FileNotFoundError('missing CLI')))
-        self.assertEqual(code, 1)
-        self.assertEqual(log.getvalue(), 'watch skipped cli_missing\n')
+        # With no CLI installed, dispatch pauses for a qualified worker; a pause files nothing.
+        self.assertEqual(code, 75)
+        self.assertNotIn('watch filed', log.getvalue())
         self.forge.open_issues.assert_not_called()
         self.forge.create_issue.assert_not_called()
         self.forge.comment_issue.assert_not_called()
@@ -161,7 +162,8 @@ class LiveWatchTest(unittest.TestCase):
         self.assertGreater(len(again['attempts']), len(paused['attempts']))
         self.assertEqual([attempt['stage'] for attempt in again['attempts']].count('triage'), 1)
         reads = [call.args[-1] for call in self.forge.load_issue.call_args_list]
-        self.assertEqual(reads, [8, 8, number, 8])
+        # Resuming the quota wait re-enters spec, whose read-only preparation reads the blocker again.
+        self.assertEqual(reads, [8, 8, number, 8, number])
         self.assertEqual({attempt['stage'] for attempt in again['attempts']}, {'triage', 'spec_check'})
 
     def test_skill_failure_preserves_resumable_checkpoints(self):

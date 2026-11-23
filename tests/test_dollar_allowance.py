@@ -18,7 +18,7 @@ from foreman.budget import CostUnknown, Exhausted, Remaining, dollar_admission
 from foreman.cli import _print_run, main
 from foreman.delivery import LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
-from foreman.runner import run_live_delivery
+from foreman.runner import run_live_delivery, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
 from foreman.usd import BudgetUsd
 from foreman.workspace import WorkspaceError
@@ -118,12 +118,20 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                             saver.serde = checkpoint_serializer()
                             return saver.get(THREAD)["channel_values"]
 
+                    def saved_attempts():
+                        """A quota pause keeps its attempts in the nested dispatch checkpoint."""
+                        with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                            saver.serde = checkpoint_serializer()
+                            graph = compile_delivery(ScriptHandler(), config, run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
+                                                     checkpointer=saver)
+                            return snapshot_result(graph.get_state(THREAD))["attempts"]
+
                     initial_flags = ("--max-budget-usd", "1.50") if stored else ()
                     first = invoke(pause, *initial_flags, expected=3 if pause == "needs_human" else 75)
                     self.assertIn("paused " + pause, first.stdout)
                     self.assertEqual(saved()["run"].max_budget_usd, stored)
                     before = log.read_text()
-                    snapshot = saved()
+                    snapshot, attempts = saved(), saved_attempts()
                     answer = ("--answer", "Only open items.") if pause == "needs_human" else ()
                     rejected = invoke("quota", *answer, "--max-budget-usd", "2", expected=1)
                     self.assertIn("--max-budget-usd differs from the stored dollar allowance", rejected.stderr)
@@ -138,14 +146,14 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         new_calls = [json.loads(line) for line in log.read_text()[len(before):].splitlines()]
                         if stored:
                             claude = next(args for args in new_calls if args[0] == "claude")
-                            prior_costs = [Decimal(repr(a["usage"]["cost_usd"])) for a in snapshot["attempts"]
+                            prior_costs = [Decimal(repr(a["usage"]["cost_usd"])) for a in attempts
                                            if a["model"].startswith("claude-")]
                             expected = Decimal(stored) - sum(prior_costs)
                             self.assertEqual(claude.count("--max-budget-usd"), 1)
                             self.assertEqual(Decimal(claude[claude.index("--max-budget-usd") + 1]), expected)
                         self.assertTrue(all("--max-budget-usd" not in args for args in new_calls if args[0] != "claude"))
                         before = log.read_text()
-                        snapshot = saved()
+                        snapshot, attempts = saved(), saved_attempts()
                         self.assertEqual(saved()["run"].max_budget_usd, stored)
                         if stored:
                             self.assertIn("claude spend", resumed.stdout)
@@ -265,10 +273,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_halt_replay_keeps_attempts_recorded_by_the_halted_call(self):
         class GitFailsOnce(FakeWorkspace):
-            fail = True
+            """Git status fails only after a worker ran, so the halted call has a charged attempt."""
+            fail, ran = True, False
 
             def fingerprint(self):
-                if self.fail:
+                if self.fail and self.ran:
                     raise WorkspaceError("git status failed")
                 return super().fingerprint()
 
@@ -287,6 +296,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                                        usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.2))
                     if node == "spec_check":
                         return ScriptHandler()(node, model, state, instruction)
+                    workspace.ran = True
                     cost = next(claude_cost) if model.family == "claude" else 5.0
                     return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
@@ -296,7 +306,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 halted = run_live_delivery(**kwargs)
                 self.assertEqual(halted["stop"], "git_failed")
                 implement = [a for a in halted["attempts"] if a["stage"] == "implement"]
-                self.assertIn(0.3, [a["usage"]["cost_usd"] for a in implement])
+                self.assertEqual([a["usage"]["cost_usd"] for a in implement], [5.0])
                 workspace.fail = False
                 dispatched = len(calls)
                 if case == "non_prefix":
@@ -311,5 +321,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 resumed = run_live_delivery(**kwargs)
                 self.assertEqual(resumed["stop"], "quota_exhausted")
                 self.assertEqual(resumed["attempts"][:len(halted["attempts"])], halted["attempts"])
-                self.assertEqual(run_tokens(resumed["attempts"]), 4 + 2 * len(implement))
-                self.assertIn("claude spend $0.6 of $1", printed(resumed))
+                # The replay tries each implement model once more; every quota attempt reports one token.
+                retried = [a for a in resumed["attempts"][len(halted["attempts"]):] if a["stage"] == "implement"]
+                self.assertEqual(len({a["model"] for a in retried}), len(retried))
+                self.assertEqual(run_tokens(resumed["attempts"]), run_tokens(halted["attempts"]) + len(retried))
+                self.assertIn("claude spend $0.5 of $1", printed(resumed))

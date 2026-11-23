@@ -79,7 +79,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                     for field in type(owner.value).model_fields:
                         self.assertNotEqual(getattr(owner.value, field), getattr(defaults, field), field)
                     self.assertEqual(serde.loads_typed(serde.dumps_typed(owner.value)), owner.value)
-            self.assertIs(serde.loads_typed(serde.dumps_typed(Halt.quota_exhausted)), Halt.quota_exhausted)
+            self.assertIs(serde.loads_typed(serde.dumps_typed(Halt.budget_exceeded)), Halt.budget_exceeded)
         with self.assertLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
             self.assertNotIsInstance(serde.loads_typed(serde.dumps_typed(HumanPrompt(stage="triage", question="Which?"))), HumanPrompt)
         with TemporaryDirectory() as directory:
@@ -142,19 +142,19 @@ with SqliteSaver.from_conn_string(path) as saver:
 '''
         size = {"head": "a" * 40, "merge_base": "b" * 40, "lines": 401}
         cases = [
-            ("triage", "triage_call", {}),
-            ("spec", "spec_call", {}),
+            ("triage", "triage", {}),
+            ("spec", "spec", {}),
             ("review", "review_post", {}),
-            ("pr_size", "spec_call", {"pr_size": size}),
-            ("quota", "triage_call", {"halt": "quota_exhausted"}),
+            ("pr_size", "spec", {"pr_size": size}),
         ]
+        # The shared quota wait is an interrupt inside dispatch; test_review_availability resumes it in fresh processes.
         cases += [(code.value, "done", {"halt": code.value, "stop": code.value}) for code in Halt]
         env = {**os.environ, "LANGGRAPH_STRICT_MSGPACK": "true",
                "PYTHONPATH": os.pathsep.join([str(Path(__file__).parent), os.environ.get("PYTHONPATH", "")])}
         with TemporaryDirectory() as directory:
             for name, predecessor, extra in cases:
                 with self.subTest(pause=name):
-                    stage = "spec" if name == "pr_size" else "triage" if name == "quota" else name
+                    stage = "spec" if name == "pr_size" else name
                     plan = next(owner.value for owner in OWNERS if owner.name == "plan")
                     state = {"schema_version": SCHEMA_VERSION, **{owner.name: owner.value for owner in OWNERS}, "path": [stage], "human_question": "Which?", "halt_detail": "Waiting.", "attempts": [{"stage": "triage", "model": "gpt",
                                  "commit": "a" * 40, "methods": [], "outcome": "ran", "usage": {
@@ -162,7 +162,7 @@ with SqliteSaver.from_conn_string(path) as saver:
                                      "cost_usd": None}}], **extra}
                     if name == "pr_size":
                         state["human_question"] = ""
-                    if predecessor == "spec_call":
+                    if predecessor == "spec":
                         plan = plan.model_copy(update={"spec_gate": "needs_human" if name == "spec" else "ready", "spec_rejection": None})
                     elif name == "triage":
                         plan = plan.model_copy(update={"triage": "needs_human"})

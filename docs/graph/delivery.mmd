@@ -6,15 +6,10 @@ config:
 graph TD;
 	__start__([<p>__start__</p>]):::first
 	triage(triage)
-	triage_call(triage_call)
 	research(research)
-	research_call(research_call)
 	spec(spec)
-	spec_call(spec_call)
 	implement(implement)
-	implement_call(implement_call)
 	review(review)
-	review_call(review_call)
 	verify(verify)
 	prepare(prepare)
 	reconcile(reconcile)
@@ -23,7 +18,6 @@ graph TD;
 	publish(publish)
 	review_post(review_post)
 	needs_human(needs_human)
-	quota_wait(quota_wait)
 	decide_pr_size(decide_pr_size)
 	merge(merge)
 	done(done)
@@ -35,12 +29,7 @@ graph TD;
 	decide_pr_size -.-> done;
 	decide_pr_size -.-> size;
 	implement -.-> done;
-	implement -. &nbsp;call&nbsp; .-> implement_call;
-	implement -.-> quota_wait;
 	implement -.-> reconcile;
-	implement_call -.-> done;
-	implement_call -.-> quota_wait;
-	implement_call -.-> reconcile;
 	merge --> done;
 	needs_human -.-> done;
 	needs_human -.-> review;
@@ -50,31 +39,14 @@ graph TD;
 	prepare -.-> implement;
 	publish -.-> done;
 	publish -.-> review;
-	quota_wait -.-> implement;
-	quota_wait -.-> research;
-	quota_wait -.-> review;
-	quota_wait -.-> spec;
-	quota_wait -.-> triage;
 	reconcile -.-> done;
 	reconcile -.-> size;
 	research -.-> done;
-	research -.-> quota_wait;
-	research -. &nbsp;call&nbsp; .-> research_call;
-	research_call -.-> done;
-	research_call -.-> quota_wait;
 	review -.-> done;
 	review -.-> merge;
 	review -.-> needs_human;
 	review -.-> prepare;
-	review -.-> quota_wait;
-	review -. &nbsp;call&nbsp; .-> review_call;
 	review -.-> review_post;
-	review_call -.-> done;
-	review_call -.-> merge;
-	review_call -.-> needs_human;
-	review_call -.-> prepare;
-	review_call -.-> quota_wait;
-	review_call -.-> review_post;
 	review_post -.-> done;
 	review_post -.-> merge;
 	review_post -.-> needs_human;
@@ -85,35 +57,16 @@ graph TD;
 	spec -.-> decide_pr_size;
 	spec -.-> done;
 	spec -.-> needs_human;
-	spec -.-> quota_wait;
-	spec -. &nbsp;call&nbsp; .-> spec_call;
-	spec_call -.-> decide_pr_size;
-	spec_call -.-> done;
-	spec_call -.-> needs_human;
-	spec_call -.-> prepare;
-	spec_call -.-> quota_wait;
-	spec_call -.-> spec;
+	spec -.-> prepare;
 	triage -.-> done;
 	triage -.-> needs_human;
-	triage -.-> quota_wait;
 	triage -.-> research;
 	triage -.-> spec;
-	triage -. &nbsp;call&nbsp; .-> triage_call;
-	triage_call -.-> done;
-	triage_call -.-> needs_human;
-	triage_call -.-> quota_wait;
-	triage_call -.-> research;
-	triage_call -.-> spec;
 	verify -.-> done;
 	verify -.-> prepare;
 	verify -.-> publish;
 	done --> __end__;
-	implement_call -. &nbsp;call&nbsp; .-> implement_call;
-	research_call -. &nbsp;call&nbsp; .-> research_call;
-	review_call -. &nbsp;call&nbsp; .-> review_call;
 	spec -.-> spec;
-	spec_call -. &nbsp;call&nbsp; .-> spec_call;
-	triage_call -. &nbsp;call&nbsp; .-> triage_call;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

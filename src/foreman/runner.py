@@ -1,9 +1,12 @@
 """Run one delivery issue against its SQLite checkpoint."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
+import fcntl
+import sqlite3
 from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
@@ -12,18 +15,20 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
+from foreman._raw import is_dict
 from foreman.config import PstackPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
-from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state, human_comments, spec_effect, spec_target
+from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, read_delivery_state, human_comments, spec_effect, spec_target
 from foreman.readiness import MergeState
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
-from foreman.dispatch import Handler, InvalidOutput
+from foreman.dispatch import Handler, InvalidOutput, QuotaPause
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError
 from foreman.watch import run_key, watch
-from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output, load_stored_slice as _load_slice
+from foreman.stage_output import SpecCandidate, spec_digest, StoredSlice, parse_output, load_stored_slice as _load_slice
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import WorkState, WorkspaceError
+from foreman.worker import AttemptJournal, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
@@ -44,10 +49,13 @@ class RunPresentation:
 def snapshot_result(snapshot: StateSnapshot) -> DeliveryResult:
     values = snapshot.values
     if snapshot.interrupts:
-        if values.get("halt") == Halt.quota_exhausted:
-            parse_output(QuotaPause, snapshot.interrupts[0].value)
-            return read_delivery_state({**values, "stop": Halt.quota_exhausted.value})
-        prompt = parse_output(HumanPrompt, snapshot.interrupts[0].value)
+        pause: object = snapshot.interrupts[0].value
+        if is_dict(pause) and pause.get("reason") == "quota_exhausted":
+            quota = parse_output(QuotaPause, pause)
+            return read_delivery_state({**values, "stop": quota.reason, "halt_detail": quota.detail,
+                                        "path": [*values["path"], quota.stage],
+                                        "attempts": [*values.get("attempts", []), *quota.attempts]})
+        prompt = parse_output(HumanPrompt, pause)
         question = prompt.question
         if prompt.revision:
             question += f"\n\nReply on the issue under the configured GitHub identity. Start with {prompt.answer_marker} and put the answer on the next line."
@@ -121,6 +129,23 @@ def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: Bu
     require_same_budget(run_state.max_budget_usd, max_budget_usd)
 
 
+@contextmanager
+def issue_lock(checkpoint: Path, thread: str) -> Generator[None]:
+    """Hold one writer per checkpoint and issue. Worker subprocesses inherit the lock."""
+    locks = checkpoint.parent / "locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    with (locks / spec_digest([str(checkpoint.resolve()), thread])).open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError(f"Foreman is already running {thread}.") from exc
+        token = worker_lock.set(lock.fileno())
+        try:
+            yield
+        finally:
+            worker_lock.reset(token)
+
+
 def run_live_delivery(
     *,
     repo: str,
@@ -147,12 +172,15 @@ def run_live_delivery(
     config: RunnableConfig = {"configurable": {"thread_id": thread}}
     workspace = str(run.workspace.root.resolve())
     client = run.forge
-    with SqliteSaver.from_conn_string(str(checkpoint)) as saver, TemporaryDirectory(prefix="foreman-skills-") as scratch:
+    with (issue_lock(checkpoint, thread), SqliteSaver.from_conn_string(str(checkpoint)) as saver,
+          TemporaryDirectory(prefix="foreman-skills-") as scratch,
+          closing(sqlite3.connect(checkpoint, check_same_thread=False)) as connection):
         saver.serde = checkpoint_serializer()
         prior = saver.get(config)
         channels = prior["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, checkpoint, thread)
+        run = replace(run, journal=AttemptJournal(connection))
         delivery_config = load_config()
         run_state = RunState()
         if prior is not None:
@@ -176,7 +204,7 @@ def run_live_delivery(
         except SkillMissing as exc:
             graph = compile_delivery(dispatcher, replace(delivery_config, pstack=pin), run=run, checkpointer=saver)
             skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,
-                                          "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "pending_dispatch": None,
+                                          "skill_reason": exc.reason, "pstack_pin": pin.model_dump(),
                                           "run": run_state if prior else RunState(issue=issue, workspace=workspace, repo=repo,
                                               max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None,
                                               token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
@@ -225,7 +253,8 @@ def run_live_delivery(
             except (ForgeError, WorkspaceError) as exc:
                 early_result = read_delivery_state({**saved_values, **halted(Halt.git_failed, str(exc), "triage"),
                                                     "stop": Halt.git_failed})
-        waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == Halt.quota_exhausted
+        pause: object = saved.interrupts[0].value if saved.interrupts else None
+        waiting_for_quota = is_dict(pause) and pause.get("reason") == "quota_exhausted"
         if saved.interrupts and not waiting_for_quota and saved_values is not None and early_result is None:
             prompt = parse_output(HumanPrompt, saved.interrupts[0].value)
             if prompt.revision is not None:
@@ -250,16 +279,6 @@ def run_live_delivery(
                     raise AnswerError("This question was already answered differently. Resume with the recorded answer.")
         if early_result is not None:
             pass
-        elif saved_values is not None and (pending := saved_values.get("pending_dispatch")):
-            assert "dispatch_plan" in saved_values
-            stage = pending["stage"]
-            models = saved_values["dispatch_plan"]["models"]
-            model = models[pending["index"]] if models else None
-            graph.update_state(config, {**halted(Halt.usage_unknown, unknown_usage(stage, model), stage),
-                                       "attempts": [Attempt(stage=stage, model=model, commit=pin.commit,
-                                                            methods=saved_values["dispatch_plan"]["methods"], outcome="interrupted", usage=None).record()],
-                                       "pending_dispatch": None}, as_node=("spec" if stage == "spec_check" else stage) + "_call")
-            invoke(None, saved_values)
         elif answer is not None and saved.interrupts and saved_values is not None:
             if parse_output(HumanPrompt, saved.interrupts[0].value).stage == "pr_size":
                 try:
@@ -354,8 +373,6 @@ def run_live_delivery(
             reset_work = repaired or before.next == ("prepare",)
             work = (WorkState(branch=prior_work.branch, base=prior_work.base, repair_head=repair_head)
                     if reset_work else prior_work.model_copy(update={"repair_head": None}))
-            if not reset_work and (partial := saved_values.get("work", WorkState()).partial_edits):
-                work = work.model_copy(update={"partial_edits": partial})
             prior_checks = restored["checks"]
             checks = saved_values["checks"].for_attempt() if reset_work else prior_checks
             assert saved_review is not None

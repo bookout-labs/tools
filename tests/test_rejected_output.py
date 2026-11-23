@@ -42,7 +42,6 @@ class RejectedStageOutputTest(unittest.TestCase):
                         expected_model = calls[-1] or "no model"
                         self.assertEqual(result["halt"], "invalid_output")
                         self.assertEqual(result["halt_detail"], f"{stage} output from {expected_model}: {diagnostic}")
-                        self.assertIsNone(result["pending_dispatch"])
                         attempts = [a for a in result["attempts"] if a["stage"] == stage]
                         self.assertEqual([a["model"] for a in attempts], calls)
                         self.assertEqual([a["outcome"] for a in attempts], [fallback, kind] if fallback else [kind])

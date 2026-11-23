@@ -195,6 +195,16 @@ class CodexAdapterTest(unittest.TestCase):
         self.assertEqual(outcome.kind, "quota")
         self.assertIn("Quota exceeded.", outcome.detail)
 
+    def test_quota_charges_zero_only_without_model_items(self):
+        # DP3: absent usage counts as zero only when the stream proves no paid work began.
+        message = {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit. Try again later."}}
+        item = {"type": "item.completed", "item": {"type": "reasoning", "text": "x"}}
+        for events, usage in (([message], (0, 0)), ([item, message], None)):
+            with self.subTest(events=len(events)):
+                outcome = self.adapter.read(codex_process([{"type": "thread.started", "thread_id": "t"}, *events], exit_code=1), CALL)
+                self.assertEqual(outcome.kind, "quota")
+                self.assertEqual(outcome.usage and (outcome.usage.input_tokens, outcome.usage.output_tokens), usage)
+
     def test_stderr_rate_limit_is_a_failure(self):
         process = codex_process([], exit_code=1, stderr='Prompt: Explain "rate limit" and HTTP 429.')
         outcome = self.adapter.read(process, CALL)

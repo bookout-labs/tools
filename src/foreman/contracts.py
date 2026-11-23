@@ -9,3 +9,7 @@ Text = Annotated[str, StringConstraints(pattern=r"\S")]
 
 class Contract(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
+
+
+class InvalidOutput(ValueError):
+    pass

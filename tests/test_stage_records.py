@@ -10,7 +10,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from foreman.stage_output import (
     CandidateSlice, CandidateSliceRecord, SpecAuthor, SpecAuthorRecord, SpecCandidate, SpecCandidateRecord, SliceProvenance, SliceProvenanceRecord,
-    PendingDispatch, PendingDispatchRecord, DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, AttemptUsageRecord,
+    DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, AttemptUsageRecord,
     Finding, FindingRecord, Seam, SeamRecord, Slice, SliceRecord, SliceProperty,
     SlicePropertyRecord, StoredSlice,
 )
@@ -27,7 +27,6 @@ class StageRecordTests(unittest.TestCase):
             (SliceProvenance, SliceProvenanceRecord, {"author": author, "revision": candidate.revision}),
             (CandidateSlice, CandidateSliceRecord, slice),
             (SpecCandidate, SpecCandidateRecord, candidate.record()),
-            (PendingDispatch, PendingDispatchRecord, {"stage": "triage", "index": 0, "quota_model": None}),
             (DispatchPlan, DispatchPlanRecord, {"budget_usd": None, "models": [], "instruction": "test", "methods": [], "read_roots": [], "target": {"state": "OPEN", "number": 1, "headRefOid": "h", "headRefName": "branch", "baseRefName": "main", "baseRefOid": "b", "isCrossRepository": False, "autoMergeRequest": None}, "scope": {"command": "diff", "inline": [("a.py", 2)]}}),
             (AttemptUsage, AttemptUsageRecord, usage),
             (Attempt, AttemptRecord, {"stage": "triage", "model": None, "commit": "pin", "methods": [], "outcome": "ran", "usage": usage}),
@@ -55,9 +54,9 @@ class StageRecordTests(unittest.TestCase):
         for field, invalid in (("target", {}), ("scope", "{}"), ("scope", {"command": "diff", "inline": ["bad"], "eligible": None})):
             with self.subTest(field=field), self.assertRaises(ValidationError):
                 DispatchPlan.model_validate({**raw, field: invalid})
-        for extra in ({"index": -1}, {"model": "worker"}):
-            with self.subTest(extra=extra), self.assertRaises(ValidationError):
-                PendingDispatch.model_validate({"stage": "review", "index": 0, "quota_model": None, **extra})
+        for session in ("--last", "../x"):
+            with self.subTest(session=session), self.assertRaises(ValidationError):
+                DispatchPlan.model_validate({**raw, "resume_session": session})
 
     def test_legacy_review_scope_remains_readable(self):
         from foreman.workspace import ReviewScope

@@ -104,7 +104,7 @@ class PullRequestSizeTest(unittest.TestCase):
                         self.original_spec or "").model_copy(update={"issue_kind": "slice" if "slice" in self.forge.labels else "parent"}),
                     "checks": ChecksState(check="exit 0"), "work": WorkState(branch=BRANCH, base=self.forge.base_branch, attempt_head=getattr(self, "attempt_head", self.base)),
                     "models_used": {"implement": "gpt-6.1-sol-high"}, "path": ["triage", "implement"],
-                }, as_node="implement_call")
+                }, as_node="implement")
         with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0", *flags],

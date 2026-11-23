@@ -122,7 +122,8 @@ class AttemptMetricsTests(unittest.TestCase):
             result = run_delivery(lambda *_: Outcome("ran", prompt_bytes=2658),
                                   repo="Example/Engine", request="List items", check="true",
                                   config=config, scratch=scratch)
-        self.assertEqual(result["stop"], "usage_unknown")
+        self.assertEqual(result["stop"], "budget_exceeded")
+        self.assertIn("usage_unknown", result["halt_detail"])
         self.assertEqual(result["attempts"][0]["prompt_bytes"], 2658)
         self.assertIsNone(result["attempts"][0]["usage"])
 

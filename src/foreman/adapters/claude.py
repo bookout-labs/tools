@@ -109,7 +109,8 @@ class ClaudeAdapter(NativeAdapter):
         if call.edit:
             directories.append(str(call.temp_dir))
         scope = [arg for directory in directories for arg in ("--add-dir", directory)]
-        return ["claude", "--model", self.model.model_id, *effort, "--restricted",
+        resume = ["--resume", call.resume_session, "--fork-session"] if call.edit and call.resume_session else []
+        return ["claude", "--model", self.model.model_id, *effort, *resume, "--restricted",
                 "--strict-mcp-config", "--permission-mode", "dontAsk",
                 "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else
                 "Read,Glob,Grep,Bash" if call.checks else "Read,Glob,Grep",

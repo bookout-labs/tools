@@ -14,13 +14,11 @@ from foreman.stage_output import (
     InvalidSlicePlan as InvalidSlicePlan, PULL_REQUEST_LINES, AttemptRecord, ReviewSelection,
 )
 
-from foreman.dispatch import InvalidOutput
+from foreman.contracts import InvalidOutput
 from foreman.review_round import history, accept
 from foreman.workspace import Workspace, PullRequestSize, ReviewScope, WorktreeInspectionFailed
 from foreman.github import Forge, PullRequest
 from foreman.review_context import ReviewContext
-from foreman.adapters import Outcome
-from foreman.outcomes import Halt
 
 if TYPE_CHECKING:
     from foreman.state import DeliveryState, DeliveryUpdate
@@ -213,15 +211,6 @@ def review_projection(state: "DeliveryState", workspace: Workspace) -> tuple["De
     return worker_state, context
 
 
-def review_unavailable(state: "DeliveryState", outcome: Outcome, model: str | None) -> tuple[Halt, str] | None:
-    if outcome.kind not in {"quota", "cli_missing"}:
-        return None
-    pending = state.get("pending_dispatch")
-    assert pending is not None
-    prior = state.get("halt_detail", "") + "; " if pending["index"] else ""
-    return Halt.reviewer_unavailable, f"{prior}review {model}: {outcome.kind}. {outcome.detail}".strip()
-
-
 @dataclass(frozen=True)
 class Stage:
     prompt: str | None
@@ -232,7 +221,6 @@ class Stage:
     prepare: Callable[["DeliveryState", Workspace, Forge], tuple[str, PullRequest | None, ReviewScope | None]] = no_preparation
     accept: Callable[[StageOutput, Acceptance], "DeliveryUpdate"] = accept_output
     project: Callable[["DeliveryState", Workspace], tuple["DeliveryState", ReviewContext | None]] = lambda state, workspace: (state.copy(), None)
-    unavailable: Callable[["DeliveryState", Outcome, str | None], tuple[Halt, str] | None] = lambda state, outcome, model: None
 
     models: Callable[[str, "DeliveryState", Config], list[ModelSpec]] = lambda name, state, config: order_for(
         name, config, state.get("models_used") or {}, state.get("implement_models"))
@@ -289,6 +277,6 @@ STAGES = {
     "review": Stage("review.md", ReviewOutput, (
         SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill", lines=(3, 7))),
     ), prepare=review_preparation, accept=accept_review, project=review_projection,
-       unavailable=review_unavailable, input_fields=("run", "plan", "work", "checks", "review")),
+        input_fields=("run", "plan", "work", "checks", "review")),
     "verify": Stage(None, VerifyOutput, accept=accept_verify, kind="deterministic", input_fields=("checks",)),
 }

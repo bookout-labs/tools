@@ -2,7 +2,7 @@
 
 from pydantic import Field
 
-from foreman.dispatch import InvalidOutput
+from foreman.contracts import InvalidOutput
 from foreman.stage_output import BlockingSeverity, Contract, Finding, ReviewOutput, ReviewSelection, SettledRuling, parse_output
 
 
