@@ -44,7 +44,7 @@ Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to 
 
 - Research on bugs and regressions builds a feedback loop first with Matt Pocock's `diagnosing-bugs`.
 - Spec applies the vertical-slice and blocking-edge rules from Matt Pocock's `to-tickets` when a parent splits into children.
-- Implement verifies with the target repository's own `verify-<app>` skill. pstack `create-verification-skill` creates it and `maintain-verification-skill` keeps it current.
+- Verify drives the change with the target repository's own `verify-<app>` skill (D11). pstack `create-verification-skill` creates it and `maintain-verification-skill` keeps it current.
 - Implement runs the target repository's own formal verification skill, `formal-<area>`, on changes that touch the verified code. pstack `create-formal-verification-skill` creates it and `maintain-formal-verification-skill` updates it when a change is intended. Formal verification is opt-in per repository: it runs only where the repository has its own skill. Agreed by the owner 2026-11-23 ("A").
 - Review checks what the change could break beyond the diff with pstack `blast-radius`.
 - Fix PRs driven by observed failures, outside the stages, use pstack `correct`.
@@ -62,3 +62,17 @@ Agreed by the owner 2026-11-22: (a). Only Git-tracked regular files in the pinne
 ## D10. What happens after an interruption?
 
 Agreed by the owner 2026-11-22: (a) with (ii). Resume at the interrupted step and reconcile before repeating a model call or remote write. If a model call's usage is ambiguous, charge the worst case to the budget, log usage unknown, and continue within the remaining allowance. Foreman reconciles calls and writes at the saved step because its local CLIs and GitHub effects can outlive the process. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)
+
+## D11. Where does end-to-end verification run?
+
+Agreed by the owner 2026-11-23: "2. Warp does it that way for a reason. It's the better design choice", then "1-A, 2-yes, 3-yes". Warp runs user-level verification as its own stage with its own worker. The worker builds and starts the app from the pull request, uses it as a user would, and reports each criterion as passed, failed or unverified with evidence. It never edits, approves or merges, and the evidence complements code review rather than replacing it.
+
+- A Verify stage runs between Implement and Review. It drives the published head with the target repository's own `verify-<app>` skill, found as a `verify-*/SKILL.md` in the target checkout. A repository without that skill gets `no_skill`, with no worker call.
+- Foreman posts one evidence comment for the tested head. If the head moved, Foreman posts the evidence marked stale and returns to Implement, which reconciles the moved head as it does after Review. Warp's publication step ends instead. Foreman diverges because nothing may verify or review a head until Foreman has reconciled it.
+- A known checked head that Merge returns for fresh review keeps the evidence already posted for it. Its code is unchanged, so Verify doesn't run again.
+- The verifier prefers a qualified model from a different family from the builders, as the reviewer does.
+- A failed criterion never routes straight to Implement. Review reads the evidence and decides severity.
+- `verify-<app>` moves from Implement to the Verify worker, so the builder runs only the repository checks.
+- The worker that reviews is called `reviewer`, and the new worker is called `verifier`, matching Warp's terms.
+
+Warp's recipe starts on a maintainer's label. Foreman runs unattended, so Verify runs on every published head and feeds Review. [Warp Computer Use verification](https://docs.warp.dev/factories/use-cases/computer-use-verification/)

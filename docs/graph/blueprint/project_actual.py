@@ -27,7 +27,8 @@ else:
 
 
 SENTINELS = {"__start__": {"kind": "node"}, "__end__": {"kind": "node"}}
-MIGRATION_ISSUES = range(232, 239)
+# The migration slices in migration.md: M1-M7 (#232-#238) and M8 Verify (#251).
+MIGRATION_ISSUES = (*range(232, 239), 251)
 
 
 def module_inventory(source):
@@ -350,7 +351,7 @@ def check(differences, waivers):
     errors = []
     for issue, entries in waivers.items():
         if type(issue) is not int or issue not in MIGRATION_ISSUES:
-            errors.append(f"Waiver group {issue!r} must name a closing issue from #232 through #238")
+            errors.append(f"Waiver group {issue!r} must name a migration issue: {', '.join(f'#{n}' for n in MIGRATION_ISSUES)}")
         if not isinstance(entries, dict):
             errors.append(f"Waiver group #{issue} must map difference IDs to subjects")
             continue

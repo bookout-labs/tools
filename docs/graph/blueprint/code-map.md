@@ -74,6 +74,23 @@ Uses Workspace, Forge, dispatch.
 
 Baseline files [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py), [`src/foreman/workspace.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/workspace.py), [`src/foreman/check_output.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/check_output.py), [`src/foreman/github.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/github.py), [`src/foreman/stage_output.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py).
 
+## Verify
+
+Exact published PR head in the exclusive target_checkout, slice acceptance and the repository's verify skill, which is a `verify-*/SKILL.md` in the target checkout's skills directory at that head. The verifier runs the app and edits nothing.
+
+Entry `src/foreman/steps/verify.py::compile_stage`. Maximum 160 physical lines in the owner module.
+
+Never edit implementation, route a failed criterion to implement, approve or merge.
+
+Uses Forge, Workspace, dispatch.
+
+| Step | Owner symbol | Scenario |
+| --- | --- | --- |
+| verify.drive | `src/foreman/steps/verify.py::drive` | VF1 |
+| verify.post | `src/foreman/steps/verify.py::post` | VF2 |
+
+Baseline files [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py), [`src/foreman/stages.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages.py), [`src/foreman/skill_rules.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/skill_rules.py), [`src/foreman/github.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/github.py), [`src/foreman/workspace.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/workspace.py), [`src/foreman/stage_output.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py).
+
 ## Review
 
 Full PR diff at current head and recorded diff base. Review worker has read-only access.
