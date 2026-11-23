@@ -8,6 +8,8 @@ from unittest.mock import call, patch
 
 from pydantic import ValidationError
 
+from foreman.redaction import redact
+from foreman.stage_output import spec_digest
 from foreman.github import (
     CommandFailed, CommandTimedOut, ForgeError, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, OpenIssue, ReviewComment,
 )
@@ -51,10 +53,10 @@ class WriteInterrupted(BaseException):
 class FakeGitHubTest(unittest.TestCase):
     def test_bodies_survive_updates_and_markers_include_closed_and_merged_issues(self):
         forge = FakeGitHub()
-        first = forge.create_issue(REPO, "First", "marker old", [])
-        second = forge.create_issue(REPO, "Second", "marker done", [])
-        third = forge.create_issue(REPO, "Third", "marker merged", [])
-        forge.create_issue("Other/Repo", "Elsewhere", "marker", [])
+        first = forge.create_issue(REPO, "First", "marker old", [], marker="")
+        second = forge.create_issue(REPO, "Second", "marker done", [], marker="")
+        third = forge.create_issue(REPO, "Third", "marker merged", [], marker="")
+        forge.create_issue("Other/Repo", "Elsewhere", "marker", [], marker="")
         forge.closed.add(second)
         forge.merged.add(third)
         forge.update_issue_body(REPO, first, "replaced")
@@ -67,7 +69,7 @@ class FakeGitHubTest(unittest.TestCase):
 
     def test_relationships_preserve_identity_state_and_one_parent_per_child(self):
         forge = FakeGitHub()
-        child = forge.create_issue(REPO, "Child", "", [])
+        child = forge.create_issue(REPO, "Child", "", [], marker="")
         self.assertIsNone(forge.parent_issue(REPO, child))
         forge.add_sub_issue(REPO, 8, child)
         forge.closed.add(child)
@@ -107,7 +109,7 @@ class FakeGitHubTest(unittest.TestCase):
                         forge.fail_next(operation, after_write=after_write, error=error)
                         with self.assertRaises(error_type) as caught:
                             if operation == "create_issue":
-                                forge.create_issue(REPO, "Child", "marker", [])
+                                forge.create_issue(REPO, "Child", "marker", [], marker="")
                             elif operation == "add_sub_issue":
                                 forge.add_sub_issue(REPO, 8, 9)
                             else:
@@ -126,7 +128,7 @@ class FakeGitHubTest(unittest.TestCase):
                             self.assertEqual(forge.load_issue(REPO, 8)["body"], "marker" if after_write else forge.body)
                         # A consumed failure must not poison the next write.
                         if operation == "create_issue":
-                            self.assertEqual(forge.create_issue(REPO, "Next", "marker", []), 102 if after_write else 101)
+                            self.assertEqual(forge.create_issue(REPO, "Next", "marker", [], marker=""), 102 if after_write else 101)
                         elif operation == "add_sub_issue":
                             forge.add_sub_issue(REPO, 8, 10)
                             self.assertEqual(forge.parent_issue(REPO, 10).number, 8)
@@ -260,14 +262,14 @@ class LiveForgeTest(unittest.TestCase):
             gh_result('{"number":"42"}'),
         ]
         forge = LiveForge()
-        self.assertEqual(forge.create_issue(REPO, "Plan {repo}", "@draft", ["slice", "factory"]), 42)
+        self.assertEqual(forge.create_issue(REPO, "Plan {repo}", "@draft", ["slice", "factory"], marker=""), 42)
         self.assertEqual(run.call_args.args[0], [
             "gh", "api", "repos/Example/Target/issues", "--method", "POST", "-f", "title=Plan {repo}",
             "-f", "body=@draft", "-f", "labels[]=slice", "-f", "labels[]=factory",
         ])
         self.assertIsNone(run.call_args.kwargs["timeout"])
         with self.assertRaises(ForgeError):
-            forge.create_issue(REPO, "Plan", "", [])
+            forge.create_issue(REPO, "Plan", "", [], marker="")
         self.assertIsNone(run.call_args.kwargs["timeout"])
 
     @patch("foreman.github.subprocess.run")
@@ -426,13 +428,13 @@ class LiveForgeTest(unittest.TestCase):
     def test_comment_issue_posts_literal_body_and_redacts_secrets(self, run):
         run.return_value = gh_result((GITHUB_FIXTURES / "created-comment.json").read_text())
         forge = LiveForge()
-        self.assertIsNone(forge.comment_issue(REPO, 1347, "@draft {repo}\nMe too"))
+        self.assertIsNone(forge.comment_issue(REPO, 1347, "@draft {repo}\nMe too", marker=""))
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0], [
             "gh", "api", f"repos/{REPO}/issues/1347/comments", "--method", "POST", "-f", "body=@draft {repo}\nMe too",
         ])
         token = "ghp_" + "a" * 36
-        forge.comment_issue(f"Example/{token}", 48, f"#48 secret: {token}")
+        forge.comment_issue(f"Example/{token}", 48, f"#48 secret: {token}", marker="")
         self.assertEqual(run.call_count, 2)
         self.assertEqual(run.call_args.args[0], [
             "gh", "api", "repos/Example/[redacted:GitHub Token]/issues/48/comments", "--method", "POST",
@@ -440,7 +442,20 @@ class LiveForgeTest(unittest.TestCase):
         ])
         run.return_value = subprocess.CompletedProcess([], 1, "", "HTTP 403")
         with self.assertRaises(ForgeError):
-            forge.comment_issue(REPO, 48, "Me too")
+            forge.comment_issue(REPO, 48, "Me too", marker="")
+
+    @patch("foreman.github.subprocess.run")
+    def test_foreman_markers_are_written_verbatim_while_the_content_is_redacted(self, run):
+        # A marker's digest looks like a secret; redacting it would leave the write unfindable (engine #1048).
+        marker = f"<!-- foreman slice {spec_digest([REPO.lower(), 8, 'Child'])} -->"
+        self.assertNotEqual(redact(marker), marker)
+        token = "ghp_" + "a" * 36
+        run.return_value = gh_result('{"number":42}')
+        forge = LiveForge()
+        forge.create_issue(REPO, "Child", f"secret: {token}", [], marker=marker)
+        self.assertIn(f"body=secret: [redacted:GitHub Token]\n\n{marker}", run.call_args.args[0])
+        forge.comment_issue(REPO, 8, f"answer {token}", marker=marker)
+        self.assertIn(f"body=answer [redacted:GitHub Token]\n\n{marker}", run.call_args.args[0])
 
     @patch("foreman.github.subprocess.run")
     def test_issue_transport_errors_leave_the_boundary_as_forge_errors(self, run):

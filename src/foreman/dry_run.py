@@ -9,7 +9,7 @@ from foreman.config import ModelSpec
 from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import (
     BOT_LOGIN, PullRequest, PublishedPullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
-    pull_request_command, render_slice_body,
+    marked, pull_request_command, render_slice_body,
 )
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
@@ -230,11 +230,13 @@ class DryRun:
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]:
         return list(self.comments)
 
-    def comment_issue(self, repo: str, number: int, body: str) -> None:
+    def comment_issue(self, repo: str, number: int, body: str, *, marker: str) -> None:
+        body = marked(body, marker)
         self.commands.append(["gh", "issue", "comment", str(number), "--repo", repo, "--body", body])
         self.comments.append(IssueComment.model_validate({"body": body, "user": {"login": BOT_LOGIN}}))
 
-    def create_issue(self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None) -> int:
+    def create_issue(self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None) -> int:
+        body = marked(body, marker)
         if child is not None:
             body = render_slice_body(body, child)
         number = len(self.issues) + 1

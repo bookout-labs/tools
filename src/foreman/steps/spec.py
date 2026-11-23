@@ -144,7 +144,7 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             child = item.model_copy(update={"blocker_numbers": [numbers[title] for title in item.depends_on]})
             marker = f"<!-- foreman slice {spec_digest([repo.lower(), parent, child.title])} -->"
             found = ensure(lambda: forge.marked_issues(repo, marker),
-                           lambda: forge.create_issue(repo, child.title, marker, ["slice"], child=child))
+                           lambda: forge.create_issue(repo, child.title, "", ["slice"], marker=marker, child=child))
             if len(found) != 1:
                 return unreconciled(f"{len(found)} issues carry the marker for {child.title}." if found
                                     else f"GitHub does not show the child issue for {child.title} yet.")

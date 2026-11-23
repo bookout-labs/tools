@@ -62,7 +62,7 @@ class StageRecoveryTest(unittest.TestCase):
     def test_unconfirmed_child_evidence_halts_without_release(self):
         marker = f"<!-- foreman slice {spec_digest([REPO.lower(), 8, BUILDER['title']])} -->"
         cases = {
-            "duplicate": (lambda: self.github.create_issue(REPO, BUILDER["title"], marker, ["slice"]),
+            "duplicate": (lambda: self.github.create_issue(REPO, BUILDER["title"], "", ["slice"], marker=marker),
                           f"2 issues carry the marker for {BUILDER['title']}."),
             "body": (lambda: self.github.bodies.update({(REPO, 101): f"{marker}\nEdited by hand."}),
                      f"Issue #101 carries the marker for {BUILDER['title']} with a different repository or body."),

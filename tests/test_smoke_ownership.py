@@ -87,9 +87,9 @@ class SmokeOwnershipTest(unittest.TestCase):
 
     def test_lost_create_response_reconciles_own_marker(self):
         forge = Mock()
-        def lost(repo, title, body, labels):
+        def lost(repo, title, body, labels, *, marker):
             data = fixture().model_dump(exclude_unset=True)
-            data['body'] = body
+            data['body'] = f"{body}\n\n{marker}"
             forge.smoke_issues.return_value = [fixture(9), SmokeIssue.model_validate(data)]
             raise ForgeError('lost response')
         forge.create_issue.side_effect = lost
@@ -162,8 +162,8 @@ class SmokeOwnershipTest(unittest.TestCase):
         for variant in ('unowned', 'substring', 'closed', 'duplicate_issue', 'duplicate_marker'):
             with self.subTest(variant=variant):
                 forge = Mock()
-                def lost(repo, title, body, labels):
-                    item = fixture().model_copy(update={'body': body})
+                def lost(repo, title, body, labels, *, marker):
+                    item = fixture().model_copy(update={'body': f"{body}\n\n{marker}"})
                     if variant == 'unowned':
                         item.user.login = 'personal'
                     elif variant == 'substring':
@@ -224,7 +224,8 @@ class Forge:
     def close_pull_request(self, repo, number):
         self.data['pulls'] = [x for x in self.data['pulls'] if x['number'] != number]
         self.save()
-    def create_issue(self, repo, title, body, labels):
+    def create_issue(self, repo, title, body, labels, *, marker):
+        body = body + 2 * chr(10) + marker
         item = fixture(len(self.data['issues']) + 1).model_dump(exclude_unset=True)
         item['body'] = body
         self.data['issues'].append(item)

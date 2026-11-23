@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from foreman.state import RunState
 from foreman.outcomes import HALTS
-from foreman.github import Forge, ForgeError, LiveForge
+from foreman.github import Forge, ForgeError, LiveForge, marked
 from foreman.redaction import redact
 from foreman.watch import run_key, watch
 from test_runner import FakeGitHub
@@ -68,6 +68,7 @@ class WatchTest(unittest.TestCase):
                 self.assertEqual(result, {"issue": 101, "action": "filed"})
                 forge.create_issue.assert_called_once()
                 repo, actual_title, body, labels = forge.create_issue.call_args.args
+                body = marked(body, forge.create_issue.call_args.kwargs["marker"])
                 self.assertEqual((repo, actual_title, labels), (TARGET, title, []))
                 self.assertIn(f"File to change: {file}", body.splitlines())
                 self.assertTrue(body.startswith(f"Proposed graph fix: {title}\nCause: "))
@@ -90,8 +91,7 @@ class WatchTest(unittest.TestCase):
         self.forge.create_issue.assert_called_once()
         self.forge.comment_issue.assert_called_once_with(TARGET, 101,
             "Evidence: Example/Engine#8; stop=invalid_output; attempts=review/gpt-6.1-sol-high=ran\n\n"
-            "Detail:\n\n    another detail\n\n"
-            "<!-- foreman-watch-run: Example/Engine#9@43 -->")
+            "Detail:\n\n    another detail\n", marker="<!-- foreman-watch-run: Example/Engine#9@43 -->")
 
     def test_different_nodes_are_different_causes(self):
         watch(state(), self.forge, TARGET, KEY)
@@ -104,27 +104,27 @@ class WatchTest(unittest.TestCase):
         for body in ("prefix " + MARKER, MARKER + " suffix"):
             with self.subTest(body=body):
                 forge = FakeGitHub()
-                forge.create_issue(TARGET, "unrelated", body, [])
+                forge.create_issue(TARGET, "unrelated", body, [], marker="")
                 self.assertEqual(watch(state(), forge, TARGET, KEY), {"issue": 102, "action": "filed"})
 
     def test_lowest_matching_issue_gets_the_comment(self):
-        self.fake.create_issue(TARGET, "first", MARKER, [])
-        self.fake.create_issue(TARGET, "second", MARKER, [])
+        self.fake.create_issue(TARGET, "first", MARKER, [], marker="")
+        self.fake.create_issue(TARGET, "second", MARKER, [], marker="")
         self.forge.open_issues.return_value = self.fake.open_issues(TARGET)[::-1]
         self.assertEqual(watch(state(), self.forge, TARGET, KEY), {"issue": 101, "action": "commented"})
         self.forge.create_issue.assert_not_called()
         self.assertEqual(self.forge.comment_issue.call_args.args[:2], (TARGET, 101))
 
     def test_crash_marker_in_any_matching_body_prevents_a_write(self):
-        self.fake.create_issue(TARGET, "first", MARKER, [])
-        self.fake.create_issue(TARGET, "second", RUN_MARKER + "\n" + MARKER, [])
+        self.fake.create_issue(TARGET, "first", MARKER, [], marker="")
+        self.fake.create_issue(TARGET, "second", RUN_MARKER + "\n" + MARKER, [], marker="")
         self.assertEqual(watch(state(), self.forge, TARGET, KEY), {"issue": 102, "action": "filed"})
         self.forge.create_issue.assert_not_called()
         self.forge.comment_issue.assert_not_called()
 
     def test_run_markers_match_whole_lines_in_bodies_and_comments(self):
-        self.fake.create_issue(TARGET, "first", MARKER + "\nprefix " + RUN_MARKER, [])
-        self.fake.comment_issue(TARGET, 101, RUN_MARKER + " suffix")
+        self.fake.create_issue(TARGET, "first", MARKER + "\nprefix " + RUN_MARKER, [], marker="")
+        self.fake.comment_issue(TARGET, 101, RUN_MARKER + " suffix", marker="")
         self.assertEqual(watch(state(), self.forge, TARGET, KEY), {"issue": 101, "action": "commented"})
         self.forge.comment_issue.assert_called_once()
 
@@ -160,10 +160,10 @@ class WatchTest(unittest.TestCase):
             fields = dict(arg.split("=", 1) for arg in args if "=" in arg and not arg.startswith("repos/"))
             if "--method" in args:
                 if endpoint.endswith("/comments"):
-                    self.fake.comment_issue(TARGET, int(endpoint.split("/")[-2]), fields["body"])
+                    self.fake.comment_issue(TARGET, int(endpoint.split("/")[-2]), fields["body"], marker="")
                     result = {}
                 else:
-                    result = {"number": self.fake.create_issue(TARGET, fields["title"], fields["body"], [])}
+                    result = {"number": self.fake.create_issue(TARGET, fields["title"], fields["body"], [], marker="")}
             elif "/comments?" in endpoint:
                 number = int(endpoint.split("/")[-2])
                 result = [[{"body": "page one"}], [{"body": body} for body in self.fake.issue_comments(TARGET, number)]]
@@ -180,14 +180,14 @@ class WatchTest(unittest.TestCase):
         for body in (self.fake.created[0][1], self.fake.comments[TARGET, 101][0]):
             self.assertNotIn(secret, body)
             self.assertIn("#48 [redacted:GitHub Token]", body)
-        self.fake.create_issue(TARGET, "duplicate", MARKER, [])
+        self.fake.create_issue(TARGET, "duplicate", MARKER, [], marker="")
         self.assertEqual(watch(halted, forge, TARGET, run_key(REPO, 8, 43)), {"issue": 101, "action": "commented"})
         self.assertEqual(len(self.fake.comments[TARGET, 101]), 1)
         self.assertNotIn((TARGET, 102), self.fake.comments)
         self.assertEqual(len(self.fake.created), 2)
 
     def test_failed_comment_lookup_does_not_write(self):
-        self.fake.create_issue(TARGET, "first", MARKER, [])
+        self.fake.create_issue(TARGET, "first", MARKER, [], marker="")
         self.forge.issue_comments.side_effect = ForgeError("page two failed")
         with self.assertRaises(ForgeError):
             watch(state(), self.forge, TARGET, KEY)

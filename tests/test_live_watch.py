@@ -140,7 +140,7 @@ class LiveWatchTest(unittest.TestCase):
     def test_blocked_run_reports_once_without_watching(self):
         seam = {'name': 'items', 'exists': False, 'path': None}
         blocker = StoredSlice.model_validate({**EMPTY_SLICE, 'title': 'blocker', 'builds': [seam]})
-        number = self.fake.create_issue('Example/Engine', blocker.title, '', ['slice'], child=blocker)
+        number = self.fake.create_issue('Example/Engine', blocker.title, '', ['slice'], child=blocker, marker="")
         self.fake.dependencies[8] = [number]
         self.fake.body = slice_body({**EMPTY_SLICE, 'uses': [seam], 'depends_on': [blocker.title], 'blocker_numbers': [number]})
         reports = []
@@ -204,10 +204,10 @@ class LiveWatchTest(unittest.TestCase):
                 result = {'defaultBranchRef': {'name': 'main'}}
             elif '--method' in args:
                 if endpoint.endswith('/comments'):
-                    self.fake.comment_issue('bookout-labs/tools', 101, fields['body'])
+                    self.fake.comment_issue('bookout-labs/tools', 101, fields['body'], marker="")
                     result = {}
                 else:
-                    result = {'number': self.fake.create_issue('bookout-labs/tools', fields['title'], fields['body'], [])}
+                    result = {'number': self.fake.create_issue('bookout-labs/tools', fields['title'], fields['body'], [], marker="")}
             elif endpoint.endswith('/dependencies/blocked_by'):
                 result = [[]]
             elif '/comments?' in endpoint:

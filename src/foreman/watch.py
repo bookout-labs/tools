@@ -40,14 +40,13 @@ def watch(state: DeliveryResult, forge: Forge, repo: str, run_key: RunKey) -> Wa
     evidence = f"Evidence: {run_state.repo}#{run_state.issue or '<issue>'}; stop={halt}; attempts={attempts}\n\nDetail:\n\n{detail}\n"
     if matches:
         number = matches[0].number
-        forge.comment_issue(repo, number, f"{evidence}\n{run_marker}")
+        forge.comment_issue(repo, number, evidence, marker=run_marker)
         return {"issue": number, "action": "commented"}
     body = (
         f"Proposed graph fix: {title}\nCause: {row.cause.format(**values)}\n{evidence}\n"
         f"File to change: {file}\n"
         "This proposal does not change models.toml or max_review_rounds.\n"
         "It does not edit the graph, merge, or launch a coding agent.\n"
-        "A person opens the pull request.\n"
-        f"{run_marker}\n{marker}"
+        "A person opens the pull request."
     )
-    return {"issue": forge.create_issue(repo, title, body, []), "action": "filed"}
+    return {"issue": forge.create_issue(repo, title, body, [], marker=f"{run_marker}\n{marker}"), "action": "filed"}
