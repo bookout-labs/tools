@@ -1,6 +1,7 @@
 """Command line for the foreman tool."""
 
 import argparse
+from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from importlib.resources import files
@@ -183,6 +184,7 @@ def main(
     worker_runner: CommandRunner = run_worker_command,
     checkpoint: Path | None = None,
     live_run: LiveRun | None = None,
+    report: Callable[[DeliveryResult], None] = lambda result: None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="foreman")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -307,6 +309,11 @@ def main(
             live_run = LiveRun(LiveForge(), LiveWorkspace(Path.cwd(), args.repo))
         live_run = replace(live_run, check_log=_write_check_log)
         dispatcher = CliWorker(live_run.workspace.root, worker_runner, scratch_root=checkpoint.parent)
+
+        def reported(result: DeliveryResult) -> None:
+            _print_run(result, presentation)
+            report(result)
+
         try:
             with signals_end_foreman():
                 result = run_live_delivery(
@@ -322,7 +329,7 @@ def main(
                     presentation=presentation,
                     max_tokens=args.max_tokens,
                     watch_repo=args.watch_repo,
-                    report=lambda result: _print_run(result, presentation),
+                    report=reported,
                     log=lambda message: _write_run_log(message, file=sys.stderr),
                     max_budget_usd=args.max_budget_usd,
                 )
