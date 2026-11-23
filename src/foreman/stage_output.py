@@ -1,6 +1,7 @@
 """Worker output contracts shared by the CLI prompts and delivery graph."""
 
 import json
+import re
 from hashlib import sha256
 from typing import Annotated, Generic, ClassVar, Literal, Self, TypeVar
 
@@ -71,6 +72,7 @@ class SliceRecord(TypedDict):
     depends_on: NotRequired[list[str]]
     blocker_numbers: NotRequired[list[int]]
     provenance: NotRequired[SliceProvenanceRecord]
+    repository: NotRequired[str | None]
 
 
 @with_config(ConfigDict(extra="forbid", strict=True))
@@ -96,7 +98,7 @@ Record = TypeVar("Record")
 
 
 class RecordContract(Contract, Generic[Record]):
-    optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance"}
+    optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance", "repository"}
     @classmethod
     @abstractmethod
     def record_adapter(cls) -> TypeAdapter[Record]:
@@ -104,8 +106,7 @@ class RecordContract(Contract, Generic[Record]):
 
     def record(self) -> Record:
         excluded = {key for key in self.optional_record_fields if key not in self.model_fields_set}
-        if getattr(self, "provenance", None) is None:
-            excluded.add("provenance")
+        excluded.update(key for key in ("provenance", "repository") if getattr(self, key, None) is None)
         return self.record_adapter().validate_python(self.model_dump(exclude=excluded), strict=True)
 
 
@@ -259,12 +260,17 @@ class Seam(RecordContract[SeamRecord]):
 
 def _describe_slice(schema: dict[str, JsonValue]) -> None:
     schema["description"] = f"One pull request's outcome, about {PULL_REQUEST_LINES} changed lines or fewer, and its proof obligations."
+    required, properties = schema.get("required"), schema.get("properties")
+    if isinstance(required, list) and isinstance(properties, dict) and isinstance(repository := properties.get("repository"), dict):
+        repository.pop("default", None)
+        required.append("repository")
 
 
 class SliceContent(RecordContract[Record], Generic[Record]):
     model_config = ConfigDict(json_schema_extra=_describe_slice)
 
     title: TrimmedText = Field(description="Name the outcome.")
+    repository: TrimmedText | None = Field(default=None, description="Explicit slice repository as OWNER/NAME, or null to inherit the admitted repository.")
     stateful: bool = Field(description="Set true when the slice changes behavior across states or transitions.")
     acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
     builds: list[Seam] = Field(description="List only new seams this slice provides for other slices, with exists false and path null. A seam is an interface, module, or contract, not a file; a new seam may be implemented in an existing file. Pure file edits belong in uses and acceptance/spec, not builds.")
@@ -330,6 +336,7 @@ class CandidateSliceRecord(TypedDict):
     properties: list[SlicePropertyRecord]
     depends_on: list[str]
     blocker_numbers: list[int]
+    repository: NotRequired[str | None]
 
 
 class CandidateSlice(SliceContent[CandidateSliceRecord]):
@@ -337,9 +344,16 @@ class CandidateSlice(SliceContent[CandidateSliceRecord]):
     @override
     def record_adapter(cls) -> TypeAdapter[CandidateSliceRecord]:
         return TypeAdapter(CandidateSliceRecord)
-    optional_record_fields: ClassVar[set[str]] = set()
+    optional_record_fields: ClassVar[set[str]] = {"repository"}
     depends_on: list[TrimmedText] = Field(default_factory=list[str])
     blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
+
+
+@with_config(ConfigDict(extra="forbid"))
+class SpecTarget(TypedDict):
+    repo: str
+    issue: int
+    base: str
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -349,6 +363,7 @@ class SpecCandidateRecord(TypedDict):
     work_kind: WorkKind
     author: SpecAuthorRecord
     revision: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    target: NotRequired[SpecTarget | None]
 
 
 class SpecCandidate(RecordContract[SpecCandidateRecord]):
@@ -356,6 +371,7 @@ class SpecCandidate(RecordContract[SpecCandidateRecord]):
     spec: str
     work_kind: WorkKind
     author: SpecAuthor
+    target: SpecTarget | None = None
     model_config = ConfigDict(frozen=True)
 
     @classmethod
@@ -373,8 +389,14 @@ class SpecCandidate(RecordContract[SpecCandidateRecord]):
     @computed_field
     @property
     def revision(self) -> str:
-        content = json.dumps(self.model_dump(exclude={"revision"}), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        return sha256(content.encode("utf-8")).hexdigest()
+        excluded = {"revision", "target"} if self.target is None else {"revision", "author"}
+        return spec_digest(self.model_dump(exclude=excluded))
+
+    @override
+    def record(self) -> SpecCandidateRecord:
+        record = self.model_dump(exclude={"target"} if self.target is None else set())
+        record["slices"] = [item.record() for item in self.slices]
+        return self.record_adapter().validate_python(record, strict=True)
 
     @classmethod
     def from_record(cls, raw: object) -> Self:
@@ -393,6 +415,10 @@ class SpecCandidate(RecordContract[SpecCandidateRecord]):
         return plan.model_copy(update=fields)
 
 
+def spec_digest(content: object) -> str:
+    return sha256(json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
 class StoredSlice(Slice):
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
@@ -401,6 +427,19 @@ class StoredSlice(Slice):
     uses: list[Seam] = Field(default_factory=list[Seam])
     depends_on: list[TrimmedText] = Field(default_factory=list[str])
     blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
+
+
+SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
+
+
+def load_stored_slice(body: str) -> StoredSlice:
+    blocks = SLICE_FENCE.findall(body)
+    if not blocks:
+        raise InvalidOutput("slice issue needs a fenced JSON object")
+    try:
+        return parse_output(StoredSlice, json.loads(blocks[-1]))
+    except json.JSONDecodeError as exc:
+        raise InvalidOutput(str(exc)) from exc
 
 
 class PullRequestSplit(TypedDict):
@@ -426,26 +465,69 @@ class InvalidSlicePlan(InvalidOutput):
 
 @with_config(ConfigDict(extra="forbid"))
 class HumanAnswer(TypedDict):
-    stage: Literal["triage", "spec", "pr_size", "review"]
+    stage: Literal["triage", "spec", "spec_check", "pr_size", "review"]
     question: str
     answer: str
+    revision: NotRequired[str]
+    candidate: NotRequired[str]
+
+
+class SettledRuling(Contract):
+    id: TrimmedText
+    text: Text
+
+
+class SpecFinding(Contract):
+    id: TrimmedText
+    kind: Literal["proof-obligation", "seam", "failure-path", "contract", "scope"]
+    slice: TrimmedText
+    section: Literal["slice", "spec", "work_kind"]
+    summary: TrimmedText = Field(max_length=200)
+    ruling_id: TrimmedText | None
+
+    @property
+    def severity(self) -> Literal["blocking"]:
+        return "blocking"
+
+
+class SpecRound(Contract):
+    candidate: SpecCandidateRecord
+    findings: list[SpecFinding]
+    notes: list[SpecFinding]
+    resolutions: dict[str, ResolutionStatus]
+
+    @field_validator("candidate")
+    @classmethod
+    def valid_candidate(cls, value: SpecCandidateRecord) -> SpecCandidateRecord:
+        return SpecCandidate.from_record(value).record()
+
+
+@with_config(ConfigDict(extra="forbid"))
+class SpecHistoryRecord(TypedDict, total=False):
+    rounds: list[SpecRound]
+    settled: list[SettledRuling]
 
 
 class PlanState(BaseModel, frozen=True, extra="forbid"):
-    # Rejected plans share dispatch receipts and paths with human questions.
-    spec_failures: int = 0
     triage: Literal["", "implement", "spec", "question", "needs_human"] = ""
     spec: str = ""
     spec_gate: Literal["", "ready", "needs_human"] = ""
     human_qa: list[HumanAnswer] = Field(default_factory=list[HumanAnswer])
     spec_candidate: SpecCandidateRecord | None = None
     spec_rejection: SpecRejection | None = None
+    rejected_revisions: list[str] = Field(default_factory=list[str])
+    spec_history: SpecHistoryRecord = Field(default_factory=SpecHistoryRecord)
+    human_approval: str | None = None
     slices: list[SliceRecord] = Field(default_factory=list[SliceRecord])
     child_issue_numbers: list[int] = Field(default_factory=list[int])
     slice: SliceRecord | None = None
     issue_kind: Literal["parent", "slice"] | None = None
     work_kind: WorkKind | None = None
     pr_split: PullRequestSplit | None = None
+
+    @property
+    def spec_failures(self) -> int:
+        return len(set(self.rejected_revisions))
 
     @field_validator("slice", mode="before")
     @classmethod
@@ -516,12 +598,7 @@ class TriageOutput(HumanQuestionOutput):
         if plan.issue_kind == "parent" and self.triage == "implement":
             if self.slice is None:
                 raise InvalidOutput("slice: required when a parent triages as implement")
-            if context.model is not None:
-                current = SpecCandidate(slices=[CandidateSlice.model_validate(self.slice.record())], spec="",
-                    work_kind=self.work_kind, author=SpecAuthor(stage="triage", model=context.model.name,
-                    family=context.model.family)).update(current, single=True)
-            else:
-                current = current.model_copy(update={"slice": self.slice.record()})
+            current = current.model_copy(update={"slice": self.slice.record()})
         return {"plan": current, "human_question": self.human_question or ""}
 
 
@@ -544,7 +621,7 @@ class SpecOutput(StageOutput):
     spec_gate: Literal["ready", "needs_human"]
     questions: list[SpecQuestion]
     slices: list[Slice] | None = Field(
-        description="For a ready parent spec, return one entry per pull request. Use null otherwise.",
+        description="Return one entry per proposed pull request, including any tentative slices when asking a question. Use null when no slices are proposed.",
     )
 
     @field_validator("questions")
@@ -563,19 +640,11 @@ class SpecOutput(StageOutput):
             f"{item.question}\nWhy code cannot answer: {item.why_code_unanswered}\n"
             f"Checked paths: {', '.join(item.checked_paths) or '(none)'}" for item in self.questions
         )
+        current = plan.model_copy(update={"spec": plan.spec if context.oversized else self.spec, "spec_gate": self.spec_gate, "spec_rejection": None,
+            "slices": slices, "spec_candidate": None, "human_approval": None})
         if context.oversized:
-            return {"plan": plan.model_copy(update={"pr_split": {"plan": self.spec, "gate": self.spec_gate,
-                "question": question or None, "slices": slices}, "spec_rejection": None})}
-        current = plan.model_copy(update={"spec": self.spec, "spec_gate": self.spec_gate, "spec_rejection": None})
-        if self.spec_gate == "needs_human":
-            current = current.model_copy(update={"spec_candidate": None})
-        if plan.issue_kind == "parent" and self.spec_gate == "ready":
-            if context.model is not None and plan.work_kind is not None:
-                current = SpecCandidate(slices=[CandidateSlice.model_validate(item) for item in slices],
-                    spec=self.spec, work_kind=plan.work_kind, author=SpecAuthor(stage="spec",
-                    model=context.model.name, family=context.model.family)).update(current, single=False)
-            else:
-                current = current.model_copy(update={"slices": slices})
+            current = current.model_copy(update={"pr_split": {"plan": self.spec, "gate": self.spec_gate,
+                "question": question or None, "slices": slices}})
         return {"plan": current, "human_question": question}
 
 
@@ -613,11 +682,6 @@ class FindingResolution(Contract):
     status: ResolutionStatus
 
 
-class SettledRuling(Contract):
-    id: TrimmedText
-    text: Text
-
-
 class ReviewFinding(Finding):
     @field_validator("location")
     @classmethod
@@ -648,27 +712,20 @@ class ReviewOutput(HumanQuestionOutput):
         raise NotImplementedError("review: use exact-head stage acceptance")
 
 
-class SpecFinding(Contract):
-    id: TrimmedText
-    kind: Literal["proof-obligation", "seam", "failure-path", "contract", "scope"]
-    slice: TrimmedText
-    section: Literal["slice", "spec", "work_kind"]
-    summary: TrimmedText = Field(max_length=200)
-    ruling_id: TrimmedText | None
-
-    @property
-    def severity(self) -> Literal["blocking"]:
-        return "blocking"
-
-
-class SpecCheckOutput(StageOutput):
-    findings: list[SpecFinding] = Field(description="New blocking gaps only. Use resolutions for earlier IDs.")
+class SpecCheckOutput(HumanQuestionOutput):
+    human_question: TrimmedText | None = Field(description="Ask an unresolved choice on this candidate only when findings is empty.")
+    findings: list[SpecFinding] = Field(description="All blocking gaps in the current candidate. Reuse the exact earlier finding when it remains unresolved.")
     notes: list[SpecFinding] = Field(description="Nonblocking observations, separate from requested fixes.")
-    resolutions: list[FindingResolution]
+
+    @model_validator(mode="after")
+    def question_or_findings(self) -> Self:
+        if self.human_question and self.findings:
+            raise ValueError("Return either a human question or blocking findings.")
+        return self
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        raise NotImplementedError("spec_check: use candidate-bound spec_check.accept")
+        return {"human_question": self.human_question or ""}
 
 
 class VerifyOutput(StageOutput):

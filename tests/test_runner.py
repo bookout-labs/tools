@@ -28,9 +28,9 @@ from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
 from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery
 from foreman.dispatch import InvalidOutput
-from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
+from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
-from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, render_slice_body
+from foreman.github import CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, render_slice_body
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import _load_slice, AnswerError, RunPresentation, run_live_delivery
@@ -39,7 +39,7 @@ from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
-from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture
+from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply
 from test_adapters import codex_events, fixture_process
 from test_spec_candidate import CandidateTests
 from owner_contract import OWNERS, assert_channels, assert_repaired, seed_repair_channels
@@ -102,7 +102,20 @@ class FakeWorkspace(LiveWorkspace):
     def tree(self, head):
         return HEAD
 
-    def create_branch(self, branch, base):
+    def validate_origin(self, repo):
+        pass
+
+    def pin_base(self, base):
+        return self.current.head
+
+    def has_tracked_file(self, base, path):
+        file = self.root / path
+        return file.is_file() and not file.is_symlink()
+
+    def contains_commit(self, base, commit):
+        return base == commit or (base, commit) == (HEAD, BASE)
+
+    def create_branch(self, branch, base, *, pinned=""):
         self.current = WorktreeState(self.current.head, True, branch)
 
     def commit(self, message):
@@ -147,7 +160,15 @@ def quota_with_usage(args):
     return process
 
 
+def planning_answer_env(detail, answer):
+    env = {**os.environ, "FOREMAN_HUMAN_LOGIN": "fixture-owner"}
+    if match := re.search(r"foreman answer ([0-9a-f-]{71})", detail):
+        env["FOREMAN_FIXTURE_RULING"] = f"foreman answer {match[1]}\n{answer}"
+    return env
+
+
 def worker_reply(args, reply):
+    reply = checker_reply(args) or reply
     if isinstance(reply, dict):
         if "triage" in reply:
             reply = {"work_kind": "feature", "slice": None, "human_question": None, **reply}
@@ -165,6 +186,7 @@ def worker_reply(args, reply):
 
 
 class FixtureWorkspace(LiveWorkspace):
+    validate_origin = FakeWorkspace.validate_origin
     review_scope = FakeWorkspace.review_scope
 
     def push(self, branch, repo):
@@ -238,8 +260,8 @@ class FakeGitHub:
     def load_issue(self, repo, number) -> Issue:
         if number in self.issue_labels:
             title, body, _ = self.created[number - 101]
-            return {"title": title, "body": self.bodies.get((repo, number), body), "labels": self.issue_labels[number]}
-        return {"title": "Issue title", "body": self.bodies.get((repo, number), self.body), "labels": self.labels}
+            return {"repo": repo, "number": number, "title": title, "body": self.bodies.get((repo, number), body), "labels": self.issue_labels[number]}
+        return {"repo": repo, "number": number, "title": "Issue title", "body": self.bodies.get((repo, number), self.body), "labels": self.labels}
 
     def open_issues(self, repo) -> list[OpenIssue]:
         return [OpenIssue(number=number, body=self.bodies[repo, number])
@@ -291,6 +313,10 @@ class FakeGitHub:
         if failures:
             raise failures.pop(0)
 
+    def issue_comment_records(self, repo, number):
+        body = os.environ.get("FOREMAN_FIXTURE_RULING")
+        return [IssueComment.model_validate({"user": {"login": "fixture-owner"}, "body": body})] if body else []
+
     def issue_comments(self, repo, number) -> list[str]:
         return list(self.comments.get((repo, number), []))
 
@@ -309,8 +335,8 @@ class FakeGitHub:
         self._fail("create_issue", after_write=True)
         return number
 
-    def is_merged(self, repo, number):
-        return number in self.merged
+    def is_merged(self, repo, number, *, contains=None):
+        return number in self.merged and (contains is None or contains(self.base))
 
     def add_blocker(self, repo, number, blocker):
         self.dependencies.setdefault(number, []).append(blocker)
@@ -333,8 +359,8 @@ class CliWorkerTest(unittest.TestCase):
     def test_spec_worker_receives_paired_questions_once(self):
         qa = [{"stage": "triage", "question": "Which scope?", "answer": "Items"},
               {"stage": "spec", "question": "Which policy?", "answer": "Sort"}]
-        state = {"plan": PlanState(human_qa=qa)}
-        instruction, _, _ = STAGES["spec"].prepare(state, None, None)
+        state = {"plan": PlanState(human_qa=qa), "run": RunState(repo="a/b", base_sha=BASE)}
+        instruction, _, _ = STAGES["spec"].prepare(state, FakeWorkspace(Path(".")), None)
 
         def run(args, cwd, env):
             prompt = args[-1]
@@ -640,7 +666,7 @@ class LiveRunnerTest(unittest.TestCase):
             self.assertEqual(cwd, self.cwd)
             self.calls.append(args[0])
             self.prompts.append(args[-1])
-            reply = next(outputs)
+            reply = checker_reply(args) or next(outputs)
             return active.reply(args, reply) if isinstance(active, FakeWorkspace) else worker_reply(args, reply)
 
         return run_live_delivery(
@@ -668,6 +694,8 @@ class LiveRunnerTest(unittest.TestCase):
         def worker(args, cwd, env):
             prompt = args[-1]
             state = json.loads(prompt.split("Delivery state:\n")[1])
+            if checker_reply(args):
+                return worker_reply(args, {})
             if state["checks"]["verify_failures"]:
                 if crash:
                     raise RuntimeError("synthetic pending dispatch crash")
@@ -687,7 +715,7 @@ class LiveRunnerTest(unittest.TestCase):
                     run_worker_command(args, cwd, env)
                     self.assertEqual(run.call_args.kwargs["input"], prompt)
                 return active.reply(args, {"implementation": "retry"})
-            return active.reply(args, next(replies))
+            return active.reply(args, checker_reply(args) or next(replies))
         def invoke(stop=None):
             def compile(*args, **kwargs):
                 graph = compile_delivery(*args, **kwargs)
@@ -747,9 +775,9 @@ class LiveRunnerTest(unittest.TestCase):
         result = self.walk([{"triage": "implement"}, *[{"implementation": "built"}] * 3, APPROVE],
                            check=f"{sys.executable} {script}")
         states = [json.loads(prompt.split("Delivery state:\n")[1]) for prompt in self.prompts]
-        self.assertIn("failure attempt 1", states[2]["checks"]["failure_output"])
-        self.assertIn("failure attempt 2", states[3]["checks"]["failure_output"])
-        self.assertNotIn("failure attempt 1", states[3]["checks"]["failure_output"])
+        self.assertIn("failure attempt 1", states[3]["checks"]["failure_output"])
+        self.assertIn("failure attempt 2", states[4]["checks"]["failure_output"])
+        self.assertNotIn("failure attempt 1", states[4]["checks"]["failure_output"])
         self.assertEqual(result["checks"].verify, "pass")
         self.assertEqual(result["checks"].failure_output, "")
         self.assertEqual(result["path"].count("publish"), 1)
@@ -809,6 +837,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertIn("XDG_STATE_HOME", str(raised.exception))
 
     def test_old_checkpoint_refusal_explains_fresh_start_without_affecting_other_issues(self):
+        self.github.labels = ["factory"]
         config = {"configurable": {"thread_id": "example/engine#8"}}
         for version in (None, SCHEMA_VERSION - 1):
             with self.subTest(version=version):
@@ -851,7 +880,7 @@ class LiveRunnerTest(unittest.TestCase):
                       patch.dict(os.environ, XDG_STATE_HOME=str(state_home)),
                       contextlib.redirect_stdout(io.StringIO()) as stdout):
                     code = main(other_command, live_run=live_run,
-                                worker_runner=lambda args, cwd, env: worker_reply(args, next(replies)))
+                                worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or next(replies)))
                 self.assertEqual(code, 0)
                 self.assertIn("done answered", stdout.getvalue())
                 with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
@@ -866,7 +895,7 @@ class LiveRunnerTest(unittest.TestCase):
                 with (patch.dict(os.environ, XDG_STATE_HOME=str(fresh_home)),
                       contextlib.redirect_stdout(io.StringIO()) as stdout):
                     code = main(command, live_run=live_run,
-                                worker_runner=lambda args, cwd, env: worker_reply(args, next(replies)))
+                                worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or next(replies)))
                 self.assertEqual(code, 0)
                 self.assertIn("done answered", stdout.getvalue())
                 self.assertTrue(fresh_checkpoint.is_file())
@@ -973,7 +1002,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             self.assertEqual(resumed.returncode, 0, resumed.stderr)
             self.assertIn("done verified", resumed.stdout)
             self.assertEqual((directory / "merges.log").read_text(), "merge\n")
-            self.assertEqual((directory / "workers.log").read_text().splitlines(), ["TriageOutput", "ImplementOutput", "ReviewOutput"])
+            self.assertEqual((directory / "workers.log").read_text().splitlines(), ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "ReviewOutput"])
 
     def test_readiness_is_reconciled_after_arming(self):
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
@@ -1004,7 +1033,7 @@ from foreman.delivery import LiveRun
 from foreman.github import ForgeError
 from foreman.runner import run_live_delivery
 from foreman.worker import CliWorker
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply
 
 phase, pin = sys.argv[1:]
 answer = "Active items only."
@@ -1020,7 +1049,7 @@ replies = iter({
 def worker(args, cwd, env):
     if phase == "answer":
         assert answer in args[-1]
-    return workspace.reply(args, next(replies))
+    return workspace.reply(args, checker_reply(args) or next(replies))
 
 def unavailable(*args, **kwargs):
     raise ForgeError("Review post temporarily unavailable")
@@ -1128,7 +1157,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         built = {"implementation": "Built."}
         result = self.walk([{"triage": "implement"}, built, {**APPROVE, "findings": findings}, built, APPROVE])
         self.assertEqual(result["merge"].status, "armed")
-        self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[2])
+        self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[3])
         _, _, head, body, comments = self.github.reviews[0]
         self.assertEqual(head, HEAD)
         self.assertIn("head items.txt:1 [P1] Untouched context.", body)
@@ -1181,10 +1210,12 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.github.merge_calls, [])
 
     def test_load_slice_issue(self):
-        result = self.walk([{"triage": "question"}, {"research": "answer"}])
+        result = self.walk([{"triage": "question"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(result["run"].request, "Issue title\n\n" + slice_body(EMPTY_SLICE))
         self.assertEqual(result["plan"].issue_kind, "slice")
-        self.assertEqual(result["plan"].slice, EMPTY_SLICE)
+        self.assertEqual({k: v for k, v in result["plan"].slice.items() if k != "provenance"},
+                         {**EMPTY_SLICE, "depends_on": [], "blocker_numbers": []})
+        self.assertEqual(result["path"][:3], ["triage", "spec_check", "implement"])
 
     def test_missing_or_invalid_slice_stops_before_triage(self):
         for body in ("Issue body", "Issue body\n\n```json\n{\n```", slice_body({"screen": ""})):
@@ -1290,6 +1321,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertIn("triage quota exhausted", stdout.getvalue())
 
     def test_resume_passes_checkpoint_pin_to_the_run_skill_source(self):
+        self.github.labels = ["factory"]
         source = FixtureSkills()
         paused = self.walk([{"triage": "needs_human", "human_question": "Which items?"}], skills=source)
         self.assertEqual(paused["stop"], "needs_human")
@@ -1301,6 +1333,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(source.pins, [self.pin, self.pin])
 
     def test_resume_allocates_fresh_scratch_without_checkpointing_paths(self):
+        self.github.labels = ["factory"]
         paths = []
 
         def quota(args, cwd, env):
@@ -1325,7 +1358,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
         def answer(args, cwd, env):
             quota(args, cwd, env)
-            return worker_reply(args, next(replies))
+            return worker_reply(args, checker_reply(args) or next(replies))
 
         resumed = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
@@ -1342,6 +1375,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
         def exhaust(node, model, state, instruction):
+            if node == "spec_check":
+                return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
             if node == "triage":
                 return Outcome("ran", {"triage": "implement", "work_kind": "feature", "human_question": None, "slice": None}, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1))
             return Outcome("quota", usage=SCRIPTED_USAGE)
@@ -1355,8 +1390,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertNotIn("done", paused["path"])
         self.assertEqual(paused["pstack_pin"], self.pin.model_dump())
         attempts = paused["attempts"]
-        self.assertEqual([a["outcome"] for a in attempts], ["ran"] + ["quota"] * 4)
-        self.assertTrue(all(a["stage"] == "implement" and a["commit"] == self.pin.commit for a in attempts[1:]))
+        self.assertEqual([a["outcome"] for a in attempts], ["ran", "ran"] + ["quota"] * 4)
+        self.assertTrue(all(a["stage"] == "implement" and a["commit"] == self.pin.commit for a in attempts[2:]))
 
         resumed = self.walk([{"implementation": "built"}, APPROVE])
         self.assertEqual(resumed["stop"], "verified")
@@ -1409,10 +1444,11 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.walk([])
         self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.label_calls, [("Example/Engine", 102, "factory")])
-        child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=102)
-        self.assertEqual(child["plan"].slice, {**child_payload, "provenance": {"author": result["plan"].spec_candidate["author"], "revision": result["plan"].spec_candidate["revision"]}})
+        child = self.walk([{"triage": "implement"}, {"implementation": "built"}, APPROVE], issue=102)
+        self.assertEqual(child["stop"], "verified", child.get("halt_detail"))
+        self.assertEqual(child["path"][:3], ["triage", "spec_check", "implement"])
+        self.assertEqual({k: v for k, v in child["plan"].slice.items() if k != "provenance"}, child_payload)
         self.assertEqual(child["plan"].work_kind, "bug_fix")
-        self.assertIn("why/SKILL.md", self.prompts[-1])
 
     def test_edit_only_spec_repairs_and_round_trips_to_children(self):
         for count in (1, 2):
@@ -1426,12 +1462,12 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 bad = [{**item, "builds": [seam], "uses": []} for item in edits]
                 spec = {"spec": "Change visible(items) in items.py.", "spec_gate": "ready", "slices": edits}
                 result = self.walk([{"triage": "spec"}, {**spec, "slices": bad}, spec])
-                self.assertEqual(result["path"], ["triage", "spec", "spec", "done"])
+                self.assertEqual(result["path"], ["triage", "spec", "spec", "spec_check", "done"])
                 self.assertEqual(result["plan"].spec_failures, 1)
                 attempts = [a for a in result["attempts"] if a["stage"] == "spec"]
                 self.assertEqual(len(attempts), 2)
                 self.assertTrue(all(a["usage"]["input"] > 0 for a in attempts))
-                prompt = self.prompts[-1]
+                prompt = self.prompts[-2]
                 for text in ("existing_seam_builder", "slices.0.builds", "items", "move them to uses"):
                     self.assertIn(text, prompt)
                 candidate = result["plan"].spec_candidate
@@ -1444,9 +1480,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     self.assertEqual(child.acceptance, edits[index]["acceptance"])
                     self.assertEqual(child.depends_on, [])
                     self.assertEqual(child.provenance.revision, candidate["revision"])
-                child = self.walk([{"triage": "question"}, {"research": "answer"}], issue=101)
+                child = self.walk([{"triage": "question"}, {"implementation": "built"}, APPROVE], issue=101)
                 self.assertEqual(child["plan"].slice["uses"], [seam])
-                self.assertEqual(child["plan"].slice["provenance"]["revision"], candidate["revision"])
+                self.assertEqual(child["path"][:3], ["triage", "spec_check", "implement"])
+                self.assertEqual(child["plan"].slice["provenance"]["author"], candidate["author"])
 
     def test_mislabel_cap_and_mixed_errors_never_file_children(self):
         seam = {"name": "items", "exists": True, "path": "items.py"}
@@ -1459,7 +1496,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     if malformed:
                         slices[-1]["unexpected"] = True
                     spec = {"spec": "Edit items", "spec_gate": "ready", "slices": slices}
-                    result = self.walk([{"triage": "spec"}, spec, spec, spec])
+                    result = self.walk([{"triage": "spec"}, spec, {**spec, "spec": "Revision two"}, {**spec, "spec": "Revision three"}])
                     self.assertEqual(result["stop"], "invalid_output" if malformed else "spec_cap")
                     self.assertEqual(result["plan"].spec_failures, 0 if malformed else 3)
                     self.assertIsNone(result["plan"].spec_candidate)
@@ -1481,7 +1518,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                         parse_output(SpecOutput, spec)
                     self.assertIs(type(raised.exception), InvalidOutput)
                     self.assertIn("questions must be non-empty on needs_human and empty on ready", str(raised.exception))
-                    result = self.walk([{"triage": "spec"}, spec, spec, spec])
+                    result = self.walk([{"triage": "spec"}, spec, {**spec, "spec": "Revision two"}, {**spec, "spec": "Revision three"}])
                     self.assertEqual(result["stop"], "invalid_output")
                     self.assertEqual(result["path"], ["triage", "spec", "done"])
                     self.assertEqual(result["plan"].spec_failures, 0)
@@ -1518,23 +1555,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         (self.cwd / "seam.py").touch()
         consumer = {**CONSUMER, "uses": [{**SEAM, "exists": True, "path": "seam.py"}]}
         spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
-        result = self.walk([{"triage": "spec"}, spec, spec, spec])
+        result = self.walk([{"triage": "spec"}, spec, {**spec, "spec": "Revision two"}, {**spec, "spec": "Revision three"}])
         self.assertEqual(result["stop"], "spec_cap")
         self.assertEqual(result["plan"].spec_rejection["kind"], "existing_seam_builder")
         self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
-
-    def test_workspace_file_paths_resolve_inside_the_root(self):
-        (self.cwd / "api.py").touch()
-        (self.cwd / "sub").mkdir()
-        workspace = LiveWorkspace(self.cwd)
-        self.assertTrue(workspace.has_file("sub/../api.py"))
-        with TemporaryDirectory() as directory:
-            outside = Path(directory) / "api.py"
-            outside.touch()
-            (self.cwd / "escape.py").symlink_to(outside)
-            for path in (str(outside), os.path.relpath(outside, self.cwd), "escape.py"):
-                with self.subTest(path=path):
-                    self.assertFalse(workspace.has_file(path))
 
     def test_existing_seam_outside_workspace_reaches_the_cap_without_filing(self):
         self.github = FakeGitHub(["factory"])
@@ -1544,7 +1568,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             (self.cwd / "escape.py").symlink_to(outside)
             consumer = {**CONSUMER, "uses": [{"name": "local", "exists": True, "path": "escape.py"}]}
             spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
-            result = self.walk([{"triage": "spec"}, spec, spec, spec])
+            result = self.walk([{"triage": "spec"}, spec, {**spec, "spec": "Revision two"}, {**spec, "spec": "Revision three"}])
         self.assertEqual(result["stop"], "spec_cap")
         self.assertEqual(len(result["review"].review_findings), 0)
         self.assertEqual(result["plan"].spec_failures, 3)
@@ -1569,8 +1593,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             [{"triage": "implement"}, {"implementation": "built"}, APPROVE],
             check="test -f expected",
         )
-        self.assertEqual(self.calls, ["claude", "codex", "claude"])
-        self.assertEqual(result["path"], ["triage", "implement", "verify", "publish", "review", "merge", "done"])
+        self.assertEqual(self.calls, ["claude", "codex", "codex", "claude"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "implement", "verify", "publish", "review", "merge", "done"])
         self.assertEqual(result["checks"].check_exit_code, 0)
         self.assertEqual(result["checks"].verified_head, HEAD)
         self.assertEqual(result["work"].head_sha, HEAD)
@@ -1591,7 +1615,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         ):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "sh verify.sh"],
-                worker_runner=lambda args, cwd, env: fake.reply(args, next(replies)),
+                worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 0)
@@ -1638,7 +1662,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
         def worker(args, cwd, env):
             self.assertEqual(cwd, root)
-            return live_run.workspace.reply(args, next(replies))
+            return live_run.workspace.reply(args, checker_reply(args) or next(replies))
 
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
             code = main(
@@ -1657,7 +1681,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         result = self.walk([{"triage": "implement"}] + [{"implementation": "built"}] * 3, check="exit 17")
         self.assertEqual(result["checks"].check_exit_code, 17)
         self.assertEqual(result["stop"], "verify_cap")
-        self.assertEqual(self.calls, ["claude", "codex", "codex", "codex"])
+        self.assertEqual(self.calls, ["claude", "codex", "codex", "codex", "codex"])
         self.assertNotIn("merge", result["path"])
 
     def test_parent_cannot_implement_without_a_slice(self):
@@ -1682,7 +1706,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
                  "--check", "touch checked", "--preflight", preflight],
-                worker_runner=lambda args, cwd, env: worker_reply(args, {"triage": "implement"}),
+                worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "implement"}),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(root)),
             )
         self.assertEqual(code, 75)
@@ -1699,7 +1723,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
                  "--check", "exit 0", "--preflight", preflight],
-                worker_runner=lambda args, cwd, env: worker_reply(args, {"triage": "implement"}),
+                worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "implement"}),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
             )
         self.assertEqual(code, 75)
@@ -1726,8 +1750,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         halted = self.walk([{"triage": "implement"}], preflight=preflight)
         self.assertEqual(halted.get("stop"), "env_unavailable")
         self.assertEqual(len(halted["review"].review_findings), 0)
-        self.assertEqual(halted.get("path"), ["triage", "prepare", "done"])
-        self.assertEqual(self.calls, ["claude"])
+        self.assertEqual(halted.get("path"), ["triage", "spec_check", "prepare", "done"])
+        self.assertEqual(self.calls, ["claude", "codex"])
 
         (self.cwd / "ready").touch()
         result = self.walk(
@@ -1737,7 +1761,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(result.get("stop"), "verified")
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertNotIn("halt_detail", result)
-        self.assertEqual(result.get("path"), ["triage", "implement", "verify", "publish", "review", "merge", "done"])
+        self.assertEqual(result.get("path"), ["triage", "spec_check", "implement", "verify", "publish", "review", "merge", "done"])
 
     def test_answer_resume_is_idempotent_after_environment_halt(self):
         preflight = "test -f ready"
@@ -1760,13 +1784,14 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(repeated.get("stop"), "verified")
         self.assertEqual(repeated["plan"].human_qa, expected_qa)
 
-    def test_non_implement_slice_routes_skip_preflight(self):
+    def test_non_implement_routes_skip_preflight(self):
         for issue, replies, stop in (
             (8, [{"triage": "question"}, {"research": "answer"}], "answered"),
             (9, [{"triage": "spec"}, {"spec": "not ready", "spec_gate": "needs_human",
                                        "questions": [{"question": "Which items?", "why_code_unanswered": "No policy in code.", "checked_paths": []}]}], "needs_human"),
         ):
             with self.subTest(stop=stop):
+                self.github = FakeGitHub(["factory"])
                 result = self.walk(replies, issue=issue, preflight="touch probed; exit 9")
                 self.assertEqual(result.get("stop"), stop)
                 self.assertFalse((self.cwd / "probed").exists())
@@ -1800,8 +1825,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}], preflight="exit 9")
         self.assertEqual(result.get("stop"), "env_unavailable")
-        self.assertEqual(result.get("path"), ["triage", "prepare", "done"])
-        self.assertEqual(self.calls, ["claude"])
+        self.assertEqual(result.get("path"), ["triage", "spec_check", "prepare", "done"])
+        self.assertEqual(self.calls, ["claude", "codex"])
 
     def test_parent_stops_sliced_without_running_preflight(self):
         self.github = FakeGitHub(["factory"])
@@ -1834,14 +1859,14 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(result["checks"].verify, "")
         self.assertIn("test -f ready", result.get("halt_detail", ""))
         self.assertIn("exited with 1", result.get("halt_detail", ""))
-        self.assertEqual(result.get("path"), ["triage", "implement", "verify", "done"])
+        self.assertEqual(result.get("path"), ["triage", "spec_check", "implement", "verify", "done"])
 
         (self.cwd / "ready").touch()
         resumed = self.walk([APPROVE])
         self.assertEqual(resumed.get("stop"), "verified")
         self.assertEqual(resumed["checks"].check_exit_code, 0)
         self.assertEqual(len(resumed["review"].review_findings), 1)
-        self.assertEqual(self.calls, ["claude", "codex", "claude"])
+        self.assertEqual(self.calls, ["claude", "codex", "codex", "claude"])
 
     def test_failed_check_consumes_round_with_healthy_or_unspecified_environment(self):
         for issue, preflight in enumerate(("", "echo probed >> preflight.log"), start=8):
@@ -1896,7 +1921,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(resumed["stop"], "dirty_worktree")
         self.assertIn("Unowned edits", resumed["halt_detail"])
         self.assertFalse((self.cwd / "preflight_ran").exists())
-        self.assertEqual([a["stage"] for a in resumed["attempts"]], ["triage"])
+        self.assertEqual([a["stage"] for a in resumed["attempts"]], ["triage", "spec_check", "spec_check"])
 
     def test_env_unavailable_resumes_before_implement(self):
         with patch("foreman.delivery.EnvironmentProbe.error", new_callable=unittest.mock.PropertyMock,
@@ -1908,6 +1933,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
         def interrupted_run(node, model, state, instruction):
+            if node == "spec_check":
+                return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
             if node == "triage":
                 return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None}, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1))
             self.assertEqual(node, "implement")
@@ -1936,7 +1963,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     check="touch ran", snapshots=(snapshot,),
                 )
                 self.assertEqual(result["stop"], "dirty_worktree")
-                self.assertEqual(result["path"], ["triage", "implement", "verify", "done"])
+                self.assertEqual(result["path"], ["triage", "spec_check", "implement", "verify", "done"])
                 self.assertFalse((self.cwd / "ran").exists())
                 self.assertIsNone(result["checks"].check_exit_code)
                 self.assertEqual(self.github.merge_calls, [])
@@ -2061,12 +2088,12 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         create_branch = workspace.create_branch
         calls = 0
 
-        def prepare_branch(branch, base):
+        def prepare_branch(branch, base, *, pinned=""):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise WorktreeInspectionFailed("branch unavailable")
-            return create_branch(branch, base)
+            return create_branch(branch, base, pinned=pinned)
 
         changes = {**APPROVE, "findings": [FINDING]}
         with patch.object(workspace, "create_branch", side_effect=prepare_branch):
@@ -2149,7 +2176,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         replies = iter([{"triage": "implement"}, {"implementation": "built"}, APPROVE])
 
         def run_worker(args, cwd, env=None):
-            reply = next(replies)
+            reply = checker_reply(args) or next(replies)
             if "implementation" in reply:
                 (repo / "items.txt").write_text("synthetic edits")
             if reply is APPROVE:
@@ -2160,7 +2187,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             return run_live_delivery(
                 repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
                 dispatcher=CliWorker(repo, run_worker),
-                run=LiveRun(self.github, LiveWorkspace(repo)),
+                run=LiveRun(self.github, FixtureWorkspace(repo)),
             )
 
         with patch.object(LiveWorkspace, "push"):
@@ -2259,7 +2286,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         ):
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
-                worker_runner=lambda args, cwd, env: fake.reply(args, next(replies)),
+                worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 75)
@@ -2269,7 +2296,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "implement", "slice": EMPTY_SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "implement", "verify", "publish", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "implement", "verify", "publish", "review", "merge", "done"])
         self.assertEqual(result["merge"].status, "armed")
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
@@ -2306,7 +2333,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
                 code = main(
                     ["run", "delivery", "--repo", repo, "--issue", "8", "--check", "exit 0"],
-                    worker_runner=lambda args, cwd, env=None: live_run.workspace.reply(args, next(replies)),
+                    worker_runner=lambda args, cwd, env=None: live_run.workspace.reply(args, checker_reply(args) or next(replies)),
                     checkpoint=self.checkpoint, live_run=live_run,
                 )
             self.assertEqual(code, 75 if self.github.hold else 0)
@@ -2321,7 +2348,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         armed = invoke()
         self.assertIn("merge armed\ndone verified", transcript(armed))
         terminal = invoke()
-        self.assertIn("restored raw tokens 47606", terminal)
+        self.assertIn("restored raw tokens 75614", terminal)
         self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
         self.assertEqual(self.github.hold_reads, [repo, repo, repo])
         self.assertEqual(self.github.merge_calls, [(repo, 8, BRANCH, HEAD)])
@@ -2333,7 +2360,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
-                worker_runner=lambda args, cwd, env=None: workspace.reply(args, next(replies)),
+                worker_runner=lambda args, cwd, env=None: workspace.reply(args, checker_reply(args) or next(replies)),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace),
             )
         self.assertEqual(code, 75)
@@ -2347,7 +2374,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 from foreman.cli import main
-from foreman.config import PstackPin, load_config
+from foreman.config import ModelSpec, PstackPin, load_config
 from foreman.delivery import LiveRun
 from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, worker_reply
 from tests.skill_fixture import checker_reply
@@ -2389,7 +2416,9 @@ def worker(args, cwd, env):
         result = type(result)(args, result.returncode, json.dumps(envelope), result.stderr)
     return result
 
-with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=PstackPin.model_validate_json(pin))):
+config = replace(load_config(), pstack=PstackPin.model_validate_json(pin))
+config.nodes["spec"] = replace(config.nodes["spec"], models=(ModelSpec.parse("claude-opus-5-5-high"),))
+with patch("foreman.runner.load_config", return_value=config):
     sys.exit(main(sys.argv[4:], worker_runner=worker, checkpoint=Path(checkpoint),
                   live_run=LiveRun(FakeGitHub(["factory"]), FakeWorkspace(Path.cwd()))))
 '''
@@ -2402,13 +2431,17 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 (root / "items.py").write_text("ITEMS = []\n")
                 checkpoint = root / "run.sqlite"
 
+                detail = ""
                 def invoke(*flags, expected):
+                    nonlocal detail
+                    answer = flags[1] if flags[:1] == ("--answer",) else ""
                     process = subprocess.run(
                         [sys.executable, "-c", bootstrap + script, str(checkpoint), self.pin.model_dump_json(), mode,
                          "run", "delivery", "--repo", "a/b", "--issue", "8", "--check", "exit 0", *flags],
-                        cwd=root, text=True, capture_output=True,
+                        cwd=root, text=True, capture_output=True, env=planning_answer_env(detail, answer),
                     )
                     self.assertEqual(process.returncode, expected, process.stderr + process.stdout)
+                    detail = process.stdout
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                         saver.serde = checkpoint_serializer()
                         stored = saver.get({"configurable": {"thread_id": "a/b#8"}})
@@ -2423,21 +2456,22 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertNotIn("\ntriage ", current)
                 self.assertEqual(sum(line.startswith("spec ") for line in current.splitlines()),
                                  0 if case in {"cap", "unknown"} else 1)
-                self.assertEqual(len(attempts), 3)
+                count = 4 if case == "complete" else 3
+                self.assertEqual(len(attempts), count)
                 self.assertEqual(attempts[:2], initial)
                 partial = case == "unknown"
-                self.assertIn(f"raw tokens {230 if partial else 345} (known subtotal)", current)
-                self.assertIn(f"work tokens used / work cap: {30 if partial else 45} / {cap}; "
+                self.assertIn(f"raw tokens {230 if partial else 115 * count} (known subtotal)", current)
+                self.assertIn(f"work tokens used / work cap: {30 if partial else 15 * count} / {cap}; "
                               f"{'partial' if partial else 'complete'}; unknown attempts {int(partial)}", current)
-                for index, stage in enumerate(("triage", "spec", "spec"), 1):
+                for index, stage in enumerate(("triage", "spec", "spec", "spec_check")[:count], 1):
                     lines = [line for line in current.splitlines() if line.startswith(f"attempt {index} ")]
                     self.assertEqual(len(lines), 1)
                     self.assertIn(f" {stage} ", lines[0])
                     self.assertIn("work=unknown" if partial and index == 3 else
                                   "input=10 output=3 cache_read=100 cache_creation=2; work=15", lines[0])
                 for bucket, total in (("input", 10), ("output", 3), ("cache_read", 100), ("cache_creation", 2)):
-                    available = 2 if partial else 3
-                    self.assertIn(f"{bucket} tokens {total * available}; available {available}/3", current)
+                    available = 2 if partial else count
+                    self.assertIn(f"{bucket} tokens {total * available}; available {available}/{count}", current)
                 if case == "cap":
                     self.assertIn("Run used 45 work tokens; cap is 45", current)
                     self.assertIn("Measured work overshoot: 0.", current)
@@ -2450,7 +2484,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 terminal, reopened = invoke(expected=code)
                 self.assertEqual(reopened, attempts)
                 self.assertEqual((root / "calls.log").read_text(), calls)
-                self.assertEqual(calls.splitlines(), ["TriageOutput", "SpecOutput", "SpecOutput"])
+                self.assertEqual(calls.splitlines(), ["TriageOutput", "SpecOutput", "SpecOutput"] + (["SpecCheckOutput"] if count == 4 else []))
                 self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
                 for line in current.splitlines():
                     if line.startswith(("raw tokens", "work tokens", "attempt ", "input tokens", "output tokens",
@@ -2503,16 +2537,16 @@ if case == "split" and not checkpoint.exists():
         graph = compile_delivery(dispatch, config, run=live, checkpointer=saver)
         graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {
             "schema_version": SCHEMA_VERSION, "pstack_pin": config.pstack.model_dump(),
-            "run": RunState(repo="a/b", issue=8, workspace=str(root), token_cap=1000000),
+            "run": RunState(repo="a/b", issue=8, workspace=str(root), base_branch="main", base_sha=workspace.inspect().head, token_cap=1000000),
             "checks": ChecksState(check="exit 0"), "review": ReviewState(),
             "plan": PlanState(triage="spec", issue_kind="parent", spec="PRE-SPLIT"),
             "pr_size": {"head": workspace.inspect().head, "merge_base": "a" * 40, "lines": 401},
             "path": ["triage"],
         }, as_node="triage_call")
-with patch("foreman.runner.load_config", return_value=config):
+with patch("foreman.runner.load_config", return_value=config), patch.object(LiveWorkspace, "validate_origin"):
     result = run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint,
     dispatcher=dispatch, run=live, answer=answer or None)
-print(result["stop"])
+print(result["stop"], result.get("halt_detail", ""))
 '''
         bootstrap = f"import sys; sys.path[:0] = {[str(Path(__file__).resolve().parents[1]), str(Path(__file__).parent.resolve())]!r}\n"
         for case in ("normal", "triage", "triage-spec", "twice", "split"):
@@ -2522,6 +2556,7 @@ print(result["stop"])
                 def git(*args):
                     return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
                 git("init", "-q", "-b", "main")
+                git("remote", "add", "origin", ".")
                 (root / ".gitignore").write_text("*\n")
                 (root / "items.py").write_text("ITEMS = []\n")
                 git("add", "-f", ".gitignore", "items.py")
@@ -2529,10 +2564,14 @@ print(result["stop"])
                     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                         "-c", "commit.gpgsign=false", "commit", "-qm", "Fixture")
                 commit()
+                detail = ""
                 def invoke(answer=""):
+                    nonlocal detail
                     process = subprocess.run([sys.executable, "-c", bootstrap + script, case,
-                        self.pin.model_dump_json(), answer], cwd=root, capture_output=True, text=True)
+                        self.pin.model_dump_json(), answer], cwd=root, capture_output=True, text=True,
+                        env=planning_answer_env(detail, answer))
                     self.assertEqual(process.returncode, 0, process.stderr + process.stdout)
+                    detail = process.stdout
                     return [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
                 invoke()
                 calls = invoke("Open items")
@@ -2567,7 +2606,7 @@ from foreman.delivery import LiveRun
 from dataclasses import replace
 from unittest.mock import patch
 from foreman.config import PstackPin, load_config
-from test_runner import APPROVE, HEAD, SYNTHETIC_QUESTION_TOKEN, FakeGitHub, FakeWorkspace, worker_reply
+from test_runner import APPROVE, HEAD, SYNTHETIC_QUESTION_TOKEN, FakeGitHub, FakeWorkspace, worker_reply, EMPTY_SLICE, slice_body
 
 def run(args, cwd, env):
     prompt = args[-1]
@@ -2580,7 +2619,7 @@ def run(args, cwd, env):
         log.write(schema["title"] + "\\n")
     if schema["title"] == "TriageOutput":
         assert not state.get("human_answers")
-        assert state["run"]["request"] == "List items"
+        assert state["run"]["request"].endswith("List items")
         return worker_reply(args, {"triage": "spec"})
     if schema["title"] == "SpecOutput":
         if not state.get("human_answers"):
@@ -2590,10 +2629,10 @@ def run(args, cwd, env):
                     "why_code_unanswered": "No policy in code.", "checked_paths": []}],
             })
         assert state["human_answers"] == ["Only open items"]
-        assert state["run"]["request"] == "List items"
-        assert state["human_question"].startswith("Which items? [redacted:GitHub Token]")
-        assert "Why code cannot answer:" in state["human_question"]
-        return worker_reply(args, {"spec": "List open items", "spec_gate": "ready"})
+        assert state["run"]["request"].endswith("List items")
+        assert state["plan"]["human_qa"][-1]["question"].startswith("Which items? [redacted:GitHub Token]")
+        assert "Why code cannot answer:" in state["plan"]["human_qa"][-1]["question"]
+        return worker_reply(args, {"spec": "List open items", "spec_gate": "ready", "slices": [EMPTY_SLICE]})
     if schema["title"] == "ImplementOutput":
         return workspace.reply(args, {"implementation": "built"})
     return worker_reply(args, APPROVE)
@@ -2605,22 +2644,28 @@ class Forge(FakeGitHub):
         return super().arm_auto_merge(*args)
 
 workspace = FakeWorkspace(Path.cwd())
+forge = Forge()
+forge.body = slice_body({**EMPTY_SLICE, "uses": [{"name": "items", "exists": True, "path": "missing.py"}]})
 pin = PstackPin.model_validate_json(sys.argv[2])
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
     sys.exit(main(
         sys.argv[3:], worker_runner=run, checkpoint=Path(sys.argv[1]),
-        live_run=LiveRun(Forge(), workspace),
+        live_run=LiveRun(forge, workspace),
     ))
 """
+        detail = ""
         def invoke(*flags, pin=None, expected=0):
+            nonlocal detail
+            answer = flags[1] if flags[:1] == ("--answer",) else ""
             bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
                          f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
             process = subprocess.run(
                 [sys.executable, "-c", bootstrap + script, str(self.checkpoint), (pin or self.pin).model_dump_json(), "run", "delivery",
                  "--repo", "Example/Engine", "--issue", "8", "--check", "echo checked >> check.log", *flags],
-                cwd=self.cwd, text=True, capture_output=True, check=False,
+                cwd=self.cwd, text=True, capture_output=True, check=False, env=planning_answer_env(detail, answer),
             )
             self.assertEqual(process.returncode, expected, process.stderr)
+            detail = process.stdout
             return process.stdout
 
         first = invoke("--request", "List items", expected=3)
@@ -2647,13 +2692,13 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertIn("restored check exit 0", terminal)
         self.assertIn("this invocation: no nodes executed", terminal)
         self.assertEqual((self.cwd / "workers.log").read_text().splitlines(),
-                         ["TriageOutput", "SpecOutput", "SpecOutput", "ImplementOutput", "ReviewOutput"])
+                         ["TriageOutput", "SpecOutput", "SpecOutput", "SpecCheckOutput", "ImplementOutput", "ReviewOutput"])
         self.assertEqual((self.cwd / "merges.log").read_text(), "merge\n")
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
             stored = saver.get({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(stored["channel_values"]["path"],
-                         ["triage", "spec", "spec", "implement", "verify", "publish", "review", "merge", "done"])
+                         ["triage", "spec", "spec", "spec_check", "implement", "verify", "publish", "review", "merge", "done"])
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
 
     def test_restored_snapshot_matches_result_for_merge_and_interrupts(self):
@@ -2710,6 +2755,8 @@ def worker(args, cwd, env):
         schema = json.loads(args[args.index("--json-schema") + 1])
     stage = schema["title"]
     record(stage)
+    if stage == "SpecCheckOutput":
+        return worker_reply(args, {})
     if stage == "TriageOutput":
         return worker_reply(args, {"triage": "implement"})
     if stage == "ImplementOutput":
@@ -2761,26 +2808,26 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertIn("restored review ", restored)
                     self.assertEqual(transcript(current), "merge not armed\ndone merge_held\nFOREMAN_MERGE_HOLD is set: Maintenance\n")
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
-                                     ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review"])
+                                     ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review"])
                     self.assertEqual((root / "check.log").read_text(), "checked\n")
                 else:
                     self.assertIn("paused quota_exhausted", first)
                     self.assertFalse((root / "check.log").exists())
                     attempts = sum(model.family != "grok" for model in load_config().nodes["implement"].models)
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
-                                     ["TriageOutput"] + ["ImplementOutput"] * attempts)
+                                     ["TriageOutput", "SpecCheckOutput"] + ["ImplementOutput"] * attempts)
 
                 resumed = invoke("ready", 0)
                 restored, current = resumed.split("this invocation:\n")
                 self.assertNotIn("\ntriage ", current)
                 if scenario == "held":
                     self.assertEqual(transcript(current), "merge armed\ndone verified\n")
-                    expected_workers = ["TriageOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"]
+                    expected_workers = ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"]
                 else:
                     self.assertRegex(transcript(restored.replace("restored ", "")), r"implement\npaused quota_exhausted")
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
-                    self.assertEqual(saved_path(), ["triage", "implement", "implement", "verify", "publish", "review", "merge", "done"])
-                    expected_workers = (["TriageOutput"] + ["ImplementOutput"] * attempts
+                    self.assertEqual(saved_path(), ["triage", "spec_check", "implement", "implement", "verify", "publish", "review", "merge", "done"])
+                    expected_workers = (["TriageOutput", "SpecCheckOutput"] + ["ImplementOutput"] * attempts
                                         + ["ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"])
                 terminal = invoke("ready", 0)
                 self.assertIn("restored merge armed", terminal)
@@ -2791,10 +2838,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual((root / "check.log").read_text(), "checked\n")
 
 class HaltExitCodeTest(unittest.TestCase):
-    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", preflight="", hold=None):
+    def live(self, replies=(), *, snapshots=(CLEAN_WORKTREE,), body=None, check="exit 0", preflight="", hold=None, labels=None):
         directory = self.enterContext(TemporaryDirectory())
         root = Path(directory)
-        forge = FakeGitHub()
+        forge = FakeGitHub(labels)
         forge.hold = hold
         if body is not None:
             forge.body = body
@@ -2804,7 +2851,7 @@ class HaltExitCodeTest(unittest.TestCase):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", check, "--preflight", preflight],
                 checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace, skills=fixture_skills),
-                worker_runner=(lambda args, cwd, env: workspace.reply(args, next(outputs))),
+                worker_runner=(lambda args, cwd, env: workspace.reply(args, checker_reply(args) or next(outputs))),
             )
         return code, output.getvalue()
 
@@ -2873,7 +2920,7 @@ class HaltExitCodeTest(unittest.TestCase):
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
 
     def test_answered_is_success(self):
-        code, output = self.live([{"triage": "question"}, {"research": "The answer."}])
+        code, output = self.live([{"triage": "question"}, {"research": "The answer."}], labels=["factory"])
         self.assertEqual(code, 0, output)
         self.assertIn("done answered\n", output)
 

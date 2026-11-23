@@ -3,11 +3,12 @@
 from decimal import Decimal
 from uuid import uuid4
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
 from typing import Literal, Protocol
+import os
 import re
 import textwrap
 
@@ -30,9 +31,10 @@ from foreman.github import (
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.redaction import redact
 from foreman.stage_output import (
-    PlanState, CandidateSlice, SpecAuthor, SpecCandidate, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, SliceRecord, StageOutput, PULL_REQUEST_LINES, StoredSlice, parse_output,
+    PlanState, CandidateSlice, SpecAuthor, SpecCandidate, SpecTarget, SpecCheckOutput, SpecRejection, WorkKind, PendingDispatch, DispatchPlan, Attempt, AttemptRecord, AttemptUsage, Contract, SliceRecord, StageOutput, PULL_REQUEST_LINES, StoredSlice, load_stored_slice, parse_output, spec_digest,
 )
-from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, oversized_pr
+from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, clean_slices, oversized_pr
+from foreman.spec_check import SpecHistory, accept as accept_spec_check
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS, halted
@@ -44,15 +46,21 @@ from foreman.workspace import WorkState, ImplementationRejected, WorkspaceError,
 GRAPH_NAME = "delivery"
 DEFAULT_TOKEN_CAP = 20_000_000
 PACKAGE = Path(__file__).parent
-MODEL_STAGES = tuple(name for name, stage in STAGES.items() if stage.kind == "model")
+MODEL_STAGES = tuple(name for name, stage in STAGES.items() if stage.kind == "model" and name != "spec_check")
 REQUIRED_NODES = (*MODEL_STAGES, "verify")
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 
 
 class HumanPrompt(Contract):
-    stage: Literal["triage", "spec", "pr_size", "review"]
+    stage: Literal["triage", "spec", "spec_check", "pr_size", "review"]
     question: str
+    revision: str | None = None
+
+    @property
+    def answer_marker(self) -> str:
+        assert self.revision is not None
+        return "foreman answer " + "-".join(self.revision[i:i + 8] for i in range(0, len(self.revision), 8))
 
 
 class QuotaPause(Contract):
@@ -78,6 +86,39 @@ class LiveRun:
     check_log: CheckLog | None = None
     environment: EnvironmentProbe | None = None
     skills: SkillSource = export_skills
+    human_login: str = field(default_factory=lambda: os.environ.get("FOREMAN_HUMAN_LOGIN", ""))
+
+
+def spec_target(run: RunState) -> SpecTarget:
+    assert run.issue is not None
+    return {"repo": run.repo.lower(), "issue": run.issue, "base": run.base_sha}
+
+
+def spec_cleared(plan: PlanState) -> bool:
+    return plan.spec_candidate is not None and SpecHistory.model_validate(plan.spec_history).clears(plan.spec_candidate["revision"])
+
+
+def spec_effect(state: DeliveryState, run: LiveRun) -> DeliveryUpdate:
+    planning = state["plan"]
+    raw = planning.spec_candidate
+    target = state["run"]
+    if raw is None or raw.get("target") != spec_target(target) or not spec_cleared(planning):
+        return halted(Halt.invalid_output, "The saved checker verdict does not clear the current repository-bound plan.", None)
+    if run.human_login and target.issue is not None:
+        revision = raw["revision"]
+        for ruling in human_comments(run, target):
+            if ruling == f"foreman stop {revision}":
+                return {"stop": "cancelled"}
+            if ruling in {f"foreman approve {revision}", f"we're good {revision}"}:
+                planning = planning.model_copy(update={"human_approval": revision})
+    return {"plan": planning}
+
+
+def human_comments(run: LiveRun, target: RunState) -> list[str]:
+    if not run.human_login or target.issue is None:
+        return []
+    return [(comment.body or "").strip() for comment in run.forge.issue_comment_records(target.repo, target.issue)
+            if comment.user is not None and comment.user.login.casefold() == run.human_login.casefold()]
 
 
 def unknown_usage(stage: str, model: str | None) -> str:
@@ -113,7 +154,8 @@ def _active_slice(state: DeliveryState) -> SliceRecord:
 
 
 def _last_stage(state: DeliveryState) -> str:
-    return state["path"][-1]
+    stage = state["path"][-1]
+    return "spec" if stage == "spec_check" else stage
 
 
 def dollar_detail(run_state: RunState, attempts: list[AttemptRecord]) -> str:
@@ -202,13 +244,15 @@ def review_submission(output: ReviewRound, scope: ReviewScope, question: str) ->
 
 
 def stop_reason(state: DeliveryState) -> Halt | Literal[
-    "sliced", "pr_split_required", "needs_human", "answered", "verified", "stopped"
+    "sliced", "pr_split_required", "needs_human", "answered", "verified", "stopped", "cancelled"
 ]:
     review_state = state["review"]
     planning = state["plan"]
     checks = state["checks"]
     if halt := state.get("halt"):
         return halt
+    if state.get("stop") == "cancelled":
+        return "cancelled"
     if oversized_pr(state):
         split = planning.pr_split
         gate = split["gate"] if split else planning.spec_gate
@@ -218,10 +262,9 @@ def stop_reason(state: DeliveryState) -> Halt | Literal[
             return "needs_human"
     if planning.triage == "needs_human" or planning.spec_gate == "needs_human":
         return "needs_human"
-    if planning.spec_gate == "ready" and state.get("path", [])[-1:] == ["spec"]:
-        if planning.issue_kind == "parent":
-            return "sliced"
-    if planning.triage == "question":
+    if state.get("path", [])[-1:] == ["spec_check"] and spec_cleared(planning):
+        return "sliced"
+    if state.get("path", [])[-1:] == ["research"]:
         return "answered"
     if checks.verify == "fail":
         return Halt.verify_cap
@@ -254,7 +297,7 @@ def compile_delivery(
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     methods_root = run.skills(config.pstack, scratch) if scratch is not None else None
-    prompts = {name: stage_text(name) for name in MODEL_STAGES}
+    prompts = {name: stage_text(name) for name in (*MODEL_STAGES, "spec_check")}
     plan_workspace = run.workspace
 
     def implementation_guard(state: DeliveryState, active: LiveRun, stage: str) -> DeliveryUpdate | None:
@@ -278,46 +321,70 @@ def compile_delivery(
             return halted(Halt.env_unavailable, detail, stage)
         return None
 
-    def bind(name: str, *, guard: Callable[[DeliveryState, LiveRun, str], DeliveryUpdate | None] | None = None) -> DeliveryNode:
-        def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
-            review_state = state["review"]
-            admission = dollar_admission_for(state["run"], state.get("attempts", []))
-            if stop := admission_stop(state, state.get("attempts", []), name, admission, work_tokens(state.get("attempts", []))):
+    def planning_guard(state: DeliveryState, stage: str) -> DeliveryUpdate:
+        try:
+            return spec_effect(state, run)
+        except ForgeError as exc:
+            return halted(Halt.git_failed, str(exc), stage)
+
+    def reject_spec(state: DeliveryState, revision: str, detail: str, reason: SpecRejection | None = None) -> DeliveryUpdate:
+        plan = state["plan"]
+        repeated = revision in plan.rejected_revisions
+        rejected = plan.rejected_revisions if repeated else [*plan.rejected_revisions, revision]
+        planning = plan.model_copy(update={"rejected_revisions": rejected, "spec_rejection": reason})
+        update: DeliveryUpdate = {"plan": planning, "human_question": ""}
+        if planning.spec_failures >= config.max_review_rounds:
+            update.update(halted(Halt.spec_cap, detail, "spec"))
+        elif repeated:
+            update.update(halted(Halt.invalid_output, f"Revision repeats a rejected plan. {detail}", "spec"))
+        return update
+
+    def reserve(name: str, state: DeliveryState, runtime: Runtime[LiveRun], guard: Callable[[DeliveryState, LiveRun, str], DeliveryUpdate | None] | None = None) -> DeliveryUpdate:
+        review_state = state["review"]
+        admission = dollar_admission_for(state["run"], state.get("attempts", []))
+        if stop := admission_stop(state, state.get("attempts", []), name, admission, work_tokens(state.get("attempts", []))):
+            return stop
+        current_run = runtime.context or run
+        if guard is not None:
+            if stop := guard(state, current_run, name):
                 return stop
-            current_run = runtime.context or run
-            if guard is not None:
-                if stop := guard(state, current_run, name):
-                    return stop
-            try:
-                models = STAGES[name].models(name, state, config)
-            except ModelDependencyMissing as exc:
-                return halted(Halt.model_dependency_missing, str(exc), name)
-            except ConfigError as exc:
-                return halted(Halt.model_family_exhausted, str(exc), name)
-            instruction = prompts[name]
-            methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
-            if methods_text:
-                instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
-            try:
-                suffix, target, scope = STAGES[name].prepare(state, run.workspace, run.forge)
-            except InvalidOutput as exc:
-                return halted(Halt.invalid_output, str(exc), name)
-            except (ForgeError, WorktreeInspectionFailed) as exc:
-                return halted(Halt.review_unavailable, str(exc), name)
-            instruction += suffix
-            return {"dispatch_plan": DispatchPlan(
-                models=[model.name for model in models], instruction=instruction, methods=methods, read_roots=read_roots,
-                budget_usd=dispatch_budget(admission),
-                target=target,
-                scope=scope.record() if scope else None,
-            ).record(), "pending_dispatch": PendingDispatch(stage=name, index=0, quota_model=None).record(), "review": review_state.model_copy(update={"review_run_id": review_state.review_run_id or uuid4().hex})}
+        try:
+            models = STAGES[name].models(name, state, config)
+        except ModelDependencyMissing as exc:
+            return halted(Halt.model_dependency_missing, str(exc), name)
+        except ConfigError as exc:
+            return halted(Halt.model_family_exhausted, str(exc), name)
+        instruction = prompts[name]
+        methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
+        if methods_text:
+            instruction = f"{instruction}\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
+        try:
+            suffix, target, scope = STAGES[name].prepare(state, run.workspace, run.forge)
+        except InvalidOutput as exc:
+            return halted(Halt.invalid_output, str(exc), name)
+        except (ForgeError, WorktreeInspectionFailed) as exc:
+            return halted(Halt.review_unavailable, str(exc), name)
+        instruction += suffix
+        return {"dispatch_plan": DispatchPlan(
+            models=[model.name for model in models], instruction=instruction, methods=methods, read_roots=read_roots,
+            budget_usd=dispatch_budget(admission),
+            target=target,
+            scope=scope.record() if scope else None,
+        ).record(), "pending_dispatch": PendingDispatch(stage=name, index=0, quota_model=None).record(),
+            "review": review_state.model_copy(update={"review_run_id": review_state.review_run_id or uuid4().hex})}
+
+    def bind(name: str, *, prepare_dispatch: DeliveryNode | None = None,
+             guard: Callable[[DeliveryState, LiveRun, str], DeliveryUpdate | None] | None = None) -> DeliveryNode:
+        def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+            return prepare_dispatch(state, runtime) if prepare_dispatch is not None else reserve(name, state, runtime, guard)
         return node
 
-    def call(name: str) -> DeliveryNode:
+    def call() -> DeliveryNode:
         def node(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
             assert "pending_dispatch" in state and "dispatch_plan" in state
             pending, plan = state["pending_dispatch"], state["dispatch_plan"]
             assert pending is not None
+            name = pending["stage"]
             models, methods = plan["models"], plan["methods"]
             try:
                 worker_state, citation_context = STAGES[name].project(state, run.workspace)
@@ -373,20 +440,95 @@ def compile_delivery(
                 output = parse_output(contract, outcome.output, context=citation_context)
                 update = stage_update(name, output, state, model, workspace=plan_workspace,
                                       accepted_model=accepted_model, config=config, attempt=attempts[0])
+                if isinstance(output, SpecCheckOutput):
+                    planning = state["plan"]
+                    candidate = SpecCandidate.from_record(planning.spec_candidate)
+                    if not output.human_question:
+                        past = SpecHistory.model_validate(planning.spec_history)
+                        checked = accept_spec_check(past, output, candidate)
+                        planning = planning.model_copy(update={"spec_history": {
+                            "rounds": checked.history.rounds, "settled": checked.history.settled,
+                        }})
+                        if not checked.approval:
+                            detail = "\n".join(f.summary for f in checked.history.accounting().unresolved())
+                            update.update(reject_spec({**state, "plan": planning}, candidate.revision, detail))
+                        else:
+                            update.update(plan=planning, human_question="")
                 update.update(attempts=update.get("attempts", attempts), pending_dispatch=None)
             except InvalidSlicePlan as exc:
-                planning = state["plan"]
-                rounds = planning.spec_failures + 1
-                rejected: DeliveryUpdate = {**stopped, "plan": planning.model_copy(update={"spec_rejection": exc.reason, "spec_failures": rounds})}
-                if rounds >= config.max_review_rounds:
-                    rejected.update(halted(Halt.spec_cap, str(exc), name))
-                return rejected
+                revision = spec_digest([spec_target(state["run"]), outcome.output])
+                return {**stopped, **reject_spec(state, revision, str(exc), exc.reason)}
             except InvalidOutput as exc:
                 return {**stopped, **halted(Halt.invalid_output, f"{name} output from {model or 'no model'}: {exc}", name)}
+            except WorkspaceError as exc:
+                return {**stopped, **halted(Halt.git_failed, str(exc), name)}
 
             return update
 
         return node
+
+    def prerequisite_seams(item: StoredSlice, target: SpecTarget) -> set[str]:
+        seams: set[str] = set()
+        repo, base = target["repo"], target["base"]
+        if len(item.depends_on) != len(item.blocker_numbers):
+            raise InvalidSlicePlan("dangling_seam", "The filed slice does not match its planned blockers.")
+        for title, number in zip(item.depends_on, item.blocker_numbers):
+            if not run.forge.is_merged(repo, number, contains=lambda commit: plan_workspace.contains_commit(base, commit)):
+                raise InvalidSlicePlan("dangling_seam", f"Blocker #{number} has no merge in the pinned tree.")
+            issue = run.forge.load_issue(repo, number)
+            if issue["repo"].lower() != repo or issue["number"] != number or "slice" not in issue["labels"]:
+                raise InvalidSlicePlan("dangling_seam", f"Blocker #{number} is not a slice in the target repository.")
+            blocker = load_stored_slice(issue["body"])
+            if blocker.title != title or (blocker.repository and blocker.repository.lower() != repo):
+                raise InvalidSlicePlan("dangling_seam", f"Blocker #{number} does not match the planned slice {title}.")
+            seams.update(seam.name for seam in blocker.builds)
+        return seams
+
+    def spec(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+        plan = state["plan"]
+        if plan.spec_candidate is not None and state["path"][-1:] == ["spec_check"] and not spec_cleared(plan):
+            stage = "spec" if plan.spec_candidate["revision"] in plan.rejected_revisions else "spec_check"
+            return reserve(stage, state, runtime)
+        size = oversized_pr(state)
+        supplied = plan.slice is not None and not plan.spec_gate and not size
+        pending = [plan.slice] if supplied and plan.slice is not None else plan.slices
+        if not pending or plan.spec_rejection or (size and plan.pr_split is None) or plan.spec_gate == "needs_human":
+            return reserve("spec", state, runtime)
+        target = spec_target(state["run"])
+        if any((repo := item.get("repository")) and repo.lower() != target["repo"] for item in pending):
+            return halted(Halt.invalid_output, "foreign_repository: slice scope differs from the admitted repository.", "spec")
+        split = plan.pr_split if size else None
+        scope = split["plan"] if split else plan.spec
+        try:
+            items = [parse_output(StoredSlice, item) for item in pending]
+            filed = supplied and plan.issue_kind == "slice"
+            seams = prerequisite_seams(items[0], target) if filed else ()
+            slices = clean_slices(items, plan_workspace, target["base"], prerequisite_seams=seams)
+            if filed:
+                slices = pending
+        except InvalidSlicePlan as exc:
+            revision = spec_digest([target, scope, plan.work_kind, pending])
+            return reject_spec(state, revision, str(exc), exc.reason)
+        except InvalidOutput as exc:
+            return halted(Halt.invalid_output, str(exc), "spec")
+        except (ForgeError, WorkspaceError) as exc:
+            return halted(Halt.git_failed, str(exc), "spec")
+        stage = "triage" if supplied else "spec"
+        author_name = state.get("models_used", {}).get(stage)
+        provenance = pending[0].get("provenance") if supplied else None
+        author = SpecAuthor.model_validate(provenance["author"]) if provenance else SpecAuthor(
+            stage=stage, model=author_name or "github", family=family(author_name) if author_name else "github")
+        kind: WorkKind = plan.work_kind or "feature"
+        candidate = SpecCandidate(slices=[CandidateSlice.model_validate({k: v for k, v in item.items() if k != "provenance"}) for item in slices],
+            spec=scope, work_kind=kind, author=author, target=target)
+        single = plan.slice is not None and len(slices) == 1 and not size
+        planning = candidate.update(plan if single or size else plan.model_copy(update={"slice": None}), single=single)
+        if split:
+            planning = planning.model_copy(update={"spec": plan.spec, "pr_split": {**split, "slices": planning.slices}})
+        planning = planning.model_copy(update={"spec_gate": "ready"})
+        if candidate.revision in plan.rejected_revisions:
+            return reject_spec(state, candidate.revision, "The checker already rejected this scope.")
+        return {**reserve("spec_check", {**state, "plan": planning}, runtime), "plan": planning}
 
     def post_review(state: DeliveryState) -> DeliveryUpdate:
         review_state = state["review"]
@@ -412,6 +554,9 @@ def compile_delivery(
         return {"review": review_state.model_copy(update={"review_receipt": receipt})}
 
     def prepare(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
+        clearance = planning_guard(state, "prepare")
+        if clearance.get("halt") or clearance.get("stop"):
+            return clearance
         if stop := implementation_guard(state, runtime.context or run, "prepare"):
             return stop
         title = redact(str(_active_slice(state)["title"]))
@@ -420,25 +565,30 @@ def compile_delivery(
         run_state = state["run"]
         branch = work.branch or f"{run_state.issue or '<issue>'}-{slug}"
         try:
-            base = work.base or run.forge.default_branch(run_state.repo)
-            run.workspace.create_branch(branch, base)
+            base = run_state.base_branch
+            run.workspace.create_branch(branch, base, pinned=run_state.base_sha)
             if repair_head := work.repair_head:
                 run.workspace.refresh(branch, repair_head)
             ready = run.workspace.inspect()
+            if not work.branch and not repair_head and ready.head != run_state.base_sha:
+                raise WorktreeInspectionFailed("The new build branch must start at the pinned base.")
             checks = state["checks"]
-            return {"work": WorkState(branch=branch, base=base, attempt_head=ready.head),
+            return {**clearance, "work": WorkState(branch=branch, base=base, attempt_head=ready.head),
                     "checks": checks.for_attempt()}
         except (WorkspaceError, ForgeError) as exc:
             return halted(Halt.git_failed, str(exc), "prepare")
 
-    dispatch_implement = call("implement")
+    dispatch_implement = call()
 
     def implement(state: DeliveryState, runtime: Runtime[LiveRun]) -> DeliveryUpdate:
         assert "work" in state and state["work"].branch and state["work"].attempt_head
         assert "pending_dispatch" in state and state["pending_dispatch"] is not None and "dispatch_plan" in state
         update: DeliveryUpdate = {}
         try:
-            update = dispatch_implement(state, runtime)
+            clearance = planning_guard(state, "implement")
+            if clearance.get("halt") or clearance.get("stop"):
+                return {**clearance, "pending_dispatch": None}
+            update = {**clearance, **dispatch_implement(state, runtime)}
             if update.get("pending_dispatch"):
                 return update
             return {**update, "work": state["work"].model_copy(update={"partial_edits": run.workspace.fingerprint() if update.get("halt") == Halt.quota_exhausted else ""})}
@@ -551,12 +701,27 @@ def compile_delivery(
         stage = state["path"][-1]
         split = state["plan"].pr_split if stage == "spec" and oversized_pr(state) else None
         question = (split["question"] if split else state.get("human_question")) or "What should Foreman know to continue?"
-        answer = interrupt(HumanPrompt.model_validate({"stage": stage, "question": question}).model_dump())
-        update: DeliveryUpdate = {"human_answers": [*state.get("human_answers", []), answer]}
         planning = state["plan"]
+        revision = None
+        if stage == "spec":
+            scope = split["plan"] if split else planning.spec
+            revision = spec_digest([stage, spec_target(state["run"]), scope, planning.work_kind,
+                                    planning.slice, planning.slices, question])
+        elif stage == "spec_check":
+            assert planning.spec_candidate is not None
+            revision = spec_digest([stage, planning.spec_candidate["revision"], question])
+        answer = interrupt(HumanPrompt.model_validate({"stage": stage, "question": question, "revision": revision}).model_dump(exclude_none=True))
+        if revision and answer == "cancel":
+            return {"stop": "cancelled"}
+        update: DeliveryUpdate = {"human_answers": [*state.get("human_answers", []), answer]}
+        candidate = planning.spec_candidate
         update["plan"] = planning.model_copy(update={"human_qa": [
-            *planning.human_qa, {"stage": stage, "question": question, "answer": answer},
+            *planning.human_qa, {"stage": stage, "question": question, "answer": answer,
+                                 **({"revision": revision} if revision else {}),
+                                 **({"candidate": candidate["revision"]} if revision and candidate else {})},
         ]})
+        if revision:
+            update["human_question"] = ""
         if stage == "review":
             past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
             update.update(halt=None, halt_detail="", human_question="", review=review_state.model_copy(update={"settled_rulings": [r.model_dump() for r in past.settled] +
@@ -582,7 +747,13 @@ def compile_delivery(
             ),
         ).model_dump()))
         if answer == PullRequestSizeDecision.OVERRIDE:
-            return {"pr_size_override": size}
+            original = _active_slice(state).get("provenance")
+            assert original is not None
+            history = SpecHistory.model_validate(planning.spec_history)
+            checked = next(entry for entry in reversed(history.rounds) if entry.candidate["revision"] == original["revision"])
+            candidate = SpecCandidate.from_record(checked.candidate)
+            restored = candidate.update(planning, single=True).model_copy(update={"pr_split": None})
+            return {"pr_size_override": size, "plan": restored}
         return {}
 
     def size(state: DeliveryState) -> DeliveryUpdate:
@@ -615,26 +786,23 @@ def compile_delivery(
         decision = planning.triage
         if decision == "needs_human":
             return "needs_human"
-        if decision == "question":
-            return "spec" if planning.issue_kind == "parent" else "research"
-        return "prepare" if decision == "implement" else decision or "done"
+        if planning.slice is not None or decision in {"implement", "spec"}:
+            return "spec"
+        return "research" if decision == "question" else "done"
 
     def after_spec(state: DeliveryState) -> str:
         planning = state["plan"]
-        if state.get("halt"):
+        if state.get("halt") or state.get("stop") == "cancelled":
             return "done"
         if planning.spec_rejection:
             return "spec"
-        if oversized_pr(state):
-            split = planning.pr_split
-            if split and split["gate"] == "needs_human":
-                return "needs_human"
-            return "decide_pr_size"
-        if planning.spec_gate == "needs_human":
+        if state.get("human_question"):
             return "needs_human"
-        if planning.issue_kind == "parent":
-            return "done"
-        return "prepare" if planning.spec_gate == "ready" else "done"
+        if not spec_cleared(planning):
+            return "spec"
+        if oversized_pr(state):
+            return "decide_pr_size"
+        return "prepare" if planning.slice is not None else "done"
 
     def after_review(state: DeliveryState) -> str:
         review_state = state["review"]
@@ -778,18 +946,6 @@ def compile_delivery(
                         state.get("human_question") or "What should Foreman know to continue?"}
         update: DeliveryUpdate = {"stop": str(reason), "path": ["done"]}
         split = planning.pr_split
-        if reason == "sliced" and split:
-            if planning.spec_candidate is not None:
-                previous = SpecCandidate.from_record(planning.spec_candidate)
-                model = state.get("models_used", {})["spec"]
-                candidate = SpecCandidate(
-                    slices=[CandidateSlice.model_validate(item) for item in split["slices"]],
-                    spec=previous.spec, work_kind=previous.work_kind,
-                    author=SpecAuthor(stage="spec", model=model, family=family(model)),
-                )
-                update = {**update, "plan": candidate.update(planning, single=planning.slice is not None)}
-            else:
-                update["plan"] = planning.model_copy(update={"slices": split["slices"]})
         if reason == "pr_split_required":
             update["halt_detail"] = split["plan"] if split else planning.spec
         return update
@@ -800,7 +956,7 @@ def compile_delivery(
 
     def after_halt(target: str) -> Callable[[DeliveryState], str]:
         def route(state: DeliveryState) -> str:
-            return "done" if state.get("halt") else target
+            return "done" if state.get("halt") or state.get("stop") == "cancelled" else target
         return route
 
     def after_size(state: DeliveryState) -> str:
@@ -808,20 +964,21 @@ def compile_delivery(
             return "decide_pr_size" if state.get("pr_size_override") else "too big: re-plan"
         return "fits"
 
-    def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str]) -> None:
+    def add_agent_edges(stage: str, route: Callable[[DeliveryState], str], targets: dict[str, str], *, call_only: tuple[str, ...] = ()) -> None:
         def next_stage(state: DeliveryState) -> str:
             return "quota_wait" if state.get("halt") == Halt.quota_exhausted else route(state)
 
         def after_setup(state: DeliveryState) -> str:
             return "call" if state.get("pending_dispatch") and not state.get("halt") else next_stage(state)
         mapped: dict[str, str] = {**targets, "quota_wait": "quota_wait", "call": stage + "_call"}
-        builder.add_conditional_edges(stage, after_setup, mapped)
+        builder.add_conditional_edges(stage, after_setup, {key: value for key, value in mapped.items() if key not in call_only})
         builder.add_conditional_edges(stage + "_call", after_setup, mapped)
 
-    graph_nodes: dict[str, DeliveryNode] = {"implement": bind("implement", guard=implementation_guard), "review": review}
+    graph_nodes: dict[str, DeliveryNode] = {"spec": bind("spec", prepare_dispatch=spec),
+        "implement": bind("implement", guard=implementation_guard), "review": review}
     for name in MODEL_STAGES:
         builder.add_node(name, graph_nodes[name] if name in graph_nodes else bind(name))
-        builder.add_node(name + "_call", implement if name == "implement" else call(name))
+        builder.add_node(name + "_call", implement if name == "implement" else call())
     builder.add_node("verify", verify)
     builder.add_node("prepare", prepare)
     builder.add_node("reconcile", reconcile)
@@ -841,18 +998,19 @@ def compile_delivery(
     add_agent_edges(
         "triage",
         after_triage,
-        {"prepare": "prepare", "spec": "spec", "research": "research",
+        {"spec": "spec", "research": "research",
          "needs_human": "needs_human", "done": "done"},
     )
     add_agent_edges(
         "spec", after_spec,
         {"spec": "spec", "prepare": "prepare", "needs_human": "needs_human", "decide_pr_size": "decide_pr_size", "done": "done"},
+        call_only=("prepare",),
     )
     builder.add_conditional_edges(
         "decide_pr_size", lambda state: "done" if oversized_pr(state) else "size", {"done": "done", "size": "size"},
     )
     builder.add_conditional_edges(
-        "needs_human", lambda state: "done" if state.get("halt") else _last_stage(state),
+        "needs_human", lambda state: "done" if state.get("halt") or state.get("stop") == "cancelled" else _last_stage(state),
         {"triage": "triage", "spec": "spec", "review": "review", "done": "done"},
     )
     builder.add_conditional_edges("prepare", after_halt("implement"), {"done": "done", "implement": "implement"})
@@ -881,7 +1039,7 @@ def compile_delivery(
     builder.add_edge("done", END)
     # Each round visits at most all stages, each with one setup and every configured candidate,
     # plus prepare/commit/publish, prompts, merge and done.
-    steps = sum(1 + max(1, len(config.nodes[name].models)) for name in REQUIRED_NODES) + 12
+    steps = sum(1 + max(1, len(config.nodes[name].models)) for name in (*REQUIRED_NODES, "spec")) + 12
     return builder.compile(checkpointer=checkpointer).with_config({"recursion_limit": steps * (config.max_review_rounds + 1)})
 
 
@@ -903,6 +1061,7 @@ def run_delivery(
     state: DeliveryState = {
         "schema_version": SCHEMA_VERSION,
         "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens,
+                        base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo)),
                         max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
         "checks": ChecksState(check=check),
         "plan": PlanState(issue_kind="parent" if slice is None else "slice"),

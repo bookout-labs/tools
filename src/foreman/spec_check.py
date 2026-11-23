@@ -2,12 +2,12 @@
 
 from typing import Literal, Self
 
-from pydantic import Field, PositiveInt, field_validator, model_validator
+from pydantic import Field, PositiveInt, model_validator
 
 from foreman.dispatch import InvalidOutput
 from foreman.resolution import ResolutionLedger
 from foreman.stage_output import (
-    Contract, ResolutionStatus, SettledRuling, SpecCandidate, SpecCandidateRecord,
+    Contract, FindingResolution, SettledRuling, SpecCandidate, SpecRound as SpecRound,
     SpecCheckOutput, SpecFinding,
 )
 
@@ -15,18 +15,6 @@ from foreman.stage_output import (
 class SpecInterdiff(Contract):
     slices: list[str]
     sections: list[Literal["slice", "spec", "work_kind"]]
-
-
-class SpecRound(Contract):
-    candidate: SpecCandidateRecord
-    findings: list[SpecFinding]
-    notes: list[SpecFinding]
-    resolutions: dict[str, ResolutionStatus]
-
-    @field_validator("candidate")
-    @classmethod
-    def valid_candidate(cls, value: SpecCandidateRecord) -> SpecCandidateRecord:
-        return SpecCandidate.from_record(value).record()
 
 
 class SpecHistory(Contract):
@@ -47,6 +35,12 @@ class SpecHistory(Contract):
         if previous is None or candidate.work_kind != previous.work_kind:
             sections.append("work_kind")
         return SpecInterdiff(slices=changed, sections=sections)
+
+    def clears(self, revision: str) -> bool:
+        for index in range(len(self.rounds) - 1, -1, -1):
+            if self.rounds[index].candidate["revision"] == revision:
+                return not ResolutionLedger(self.rounds[:index + 1], self.settled).unresolved()
+        return False
 
     def accounting(self) -> ResolutionLedger[SpecFinding]:
         return ResolutionLedger(self.rounds, self.settled)
@@ -79,17 +73,24 @@ class AcceptedSpecCheck(Contract):
         return self
 
 
-def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate, *, max_rounds: int) -> AcceptedSpecCheck:
-    if max_rounds < 1 or len(past.rounds) >= max_rounds:
+def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate, *, max_rounds: int | None = None) -> AcceptedSpecCheck:
+    if max_rounds is not None and len(past.rounds) >= max_rounds:
         raise InvalidOutput("spec_check: round cap reached")
     candidate = SpecCandidate.from_record(candidate.record())
     slices = {s.title: s for s in candidate.slices}
     accounting = past.accounting()
-    new = [*output.findings, *output.notes]
+    earlier = {finding.id: finding for finding in accounting.unresolved()}
+    repeated = {finding.id for finding in output.findings if earlier.get(finding.id) == finding}
+    if len({finding.id for finding in output.findings}) != len(output.findings):
+        raise InvalidOutput("findings: IDs must be unique within a round")
+    current = [finding for finding in output.findings if finding.id not in repeated]
+    new = [*current, *output.notes]
     reserved = {note.id for entry in past.rounds for note in entry.notes}
     if reserved.intersection(f.id for f in new):
         raise InvalidOutput("findings: IDs must be unique across rounds, including notes")
-    resolutions = accounting.account(new, output.resolutions)
+    resolutions = accounting.account(new, [
+        FindingResolution(id=key, status="unresolved" if key in repeated else "resolved") for key in earlier
+    ])
     for finding in accounting.unresolved():
         if resolutions[finding.id] == "unresolved" and finding.slice not in slices:
             raise InvalidOutput("resolutions: unresolved finding targets unknown candidate slice")
@@ -98,7 +99,7 @@ def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate,
     for finding in [*output.findings, *output.notes]:
         if finding.slice not in slices:
             raise InvalidOutput("findings.slice: unknown candidate slice")
-    for finding in output.findings:
+    for finding in current:
         if finding.ruling_id is not None:
             notes.append(finding)
             continue
@@ -111,7 +112,7 @@ def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate,
     unsettled = ""
     if recurrence:
         unsettled = f"Recurring spec kind {recurrence[1].kind}: {recurrence[0].id}, {recurrence[1].id}"
-    elif unresolved and len(history.rounds) >= max_rounds:
+    elif unresolved and max_rounds is not None and len(history.rounds) >= max_rounds:
         unsettled = "Unresolved spec findings at round cap: " + ", ".join(f.id for f in unresolved)
     approval = None if unresolved else SpecApproval(revision=candidate.revision, round=len(history.rounds))
     return AcceptedSpecCheck(history=history, approval=approval, unsettled=unsettled)

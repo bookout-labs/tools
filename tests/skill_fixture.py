@@ -11,7 +11,7 @@ from foreman.config import Config, PstackPin, load_config
 from foreman.delivery import stage_text
 from foreman.dry_run import CLEAR
 from foreman.spec_check import SpecHistory, accept
-from foreman.stage_output import PlanState, CandidateSlice, SliceProvenanceRecord, SpecCandidate, SpecAuthor
+from foreman.stage_output import PlanState, CandidateSlice, SliceProvenanceRecord, SpecCandidate, SpecAuthor, SpecTarget
 from foreman.skill_rules import export_skills, git
 
 
@@ -59,12 +59,11 @@ def stored_slice(item: Mapping[str, object]) -> dict[str, object]:
     return {**item, "provenance": PROVENANCE}
 
 
-def approved_spec(item: Mapping[str, object], spec: str = "") -> dict[str, object]:
+def approved_spec(item: Mapping[str, object], target: SpecTarget, spec: str = "") -> PlanState:
     candidate = SpecCandidate(slices=[CandidateSlice.model_validate(item)], spec=spec, work_kind="feature",
-                              author=AUTHOR)
+                              author=AUTHOR, target=target)
     checked = accept(SpecHistory(), CLEAR, candidate, max_rounds=3)
-    return {"plan": candidate.update(PlanState(), single=True), "spec_history": checked.history.model_dump(mode="json"),
-            "spec_approval": checked.approval.model_dump()}
+    return candidate.update(PlanState(spec_gate="ready", spec_history={"rounds": checked.history.rounds}), single=True)
 
 
 def checker_reply(args: Sequence[str]) -> dict[str, object] | None:

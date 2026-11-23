@@ -70,7 +70,7 @@ class PublicationTest(unittest.TestCase):
 
     def subprocess(self, command, **kwargs):
         if command[:3] == ["git", "remote", "get-url"]:
-            return subprocess.CompletedProcess(command, 0, b"https://github.com/Example/Engine.git\n", b"")
+            return subprocess.CompletedProcess(command, 0, "https://github.com/Example/Engine.git\n", "")
         if command[0] != "gh":
             return run_subprocess(command, **kwargs)
         if command[1:3] == ["repo", "view"]:
@@ -84,8 +84,8 @@ class PublicationTest(unittest.TestCase):
                 response = {"number": 101}
             case ["api", "repos/Example/Engine/issues/8/dependencies/blocked_by"]:
                 response = [[]]
-            case ["issue", "view"]:
-                response = {"title": self.slice["title"], "body": slice_body(self.slice), "labels": [{"name": "slice"}]}
+            case ["api", "repos/Example/Engine/issues/8"]:
+                response = {"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}", "title": self.slice["title"], "body": slice_body(self.slice), "labels": [{"name": "slice"}]}
             case ["pr", "create"]:
                 self.assertEqual(command[3:], [
                     "--repo", REPO, "--base", self.base, "--head", self.branch,
@@ -301,11 +301,11 @@ class PublicationTest(unittest.TestCase):
             self.edit()
         original = LiveWorkspace.create_branch
         prepares = []
-        def prepare(workspace, branch, base):
+        def prepare(workspace, branch, base, *, pinned=""):
             if prepares:
                 self.advance_origin()
             prepares.append(branch)
-            return original(workspace, branch, base)
+            return original(workspace, branch, base, pinned=pinned)
         with patch.object(LiveWorkspace, "create_branch", prepare):
             result = self.walk(edit, reviews=["changes", "approve"])
         self.assertEqual(result["stop"], "verified")
@@ -417,7 +417,7 @@ class PublicationTest(unittest.TestCase):
         result = self.walk(lambda: None)
         self.assertEqual(result.get("stop"), "failed")
         self.assertEqual(result.get("halt_detail"), "no changes")
-        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement"])
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check", "implement"])
         self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
         self.assertEqual(self.created, [])
 
@@ -428,7 +428,7 @@ class PublicationTest(unittest.TestCase):
         result = self.walk(commit)
         self.assertEqual(result.get("stop"), "implementation_rejected")
         self.assertIn("nonempty", result.get("halt_detail", ""))
-        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "implement"])
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check", "implement"])
         self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
         self.assertEqual(self.created, [])
 
@@ -619,7 +619,7 @@ class PublicationTest(unittest.TestCase):
                     self.git("add", "--all")
                 resumed = self.walk(self.no_worker)
                 self.assertEqual(resumed["stop"], "verified")
-                self.assertEqual(resumed["attempts"][:2], result["attempts"])
+                self.assertEqual(resumed["attempts"][:len(result["attempts"])], result["attempts"])
 
     def test_ignored_runtime_and_local_files_never_enter_the_commit(self):
         for committed in (False, True):
@@ -900,7 +900,7 @@ class PublicationTest(unittest.TestCase):
         recovered = self.walk(self.no_worker)
         self.assertEqual(recovered["stop"], "verified")
         self.assertEqual(recovered["work"].candidate["disposition"], "edits")
-        self.assertEqual(recovered["attempts"][:2], rejected["attempts"])
+        self.assertEqual(recovered["attempts"][:len(rejected["attempts"])], rejected["attempts"])
 
     def test_reconcile_git_errors_remain_git_failed(self):
         for operation in ("show", "merge-base"):
@@ -995,7 +995,7 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(result["stop"], "env_unavailable")
         self.assertEqual(self.git("branch", "--show-current"), "main")
         self.assertFalse(result.get("work", WorkState()).attempt_head)
-        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage"])
+        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check"])
         self.assertEqual(result["path"][-2:], ["prepare", "done"])
         self.assertIn("unavailable", "".join(logs))
 
@@ -1012,7 +1012,7 @@ class PublicationTest(unittest.TestCase):
                 self.assertEqual(paused["stop"], "quota_exhausted")
                 work, attempts = paused["work"], paused["attempts"]
                 self.assertTrue(work.partial_edits)
-                self.assertEqual([a["outcome"] for a in attempts], ["ran"] + ["quota"] * 4)
+                self.assertEqual([a["outcome"] for a in attempts], ["ran", "ran"] + ["quota"] * 4)
                 self.assertEqual("".join(logs).count("probe"), 1)
                 if change == "cleared":
                     (self.checkout / "items.txt").unlink()
@@ -1069,7 +1069,7 @@ class PublicationTest(unittest.TestCase):
                     return original(command, **kwargs)
                 with patch("foreman.workspace.subprocess.run", side_effect=remote):
                     result = self.walk()
-                self.assertEqual(result.get("stop"), "publish_failed")
+                self.assertEqual(result.get("stop"), "publish_failed" if case == "rejected push" else "git_failed")
                 self.assertIn(detail, result["halt_detail"])
                 self.assertEqual(self.created, [])
                 hook.unlink()

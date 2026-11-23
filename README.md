@@ -103,7 +103,6 @@ graph TD;
 	spec -.-> decide_pr_size;
 	spec -.-> done;
 	spec -.-> needs_human;
-	spec -.-> prepare;
 	spec -.-> quota_wait;
 	spec -. &nbsp;call&nbsp; .-> spec_call;
 	spec_call -.-> decide_pr_size;
@@ -114,14 +113,12 @@ graph TD;
 	spec_call -.-> spec;
 	triage -.-> done;
 	triage -.-> needs_human;
-	triage -.-> prepare;
 	triage -.-> quota_wait;
 	triage -.-> research;
 	triage -.-> spec;
 	triage -. &nbsp;call&nbsp; .-> triage_call;
 	triage_call -.-> done;
 	triage_call -.-> needs_human;
-	triage_call -.-> prepare;
 	triage_call -.-> quota_wait;
 	triage_call -.-> research;
 	triage_call -.-> spec;
@@ -154,7 +151,7 @@ each finding. Foreman posts a COMMENT for each report. Only concrete P0 or P1 co
 security or scope defects send the same PR back for repair. Other findings remain advisory.
 Honor applicable settled rulings.
 
-An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every configured reviewer is out of quota or its CLI is missing, review stops with `reviewer_unavailable` (exit 75). Rerun the same command without `--answer` to select from the current review order again. Other stages retain `cli_missing` for missing CLIs. Missing implementation provenance still stops with `no_reviewer`. The future spec checker uses the same ordering rule against its actual author; its separate checker-unavailability contract is unchanged. The record includes `halt_detail` for these stops.
+An unavailable PR or diff stops the run with `review_unavailable`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. If every configured reviewer is out of quota or its CLI is missing, review stops with `reviewer_unavailable` (exit 75). Rerun the same command without `--answer` to select from the current review order again. Other stages retain `cli_missing` for missing CLIs. Missing implementation provenance still stops with `no_reviewer`. The independent spec checker prefers a different model family from the accepted draft author. The record includes `halt_detail` for these stops.
 
 Foreman creates an `<issue>-<slug>` branch from the repository default branch before the first edit. It sizes the reconciled candidate before committing, then verifies the commit before publishing. An attempt with no file changes stops with `failed`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
@@ -277,15 +274,17 @@ Print the graph:
 foreman diagram delivery
 ```
 
-Start a live run from the root of the engine checkout. Use `--request` to supply the issue text when it is not available in the checkout.
+Start a live run from the root of the engine checkout. Use `--request` to add context alongside the issue text from GitHub.
 
 ```sh
 foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm run check" --request "Add a field"
 ```
 
-Foreman creates the slice branch from the repository default branch, checkpoints worker edits, commits them, pushes to the checkout's `origin`, and opens or reuses the branch's pull request. Both origin fetch and push URLs must identify `--repo`. For HTTPS, configure GitHub CLI authentication with `gh auth setup-git` before running. Git calls cannot prompt for credentials. Run the same issue again to resume after a quota stop, temporary Git failure or publication failure. Keep the run's partial edits in place.
+Foreman pins the repository default branch on admission and creates the slice branch from that commit, checkpoints worker edits, commits them, pushes to the checkout's `origin`, and opens or reuses the branch's pull request. Both origin fetch and push URLs must identify `--repo`. For HTTPS, configure GitHub CLI authentication with `gh auth setup-git` before running. Git calls cannot prompt for credentials. Run the same issue again to resume after a quota stop, temporary Git failure or publication failure. Keep the run's partial edits in place.
 
-The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. If you see a question, add `--answer "…"` to continue with the saved request, check command, and any preflight command.
+The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. For triage, review, and PR size questions, add `--answer "…"` to continue.
+
+Set `FOREMAN_HUMAN_LOGIN` to the GitHub login authorized to answer planning questions or approve or stop a plan. The planning prompt shows the exact `foreman answer <question digest>` marker. Post it on the issue with the answer on the next line, then rerun the command. A plan clears automatically after validation and the independent check. To record optional approval, post `foreman approve <plan digest>` or `we're good <plan digest>` on the issue. To prevent a build or child filing for a plan, post `foreman stop <plan digest>`.
 
 After an upgrade, Foreman refuses checkpoints from older releases, including checkpoints
 without a schema version. The refusal names the stored and expected versions and the

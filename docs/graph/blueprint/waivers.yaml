@@ -1,18 +1,5 @@
 # IDs bind each exact difference to its migration issue. Delete the entry when the difference closes.
 waivers:
-  233:
-    V2-2ccc581c949a2cc8: mismatched [procedure/spec] prompt
-    V2-1758e49cc682d76c: mismatched [procedure/spec_check] inputs
-    V2-4b09321a0dbefdf6: mismatched [procedure/spec_check] kind
-    V2-1993627a3c124fb7: missing [procedure/spec_check] model_dependency
-    V2-173eaf7d98475a38: missing [procedure/spec_check] model_policy
-    V2-0e35eb22ddefe3ab: mismatched [procedure/spec_check] output_fields
-    V2-6764b2ed7841d021: mismatched [procedure/spec_check] prompt
-    V2-2debcdea1bd567b3: mismatched [procedure/spec_check] skills
-    V2-54e8c089244e9959: missing [procedure/spec_check] step
-    V2-8174b6febc90d8c7: missing [procedure/spec_check] worker
-    V2-5132467121aaf85a: extra [top/delivery] edge spec -> prepare
-    V2-02b9d34fa4cf308e: extra [top/delivery] edge triage -> prepare
   234:
     V2-8c03538569dd3058: extra [shared/halts] usage_unknown
     V2-69ddd346c649b1a5: extra [procedure/review] unavailability_halt
@@ -73,7 +60,6 @@ waivers:
     V2-6286d36f34001f6f: extra [top/delivery] edge triage -> triage_call
     V2-72b0b8a31aeb342c: extra [top/delivery] edge triage_call -> done
     V2-74e4e86b04b6b0b3: extra [top/delivery] edge triage_call -> needs_human
-    V2-d22cb509713f1c53: extra [top/delivery] edge triage_call -> prepare
     V2-cbc2b02e08d87d91: extra [top/delivery] edge triage_call -> quota_wait
     V2-21bc802787c3f331: extra [top/delivery] edge triage_call -> research
     V2-ff10dcca2514fb03: extra [top/delivery] edge triage_call -> spec

@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.state import checkpoint_serializer
+from foreman.stage_output import StoredSlice
 from foreman.adapters import Outcome, Usage
 from foreman.cli import main
 from foreman.config import load_config
@@ -24,6 +25,8 @@ from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.worker import CliWorker
 from skill_fixture import fixture_skills
 from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, slice_body, worker_reply
+from foreman.dry_run import CLEAR
+from skill_fixture import checker_reply
 
 
 class LiveWatchTest(unittest.TestCase):
@@ -88,7 +91,7 @@ class LiveWatchTest(unittest.TestCase):
         workspace = FakeWorkspace(self.root)
         workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
         self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
-        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, {"triage": "implement"}))
+        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "implement"}))
         first = self.invoke(dispatcher=dispatcher)
         self.assertEqual(first['halt'], 'git_failed')
         second = self.invoke(dispatcher=dispatcher)
@@ -134,17 +137,19 @@ class LiveWatchTest(unittest.TestCase):
         self.assertEqual(self.forge.mock_calls, [])
 
     def test_blocked_run_reports_once_without_watching(self):
-        self.fake.create_issue('Example/Engine', 'blocker', '', [])
-        self.fake.dependencies[8] = [101]
-        self.fake.body = slice_body({**EMPTY_SLICE, 'depends_on': ['blocker'], 'blocker_numbers': [101]})
+        seam = {'name': 'items', 'exists': False, 'path': None}
+        blocker = StoredSlice.model_validate({**EMPTY_SLICE, 'title': 'blocker', 'builds': [seam]})
+        number = self.fake.create_issue('Example/Engine', blocker.title, '', ['slice'], child=blocker)
+        self.fake.dependencies[8] = [number]
+        self.fake.body = slice_body({**EMPTY_SLICE, 'uses': [seam], 'depends_on': [blocker.title], 'blocker_numbers': [number]})
         reports = []
         result = self.invoke(report=reports.append)
         self.assertEqual([report['stop'] for report in reports], ['blocked'])
         self.assertEqual(result['stop'], 'blocked')
         self.forge.open_issues.assert_not_called()
         self.forge.create_issue.assert_not_called()
-        self.fake.closed.add(101)
-        self.fake.merged.add(101)
+        self.fake.closed.add(number)
+        self.fake.merged.add(number)
         def dispatch(stage, *args):
             return (Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
                             usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1)) if stage == 'triage' else Outcome('quota', usage=SCRIPTED_USAGE))
@@ -155,7 +160,9 @@ class LiveWatchTest(unittest.TestCase):
         self.assertEqual(again['stop'], 'quota_exhausted')
         self.assertGreater(len(again['attempts']), len(paused['attempts']))
         self.assertEqual([attempt['stage'] for attempt in again['attempts']].count('triage'), 1)
-        self.assertEqual(self.forge.load_issue.call_count, 2)
+        reads = [call.args[-1] for call in self.forge.load_issue.call_args_list]
+        self.assertEqual(reads, [8, 8, number, 8])
+        self.assertEqual({attempt['stage'] for attempt in again['attempts']}, {'triage', 'spec_check'})
 
     def test_skill_failure_preserves_resumable_checkpoints(self):
         for stop in ('git_failed', 'quota_exhausted'):
@@ -167,6 +174,8 @@ class LiveWatchTest(unittest.TestCase):
                 def dispatch(stage, *args):
                     if stop == 'quota_exhausted':
                         return Outcome('quota', usage=SCRIPTED_USAGE)
+                    if stage == 'spec_check':
+                        return Outcome('ran', CLEAR.model_dump(), usage=SCRIPTED_USAGE)
                     return Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
                                    usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1))
                 dispatcher = dispatch
@@ -186,8 +195,8 @@ class LiveWatchTest(unittest.TestCase):
         def gh(args, **kwargs):
             endpoint = args[2]
             fields = dict(arg.split('=', 1) for arg in args if '=' in arg and not arg.startswith('repos/'))
-            if args[1] == 'issue':
-                result = {'title': 'Issue', 'body': self.fake.body, 'labels': [{'name': 'slice'}]}
+            if endpoint == 'repos/Example/Engine/issues/8':
+                result = {'number': 8, 'repository_url': 'https://api.github.com/repos/Example/Engine', 'title': 'Issue', 'body': self.fake.body, 'labels': [{'name': 'slice'}]}
             elif args[1] == 'repo':
                 result = {'defaultBranchRef': {'name': 'main'}}
             elif '--method' in args:
@@ -196,6 +205,8 @@ class LiveWatchTest(unittest.TestCase):
                     result = {}
                 else:
                     result = {'number': self.fake.create_issue('bookout-labs/tools', fields['title'], fields['body'], [])}
+            elif endpoint.endswith('/dependencies/blocked_by'):
+                result = [[]]
             elif '/comments?' in endpoint:
                 result = [[{'body': body} for body in self.fake.issue_comments('bookout-labs/tools', 101)]]
             else:
@@ -204,7 +215,7 @@ class LiveWatchTest(unittest.TestCase):
         workspace = FakeWorkspace(self.root)
         workspace.create_branch = Mock(side_effect=WorkspaceError('#48 ' + secret))
         self.run = LiveRun(LiveForge(), workspace, skills=fixture_skills)
-        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, {'triage': 'implement'}))
+        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'implement'}))
         real_run = subprocess.run
         fake_gh = lambda args, **kwargs: gh(args, **kwargs) if args[0] == 'gh' else real_run(args, **kwargs)
         with patch('foreman.github.subprocess.run', side_effect=fake_gh):
@@ -220,7 +231,7 @@ class LiveWatchTest(unittest.TestCase):
             self.checkpoint = self.root / f'{stop}.sqlite3'
             if code == 75:
                 self.run.workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
-                dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, {'triage': 'implement'}))
+                dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'implement'}))
                 self.invoke(dispatcher=dispatcher)
             else:
                 self.invoke()

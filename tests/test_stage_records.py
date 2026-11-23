@@ -143,19 +143,15 @@ class StageOwnershipTests(unittest.TestCase):
         target = workspace.review_target("org/repo", 1, "1-branch", "a" * 40)
         state["dispatch_plan"] = DispatchPlan(models=[], instruction="Review", methods=[], read_roots=[],
                                               target=target, scope=None).record()
-        handler = ScriptHandler(reviews=["changes"])
+        handler = ScriptHandler(reviews=["changes"], slices=[{"title": "Ship", "acceptance": "Pass", "stateful": False, "uses": [], "builds": [], "screen": "", "properties": []}])
         for stage, row in STAGES.items():
             if (contract := row.output) is None:
                 continue
             with self.subTest(stage=stage):
-                if stage == "spec_check":
-                    with self.assertRaisesRegex(NotImplementedError, "candidate-bound"):
-                        stage_update(stage, parse_output(contract, {"findings": [], "notes": [], "resolutions": []}), state, "model")
-                    continue
                 payload = {"verify": "fail"} if stage == "verify" else handler(stage, None, state, "").output
                 output = parse_output(contract, payload, context=SCRIPTED_REVIEW_CONTEXT)
                 update = stage_update(stage, output, state, "model", workspace=workspace)
-                key = {"implement": "implementation", "review": "review", "verify": "checks", "triage": "plan", "spec": "plan"}.get(stage, stage)
+                key = {"implement": "implementation", "review": "review", "verify": "checks", "triage": "plan", "spec": "plan", "spec_check": "human_question"}.get(stage, stage)
                 self.assertIn(key, update)
                 self.assertEqual(update["path"], [stage])
                 self.assertEqual(update["models_used"][stage], "model")

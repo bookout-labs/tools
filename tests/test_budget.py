@@ -73,7 +73,7 @@ class DollarBudgetTests(unittest.TestCase):
                         invocation = {"configurable": {"thread_id": stage}}
                         graph = compile_delivery(handler, config, run=LiveRun(forge, workspace),
                                                  scratch=scratch, checkpointer=saver)
-                        graph.invoke({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", issue=8, token_cap=100, request="x"), "checks": ChecksState(check="exit 0"), "path": [],
+                        graph.invoke({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", issue=8, base_branch="main", base_sha=workspace.current.head, token_cap=100, request="x"), "checks": ChecksState(check="exit 0"), "path": [],
                                         "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE)},
                                      invocation, durability="sync")
                         snapshot = graph.get_state(invocation)
@@ -82,7 +82,7 @@ class DollarBudgetTests(unittest.TestCase):
                     commit.assert_not_called()
                     push.assert_not_called()
                     publish.assert_not_called()
-                self.assertEqual([node for node, _ in calls], ["triage"] if stage == "triage" else ["triage", "implement"])
+                self.assertEqual([node for node, _ in calls], ["triage"] if stage == "triage" else ["triage", "spec_check", "implement"])
                 self.assertEqual(calls[-1][1], config.nodes[stage].models[0].name)
                 attempts = [attempt for attempt in state["attempts"] if attempt["stage"] == stage]
                 self.assertEqual(len(attempts), 1)

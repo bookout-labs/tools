@@ -11,8 +11,8 @@ from test_spec_candidate import SLICE
 FINDING = dict(id="f1", kind="contract", slice="Save", section="slice", summary="Keep IDs unique.", ruling_id=None)
 
 
-def output(findings=(), resolutions=(), notes=()):
-    return parse_output(SpecCheckOutput, dict(findings=list(findings), resolutions=list(resolutions), notes=list(notes)))
+def output(findings=(), notes=()):
+    return parse_output(SpecCheckOutput, dict(findings=list(findings), notes=list(notes), human_question=None))
 
 
 def candidate(**changes):
@@ -82,22 +82,21 @@ class SpecCheckTests(unittest.TestCase):
                 accept(SpecHistory(), payload, candidate(), max_rounds=3)
         renamed = candidate(slices=[{**SLICE, "title": "Renamed"}])
         with self.assertRaisesRegex(InvalidOutput, "unknown candidate slice"):
-            accept(self.first().history, output([{**FINDING, "id": "f2"}], [{"id": "f1", "status": "resolved"}]), renamed, max_rounds=3)
-        accepted = accept(self.first().history, output([{**FINDING, "id": "f2", "slice": "Renamed", "kind": "scope"}],
-                          [{"id": "f1", "status": "resolved"}]), renamed, max_rounds=3)
+            accept(self.first().history, output([{**FINDING, "id": "f2"}]), renamed, max_rounds=3)
+        accepted = accept(self.first().history, output([{**FINDING, "id": "f2", "slice": "Renamed", "kind": "scope"}]), renamed, max_rounds=3)
         self.assertEqual(accepted.verdict, "gaps")
         for changed in (renamed, candidate(slices=[{**SLICE, "title": "Other"}])):
             with self.subTest(changed=changed), self.assertRaisesRegex(InvalidOutput, "unresolved finding targets"):
-                accept(self.first().history, output(resolutions=[{"id": "f1", "status": "unresolved"}]), changed, max_rounds=3)
+                accept(self.first().history, output([FINDING]), changed, max_rounds=3)
         with self.assertRaisesRegex(ValueError, "titles must be unique"):
             candidate(slices=[SLICE, SLICE])
 
-    def test_accounting_missing_duplicate_unknown_and_reused_ids(self):
-        resolved = {"id": "f1", "status": "resolved"}
-        for entries, findings in (([], []), ([resolved, resolved], []),
-                                  ([{"id": "unknown", "status": "resolved"}], []), ([resolved], [FINDING])):
-            with self.subTest(entries=entries), self.assertRaises(InvalidOutput):
-                accept(self.first().history, output(findings, entries), candidate(), max_rounds=3)
+    def test_repeat_keeps_existing_gap_and_changed_finding_needs_a_new_id(self):
+        first = self.first()
+        repeated = accept(first.history, output([FINDING]), candidate(), max_rounds=3)
+        self.assertEqual(repeated.verdict, "gaps")
+        with self.assertRaises(InvalidOutput):
+            accept(first.history, output([{**FINDING, "summary": "Different gap."}]), candidate(), max_rounds=3)
         with self.assertRaises(InvalidOutput):
             accept(SpecHistory(), output([FINDING, FINDING]), candidate(), max_rounds=3)
 
@@ -108,7 +107,6 @@ class SpecCheckTests(unittest.TestCase):
 
     def test_scope_uses_structural_slice_and_global_section_changes(self):
         past = self.first().history
-        resolved = [{"id": "f1", "status": "resolved"}]
         new = {**FINDING, "id": "f2", "kind": "seam"}
         for changed, titles, sections in ((candidate(), [], []),
                 (candidate(slices=[{**SLICE, "acceptance": "Changed"}]), ["Save"], ["slice"]),
@@ -116,18 +114,17 @@ class SpecCheckTests(unittest.TestCase):
                 (candidate(work_kind="bug_fix"), [], ["work_kind"]),
                 (candidate(slices=[SLICE, {**SLICE, "title": "Other"}]), ["Other"], ["slice"])):
             with self.subTest(changed=changed):
-                accepted = accept(past, output([new], resolved), changed, max_rounds=3)
+                accepted = accept(past, output([new]), changed, max_rounds=3)
                 self.assertEqual(accepted.verdict, "gaps")
                 self.assertIsNone(accepted.approval)
                 self.assertEqual(accepted.history.interdiff().slices, titles)
                 self.assertEqual(accepted.history.interdiff().sections, sections)
-                cleared = accept(accepted.history, output(resolutions=[{"id": "f2", "status": "resolved"}]), changed, max_rounds=3)
+                cleared = accept(accepted.history, output(), changed, max_rounds=3)
                 self.assertEqual(cleared.verdict, "clear")
                 self.assertTrue(cleared.approval.matches(changed))
 
     def test_settled_findings_become_notes_and_unknown_rulings_fail(self):
-        resolved = [{"id": "f1", "status": "resolved"}]
-        second = accept(self.first().history, output(resolutions=resolved), candidate(), max_rounds=3)
+        second = accept(self.first().history, output(), candidate(), max_rounds=3)
         note = {**FINDING, "id": "f2", "ruling_id": "finding:f1"}
         accepted = accept(second.history, output([note]), candidate(), max_rounds=3)
         self.assertEqual(accepted.verdict, "clear")
@@ -141,11 +138,11 @@ class SpecCheckTests(unittest.TestCase):
         first = self.first()
         changed = candidate(spec="Changed")
         new = {**FINDING, "id": "f2", "section": "spec"}
-        second = accept(first.history, output(resolutions=[{"id": "f1", "status": "resolved"}]), candidate(), max_rounds=3)
+        second = accept(first.history, output(), candidate(), max_rounds=3)
         repeated = accept(second.history, output([new]), changed, max_rounds=3)
         self.assertIn("Recurring spec kind contract", repeated.unsettled)
         self.assertIsNone(repeated.approval)
-        unresolved = output(resolutions=[{"id": "f1", "status": "unresolved"}])
+        unresolved = output([FINDING])
         second = accept(first.history, unresolved, candidate(), max_rounds=3)
         self.assertEqual(second.unsettled, "")
         self.assertEqual(second.verdict, "gaps")

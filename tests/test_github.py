@@ -181,11 +181,13 @@ class LiveForgeTest(unittest.TestCase):
     @patch("foreman.github.subprocess.run")
     def test_load_issue_validates_labels_and_normalizes_an_empty_body(self, run):
         run.side_effect = [
-            gh_result('{"title":"Track items","body":null,"labels":[{"name":"slice","color":"eeeeee"}]}'),
-            gh_result('{"title":"Track items","body":"","labels":[{"name":12}]}'),
+            gh_result(json.dumps({"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}",
+                                  "title": "Track items", "body": None, "labels": [{"name": "slice", "color": "eeeeee"}]})),
+            gh_result(json.dumps({"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}",
+                                  "title": "Track items", "body": "", "labels": [{"name": 12}]})),
         ]
         forge = LiveForge()
-        self.assertEqual(forge.load_issue(REPO, 8), {"title": "Track items", "body": "", "labels": ["slice"]})
+        self.assertEqual(forge.load_issue(REPO, 8), {"repo": REPO, "number": 8, "title": "Track items", "body": "", "labels": ["slice"]})
         with self.assertRaises(ForgeError) as exc:
             forge.load_issue(REPO, 8)
         self.assertIsInstance(exc.exception.__cause__, ValidationError)
@@ -216,6 +218,21 @@ class LiveForgeTest(unittest.TestCase):
                 run.side_effect = replies
                 self.assertEqual(LiveForge().is_merged(REPO, 1), expected)
                 self.assertEqual([invocation.args[0] for invocation in run.call_args_list], commands)
+
+    @patch("foreman.github.subprocess.run")
+    def test_pinned_merge_evidence_comes_from_the_target_repository(self, run):
+        local_pr = {**CLOSING_PR, "repository": {"name": REPO.split("/")[1], "owner": {"login": REPO.split("/")[0]}}}
+        merge = "a" * 40
+        run.side_effect = [
+            gh_result(json.dumps({"closed": True, "closedByPullRequestsReferences": [CLOSING_PR, local_pr]})),
+            gh_result(json.dumps({"state": "MERGED", "baseRefName": "main", "mergeCommit": {"oid": merge}})),
+            gh_result(json.dumps({"defaultBranchRef": {"name": "main"}})),
+        ]
+        seen = []
+        self.assertFalse(LiveForge().is_merged(REPO, 8, contains=lambda commit: seen.append(commit) or False))
+        self.assertEqual(seen, [merge])
+        self.assertEqual(run.call_args_list[1].args[0],
+                         ["gh", "pr", "view", "3", "--repo", REPO, "--json", "state,baseRefName,mergeCommit"])
 
     @patch("foreman.github.subprocess.run")
     def test_is_merged_rejects_invalid_issue_and_pr_responses(self, run):

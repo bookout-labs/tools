@@ -24,6 +24,8 @@ class RunState(BaseModel, frozen=True, extra="forbid"):
     issue: int | None = None
     request: str = ""
     workspace: str = ""
+    base_branch: str = ""
+    base_sha: str = ""
     token_cap: int | None = None
     max_budget_usd: str | None = None
 
@@ -46,7 +48,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:

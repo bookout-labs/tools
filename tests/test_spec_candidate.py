@@ -17,6 +17,7 @@ from foreman.github import render_slice_body
 from foreman.runner import _load_slice, checkpoint_state
 from foreman.stage_output import CandidateSlice, SliceProvenance, SpecAuthor, SpecCandidate, StoredSlice, SpecOutput
 from skill_fixture import skill_fixture
+from foreman.skill_rules import git
 
 
 SLICE = {
@@ -59,10 +60,18 @@ class CandidateTests(unittest.TestCase):
                  "path": [], "plan": candidate.update(PlanState(), single=False)}
         with TemporaryDirectory() as directory:
             root = Path(directory)
+            git(root, "init", "--quiet")
+            git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                "commit", "--allow-empty", "-qm", "Empty tree")
+            state["run"] = state["run"].model_copy(update={"base_sha": git(root, "rev-parse", "HEAD")})
             workspace = LiveWorkspace(root, "org/repo")
             with self.assertRaisesRegex(InvalidOutput, "checked_paths"):
                 accept_spec(SpecOutput.model_validate(raw), Acceptance(state, workspace=workspace))
             (root / "policy.py").write_text("# Mechanics only\n")
+            git(root, "add", "policy.py")
+            git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                "commit", "-qm", "Tracked policy")
+            state["run"] = state["run"].model_copy(update={"base_sha": git(root, "rev-parse", "HEAD")})
             update = accept_spec(SpecOutput.model_validate(raw), Acceptance(state, workspace=workspace))
             restored = checkpoint_state(json.loads(json.dumps({**state, **update}, default=lambda x: x.model_dump())))
             self.assertIsNone(restored["plan"].spec_candidate)
@@ -82,7 +91,10 @@ class CandidateTests(unittest.TestCase):
         raw = self.candidate().model_dump(exclude={"revision"})
         expected = SpecCandidate.model_validate(dict(reversed(list(raw.items())))).revision
         self.assertEqual(expected, self.candidate().revision)
-        self.assertEqual(expected, "5d7cac4e6017c6467cd76e2c3ba0f905fbadbfbc3803188c8accc4b566d8999d")
+        for key, value in (("repo", "org/other"), ("issue", 2), ("base", "b" * 40)):
+            target = {"repo": "org/repo", "issue": 1, "base": "a" * 40}
+            self.assertNotEqual(SpecCandidate.model_validate({**raw, "target": target}).revision,
+                SpecCandidate.model_validate({**raw, "target": {**target, key: value}}).revision)
         for key, value in (("spec", "Changed"), ("work_kind", "refactoring"),
                            ("author", {"stage": "triage", "model": "claude-test", "family": "claude"})):
             self.assertNotEqual(SpecCandidate.model_validate({**raw, key: value}).revision, expected)
@@ -129,12 +141,24 @@ class CandidateTests(unittest.TestCase):
     def test_inherited_slice_author_survives_child_triage_and_spec(self):
         candidate = self.candidate()
         provenance = {"author": candidate.author.record(), "revision": candidate.revision}
+        supplied = {**SLICE, "provenance": provenance, "depends_on": [], "blocker_numbers": []}
         for triage in ("implement", "spec"):
             with skill_fixture() as (config, scratch):
                 result = run_delivery(ScriptHandler(triage=triage), repo="org/repo", request="Save",
-                                      slice={**SLICE, "provenance": provenance}, config=config, scratch=scratch)
-            self.assertEqual(result["plan"].slice["provenance"], provenance)
-            self.assertIsNone(result["plan"].spec_candidate)
+                                      slice=supplied, config=config, scratch=scratch)
+            bound = SpecCandidate.from_record(result["plan"].spec_candidate)
+            self.assertEqual(bound.author.record(), provenance["author"])
+            self.assertEqual(result["plan"].slice["provenance"]["revision"], bound.revision)
+            self.assertEqual(bound.target, {"repo": "org/repo", "issue": 0, "base": "<sha>"})
+
+    def test_dry_run_cannot_clear_a_pathless_seam_without_prerequisite_evidence(self):
+        supplied = {**SLICE, "uses": [{"name": "database", "exists": False, "path": None}]}
+        script = ScriptHandler()
+        with skill_fixture() as (config, scratch):
+            result = run_delivery(script, repo="org/repo", request="Save",
+                                  slice=supplied, config=config, scratch=scratch)
+        self.assertEqual(result["halt"], "invalid_output")
+        self.assertNotIn("spec_check", [call["node"] for call in script.calls])
 
     def test_checkpoint_rejects_divergent_candidate_copies(self):
         candidate = self.candidate()
@@ -166,6 +190,6 @@ class CandidateTests(unittest.TestCase):
 
     def test_without_methods_records_dispatch_author_independently_of_attempts(self):
         result = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=DryRun(), workspace=DryRun())).invoke(
-            {"review": ReviewState(), "run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP), "checks": ChecksState(check=""), "path": [], "plan": PlanState(issue_kind="parent")})
+            {"review": ReviewState(), "run": RunState(repo="org/repo", issue=0, base_branch="main", base_sha="<sha>", token_cap=DEFAULT_TOKEN_CAP), "checks": ChecksState(check=""), "path": [], "plan": PlanState(issue_kind="parent")})
         self.assertNotIn("skill_attempts", result)
         self.assertEqual(result["plan"].spec_candidate["author"]["model"], result["models_used"]["triage"])

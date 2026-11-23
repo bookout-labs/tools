@@ -63,12 +63,12 @@ class DeliveryTest(unittest.TestCase):
         self.assertTrue(result["attempts"])
 
     def test_passing_a_slice_starts_a_slice_run(self):
-        result = walk(ScriptHandler(triage="spec"), slice=SLICES[1])
+        result = walk(ScriptHandler(triage="spec"), slice=SLICES[0])
         self.assertEqual(result["plan"].issue_kind, "slice")
-        self.assertEqual(result["plan"].slice, SLICES[1])
+        self.assertEqual(result["plan"].slice["acceptance"], SLICES[0]["acceptance"])
         self.assertEqual(result["stop"], "verified")
 
-    def test_clear_change_skips_spec(self):
+    def test_clear_change_still_runs_the_checker(self):
         handler = ScriptHandler()
 
         def check_review_context(node, model, state, instruction):
@@ -80,7 +80,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "implement", "verify", "publish", "review", "merge", "done"],
+            ["triage", "spec_check", "implement", "verify", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["merge"].status, "skipped")
@@ -93,13 +93,13 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="spec", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec", "implement", "verify", "publish", "review", "merge", "done"],
+            ["triage", "spec_check", "implement", "verify", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
     def test_ready_spec_retains_acceptance_specific_evidence(self):
         result = walk(ScriptHandler(triage="spec"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec", "implement", "verify", "publish", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "implement", "verify", "publish", "review", "merge", "done"])
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["plan"].slice["properties"], SLICES[0]["properties"])
 
@@ -114,23 +114,18 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "invalid_output")
         self.assertTrue(result["halt_detail"].startswith("triage output from claude-opus-5-5-high: slice.depends_on:"))
 
-    def test_a_parent_routes_spec_and_question_to_spec(self):
-        for triage in ("spec", "question"):
-            with self.subTest(triage=triage):
-                result = walk(ScriptHandler(triage=triage, slices=SLICES[::-1]), slice=None)
-                self.assertEqual(result["path"], ["triage", "spec", "done"])
-                self.assertEqual(result["stop"], "sliced")
-                self.assertEqual(result["plan"].slices, [
-                    {**SLICES[0], "depends_on": [], "blocker_numbers": [], "provenance": {"author": result["plan"].spec_candidate["author"], "revision": result["plan"].spec_candidate["revision"]}},
-                    {**SLICES[1], "depends_on": [SLICES[0]["title"]], "blocker_numbers": [], "provenance": {"author": result["plan"].spec_candidate["author"], "revision": result["plan"].spec_candidate["revision"]}},
-                ])
+    def test_parent_questions_route_to_research_and_parent_plans_are_checked(self):
+        result = walk(ScriptHandler(triage="question"), slice=None)
+        self.assertEqual(result["path"], ["triage", "research", "done"])
+        result = walk(ScriptHandler(triage="spec", slices=SLICES), slice=None)
+        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "done"])
+        self.assertEqual(result["stop"], "sliced")
 
-    def test_single_slice_parents_skip_seam_ordering(self):
-        consumer = SLICES[1]
-        triaged = walk(ScriptHandler(slice=consumer), slice=None)
-        self.assertEqual(triaged["stop"], "verified")
-        specified = walk(ScriptHandler(triage="spec", slices=[consumer]), slice=None)
-        self.assertEqual(specified["plan"].slices, [{**consumer, "depends_on": [], "blocker_numbers": [], "provenance": {"author": specified["plan"].spec_candidate["author"], "revision": specified["plan"].spec_candidate["revision"]}}])
+    def test_single_slice_rejects_a_missing_dependency(self):
+        handler = ScriptHandler(slice=SLICES[1], slices=[EMPTY_SLICE])
+        result = walk(handler, slice=None)
+        self.assertEqual(result["plan"].spec_failures, 1)
+        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "implement", "verify", "publish", "review", "merge", "done"])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES
@@ -151,7 +146,7 @@ class DeliveryTest(unittest.TestCase):
                     return handler(node, model, state, instruction)
 
                 result = walk(repair, slice=None)
-                self.assertEqual(result["path"], ["triage", "spec", "spec", "done"])
+                self.assertEqual(result["path"], ["triage", "spec", "spec", "spec_check", "done"])
                 self.assertEqual(len(result["review"].review_findings), 0)
                 self.assertEqual(result["plan"].spec_failures, 1)
                 self.assertEqual(result["stop"], "sliced")
@@ -163,23 +158,29 @@ class DeliveryTest(unittest.TestCase):
         from foreman.workspace import LiveWorkspace
         with TemporaryDirectory() as directory:
             root = Path(directory)
+            from foreman.skill_rules import git
             (root / "items.py").touch()
+            git(root, "init", "-q")
+            git(root, "add", "items.py")
+            git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                "commit", "-qm", "Tracked items")
             workspace = LiveWorkspace(root)
+            base = git(root, "rev-parse", "HEAD")
             new = {"name": "items", "exists": False, "path": None}
             existing = {**new, "exists": True, "path": "items.py"}
             for count in (1, 2):
-                for use, kind in ((existing, "existing_seam_builder" if count == 2 else None), ({**existing, "path": "absent.py"}, "dangling_seam"),
+                for use, kind in ((existing, "existing_seam_builder"), ({**existing, "path": "absent.py"}, "dangling_seam"),
                                   (new, None)):
                     item = {**EMPTY_SLICE, "builds": [new], "uses": [use]}
                     raw = [item] + ([{**item, "title": "Consumer", "builds": []}] if count == 2 else [])
                     if kind:
                         with self.assertRaises(InvalidSlicePlan) as raised:
-                            clean_slices([Slice.model_validate(s) for s in raw], workspace)
+                            clean_slices([Slice.model_validate(s) for s in raw], workspace, base)
                         self.assertEqual(raised.exception.reason["kind"], kind)
                     else:
-                        self.assertEqual(clean_slices([Slice.model_validate(s) for s in raw], workspace)[0]["depends_on"], [])
+                        self.assertEqual(clean_slices([Slice.model_validate(s) for s in raw], workspace, base)[0]["depends_on"], [])
 
-    def test_single_slice_shortcut_and_multiple_slice_graph_errors(self):
+    def test_common_validator_rejects_missing_dependencies_and_cycles(self):
         from foreman.stages import clean_slices, InvalidSlicePlan
         from foreman.stage_output import Slice
         first, second = SLICES
@@ -192,12 +193,13 @@ class DeliveryTest(unittest.TestCase):
             for count in (1, 2):
                 raw = [Slice.model_validate(item) for item in plan[:count]]
                 with self.subTest(kind=kind, count=count):
-                    if count == 1:
+                    expected = ("dangling_seam" if kind == "dependency_cycle" else kind) if count == 1 else kind
+                    if count == 1 and kind == "duplicate_builder":
                         self.assertEqual(clean_slices(raw, None)[0]["depends_on"], [])
-                    else:
-                        with self.assertRaises(InvalidSlicePlan) as raised:
-                            clean_slices(raw, None)
-                        self.assertEqual(raised.exception.reason["kind"], kind)
+                        continue
+                    with self.assertRaises(InvalidSlicePlan) as raised:
+                        clean_slices(raw, None)
+                    self.assertEqual(raised.exception.reason["kind"], expected)
 
     def test_a_parent_stops_on_malformed_slices(self):
         first = SLICES[0]
@@ -240,17 +242,17 @@ class DeliveryTest(unittest.TestCase):
     def test_model_selection_stops_when_its_dependency_is_missing(self):
         config = load_config()
         config.nodes["research"] = replace(config.nodes["research"], other_family_from="implement")
-        result = walk(ScriptHandler(triage="question"), config=config)
+        result = walk(ScriptHandler(triage="question"), config=config, slice=None)
         self.assertEqual(result["stop"], "model_dependency_missing")
 
     def test_open_spec_stops_for_a_person(self):
-        result = walk(ScriptHandler(triage="spec", spec_gate="needs_human"))
+        result = walk(ScriptHandler(triage="spec", spec_gate="needs_human"), slice=None)
         self.assertEqual(result["path"], ["triage", "spec"])
         self.assertEqual(result["stop"], "needs_human")
         self.assertNotIn("implement", result["path"])
 
     def test_question_is_answered_without_a_change(self):
-        result = walk(ScriptHandler(triage="question"))
+        result = walk(ScriptHandler(triage="question"), slice=None)
         self.assertEqual(result["path"], ["triage", "research", "done"])
         self.assertEqual(result["stop"], "answered")
 
@@ -258,7 +260,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "implement", "verify", "publish", "review", "implement", "verify", "publish", "review", "merge", "done"],
+            ["triage", "spec_check", "implement", "verify", "publish", "review", "implement", "verify", "publish", "review", "merge", "done"],
         )
         self.assertEqual(result["stop"], "verified")
 
@@ -384,13 +386,15 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual("tdd/SKILL.md#L9-L31" in methods, kind == "bug_fix")
                 self.assertEqual("benchmark-checklist/SKILL.md#L13-L27" in methods, kind == "perf_issue")
 
-                researched = walk(ScriptHandler(triage="question", work_kind=kind))
+                researched = walk(ScriptHandler(triage="question", work_kind=kind), slice=None)
                 research = researched["attempts"][-1]["methods"]
                 self.assertIn("how/SKILL.md#L17-L17", research)
                 self.assertEqual("why/SKILL.md" in research, kind == "bug_fix")
 
-    def test_spec_uses_statechart_only_for_a_stored_stateful_slice(self):
-        for item in (None, EMPTY_SLICE, {**EMPTY_SLICE, "stateful": True}):
+    def test_draft_uses_statechart_when_revising_a_stored_stateful_slice(self):
+        absent = {"name": "policy", "exists": True, "path": "missing.py"}
+        invalid = {**EMPTY_SLICE, "uses": [absent]}
+        for item in (None, invalid, {**invalid, "stateful": True}):
             with self.subTest(item=item):
                 result = walk(ScriptHandler(triage="spec", slices=[{**EMPTY_SLICE, "stateful": True}]), slice=item)
                 methods = next(record["methods"] for record in result["attempts"] if record["stage"] == "spec")
@@ -413,7 +417,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(read_methods)
         self.assertEqual(result["stop"], "verified")
-        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec", "implement", "review"])
+        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "review"])
 
 
 if __name__ == "__main__":

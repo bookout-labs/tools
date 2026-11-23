@@ -3,9 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
-import json
 from pathlib import Path
-import re
 from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
@@ -16,16 +14,16 @@ from pydantic import TypeAdapter
 
 from foreman.config import PstackPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
-from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state
+from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, QuotaPause, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, unknown_usage, read_delivery_state, human_comments, spec_effect, spec_target
 from foreman.readiness import MergeState
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError
 from foreman.watch import run_key, watch
-from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output
+from foreman.stage_output import Attempt, SpecCandidate, StoredSlice, parse_output, load_stored_slice as _load_slice
 from foreman.usd import BudgetUsd, usd_text
-from foreman.workspace import WorkState
+from foreman.workspace import WorkState, WorkspaceError
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
@@ -49,7 +47,10 @@ def snapshot_result(snapshot: StateSnapshot) -> DeliveryResult:
         if values.get("halt") == Halt.quota_exhausted:
             parse_output(QuotaPause, snapshot.interrupts[0].value)
             return read_delivery_state({**values, "stop": Halt.quota_exhausted.value})
-        question = parse_output(HumanPrompt, snapshot.interrupts[0].value).question
+        prompt = parse_output(HumanPrompt, snapshot.interrupts[0].value)
+        question = prompt.question
+        if prompt.revision:
+            question += f"\n\nReply on the issue under the configured GitHub identity. Start with {prompt.answer_marker} and put the answer on the next line."
         return read_delivery_state({**values, "stop": "needs_human", "halt_detail": question})
     return read_delivery_state({**values, "stop": values.get("stop", "")})
 
@@ -62,31 +63,27 @@ def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
     plan = state["plan"]
     if plan.spec_candidate is not None:
         candidate = SpecCandidate.from_record(plan.spec_candidate)
+        if state["run"].base_sha and candidate.target != spec_target(state["run"]):
+            raise ValueError("The saved candidate targets a different repository, issue or base.")
         expected = candidate.update(plan, single=plan.slice is not None)
         for key in ("slice", "slices", "spec", "work_kind"):
+            if key in {"slice", "spec"} and plan.pr_split is not None:
+                continue
             if getattr(plan, key) != getattr(expected, key):
                 raise ValueError(f"{key} differs from candidate")
     return state
-
-
-SLICE_FENCE = re.compile(r"^```json[ \t]*\r?\n((?:(?!^```)[^\n]*\n)*)^```[ \t]*\r?$", re.MULTILINE)
 
 
 class AnswerError(RuntimeError):
     """An answer cannot be applied to this checkpoint's question."""
 
 
-def _load_slice(body: str) -> StoredSlice:
-    blocks = SLICE_FENCE.findall(body)
-    if not blocks:
-        raise InvalidOutput("slice issue needs a fenced JSON object")
-    return parse_output(StoredSlice, json.loads(blocks[-1]))
-
-
-def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice) -> str:
+def _blocker_detail(forge: Forge, repo: str, issue: int, item: StoredSlice | None) -> str:
     blockers = forge.blockers(repo, issue)
     if open_urls := [blocker.html_url for blocker in blockers if blocker.state == "open"]:
         return "Open blockers: " + ", ".join(open_urls)
+    if item is None:
+        return ""
     local = {blocker.number: blocker for blocker in blockers if blocker.in_repo(repo)}
     planned = item.blocker_numbers
     if len(planned) != len(item.depends_on) or not set(planned) <= local.keys():
@@ -215,7 +212,31 @@ def run_live_delivery(
         saved_workspace = saved_values["run"].workspace if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
+        loaded = client.load_issue(repo, issue) if early_result is None and (saved_values is None or saved_values["run"].base_sha) else None
+        identity_ok = loaded is not None and loaded["repo"].lower() == repo.lower() and loaded["number"] == issue
+        if early_result is None and saved_values is not None and saved_values["run"].base_sha:
+            saved_run = saved_values["run"]
+            if not identity_ok or (saved_run.repo.lower(), saved_run.issue) != (repo.lower(), issue):
+                raise ValueError("The issue does not match the saved repository and number.")
+            try:
+                run.workspace.validate_origin(saved_run.repo)
+                if detail := _blocker_detail(client, saved_run.repo, issue, None):
+                    early_result = read_delivery_state({**saved_values, "stop": "blocked", "halt_detail": detail})
+            except (ForgeError, WorkspaceError) as exc:
+                early_result = read_delivery_state({**saved_values, **halted(Halt.git_failed, str(exc), "triage"),
+                                                    "stop": Halt.git_failed})
         waiting_for_quota = bool(saved.interrupts) and saved_values is not None and saved_values.get("halt") == Halt.quota_exhausted
+        if saved.interrupts and not waiting_for_quota and saved_values is not None and early_result is None:
+            prompt = parse_output(HumanPrompt, saved.interrupts[0].value)
+            if prompt.revision is not None:
+                prefix = prompt.answer_marker + "\n"
+                used = {qa["answer"] for qa in saved_values["plan"].human_qa if qa.get("revision") == prompt.revision}
+                replies = [ruling.removeprefix(prefix).strip() for ruling in human_comments(run, saved_values["run"])
+                           if ruling.startswith(prefix)]
+                replies = [reply for reply in replies if reply and reply not in used]
+                if answer is not None and answer not in replies:
+                    raise AnswerError("This question needs a matching answer posted under the configured GitHub identity.")
+                answer = answer or next((reply for reply in reversed(replies) if reply), None)
         if answer is not None and early_result is None:
             if waiting_for_quota:
                 raise AnswerError("This issue has no pending question.")
@@ -237,7 +258,7 @@ def run_live_delivery(
             graph.update_state(config, {**halted(Halt.usage_unknown, unknown_usage(stage, model), stage),
                                        "attempts": [Attempt(stage=stage, model=model, commit=pin.commit,
                                                             methods=saved_values["dispatch_plan"]["methods"], outcome="interrupted", usage=None).record()],
-                                       "pending_dispatch": None}, as_node=stage + "_call")
+                                       "pending_dispatch": None}, as_node=("spec" if stage == "spec_check" else stage) + "_call")
             invoke(None, saved_values)
         elif answer is not None and saved.interrupts and saved_values is not None:
             if parse_output(HumanPrompt, saved.interrupts[0].value).stage == "pr_size":
@@ -247,11 +268,13 @@ def run_live_delivery(
                     raise AnswerError("Answer split or override at the pull request size prompt.") from exc
             invoke(Command(resume=answer), saved_values)
         elif saved_values is None:
-            loaded = client.load_issue(repo, issue)
-            text = request if request is not None else loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
+            assert loaded is not None
+            text = loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
+            if request is not None:
+                text = f"{text}\n\nOperator context:\n{request}"
             initial: DeliveryState = {
                 "schema_version": SCHEMA_VERSION,
-                "run": RunState(repo=repo, issue=issue, workspace=workspace, request=text,
+                "run": RunState(repo=loaded["repo"], issue=issue, workspace=workspace, request=text,
                                 token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
                                 max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
                 "checks": ChecksState(check=check, preflight=preflight),
@@ -260,16 +283,29 @@ def run_live_delivery(
                 "plan": PlanState(issue_kind="slice" if "slice" in loaded["labels"] else "parent"),
                 "review": ReviewState(),
             }
-            if initial["plan"].issue_kind == "slice":
+            item = None
+            if not identity_ok:
+                initial.update(halted(Halt.invalid_output, "foreign_repository: issue identity differs from the requested assignment.", "triage"))
+            elif initial["plan"].issue_kind == "slice":
                 try:
                     item = _load_slice(loaded["body"])
-                except (InvalidOutput, json.JSONDecodeError) as exc:
+                except InvalidOutput as exc:
                     initial.update(halted(Halt.missing_slice, str(exc), None))
                 else:
+                    initial["plan"] = initial["plan"].model_copy(update={"slice": item.record(), "work_kind": item.work_kind})
+            if not initial.get("halt"):
+                try:
+                    run.workspace.validate_origin(loaded["repo"])
                     if detail := _blocker_detail(client, repo, issue, item):
                         initial.update(path=["done"], stop="blocked", halt_detail=detail)
-                    initial["plan"] = initial["plan"].model_copy(update={"slice": item.record(), "work_kind": item.work_kind})
-            if initial.get("stop") == "blocked":
+                    else:
+                        base = client.default_branch(repo)
+                        initial["run"] = initial["run"].model_copy(update={"base_branch": base, "base_sha": run.workspace.pin_base(base)})
+                except (ForgeError, WorkspaceError) as exc:
+                    initial.update(halted(Halt.git_failed, str(exc), None))
+            if initial.get("stop") == "blocked" or initial.get("halt") == Halt.git_failed:
+                if halt := initial.get("halt"):
+                    initial["stop"] = halt
                 early_result = read_delivery_state(initial)
             else:
                 invoke(initial, initial)
@@ -313,6 +349,8 @@ def run_live_delivery(
             replay = before.config
             receipt = None if repaired else saved_values.get("merge", MergeState()).receipt
             prior_work = restored.get("work", WorkState())
+            if repaired:
+                prior_work = saved_values.get("work", prior_work)
             reset_work = repaired or before.next == ("prepare",)
             work = (WorkState(branch=prior_work.branch, base=prior_work.base, repair_head=repair_head)
                     if reset_work else prior_work.model_copy(update={"repair_head": None}))
@@ -321,7 +359,9 @@ def run_live_delivery(
             prior_checks = restored["checks"]
             checks = saved_values["checks"].for_attempt() if reset_work else prior_checks
             assert saved_review is not None
-            retained: DeliveryUpdate = {"plan": restored["plan"].model_copy(update={"spec_failures": saved_values["plan"].spec_failures}),
+            retained: DeliveryUpdate = {"plan": restored["plan"].model_copy(update={
+                                            "rejected_revisions": saved_values["plan"].rejected_revisions,
+                                        }),
                                         "work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": (
                 ReviewState(review_findings=saved_review.review_findings, settled_rulings=saved_review.settled_rulings,
                             review_run_id=saved_review.review_run_id)
@@ -342,6 +382,18 @@ def run_live_delivery(
         result = early_result if early_result is not None else snapshot_result(saved)
         if result.get("stop") == "sliced":
             saved_values = checkpoint_state(saved.values)
+            assert saved_values is not None
+            clearance = spec_effect(saved_values, run)
+            if clearance.get("halt") or clearance.get("stop"):
+                graph.update_state(config, {**clearance, "stop": clearance.get("stop") or Halt.invalid_output}, as_node="done")
+                result = snapshot_result(graph.get_state(config))
+                report(result)
+                return result
+            if clearance.get("plan") != saved_values["plan"]:
+                graph.update_state(config, clearance, as_node="done")
+                result = snapshot_result(graph.get_state(config))
+        if result.get("stop") == "sliced":
+            saved_values = checkpoint_state(graph.get_state(config).values)
             assert saved_values is not None
             owner = saved_values["plan"]
             if not owner.slices:

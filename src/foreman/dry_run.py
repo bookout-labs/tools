@@ -1,19 +1,19 @@
 """A handler that walks the graph without calling a model."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
 from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
-from foreman.github import PullRequest, Issue, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt, pull_request_command
+from foreman.github import PullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt, pull_request_command
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.workspace import WorktreeState, ReviewDiff, ImplementationCandidate, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope
 
 SCRIPTED_USAGE = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)
-CLEAR = SpecCheckOutput(findings=[], notes=[], resolutions=[])
+CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
 
 class ScriptHandler:
     def __init__(
@@ -95,7 +95,13 @@ class DryRun:
     def inspect(self) -> WorktreeState:
         return WorktreeState(self.head, self.clean, self.branch)
 
-    def create_branch(self, branch: str, base: str) -> None:
+    def validate_origin(self, repo: str) -> None:
+        pass
+
+    def pin_base(self, base: str) -> str:
+        return self.head
+
+    def create_branch(self, branch: str, base: str, *, pinned: str = "") -> None:
         if self.branch != branch:
             self.commands.append(branch_command(branch, f"refs/remotes/origin/{base}"))
         self.branch = branch
@@ -160,7 +166,10 @@ class DryRun:
     def soft_reset(self, parent: str) -> None:
         raise NotImplementedError("Not used by dry delivery")
 
-    def has_file(self, path: str) -> bool:
+    def has_tracked_file(self, base: str, path: str) -> bool:
+        return False
+
+    def contains_commit(self, base: str, commit: str) -> bool:
         return False
 
     def review_diff(self, base: str, head: str) -> ReviewDiff:
@@ -190,6 +199,9 @@ class DryRun:
     def issue_comments(self, repo: str, number: int) -> list[str]:
         raise NotImplementedError("Not used by dry delivery")
 
+    def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]:
+        return []
+
     def comment_issue(self, repo: str, number: int, body: str) -> None:
         raise NotImplementedError("Not used by dry delivery")
 
@@ -202,8 +214,8 @@ class DryRun:
     def blockers(self, repo: str, number: int) -> list[IssueBlocker]:
         raise NotImplementedError("Not used by dry delivery")
 
-    def is_merged(self, repo: str, number: int) -> bool:
-        raise NotImplementedError("Not used by dry delivery")
+    def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool:
+        return False
 
     def add_label(self, repo: str, number: int, label: str) -> None:
         raise NotImplementedError("Not used by dry delivery")

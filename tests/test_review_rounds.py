@@ -22,7 +22,7 @@ from foreman.smoke import smoke_verdict
 from foreman.github import LiveForge
 from foreman.config import ModelSpec
 from foreman.adapters import Outcome
-from foreman.dry_run import SCRIPTED_USAGE
+from foreman.dry_run import CLEAR, SCRIPTED_USAGE
 from skill_fixture import skill_fixture
 from test_adapters import codex_events, codex_process, fixture_process
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
@@ -167,6 +167,8 @@ class ReviewRoundsTest(unittest.TestCase):
                     raise RuntimeError("process lost")
                 if node == "triage":
                     return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None}, usage=SCRIPTED_USAGE)
+                if node == "spec_check":
+                    return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
                 implementations += 1
                 workspace.current = type(workspace.current)(workspace.current.head, False, workspace.current.branch)
                 return Outcome("ran", {"implementation": "Fixed."}, usage=SCRIPTED_USAGE)
@@ -176,7 +178,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 graph = compile_delivery(dispatch, settings, scratch=scratch,
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "example/repo#8"}}
-                state = {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo=repo, issue=8, token_cap=20_000_000, max_budget_usd=None), "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE),
+                state = {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo=repo, issue=8, base_branch="main", base_sha=workspace.current.head, token_cap=20_000_000, max_budget_usd=None), "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE),
                          "checks": ChecksState(check="exit 0"), "pstack_pin": settings.pstack.model_dump(), **(initial or {})}
                 if crash or post_crash or review_crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):

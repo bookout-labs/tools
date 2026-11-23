@@ -238,6 +238,19 @@
             "title": "Properties",
             "type": "array"
           },
+          "repository": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Explicit slice repository as OWNER/NAME, or null to inherit the admitted repository.",
+            "title": "Repository"
+          },
           "screen": {
             "description": "When the change alters a screen described under docs/screens/, name that Markdown file directly under docs/screens/ without '..'. Use an empty string when no documented screen changes.",
             "pattern": "^(docs/screens/(?:[^./\\\\\\x00-\\x1f]|\\.[^./\\\\\\x00-\\x1f])+\\.md)?$",
@@ -271,7 +284,8 @@
           "builds",
           "uses",
           "screen",
-          "properties"
+          "properties",
+          "repository"
         ],
         "title": "Slice",
         "type": "object"
@@ -351,7 +365,7 @@
             "type": "null"
           }
         ],
-        "description": "For a ready parent spec, return one entry per pull request. Use null otherwise.",
+        "description": "Return one entry per proposed pull request, including any tentative slices when asking a question. Use null when no slices are proposed.",
         "title": "Slices"
       },
       "spec": {
@@ -379,30 +393,6 @@
   },
   "spec_check": {
     "$defs": {
-      "FindingResolution": {
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "pattern": "\\S",
-            "title": "Id",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "resolved",
-              "unresolved"
-            ],
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "status"
-        ],
-        "title": "FindingResolution",
-        "type": "object"
-      },
       "SpecFinding": {
         "additionalProperties": false,
         "properties": {
@@ -470,12 +460,25 @@
     "additionalProperties": false,
     "properties": {
       "findings": {
-        "description": "New blocking gaps only. Use resolutions for earlier IDs.",
+        "description": "All blocking gaps in the current candidate. Reuse the exact earlier finding when it remains unresolved.",
         "items": {
           "$ref": "#/$defs/SpecFinding"
         },
         "title": "Findings",
         "type": "array"
+      },
+      "human_question": {
+        "anyOf": [
+          {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Ask an unresolved choice on this candidate only when findings is empty.",
+        "title": "Human Question"
       },
       "notes": {
         "description": "Nonblocking observations, separate from requested fixes.",
@@ -484,19 +487,12 @@
         },
         "title": "Notes",
         "type": "array"
-      },
-      "resolutions": {
-        "items": {
-          "$ref": "#/$defs/FindingResolution"
-        },
-        "title": "Resolutions",
-        "type": "array"
       }
     },
     "required": [
+      "human_question",
       "findings",
-      "notes",
-      "resolutions"
+      "notes"
     ],
     "title": "SpecCheckOutput",
     "type": "object"
@@ -565,6 +561,19 @@
             "title": "Properties",
             "type": "array"
           },
+          "repository": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Explicit slice repository as OWNER/NAME, or null to inherit the admitted repository.",
+            "title": "Repository"
+          },
           "screen": {
             "description": "When the change alters a screen described under docs/screens/, name that Markdown file directly under docs/screens/ without '..'. Use an empty string when no documented screen changes.",
             "pattern": "^(docs/screens/(?:[^./\\\\\\x00-\\x1f]|\\.[^./\\\\\\x00-\\x1f])+\\.md)?$",
@@ -598,7 +607,8 @@
           "builds",
           "uses",
           "screen",
-          "properties"
+          "properties",
+          "repository"
         ],
         "title": "Slice",
         "type": "object"
