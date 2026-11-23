@@ -12,7 +12,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.cli import main
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun
 from foreman.github import VariablesUnreadable
-from foreman.runner import IssueLocked, issue_lock
+from foreman.runner import IssueLocked, issue_lock, saved_workspace
 from foreman.stage_output import spec_digest
 from foreman.state import checkpoint_serializer
 from foreman.usd import BudgetUsd
@@ -62,6 +62,18 @@ class StartTest(unittest.TestCase):
         # A repeated delivery is a no-op, whatever stop the run reached.
         self.assertEqual(self.start(variables)[:2], (0, f"already started {THREAD}\n"))
         self.assertEqual(self.worker_calls, calls)
+
+    def test_a_started_run_resumes_without_a_check_and_a_new_run_needs_one(self):
+        self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        store = self.root / "runs.sqlite3"
+        self.assertEqual(saved_workspace(store, THREAD), str(self.root.resolve()))
+        self.assertIsNone(saved_workspace(store, "example/engine#9"))
+        live = LiveRun(self.forge, self.workspace, skills=fixture_skills)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertNotEqual(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"], checkpoint=store, live_run=live), 2)
+            with self.assertRaises(SystemExit) as refused:
+                main(["run", "delivery", "--repo", "Example/Engine", "--issue", "9"], checkpoint=store, live_run=live)
+        self.assertEqual(refused.exception.code, 2)
 
     def test_settings_default_and_parse(self):
         seen = []

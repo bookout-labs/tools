@@ -886,6 +886,33 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(resumed["review"].review_receipt, waiting["review"].review_receipt)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
 
+    def test_finished_run_releases_its_checkout_and_a_halted_run_keeps_it(self):
+        released: list[set[str]] = []
+
+        class Releasing(FakeWorkspace):
+            def release(self, heads):
+                released.append(set(heads))
+                return True
+
+        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
+                                   workspace=Releasing(self.cwd))["stop"], "merged")
+        self.assertEqual(len(released), 1)
+        self.assertIn(HEAD, released[0])
+        halted = self.walk([{"triage": "not-a-route"}], issue=9, workspace=Releasing(self.cwd))
+        self.assertIsNotNone(halted.get("halt"))
+        self.assertEqual(len(released), 1)
+
+    def test_a_waiting_run_rechecks_its_origin_before_resuming(self):
+        pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending", "recovery": "Wait."})
+        with patch.object(self.github, "readiness", return_value=pending):
+            self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+
+        class Moved(FakeWorkspace):
+            def validate_origin(self, repo):
+                raise WorktreeInspectionFailed("origin moved")
+
+        self.assertEqual(self.walk([], workspace=Moved(self.cwd)).get("halt"), "git_failed")
+
     def test_failed_checks_or_conflict_route_to_repair_with_github_evidence(self):
         original = self.github.readiness
         for outcome, step in [("red", "arm"), ("conflict", "arm"), ("red", "observe")]:
