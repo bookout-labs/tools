@@ -65,7 +65,8 @@ class StateTests(unittest.TestCase):
                 before = graph.get_state(config)
                 self.assertEqual(before.values, original)
                 self.assertIsNotNone(checkpoint_state(before.values))
-                self.assertEqual(before.next, ("done",))
+                # The saved halt ends the run at triage's exit.
+                self.assertEqual(before.next, ())
                 attempt = {**original["attempts"][0], "stage": "research"}
                 graph.update_state(config, {"path": ["research"], "attempts": [attempt],
                                             "halt_detail": "after move"}, as_node="triage")

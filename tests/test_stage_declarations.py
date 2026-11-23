@@ -26,7 +26,7 @@ from test_delivery import EMPTY_SLICE
 def capture():
     captures = {}
     for kind in ("feature", "bug_fix", "refactoring", "perf_issue"):
-        for route in ("spec", "question", "implement"):
+        for route in ("plan", "question", "supplied_slice"):
             records = []
             item = {**EMPTY_SLICE, "stateful": True}
             script = ScriptHandler(triage=route,
@@ -81,7 +81,7 @@ class StageDeclarationsTest(unittest.TestCase):
             with self.subTest(stage=name):
                 row = STAGES[name]
                 seen = []
-                script = ScriptHandler(triage="question" if name == "research" else "spec", slices=[EMPTY_SLICE])
+                script = ScriptHandler(triage="question" if name == "research" else "plan", slices=[EMPTY_SLICE])
 
                 def dispatch(stage, model, state, instruction):
                     if stage == name:
@@ -100,11 +100,11 @@ class StageDeclarationsTest(unittest.TestCase):
                     result = walk(dispatch, slice=None) if name in {"research", "spec"} else walk(dispatch)
                 self.assertEqual(seen, [name])
                 self.assertEqual(result["research"], "Row accepted")
-                self.assertEqual(result["stop"], {"research": "answered", "spec": "sliced"}.get(name, "verified"))
+                self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(name, "verified"))
                 self.assertEqual(result["attempts"][-1]["stage"], {"research": "research", "spec": "spec_check"}.get(name, "review"))
 
     def assert_no_stage_policy(self, source, module):
-        expected = {"call", "stage_update"} if module == "delivery.py" else {"clean", "reserve", "launch", "charge", "reconcile"}
+        expected = {"dispatch_run", "apply", "stage_update"} if module == "delivery.py" else {"clean", "reserve", "launch", "charge", "reconcile"}
         visited = set()
         for function in ast.walk(ast.parse(source)):
             if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -137,7 +137,7 @@ class StageDeclarationsTest(unittest.TestCase):
                 self.assert_no_stage_policy("def clean(): pass\ndef reserve(): pass\ndef launch(): pass\ndef charge(): pass\n"
                                             "def reconcile(): pass\ndef helper(name):\n    " + body, "dispatch.py")
         with self.assertRaises(AssertionError):
-            self.assert_no_stage_policy('def call(name):\n    if name == "implement": pass\ndef stage_update(): pass', "delivery.py")
+            self.assert_no_stage_policy('def apply(name):\n    if name == "implement": pass\ndef dispatch_run(): pass\ndef stage_update(): pass', "delivery.py")
         for module in ("delivery.py", "dispatch.py"):
             with self.subTest(module=module), self.assertRaises(AssertionError):
                 self.assert_no_stage_policy("def renamed(): pass", module)
@@ -218,7 +218,7 @@ class StageDeclarationsTest(unittest.TestCase):
             missing = SkillRule(skill=SkillMethod(path="absent/SKILL.md", kind="skill"))
             with patch.dict(STAGES, spec_check=replace(STAGES["spec_check"], skills=(missing,))):
                 with self.assertRaises(SkillMissing):
-                    export_skills(config.pstack, scratch)
+                    export_skills(config.pstack, config.matt_skills, scratch)
 
     def test_declared_inputs_are_delivery_channels(self):
         fields = get_type_hints(DeliveryState)
@@ -228,7 +228,7 @@ class StageDeclarationsTest(unittest.TestCase):
 
     def test_spec_checker_uses_the_independent_evidence_probe(self):
         with skill_fixture() as (config, scratch):
-            root = export_skills(config.pstack, scratch)
+            root = export_skills(config.pstack, config.matt_skills, scratch)
             _, methods, _ = stage_methods("spec_check", {"plan": PlanState()}, root)
         self.assertEqual(methods, ["interrogate/SKILL.md#L19-L19"])
 
@@ -244,7 +244,7 @@ class StageDeclarationsTest(unittest.TestCase):
 
     def test_condition_change_reaches_runtime_methods(self):
         row = STAGES["research"]
-        skills = (*row.skills[:-1], row.skills[-1].model_copy(update={"when": None}))
+        skills = tuple(rule.model_copy(update={"when": None}) if rule.skill.path == "why/SKILL.md" else rule for rule in row.skills)
         with patch.dict(STAGES, research=replace(row, skills=skills)):
             calls = capture()["feature/question"]["calls"]
-        self.assertIn("why/SKILL.md", calls[-1]["methods"])
+        self.assertIn("why/SKILL.md#L9-L9", calls[-1]["methods"])

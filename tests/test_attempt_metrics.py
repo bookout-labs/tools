@@ -169,7 +169,7 @@ class AttemptMetricsTests(unittest.TestCase):
             prompts.append(args[-1])
             envelope = json.loads(fixture_process(args, "success", 0).stdout)
             envelope["structured_output"] = (
-                {"triage": "spec", "work_kind": "feature", "slice": None, "human_question": None}
+                {"triage": "plan", "work_kind": "feature", "slice": None, "human_question": None}
                 if len(prompts) == 1 else
                 {"spec": "Needs item definitions.", "spec_gate": "needs_human", "slices": [],
                  "questions": [{"question": "Which items?", "why_code_unanswered": "No policy in code.", "checked_paths": []}]}

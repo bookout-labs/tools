@@ -7,9 +7,11 @@ import json
 from typing import Literal, TYPE_CHECKING
 
 from foreman.config import Config, ModelSpec, order_for, contributors_for, family
-from foreman.skill_rules import SkillMethod, SkillRule, principle
+from foreman.skill_rules import SkillMethod, SkillRule
+from foreman.outcomes import Halt, stopped
+from foreman.spec_check import SpecHistory, accept as accept_checked
 from foreman.stage_output import (
-    StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput,
+    StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecRejection, PlanState,
     ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord,
     InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection,
 )
@@ -77,7 +79,7 @@ def no_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -
     return "", None, None
 
 
-def spec_instructions(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
+def pinned_instructions(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
     run = state["run"]
     pinned = (f"\n\ntarget_repository: {run.repo}\ntarget_checkout: {workspace.root.resolve()}\npinned base: {run.base_sha}"
               f"\nRead the committed tree with git ls-tree {run.base_sha} and git show {run.base_sha}:<path>.")
@@ -107,6 +109,35 @@ def accept_spec(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     if output.spec_gate == "ready" and not slices:
         raise InvalidOutput("slices: ready spec needs at least one slice")
     return {**output.update(UpdateContext(plan, state["review"], slices, model if isinstance(model, ModelSpec) else None))}
+
+
+def reject_candidate(plan: PlanState, revision: str, detail: str, max_rounds: int,
+                     reason: SpecRejection | None = None) -> "DeliveryUpdate":
+    """Count each rejected candidate once. The final allowed rejection or a repeated one stops planning."""
+    repeated = revision in plan.rejected_revisions
+    rejected = plan.rejected_revisions if repeated else [*plan.rejected_revisions, revision]
+    planning = plan.model_copy(update={"rejected_revisions": rejected, "spec_rejection": reason})
+    update: "DeliveryUpdate" = {"plan": planning, "human_question": ""}
+    if planning.spec_failures >= max_rounds:
+        update.update(stopped(Halt.spec_cap, detail, "spec"))
+    elif repeated:
+        update.update(stopped(Halt.invalid_output, f"Revision repeats a rejected plan. {detail}", "spec"))
+    return update
+
+
+def accept_spec_check(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
+    assert isinstance(output, SpecCheckOutput) and context.config is not None
+    if output.human_question:
+        return {"human_question": output.human_question}
+    plan = context.state["plan"]
+    assert plan.spec_candidate is not None
+    candidate = SpecCandidate.from_record(plan.spec_candidate)
+    checked = accept_checked(SpecHistory.model_validate(plan.spec_history), output, candidate)
+    planning = plan.model_copy(update={"spec_history": {"rounds": checked.history.rounds, "settled": checked.history.settled}})
+    if checked.approval:
+        return {"plan": planning, "human_question": ""}
+    detail = "\n".join(finding.summary for finding in checked.history.accounting().unresolved())
+    return reject_candidate(planning, candidate.revision, detail, context.config.max_review_rounds)
 
 
 def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
@@ -205,6 +236,18 @@ class Stage:
         name, config, state.get("models_used") or {}, state.get("implement_models"))
 
 
+class TriageStage(Stage):
+    step = "triage.route"
+
+
+class ResearchStage(Stage):
+    step = "research.answer"
+
+
+class SpecStage(Stage):
+    step = "spec.draft"
+
+
 class SpecCheckStage(Stage):
     model_selector = "spec"
     model_dependency = "spec"
@@ -233,25 +276,24 @@ def spec_check_projection(state: "DeliveryState", workspace: Workspace) -> tuple
             "human_answers": [answer["answer"] for answer in answers]}, None
 
 
+DIAGNOSING_BUGS = SkillMethod(path="engineering/diagnosing-bugs/SKILL.md", kind="skill", lines=(18, 37), repository="matt_skills")
 STAGES = {
-    "triage": Stage("triage.md", TriageOutput, (
-        SkillRule(skill=SkillMethod(path="poteto-mode/SKILL.md", kind="skill", lines=(110, 110))),
-    ), input_fields=("run", "plan", "human_question", "human_answers")),
-    "research": Stage("research.md", ResearchOutput, (
+    "triage": TriageStage("triage.md", TriageOutput, prepare=pinned_instructions, input_fields=("run", "plan", "human_answers")),
+    "research": ResearchStage("research.md", ResearchOutput, (
         SkillRule(skill=SkillMethod(path="how/SKILL.md", kind="leaf_prompt", lines=(17, 17))),
-        SkillRule(skill=SkillMethod(path="why/SKILL.md", kind="skill"), when="bug_fix"),
-    ), input_fields=("run", "plan")),
-    "spec": Stage("spec.md", SpecOutput, (
-        principle("redesign-from-first-principles"),
-        principle("subtract-before-you-add"),
-        principle("model-the-domain"),
-        principle("boundary-discipline"),
-        principle("type-system-discipline"),
-        SkillRule(skill=SkillMethod(path="statechart/SKILL.md", kind="skill"), when="stateful"),
-    ), prepare=spec_instructions, accept=accept_spec, input_fields=("run", "plan", "human_question", "human_answers")),
+        SkillRule(skill=SkillMethod(path="why/SKILL.md", kind="skill", lines=(9, 9)), when="bug_fix"),
+        SkillRule(skill=DIAGNOSING_BUGS, when="bug_fix"),
+        SkillRule(skill=DIAGNOSING_BUGS, when="perf_issue"),
+    ), prepare=pinned_instructions, input_fields=("run", "plan", "human_answers")),
+    "spec": SpecStage("spec.md", SpecOutput, (
+        SkillRule(skill=SkillMethod(path="architect/SKILL.md", kind="skill", lines=(9, 9))),
+        SkillRule(skill=SkillMethod(path="statechart/SKILL.md", kind="skill", lines=(23, 27)), when="stateful"),
+        SkillRule(skill=SkillMethod(path="engineering/to-tickets/SKILL.md", kind="skill", lines=(29, 40),
+                                    repository="matt_skills"), when="parent"),
+    ), prepare=pinned_instructions, accept=accept_spec, input_fields=("run", "plan", "human_answers")),
     "spec_check": SpecCheckStage("spec_check.md", SpecCheckOutput, (
         SkillRule(skill=SkillMethod(path="interrogate/SKILL.md", kind="leaf_prompt", lines=(19, 19))),
-    ), prepare=spec_instructions, project=spec_check_projection,
+    ), prepare=pinned_instructions, accept=accept_spec_check, project=spec_check_projection,
         input_fields=("run", "plan", "human_answers"), models=spec_check_models),
     "implement": ImplementStage("implement.md", ImplementOutput, (
         SkillRule(skill=SkillMethod(path="tdd/SKILL.md", kind="skill", lines=(9, 31)), when="bug_fix"),

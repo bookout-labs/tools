@@ -3,6 +3,8 @@ import tests
 from foreman.stages import STAGES
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION
 from test_runner import FINDING
+from skill_fixture import AUTHOR
+from foreman.config import load_config
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 import unittest
 
@@ -149,8 +151,12 @@ class StageOwnershipTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 payload = handler(stage, None, state, "").output
                 output = parse_output(contract, payload, context=SCRIPTED_REVIEW_CONTEXT)
-                update = stage_update(stage, output, state, "model", workspace=workspace)
-                key = {"implement": "implementation", "review": "review", "triage": "plan", "spec": "plan", "spec_check": "human_question"}.get(stage, stage)
+                # The checker records its verdict on the candidate it checked.
+                checked = {**state, "plan": SpecCandidate(slices=[CandidateSlice.model_validate(handler.slices[0])], spec="Ship",
+                    work_kind="feature", author=AUTHOR).update(PlanState(issue_kind="slice", spec_gate="ready"), single=True)}
+                update = stage_update(stage, output, checked if stage == "spec_check" else state, "model",
+                                      workspace=workspace, config=load_config())
+                key = {"implement": "implementation", "review": "review", "triage": "plan", "spec": "plan", "spec_check": "plan"}.get(stage, stage)
                 self.assertIn(key, update)
                 self.assertEqual(update["path"], [stage])
                 self.assertEqual(update["models_used"][stage], "model")
@@ -159,4 +165,4 @@ class StageOwnershipTests(unittest.TestCase):
         from foreman.delivery import read_delivery_state
 
         with self.assertRaises(ValidationError):
-            read_delivery_state({"review": ReviewState(), "run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "stop": "sliced", "plan": {"slice": {"title": "Incomplete"}}})
+            read_delivery_state({"review": ReviewState(), "run": RunState(repo="org/repo"), "checks": ChecksState(check=""), "path": [], "stop": "children_filed", "plan": {"slice": {"title": "Incomplete"}}})

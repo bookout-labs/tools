@@ -13,7 +13,7 @@ from foreman.outcomes import Halt
 from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
-    AttemptRecord, DispatchPlanRecord,
+    AttemptRecord, DispatchPlanRecord, SpecTarget,
     PlanState as PlanState, ReviewState as ReviewState,
 )
 from foreman.workspace import PullRequestSize, WorkState
@@ -28,6 +28,11 @@ class RunState(BaseModel, frozen=True, extra="forbid"):
     base_sha: str = ""
     token_cap: int | None = None
     max_budget_usd: str | None = None
+
+    def target(self) -> SpecTarget:
+        """The admitted repository, issue and pinned base that every candidate binds."""
+        assert self.issue is not None
+        return {"repo": self.repo.lower(), "issue": self.issue, "base": self.base_sha}
 
 
 class ChecksState(BaseModel, frozen=True, extra="forbid"):
@@ -49,7 +54,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -94,6 +99,7 @@ class DeliveryFields(TypedDict, total=False):
     schema_version: int
     dispatch_plan: DispatchPlanRecord
     pstack_pin: dict[str, str]
+    matt_skills_pin: dict[str, str]
     skill_reason: SkillFailureReason
     attempts: Annotated[list[AttemptRecord], extend_attempts]
     research: str

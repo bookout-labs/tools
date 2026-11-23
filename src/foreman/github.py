@@ -354,7 +354,32 @@ def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
     return ["gh", "pr", "merge", pull_request, "--repo", repo, "--auto", "--squash", "--match-head-commit", sha]
 
 
+def redact_slice(child: StoredSlice) -> StoredSlice:
+    screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
+    return child.model_copy(update={
+        "builds": [seam.model_copy(update={"name": redact(seam.name), "path": redact(seam.path) if seam.path else None}) for seam in child.builds],
+        "uses": [seam.model_copy(update={"name": redact(seam.name), "path": redact(seam.path) if seam.path else None}) for seam in child.uses],
+        "title": redact(child.title),
+        "acceptance": redact(child.acceptance),
+        "depends_on": [redact(title) for title in child.depends_on],
+        "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
+        "properties": [
+            prop.model_copy(update={"name": redact(prop.name), "constraint": redact(prop.constraint)})
+            for prop in child.properties
+        ],
+    })
+
+
+def human_comments(forge: "Forge", login: str, repo: str, issue: int) -> list[str]:
+    """Comments the configured human posted on the issue, which the coordinator relays under their identity."""
+    if not login:
+        return []
+    return [(comment.body or "").strip() for comment in forge.issue_comment_records(repo, issue)
+            if comment.user is not None and comment.user.login.casefold() == login.casefold()]
+
+
 def render_slice_body(prose: str, child: StoredSlice) -> str:
+    child = redact_slice(child)
     dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
     constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
     stored = child.model_dump(exclude_unset=True)
@@ -608,7 +633,6 @@ class LiveForge:
     ) -> int:
         repo, title, body, *labels = (redact(value) for value in (repo, title, body, *labels))
         if child is not None:
-            child = self._redact_slice(child)
             body = render_slice_body(body, child)
         args = ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={body}"]
         for label in labels:
@@ -628,22 +652,6 @@ class LiveForge:
             "gh", "api", f"repos/{repo}/issues/{number}/dependencies/blocked_by", "--paginate", "--slurp",
         ])
         return [blocker for page in pages.root for blocker in page]
-
-    @staticmethod
-    def _redact_slice(child: StoredSlice) -> StoredSlice:
-        screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
-        return child.model_copy(update={
-            "builds": [seam.model_copy(update={"name": redact(seam.name), "path": redact(seam.path) if seam.path else None}) for seam in child.builds],
-            "uses": [seam.model_copy(update={"name": redact(seam.name), "path": redact(seam.path) if seam.path else None}) for seam in child.uses],
-            "title": redact(child.title),
-            "acceptance": redact(child.acceptance),
-            "depends_on": [redact(title) for title in child.depends_on],
-            "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
-            "properties": [
-                prop.model_copy(update={"name": redact(prop.name), "constraint": redact(prop.constraint)})
-                for prop in child.properties
-            ],
-        })
 
     def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool:
         issue = self._read(

@@ -47,14 +47,14 @@ def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000, par
 
         "attempts": [attempt(CLAUDE.name, prior)],
     })
-    return snapshot_result(graph.get_state(graph.config))
+    return snapshot_result(graph.get_state(graph.config, subgraphs=True))
 
 
 class DispatchBudgetTests(unittest.TestCase):
     def test_every_dispatching_stage_recomputes_the_budget_for_each_claude_attempt(self):
         for stage in MODEL_STAGES:
             with self.subTest(stage=stage):
-                script = ScriptHandler(triage="question" if stage == "research" else "spec", slices=[EMPTY_SLICE])
+                script = ScriptHandler(triage="question" if stage == "research" else "plan", slices=[EMPTY_SLICE])
                 calls = []
 
                 def handler(node, model, state, instruction):
@@ -67,7 +67,7 @@ class DispatchBudgetTests(unittest.TestCase):
                     return replace(reply, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
                 result = walk(handler, config=configured(stage), parent=stage in {"research", "spec"})
-                self.assertEqual(result["stop"], {"research": "answered", "spec": "sliced"}.get(stage, "verified"))
+                self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(stage, "verified"))
                 self.assertEqual(calls, [(CLAUDE.name, "0.2"), (NEXT_CLAUDE.name, "0.1")])
                 self.assertTrue(getattr(result["plan"], stage) if stage in {"triage", "spec"} else result["implementation" if stage == "implement" else stage])
 
@@ -141,7 +141,7 @@ class DispatchBudgetTests(unittest.TestCase):
                             0.25: "Run Claude spend: $1.05. Dollar allowance: $1.",
                         }[cost])
                     else:
-                        self.assertEqual(result["plan"].triage, "needs_human")
+                        self.assertTrue(result["halt_detail"].startswith("Which?"))
 
     def test_spent_or_unknown_allowance_never_starts_a_candidate(self):
         for prior, expected in ((1.0, "budget_exceeded"), (1.05, "budget_exceeded"), (None, "budget_exceeded")):

@@ -91,7 +91,7 @@ class NpmSmokeTest(unittest.TestCase):
                     return worker_reply(args, {'implementation': 'added exact fixture'})
                 if node:
                     return worker_reply(args, APPROVE)
-                return worker_reply(args, {'triage': 'implement'})
+                return worker_reply(args, {'triage': 'supplied_slice'})
             def pull_request_for(repo, branch):
                 # Origin is the checkout itself, so the PR shows the branch head that publish observes there.
                 listed = real_run(['git', 'ls-remote', '.', f'refs/heads/{branch}'], cwd=checkouts[-1],

@@ -8,15 +8,16 @@ from typing import Annotated, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from foreman.config import PstackPin
+from foreman.config import SkillPin
 from foreman.stage_output import WorkKind
 
 if TYPE_CHECKING:
     from foreman.state import DeliveryState
 
-SkillSource = Callable[[PstackPin, Path], Path]
+SkillSource = Callable[[SkillPin, SkillPin, Path], Path]
 
-Condition = WorkKind | Literal["stateful"]
+Condition = WorkKind | Literal["stateful", "parent"]
+Repository = Literal["pstack", "matt_skills"]
 SkillFailureReason = Literal["pin_unavailable", "method_missing"]
 LineNumber = Annotated[int, Field(ge=1)]
 PACKAGE_SKILLS = Path(__file__).resolve().with_name("skills")
@@ -28,11 +29,14 @@ class SkillMethod(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     path: str
-    kind: Literal["principle", "skill", "leaf_prompt", "repository_skill", "target_skill"]
+    kind: Literal["skill", "leaf_prompt", "repository_skill", "target_skill"]
     lines: tuple[LineNumber, LineNumber] | None = None
+    repository: Repository = "pstack"
 
     def source(self, root: Path) -> Path:
-        return PACKAGE_SKILLS / Path(self.path).name if self.kind == "repository_skill" else root / self.path
+        if self.kind == "repository_skill":
+            return PACKAGE_SKILLS / Path(self.path).name
+        return root / self.path if self.repository == "pstack" else root / self.repository / self.path
 
     @field_validator("lines")
     @classmethod
@@ -55,21 +59,19 @@ class SkillRule(BaseModel):
                 return True
             case "stateful":
                 return plan.issue_kind == "slice" and plan.slice is not None and plan.slice["stateful"] is True
+            case "parent":
+                return plan.issue_kind == "parent"
             case work_kind:
                 return plan.work_kind == work_kind
-
-
-def principle(name: str) -> SkillRule:
-    return SkillRule(skill=SkillMethod(path=f"principle-{name}/SKILL.md", kind="principle"))
 
 
 class SkillMissing(ValueError):
     halt: Literal["skill_missing"] = "skill_missing"
 
-    def __init__(self, pin: PstackPin, method: str | None = None, detail: str | None = None):
+    def __init__(self, pin: SkillPin, method: str | None = None, detail: str | None = None, *, source: Repository = "pstack"):
         self.reason: SkillFailureReason = "pin_unavailable" if method is None else "method_missing"
         reason = "pin unavailable" if method is None else f"method missing at pin ({method})"
-        super().__init__(f"pstack {reason}, commit {pin.commit}" + (f": {detail}" if detail else ""))
+        super().__init__(f"{source} {reason}, commit {pin.commit}" + (f": {detail}" if detail else ""))
 
 
 def git(root: Path, *args: str) -> str:
@@ -78,37 +80,40 @@ def git(root: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def export_skills(pin: PstackPin, scratch: Path) -> Path:
+def export_skills(pin: SkillPin, matt_skills: SkillPin, scratch: Path) -> Path:
+    """Export the pstack skills to the returned root and the Matt Pocock skills under its matt_skills directory."""
     from foreman.stages import STAGES
 
-    checkout = scratch / "source"
-    checkout.mkdir()
-    archive = scratch / "skills.tar"
     root = (scratch / "skills").resolve()
-    root.mkdir()
-    try:
-        git(checkout, "init", "--quiet")
-        git(checkout, "fetch", "--quiet", "--no-tags", "--depth=1", "--", pin.repository, pin.commit)
-        git(checkout, "archive", "--format=tar", f"--output={archive.resolve()}", "FETCH_HEAD:pstack/skills")
-        with tarfile.open(archive) as bundle:
-            bundle.extractall(root, filter="data")
-    except (OSError, subprocess.CalledProcessError, tarfile.TarError) as exc:
-        raise SkillMissing(pin) from exc
+    pins: dict[Repository, SkillPin] = {"pstack": pin, "matt_skills": matt_skills}
+    for name, source in pins.items():
+        checkout, archive = scratch / f"{name}-source", scratch / f"{name}.tar"
+        destination = root if name == "pstack" else root / name
+        checkout.mkdir()
+        destination.mkdir()
+        try:
+            git(checkout, "init", "--quiet")
+            git(checkout, "fetch", "--quiet", "--no-tags", "--depth=1", "--", source.repository, source.commit)
+            git(checkout, "archive", "--format=tar", f"--output={archive.resolve()}", f"FETCH_HEAD:{source.directory}")
+            with tarfile.open(archive) as bundle:
+                bundle.extractall(destination, filter="data")
+        except (OSError, subprocess.CalledProcessError, tarfile.TarError) as exc:
+            raise SkillMissing(source, source=name) from exc
 
     for rule in (rule for stage in STAGES.values() for rule in stage.skills if rule.skill.kind != "target_skill"):
         method = rule.skill
-        path = method.source(root)
+        pin, name = pins[method.repository], method.path
         try:
-            content = path.read_text(encoding="utf-8")
+            content = method.source(root).read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
-            raise SkillMissing(pin, method.path) from exc
-        name = method.path
+            raise SkillMissing(pin, name, source=method.repository) from exc
         if not content.strip():
-            raise SkillMissing(pin, name, "method is empty")
+            raise SkillMissing(pin, name, "method is empty", source=method.repository)
         if method.lines:
             first, last = method.lines
             if len(content.splitlines()) < last:
-                raise SkillMissing(pin, name, f"requires lines {first} through {last}, has {len(content.splitlines())}")
+                raise SkillMissing(pin, name, f"requires lines {first} through {last}, has {len(content.splitlines())}",
+                                   source=method.repository)
 
     for path in sorted(root.rglob("*"), key=lambda entry: -len(entry.parts)):
         if not path.is_symlink():

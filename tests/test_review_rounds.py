@@ -18,6 +18,7 @@ from foreman.worker import CliWorker, run_worker_command
 from unittest.mock import patch
 from foreman.workspace import LiveWorkspace
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
+from foreman.runner import snapshot_result
 from foreman.smoke import smoke_verdict
 from foreman.github import LiveForge
 from foreman.config import ModelSpec
@@ -167,7 +168,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     crashed = True
                     raise RuntimeError("process lost")
                 if node == "triage":
-                    return Outcome("ran", {"triage": "implement", "work_kind": "feature", "slice": None, "human_question": None}, usage=SCRIPTED_USAGE)
+                    return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None}, usage=SCRIPTED_USAGE)
                 if node == "spec_check":
                     return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
                 implementations += 1
@@ -180,7 +181,7 @@ class ReviewRoundsTest(unittest.TestCase):
                                          run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "example/repo#8"}}
                 state = {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo=repo, issue=8, base_branch="main", base_sha=workspace.current.head, token_cap=20_000_000, max_budget_usd=None), "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE),
-                         "checks": ChecksState(check="exit 0"), "pstack_pin": settings.pstack.model_dump(), **(initial or {})}
+                         "checks": ChecksState(check="exit 0"), "pstack_pin": settings.pstack.model_dump(), "matt_skills_pin": settings.matt_skills.model_dump(), **(initial or {})}
                 if crash or post_crash or review_crash:
                     with self.assertRaisesRegex(RuntimeError, "process lost"):
                         graph.invoke(state, config)
@@ -202,6 +203,8 @@ class ReviewRoundsTest(unittest.TestCase):
                     with patch('foreman.runner.load_config', return_value=settings):
                         result = run_live_delivery(repo=repo, issue=8, check='exit 0',
                             checkpoint=Path(directory) / 'checkpoint', run=LiveRun(self.forge, workspace), dispatcher=dispatch)
+                if (paused := graph.get_state(config, subgraphs=True)).interrupts:
+                    return snapshot_result(paused)
                 return read_delivery_state({"stop": "needs_human", **result})
 
     def test_claude_grants_each_rendered_review_command(self):
@@ -577,12 +580,14 @@ class ReviewRoundsTest(unittest.TestCase):
                                  answer=answer)
         self.assertEqual(result["stop"], "verified")
         self.assertEqual(result["path"].count("implement"), 1)
-        self.assertEqual(len(self.forge.reviews), 2)
+        # The question pauses inspect, so only the answered review is posted.
+        self.assertEqual(len(self.forge.reviews), 1)
 
     def test_report_with_unresolved_intent_holds_for_an_answer(self):
         question = "Should the list include archived items?"
         result = self.run_rounds([{**APPROVE, "human_question": question}])
         self.assertEqual(result["stop"], "needs_human")
         self.assertEqual(result["review"].review, "")
-        self.assertIn(question, self.forge.reviews[0][3])
+        self.assertTrue(result["halt_detail"].startswith(question))
+        self.assertEqual(self.forge.reviews, [])
         self.assertFalse(self.forge.merge_calls)

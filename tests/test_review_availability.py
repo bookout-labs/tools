@@ -23,7 +23,7 @@ import sys
 from unittest.mock import patch
 from foreman.adapters import Outcome, Usage
 from foreman.cli import run_exit_code
-from foreman.config import ModelSpec, PstackPin, load_config, order_for
+from foreman.config import ModelSpec, SkillPin, load_config, order_for
 from foreman.outcomes import Halt
 from foreman.delivery import LiveRun, compile_delivery, halted
 from foreman.github import ForgeError
@@ -98,7 +98,7 @@ def worker(node, model, state, instruction):
         if kind == "invalid":
             return Outcome("ran", {}, usage=SCRIPTED_USAGE)
     return script(node, model, state, instruction)
-config = replace(load_config(), pstack=PstackPin.model_validate_json(pin))
+config = replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_skills=SkillPin.model_validate_json(pin).model_copy(update={"directory": "skills"}))
 if legacy == "single":
     for name, node in config.nodes.items():
         if node.models:

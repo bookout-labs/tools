@@ -26,7 +26,7 @@ from test_runner import EMPTY_SLICE
 class PermissionsTest(unittest.TestCase):
     def test_method_paths_are_covered_by_precise_roots(self):
         with skill_fixture() as (config, scratch), TemporaryDirectory() as directory:
-            root = export_skills(config.pstack, scratch)
+            root = export_skills(config.pstack, config.matt_skills, scratch)
             # The worker runs in the target checkout, so its own verify skill needs no extra read root.
             checkout = Path(directory)
             target_skill = checkout / ".claude/skills/verify-board/SKILL.md"
@@ -94,7 +94,7 @@ class PermissionsTest(unittest.TestCase):
 
     def test_spec_read_first_rule_reaches_worker(self):
         instructions = []
-        script = ScriptHandler(triage="spec", spec_gate="needs_human")
+        script = ScriptHandler(triage="plan", spec_gate="needs_human")
         def handler(node, model, state, instruction):
             if node == "spec":
                 instructions.append(instruction)

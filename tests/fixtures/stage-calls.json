@@ -1,14 +1,14 @@
 {
-  "bug_fix/implement": "83df82ecfc65b92ec4b0ab5c4123ab1fd58a25fc270c92b817ec40b121c142ee",
-  "bug_fix/question": "5b6385ad6b4267685c8beb486b1a56a55c1d5bb6eb1fd108cffb6f838ec03042",
-  "bug_fix/spec": "062742cde87381264f130f45140c449203067ad7b583c5140813673f532e5c64",
-  "feature/implement": "23ee1a04e1a8be8df0f8671ff595e064db4a24495cd5667fbfd942a3c968dca0",
-  "feature/question": "49d75bc0bc6fdfe785c260cabd3a4e6924ff9802d67168a2c761ef12d266fa3b",
-  "feature/spec": "a5ad6e442d658b8ee943f2c859ceb597848e04afff8b71e698e39a8b21874dd9",
-  "perf_issue/implement": "d2488c749305782382a45ed1d3d91ab669c077766cb811093a50a53462587968",
-  "perf_issue/question": "98abfa4b1982398ddf24703fdb5d43e5704ffa047972cc8316205adfcaa8f63a",
-  "perf_issue/spec": "8fef1ba7775d2f23bca1b19b174cf1583e204a7554a2385dc202bf82c81f6932",
-  "refactoring/implement": "261c8c143d8027f706d353dd971988b9010bf1f948526b9d218d4705e589eec8",
-  "refactoring/question": "d0eb94bc4880a87255e0ce2abfac2be9360214f00de3ff5fe3ad0969bfbc736d",
-  "refactoring/spec": "c2641a89d5feed410f67f6354c8ea7e6ab058330de2785d2e54fcbb6da543523"
+  "bug_fix/plan": "7d0d681968775dbb03d00309fd2f5493ab77078a3f92ce289becbcb9338abdbf",
+  "bug_fix/question": "ac2c868fdc6dcd3592b52886380a7f9d5842d5c1be147f5c69e6c02e0b77f87b",
+  "bug_fix/supplied_slice": "7d0d681968775dbb03d00309fd2f5493ab77078a3f92ce289becbcb9338abdbf",
+  "feature/plan": "1dbfd88f5cfa197e55455d3ca9681e06b2ef5592ba85cb4d4046d1615ef69431",
+  "feature/question": "1efd02626e969cdbbeb75fdfc5a5bab52d034e8791786b20d4d03b09f45f3aeb",
+  "feature/supplied_slice": "1dbfd88f5cfa197e55455d3ca9681e06b2ef5592ba85cb4d4046d1615ef69431",
+  "perf_issue/plan": "f33c3d17a8140311da45e96f1b2304ccf766f27d513439e6294242d29fc0772b",
+  "perf_issue/question": "3f45bac01afaaf3883b1be289227c511693ef2aa8a347daeabd8abc5d6a32990",
+  "perf_issue/supplied_slice": "f33c3d17a8140311da45e96f1b2304ccf766f27d513439e6294242d29fc0772b",
+  "refactoring/plan": "38baf750d6b83d81560d63df29e28055e178a9f3fbe6493e0baf22a2ea8d2398",
+  "refactoring/question": "a49cd7edfdf11504ec46b8b6748227c4ef30ff5d2c0970ab78a48d2c98758690",
+  "refactoring/supplied_slice": "38baf750d6b83d81560d63df29e28055e178a9f3fbe6493e0baf22a2ea8d2398"
 }

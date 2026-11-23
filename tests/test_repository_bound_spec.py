@@ -7,12 +7,13 @@ import unittest
 from unittest.mock import patch
 
 from foreman.adapters import Outcome
-from foreman.delivery import LiveRun, spec_effect
+from foreman.delivery import LiveRun
 from foreman.dry_run import CLEAR, SCRIPTED_USAGE, ScriptHandler
-from foreman.github import IssueComment, IssueBlocker
+from foreman.github import IssueBlocker
 from foreman.runner import AnswerError, run_live_delivery
 from foreman.skill_rules import git
 from foreman.stage_output import SpecCandidate, StoredSlice
+from foreman.steps import spec as spec_step
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_skills
 from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, slice_body
@@ -39,11 +40,7 @@ class Checkout(FakeWorkspace):
 class Forge(FakeGitHub):
     def __init__(self):
         super().__init__()
-        self.rulings = []
         self.builds = []
-
-    def issue_comment_records(self, repo, number):
-        return list(self.rulings)
 
     def open_pull_request(self, repo, head, base, title, body):
         self.builds.append((repo, head, base))
@@ -52,9 +49,6 @@ class Forge(FakeGitHub):
     def arm_auto_merge(self, *args):
         receipt = super().arm_auto_merge(*args)
         return receipt.model_copy(update={"status": "MERGED"})
-
-    def ruling(self, body, login="fixture-owner"):
-        self.rulings.append(IssueComment.model_validate({"user": {"login": login}, "body": body}))
 
 
 class RepositoryBoundSpecTests(unittest.TestCase):
@@ -233,7 +227,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                 self.checkpoint = self.checkpoint.with_name(f"{entry}.sqlite3")
                 if entry == "drafted":
                     self.forge.labels = ["factory"]
-                    self.script.triage = "spec"
+                    self.script.triage = "plan"
                     self.script.slices = [EDIT]
 
                 def check(model, state, instruction):
@@ -248,7 +242,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
 
     def test_distinct_defects_reach_the_cap(self):
         self.forge.labels = ["factory"]
-        self.script.triage = "spec"
+        self.script.triage = "plan"
         invalid = {**EDIT, "uses": [{"name": "other", "exists": True, "path": "tool.py"}]}
         first = {"spec": "First draft", "spec_gate": "ready", "slices": [invalid], "questions": []}
         plans = iter([first, {**first, "spec": "Second draft"}, {**first, "spec": "Third draft"}])
@@ -261,7 +255,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
 
     def test_unchanged_invalid_draft_stops_instead_of_drafting_until_recursion_limit(self):
         self.forge.labels = ["factory"]
-        self.script.triage = "spec"
+        self.script.triage = "plan"
         invalid = {**EDIT, "uses": [{"name": "other", "exists": True, "path": "tool.py"}]}
         draft = {"spec": "Same draft", "spec_gate": "ready", "slices": [invalid], "questions": []}
         result = self.invoke(draft=lambda: draft)
@@ -285,7 +279,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
 
     def test_changed_draft_requires_a_fresh_answer_to_the_same_question(self):
         self.forge.labels = ["factory"]
-        self.script.triage = "spec"
+        self.script.triage = "plan"
         question = {"question": "Use the proposed order?", "why_code_unanswered": "The issue does not specify order.",
                     "checked_paths": ["index.py"]}
         initial = {"spec": "Proposed change", "spec_gate": "needs_human", "slices": [EDIT], "questions": [question]}
@@ -305,7 +299,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.forge.ruling(marker_b + "\nUse a stable sort")
         result = self.invoke(draft=draft)
         self.assertEqual([qa["answer"] for qa in result["plan"].human_qa], ["Yes", "Use a stable sort"])
-        self.assertEqual(result["stop"], "sliced")
+        self.assertEqual(result["stop"], "children_filed")
 
     def test_verdict_for_another_scope_blocks_both_effects(self):
         for entry in ("stored", "drafted"):
@@ -314,21 +308,23 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                 self.calls.clear()
                 if entry == "drafted":
                     self.forge.labels = ["factory"]
-                    self.script.triage = "spec"
+                    self.script.triage = "plan"
                     self.script.slices = [EDIT]
 
+                real, guards = spec_step.check, []
+
                 def stale(state, run):
+                    # The saved verdict cleared a plan bound to another pinned base.
+                    guards.append(entry)
                     plan = state["plan"]
                     approved = SpecCandidate.from_record(plan.spec_candidate)
-                    changed = approved.model_copy(update={"spec": "Different scope"})
-                    changed_plan = changed.update(plan, single=entry == "stored")
+                    changed = approved.model_copy(update={"target": {**approved.target, "base": "0" * 40}})
                     self.assertNotEqual(changed.revision, approved.revision)
-                    return spec_effect({**state, "plan": changed_plan}, run)
+                    return real({**state, "plan": changed.update(plan, single=entry == "stored")}, run)
 
-                with patch("foreman.delivery.spec_effect", side_effect=stale) as build_guard, \
-                     patch("foreman.runner.spec_effect", side_effect=stale) as filing_guard:
+                with patch.object(spec_step, "check", stale):
                     result = self.invoke()
-                (build_guard if entry == "stored" else filing_guard).assert_called_once()
+                self.assertEqual(guards, [entry])
                 self.assertEqual(result["stop"], "invalid_output")
                 self.assertEqual(self.forge.builds, [])
                 self.assertFalse(any("slice" in labels for _, _, labels in self.forge.created))

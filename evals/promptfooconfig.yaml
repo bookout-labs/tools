@@ -27,12 +27,12 @@ tests:
     assert:
       - type: equals
         value: verified
-  - description: A parent issue that needs a spec stops sliced
+  - description: A parent issue that needs a spec files its children
     vars:
       case: parent-spec
     assert:
       - type: equals
-        value: sliced
+        value: children_filed
   - description: An open product choice stops for a person
     vars:
       case: spec-gate

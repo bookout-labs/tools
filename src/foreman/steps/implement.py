@@ -1,52 +1,29 @@
 """Implement: publish exactly the tree that passed the target repository's checks."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from functools import wraps
 import re
 import textwrap
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import interrupt
 
 from foreman.check_output import CheckOutput
 from foreman.config import family
-from foreman.dispatch import DISPATCH, DispatchResult, DispatchRun
-from foreman.github import Forge, ForgeError, PublishedPullRequest
+from foreman.dispatch import DISPATCH
+from foreman.github import ForgeError, PublishedPullRequest
 from foreman.outcomes import Halt, stopped
 from foreman.redaction import redact
-from foreman.stage_output import AttemptRecord, HumanPrompt, PlanState, ReviewState, spec_digest
-from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState
-from foreman.workspace import CheckLog, ImplementationRejected, WorkState, Workspace, WorkspaceError
+from foreman.stage_output import ReviewState
+from foreman.state import DeliveryState, DeliveryUpdate
+from foreman.steps import StageInput, StageRun
+from foreman.workspace import ImplementationRejected, WorkState, WorkspaceError
 
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.verify_cap,
          Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled]
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 STEPS = ("prepare", "implement", "check", "commit", "publish")
-
-
-@dataclass(frozen=True)
-class StageRun:
-    """The live adapters and delivery callbacks that the implement steps share."""
-
-    workspace: Workspace
-    forge: Forge
-    check_log: CheckLog | None
-    max_check_failures: int
-    dispatch: Callable[[DeliveryState, str], DispatchRun]
-    apply: Callable[[DeliveryState, DispatchResult], DeliveryUpdate]
-
-
-class ImplementInput(DeliveryFields, total=False):
-    """Everything but the step path, which the stage returns as its own entries."""
-
-    review: ReviewState
-    plan: PlanState
-    checks: ChecksState
-    run: RunState
-    stop: str
 
 
 def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -59,7 +36,7 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                 return {"path": ["prepare"]}
             # A resumed attempt keeps the edits it owns.
             worktree = workspace.inspect()
-            owned = worktree.clean or run.dispatch(state, work.owned).fingerprint() == work.owned
+            owned = worktree.clean or run.dispatch("implement", state, work.owned).fingerprint() == work.owned
             descends = worktree.head == work.attempt_head or workspace.contains_commit(worktree.head, work.attempt_head)
             if worktree.branch != work.branch or not descends or not owned:
                 return stopped(Halt.dirty_worktree, f"The checkout differs from the saved attempt on {work.branch}. It is preserved.", "prepare")
@@ -90,37 +67,18 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     work, checks = state["work"], state["checks"]
     workspace = run.workspace
     update: DeliveryUpdate = {}
-    attempts: list[AttemptRecord] = []
-    steps: list[str] = []
 
     def finish(result: DeliveryUpdate) -> DeliveryUpdate:
-        return {**update, "work": work, "checks": checks, **result, "attempts": attempts, "path": steps}
+        # The path names the builder call and the check run, not the halt's step label.
+        return {**update, "work": work, "checks": checks, **result, "path": update.get("path", [])}
 
     if not work.built or checks.verify == "fail":
-        current: DeliveryState = state
-        owned = work.owned
-        while True:
-            # Each answered question dispatches again. A resumed node replays earlier calls from their checkpoints.
-            result = DISPATCH.invoke({"caller": current, "stage": "implement"}, context=run.dispatch(current, owned))
-            applied = run.apply(current, result)
-            attempts += applied.pop("attempts", [])
-            steps += applied.pop("path", [])
-            update.update(applied)
-            if halt := update.get("halt"):
-                return {**update, "stop": halt, "attempts": attempts, "path": steps}
-            owned = result.get("fingerprint", owned)
-            if not (question := update.get("human_question")):
-                break
-            plan = update.get("plan", state["plan"])
-            revision = spec_digest(["implement", state["run"].issue, work.attempt_head, question])
-            answer = interrupt(HumanPrompt(stage="implement", question=question, revision=revision).model_dump())
-            if answer == "cancel":
-                return {**update, "stop": "cancelled", "human_question": "", "attempts": attempts, "path": steps}
-            asked = [*plan.human_qa, {"stage": "implement", "question": question, "answer": answer, "revision": revision}]
-            update.update(human_question="", human_answers=[*state.get("human_answers", []), answer],
-                          plan=plan.model_copy(update={"human_qa": asked}))
-            current = {**current, **update, "attempts": [*state.get("attempts", []), *attempts]}
-        if run.dispatch(state, "").fingerprint() != owned:
+        scope: list[object] = [state["run"].issue, work.attempt_head]
+        consulted, owned = run.consult(DISPATCH, "implement", state, lambda _: scope, owned=work.owned)
+        update.update(consulted)
+        if update.get("stop"):
+            return update
+        if run.dispatch("implement", state, "").fingerprint() != owned:
             return finish(stopped(Halt.dirty_worktree, "The worktree changed after the builder returned. It is preserved.", "implement"))
         work = work.model_copy(update={"built": True, "candidate": None, "owned": owned})
         checks = checks.model_copy(update={"verify": "", "failure_output": "", "check_exit_code": None, "checked_tree": ""})
@@ -132,13 +90,13 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                 findings = ", ".join(str(finding.get("id")) for finding in state["review"].findings)
                 return finish({"stop": "no_change", "halt_detail": "No justified change" + (
                     f"; unresolved findings: {findings}." if findings else ".")})
-            work = work.model_copy(update={"candidate": candidate, "owned": run.dispatch(state, "").fingerprint()})
+            work = work.model_copy(update={"candidate": candidate, "owned": run.dispatch("implement", state, "").fingerprint()})
         tree = workspace.tree(None)
         if tree != candidate["size"]["head"]:
             return finish(stopped(Halt.dirty_worktree, "The edits changed after reconciliation. They are preserved.", "check"))
         if checks.verify == "pass" and checks.checked_tree == tree:
             return finish({})
-        steps.append("check")
+        update["path"] = [*update.get("path", []), "check"]
         output = CheckOutput(run.check_log)
         exit_code = workspace.run(checks.check, log=output)
         detail = ""
@@ -147,7 +105,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         elif exit_code and checks.preflight and (preflight := workspace.run(checks.preflight, log=run.check_log)):
             detail = f"Preflight {checks.preflight!r} exited with {preflight}"
         stable = workspace.tree(None) == tree
-        work = work.model_copy(update={"owned": run.dispatch(state, "").fingerprint()})
+        work = work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint()})
     except ImplementationRejected as exc:
         return finish(stopped(Halt.implementation_rejected, str(exc), "implement"))
     except WorkspaceError as exc:
@@ -161,14 +119,14 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     failure = output.text if exit_code else "The check passed but changed the candidate tree. Make the check leave the tree unchanged."
     checks = checks.model_copy(update={"verify": "fail", "check_exit_code": exit_code, "failure_output": failure,
                                        "verify_failures": checks.verify_failures + 1})
-    if checks.verify_failures >= run.max_check_failures:
+    if checks.verify_failures >= run.max_rounds:
         detail = f"Verification failed after {checks.verify_failures} rounds. Check {checks.check or '(none)'} failed."
         return finish(stopped(Halt.verify_cap, detail, "check"))
     if candidate["disposition"] == "adopted":
         # The next round edits on the attempt parent, so worker commits become edits.
         try:
             workspace.soft_reset(work.attempt_head)
-            work = work.model_copy(update={"owned": run.dispatch(state, "").fingerprint()})
+            work = work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint()})
         except WorkspaceError as exc:
             return finish(stopped(Halt.git_failed, str(exc), "check"))
     return finish({})
@@ -287,7 +245,7 @@ def publish(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     return {"work": work.model_copy(update={"published_head": head}), "path": ["publish"]}
 
 
-def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, ImplementInput, DeliveryState]:
+def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
     def bind(step: Callable[[DeliveryState, StageRun], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
         # The bound node keeps the step's identity, so introspection names the step as its owner.
         @wraps(step)
@@ -311,7 +269,7 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Impl
 
     declarations = {"halts": [halt.value for halt in HALTS],
                     "retries": {"failed_checks": "src/foreman/models.toml#max_review_rounds"}}
-    return (StateGraph[DeliveryState, None, ImplementInput, DeliveryState](DeliveryState, input_schema=ImplementInput, output_schema=DeliveryState)
+    return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
             .add_node("prepare", bind(prepare))
             .add_node("edit", bind(edit))
             .add_node("commit", bind(commit))

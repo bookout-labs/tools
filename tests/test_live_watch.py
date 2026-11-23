@@ -91,7 +91,7 @@ class LiveWatchTest(unittest.TestCase):
         workspace = FakeWorkspace(self.root)
         workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
         self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
-        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "implement"}))
+        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}))
         first = self.invoke(dispatcher=dispatcher)
         self.assertEqual(first['halt'], 'git_failed')
         second = self.invoke(dispatcher=dispatcher)
@@ -152,7 +152,7 @@ class LiveWatchTest(unittest.TestCase):
         self.fake.closed.add(number)
         self.fake.merged.add(number)
         def dispatch(stage, *args):
-            return (Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
+            return (Outcome('ran', {'triage': 'supplied_slice', 'human_question': None, 'work_kind': 'feature', 'slice': None},
                             usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1)) if stage == 'triage' else Outcome('quota', usage=SCRIPTED_USAGE))
         quota = dispatch
         paused = self.invoke(dispatcher=quota)
@@ -162,8 +162,9 @@ class LiveWatchTest(unittest.TestCase):
         self.assertGreater(len(again['attempts']), len(paused['attempts']))
         self.assertEqual([attempt['stage'] for attempt in again['attempts']].count('triage'), 1)
         reads = [call.args[-1] for call in self.forge.load_issue.call_args_list]
-        # Resuming the quota wait re-enters spec, whose read-only preparation reads the blocker again.
-        self.assertEqual(reads, [8, 8, number, 8, number])
+        # Resuming the quota wait re-enters spec's check step: the runner rereads the issue identity,
+        # and validate's checkpointed result stands, so the blocker is not read again.
+        self.assertEqual(reads, [8, 8, number, 8])
         self.assertEqual({attempt['stage'] for attempt in again['attempts']}, {'triage', 'spec_check'})
 
     def test_skill_failure_preserves_resumable_checkpoints(self):
@@ -178,7 +179,7 @@ class LiveWatchTest(unittest.TestCase):
                         return Outcome('quota', usage=SCRIPTED_USAGE)
                     if stage == 'spec_check':
                         return Outcome('ran', CLEAR.model_dump(), usage=SCRIPTED_USAGE)
-                    return Outcome('ran', {'triage': 'implement', 'human_question': None, 'work_kind': 'feature', 'slice': None},
+                    return Outcome('ran', {'triage': 'supplied_slice', 'human_question': None, 'work_kind': 'feature', 'slice': None},
                                    usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1))
                 dispatcher = dispatch
                 self.assertEqual(self.invoke(dispatcher=dispatcher)['stop'], stop)
@@ -217,7 +218,7 @@ class LiveWatchTest(unittest.TestCase):
         workspace = FakeWorkspace(self.root)
         workspace.create_branch = Mock(side_effect=WorkspaceError('#48 ' + secret))
         self.run = LiveRun(LiveForge(), workspace, skills=fixture_skills)
-        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'implement'}))
+        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'supplied_slice'}))
         real_run = subprocess.run
         fake_gh = lambda args, **kwargs: gh(args, **kwargs) if args[0] == 'gh' else real_run(args, **kwargs)
         with patch('foreman.github.subprocess.run', side_effect=fake_gh):
@@ -233,7 +234,7 @@ class LiveWatchTest(unittest.TestCase):
             self.checkpoint = self.root / f'{stop}.sqlite3'
             if code == 75:
                 self.run.workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
-                dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'implement'}))
+                dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'supplied_slice'}))
                 self.invoke(dispatcher=dispatcher)
             else:
                 self.invoke()
@@ -250,7 +251,8 @@ class LiveWatchTest(unittest.TestCase):
             text = stream.getvalue()
             self.assertNotIn(secret, text)
             self.assertTrue(text.endswith('watch failed: #48 [redacted:GitHub Token]\n'), text)
-            self.assertLess(text.index('done '), text.index('watch failed:'))
+            # Stage stops no longer pass through `done`, so check the run report prints before the watch error.
+            self.assertLess(text.index('this invocation'), text.index('watch failed:'))
             self.assertIsNone(self.stored()['watch'])
             self.forge.open_issues.side_effect = None
             self.assertIsNotNone(self.invoke()['watch'])

@@ -55,8 +55,8 @@ OWNERS = (
         frozenset({"check", "preflight", "verify_failures"}), 5, {}),
     OwnerCase("plan", CANDIDATE.update(PlanState(
         rejected_revisions=["b" * 64, "c" * 64], human_approval=CANDIDATE.revision,
-        spec_history={"rounds": CHECKED.rounds}, triage="implement", spec_gate="ready",
-        issue_kind="parent", work_kind="feature", child_issue_numbers=[9],
+        spec_history={"rounds": CHECKED.rounds}, triage="supplied_slice", spec_gate="ready",
+        issue_kind="parent", work_kind="feature",
         human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}],
         spec_rejection={"kind": "dangling_seam", "detail": "Missing"}), single=True),
         frozenset(PlanState.model_fields), 6, {}),

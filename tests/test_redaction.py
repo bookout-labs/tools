@@ -19,7 +19,7 @@ from detect_secrets.settings import default_settings, get_plugins
 from foreman.cli import main
 from foreman.github import LiveForge
 from foreman.redaction import redact
-from foreman.runner import _load_slice
+from foreman.stage_output import load_stored_slice as _load_slice
 from foreman.stage_output import StoredSlice
 
 
@@ -239,7 +239,7 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge._run_command"): 2,
             ("workspace.py", "LiveWorkspace._git"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,
-            ("github.py", "LiveForge._redact_slice"): 10,
+            ("github.py", "redact_slice"): 10,
             ("github.py", "LiveForge.add_label"): 1,
             ("github.py", "LiveForge.add_blocker"): 1,
             ("github.py", "LiveForge.add_sub_issue"): 1,
