@@ -2,7 +2,6 @@
 waivers:
   251:
     V2-063170af35697f53: missing [steps/verify] edge post -> __end__
-    V2-0887c4733a79c3e1: mismatched [procedure/review] prompt
     V2-0a7de2f23324161e: mismatched [procedure/review] inputs
     V2-0fd210fef8c34232: extra [top/delivery] edge implement -> review
     V2-11020c5b7a20e85d: missing [steps/verify] edge drive -> post
@@ -22,6 +21,7 @@ waivers:
     V2-c4ed5ef2cb9bb095: missing [procedure/verify] declaration
     V2-e0bc49acf18660fd: missing [steps/verify] subgraph endpoints
     V2-e1496bab14e215e9: missing [steps/verify] edge drive -> __end__
+    V2-e8993311043047b8: mismatched [procedure/review] prompt
     V2-e8f0e9ac9900113c: missing [steps/dispatch] call from verify.drive
     V2-f40a7a33c594181b: missing [steps/verify] owner src/foreman/steps/verify.py
     V2-f640be403ba68ff1: missing [top/delivery] edge verify -> __end__
