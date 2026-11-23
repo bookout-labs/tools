@@ -22,6 +22,7 @@ class Halt(StrEnum):
     merge_held = auto()
     merge_not_armed = auto()
     readiness_unavailable = auto()
+    merged_unreviewed = auto()
     budget_exceeded = auto()
     env_unavailable = auto()
     publish_failed = auto()
@@ -88,6 +89,10 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.merge_held: Policy("Repository policy holds merge arming.", "retry", None),
     Halt.merge_not_armed: Policy("Auto-merge is not switched on for the reviewed version.", "retry", None),
     Halt.readiness_unavailable: Policy("Merge readiness cannot be established.", "retry", None),
+    Halt.merged_unreviewed: Policy("GitHub merged the pull request at a head Foreman did not review.", "terminal",
+        Watch("Investigate a merge at an unreviewed head",
+              "GitHub merged the pull request at a head Foreman did not review, so the run earned no credit or dependent release.",
+              "src/foreman/steps/merge.py")),
     Halt.budget_exceeded: Policy("The run reached its token or dollar budget.", "terminal", None),
     Halt.env_unavailable: Policy("The implementation environment is unavailable.", "retry", None),
     Halt.publish_failed: Policy("The branch or pull request could not be published.", "retry", None),

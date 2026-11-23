@@ -499,7 +499,7 @@ stages:
       - After a matching merge, recheck admission for every dependent that still carries Ready. Admit only when all of its prerequisites merged. Reuse intake deduplication and keep the Ready label until admitted.
       - Foreman verifies the repository, PR, issue and owned branch from GitHub evidence and verifies Git ancestry against the saved owned revision. The human's ruling supplies evidence. Keep the head_unverified gate open until Foreman verifies both. Only verified heads can route to review or repair.
     failure_and_resume:
-      halts: [merge_held, merge_not_armed, readiness_unavailable]
+      halts: [merge_held, merge_not_armed, readiness_unavailable, merged_unreviewed]
       retries: {}
       waits: {arm: Wait for GitHub checks or approval, observe: Wait for GitHub to report a merge result}
       recovery: Pending checks or approvals pause arm. Pending queue pauses observe. Reconcile the saved PR and arm receipt before a repeated write. A fixable owned head, queue or CI failure routes to implement. A known already checked head routes to review. Preserve an unrecognized head and open the head_unverified gate. Report a mismatched merge revision without credit or dependency release.

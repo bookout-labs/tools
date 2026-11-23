@@ -1,14 +1,11 @@
 """Triage: admit one issue against its pinned repository and route it to research or planning."""
 
-from collections.abc import Callable
-from functools import wraps
-
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.github import ForgeError
+from foreman.github import ForgeError, unmet_prerequisites
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import load_stored_slice
 from foreman.state import DeliveryState, DeliveryUpdate
@@ -40,18 +37,7 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                 return stopped(Halt.missing_slice, str(exc), "admit")
             plan = plan.model_copy(update={"slice": item.record(), "work_kind": item.work_kind})
         workspace.validate_origin(issue["repo"])
-        blockers = forge.blockers(repo, number)
-        detail = ""
-        if open_urls := [blocker.html_url for blocker in blockers if blocker.state == "open"]:
-            detail = "Open blockers: " + ", ".join(open_urls)
-        elif item is not None:
-            local = {blocker.number for blocker in blockers if blocker.in_repo(repo)}
-            planned = item.blocker_numbers
-            if len(planned) != len(item.depends_on) or not set(planned) <= local:
-                detail = "Planned blocker links are missing."
-            elif unmerged := [number for number in planned if not forge.is_merged(repo, number)]:
-                detail = "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged)
-        if detail:
+        if detail := unmet_prerequisites(forge, repo, forge.blockers(repo, number), item):
             # The issue stays unadmitted. A later Ready recheck admits it once its prerequisites merge.
             return {"stop": "blocked", "halt_detail": detail, "path": ["admit"]}
         base = forge.default_branch(repo)
@@ -81,13 +67,6 @@ def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
-    def bind(step: Callable[[DeliveryState, StageRun], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
-        # The bound node keeps the step's identity, so introspection names the step as its owner.
-        @wraps(step)
-        def node(state: DeliveryState) -> DeliveryUpdate:
-            return step(state, run)
-        return node
-
     def outcome(state: DeliveryState) -> str:
         if state.get("halt") or state.get("stop") == "blocked":
             return "halted"
@@ -95,8 +74,8 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
 
     declarations: dict[str, object] = {"halts": [halt.value for halt in HALTS], "retries": {}}
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
-            .add_node("admit", bind(admit))
-            .add_node("route", bind(route))
+            .add_node("admit", run.bind(admit))
+            .add_node("route", run.bind(route))
             .add_edge(START, "admit")
             .add_conditional_edges("admit", lambda state: "halted" if outcome(state) == "halted" else "admitted",
                                    {"admitted": "route", "halted": END})

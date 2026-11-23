@@ -277,6 +277,9 @@ class FakeGitHub:
         return head not in self.foreign_heads
 
     def reconcile_merge(self, receipt):
+        # Like GitHub's queue readback, a receipt binds the base it was armed or last reconciled at.
+        if receipt.base != self.base:
+            raise HandoffChanged(f"PR #{receipt.pr} base changed from {receipt.base} to {self.base}")
         return receipt
 
     def merge_hold(self, repo):
@@ -1117,16 +1120,19 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         readings = iter([self.github.readiness("Example/Engine", 8, BRANCH, HEAD)])
         with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, merged)):
             result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
-        self.assertEqual((result["stop"], result["merge"].observed_head), ("merge_not_armed", "c" * 40))
+        self.assertEqual((result["stop"], result["merge"].observed_head), ("merged_unreviewed", "c" * 40))
         self.assertIn("No delivery credit or dependent release", result["halt_detail"])
         self.assertEqual(self.github.label_calls, [])
-        self.assertEqual(run_exit_code(result), 75)
+        # The merge cannot be undone by a retry, so the run ends and a watch tells a person.
+        self.assertEqual(run_exit_code(result), 1)
+        self.assertEqual(result["watch"]["action"], "filed")
 
     def test_ready_dependent_is_released_once_after_rejection_repair_and_matching_merge(self):
         # ME3: parent 7 holds this issue, a dependent blocked only by it, and one also blocked by an open sibling.
-        dependent = self.github.create_issue("Example/Engine", "Dependent", "Uses the change.", ["slice"])
-        waiting = self.github.create_issue("Example/Engine", "Waiting", "Uses both.", ["slice"])
         other = self.github.create_issue("Example/Engine", "Other", "Still open.", ["slice"])
+        planned = lambda *numbers: slice_body({**EMPTY_SLICE, "depends_on": [f"#{number}" for number in numbers], "blocker_numbers": list(numbers)})
+        dependent = self.github.create_issue("Example/Engine", "Dependent", planned(8), ["slice"])
+        waiting = self.github.create_issue("Example/Engine", "Waiting", planned(8, other), ["slice"])
         for number in (8, dependent, waiting, other):
             self.github.parents[("Example/Engine", number)] = 7
         self.github.dependencies = {dependent: [8], waiting: [8, other]}
@@ -1181,6 +1187,25 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual(len(self.github.merge_calls), 0 if step == "arm" else 1)
         self.github.queue_merges = True
 
+    def test_unverified_head_answer_is_kept_when_the_head_is_restored(self):
+        observe, foreign, restored = self.github.readiness, "c" * 40, []
+        self.github.foreign_heads.add(foreign)
+
+        def read(*args):
+            reading = observe(*args)
+            if restored:
+                return reading
+            head = reading.pr.head.model_copy(update={"sha": foreign})
+            return reading.model_copy(update={"outcome": "head_changed", "pr": reading.pr.model_copy(update={"head": head})})
+        with patch.object(self.github, "readiness", side_effect=read):
+            self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "needs_human")
+            restored.append(True)
+            result = self.walk([], answer="I restored the head.")
+        # The answer is saved before GitHub is read again, so restoring the head keeps the evidence.
+        self.assertEqual(result["stop"], "merged")
+        self.assertEqual([(saved["stage"], saved["answer"]) for saved in result["plan"].human_qa], [("merge", "I restored the head.")])
+        self.assertEqual(len(self.github.reviews), 1)
+
     def test_conflict_on_a_moved_base_repairs_without_an_extra_review(self):
         observe = self.github.readiness
 
@@ -1197,11 +1222,14 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_release_waits_for_every_prerequisite_including_other_repositories(self):
         self.github.parents[("Example/Engine", 8)] = 7
-        held = self.github.create_issue("Example/Engine", "Held", "Also needs another repository.", ["slice"])
-        released = self.github.create_issue("Example/Engine", "Released", "Its other prerequisite closed.", ["slice"])
-        for number in (held, released):
+        planned = slice_body({**EMPTY_SLICE, "depends_on": ["#8"], "blocker_numbers": [8]})
+        held = self.github.create_issue("Example/Engine", "Held", planned, ["slice"])
+        released = self.github.create_issue("Example/Engine", "Released", planned, ["slice"])
+        broken = self.github.create_issue("Example/Engine", "Broken", "No slice record.", ["slice"])
+        for number in (held, released, broken):
             self.github.parents[("Example/Engine", number)] = 7
-        self.github.dependencies = {held: [8], released: [8]}
+        # Triage could not admit the broken slice, so release leaves it for a person too.
+        self.github.dependencies = {held: [8], released: [8], broken: [8]}
         listed = self.github.blockers
 
         def blockers(repo, number):
@@ -1233,7 +1261,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             self.assertEqual((self.walk([])["stop"], read.call_count), ("needs_human", before))
             cancelled = self.walk([], answer="cancel")
         self.assertEqual(cancelled["stop"], "cancelled")
-        self.assertEqual([(saved["stage"], saved["answer"]) for saved in cancelled["plan"].human_qa], [("merge", "The revision is mine.")])
+        self.assertEqual([(saved["stage"], saved["answer"]) for saved in cancelled["plan"].human_qa],
+                         [("merge", "The revision is mine."), ("merge", "cancel")])
         self.assertFalse(self.github.merge_calls)
 
     def test_pull_request_closed_without_merge_exits_closed(self):

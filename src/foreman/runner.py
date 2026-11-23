@@ -26,7 +26,7 @@ from foreman.dispatch import Handler, QuotaPause
 from foreman.skill_rules import SkillMissing
 from foreman.github import ForgeError, human_comments
 from foreman.watch import run_key, watch
-from foreman.stage_output import HumanPrompt, SpecCandidate, spec_digest, parse_output
+from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, spec_digest, parse_output
 from foreman.steps import implement
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import WorkState, WorkspaceError
@@ -258,6 +258,7 @@ def run_live_delivery(
         pause: object = saved.interrupts[0].value if saved.interrupts else None
         waiting = is_dict(pause) and pause.get("reason") in PAUSES
         merge_wait = is_dict(pause) and pause.get("reason") == "merge_pending"
+        prompt: HumanPrompt | None = None
         if saved.interrupts and not waiting and saved_values is not None and early_result is None:
             prompt = parse_output(HumanPrompt, saved.interrupts[0].value)
             if prompt.revision is not None:
@@ -282,9 +283,11 @@ def run_live_delivery(
                     raise AnswerError("This issue has no pending question.")
                 if answer != answers[-1]:
                     raise AnswerError("This question was already answered differently. Resume with the recorded answer.")
+        # A merge gate's answer is saved before the stage reads GitHub again, so it never depends on a replay.
+        merge_gate = answer is not None and prompt is not None and prompt.stage == "merge"
         if early_result is not None:
             pass
-        elif answer is not None and saved.interrupts and saved_values is not None:
+        elif answer is not None and saved.interrupts and saved_values is not None and not merge_gate:
             invoke(Command(resume=answer))
         elif saved_values is None:
             # Triage admits the issue: its identity, slice, prerequisites and pinned base.
@@ -302,12 +305,12 @@ def run_live_delivery(
             })
         elif waiting and not merge_wait:
             invoke(Command(resume=True))
-        elif merge_wait or saved_values.get("halt") in RESUMABLE_HALTS:
-            # A merge wait restarts its stage with the progress it reached, so each GitHub event reads GitHub once.
-            if merge_wait:
+        elif merge_wait or merge_gate or saved_values.get("halt") in RESUMABLE_HALTS:
+            # A paused merge stage restarts with the progress it reached, so each GitHub event reads GitHub once.
+            if paused_merge := merge_wait or merge_gate:
                 saved_values = checkpoint_state(paused_values(saved))
                 assert saved_values is not None
-            stage = "merge" if merge_wait else STEP_STAGES.get(next(iter(saved_values["path"][-1:]), ""))
+            stage = "merge" if paused_merge else STEP_STAGES.get(next(iter(saved_values["path"][-1:]), ""))
             inside = stage is not None
             before = _checkpoint_before_halt(graph, config, saved_values["path"], stage)
             require_schema_version(before.values, checkpoint, thread)
@@ -321,7 +324,7 @@ def run_live_delivery(
             if presentation is not None:
                 presentation.restore(before)
             replay = before.config
-            receipt = saved_values.get("merge", MergeState()).receipt
+            saved_merge = saved_values.get("merge", MergeState())
             progress: DeliveryUpdate = {}
             prior = saved_values.get("work", WorkState())
             if stage == "implement" and prior.head_sha and prior.published_head == prior.head_sha:
@@ -335,10 +338,14 @@ def run_live_delivery(
             else:
                 work, checks = restored.get("work", WorkState()).model_copy(update={"repair_head": None}), restored["checks"]
             assert saved_review is not None
-            retained: DeliveryUpdate = {**progress, "plan": (saved_values if inside else restored)["plan"].model_copy(update={
-                                            "rejected_revisions": saved_values["plan"].rejected_revisions,
-                                        }),
-                                        "work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": saved_review}
+            plan = (saved_values if inside else restored)["plan"].model_copy(update={"rejected_revisions": saved_values["plan"].rejected_revisions})
+            if merge_gate:
+                assert prompt is not None and answer is not None and prompt.revision is not None
+                plan = plan.model_copy(update={"human_qa": [*plan.human_qa, HumanAnswer(
+                    stage="merge", question=prompt.question, answer=answer, revision=prompt.revision)]})
+            # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm.
+            merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None)
+            retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             invoke(None, graph.update_state(replay, retained))

@@ -377,6 +377,22 @@ def redact_slice(child: StoredSlice) -> StoredSlice:
     })
 
 
+def unmet_prerequisites(forge: "Forge", repo: str, blockers: list[IssueBlocker], item: StoredSlice | None, merged: int | None = None) -> str:
+    """Why triage cannot admit an issue yet, or "" once it can. Release rechecks a dependent with the same rule.
+
+    `merged` names the prerequisite GitHub just reported merged, whose issue may not have closed yet."""
+    blockers = [blocker for blocker in blockers if not (blocker.in_repo(repo) and blocker.number == merged)]
+    if open_urls := [blocker.html_url for blocker in blockers if blocker.state == "open"]:
+        return "Open blockers: " + ", ".join(open_urls)
+    if item is None:
+        return ""
+    local, planned = {blocker.number for blocker in blockers if blocker.in_repo(repo)}, item.blocker_numbers
+    if len(planned) != len(item.depends_on) or not set(planned) <= local | {merged}:
+        return "Planned blocker links are missing."
+    unmerged = [number for number in planned if number != merged and not forge.is_merged(repo, number)]
+    return "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged) if unmerged else ""
+
+
 def human_comments(forge: "Forge", login: str, repo: str, issue: int) -> list[str]:
     """Comments the configured human posted on the issue, which the coordinator relays under their identity."""
     if not login:
