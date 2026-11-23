@@ -30,7 +30,8 @@ from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
-from foreman.github import BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body
+from foreman.redaction import redact
+from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, run_live_delivery, snapshot_result
@@ -365,12 +366,14 @@ class FakeGitHub:
     def issue_comments(self, repo, number) -> list[str]:
         return list(self.comments.get((repo, number), []))
 
-    def comment_issue(self, repo, number, body):
+    def comment_issue(self, repo, number, body, *, marker):
+        body = marked(redact(body), marker)  # As LiveForge writes it.
         self._fail("comment_issue", after_write=False)
         self.comments.setdefault((repo, number), []).append(body)
         self._fail("comment_issue", after_write=True)
 
-    def create_issue(self, repo, title, body, labels, *, child=None):
+    def create_issue(self, repo, title, body, labels, *, marker, child=None):
+        body = marked(redact(body), marker)  # As LiveForge writes it.
         self._fail("create_issue", after_write=False)
         if child is not None:
             body = render_slice_body(body, child)
@@ -1130,10 +1133,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_ready_dependent_is_released_once_after_rejection_repair_and_matching_merge(self):
         # ME3: parent 7 holds this issue, a dependent blocked only by it, and one also blocked by an open sibling.
-        other = self.github.create_issue("Example/Engine", "Other", "Still open.", ["slice"])
+        other = self.github.create_issue("Example/Engine", "Other", "Still open.", ["slice"], marker="")
         planned = lambda *numbers: slice_body({**EMPTY_SLICE, "depends_on": [f"#{number}" for number in numbers], "blocker_numbers": list(numbers)})
-        dependent = self.github.create_issue("Example/Engine", "Dependent", planned(8), ["slice"])
-        waiting = self.github.create_issue("Example/Engine", "Waiting", planned(8, other), ["slice"])
+        dependent = self.github.create_issue("Example/Engine", "Dependent", planned(8), ["slice"], marker="")
+        waiting = self.github.create_issue("Example/Engine", "Waiting", planned(8, other), ["slice"], marker="")
         for number in (8, dependent, waiting, other):
             self.github.parents[("Example/Engine", number)] = 7
         self.github.dependencies = {dependent: [8], waiting: [8, other]}
@@ -1224,9 +1227,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_release_waits_for_every_prerequisite_including_other_repositories(self):
         self.github.parents[("Example/Engine", 8)] = 7
         planned = slice_body({**EMPTY_SLICE, "depends_on": ["#8"], "blocker_numbers": [8]})
-        held = self.github.create_issue("Example/Engine", "Held", planned, ["slice"])
-        released = self.github.create_issue("Example/Engine", "Released", planned, ["slice"])
-        broken = self.github.create_issue("Example/Engine", "Broken", "No slice record.", ["slice"])
+        held = self.github.create_issue("Example/Engine", "Held", planned, ["slice"], marker="")
+        released = self.github.create_issue("Example/Engine", "Released", planned, ["slice"], marker="")
+        broken = self.github.create_issue("Example/Engine", "Broken", "No slice record.", ["slice"], marker="")
         for number in (held, released, broken):
             self.github.parents[("Example/Engine", number)] = 7
         # Triage could not admit the broken slice, so release leaves it for a person too.

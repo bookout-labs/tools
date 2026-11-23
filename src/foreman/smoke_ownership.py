@@ -56,10 +56,9 @@ def cleanup_smoke(forge: LiveForge, repo: str) -> None:
 def create_smoke_issue(forge: LiveForge, repo: str) -> int:
     run = uuid4().hex
     marker = "<!-- foreman-smoke-run: " + "-".join(run[i:i+4] for i in range(0, 32, 4)) + " -->"
-    body = ("Add smoke_<this issue number>.txt containing exactly smoke <this issue number> "
-            f"and a newline. Change no other files.\n\n{marker}")
+    body = "Add smoke_<this issue number>.txt containing exactly smoke <this issue number> and a newline. Change no other files."
     try:
-        return forge.create_issue(repo, "Smoke fixture", body, ["smoke"])
+        return forge.create_issue(repo, "Smoke fixture", body, ["smoke"], marker=marker)
     except ForgeError:
         matches = [issue.number for issue in forge.smoke_issues(repo)
                    if issue.state == "open" and owned(issue, repo) and _markers(issue.body) == [marker]]

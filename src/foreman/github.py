@@ -335,9 +335,9 @@ class Forge(Protocol):
     def update_issue_body(self, repo: str, number: int, body: str) -> None: ...
     def issue_comments(self, repo: str, number: int) -> list[str]: ...
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]: ...
-    def comment_issue(self, repo: str, number: int, body: str) -> None: ...
+    def comment_issue(self, repo: str, number: int, body: str, *, marker: str) -> None: ...
     def create_issue(
-        self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None,
+        self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None,
     ) -> int: ...
     def add_blocker(self, repo: str, number: int, blocker: int) -> None: ...
     def blockers(self, repo: str, number: int) -> list[IssueBlocker]: ...
@@ -399,6 +399,11 @@ def human_comments(forge: "Forge", login: str, repo: str, issue: int) -> list[st
         return []
     return [(comment.body or "").strip() for comment in forge.issue_comment_records(repo, issue)
             if comment.user is not None and comment.user.login.casefold() == login.casefold()]
+
+
+def marked(content: str, marker: str) -> str:
+    """Foreman's marker follows the content verbatim. Redaction would rewrite a digest, and the marker could not be found again."""
+    return "\n\n".join(part for part in (content, marker) if part)
 
 
 def render_slice_body(prose: str, child: StoredSlice) -> str:
@@ -645,16 +650,18 @@ class LiveForge:
             "gh", "api", f"repos/{repo}/issues/{number}", "--method", "PATCH", "-f", f"body={body}",
         ])
 
-    def comment_issue(self, repo: str, number: int, body: str) -> None:
+    def comment_issue(self, repo: str, number: int, body: str, *, marker: str) -> None:
         repo, body = (redact(value) for value in (repo, body))
+        body = marked(body, marker)
         self._run_command(repo, [
             "gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}",
         ])
 
     def create_issue(
-        self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None,
+        self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None,
     ) -> int:
         repo, title, body, *labels = (redact(value) for value in (repo, title, body, *labels))
+        body = marked(body, marker)
         if child is not None:
             body = render_slice_body(body, child)
         args = ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={body}"]

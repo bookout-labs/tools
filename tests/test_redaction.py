@@ -87,7 +87,7 @@ class RedactionTest(unittest.TestCase):
                     depends_on=[], screen="", properties=[],
                 )
                 title = f"Synthetic case {SYNTHETIC_GITHUB}"
-                self.assertEqual(LiveForge().create_issue("Example/Target", title, "", ["slice"], child=child), 42)
+                self.assertEqual(LiveForge().create_issue("Example/Target", title, "", ["slice"], child=child, marker=""), 42)
                 argv = gh.call_args.args[0]
                 self.assertIn("title=Synthetic case [redacted:GitHub Token]", argv)
                 body = next(arg.removeprefix("body=") for arg in argv if arg.startswith("body="))
@@ -102,7 +102,7 @@ class RedactionTest(unittest.TestCase):
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
         body = f"{SYNTHETIC_GITHUB} # pragma: allowlist secret"
         forge = LiveForge()
-        forge.create_issue("Example/Target", "Synthetic fixture", body, [SYNTHETIC_GITHUB])
+        forge.create_issue("Example/Target", "Synthetic fixture", body, [SYNTHETIC_GITHUB], marker="")
         self.assertIn("body=[redacted:GitHub Token] # pragma: allowlist secret", gh.call_args.args[0])
         self.assertIn("labels[]=[redacted:GitHub Token]", gh.call_args.args[0])
         forge.add_label("Example/Target", 42, SYNTHETIC_GITHUB)
@@ -118,7 +118,7 @@ class RedactionTest(unittest.TestCase):
     def test_issue_write_redacts_repeated_keyword_matches_on_one_line(self, gh):
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
         body = 'password="synthetic-aaaa" password="synthetic-bbbb"'
-        LiveForge().create_issue("Example/Target", "Synthetic fixture", body, [])
+        LiveForge().create_issue("Example/Target", "Synthetic fixture", body, [], marker="")
         self.assertIn(
             'body=password="[redacted:Secret Keyword]" password="[redacted:Secret Keyword]"',
             gh.call_args.args[0],
@@ -138,7 +138,7 @@ class RedactionTest(unittest.TestCase):
                 "constraint": f"row_check {SYNTHETIC_GITHUB}",
             }],
         })
-        LiveForge().create_issue("Example/Target", child.title, f"Excerpt {SYNTHETIC_GITHUB}", ["slice"], child=child)
+        LiveForge().create_issue("Example/Target", child.title, f"Excerpt {SYNTHETIC_GITHUB}", ["slice"], child=child, marker="")
         written = next(arg for arg in gh.call_args.args[0] if arg.startswith("body="))
         self.assertIn("body=Excerpt [redacted:GitHub Token]\n", written)
         self.assertEqual(_load_slice(written.removeprefix("body=")).model_dump(exclude_unset=True), {
@@ -185,7 +185,7 @@ class RedactionTest(unittest.TestCase):
         self.assertEqual(live[-2:], ["--match-head-commit", SYNTHETIC_SHA])
         gh.side_effect = None
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
-        LiveForge().create_issue("Example/Target", "Synthetic fixture", SYNTHETIC_SHA, [])
+        LiveForge().create_issue("Example/Target", "Synthetic fixture", SYNTHETIC_SHA, [], marker="")
         self.assertIn("body=[redacted:Hex High Entropy String]", gh.call_args.args[0])
 
     def test_run_log_redacts_dry_run_check_and_live_error(self):

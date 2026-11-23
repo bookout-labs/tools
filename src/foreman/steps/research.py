@@ -38,7 +38,7 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     except ForgeError as exc:
         return stopped(Halt.git_failed, f"The issue comments could not be read ({exc}).", "post")
     try:
-        run.forge.comment_issue(repo, issue, f"{text}\n\n{marker}")
+        run.forge.comment_issue(repo, issue, text, marker=marker)
         error = None
     except ForgeError as exc:
         error = exc

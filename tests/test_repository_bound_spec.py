@@ -144,7 +144,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
     def test_released_child_keeps_its_scope_when_the_blocker_is_in_the_pinned_tree(self):
         seam = {"name": "provided-api", "exists": False, "path": None}
         blocker = StoredSlice.model_validate({**EMPTY_SLICE, "title": "Earlier sibling", "builds": [seam]})
-        number = self.forge.create_issue(TARGET, blocker.title, "", ["slice"], child=blocker)
+        number = self.forge.create_issue(TARGET, blocker.title, "", ["slice"], child=blocker, marker="")
         supplied = {**EDIT, "uses": [seam, *EDIT["uses"]], "depends_on": [blocker.title], "blocker_numbers": [number]}
         self.forge.body = slice_body(supplied)
         self.forge.dependencies[8] = [number]
