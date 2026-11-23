@@ -10,7 +10,7 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.config import family
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.github import ForgeError, human_comments, render_slice_body
+from foreman.github import RELEASE_LABEL, ForgeError, human_comments, render_slice_body
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
@@ -22,7 +22,6 @@ from foreman.steps import StageInput, StageRun
 from foreman.workspace import WorkspaceError
 
 HALTS = [Halt.invalid_output, Halt.spec_cap, Halt.git_failed, Halt.publication_unreconciled]
-RELEASE_LABEL = "factory"
 Observed = TypeVar("Observed")
 
 

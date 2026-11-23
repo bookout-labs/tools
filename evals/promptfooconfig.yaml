@@ -14,19 +14,19 @@ tests:
       case: clear
     assert:
       - type: equals
-        value: verified
+        value: merge_pending
   - description: An approved spec is implemented
     vars:
       case: spec-ready
     assert:
       - type: equals
-        value: verified
-  - description: A small parent issue goes straight to implementation and stops verified
+        value: merge_pending
+  - description: A small parent issue goes straight to implementation and waits to merge
     vars:
       case: parent
     assert:
       - type: equals
-        value: verified
+        value: merge_pending
   - description: A parent issue that needs a spec files its children
     vars:
       case: parent-spec
@@ -50,16 +50,16 @@ tests:
       case: failover
     assert:
       - type: equals
-        value: verified
+        value: merge_pending
   - description: A P1 needs one repair and the repeated advisory note permits merge
     vars:
       case: review-converges
     assert:
       - type: equals
-        value: verified skipped edits=2 reports=2
+        value: merge_pending skipped edits=2 reports=2
   - description: Review falls back to the configured builder model after quota
     vars:
       case: review-fallback
     assert:
       - type: equals
-        value: verified claude-opus-5-5-high,gpt-6.1-sol-high rounds=1 same_family=True reason=preceding_candidates_unavailable
+        value: merge_pending claude-opus-5-5-high,gpt-6.1-sol-high rounds=1 same_family=True reason=preceding_candidates_unavailable

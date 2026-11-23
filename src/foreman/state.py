@@ -16,7 +16,7 @@ from foreman.stage_output import (
     AttemptRecord, DispatchPlanRecord, SpecTarget,
     PlanState as PlanState, ReviewState as ReviewState,
 )
-from foreman.workspace import PullRequestSize, WorkState
+from foreman.workspace import PullRequestSize, WorkState as WorkState
 
 
 class RunState(BaseModel, frozen=True, extra="forbid"):

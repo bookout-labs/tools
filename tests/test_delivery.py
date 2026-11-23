@@ -10,7 +10,8 @@ from tempfile import TemporaryDirectory
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
-from foreman.delivery import run_delivery, stage_text
+from foreman.cli import run_exit_code
+from foreman.delivery import LiveRun, compile_delivery, run_delivery, stage_text
 from unittest.mock import patch
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from skill_fixture import FixtureSkills, skill_fixture
@@ -50,6 +51,17 @@ def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, comm
 
 
 class DeliveryTest(unittest.TestCase):
+    def test_each_run_result_is_a_distinct_typed_exit(self):
+        # DN1: every way a run ends is its own typed exit. A merge wait is an interrupt, never an exit.
+        graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun()))
+        exits = {key for branch in graph.builder.branches.values() for route in branch.values()
+                 for key, target in (route.ends or {}).items() if target == "__end__"}
+        self.assertEqual(exits, {"answered", "children_filed", "cancelled", "no_change", "closed", "merged", "halted"})
+        # A queued pull request is pending: no completion until GitHub reports the merge.
+        result = walk(ScriptHandler())
+        self.assertEqual((result["stop"], result["merge"].status, run_exit_code(result)), ("merge_pending", "skipped", 75))
+        self.assertEqual(result["path"][-1], "merge")
+
     def test_graph_receives_the_skill_source_as_an_input(self):
         source = FixtureSkills()
 
@@ -58,7 +70,7 @@ class DeliveryTest(unittest.TestCase):
                 ScriptHandler(), repo="Example/Engine",
                 request="List items", scratch=Path(directory), skills=source,
             )
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(source.pins, [PSTACK_PIN])
         self.assertTrue(result["attempts"])
 
@@ -66,7 +78,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="plan"), slice=SLICES[0])
         self.assertEqual(result["plan"].issue_kind, "slice")
         self.assertEqual(result["plan"].slice["acceptance"], SLICES[0]["acceptance"])
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merge_pending")
 
     def test_clear_change_still_runs_the_checker(self):
         handler = ScriptHandler()
@@ -80,9 +92,9 @@ class DeliveryTest(unittest.TestCase):
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"],
+            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
         )
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["merge"].status, "skipped")
         self.assertEqual(result["work"].head_sha, result["checks"].verified_head)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
@@ -93,14 +105,14 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="plan", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"],
+            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
         )
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merge_pending")
 
     def test_ready_spec_retains_acceptance_specific_evidence(self):
         result = walk(ScriptHandler(triage="plan"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"])
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
+        self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["plan"].slice["properties"], SLICES[0]["properties"])
 
     def test_worker_cannot_declare_depends_on(self):
@@ -125,7 +137,7 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler(slice=SLICES[1], slices=[EMPTY_SLICE])
         result = walk(handler, slice=None)
         self.assertEqual(result["plan"].spec_failures, 1)
-        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES
@@ -227,7 +239,7 @@ class DeliveryTest(unittest.TestCase):
         config.nodes["review"] = replace(config.nodes["review"], models=(ModelSpec.parse("gpt-6.1-sol-high"),))
         handler = ScriptHandler()
         result = walk(handler, config=config)
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["models_used"]["review"], result["models_used"]["implement"])
 
     def test_review_stops_when_the_builder_model_is_missing(self):
@@ -260,9 +272,9 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"],
+            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
         )
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merge_pending")
 
     def test_review_prefers_models_outside_every_builder_family(self):
         for review_models in (("claude-opus-5-5-high", "gpt-6.1-sol-high", "grok-4.7-high"),
@@ -282,10 +294,10 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual(result["models_used"]["implement"], "claude-opus-5-5-high")
                 if "grok-4.7-high" in review_models:
                     self.assertEqual(reviewers, ["claude-opus-5-5-high", "grok-4.7-high"])
-                    self.assertEqual(result["stop"], "verified")
+                    self.assertEqual(result["stop"], "merge_pending")
                 else:
                     self.assertEqual(reviewers, ["claude-opus-5-5-high"] * 2)
-                    self.assertEqual(result["stop"], "verified")
+                    self.assertEqual(result["stop"], "merge_pending")
                 self.assertEqual(result["implement_models"], ["gpt-6.1-sol-high", "claude-opus-5-5-high"])
 
     def test_review_cap_stops_without_arming(self):
@@ -356,7 +368,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual([item["outcome"] for item in triage], ["quota", "ran"])
         self.assertEqual([item["methods"] for item in triage], [[]] * 2)
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merge_pending")
 
     def test_every_model_exhausted_halts(self):
         def exhaust(node, model, state, instruction):
@@ -417,7 +429,7 @@ class DeliveryTest(unittest.TestCase):
             return script(node, model, state, instruction)
 
         result = walk(read_methods)
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "review"])
 
 

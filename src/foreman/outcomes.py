@@ -5,9 +5,6 @@ from dataclasses import dataclass
 from enum import StrEnum, auto
 from typing import Final, Literal, TYPE_CHECKING, cast
 
-from foreman.readiness import Outcome as ReadinessOutcome
-
-
 if TYPE_CHECKING:
     from foreman.state import DeliveryUpdate
 
@@ -24,10 +21,6 @@ class Halt(StrEnum):
     skill_missing = auto()
     merge_held = auto()
     merge_not_armed = auto()
-    pr_conflict = auto()
-    ci_pending = auto()
-    queue_rejected = auto()
-    ci_red = auto()
     readiness_unavailable = auto()
     budget_exceeded = auto()
     env_unavailable = auto()
@@ -60,9 +53,8 @@ class Watch:
 @dataclass(frozen=True)
 class Policy:
     reason: str
-    recovery: Literal["terminal", "retry", "recheck_merge"]
+    recovery: Literal["terminal", "retry"]
     watch: Watch | None
-    readiness: tuple[ReadinessOutcome, ...] = ()
 
 
 HALTS: Final[Mapping[Halt, Policy]] = {
@@ -93,17 +85,9 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.skill_missing: Policy("A required instruction file is unavailable at the selected version.", "terminal",
         Watch("Pinned skills are available before dispatch",
               "A required skill was unavailable at the pinned commit.", "src/foreman/skill_rules.py")),
-    Halt.merge_held: Policy("Repository policy holds merge arming.", "recheck_merge", None),
-    Halt.merge_not_armed: Policy("Auto-merge is not switched on for the reviewed version.", "recheck_merge",
-        None, readiness=("ready", "head_changed", "closed", "retargeted")),
-    Halt.pr_conflict: Policy("The pull request conflicts with its base.", "recheck_merge",
-        None, readiness=("conflict",)),
-    Halt.ci_pending: Policy("Required checks are still pending.", "recheck_merge", None, readiness=("pending",)),
-    Halt.queue_rejected: Policy("The merge queue rejected the pull request.", "recheck_merge",
-        None, readiness=("queue_rejected",)),
-    Halt.ci_red: Policy("Required checks failed.", "recheck_merge", None, readiness=("red",)),
-    Halt.readiness_unavailable: Policy("Merge readiness cannot be established.", "recheck_merge",
-        None, readiness=("policy",)),
+    Halt.merge_held: Policy("Repository policy holds merge arming.", "retry", None),
+    Halt.merge_not_armed: Policy("Auto-merge is not switched on for the reviewed version.", "retry", None),
+    Halt.readiness_unavailable: Policy("Merge readiness cannot be established.", "retry", None),
     Halt.budget_exceeded: Policy("The run reached its token or dollar budget.", "terminal", None),
     Halt.env_unavailable: Policy("The implementation environment is unavailable.", "retry", None),
     Halt.publish_failed: Policy("The branch or pull request could not be published.", "retry", None),
@@ -118,7 +102,6 @@ HALTS: Final[Mapping[Halt, Policy]] = {
 }
 
 RESUMABLE_HALTS = frozenset(code for code, row in HALTS.items() if row.recovery != "terminal")
-READINESS_HALTS = {outcome: code for code, row in HALTS.items() for outcome in row.readiness}
 
 
 def exit_code(code: str | None) -> int:

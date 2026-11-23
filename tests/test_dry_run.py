@@ -65,6 +65,6 @@ commit
 publish
 review claude-opus-5-5-high
 merge skipped (dry run): gh pr merge '<number>' --repo DoctorCRE/doctorcre-engine --auto --squash --match-head-commit '<sha>'
-check exit 0
-done verified
+done merge_pending
+PR #1 at <sha>: dry run, so Foreman did not arm it. Waiting for GitHub to report the merge.
 """)

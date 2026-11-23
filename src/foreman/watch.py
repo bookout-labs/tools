@@ -21,7 +21,7 @@ def watch(state: DeliveryResult, forge: Forge, repo: str, run_key: RunKey) -> Wa
         return None
     values: dict[str, str] = {}
     if "{node}" in row.file:
-        values["node"] = next(node for node in reversed(state["path"]) if node != "done")
+        values["node"] = state["path"][-1]
     file = row.file.format(**values)
     title = row.title.format(**values)
     marker = f"<!-- foreman-watch: {halt}@{file} -->"

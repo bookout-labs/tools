@@ -67,7 +67,7 @@ class DispatchBudgetTests(unittest.TestCase):
                     return replace(reply, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
                 result = walk(handler, config=configured(stage), parent=stage in {"research", "spec"})
-                self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(stage, "verified"))
+                self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(stage, "merge_pending"))
                 self.assertEqual(calls, [(CLAUDE.name, "0.2"), (NEXT_CLAUDE.name, "0.1")])
                 self.assertTrue(getattr(result["plan"], stage) if stage in {"triage", "spec"} else result["implementation" if stage == "implement" else stage])
 
@@ -111,7 +111,7 @@ class DispatchBudgetTests(unittest.TestCase):
     def test_bounded_dry_run_records_remainders_and_zero_cost(self):
         script = ScriptHandler()
         result = walk(script, config=load_config())
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual([call["budget_usd"] for call in script.calls], ["0.2"] * 4)
         self.assertEqual(claude_spend(result["attempts"]), Decimal("0.8"))
         self.assertTrue(all(a["usage"]["cost_usd"] == 0.0 for a in result["attempts"][1:]))
@@ -234,7 +234,7 @@ class DispatchBudgetTests(unittest.TestCase):
                                               total_cost_usd=0.01 if model == CLAUDE else 5.0))
 
         result = walk(handler, config=configured(models=(GPT, GROK, CLAUDE)))
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual([model for _, model, _ in calls[:3]], [GPT.name, GROK.name, CLAUDE.name])
         self.assertEqual([budget for _, _, budget in calls[:3]], ["0.2"] * 3)
         self.assertEqual(calls[-1], ("review", CLAUDE.name, "0.19"))

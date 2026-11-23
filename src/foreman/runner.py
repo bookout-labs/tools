@@ -20,7 +20,7 @@ from foreman._raw import is_dict
 from foreman.config import SkillPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, halted, read_delivery_state
-from foreman.readiness import MergeState
+from foreman.readiness import MergeState, MergeWait
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, QuotaPause
 from foreman.skill_rules import SkillMissing
@@ -34,10 +34,12 @@ from foreman.worker import AttemptJournal, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
+# A paused run waits for worker capacity or for GitHub, and a later run resumes the same step.
+PAUSES = frozenset({"quota_exhausted", "merge_pending"})
 STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size")
 # Each step a stage records in the path, so a halt inside a stage resumes that stage.
 STEP_STAGES = {"admit": "triage", "triage": "triage", "research": "research", "post": "research",
-               "spec": "spec", "spec_check": "spec", "file_children": "spec", "review": "review",
+               "spec": "spec", "spec_check": "spec", "file_children": "spec", "review": "review", "merge": "merge",
                **dict.fromkeys(implement.STEPS, "implement")}
 
 
@@ -71,6 +73,10 @@ def snapshot_result(snapshot: StateSnapshot) -> DeliveryResult:
             return read_delivery_state({**values, "stop": quota.reason, "halt_detail": quota.detail,
                                         "path": [*values["path"], quota.stage],
                                         "attempts": quota.attempts})
+        if is_dict(pause) and pause.get("reason") == "merge_pending":
+            pending = MergeWait.model_validate(pause)
+            return read_delivery_state({**values, "stop": pending.reason, "halt_detail": pending.detail,
+                                        "path": [*values["path"], "merge"]})
         prompt = parse_output(HumanPrompt, pause)
         question = prompt.question
         if prompt.revision:
@@ -109,8 +115,6 @@ def _checkpoint_before_halt(
     path: list[str],
     node: str | None = None,
 ) -> StateSnapshot:
-    if path and path[-1] == "done":
-        path = path[:-1]
     if not path:
         raise ValueError("Cannot resume a run without a halted node.")
     node = node or path[-1]
@@ -208,7 +212,7 @@ def run_live_delivery(
             )
         except SkillMissing as exc:
             graph = compile_delivery(dispatcher, pinned, run=run, checkpointer=saver)
-            skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,
+            skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
                                           "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
                                           "run": run_state if prior else RunState(issue=issue, workspace=workspace, repo=repo,
                                               max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None,
@@ -219,7 +223,7 @@ def run_live_delivery(
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
             else:
-                graph.update_state(config, skill_halt, as_node="done")
+                graph.update_state(config, skill_halt, as_node="triage")
         def invoke(graph_input: DeliveryState | Command[str] | None, invocation_config: RunnableConfig = config) -> None:
             for part in graph.stream(
                 graph_input, invocation_config, context=run,
@@ -252,8 +256,8 @@ def run_live_delivery(
                 early_result = read_delivery_state({**saved_values, **halted(Halt.git_failed, str(exc), "admit"),
                                                     "stop": Halt.git_failed})
         pause: object = saved.interrupts[0].value if saved.interrupts else None
-        waiting_for_quota = is_dict(pause) and pause.get("reason") == "quota_exhausted"
-        if saved.interrupts and not waiting_for_quota and saved_values is not None and early_result is None:
+        waiting = is_dict(pause) and pause.get("reason") in PAUSES
+        if saved.interrupts and not waiting and saved_values is not None and early_result is None:
             prompt = parse_output(HumanPrompt, saved.interrupts[0].value)
             if prompt.revision is not None:
                 prefix = prompt.answer_marker + "\n"
@@ -267,7 +271,7 @@ def run_live_delivery(
                     raise AnswerError("This question needs a matching answer posted under the configured GitHub identity.")
                 answer = answer or next((reply for reply in reversed(replies) if reply), None)
         if answer is not None and early_result is None:
-            if waiting_for_quota:
+            if waiting:
                 raise AnswerError("This issue has no pending question.")
             if not answer.strip():
                 raise AnswerError("The answer must contain text.")
@@ -295,35 +299,12 @@ def run_live_delivery(
                 "plan": PlanState(),
                 "review": ReviewState(),
             })
-        elif waiting_for_quota:
+        elif waiting:
             invoke(Command(resume=True))
         elif saved_values.get("halt") in RESUMABLE_HALTS:
-            repaired = False
-            renew_review = False
-            repair_head: str | None = None
-            if HALTS[Halt(saved_values.get("halt"))].recovery == "recheck_merge" and not saved_values.get("merge", MergeState()).receipt and (head := saved_values["checks"].verified_head) and (branch := saved_values.get("work", WorkState()).branch):
-                worktree = run.workspace.inspect()
-                try:
-                    observed = client.readiness(repo, issue, branch, head)
-                except ForgeError:
-                    observed = None
-                if observed is not None and observed.outcome == "head_changed":
-                    repair_head = observed.pr.head.sha
-                    repaired = True
-                elif observed is None or observed.outcome not in {"closed", "retargeted"}:
-                    repaired = worktree.head != head
-                    plan = saved_values.get("dispatch_plan")
-                    target = plan["target"] if plan else None
-                    if observed is not None and target is not None:
-                        pr = observed.pr
-                        renew_review = (pr.number, pr.head.sha, pr.base.ref) == (
-                            target["number"], head, target["baseRefName"],
-                        ) and pr.base.sha != target["baseRefOid"]
-            stage = None if repaired else STEP_STAGES.get(next(iter(saved_values["path"][-1:]), ""))
+            stage = STEP_STAGES.get(next(iter(saved_values["path"][-1:]), ""))
             inside = stage is not None
-            before = _checkpoint_before_halt(
-                graph, config, saved_values["path"], "implement" if repaired else stage or ("review" if renew_review else None),
-            )
+            before = _checkpoint_before_halt(graph, config, saved_values["path"], stage)
             require_schema_version(before.values, checkpoint, thread)
             require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_budget_usd)
             restored = checkpoint_state(before.values)
@@ -335,13 +316,13 @@ def run_live_delivery(
             if presentation is not None:
                 presentation.restore(before)
             replay = before.config
-            receipt = None if repaired else saved_values.get("merge", MergeState()).receipt
+            receipt = saved_values.get("merge", MergeState()).receipt
             progress: DeliveryUpdate = {}
             prior = saved_values.get("work", WorkState())
-            if repaired or stage == "implement" and prior.head_sha and prior.published_head == prior.head_sha:
-                # A repair, or a halt before the next attempt started, discards the published attempt.
-                work, checks = WorkState(branch=prior.branch, base=prior.base, repair_head=repair_head), saved_values["checks"].for_attempt()
-            elif inside and not renew_review:
+            if stage == "implement" and prior.head_sha and prior.published_head == prior.head_sha:
+                # A halt before the next attempt started discards the published attempt.
+                work, checks = WorkState(branch=prior.branch, base=prior.base), saved_values["checks"].for_attempt()
+            elif inside:
                 # The stage restarts with the progress it reached, so no paid call or remote write repeats.
                 work, checks = saved_values.get("work", WorkState()), saved_values["checks"]
                 progress = _DELIVERY_UPDATE.validate_python(
@@ -352,16 +333,10 @@ def run_live_delivery(
             retained: DeliveryUpdate = {**progress, "plan": (saved_values if inside else restored)["plan"].model_copy(update={
                                             "rejected_revisions": saved_values["plan"].rejected_revisions,
                                         }),
-                                        "work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": (
-                ReviewState(review_findings=saved_review.review_findings, settled_rulings=saved_review.settled_rulings,
-                            review_run_id=saved_review.review_run_id)
-                if repaired else saved_review)}
+                                        "work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": saved_review}
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
-            if repaired or renew_review:
-                invoke(Command(update=retained), replay)
-            else:
-                invoke(None, graph.update_state(replay, retained))
+            invoke(None, graph.update_state(replay, retained))
         elif saved.next and not saved.interrupts:
             invoke(None)
 
@@ -384,7 +359,7 @@ def run_live_delivery(
                     log(f"watch failed: {exc}")
                 else:
                     if record is not None:
-                        graph.update_state(config, {"watch": record}, as_node="done")
+                        graph.update_state(config, {"watch": record}, as_node="triage")
                         result["watch"] = record
                         log(f"watch {record['action']} #{record['issue']}")
         return result

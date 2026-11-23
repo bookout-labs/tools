@@ -242,7 +242,7 @@ class LiveWatchTest(unittest.TestCase):
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(lambda *args: Outcome('failed', detail='bad output', usage=SCRIPTED_USAGE), load_config(), run=self.run, checkpointer=saver)
                 graph.update_state({'configurable': {'thread_id': 'example/engine#8'}},
-                                   {'stop': stop, 'watch': None}, as_node='done')
+                                   {'stop': stop, 'watch': None}, as_node='research')
             self.forge.open_issues.side_effect = ForgeError('#48 ' + secret)
             stream = io.StringIO()
             with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):

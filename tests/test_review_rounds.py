@@ -19,6 +19,7 @@ from unittest.mock import patch
 from foreman.workspace import LiveWorkspace
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
 from foreman.runner import snapshot_result
+from foreman.review_round import history
 from foreman.smoke import smoke_verdict
 from foreman.github import LiveForge
 from foreman.config import ModelSpec
@@ -214,7 +215,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 {**APPROVE, "findings": [FINDING]},
                 APPROVE,
             ], trees=trees)
-            self.assertEqual(result["merge"].status, "armed")
+            self.assertEqual(result["merge"].status, "merged")
             reviews = [p for p in self.prompts if p[0] == "review"]
             self.assertEqual(len(reviews), 2)
             for index, (node, state, instruction) in enumerate(reviews):
@@ -331,14 +332,14 @@ class ReviewRoundsTest(unittest.TestCase):
         result = self.run_rounds([APPROVE], review_crash=True)
         self.assertEqual(self.interrupted_next, ("review",))
         self.assertEqual(len(self.interrupted["review"].review_findings), 0)
-        self.assertEqual(result["merge"].status, "armed")
+        self.assertEqual(result["merge"].status, "merged")
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(len(self.forge.reviews), 1)
         self.assertEqual([p[0] for p in self.prompts].count("review"), 2)
 
     def test_review_quota_failover_accepts_one_round(self):
         result = self.run_rounds([APPROVE], review_quota=True)
-        self.assertEqual(result["merge"].status, "armed")
+        self.assertEqual(result["merge"].status, "merged")
         self.assertEqual(len(result["review"].review_findings), 1)
         attempts = [a for a in result["attempts"] if a["stage"] == "review"]
         self.assertEqual([a["outcome"] for a in attempts], ["quota", "ran"])
@@ -422,26 +423,39 @@ class ReviewRoundsTest(unittest.TestCase):
         output = {**APPROVE, "findings": [{**FINDING, "ruling_id": "size"}]}
         result = self.run_rounds([output], initial={"review": ReviewState(
             settled_rulings=[{"id": "size", "text": "Size rule lives in the contract."}])})
-        self.assertEqual(result["merge"].status, "armed")
+        self.assertEqual(result["merge"].status, "merged")
         self.assertIn("Advisory, settled by size", self.forge.reviews[0][4][0]["body"])
         result = self.run_rounds([output])
         self.assertEqual(result["halt"], "invalid_output")
         self.assertFalse(self.forge.reviews)
 
-    def test_posted_comment_cannot_clear_a_moved_base_or_head(self):
+    def test_posted_comment_cannot_clear_a_moved_base(self):
+        moved = "c" * 40
+
+        def advance(forge):
+            # The base advances after the first review, so the next review reads the new base.
+            if not forge.reviews:
+                forge.base = moved
+        result = self.run_rounds([APPROVE, APPROVE], mutate=advance)
+        self.assertEqual(result["stop"], "merged")
+        self.assertEqual([review[2] for review in self.forge.reviews], [HEAD, HEAD])
+        self.assertEqual(history({"rounds": result["review"].review_findings}).rounds[-1].base, moved)
+        self.assertEqual(len(self.forge.merge_calls), 1)
+
+    def test_posted_comment_cannot_clear_an_unverified_head(self):
         def move(forge):
             readiness = forge.readiness
             def moved(*args):
                 observation = readiness(*args)
-                pr = observation.pr
-                ref = getattr(pr, field).model_copy(update={"sha": "c" * 40})
-                return observation.model_copy(update={"pr": pr.model_copy(update={field: ref})})
+                return observation.model_copy(update={"outcome": "head_changed", "pr": observation.pr.model_copy(
+                    update={"head": observation.pr.head.model_copy(update={"sha": "c" * 40})})})
             forge.readiness = moved
-        for field in ("base", "head"):
-            with self.subTest(ref=field):
-                result = self.run_rounds([APPROVE], mutate=move)
-                self.assertEqual(result["halt"], "merge_not_armed")
-                self.assertFalse(self.forge.merge_calls)
+            forge.foreign_heads.add("c" * 40)
+        result = self.run_rounds([APPROVE], mutate=move)
+        # Without ancestry from the checked head the run asks and neither adopts nor repairs the revision.
+        self.assertEqual(result["stop"], "needs_human")
+        self.assertIn("does not descend from the checked head", result["halt_detail"])
+        self.assertFalse(self.forge.merge_calls)
 
     def test_failed_review_stops_without_comment_or_retry(self):
         result = self.run_rounds([Outcome("failed", detail="Read denied.", usage=SCRIPTED_USAGE)])
@@ -529,7 +543,7 @@ class ReviewRoundsTest(unittest.TestCase):
 
             result = self.run_rounds([review], trees=trees)
         if halt_detail is None:
-            self.assertEqual(result["stop"], "verified")
+            self.assertEqual(result["stop"], "merged")
             self.assertEqual(len(self.forge.merge_calls), 1)
         else:
             self.assertEqual(result.get("halt"), "invalid_output")
@@ -545,7 +559,7 @@ class ReviewRoundsTest(unittest.TestCase):
             return APPROVE
 
         result = self.run_rounds([first_review, APPROVE], rerun=True)
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merged")
         self.assertEqual(result["path"].count("implement"), 1)
         self.assertEqual([(r["reviewed_head"], r["base"]) for r in result["review"].review_findings],
                          [(HEAD, BASE), (HEAD, new_base)])
@@ -566,7 +580,7 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(self.interrupted["review"].review_receipt["id"], 1)
         self.assertEqual(result["path"].count("implement"), 2)
         self.assertEqual(len(self.forge.reviews), 2)
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merged")
 
     def test_answer_reopens_review_before_repair(self):
         question = "Should the list include archived items?"
@@ -578,7 +592,7 @@ class ReviewRoundsTest(unittest.TestCase):
 
         result = self.run_rounds([{**APPROVE, "human_question": question, "findings": [FINDING]}, after_answer],
                                  answer=answer)
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merged")
         self.assertEqual(result["path"].count("implement"), 1)
         # The question pauses inspect, so only the answered review is posted.
         self.assertEqual(len(self.forge.reviews), 1)

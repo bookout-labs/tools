@@ -63,10 +63,16 @@ class PublicationTest(unittest.TestCase):
         self.pr_view_error = ""
         self.create_error = False
         self.queued = False
+        # The queue merges an armed pull request unless a test holds it.
+        self.queue_merges = True
         self.fixture.enter_context(patch("foreman.github.subprocess.run", side_effect=self.subprocess))
 
     def git(self, *args):
         return run_subprocess(["git", *args], cwd=self.checkout, check=True, capture_output=True, text=True).stdout.strip()
+
+    @property
+    def merged(self):
+        return self.queued and self.queue_merges
 
     def remote_head(self):
         return self.git("--git-dir", str(self.remote), "rev-parse", self.ref)
@@ -85,6 +91,8 @@ class PublicationTest(unittest.TestCase):
                 response = [[]]
             case ["api", "repos/bookout-labs/tools/issues"]:
                 response = {"number": 101}
+            case ["api", "repos/Example/Engine/issues/8/parent"]:
+                return subprocess.CompletedProcess(command, 1, "", "gh: No parent issue found (HTTP 404)")
             case ["api", "repos/Example/Engine/issues/8/dependencies/blocked_by"]:
                 response = [[]]
             case ["api", "repos/Example/Engine/issues/8/comments?per_page=100"]:
@@ -111,7 +119,7 @@ class PublicationTest(unittest.TestCase):
                             "baseRefName": self.base, "baseRefOid": self.git("--git-dir", str(self.remote), "rev-parse", self.base),
                             "isCrossRepository": False, "autoMergeRequest": None, "body": self.pr_body}
             case ["api", "graphql"]:
-                response = dict(number=12, state="OPEN", headRefOid=self.remote_head(),
+                response = dict(number=12, state="MERGED" if self.merged else "OPEN", headRefOid=self.remote_head(),
                     baseRefName=self.base, baseRefOid=self.git("--git-dir", str(self.remote), "rev-parse", self.base),
                     isDraft=False, autoMergeRequest=None,
                     mergeQueueEntry=dict(id="queue-12", state="QUEUED", headCommit=dict(oid=self.remote_head())) if self.queued else None)
@@ -119,8 +127,8 @@ class PublicationTest(unittest.TestCase):
                 response = ({"id": 1, "state": "COMMENTED", "commit_id": self.remote_head(), "body": "posted"}
                             if "POST" in command else [[]])
             case ["api", "repos/Example/Engine/pulls/12"]:
-                response = dict(number=12, state="open", draft=False, mergeable=True, mergeable_state="clean",
-                    merge_commit_sha=None, head=dict(sha=self.remote_head(), ref=self.branch),
+                response = dict(number=12, state="closed" if self.merged else "open", draft=False, mergeable=True, mergeable_state="clean",
+                    merged=self.merged, merge_commit_sha="e" * 40 if self.merged else None, head=dict(sha=self.remote_head(), ref=self.branch),
                     base=dict(sha=self.git("--git-dir", str(self.remote), "rev-parse", self.base), ref=self.base))
             case ["api", url] if "/rules/branches/" in url:
                 response = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test", integration_id=15368)])),
@@ -194,7 +202,7 @@ class PublicationTest(unittest.TestCase):
                         self.git("branch", "-d", "main")
                 before = self.git("rev-parse", "HEAD")
                 result = self.walk()
-                self.assertEqual(result["stop"], "verified")
+                self.assertEqual(result["stop"], "merged")
                 self.assertEqual(result["work"].attempt_head, tip)
                 self.assertEqual(self.git("rev-parse", "HEAD^"), tip)
                 self.assertEqual(self.git("rev-parse", before), before)
@@ -229,7 +237,7 @@ class PublicationTest(unittest.TestCase):
                     self.walk(self.edit if checkpointed else self.no_worker)
                 self.advance_origin()
                 result = self.walk(self.no_worker if checkpointed else self.edit)
-                self.assertEqual(result["stop"], "verified")
+                self.assertEqual(result["stop"], "merged")
                 self.assertEqual(result["work"].attempt_head, tip)
                 self.assertEqual(self.git("rev-parse", "HEAD^"), tip)
 
@@ -260,7 +268,7 @@ class PublicationTest(unittest.TestCase):
         detached = self.git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Divergent")
         self.git("switch", "--detach", detached)
         result = self.walk()
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merged")
         self.assertEqual(result["work"].attempt_head, tip)
 
     def test_merge_base_operational_errors_keep_their_detail(self):
@@ -319,7 +327,7 @@ class PublicationTest(unittest.TestCase):
             return original(workspace, branch, base, pinned=pinned)
         with patch.object(LiveWorkspace, "create_branch", prepare):
             result = self.walk(edit, reviews=["changes", "approve"])
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merged")
         self.assertEqual(len(heads), 2)
         self.assertEqual(result["work"].attempt_head, heads[1])
         self.assertEqual(self.git("rev-parse", "HEAD^"), heads[1])
@@ -393,7 +401,7 @@ class PublicationTest(unittest.TestCase):
                 self.git("switch", "-c", "unrelated")
                 self.git("commit", "--allow-empty", "-m", "Unrelated change")
                 result = self.walk(family=family)
-                self.assertEqual(result.get("merge", MergeState()).status, "armed")
+                self.assertEqual(result.get("merge", MergeState()).status, "merged")
                 self.assertEqual(self.remote_head(), result.get("work", WorkState()).head_sha)
                 self.assertEqual(result["checks"].verified_head, self.remote_head())
                 self.assertEqual(self.created, [self.remote_head()])
@@ -406,7 +414,7 @@ class PublicationTest(unittest.TestCase):
     def test_second_attempt_adds_a_commit_to_the_same_pull_request(self):
         edits = iter(("one\n", "two\n"))
         result = self.walk(lambda: (self.checkout / "items.txt").write_text(next(edits)), ["changes", "approve"])
-        self.assertEqual(result.get("merge", MergeState()).status, "armed")
+        self.assertEqual(result.get("merge", MergeState()).status, "merged")
         first, second = self.published_heads
         self.assertEqual(self.created, [first])
         self.assertEqual(second, self.remote_head())
@@ -421,7 +429,7 @@ class PublicationTest(unittest.TestCase):
                 return Outcome("quota", usage=SCRIPTED_USAGE)
             self.edit()
         result = self.walk(edit)
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merged")
         self.assertEqual([a["outcome"] for a in result["attempts"] if a["stage"] == "implement"], ["quota", "ran"])
 
     def test_no_changes_fails_without_pushing(self):
@@ -478,7 +486,7 @@ class PublicationTest(unittest.TestCase):
                 ):
                     result = self.walk(self.no_worker)
                 self.assertEqual(len(commits), int(crash_at == "soft_reset"))
-                self.assertEqual(result["stop"], "verified")
+                self.assertEqual(result["stop"], "merged")
                 candidate = result["work"].candidate
                 self.assertEqual(candidate["disposition"], "adopted")
                 self.assertEqual(candidate["head"], worker_heads[0])
@@ -547,7 +555,7 @@ class PublicationTest(unittest.TestCase):
                 if kind == "branch":
                     self.git("switch", self.branch)
                     recovered = self.walk(self.no_worker)
-                    self.assertEqual(recovered["stop"], "verified")
+                    self.assertEqual(recovered["stop"], "merged")
                     self.assertEqual([a for a in recovered["attempts"] if a["stage"] == "implement"],
                                      [a for a in result["attempts"] if a["stage"] == "implement"])
 
@@ -630,7 +638,7 @@ class PublicationTest(unittest.TestCase):
                 if mode in ("staged", "committed", "tracked"):
                     self.git("add", "--all")
                 resumed = self.walk(self.no_worker)
-                self.assertEqual(resumed["stop"], "verified")
+                self.assertEqual(resumed["stop"], "merged")
                 self.assertEqual(resumed["attempts"][:len(result["attempts"])], result["attempts"])
 
     def test_ignored_runtime_and_local_files_never_enter_the_commit(self):
@@ -654,7 +662,7 @@ class PublicationTest(unittest.TestCase):
                     if committed:
                         self.worker_commit()
                 result = self.walk(edit)
-                self.assertEqual(result["stop"], "verified")
+                self.assertEqual(result["stop"], "merged")
                 files = self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines()
                 for name in paths:
                     self.assertNotIn(name, files)
@@ -687,7 +695,7 @@ class PublicationTest(unittest.TestCase):
                     file.unlink()
                     if committed:
                         self.worker_commit()
-                self.assertEqual(self.walk(edit)["stop"], "verified")
+                self.assertEqual(self.walk(edit)["stop"], "merged")
                 self.assertNotIn("evidence/old.log", self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines())
 
     def test_nested_ignore_and_negation_ignore_local_excludes(self):
@@ -711,7 +719,7 @@ class PublicationTest(unittest.TestCase):
         self.assertNotIn("items.txt", rejected["halt_detail"])
         (directory / "drop.tmp").unlink()
         self.git("add", "--all")
-        self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
+        self.assertEqual(self.walk(self.no_worker)["stop"], "merged")
         self.assertNotIn("items.txt", self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines())
 
     def test_ignore_policy_comes_from_merge_base_and_handles_odd_paths(self):
@@ -770,7 +778,7 @@ class PublicationTest(unittest.TestCase):
                     if committed:
                         self.worker_commit()
                 result = self.walk(edit)
-                self.assertEqual(result["stop"], "verified")
+                self.assertEqual(result["stop"], "merged")
                 candidate = result["work"].candidate
                 self.assertEqual(candidate["disposition"], "adopted" if committed else "edits")
                 self.assertEqual(result["pr_size"], candidate["size"])
@@ -780,7 +788,7 @@ class PublicationTest(unittest.TestCase):
 
     def test_first_publication_uses_bound_size_without_pr_lookup(self):
         result = self.walk(self.edit)
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merged")
         bound = result["work"].candidate["size"]
         self.assertEqual(bound["head"], self.git("rev-parse", "HEAD^{tree}"))
         self.assertEqual(result["pr_size"], bound)
@@ -847,7 +855,7 @@ class PublicationTest(unittest.TestCase):
         self.git("switch", self.branch)
         self.git("reset", "--soft", self.git("rev-parse", "main"))
         recovered = self.walk(self.no_worker)
-        self.assertEqual(recovered["stop"], "verified")
+        self.assertEqual(recovered["stop"], "merged")
         self.assertEqual(recovered["work"].candidate["disposition"], "edits")
         self.assertEqual(recovered["attempts"][:len(rejected["attempts"])], rejected["attempts"])
 
@@ -873,7 +881,7 @@ class PublicationTest(unittest.TestCase):
             result = self.walk(edit)
         self.assertEqual(result["stop"], "git_failed")
         self.assertIn(detail, result["halt_detail"])
-        self.assertEqual(self.walk(self.no_worker)["stop"], "verified")
+        self.assertEqual(self.walk(self.no_worker)["stop"], "merged")
 
     def test_rerun_retries_publication_without_rerunning_the_worker(self):
         self.create_error = True
@@ -882,7 +890,7 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(failed.get("work", WorkState()).head_sha, self.remote_head())
         self.create_error = False
         result = self.walk(lambda: self.fail("The committed change should be reused"))
-        self.assertEqual(result.get("merge", MergeState()).status, "armed")
+        self.assertEqual(result.get("merge", MergeState()).status, "merged")
         self.assertEqual(self.created, [failed.get("work", WorkState()).head_sha])
 
     def test_crash_windows_resume_without_duplicate_completed_work(self):
@@ -913,7 +921,7 @@ class PublicationTest(unittest.TestCase):
                     return original_git(workspace, *args, **kwargs)
                 with patch.object(LiveWorkspace, "_git", resume_git):
                     result = self.walk(self.no_worker if worker_done else self.edit)
-                self.assertEqual(result.get("stop"), "verified")
+                self.assertEqual(result.get("stop"), "merged")
                 self.assertEqual(len(self.created), 1)
                 if completed and worker_done:
                     self.assertEqual(self.remote_head(), head)
@@ -922,7 +930,7 @@ class PublicationTest(unittest.TestCase):
         edits = iter((lambda: (self.checkout / "draft.txt").write_text("draft\n"), self.edit))
         logs = []
         result = self.walk(lambda: next(edits)(), check_log=logs.append)
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merged")
         self.assertEqual(result["checks"].verify_failures, 1)
         self.assertEqual([a["stage"] for a in result["attempts"]].count("implement"), 2)
         self.assertEqual(result["path"].count("check"), 2)
@@ -976,7 +984,7 @@ class PublicationTest(unittest.TestCase):
                     self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
                     self.assertEqual(self.created, [])
                 else:
-                    self.assertEqual(result["stop"], "verified")
+                    self.assertEqual(result["stop"], "merged")
                     self.assertEqual(len(implements), 2)
                     self.assertEqual([(qa["stage"], qa["answer"]) for qa in result["plan"].human_qa], [("implement", reply)])
                     self.assertEqual(self.created, [result["work"].head_sha])
@@ -1036,7 +1044,7 @@ class PublicationTest(unittest.TestCase):
                             if window == "push":
                                 self.assertEqual(self.remote_head(), foreign)
                         else:
-                            self.assertEqual(result["stop"], "verified")
+                            self.assertEqual(result["stop"], "merged")
                             self.assertEqual(effects, ["commit", "push", "create"])
                             self.assertEqual(self.created, [head])
                             self.assertEqual(self.remote_head(), head)
@@ -1055,11 +1063,11 @@ class PublicationTest(unittest.TestCase):
                 self.assertEqual(result.get("stop"), "git_failed")
                 self.assertIn("index.lock", result["halt_detail"])
                 lock.unlink()
-                self.assertEqual(self.walk(self.edit if before_worker else self.no_worker).get("stop"), "verified")
+                self.assertEqual(self.walk(self.edit if before_worker else self.no_worker).get("stop"), "merged")
 
     def test_existing_branch_at_expected_base_is_reused(self):
         self.git("branch", self.branch, "main")
-        self.assertEqual(self.walk().get("stop"), "verified")
+        self.assertEqual(self.walk().get("stop"), "merged")
 
     def test_prepare_preflight_stops_before_creating_attempt(self):
         logs = []
@@ -1109,7 +1117,7 @@ class PublicationTest(unittest.TestCase):
                 self.assertEqual(resumed["attempts"][:len(attempts)], attempts)
                 self.assertEqual(resumed["work"].attempt_head, work.attempt_head)
                 if accepted:
-                    self.assertEqual(resumed["stop"], "verified")
+                    self.assertEqual(resumed["stop"], "merged")
                     self.assertEqual([a["stage"] for a in resumed["attempts"][len(attempts):]],
                                      ["implement", "review"])
                 else:
@@ -1148,7 +1156,7 @@ class PublicationTest(unittest.TestCase):
                 self.assertEqual(self.created, [])
                 hook.unlink()
                 if case == "rejected push":
-                    self.assertEqual(self.walk(self.no_worker).get("stop"), "verified")
+                    self.assertEqual(self.walk(self.no_worker).get("stop"), "merged")
 
     def test_wrong_base_open_pr_stops_without_creation(self):
         from foreman.github import PublishedPullRequest
@@ -1256,7 +1264,7 @@ class PublicationTest(unittest.TestCase):
                     self.assertNotIn(synthetic, json.dumps(presentation.commands))
                     self.assertNotIn(synthetic, json.dumps(pull_request_command(REPO, self.branch, self.base, self.slice["title"], synthetic)))
                 else:
-                    self.assertEqual(self.walk().get("stop"), "verified")
+                    self.assertEqual(self.walk().get("stop"), "merged")
                     message = self.git("show", "-s", "--format=%B", "HEAD")
                     self.assertNotIn(synthetic, message)
                     self.assertNotIn(synthetic.lower(), self.branch)
@@ -1275,7 +1283,7 @@ class PublicationTest(unittest.TestCase):
                 with patch("foreman.github.subprocess.run", side_effect=original) as call:
                     result = self.walk()
                 self.assertEqual(result.get("work", WorkState()).base, base)
-                self.assertEqual(result.get("stop"), "verified")
+                self.assertEqual(result.get("stop"), "merged")
                 self.assertEqual(self.git("rev-parse", "HEAD^"), self.git("rev-parse", base))
                 commands = [c.args[0] for c in call.call_args_list if c.args[0][:3] == ["gh", "repo", "view"]]
                 self.assertEqual(commands, [["gh", "repo", "view", REPO, "--json", "defaultBranchRef"]])

@@ -100,7 +100,7 @@ class StageDeclarationsTest(unittest.TestCase):
                     result = walk(dispatch, slice=None) if name in {"research", "spec"} else walk(dispatch)
                 self.assertEqual(seen, [name])
                 self.assertEqual(result["research"], "Row accepted")
-                self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(name, "verified"))
+                self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(name, "merge_pending"))
                 self.assertEqual(result["attempts"][-1]["stage"], {"research": "research", "spec": "spec_check"}.get(name, "review"))
 
     def assert_no_stage_policy(self, source, module):
@@ -170,7 +170,7 @@ class StageDeclarationsTest(unittest.TestCase):
             result = walk(dispatch)
         # Dispatch projects the worker's state; acceptance projects the citation context.
         self.assertEqual(seen, [True, True])
-        self.assertEqual(result["stop"], "verified", result.get("halt_detail"))
+        self.assertEqual(result["stop"], "merge_pending", result.get("halt_detail"))
         self.assertEqual(result["review"].review_findings[0]["findings"][0]["location"]["path"], "row.py")
 
     def test_implement_acceptance_keeps_model_history(self):

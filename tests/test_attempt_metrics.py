@@ -198,7 +198,7 @@ class AttemptMetricsTests(unittest.TestCase):
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(worker, config, run=LiveRun(DryRun(), DryRun()), checkpointer=saver)
                 thread = {"configurable": {"thread_id": "metrics"}}
-                graph.update_state(thread, result, as_node="done")
+                graph.update_state(thread, result, as_node="research")
                 self.assertEqual(graph.get_state(thread).values["attempts"], result["attempts"])
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint.sqlite")) as restored:
                 restored.serde = checkpoint_serializer()

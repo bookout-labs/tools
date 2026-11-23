@@ -24,7 +24,7 @@ from foreman.github import ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
 from foreman.redaction import redact
 from foreman.outcomes import Halt, exit_code
-from foreman.runner import AnswerError, RunPresentation, run_live_delivery
+from foreman.runner import PAUSES, AnswerError, RunPresentation, run_live_delivery
 from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
@@ -48,7 +48,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     for update in presentation.updates:
         current.update(update)
     # The result repeats the restored path, except the stage a quota pause names while its call waits.
-    restored = presentation.restored["path"][:-1] if presentation.restored["stop"] == "quota_exhausted" else presentation.restored["path"]
+    restored = presentation.restored["path"][:-1] if presentation.restored["stop"] in PAUSES else presentation.restored["path"]
     models = result.get("models_used", {})
     rows = [(node, models.get(node)) for node in result["path"][len(restored):]]
     _print_run_rows(presentation.restored if rows else result, prefix="restored ")
@@ -58,7 +58,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     current["path"] = [node for node, _ in rows]
     current["stop"] = result["stop"]
     current["attempts"] = result.get("attempts", [])
-    if result["stop"] in {"needs_human", "quota_exhausted"}:
+    if result["stop"] in {"needs_human", *PAUSES}:
         current["halt_detail"] = result.get("halt_detail", "")
     _write_run_log("this invocation:")
     _write_run_log("usage below is cumulative across all invocations")
@@ -123,8 +123,6 @@ def _print_run_rows(
     for node, model in rows:
         if node == "check":
             write(f"check {checks.check or '(no check)'}")
-        elif node == "done":
-            write_done()
         elif node == "merge":
             match outcome := result.get("merge", MergeState()).status:
                 case "armed":
@@ -137,6 +135,10 @@ def _print_run_rows(
                         write_literal("merge skipped (dry run)")
                 case "not_armed":
                     write_literal("merge not armed")
+                case "merged":
+                    write_literal(f"merged {result.get('merge', MergeState()).merge_commit_sha}")
+                case "closed":
+                    write_literal("pull request closed without merge")
                 case None:
                     write_literal("merge outcome unavailable")
                 case _:
@@ -147,17 +149,16 @@ def _print_run_rows(
                 fields.append(model)
             write(" ".join(fields))
     stop = result.get("stop")
-    if not stop or any(node == "done" for node, _ in rows):
+    if not stop:
         return
-    if stop in {"needs_human", "quota_exhausted"}:
+    if stop in {"needs_human", *PAUSES}:
         if run_state.token_cap is not None:
             write_tokens()
-        label = "done" if stop == "needs_human" and dry_run else "paused"
+        label = "done" if stop in {"needs_human", "merge_pending"} and dry_run else "paused"
         write_literal(f"{label} {stop}")
         if detail := result.get("halt_detail"):
             write(detail)
     else:
-        # A stage that ends the run, such as implement, reports the same summary as done.
         write_done()
 
 
@@ -290,6 +291,9 @@ def main(
         )
         print("pstack pin not checked (dry run)")
         _print_run(result, presentation, dry_run=True)
+        if result["stop"] == "merge_pending":
+            # A dry run ends where a live run waits for GitHub to merge the queued pull request.
+            return 0
     else:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
             run.error("--repo must be OWNER/NAME")
@@ -331,8 +335,9 @@ def run_exit_code(result: DeliveryResult) -> int:
     stop = result.get("stop")
     if stop == "needs_human":
         return 3
-    if stop == "quota_exhausted":
+    if stop in PAUSES:
         return 75
-    if stop in ("answered", "children_filed") or stop == "verified" and result.get("path", [])[-1:] == ["done"]:
+    # A queued pull request is pending. Only GitHub's confirmed merge of the reviewed head completes delivery.
+    if stop in ("answered", "children_filed", "merged"):
         return 0
     return exit_code(result.get("halt"))

@@ -194,7 +194,7 @@ class RedactionTest(unittest.TestCase):
             code = main([*base, "--dry-run", "--request", "Add a field", "--check", f"echo {SYNTHETIC_GITHUB}"])
         self.assertEqual(code, 0)
         self.assertIn("check echo [redacted:GitHub Token]\n", stdout.getvalue())
-        self.assertIn("done verified\n", stdout.getvalue())
+        self.assertIn("done merge_pending\n", stdout.getvalue())
         self.assertNotIn(SYNTHETIC_GITHUB, stdout.getvalue())
 
         with (
