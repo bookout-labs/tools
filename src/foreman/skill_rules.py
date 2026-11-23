@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from pathlib import Path
+import re
 import subprocess
 import tarfile
 from typing import Annotated, Literal, TYPE_CHECKING
@@ -134,7 +135,7 @@ def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, 
         method = rule.skill
         if method.kind == "target_skill":
             if workspace := state["run"].workspace:
-                checkout, pattern = Path(workspace), method.path.replace("<app>", "*")
+                checkout, pattern = Path(workspace), re.sub(r"<[a-z]+>", "*", method.path)
                 for found in sorted(path for directory in TARGET_SKILL_DIRECTORIES for path in checkout.glob(f"{directory}/{pattern}")):
                     methods.append(found.relative_to(checkout).as_posix())
                     instructions.append(f"Read {found} in full and follow it to verify the change.")
