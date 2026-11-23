@@ -1,5 +1,5 @@
 flowchart TD
-    n0(["GitHub Project issue enters Ready"]):::terminal
+    n0(["Ready label added to an issue"]):::terminal
     n1["Triage · Route the issue"]:::stage
     n2["Research · Answer the question"]:::stage
     n3["Spec · Plan and check the work"]:::stage
@@ -13,7 +13,7 @@ flowchart TD
     n11(["No change"]):::terminal
     n12(["Merged"]):::terminal
     n13(["Closed"]):::terminal
-    n0 -->|"GitHub Project webhook"| n1
+    n0 -->|"GitHub App webhook"| n1
     n1 -->|"Question"| n2
     n1 -->|"Plan / Supplied slice"| n3
     n1 --> n7

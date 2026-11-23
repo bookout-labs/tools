@@ -159,7 +159,7 @@ def stage_links(name, contract, target, nodes):
             next_stage = exits[normalized]
             if next_stage == "__end__":
                 end = f"exit_{normalized}"
-                nodes[end] = (f"{label(normalized)}\nReported on Project card", "terminal")
+                nodes[end] = (f"{label(normalized)}\nReported on the issue", "terminal")
                 detail = label(outcome) if outcome != normalized else ""
             else:
                 end = f"continue_{next_stage}"
@@ -208,7 +208,7 @@ def views(target):
                 links.append((origin, destination, label(route or "")))
         if name == target["entry"]:
             links = [
-                (origin, destination, "Project webhook or dependent recheck" if origin == "__start__" else detail)
+                (origin, destination, "Ready label webhook or dependent recheck" if origin == "__start__" else detail)
                 for origin, destination, detail in links
             ]
         for gate in gates:
@@ -280,23 +280,30 @@ def baseline_file(repo, revision, path):
     return result.stdout if result.returncode == 0 else None
 
 
-def inventory(target, pin):
+def inventory(target, pins):
+    """List every referenced file. `pins` maps each skill repository name to a checkout holding its pinned commit."""
     specs = defaultdict(list)
     sections = defaultdict(set)
     planned = set()
     target_prompts, runtime_prompts = set(), set()
-    pstack = target["repositories"]["pstack"]
+    origins = {}
     subprocess.run(["git", "cat-file", "-e", f"{target['baseline']}^{{commit}}"],
                    cwd=ROOT, check=True)
-    actual_pin = subprocess.check_output(["git", "rev-parse", "--verify", f"{pstack['revision']}^{{commit}}"],
-                                         cwd=pin, text=True).strip()
-    if actual_pin != pstack["revision"]:
-        raise ValueError("Pinned pstack commit is unavailable")
+    for name, checkout in pins.items():
+        revision = target["repositories"][name]["revision"]
+        actual_pin = subprocess.check_output(["git", "rev-parse", "--verify", f"{revision}^{{commit}}"],
+                                             cwd=checkout, text=True).strip()
+        if actual_pin != revision:
+            raise ValueError(f"Pinned {name} commit is unavailable")
 
     def add_skills(section, skills):
         for skill in skills:
-            ref = skill["ref"]
-            path = ref if ref.startswith(FOREMAN_SOURCE) else f"{pstack['directory']}/{ref}"
+            ref, name = skill["ref"], skill.get("repository", "pstack")
+            if name == "target_repository":  # Lives in each target checkout, so it has no pinned source.
+                continue
+            path = ref if ref.startswith(FOREMAN_SOURCE) else f"{target['repositories'][name]['directory']}/{ref}"
+            if not ref.startswith(FOREMAN_SOURCE):
+                origins[path] = name
             specs[path].append(skill)
             sections[section].add(path)
 
@@ -320,16 +327,17 @@ def inventory(target, pin):
 
     files = {}
     for path in sorted(set().union(*sections.values())):
-        external = path.startswith(pstack["directory"] + "/")
-        repository = pstack["repository"] if external else target["repositories"]["foreman_repository"]
-        revision = pstack["revision"] if external else target["baseline"]
+        origin = target["repositories"].get(origins.get(path, ""), {})
+        external = path in origins
+        repository = origin["repository"] if external else target["repositories"]["foreman_repository"]
+        revision = origin["revision"] if external else target["baseline"]
         if path in target_prompts:
             entry = describe(path, (ROOT / path).read_text(), ())
             entry.update(kind="target prompt", repository=repository, revision="target",
                          url=Path(path).relative_to(BLUEPRINT.relative_to(ROOT)).as_posix())
             files[path] = entry
             continue
-        source = baseline_file(pin if external else ROOT, revision, path)
+        source = baseline_file(pins[origins[path]] if external else ROOT, revision, path)
         if source is None and path not in planned:
             raise ValueError(f"Missing pinned source: {path}")
         entry = describe(path, source, specs[path])
@@ -429,13 +437,14 @@ def main():
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pstack", type=Path, required=True, help="Git repository containing the pinned pstack commit")
+    parser.add_argument("--matt-skills", type=Path, required=True, help="Git repository containing the pinned mattpocock/skills commit")
     parser.add_argument("--output", type=Path, default=BLUEPRINT, help="Output directory (defaults to the blueprint directory)")
     rendering = parser.add_mutually_exclusive_group()
     rendering.add_argument("--no-svg", action="store_true", help="Generate text and Mermaid source without a browser")
     rendering.add_argument("--puppeteer", type=Path, help="Mermaid CLI browser configuration for rendering SVGs")
     args = parser.parse_args()
     target = load_target()
-    files, sections = inventory(target, args.pstack)
+    files, sections = inventory(target, {"pstack": args.pstack, "matt_skills": args.matt_skills})
     drawings = views(target)
     svgs = None if args.no_svg else render(drawings, args.puppeteer)
     write_views(drawings, svgs, args.output)

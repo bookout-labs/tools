@@ -69,6 +69,7 @@ waivers:
     V2-065fa8600ba9f22d: extra [top/delivery] node verify
     V2-5132467121aaf85a: extra [top/delivery] edge spec -> prepare
     V2-01893da438521b27: mismatched [top/delivery] node implement
+    V2-882f3e4484a41ce2: mismatched [procedure/implement] skills
   236:
     V2-69bf95b93e669d2b: missing [steps/dispatch] call from triage.route
     V2-afb68dac233b845c: missing [steps/dispatch] call from spec.draft
@@ -77,10 +78,10 @@ waivers:
     V2-ec184752ce9c77d4: mismatched [procedure/research] inputs
     V2-820c41915125fb11: mismatched [procedure/research] output_fields
     V2-990b11b9cfd08efd: mismatched [procedure/research] prompt
-    V2-64289c5514b0ea0e: mismatched [procedure/research] skills
+    V2-e90f641767d4380a: mismatched [procedure/research] skills
     V2-fcdd68b495a06252: missing [procedure/research] step
     V2-fc6cd8e3c6c2795a: mismatched [procedure/spec] inputs
-    V2-0b74d060da68d39d: mismatched [procedure/spec] skills
+    V2-98c8eda9fcec6c93: mismatched [procedure/spec] skills
     V2-5695273c30b5719d: missing [procedure/spec] step
     V2-3b552330fdf9655f: mismatched [procedure/triage] inputs
     V2-1e98be05b15e81b0: mismatched [procedure/triage] prompt
@@ -156,6 +157,7 @@ waivers:
     V2-541d00ec10c8c0e3: mismatched [top/delivery] node spec
     V2-f69e2ef4269b6a28: mismatched [top/delivery] node triage
   237:
+    V2-40350fdb552ab149: mismatched [procedure/review] skills
     V2-ac5a720ea744df66: missing [steps/dispatch] call from review.inspect
     V2-66f3c36d0dcb14da: missing [procedure/review] step
     V2-e706c75229be8c37: extra [shared/halts] ci_pending
@@ -218,6 +220,3 @@ waivers:
     V2-3f31c4a5ff3be692: mismatched [top/delivery] node merge
     V2-5a41012e57491487: mismatched [top/delivery] node review
     V2-4daf2985144027b6: extra [top/delivery] node review_post
-  238:
-    V2-ba814f77d3054e49: extra [ingress/triage] admit issue_labeled
-    V2-7a6654648502ee32: missing [ingress/triage] admit project_item_ready

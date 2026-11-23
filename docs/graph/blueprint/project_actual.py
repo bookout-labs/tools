@@ -324,7 +324,6 @@ def compare(target, actual):
                        "sha256": sha256((ROOT / instructions["prompt"]).read_bytes()).hexdigest()},
             "skills": [{key: skill.get(key) for key in ("ref", "when", "kind", "lines")}
                        for skill in procedure.get("skills", contract["skills"])],
-            "unavailability_halt": procedure.get("unavailability_halt"),
         }
         for field, value in expected.items():
             record("procedure", name, field, value, observed.get(field))

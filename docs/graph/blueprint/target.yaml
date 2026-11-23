@@ -10,23 +10,30 @@ repositories:
     repository: cursor/plugins
     revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
     directory: pstack/skills
+  matt_skills:
+    repository: mattpocock/skills
+    revision: abeeaf95660ba9e8b7c753eb38f441ca707a8823
+    directory: skills
 entry: triage
 intake:
-  trigger: GitHub Project issue enters Ready
-  delivery: GitHub Project webhook
-  event: project_item_ready
-  board_statuses:
+  trigger: Ready label added to an issue
+  delivery: GitHub App webhook
+  event: issue_labeled
+  run_labels:
     ready: Show eligible work waiting to start.
     doing: Show the admitted run and its current stage.
     needs_answer: Show a saved question that requires the human's decision.
-    done: Show a typed terminal result and its links.
+    done: Show a typed terminal result.
   policy: >-
-    Verify the GitHub webhook and configured Project, then read current GitHub issue and board identity.
-    Admit only real issues in that Project's Ready state. Check admission on a verified Ready transition
-    or after a matching prerequisite merge for a dependent already in Ready. Ignore duplicate and stale
-    deliveries and Foreman's status updates. Reuse the per-issue checkpoint and lock. Mirror checkpoint state on
-    the card, including the typed result. The board does not grant authority to merge or answer gates.
-  settings: The human chooses the pilot GitHub Project and its exact status-column mapping (D6).
+    Verify the App webhook and that the App is installed on the issue's repository, then read the current issue, repository and labels from GitHub.
+    Admit only real issues that carry the Ready label. Check admission on a verified Ready label event
+    or after a matching prerequisite merge for a dependent that still carries Ready. Ignore duplicate and stale
+    deliveries and Foreman's own label updates. Reuse the per-issue checkpoint and lock. Mirror checkpoint state
+    as one run label and one status comment with the typed result and its links. Labels do not grant authority to
+    merge or answer gates.
+  settings: >-
+    Works for organization and personal repositories (D6). A Project board is an optional view. An organization board
+    can collect labeled issues with GitHub's built-in auto-add workflow.
   source: https://docs.warp.dev/factories/automation-triggers/
 overview:
   framing: "Specific to issue delivery, shared through GitHub, and scrutinized with scorers, benchmarks and a scorecard for each run."
@@ -72,9 +79,8 @@ context:
   - [Human, Coordinator or personal agent, Work and decisions]
   - [Coordinator or personal agent, GitHub issue, Files and comments for the human]
   - [Foreman, Coordinator or personal agent, Gate questions]
-  - [GitHub Project board, Foreman, Ready webhook]
-  - [GitHub issue, Foreman, "Work, repository identity, and comments"]
-  - [Foreman, GitHub Project board, Run state]
+  - [GitHub issue, Foreman, "Ready label, work, repository identity, and comments"]
+  - [Foreman, GitHub issue, Run label and status comment]
   - [CARR record layer, T3, Authorized team context]
   - [T3, Coordinator or personal agent, Conversation context]
   - [Foreman, Worker CLIs, Assigns a bounded procedure]
@@ -110,8 +116,8 @@ stages:
   triage:
     title: Route the issue
     purpose: Choose research or planning for one admitted issue.
-    scope: Read target_repository issue and dependencies. Update the Project card. No repository edits or PR writes.
-    entry: A verified Ready webhook or a recheck for an already-Ready dependent after a prerequisite merge. A saved answer resumes the route step.
+    scope: Read target_repository issue and dependencies. Update the issue's run label and status comment. No repository edits or PR writes.
+    entry: A verified Ready label event or a recheck for a dependent that still carries Ready after a prerequisite merge. A saved answer resumes the route step.
     worker: coordinator
     model_policy: nodes.triage
     instructions:
@@ -153,7 +159,7 @@ stages:
     exits: {question: research, plan: spec, supplied_slice: spec, cancelled: __end__, halted: __end__}
     gates:
       - {answerer: Human, question: Decide the missing issue intent, accepted: answer or cancel, saved: Issue-bound answer, resume: route, bullets: [Clarify issue intent, Answer or cancel, Resume triage]}
-    effects: [Foreman reads GitHub and saves admission and route records., Foreman uses the GitHub adapter to mirror checkpoint state on the Project card.]
+    effects: [Foreman reads GitHub and saves admission and route records., Foreman uses the GitHub adapter to mirror checkpoint state as the issue's run label and status comment.]
     invariants: [GitHub repository identity and run configuration agree., Open dependencies prevent admission and later eligibility is read from GitHub.]
     failure_and_resume:
       halts: [missing_slice]
@@ -164,7 +170,7 @@ stages:
     scenarios:
       TR1: {given: The requested issue names another repository or a dependency is still open, expect: Stop before a paid call or build checkout allocation.}
       TR2: {given: A parent-labelled question and a separately supplied single slice, expect: Route the question to research and the supplied slice to spec.validate.}
-      TR3: {given: A verified Ready event arrives twice and the App updates the card to Doing, expect: One admitted checkpoint and one run with the card showing its state.}
+      TR3: {given: A verified Ready label event arrives twice and the App adds the Doing label, expect: One admitted checkpoint and one run with the issue showing its state.}
     decisions: [D3, D6, D9]
     warp: {equivalent: Intake and conditional triage, page: https://docs.warp.dev/factories/how-factories-work/, divergence: Foreman binds GitHub issue and dependency identity before classification to prevent cross-repository work.}
 
@@ -182,6 +188,8 @@ stages:
     skills:
       - {ref: how/SKILL.md, when: always, kind: leaf_prompt, lines: [17, 17], method: Inspect the code and explain its architecture from source.}
       - {ref: why/SKILL.md, when: bug_fix, kind: skill, lines: [9, 9], method: Read author records and mark inferences.}
+      - {ref: engineering/diagnosing-bugs/SKILL.md, repository: matt_skills, when: bug_fix, kind: skill, lines: [18, 37], method: Name a tight feedback loop that reproduces the bug before any hypothesis.}
+      - {ref: engineering/diagnosing-bugs/SKILL.md, repository: matt_skills, when: perf_issue, kind: skill, lines: [18, 37], method: Name a tight feedback loop that reproduces the regression before any hypothesis.}
     inputs:
       run: Triage supplies origin issue, repository, base and question, required.
       human_answers: On resume, Foreman supplies the saved source or clarification the agent posted on the issue under the human's identity.
@@ -233,6 +241,7 @@ stages:
     skills:
       - {ref: architect/SKILL.md, when: always, kind: skill, lines: [9, 9], method: Trace affected systems and sketch two ownership shapes.}
       - {ref: statechart/SKILL.md, when: stateful, kind: skill, lines: [23, 27], method: Describe state transitions and invariants.}
+      - {ref: engineering/to-tickets/SKILL.md, repository: matt_skills, when: parent, kind: skill, lines: [29, 40], method: Cut thin end-to-end slices and name each blocking edge.}
     inputs:
       run: Triage supplies canonical issue, target repository and pinned base, required.
       plan: Triage supplies a stored slice, or spec supplies a draft and bound prior findings for revision.
@@ -309,6 +318,7 @@ stages:
     skills:
       - {ref: tdd/SKILL.md, when: bug_fix, kind: skill, lines: [9, 31], method: Reproduce cheaply and rerun the focused regression check.}
       - {ref: benchmark-checklist/SKILL.md, when: perf_issue, kind: skill, lines: [13, 27], method: Verify benchmark conditions, result and relevance.}
+      - {ref: verify-<app>/SKILL.md, repository: target_repository, when: always, kind: target_skill, lines: null, method: "Verify with the target repository's own skill, created by pstack create-verification-skill and kept current by maintain-verification-skill."}
     inputs:
       run: Intake supplies issue, repo and pinned base, required.
       plan: Spec supplies one cleared slice and matching candidate revision, required.
@@ -378,6 +388,7 @@ stages:
       context: [Exact full diff and base, slice and acceptance, prior settled rulings]
     skills:
       - {ref: src/foreman/skills/review-quality.md, when: always, kind: repository_skill, heading: Review quality, lines: [3, 7], method: Cite evidence and assign severity.}
+      - {ref: blast-radius/SKILL.md, when: always, kind: skill, lines: [31, 37], method: Find the one fact the change is safe because of and what it breaks beyond the diff.}
     inputs:
       run: Intake supplies origin issue identity, required.
       plan: Spec supplies bound acceptance, required.
@@ -455,7 +466,7 @@ stages:
     steps:
       arm: {actor: Foreman, action: Queue the exact reviewed head, result: Observed queue or arm receipt, owner: arm, check: ME1}
       observe: {actor: Foreman, action: Read the GitHub merge outcome, result: Matching merge receipt or typed alternate outcome, owner: observe, check: ME2}
-      release: {actor: Foreman, action: Recheck Ready dependent issues, result: Eligible issues return to admission without another Ready transition, owner: release, check: ME3}
+      release: {actor: Foreman, action: Recheck Ready dependent issues, result: Eligible issues return to admission without another Ready label event, owner: release, check: ME3}
       report: {actor: Foreman, action: Record the typed merge outcome, result: Persisted run result or repair route, owner: report, check: DN1}
     transitions:
       - [__start__, arm, null]
@@ -484,7 +495,7 @@ stages:
       - Expand queue authority through synthetic replays, live smoke, about three real issues and normal volume.
       - Keep merge_held until a synthetic repository probe proves that neither an outside writer nor the App can move the source branch while the arm is open. The exact-head arm argument protects only the request.
       - A queue acknowledgment stays pending. An authenticated relevant GitHub event wakes the checkpoint and Foreman re-reads GitHub.
-      - After a matching merge, recheck admission for every dependent already in Ready. Admit only when all of its prerequisites merged. Reuse intake deduplication and keep the card in Ready until admitted.
+      - After a matching merge, recheck admission for every dependent that still carries Ready. Admit only when all of its prerequisites merged. Reuse intake deduplication and keep the Ready label until admitted.
       - Foreman verifies the repository, PR, issue and owned branch from GitHub evidence and verifies Git ancestry against the saved owned revision. The human's ruling supplies evidence. Keep the head_unverified gate open until Foreman verifies both. Only verified heads can route to review or repair.
     failure_and_resume:
       halts: [merge_held, merge_not_armed, readiness_unavailable]
@@ -496,7 +507,7 @@ stages:
     scenarios:
       ME1: {given: The PR moves before arm or source policy has no accepted probe, expect: Stale evidence cannot arm and unproven policy reports merge_held.}
       ME2: {given: GitHub reports a squash or queue merge with a distinct merge commit SHA, expect: Record both SHAs and accept the merge only when the PR head at merge matches the reviewed head.}
-      ME3: {given: "Queue pending and rejection precede the matching merge of the last prerequisite for an already-Ready issue, with duplicate wakes", expect: "Wait, repair, then recheck admission and admit the dependent once without another Ready transition."}
+      ME3: {given: "Queue pending and rejection precede the matching merge of the last prerequisite for an issue that still carries Ready, with duplicate wakes", expect: "Wait, repair, then recheck admission and admit the dependent once without another Ready label event."}
       ME4: {given: The human says an unexpected head belongs to the run but lineage has no verification, expect: Stay at head_unverified without adopting or repairing the revision.}
       ME5: {given: GitHub arms the PR before interruption or reports a merge of an unreviewed head, expect: Adopt the existing arm once and give no delivery credit or dependent release to the unreviewed head.}
       DN1: {given: "An answer, child issue plan, cancellation, queued PR, closed PR and confirmed merge", expect: Distinct typed exits with no completion for a queued PR.}
@@ -559,7 +570,7 @@ procedures:
       - {ref: interrogate/SKILL.md, when: always, kind: leaf_prompt, lines: [19, 19], method: Probe the candidate in one independent session and cite verified findings.}
     output: {schema: foreman.stage_output.SpecCheckOutput, fields: [findings, notes, human_question]}
   implement: {step: implement.edit, role: builder, model_policy: nodes.implement, inputs: [run, plan, work, checks, review]}
-  review: {step: review.inspect, role: verifier, model_policy: nodes.review, model_dependency: implement, unavailability_halt: null, inputs: [run, plan, work, checks, review]}
+  review: {step: review.inspect, role: verifier, model_policy: nodes.review, model_dependency: implement, inputs: [run, plan, work, checks, review]}
 
 # Baseline paths supply source evidence and descriptions. Proposed owner paths
 # in the stage contracts are checked separately as explicit missing owners.

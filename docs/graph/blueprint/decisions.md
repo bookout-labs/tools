@@ -1,13 +1,11 @@
 # Blueprint decisions
 
-Decisions D6 and D7 remain open.
-
 ## Agreed direction
 
 Agreed by the owner 2026-11-22. “i agree with all of your take aways from this book” and “if I didn't comment on any of those takeaways, then I'm good with them”.
 
 - Roll out each version and its merge authority through synthetic replays, smoke repositories, about three real issues, then normal volume.
-- Start a run when an issue enters Ready on a GitHub Project board. A webhook delivers the trigger and the board mirrors the run's state.
+- Start a run when the Ready label is added to an issue. A webhook delivers the trigger and the issue's run label and status comment mirror the run's state (D6).
 - Use GitHub, the CARR record layer and T3 as the shared context system. Git versions the blueprint.
 - Keep worker configuration separate from stage procedures. Agreed by the owner 2026-11-22.
 - Add scorers, benchmarks and fix PRs driven by observed failures. Agreed by the owner 2026-11-22.
@@ -36,13 +34,21 @@ Agreed by the owner 2026-11-22. Remove the 400-line gate and its override. Repor
 
 Agreed by the owner 2026-11-22. Resume the builder's conversation when the same verified run and PR lineage continue on a compatible CLI. A fresh review session reads the full current PR each round. Warp can continue a worker's conversation during revisions. [Warp workers](https://docs.warp.dev/factories/factory-agents/)
 
-## D6. Which Project board and columns should Foreman use?
+## D6. How does a run start and show its state?
 
-The Ready webhook and visible run state are agreed. Pilot on one team-owned GitHub Project. Use Ready for to-do, Doing for active work, Needs answer while the human's decision is pending, and Done for typed terminal outcomes. Show the result on the card so a halt remains distinct from a merge. The human chooses the Project and exact column mapping. Reusing an existing board saves setup and may require mapping its status names. The App needs Projects access and a webhook subscription, and the board needs tests for duplicate delivery and updates from Foreman itself. Warp can start runs from filtered GitHub events and custom webhooks. Its documented native GitHub events do not list Project status changes. [Notion’s book (archived)](https://web.archive.org/web/20261121015523/https://www.notion.com/a-new-shape-for-work) · [Warp triggers](https://docs.warp.dev/factories/automation-triggers/) · [GitHub Projects webhook](https://docs.github.com/en/webhooks/webhook-events-and-payloads#projects_v2_item)
+Agreed by the owner 2026-11-22: A. A run starts when the Ready label is added to an issue in any repository where the App is installed, on an organization or a personal account. The issue shows the run's state as one run label (Ready, Doing, Needs answer or Done) plus a status comment with the typed result and its links, so a halt stays distinct from a merge. Project boards are optional views. An organization board can collect labeled issues with GitHub's built-in auto-add workflow. GitHub sends `projects_v2_item` events only for organization-owned Projects, so a board column cannot be the trigger for personal repositories. Warp starts runs from filtered GitHub events, including issue labels. [Warp triggers](https://docs.warp.dev/factories/automation-triggers/) · [GitHub issues webhook](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issues) · [GitHub Projects webhook](https://docs.github.com/en/webhooks/webhook-events-and-payloads#projects_v2_item)
 
 ## D7. Which worker methods belong in each step?
 
-Warp assigns reusable skills to workers. Use the pinned how and why excerpts for research, architect for planning, statechart for stateful work and interrogate's evidence probe for the independent plan review. Use practical TDD for bug fixes and benchmark-checklist for performance work. Keep review-quality's evidence rubric. The pinned interrogate file has no Lead Judgment section. Using the current skill rules would retain more general guidance, including duplicate review instructions and universal proof methods. Measure the narrower selection using the synthetic benchmarks. [Warp skills](https://docs.warp.dev/factories/factory-skills/)
+Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to workers. Keep the pinned how and why excerpts for research, architect for planning, statechart for stateful work, interrogate's evidence probe for the independent plan review, practical TDD for bug fixes, benchmark-checklist for performance work and review-quality's evidence rubric. Add five methods:
+
+- Research on bugs and regressions builds a feedback loop first with Matt Pocock's `diagnosing-bugs`.
+- Spec applies the vertical-slice and blocking-edge rules from Matt Pocock's `to-tickets` when a parent splits into children.
+- Implement verifies with the target repository's own `verify-<app>` skill. pstack `create-verification-skill` creates it and `maintain-verification-skill` keeps it current.
+- Review checks what the change could break beyond the diff with pstack `blast-radius`.
+- Fix PRs driven by observed failures, outside the stages, use pstack `correct`.
+
+Leave out `to-spec`, Matt Pocock's `triage` and `code-review`, and formal verification, which stays off by default. Measure the selection using the synthetic benchmarks. [Warp skills](https://docs.warp.dev/factories/factory-skills/)
 
 ## D8. Where should checks and evidence live?
 

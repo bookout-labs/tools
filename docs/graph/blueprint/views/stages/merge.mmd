@@ -4,12 +4,12 @@ flowchart TD
     n2["Foreman · Read the GitHub merge outcome"]:::step
     n3["Foreman · Recheck Ready dependent issues"]:::step
     n4["Foreman · Record the typed merge outcome"]:::step
-    n5(["Merged<br/>Reported on Project card"]):::terminal
-    n6(["Closed<br/>Reported on Project card"]):::terminal
+    n5(["Merged<br/>Reported on the issue"]):::terminal
+    n6(["Closed<br/>Reported on the issue"]):::terminal
     n7["Continue to Review stage"]:::stage
     n8["Continue to Implement stage"]:::stage
-    n9(["Cancelled<br/>Reported on Project card"]):::terminal
-    n10(["Run stops<br/>Reported on Project card"]):::terminal
+    n9(["Cancelled<br/>Reported on the issue"]):::terminal
+    n10(["Run stops<br/>Reported on the issue"]):::terminal
     n11{{"Human<br/>• Confirm revision ownership<br/>• Supply evidence or cancel<br/>• Recheck PR revision"}}:::gate
     n12["Wait for GitHub checks or approval"]:::step
     n13["Wait for GitHub to report a merge result"]:::step

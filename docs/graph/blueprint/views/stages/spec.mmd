@@ -4,10 +4,10 @@ flowchart TD
     n2["Foreman · Validate repository and seam paths"]:::step
     n3(["Independent checker · Check and approve the plan"]):::worker
     n4["Foreman · File and link child issues"]:::step
-    n5(["Cancelled<br/>Reported on Project card"]):::terminal
-    n6(["Run stops<br/>Reported on Project card"]):::terminal
+    n5(["Cancelled<br/>Reported on the issue"]):::terminal
+    n6(["Run stops<br/>Reported on the issue"]):::terminal
     n7["Continue to Implement stage"]:::stage
-    n8(["Children filed<br/>Reported on Project card"]):::terminal
+    n8(["Children filed<br/>Reported on the issue"]):::terminal
     n9{{"Human<br/>• Resolve planning choice<br/>• Choose or cancel<br/>• Resume drafting"}}:::gate
     n10{{"Human<br/>• Resolve checker question<br/>• Choose or cancel<br/>• Resume plan check"}}:::gate
     n0 -->|"Supplied slice"| n2
