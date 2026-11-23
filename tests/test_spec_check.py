@@ -4,7 +4,7 @@ from pathlib import Path
 
 from foreman.dispatch import InvalidOutput
 from foreman.spec_check import AcceptedSpecCheck, SpecHistory, SpecRound, accept
-from foreman.stage_output import SpecAuthor, SpecCandidate, SpecCheckOutput, parse_output
+from foreman.stage_output import PlanState, SpecAuthor, SpecCandidate, SpecCheckOutput, parse_output
 from test_spec_candidate import SLICE
 
 
@@ -23,13 +23,13 @@ def candidate(**changes):
 
 class SpecCheckTests(unittest.TestCase):
     def first(self):
-        return accept(SpecHistory(), output([FINDING]), candidate(), max_rounds=3)
+        return accept(SpecHistory(), output([FINDING]), candidate())
 
     def test_native_fixture_and_contradictions(self):
         raw = json.loads(Path("tests/fixtures/spec-check.json").read_text())
         checked = parse_output(SpecCheckOutput, raw)
-        self.assertEqual(accept(SpecHistory(), checked, candidate(), max_rounds=3).verdict, "gaps")
-        self.assertEqual(accept(SpecHistory(), output(), candidate(), max_rounds=3).verdict, "clear")
+        self.assertEqual(accept(SpecHistory(), checked, candidate()).verdict, "gaps")
+        self.assertEqual(accept(SpecHistory(), output(), candidate()).verdict, "clear")
         for verdict in ("clear", "gaps"):
             with self.assertRaises(InvalidOutput):
                 parse_output(SpecCheckOutput, {**raw, "verdict": verdict})
@@ -39,7 +39,7 @@ class SpecCheckTests(unittest.TestCase):
         self.assertEqual(output([{**FINDING, "summary": "  Valid.  "}]).findings[0].summary, "Valid.")
 
     def test_clear_approval_is_bound_and_round_history_roundtrips(self):
-        accepted = accept(SpecHistory(), output(notes=[FINDING]), candidate(), max_rounds=3)
+        accepted = accept(SpecHistory(), output(notes=[FINDING]), candidate())
         self.assertEqual(accepted.verdict, "clear")
         self.assertTrue(accepted.approval.matches(candidate()))
         self.assertFalse(accepted.approval.matches(candidate(spec="Changed")))
@@ -51,116 +51,75 @@ class SpecCheckTests(unittest.TestCase):
                                   (accepted.history, {"revision": "0" * 64, "round": 1}),
                                   (accepted.history, {"revision": candidate().revision, "round": 2})):
             with self.subTest(approval=approval), self.assertRaisesRegex(ValueError, "approval must match"):
-                AcceptedSpecCheck(history=history, approval=approval, unsettled="")
-            raw = dict(history=json.loads(history.model_dump_json()), approval=approval.model_dump() if hasattr(approval, "model_dump") else approval, unsettled="")
+                AcceptedSpecCheck(history=history, approval=approval)
+            raw = dict(history=json.loads(history.model_dump_json()), approval=approval.model_dump() if hasattr(approval, "model_dump") else approval)
             with self.assertRaisesRegex(ValueError, "approval must match"):
                 AcceptedSpecCheck.model_validate_json(json.dumps(raw))
 
-    def test_interdiff_is_derived_and_forged_scope_is_rejected(self):
-        first = accept(SpecHistory(), output(), candidate(), max_rounds=3).history
-        history = accept(first, output(), candidate(spec="Changed"), max_rounds=3).history
-        restored = SpecHistory.model_validate_json(history.model_dump_json())
-        self.assertEqual(restored.interdiff(0).slices, ["Save"])
-        self.assertEqual(restored.interdiff(0).sections, ["slice", "spec", "work_kind"])
-        self.assertEqual(restored.interdiff().slices, [])
-        self.assertEqual(restored.interdiff().sections, ["spec"])
-        for index in range(len(history.rounds)):
-            raw = history.model_dump()
-            self.assertNotIn("interdiff", raw["rounds"][index])
-            raw["rounds"][index]["interdiff"] = dict(slices=["Nope"], sections=[])
-            with self.subTest(index=index):
-                with self.assertRaisesRegex(ValueError, "Extra inputs are not permitted"):
-                    SpecRound(**raw["rounds"][index])
-                with self.assertRaisesRegex(ValueError, "Extra inputs are not permitted"):
-                    SpecHistory(**raw)
-                with self.assertRaisesRegex(ValueError, "Extra inputs are not permitted"):
-                    SpecHistory.model_validate_json(json.dumps(raw))
+    def test_rounds_store_only_the_checked_candidate_and_its_report(self):
+        raw = self.first().history.model_dump()
+        for extra in ("resolutions", "interdiff"):
+            entry = {**raw["rounds"][0], extra: {}}
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, "Extra inputs are not permitted"):
+                SpecRound(**entry)
 
     def test_targets_missing_renamed_and_duplicate_titles(self):
         for payload in (output([{**FINDING, "slice": "Missing"}]), output(notes=[{**FINDING, "slice": "Missing"}])):
             with self.assertRaisesRegex(InvalidOutput, "unknown candidate slice"):
-                accept(SpecHistory(), payload, candidate(), max_rounds=3)
+                accept(SpecHistory(), payload, candidate())
         renamed = candidate(slices=[{**SLICE, "title": "Renamed"}])
         with self.assertRaisesRegex(InvalidOutput, "unknown candidate slice"):
-            accept(self.first().history, output([{**FINDING, "id": "f2"}]), renamed, max_rounds=3)
-        accepted = accept(self.first().history, output([{**FINDING, "id": "f2", "slice": "Renamed", "kind": "scope"}]), renamed, max_rounds=3)
+            accept(self.first().history, output([FINDING]), renamed)
+        accepted = accept(self.first().history, output([{**FINDING, "slice": "Renamed"}]), renamed)
         self.assertEqual(accepted.verdict, "gaps")
-        for changed in (renamed, candidate(slices=[{**SLICE, "title": "Other"}])):
-            with self.subTest(changed=changed), self.assertRaisesRegex(InvalidOutput, "unresolved finding targets"):
-                accept(self.first().history, output([FINDING]), changed, max_rounds=3)
+        self.assertEqual(accept(accepted.history, output(), renamed).verdict, "clear")
         with self.assertRaisesRegex(ValueError, "titles must be unique"):
             candidate(slices=[SLICE, SLICE])
 
-    def test_repeat_keeps_existing_gap_and_changed_finding_needs_a_new_id(self):
-        first = self.first()
-        repeated = accept(first.history, output([FINDING]), candidate(), max_rounds=3)
-        self.assertEqual(repeated.verdict, "gaps")
-        with self.assertRaises(InvalidOutput):
-            accept(first.history, output([{**FINDING, "summary": "Different gap."}]), candidate(), max_rounds=3)
-        with self.assertRaises(InvalidOutput):
-            accept(SpecHistory(), output([FINDING, FINDING]), candidate(), max_rounds=3)
-
-        noted = accept(SpecHistory(), output(notes=[FINDING]), candidate(), max_rounds=3)
-        for payload in (output([FINDING]), output(notes=[FINDING])):
-            with self.subTest(payload=payload), self.assertRaisesRegex(InvalidOutput, "including notes"):
-                accept(noted.history, payload, candidate(), max_rounds=3)
-
-    def test_scope_uses_structural_slice_and_global_section_changes(self):
-        past = self.first().history
-        new = {**FINDING, "id": "f2", "kind": "seam"}
-        for changed, titles, sections in ((candidate(), [], []),
-                (candidate(slices=[{**SLICE, "acceptance": "Changed"}]), ["Save"], ["slice"]),
-                (candidate(spec="Changed prose"), [], ["spec"]),
-                (candidate(work_kind="bug_fix"), [], ["work_kind"]),
-                (candidate(slices=[SLICE, {**SLICE, "title": "Other"}]), ["Other"], ["slice"])):
-            with self.subTest(changed=changed):
-                accepted = accept(past, output([new]), changed, max_rounds=3)
-                self.assertEqual(accepted.verdict, "gaps")
-                self.assertIsNone(accepted.approval)
-                self.assertEqual(accepted.history.interdiff().slices, titles)
-                self.assertEqual(accepted.history.interdiff().sections, sections)
-                cleared = accept(accepted.history, output(), changed, max_rounds=3)
-                self.assertEqual(cleared.verdict, "clear")
-                self.assertTrue(cleared.approval.matches(changed))
-
-    def test_settled_findings_become_notes_and_unknown_rulings_fail(self):
-        second = accept(self.first().history, output(), candidate(), max_rounds=3)
-        note = {**FINDING, "id": "f2", "ruling_id": "finding:f1"}
-        accepted = accept(second.history, output([note]), candidate(), max_rounds=3)
-        self.assertEqual(accepted.verdict, "clear")
-        self.assertEqual(accepted.history.rounds[-1].notes[0].id, "f2")
-        self.assertEqual(accepted.unsettled, "")
-        for payload in (output([{**note, "ruling_id": "unknown"}]), output(notes=[{**note, "ruling_id": "unknown"}])):
-            with self.assertRaisesRegex(InvalidOutput, "unknown settled ruling"):
-                accept(second.history, payload, candidate(), max_rounds=3)
-
-    def test_recurrence_across_all_rounds_and_unresolved_at_cap(self):
-        first = self.first()
+    def test_ids_are_unique_within_a_round_only(self):
+        for payload in (dict(findings=[FINDING, FINDING]), dict(findings=[FINDING], notes=[FINDING])):
+            with self.subTest(payload=payload), self.assertRaisesRegex(InvalidOutput, "unique within a round"):
+                accept(SpecHistory(), output(**payload), candidate())
+        # Engine #1225: round 3 repeated an earlier note's ID. Each round reports on its own candidate.
+        noted = accept(SpecHistory(), output(notes=[FINDING]), candidate())
         changed = candidate(spec="Changed")
-        new = {**FINDING, "id": "f2", "section": "spec"}
-        second = accept(first.history, output(), candidate(), max_rounds=3)
-        repeated = accept(second.history, output([new]), changed, max_rounds=3)
-        self.assertIn("Recurring spec kind contract", repeated.unsettled)
-        self.assertIsNone(repeated.approval)
-        unresolved = output([FINDING])
-        second = accept(first.history, unresolved, candidate(), max_rounds=3)
-        self.assertEqual(second.unsettled, "")
+        second = accept(noted.history, output([FINDING]), changed)
         self.assertEqual(second.verdict, "gaps")
-        self.assertIsNone(second.approval)
-        capped = accept(second.history, unresolved, candidate(), max_rounds=3)
-        self.assertEqual(capped.verdict, "gaps")
-        self.assertIn("Unresolved spec findings at round cap: f1", capped.unsettled)
-        self.assertIsNone(capped.approval)
-        with self.assertRaisesRegex(InvalidOutput, "round cap"):
-            accept(capped.history, unresolved, candidate(), max_rounds=3)
-        self.assertEqual(len(first.history.rounds), 1)
+        for payload in (output(notes=[FINDING]), output([{**FINDING, "summary": "Different gap."}])):
+            with self.subTest(payload=payload):
+                third = accept(second.history, payload, candidate(spec="Again"))
+                self.assertEqual(len(third.history.rounds), 3)
+        self.assertEqual(accept(second.history, output(notes=[FINDING]), changed).verdict, "clear")
 
-    def test_human_ruling_and_candidate_snapshot_are_preserved(self):
+    def test_verdict_and_clearance_follow_the_latest_check_of_a_revision(self):
+        gaps = self.first()
+        self.assertEqual([f.id for f in gaps.findings], ["f1"])
+        self.assertFalse(gaps.history.clears(candidate().revision))
+        cleared = accept(gaps.history, output(), candidate())
+        self.assertTrue(cleared.history.clears(candidate().revision))
+        self.assertTrue(cleared.approval.matches(candidate()))
+        reopened = accept(cleared.history, output([FINDING]), candidate())
+        self.assertFalse(reopened.history.clears(candidate().revision))
+        self.assertFalse(cleared.history.clears(candidate(spec="Unchecked").revision))
+        plan = PlanState(spec_candidate=candidate().record(), spec_history={"rounds": cleared.history.rounds})
+        self.assertTrue(SpecHistory.cleared(plan))
+        self.assertFalse(SpecHistory.cleared(plan.model_copy(update={"spec_candidate": None})))
+
+    def test_settled_rulings_turn_findings_into_notes_and_unknown_rulings_fail(self):
         past = SpecHistory(settled=[dict(id="design:1", text="Use a unique ID.")])
         current = candidate()
-        accepted = accept(past, output([{**FINDING, "ruling_id": "design:1"}]), current, max_rounds=3)
+        accepted = accept(past, output([{**FINDING, "ruling_id": "design:1"}]), current)
         self.assertEqual(accepted.verdict, "clear")
-        self.assertEqual(accepted.history.accounting().rulings()[0].id, "design:1")
+        self.assertEqual(accepted.history.rounds[0].notes[0].id, "f1")
+        self.assertEqual(accepted.history.settled, past.settled)
+        for payload in (output([{**FINDING, "ruling_id": "unknown"}]), output(notes=[{**FINDING, "ruling_id": "unknown"}]),
+                        output([{**FINDING, "ruling_id": "finding:f1"}])):
+            with self.subTest(payload=payload), self.assertRaisesRegex(InvalidOutput, "unknown settled ruling"):
+                accept(self.first().history, payload, current)
+
+    def test_candidate_snapshot_is_preserved(self):
+        current = candidate()
+        accepted = accept(SpecHistory(), output(), current)
         checked_revision = accepted.history.rounds[0].candidate["revision"]
         current.slices[0].acceptance = "Changed after acceptance"
         self.assertFalse(accepted.approval.matches(current))
@@ -169,11 +128,4 @@ class SpecCheckTests(unittest.TestCase):
         raw["rounds"][0]["candidate"]["spec"] = "Tampered"
         with self.assertRaises(ValueError):
             SpecHistory.model_validate(raw)
-        self.assertEqual(past.rounds, [])
 
-    def test_slice_order_is_part_of_the_structural_interdiff(self):
-        other = {**SLICE, "title": "Other"}
-        first = accept(SpecHistory(), output(), candidate(slices=[SLICE, other]), max_rounds=3)
-        accepted = accept(first.history, output([FINDING]), candidate(slices=[other, SLICE]), max_rounds=3)
-        self.assertEqual(accepted.verdict, "gaps")
-        self.assertEqual(accepted.history.interdiff().slices, ["Other", "Save"])

@@ -136,7 +136,7 @@ def accept_spec_check(output: StageOutput, context: Acceptance) -> "DeliveryUpda
     planning = plan.model_copy(update={"spec_history": {"rounds": checked.history.rounds, "settled": checked.history.settled}})
     if checked.approval:
         return {"plan": planning, "human_question": ""}
-    detail = "\n".join(finding.summary for finding in checked.history.accounting().unresolved())
+    detail = "\n".join(finding.summary for finding in checked.findings)
     return reject_candidate(planning, candidate.revision, detail, context.config.max_review_rounds)
 
 
@@ -276,7 +276,7 @@ def spec_check_projection(state: "DeliveryState", workspace: Workspace) -> tuple
     plan = state["plan"]
     assert plan.spec_candidate is not None
     answers = [answer for answer in plan.human_qa if answer.get("candidate") == plan.spec_candidate["revision"]]
-    return {**state, "plan": plan.model_copy(update={"human_qa": answers}),
+    return {**state, "plan": plan.model_copy(update={"human_qa": answers, "spec_history": {}}),
             "human_answers": [answer["answer"] for answer in answers]}, None
 
 

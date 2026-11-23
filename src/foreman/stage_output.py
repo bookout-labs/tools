@@ -30,7 +30,6 @@ WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
 Severity = Literal["P0", "P1", "P2", "P3", "P4"]
 BlockingSeverity = Literal["P0", "P1"]
 FindingKind = Literal["correctness", "security", "scope", "other"]
-ResolutionStatus = Literal["resolved", "unresolved"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -504,7 +503,6 @@ class SpecRound(Contract):
     candidate: SpecCandidateRecord
     findings: list[SpecFinding]
     notes: list[SpecFinding]
-    resolutions: dict[str, ResolutionStatus]
 
     @field_validator("candidate")
     @classmethod
@@ -700,11 +698,6 @@ class Finding(RecordContract[FindingRecord]):
         return None
 
 
-class FindingResolution(Contract):
-    id: TrimmedText
-    status: ResolutionStatus
-
-
 class ReviewFinding(Finding):
     @field_validator("location")
     @classmethod
@@ -737,7 +730,7 @@ class ReviewOutput(HumanQuestionOutput):
 
 class SpecCheckOutput(HumanQuestionOutput):
     human_question: TrimmedText | None = Field(description="Ask an unresolved choice on this candidate only when findings is empty.")
-    findings: list[SpecFinding] = Field(description="All blocking gaps in the current candidate. Reuse the exact earlier finding when it remains unresolved.")
+    findings: list[SpecFinding] = Field(description="All blocking gaps in the current candidate.")
     notes: list[SpecFinding] = Field(description="Nonblocking observations, separate from requested fixes.")
 
     @model_validator(mode="after")
