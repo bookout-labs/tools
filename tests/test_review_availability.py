@@ -312,7 +312,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 # The final dispatch's fallback attempts reach the run state with its result.
                 self.assertEqual(result["attempts"][:len(before["attempts"])], before["attempts"])
                 self.assertEqual(len(result["attempts"]) - len(before["attempts"]), len(outcomes) - rounds)
-                self.assertEqual(result["path"][-2:], ["review", "done"])
+                self.assertEqual(result["path"][-2:], ["publish", "review"])
                 self.assertEqual(result["path"].count("implement"), rounds + 1)
                 self.assertEqual(result["path"].count("check"), rounds + 1)
                 self.assertEqual(len(result["review"].review_findings), rounds)

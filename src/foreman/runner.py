@@ -37,7 +37,8 @@ _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
 STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size")
 # Each step a stage records in the path, so a halt inside a stage resumes that stage.
 STEP_STAGES = {"admit": "triage", "triage": "triage", "research": "research", "post": "research",
-               "spec": "spec", "spec_check": "spec", "file_children": "spec", **dict.fromkeys(implement.STEPS, "implement")}
+               "spec": "spec", "spec_check": "spec", "file_children": "spec", "review": "review",
+               **dict.fromkeys(implement.STEPS, "implement")}
 
 
 @dataclass
@@ -340,7 +341,7 @@ def run_live_delivery(
             if repaired or stage == "implement" and prior.head_sha and prior.published_head == prior.head_sha:
                 # A repair, or a halt before the next attempt started, discards the published attempt.
                 work, checks = WorkState(branch=prior.branch, base=prior.base, repair_head=repair_head), saved_values["checks"].for_attempt()
-            elif inside:
+            elif inside and not renew_review:
                 # The stage restarts with the progress it reached, so no paid call or remote write repeats.
                 work, checks = saved_values.get("work", WorkState()), saved_values["checks"]
                 progress = _DELIVERY_UPDATE.validate_python(

@@ -1,10 +1,6 @@
 # IDs bind each exact difference to its migration issue. Delete the entry when the difference closes.
 waivers:
   237:
-    V2-7c62a8648f0ec8ad: mismatched [top/delivery] edge review -> implement
-    V2-8dc9875d45361cbd: extra [top/delivery] edge review_post -> implement
-    V2-40350fdb552ab149: mismatched [procedure/review] skills
-    V2-ac5a720ea744df66: missing [steps/dispatch] call from review.inspect
     V2-66f3c36d0dcb14da: missing [procedure/review] step
     V2-e706c75229be8c37: extra [shared/halts] ci_pending
     V2-112ffe489cffe949: extra [shared/halts] ci_red
@@ -29,34 +25,10 @@ waivers:
     V2-b87eb73511d90a61: missing [steps/merge] owner src/foreman/steps/merge.py::report
     V2-a1ce5c003a88f939: missing [steps/merge] retries
     V2-f0b228b74ad24010: missing [steps/merge] subgraph endpoints
-    V2-1a0335f687456599: missing [steps/review] edge __start__ -> inspect
-    V2-f6c58306a017e1a6: missing [steps/review] edge inspect -> __end__
-    V2-d99e41e9191a3101: missing [steps/review] edge inspect -> post
-    V2-9feef563c09290b4: missing [steps/review] edge post -> __end__
-    V2-6eda8209c2b4b0c0: missing [steps/review] edge post -> route
-    V2-8599c6e38373e152: missing [steps/review] edge route -> __end__
-    V2-d8fd34163b090f61: missing [steps/review] halts
-    V2-3d06a77cb1462102: missing [steps/review] node inspect
-    V2-78000016fee4d77e: missing [steps/review] node post
-    V2-b21ac76a27655a13: missing [steps/review] node route
-    V2-00cc723bb9af23b5: missing [steps/review] owner src/foreman/steps/review.py::compile_stage
-    V2-95f811e1e974db4a: missing [steps/review] owner src/foreman/steps/review.py::inspect
-    V2-699aabd55411097e: missing [steps/review] owner src/foreman/steps/review.py::post
-    V2-6ba0aa0f81f6bfde: missing [steps/review] owner src/foreman/steps/review.py::route
-    V2-e0040799f203dd3f: missing [steps/review] retries
-    V2-567b837935d37d15: missing [steps/review] subgraph endpoints
     V2-d68e41f5957fd801: extra [top/delivery] edge done -> __end__
     V2-160510c179709031: missing [top/delivery] edge merge -> __end__
     V2-62ed81532e6d8557: extra [top/delivery] edge merge -> done
     V2-cfb87bfca15fa5d9: missing [top/delivery] edge merge -> implement
     V2-dde78abb7321c90f: missing [top/delivery] edge merge -> review
-    V2-29dfbacdee7cbddf: missing [top/delivery] edge review -> __end__
-    V2-c0082ed968e05680: extra [top/delivery] edge review -> done
-    V2-86a11305697dfe87: mismatched [top/delivery] edge review -> merge
-    V2-23e310e1d747fbd1: extra [top/delivery] edge review -> review_post
-    V2-beb253e75c342eb4: extra [top/delivery] edge review_post -> done
-    V2-08262c71a13d8666: extra [top/delivery] edge review_post -> merge
     V2-15317eed1e8a3824: extra [top/delivery] node done
     V2-3f31c4a5ff3be692: mismatched [top/delivery] node merge
-    V2-5a41012e57491487: mismatched [top/delivery] node review
-    V2-4daf2985144027b6: extra [top/delivery] node review_post

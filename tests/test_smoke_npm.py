@@ -82,14 +82,14 @@ class NpmSmokeTest(unittest.TestCase):
                 if reply := checker_reply(args):
                     return worker_reply(args, reply)
                 state = json.loads(args[-1].split('Delivery state:\n')[1])
-                node = state['path'][-1] if state['path'] else ''
                 # The worker is scripted; all workspace operations remain real.
                 if args[0] == 'codex':
                     (cwd / f'smoke_{state["run"]["issue"]}.txt').write_text(f'smoke {state["run"]["issue"]}\n')
                     if mutation == 'broken suite':
                         (cwd / 'src/text.js').write_text('export const normalize = s => s;\n')
                     return worker_reply(args, {'implementation': 'added exact fixture'})
-                if node:
+                # A stage subgraph sees only its own path, so triage's recorded route tells review from triage.
+                if state['plan']['triage']:
                     return worker_reply(args, APPROVE)
                 return worker_reply(args, {'triage': 'supplied_slice'})
             def pull_request_for(repo, branch):

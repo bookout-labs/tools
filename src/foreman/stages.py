@@ -302,6 +302,7 @@ STAGES = {
     ), accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review")),
     "review": Stage("review.md", ReviewOutput, (
         SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill", lines=(3, 7))),
+        SkillRule(skill=SkillMethod(path="blast-radius/SKILL.md", kind="skill", lines=(31, 37))),
     ), prepare=review_preparation, accept=accept_review, project=review_projection,
         input_fields=("run", "plan", "work", "checks", "review")),
 }

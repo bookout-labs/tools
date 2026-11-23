@@ -1,0 +1,135 @@
+"""Review: assess the full current pull request, post one exact-head report and route on its severity."""
+
+from collections.abc import Callable
+from functools import wraps
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+from pydantic import TypeAdapter
+
+from foreman.contracts import InvalidOutput
+from foreman.dispatch import DISPATCH
+from foreman.github import CommandTimedOut, ForgeError, PullRequest, ReviewComment
+from foreman.outcomes import Halt, stopped
+from foreman.review_round import history
+from foreman.state import DeliveryState, DeliveryUpdate
+from foreman.steps import StageInput, StageRun
+from foreman.workspace import ReviewScope, WorktreeInspectionFailed
+
+HALTS = [Halt.review_cap, Halt.review_not_posted, Halt.git_failed, Halt.publication_unreconciled]
+# The checked evidence no longer names the reviewed head, so Implement re-establishes it.
+HEAD_MOVED = "head_moved"
+
+
+def inspect(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    review = state["review"]
+    try:
+        rounds = history({"rounds": review.review_findings}).rounds
+    except InvalidOutput as exc:
+        return stopped(Halt.invalid_output, str(exc), "review")
+    head = state["checks"].verified_head
+    target = (state.get("dispatch_plan") or {}).get("target")
+    last = rounds[-1] if rounds else None
+    if last and not review.review_receipt and target and last.reviewed_head == head and (target["headRefOid"], target["baseRefOid"]) == (head, last.base):
+        # A resumed round keeps the assessment it reached for this head and base, and posts it.
+        return {"stop": ""}
+    try:
+        if not head:
+            raise WorktreeInspectionFailed("The run did not record a verified HEAD.")
+        worktree = run.workspace.inspect()
+        if worktree.head != head:
+            return {"stop": HEAD_MOVED, "checks": state["checks"].for_attempt()}
+        if not worktree.clean or worktree.branch is None:
+            raise WorktreeInspectionFailed("The worktree changed after verification.")
+    except WorktreeInspectionFailed as exc:
+        return stopped(Halt.git_failed, str(exc), "review")
+
+    def settle(current: DeliveryState, answer: str) -> DeliveryUpdate:
+        # The human's ruling on a disputed scope or rule settles it for the fresh review of this head.
+        current_review = current["review"]
+        past = history({"rounds": current_review.review_findings, "settled": current_review.settled_rulings})
+        rulings = [ruling.model_dump() for ruling in past.settled] + [{"id": f"design:{len(past.rounds)}", "text": answer}]
+        return {"review": current_review.model_copy(update={"settled_rulings": rulings})}
+
+    update, _ = run.consult(DISPATCH, "review", state, None, answered=settle)
+    # The round's own result replaces the route an earlier round left.
+    return {"stop": "", **update}
+
+
+def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    review = state["review"]
+    if review.review_receipt:
+        return {}
+    assert "dispatch_plan" in state and review.review_run_id
+    plan = state["dispatch_plan"]
+    assert plan["target"] is not None and plan["scope"] is not None
+    rounds = history({"rounds": review.review_findings}).rounds
+    report, target, repo = rounds[-1], PullRequest.model_validate(plan["target"]), state["run"].repo
+    if report.reviewed_head != state["checks"].verified_head or (report.reviewed_head, report.base) != (target.headRefOid, target.baseRefOid):
+        return {"stop": HEAD_MOVED, "checks": state["checks"].for_attempt()}
+    scope = TypeAdapter(ReviewScope).validate_python(plan["scope"])
+    body = [f"Review route: {report.severity or 'none'}. Head: {report.reviewed_head}. Base ref: {report.base}."]
+    if (provenance := report.provenance) is not None:
+        reason = provenance.reason.replace("_", " ") if provenance.reason else "not needed"
+        body.append(f"Reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; same-family fallback: {reason}.")
+    comments: list[ReviewComment] = []
+    for finding in sorted(report.findings, key=lambda item: item.severity):
+        location = finding.location
+        path, line = location["path"], location["line"]
+        label = f"Advisory, settled by {finding.ruling_id}" if finding.ruling_id else finding.severity
+        message = f"[{label}] {finding.summary}\n\nImpact: {finding.impact}\n\nEvidence: {finding.evidence}"
+        if location["side"] == "head" and line is not None and (path, line) in scope.inline:
+            comments.append({"path": path, "line": line, "side": "RIGHT", "body": message})
+        else:
+            body.append(f"{location['side']} {f'{path}:{line}' if line is not None else path} {message}")
+    marker = f"{review.review_run_id}:{len(rounds)}:{report.base}:{report.reviewed_head}"
+    try:
+        # The forge rechecks the PR, head and base, and adopts the report that carries this marker before it writes another.
+        receipt = run.forge.post_review(repo, target, "\n\n".join(body), comments, marker=marker)
+    except CommandTimedOut as exc:
+        return stopped(Halt.publication_unreconciled, f"The review may have posted ({exc}). Rerun to adopt it by its marker.", "review")
+    except ForgeError as exc:
+        return stopped(Halt.review_not_posted, str(exc), "review")
+    if receipt["state"] != "COMMENTED" or receipt["commit_id"] != report.reviewed_head:
+        return stopped(Halt.review_not_posted, "The review receipt does not match the submitted COMMENT.", "review")
+    return {"review": review.model_copy(update={"review_receipt": receipt})}
+
+
+def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    review = state["review"]
+    rounds = history({"rounds": review.review_findings}).rounds
+    severity = rounds[-1].severity if rounds else None
+    # Each completed blocking round counts once toward the cap.
+    blocking = sum(round.severity is not None for round in rounds)
+    if severity and blocking >= run.max_rounds:
+        return stopped(Halt.review_cap, f"Review requested changes after {blocking} rounds. Last review: {review.detail}", "review")
+    return {"stop": severity or "none"}
+
+
+def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
+    def bind(step: Callable[[DeliveryState, StageRun], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
+        # The bound node keeps the step's identity, so introspection names the step as its owner.
+        @wraps(step)
+        def node(state: DeliveryState) -> DeliveryUpdate:
+            return step(state, run)
+        return node
+
+    def ended(state: DeliveryState) -> str | None:
+        if state.get("halt"):
+            return "halted"
+        stop = state.get("stop")
+        return stop if stop in {HEAD_MOVED, "cancelled"} else None
+
+    declarations: dict[str, object] = {"halts": [halt.value for halt in HALTS],
+                                       "retries": {"blocking_rounds": "src/foreman/models.toml#max_review_rounds"}}
+    return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
+            .add_node("inspect", bind(inspect))
+            .add_node("post", bind(post))
+            .add_node("route", bind(route))
+            .add_edge(START, "inspect")
+            .add_conditional_edges("inspect", lambda state: ended(state) or "assessed",
+                                   {"assessed": "post", HEAD_MOVED: END, "cancelled": END, "halted": END})
+            .add_conditional_edges("post", lambda state: ended(state) or "posted", {"posted": "route", HEAD_MOVED: END, "halted": END})
+            .add_conditional_edges("route", lambda state: "halted" if state.get("halt") else state.get("stop", ""),
+                                   {"P0": END, "P1": END, "none": END, "halted": END})
+            .compile().with_config({"metadata": {"contract_id": "review", "stage_declarations": declarations}}))
