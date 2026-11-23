@@ -42,3 +42,5 @@ jobs:
       - run: python -m unittest discover -s tests
       - run: pyright
       - run: sh evals/eval.sh
+      - name: Model-check crash recovery (formal/, see .claude/skills/formal-recovery)
+        run: sh formal/check.sh
