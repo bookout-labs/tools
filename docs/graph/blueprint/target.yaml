@@ -319,6 +319,7 @@ stages:
       - {ref: tdd/SKILL.md, when: bug_fix, kind: skill, lines: [9, 31], method: Reproduce cheaply and rerun the focused regression check.}
       - {ref: benchmark-checklist/SKILL.md, when: perf_issue, kind: skill, lines: [13, 27], method: Verify benchmark conditions, result and relevance.}
       - {ref: verify-<app>/SKILL.md, repository: target_repository, when: always, kind: target_skill, lines: null, method: "Verify with the target repository's own skill, created by pstack create-verification-skill and kept current by maintain-verification-skill."}
+      - {ref: formal-<area>/SKILL.md, repository: target_repository, when: always, kind: target_skill, lines: null, method: "When the target repository has its own formal verification skill, created by pstack create-formal-verification-skill, run its check on any change that touches the verified code. When the change is intended, update the verification with maintain-formal-verification-skill."}
     inputs:
       run: Intake supplies issue, repo and pinned base, required.
       plan: Spec supplies one cleared slice and matching candidate revision, required.

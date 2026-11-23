@@ -45,10 +45,11 @@ Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to 
 - Research on bugs and regressions builds a feedback loop first with Matt Pocock's `diagnosing-bugs`.
 - Spec applies the vertical-slice and blocking-edge rules from Matt Pocock's `to-tickets` when a parent splits into children.
 - Implement verifies with the target repository's own `verify-<app>` skill. pstack `create-verification-skill` creates it and `maintain-verification-skill` keeps it current.
+- Implement runs the target repository's own formal verification skill, `formal-<area>`, on changes that touch the verified code. pstack `create-formal-verification-skill` creates it and `maintain-formal-verification-skill` updates it when a change is intended. Formal verification is opt-in per repository: it runs only where the repository has its own skill. Agreed by the owner 2026-11-23 ("A").
 - Review checks what the change could break beyond the diff with pstack `blast-radius`.
 - Fix PRs driven by observed failures, outside the stages, use pstack `correct`.
 
-Leave out `to-spec`, Matt Pocock's `triage` and `code-review`, and formal verification, which stays off by default. Measure the selection using the synthetic benchmarks. [Warp skills](https://docs.warp.dev/factories/factory-skills/)
+Leave out `to-spec` and Matt Pocock's `triage` and `code-review`. Measure the selection using the synthetic benchmarks. [Warp skills](https://docs.warp.dev/factories/factory-skills/)
 
 ## D8. Where should checks and evidence live?
 

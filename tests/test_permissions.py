@@ -29,9 +29,11 @@ class PermissionsTest(unittest.TestCase):
             root = export_skills(config.pstack, config.matt_skills, scratch)
             # The worker runs in the target checkout, so its own verify skill needs no extra read root.
             checkout = Path(directory)
-            target_skill = checkout / ".claude/skills/verify-board/SKILL.md"
-            target_skill.parent.mkdir(parents=True)
-            target_skill.write_text("Run the board checks.\n")
+            # A repository opts in to each target skill by having it: verify-<app> and formal-<area>.
+            for skill in ("verify-board", "formal-recovery"):
+                target_skill = checkout / f".claude/skills/{skill}/SKILL.md"
+                target_skill.parent.mkdir(parents=True)
+                target_skill.write_text("Run the board checks.\n")
             for stage, row in STAGES.items():
                 if not row.skills:
                     continue
@@ -46,7 +48,8 @@ class PermissionsTest(unittest.TestCase):
                         path = instruction.split(' of ')[-1].split(' as the method.')[0] if ' of ' in instruction else instruction.removeprefix('Read ').split(' in full')[0]
                         self.assertTrue(Path(path).is_file())
                         self.assertTrue(any(Path(path).is_relative_to(Path(r)) for r in (*roots, checkout)))
-                    self.assertEqual(".claude/skills/verify-board/SKILL.md" in methods, stage == "implement")
+                    for skill in ("verify-board", "formal-recovery"):
+                        self.assertEqual(f".claude/skills/{skill}/SKILL.md" in methods, stage == "implement")
 
     def test_first_fix_and_quota_fallback_receive_the_bound_grant(self):
         for fallback in (False, True):
