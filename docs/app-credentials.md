@@ -1,8 +1,9 @@
 # Foreman App credentials
 
-Set `FOREMAN_APP_ID` and `FOREMAN_INSTALLATION_ID` in Foreman's environment.
+Set `FOREMAN_APP_ID` in Foreman's environment.
 `FOREMAN_APP_KEY_PATH` defaults to `~/.config/bookout-foreman/app.pem` and must be owner-only.
-With neither ID set, personal gh and git behavior remains. Partial configuration fails closed.
+Each repository's token comes from the installation that covers it (`GET /repos/{owner}/{repo}/installation`), on an organization or a personal account.
+A repository where the App is not installed fails closed. With no App ID set, personal gh and git behavior remains.
 
 Configured Workspace transports use the run's repository, validated HTTPS origins and a command-scoped helper.
 Credential failures reuse stage-specific resumable halts. Only a 401 clears cached tokens.

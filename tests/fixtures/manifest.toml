@@ -928,9 +928,9 @@ notes = "API excerpts captured 2026-11-21. Contract source: https://docs.github.
 
 [fixtures."github/app-credentials.txt"]
 tool = "GitHub App REST, gh and Git credential helpers"
-version = "Documentation read 2026-11-21"
+version = "Documentation read 2026-11-21 and 2026-11-23"
 kind = "quoted_source"
-sources = ["https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app", "https://cli.github.com/manual/gh_help_environment", "https://git-scm.com/docs/gitcredentials", "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github#githubs-token-formats", "https://git-scm.com/docs/git-config", "https://git-scm.com/docs/git", "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation", "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app"]
+sources = ["https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app", "https://cli.github.com/manual/gh_help_environment", "https://git-scm.com/docs/gitcredentials", "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github#githubs-token-formats", "https://git-scm.com/docs/git-config", "https://git-scm.com/docs/git", "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation", "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app", "https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#get-a-repository-installation-for-the-authenticated-app"]
 notes = "Published source excerpts. Offline tests use generated keys, fake HTTP and a fake clock. No real installation token was minted."
 [fixtures."git/grep-lines.z"]
 tool = "git"

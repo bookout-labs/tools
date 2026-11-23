@@ -32,6 +32,10 @@ def failure(status: int, rate_limited: bool = False) -> str:
     return UNAVAILABLE if kind is None else f"App credentials: {kind}. Restore App access, then resume the same run."
 
 
+class _Installation(BaseModel):
+    id: int
+
+
 class _Token(BaseModel):
     token: SecretStr
     expires_at: datetime
@@ -46,11 +50,11 @@ class _Entry:
 class AppCredentials:
     def __init__(self) -> None:
         self._lock = Lock()
-        self._entries: dict[tuple[str, str, str, str], _Entry] = {}
+        self._entries: dict[tuple[str, str, str], _Entry] = {}
 
     @property
     def configured(self) -> bool:
-        return bool(os.environ.get("FOREMAN_APP_ID") or os.environ.get("FOREMAN_INSTALLATION_ID"))
+        return bool(os.environ.get("FOREMAN_APP_ID"))
 
     def known_values(self) -> tuple[str, ...]:
         with self._lock:
@@ -62,15 +66,14 @@ class AppCredentials:
 
     def environment(self, repo: str) -> dict[str, str] | None:
         app = os.environ.get("FOREMAN_APP_ID", "")
-        installation = os.environ.get("FOREMAN_INSTALLATION_ID", "")
         if not self.configured:
             return None
-        if not app.isdecimal() or not installation.isdecimal():
-            raise CredentialFailure("Configure FOREMAN_APP_ID and FOREMAN_INSTALLATION_ID, then resume.")
+        if not app.isdecimal():
+            raise CredentialFailure("Configure FOREMAN_APP_ID, then resume.")
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
             raise CredentialFailure("App credentials require an authorized OWNER/NAME repository.")
         key_path = os.environ.get("FOREMAN_APP_KEY_PATH", "~/.config/bookout-foreman/app.pem")
-        cache_key = (app, installation, key_path, repo.lower())
+        cache_key = (app, key_path, repo.lower())
         with self._lock:
             entry = self._entries.setdefault(cache_key, _Entry())
         with entry.lock:
@@ -82,10 +85,18 @@ class AppCredentials:
                         raise CredentialFailure("App key must have owner-only permissions. Repair and resume.")
                     now = int(time.time())
                     signed = jwt.encode({"iat": now - 60, "exp": now + 540, "iss": app}, key.read_bytes(), algorithm="RS256")
+                    headers = {"Authorization": f"Bearer {signed}", "Accept": "application/vnd.github+json"}
+                    # The installation that covers this repository, on an organization or a personal account.
+                    try:
+                        with urlopen(Request(f"https://api.github.com/repos/{repo}/installation", headers=headers), timeout=15) as response:
+                            installation = _Installation.model_validate_json(response.read()).id
+                    except HTTPError as exc:
+                        if exc.code == 404:
+                            raise CredentialFailure(f"The App is not installed on {repo}. Install it on that account, then resume.") from None
+                        raise
                     request = Request(
                         f"https://api.github.com/app/installations/{installation}/access_tokens",
-                        data=json.dumps({"repositories": [repo.split('/')[1]]}).encode(),
-                        headers={"Authorization": f"Bearer {signed}", "Accept": "application/vnd.github+json"},
+                        data=json.dumps({"repositories": [repo.split('/')[1]]}).encode(), headers=headers,
                     )
                     with urlopen(request, timeout=15) as response:
                         token = _Token.model_validate_json(response.read())

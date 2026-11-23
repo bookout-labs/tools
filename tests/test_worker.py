@@ -357,7 +357,7 @@ class WorkerExpiryTest(CredentialFixture):
                 self.clock.return_value = now
                 with redirect_stdout(StringIO()):
                     self.assertEqual(main(['gh', 'issue', 'create', '--title', 'synthetic', '--body', 'synthetic']), 0)
-            self.assertEqual(self.http.call_count, 2)
+            self.assertEqual(self.http.call_count, 4)  # Each hourly mint looks up the installation, then mints.
 
     def test_remote_uses_same_owner_after_one_hour(self):
         with patch('foreman.worker_auth.credentials', self.owner):
@@ -373,4 +373,4 @@ class WorkerExpiryTest(CredentialFixture):
                     self.clock.return_value = now
                     with redirect_stdout(StringIO()):
                         self.assertEqual(main(['--studio', 'foreman-studio', 'gh', 'issue', 'create', '--title', 'synthetic', '--body', 'synthetic']), 0)
-            self.assertEqual(self.http.call_count, 2)
+            self.assertEqual(self.http.call_count, 4)  # Each hourly mint looks up the installation, then mints.
