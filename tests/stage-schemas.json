@@ -495,7 +495,7 @@
     "additionalProperties": false,
     "properties": {
       "findings": {
-        "description": "All blocking gaps in the current candidate. Reuse the exact earlier finding when it remains unresolved.",
+        "description": "All blocking gaps in the current candidate.",
         "items": {
           "$ref": "#/$defs/SpecFinding"
         },

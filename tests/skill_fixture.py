@@ -71,7 +71,7 @@ def stored_slice(item: Mapping[str, object]) -> dict[str, object]:
 def approved_spec(item: Mapping[str, object], target: SpecTarget, spec: str = "") -> PlanState:
     candidate = SpecCandidate(slices=[CandidateSlice.model_validate(item)], spec=spec, work_kind="feature",
                               author=AUTHOR, target=target)
-    checked = accept(SpecHistory(), CLEAR, candidate, max_rounds=3)
+    checked = accept(SpecHistory(), CLEAR, candidate)
     return candidate.update(PlanState(spec_gate="ready", spec_history={"rounds": checked.history.rounds}), single=True)
 
 
