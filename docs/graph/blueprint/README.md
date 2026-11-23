@@ -12,4 +12,20 @@ To regenerate SVGs and their checksums with Node and the pinned Mermaid CLI, omi
 
 CI checks out the Foreman history before the tests run. Set `FOREMAN_PINNED_SKILL_REPO` to your pstack checkout to run text regeneration locally. The SVG check verifies the published Mermaid sources and SVGs against `views/SHA256SUMS` without a browser.
 
-The projection guide (`actual-projection.md`), projector (`project_actual.py`), and its outputs (`actual.yaml`, `diff.txt`, and `waivers.yaml`) belong to the projection check described in the [migration](migration.md). The design package's `synthesis-notes.md` records the rationale for combining earlier proposals. The [decisions](decisions.md) and [migration](migration.md) describe the choices that apply to this blueprint.
+## Check the implementation
+
+Run the projector from the repository root to write `actual.yaml` and print the missing, extra, and mismatched elements.
+
+```sh
+uv run --python 3.12 python docs/graph/blueprint/project_actual.py --output actual.yaml
+```
+
+The projector compiles Foreman with inert adapters and reads its graph registrations, stage declarations, and source. The generated YAML is for inspection. CI recomputes the projection in the Python 3.12 unittest suite without network access. This is Foreman's equivalent of Warp's pull request configuration check. [Warp factory definition checks](https://docs.warp.dev/factories/factory-as-code/#pull-request-checks)
+
+Run the same check directly.
+
+```sh
+uv run --python 3.12 python docs/graph/blueprint/project_actual.py --check
+```
+
+Each entry in [`waivers.yaml`](waivers.yaml) names a migration issue and identifies one difference by its scope, expected value, and observed value. After implementing a slice, run the check and delete its stale entries and any empty issue group. Any new or changed difference fails the check. Use the migration issue and the printed diff to investigate before proposing a target change.

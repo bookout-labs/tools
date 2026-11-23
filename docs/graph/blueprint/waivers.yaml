@@ -1,0 +1,310 @@
+# IDs bind each exact difference to its migration issue. Delete the entry when the difference closes.
+waivers:
+  232:
+    V2-a84571dba5286e94: mismatched [procedure/implement] prompt
+    V2-6bc519c6dc6c0cec: mismatched [procedure/implement] skills
+    V2-7ccf17f9b80e0a2a: extra [procedure/proof] declaration
+    V2-cd6b52df9aa54a21: mismatched [procedure/review] inputs
+    V2-9509e553a2f38d9c: mismatched [procedure/review] output_fields
+    V2-3f688dd68161472d: mismatched [procedure/review] prompt
+    V2-8521f746f1c929ae: mismatched [procedure/review] skills
+    V2-d78ccda46832c3a0: extra [shared/halts] design_rethink
+    V2-37a251de4395de5e: extra [shared/halts] insufficient_evidence
+    V2-ac56d99147f7c553: extra [top/delivery] edge proof -> done
+    V2-556cf3c58dd020bd: extra [top/delivery] edge proof -> prepare
+    V2-a4d9e1ad3f5b9132: extra [top/delivery] edge proof -> publish
+    V2-b422c14f49bb06a6: extra [top/delivery] edge verify -> proof
+    V2-c3a69fb6f8e02d18: extra [top/delivery] node proof
+  233:
+    V2-2ccc581c949a2cc8: mismatched [procedure/spec] prompt
+    V2-1758e49cc682d76c: mismatched [procedure/spec_check] inputs
+    V2-4b09321a0dbefdf6: mismatched [procedure/spec_check] kind
+    V2-1993627a3c124fb7: missing [procedure/spec_check] model_dependency
+    V2-173eaf7d98475a38: missing [procedure/spec_check] model_policy
+    V2-0e35eb22ddefe3ab: mismatched [procedure/spec_check] output_fields
+    V2-6764b2ed7841d021: mismatched [procedure/spec_check] prompt
+    V2-2debcdea1bd567b3: mismatched [procedure/spec_check] skills
+    V2-54e8c089244e9959: missing [procedure/spec_check] step
+    V2-8174b6febc90d8c7: missing [procedure/spec_check] worker
+    V2-5132467121aaf85a: extra [top/delivery] edge spec -> prepare
+    V2-02b9d34fa4cf308e: extra [top/delivery] edge triage -> prepare
+  234:
+    V2-8c03538569dd3058: extra [shared/halts] usage_unknown
+    V2-69ddd346c649b1a5: extra [procedure/review] unavailability_halt
+    V2-a804004e89ff1d18: extra [shared/halts] cli_missing
+    V2-cf73d422ff07f1b9: extra [shared/halts] model_family_exhausted
+    V2-d01511ae13d502d5: extra [shared/halts] quota_exhausted
+    V2-9ab1f91a88a71cac: extra [shared/halts] review_unavailable
+    V2-924010bb2349a623: extra [shared/halts] reviewer_unavailable
+    V2-0b19e86a0a4e216c: missing [steps/dispatch] edge __start__ -> reserve
+    V2-ffce5bbfe186b434: missing [steps/dispatch] edge reconcile -> __end__
+    V2-25eab3c665b6718f: missing [steps/dispatch] edge reconcile -> reserve
+    V2-4826c2e4c082a58f: missing [steps/dispatch] edge reserve -> __end__
+    V2-a17d4884bb19096e: missing [steps/dispatch] edge reserve -> reconcile
+    V2-3b5b1488d9bc6487: missing [steps/dispatch] halts
+    V2-88b8c20634c89d04: missing [steps/dispatch] node reconcile
+    V2-544b6bc18ed0d9f6: missing [steps/dispatch] node reserve
+    V2-5673b8200a189540: extra [steps/dispatch] owner src/foreman/dispatch.py::clean_outcome
+    V2-475609af344f7dfc: missing [steps/dispatch] owner src/foreman/dispatch.py::compile_dispatch
+    V2-93430e6fe0f8668d: missing [steps/dispatch] owner src/foreman/dispatch.py::reconcile
+    V2-7d836d57689c62b9: missing [steps/dispatch] owner src/foreman/dispatch.py::reserve
+    V2-6708d12b1bf35b15: missing [steps/dispatch] retries
+    V2-f92638735ca3e122: missing [steps/dispatch] subgraph endpoints
+    V2-473fc2f8695d2ff1: extra [top/delivery] edge implement -> implement_call
+    V2-5456ebf9a78770cb: extra [top/delivery] edge implement -> quota_wait
+    V2-876ee41e7df16b4a: extra [top/delivery] edge implement_call -> done
+    V2-b7af989c5da36c5a: extra [top/delivery] edge implement_call -> implement_call
+    V2-b9448768ac11e272: extra [top/delivery] edge implement_call -> quota_wait
+    V2-bd0fe9177e4198ed: extra [top/delivery] edge implement_call -> reconcile
+    V2-54a104b66b49e8da: extra [top/delivery] edge quota_wait -> implement
+    V2-96cae6d421503bcf: extra [top/delivery] edge quota_wait -> research
+    V2-2e8d8020918b4174: extra [top/delivery] edge quota_wait -> review
+    V2-b57b177529914a56: extra [top/delivery] edge quota_wait -> spec
+    V2-5fa25f1f595989fd: extra [top/delivery] edge quota_wait -> triage
+    V2-141a6cd219daef97: extra [top/delivery] edge research -> quota_wait
+    V2-94cc32691b589cc2: extra [top/delivery] edge research -> research_call
+    V2-9a5517e5fb044b5a: extra [top/delivery] edge research_call -> done
+    V2-9b8f277aa925b9fc: extra [top/delivery] edge research_call -> quota_wait
+    V2-82f862cdf236d3bc: extra [top/delivery] edge research_call -> research_call
+    V2-fa5e4b71d58f17d0: extra [top/delivery] edge review -> quota_wait
+    V2-da9e59596a1d5843: extra [top/delivery] edge review -> review_call
+    V2-575aebd2225d2cc1: extra [top/delivery] edge review_call -> done
+    V2-5a6cb244732794b3: extra [top/delivery] edge review_call -> merge
+    V2-b2ee5ff3a8d016ca: extra [top/delivery] edge review_call -> needs_human
+    V2-433648786a01a735: extra [top/delivery] edge review_call -> prepare
+    V2-d4673dec8c63ac25: extra [top/delivery] edge review_call -> quota_wait
+    V2-ba73096b25051376: extra [top/delivery] edge review_call -> review_call
+    V2-b97706f1d219e9ca: extra [top/delivery] edge review_call -> review_post
+    V2-d4ea02dcdecd30b3: extra [top/delivery] edge spec -> quota_wait
+    V2-13ec9264c0351dc6: extra [top/delivery] edge spec -> spec_call
+    V2-2b284195e38038db: extra [top/delivery] edge spec_call -> decide_pr_size
+    V2-8f0449422cbf2af5: extra [top/delivery] edge spec_call -> done
+    V2-bba759a8684bc5a2: extra [top/delivery] edge spec_call -> needs_human
+    V2-26e06a5ee5aa6be0: extra [top/delivery] edge spec_call -> prepare
+    V2-b9f0be268abf9dd0: extra [top/delivery] edge spec_call -> quota_wait
+    V2-39638e29853c510d: extra [top/delivery] edge spec_call -> spec
+    V2-3afe0b3a9539464a: extra [top/delivery] edge spec_call -> spec_call
+    V2-c1990347456a4a1d: extra [top/delivery] edge triage -> quota_wait
+    V2-6286d36f34001f6f: extra [top/delivery] edge triage -> triage_call
+    V2-72b0b8a31aeb342c: extra [top/delivery] edge triage_call -> done
+    V2-74e4e86b04b6b0b3: extra [top/delivery] edge triage_call -> needs_human
+    V2-d22cb509713f1c53: extra [top/delivery] edge triage_call -> prepare
+    V2-cbc2b02e08d87d91: extra [top/delivery] edge triage_call -> quota_wait
+    V2-21bc802787c3f331: extra [top/delivery] edge triage_call -> research
+    V2-ff10dcca2514fb03: extra [top/delivery] edge triage_call -> spec
+    V2-3b81ceaff9dc13ab: extra [top/delivery] edge triage_call -> triage_call
+    V2-63194d451acce7fe: extra [top/delivery] node implement_call
+    V2-d9ae45977175e4fc: extra [top/delivery] node quota_wait
+    V2-37535d700f5d7d8e: extra [top/delivery] node research_call
+    V2-578a600828853b3b: extra [top/delivery] node review_call
+    V2-f025b8c45304fcb4: extra [top/delivery] node spec_call
+    V2-18db07ab98860f22: extra [top/delivery] node triage_call
+  235:
+    V2-cf41c5d5e274b2cf: missing [steps/dispatch] call from implement.edit
+    V2-1debfbdb835fbdd8: mismatched [procedure/implement] output_fields
+    V2-3c83ff3a89e487d1: missing [procedure/implement] step
+    V2-96fba37eb404814b: extra [procedure/verify] declaration
+    V2-0c0d2b8bd0152622: extra [shared/halts] failed
+    V2-292b54d17fe27b2c: extra [shared/halts] pr_size_unavailable
+    V2-108171be7a0e69c3: missing [shared/halts] publication_unreconciled
+    V2-95f8f32efefefbc5: missing [steps/implement] edge __start__ -> prepare
+    V2-2e80a3901369d57b: missing [steps/implement] edge commit -> __end__
+    V2-dc7e65aa3d486bee: missing [steps/implement] edge commit -> publish
+    V2-9a06063d5ce4b220: missing [steps/implement] edge edit -> __end__
+    V2-75992dd55036ed36: missing [steps/implement] edge edit -> commit
+    V2-a405696e8ef48783: missing [steps/implement] edge edit -> edit
+    V2-8ccb7ab15a98d415: missing [steps/implement] edge prepare -> __end__
+    V2-e02aacb96000c913: missing [steps/implement] edge prepare -> edit
+    V2-5595eda3ec556688: missing [steps/implement] edge publish -> __end__
+    V2-e01d987977dc83ba: missing [steps/implement] edge publish -> prepare
+    V2-6d2244c09fdf69d1: missing [steps/implement] halts
+    V2-2bd42dd49a8cbcbd: missing [steps/implement] node commit
+    V2-80cee159ff85b1e0: missing [steps/implement] node edit
+    V2-e611ba4d2b9c3af5: missing [steps/implement] node prepare
+    V2-d30171cd50b1d232: missing [steps/implement] node publish
+    V2-6ba18c0f89fd586a: missing [steps/implement] owner src/foreman/steps/implement.py::commit
+    V2-eae049fe856c89df: missing [steps/implement] owner src/foreman/steps/implement.py::compile_stage
+    V2-615e6e20dbd996d7: missing [steps/implement] owner src/foreman/steps/implement.py::edit
+    V2-bff8beb5dfd6a70c: missing [steps/implement] owner src/foreman/steps/implement.py::prepare
+    V2-c2b9aabc4af4bd1f: missing [steps/implement] owner src/foreman/steps/implement.py::publish
+    V2-3dff85f05e5aacf3: missing [steps/implement] retries
+    V2-a8afcd34de6276ac: missing [steps/implement] subgraph endpoints
+    V2-d3d61a63cd563d8c: extra [top/delivery] edge commit -> done
+    V2-7a7b234d8180b716: extra [top/delivery] edge commit -> verify
+    V2-4b3e1b7e853761b4: extra [top/delivery] edge decide_pr_size -> done
+    V2-0b4a46efbf86097a: extra [top/delivery] edge decide_pr_size -> size
+    V2-4a51f821f99e9800: missing [top/delivery] edge implement -> __end__
+    V2-3e511e4f7b239f3c: extra [top/delivery] edge implement -> done
+    V2-b7cddfabef7ec9a1: extra [top/delivery] edge implement -> reconcile
+    V2-a0e8af80aaccb533: missing [top/delivery] edge implement -> review
+    V2-de98578758d1c3ff: extra [top/delivery] edge prepare -> done
+    V2-b154983935653d14: extra [top/delivery] edge prepare -> implement
+    V2-a156c2f85ad0c17b: extra [top/delivery] edge publish -> done
+    V2-acde425cf965619d: extra [top/delivery] edge publish -> review
+    V2-658032c1702dff69: extra [top/delivery] edge reconcile -> done
+    V2-84089972873e384a: extra [top/delivery] edge reconcile -> size
+    V2-cc29823a7e195340: extra [top/delivery] edge size -> commit
+    V2-b700af50bab3dc90: extra [top/delivery] edge size -> decide_pr_size
+    V2-314e4d1b2247be61: extra [top/delivery] edge size -> spec
+    V2-856f0e62a40d7227: extra [top/delivery] edge verify -> done
+    V2-a7d94d53939555c5: extra [top/delivery] edge verify -> prepare
+    V2-30290861dc14aa64: extra [top/delivery] node commit
+    V2-df801846ce28b104: extra [top/delivery] node decide_pr_size
+    V2-b30ef0866ec5811b: mismatched [top/delivery] node implement
+    V2-df0f83e6a55a696d: extra [top/delivery] node prepare
+    V2-381baa256230dba9: extra [top/delivery] node publish
+    V2-126a3ea73ab1e45a: extra [top/delivery] node reconcile
+    V2-adeea79d6722b70f: extra [top/delivery] node size
+    V2-065fa8600ba9f22d: extra [top/delivery] node verify
+  236:
+    V2-69bf95b93e669d2b: missing [steps/dispatch] call from triage.route
+    V2-afb68dac233b845c: missing [steps/dispatch] call from spec.draft
+    V2-7e04400433afc3a7: missing [steps/dispatch] call from spec.check
+    V2-a0d3b98bd4905901: missing [steps/dispatch] call from research.answer
+    V2-ec184752ce9c77d4: mismatched [procedure/research] inputs
+    V2-820c41915125fb11: mismatched [procedure/research] output_fields
+    V2-990b11b9cfd08efd: mismatched [procedure/research] prompt
+    V2-64289c5514b0ea0e: mismatched [procedure/research] skills
+    V2-fcdd68b495a06252: missing [procedure/research] step
+    V2-fc6cd8e3c6c2795a: mismatched [procedure/spec] inputs
+    V2-0b74d060da68d39d: mismatched [procedure/spec] skills
+    V2-5695273c30b5719d: missing [procedure/spec] step
+    V2-3b552330fdf9655f: mismatched [procedure/triage] inputs
+    V2-1e98be05b15e81b0: mismatched [procedure/triage] prompt
+    V2-07e057e6ee90064d: mismatched [procedure/triage] skills
+    V2-2be96502ef852069: missing [procedure/triage] step
+    V2-9cf5fd5e5504f21b: missing [steps/research] edge __start__ -> answer
+    V2-3276a23512c236a4: missing [steps/research] edge answer -> __end__
+    V2-fa6afa77952c8906: missing [steps/research] edge answer -> post
+    V2-9d49d5c34793f6b3: missing [steps/research] edge post -> __end__
+    V2-42a3e2bd3e036a9f: missing [steps/research] halts
+    V2-b7432cc7d003dc5f: missing [steps/research] node answer
+    V2-8d422d81956897cc: missing [steps/research] node post
+    V2-a2d601965bac952a: missing [steps/research] owner src/foreman/steps/research.py::answer
+    V2-3216a8eda855acd8: missing [steps/research] owner src/foreman/steps/research.py::compile_stage
+    V2-02b5e28765ebd246: missing [steps/research] owner src/foreman/steps/research.py::post
+    V2-9773fd2769d7c1f0: missing [steps/research] retries
+    V2-c578ddd2cb13ac6f: missing [steps/research] subgraph endpoints
+    V2-77dd0d3614fc1ff5: missing [steps/spec] edge __start__ -> draft
+    V2-84fd76cc5ef30757: missing [steps/spec] edge __start__ -> validate
+    V2-7e407f5374b84630: missing [steps/spec] edge check -> __end__
+    V2-481bf58dc3f37a3d: missing [steps/spec] edge check -> draft
+    V2-170c6e9bd9479cc3: missing [steps/spec] edge check -> file_children
+    V2-6138ed4dfde643d5: missing [steps/spec] edge draft -> __end__
+    V2-6f076965399660a6: missing [steps/spec] edge draft -> validate
+    V2-fb514dc1ed741f10: missing [steps/spec] edge file_children -> __end__
+    V2-ded9875572a83c09: missing [steps/spec] edge validate -> __end__
+    V2-3c8961a38964efc8: missing [steps/spec] edge validate -> check
+    V2-94074dbacc24c69e: missing [steps/spec] edge validate -> draft
+    V2-0d754151113540ad: missing [steps/spec] halts
+    V2-e344bbf2b609ce8f: missing [steps/spec] node check
+    V2-3144968e4ae82522: missing [steps/spec] node draft
+    V2-e7191a86935adcc7: missing [steps/spec] node file_children
+    V2-16d9c8ff4046353d: missing [steps/spec] node validate
+    V2-83f291b863ab5871: missing [steps/spec] owner src/foreman/steps/spec.py::check
+    V2-f7b59b82a6d0b8c0: missing [steps/spec] owner src/foreman/steps/spec.py::compile_stage
+    V2-9f1a8ab3ed73b84e: missing [steps/spec] owner src/foreman/steps/spec.py::draft
+    V2-561e2c8cc1b6b878: missing [steps/spec] owner src/foreman/steps/spec.py::file_children
+    V2-f3b97f53e9afe6ce: missing [steps/spec] owner src/foreman/steps/spec.py::validate
+    V2-b142ca02df37dbdb: missing [steps/spec] retries
+    V2-e95857c61c170817: missing [steps/spec] subgraph endpoints
+    V2-0dd19296bbfb514b: missing [steps/triage] edge __start__ -> admit
+    V2-2c43d1c1a9f99278: missing [steps/triage] edge admit -> __end__
+    V2-28a23a79dec958fa: missing [steps/triage] edge admit -> route
+    V2-57f15452dbd26df7: missing [steps/triage] edge route -> __end__
+    V2-8c7a472770b598eb: missing [steps/triage] halts
+    V2-4b1828ef4d65a411: missing [steps/triage] node admit
+    V2-011e1268a2fa7074: missing [steps/triage] node route
+    V2-950261ae88ebdf3e: missing [steps/triage] owner src/foreman/steps/triage.py::admit
+    V2-76431ae604e5b4c1: missing [steps/triage] owner src/foreman/steps/triage.py::compile_stage
+    V2-fa8126dd4e5ae3fb: missing [steps/triage] owner src/foreman/steps/triage.py::route
+    V2-48b4a0bd968cbe73: missing [steps/triage] retries
+    V2-9ab4ebb59968902e: missing [steps/triage] subgraph endpoints
+    V2-8f35d7f70507cf0c: mismatched [top/delivery] edge __start__ -> triage
+    V2-5060bad7ad743fe1: extra [top/delivery] edge needs_human -> done
+    V2-26fc7836f9790458: extra [top/delivery] edge needs_human -> prepare
+    V2-e95c028e381dbe08: extra [top/delivery] edge needs_human -> spec
+    V2-51cdd27d0e88f52e: extra [top/delivery] edge needs_human -> triage
+    V2-ac16f3a053beebac: missing [top/delivery] edge research -> __end__
+    V2-db2a805b6a3e2ac8: extra [top/delivery] edge research -> done
+    V2-bc67dad1b64ae568: missing [top/delivery] edge spec -> __end__
+    V2-e867248ebd0874a1: extra [top/delivery] edge spec -> decide_pr_size
+    V2-451406bb1397c038: extra [top/delivery] edge spec -> done
+    V2-1dc13abe71d6024a: missing [top/delivery] edge spec -> implement
+    V2-38832a13395f39f7: extra [top/delivery] edge spec -> needs_human
+    V2-8d4ab4268d8f3f26: extra [top/delivery] edge spec -> spec
+    V2-ef323666fac76132: missing [top/delivery] edge triage -> __end__
+    V2-8feee6f15134a31b: extra [top/delivery] edge triage -> done
+    V2-ad46fa2951218883: extra [top/delivery] edge triage -> needs_human
+    V2-2820be55b1b14599: mismatched [top/delivery] edge triage -> research
+    V2-eecb34b96bf99930: mismatched [top/delivery] edge triage -> spec
+    V2-7633d289e8f3c3d1: extra [top/delivery] node needs_human
+    V2-405c60cf22878fae: mismatched [top/delivery] node research
+    V2-883c2e884445e755: mismatched [top/delivery] node spec
+    V2-033b77ac69c6ba6e: mismatched [top/delivery] node triage
+  237:
+    V2-ac5a720ea744df66: missing [steps/dispatch] call from review.inspect
+    V2-66f3c36d0dcb14da: missing [procedure/review] step
+    V2-e706c75229be8c37: extra [shared/halts] ci_pending
+    V2-112ffe489cffe949: extra [shared/halts] ci_red
+    V2-981dfd0d5c87307e: extra [shared/halts] pr_conflict
+    V2-c627f132c3c2fc3a: extra [shared/halts] queue_rejected
+    V2-1d8d500b2103dfda: missing [steps/merge] edge __start__ -> arm
+    V2-0f8e4f3172b7379f: missing [steps/merge] edge arm -> observe
+    V2-8768422280aaf7c3: missing [steps/merge] edge arm -> report
+    V2-6016675287dcbd63: missing [steps/merge] edge observe -> release
+    V2-0fc67ee6c97cdb77: missing [steps/merge] edge observe -> report
+    V2-d7c21a49cfe34f78: missing [steps/merge] edge release -> report
+    V2-9d6d4a76450af87e: missing [steps/merge] edge report -> __end__
+    V2-10edfff01492b9d5: missing [steps/merge] halts
+    V2-be15babae34010a5: missing [steps/merge] node arm
+    V2-ee0f2d0a19997d4f: missing [steps/merge] node observe
+    V2-c622c9ff62946f21: missing [steps/merge] node release
+    V2-564fb912fa29eee6: missing [steps/merge] node report
+    V2-5de157b75afdd60a: missing [steps/merge] owner src/foreman/steps/merge.py::arm
+    V2-ffbdf27139a87bb1: missing [steps/merge] owner src/foreman/steps/merge.py::compile_stage
+    V2-5bb66c3d0151a26e: missing [steps/merge] owner src/foreman/steps/merge.py::observe
+    V2-77dda670438b5a75: missing [steps/merge] owner src/foreman/steps/merge.py::release
+    V2-b87eb73511d90a61: missing [steps/merge] owner src/foreman/steps/merge.py::report
+    V2-a1ce5c003a88f939: missing [steps/merge] retries
+    V2-f0b228b74ad24010: missing [steps/merge] subgraph endpoints
+    V2-1a0335f687456599: missing [steps/review] edge __start__ -> inspect
+    V2-f6c58306a017e1a6: missing [steps/review] edge inspect -> __end__
+    V2-d99e41e9191a3101: missing [steps/review] edge inspect -> post
+    V2-9feef563c09290b4: missing [steps/review] edge post -> __end__
+    V2-6eda8209c2b4b0c0: missing [steps/review] edge post -> route
+    V2-8599c6e38373e152: missing [steps/review] edge route -> __end__
+    V2-d8fd34163b090f61: missing [steps/review] halts
+    V2-3d06a77cb1462102: missing [steps/review] node inspect
+    V2-78000016fee4d77e: missing [steps/review] node post
+    V2-b21ac76a27655a13: missing [steps/review] node route
+    V2-00cc723bb9af23b5: missing [steps/review] owner src/foreman/steps/review.py::compile_stage
+    V2-95f811e1e974db4a: missing [steps/review] owner src/foreman/steps/review.py::inspect
+    V2-699aabd55411097e: missing [steps/review] owner src/foreman/steps/review.py::post
+    V2-6ba0aa0f81f6bfde: missing [steps/review] owner src/foreman/steps/review.py::route
+    V2-e0040799f203dd3f: missing [steps/review] retries
+    V2-567b837935d37d15: missing [steps/review] subgraph endpoints
+    V2-b976e2418baa74f9: extra [top/delivery] edge __start__ -> done
+    V2-d68e41f5957fd801: extra [top/delivery] edge done -> __end__
+    V2-160510c179709031: missing [top/delivery] edge merge -> __end__
+    V2-62ed81532e6d8557: extra [top/delivery] edge merge -> done
+    V2-cfb87bfca15fa5d9: missing [top/delivery] edge merge -> implement
+    V2-dde78abb7321c90f: missing [top/delivery] edge merge -> review
+    V2-29dfbacdee7cbddf: missing [top/delivery] edge review -> __end__
+    V2-c0082ed968e05680: extra [top/delivery] edge review -> done
+    V2-da09a4f677a480fb: missing [top/delivery] edge review -> implement
+    V2-86a11305697dfe87: mismatched [top/delivery] edge review -> merge
+    V2-a5f8bd94957a561a: extra [top/delivery] edge review -> needs_human
+    V2-40fe2a1cbe5563b9: extra [top/delivery] edge review -> prepare
+    V2-23e310e1d747fbd1: extra [top/delivery] edge review -> review_post
+    V2-beb253e75c342eb4: extra [top/delivery] edge review_post -> done
+    V2-08262c71a13d8666: extra [top/delivery] edge review_post -> merge
+    V2-fc50f345cc2b993d: extra [top/delivery] edge review_post -> needs_human
+    V2-9b2b9df835f5eb6b: extra [top/delivery] edge review_post -> prepare
+    V2-15317eed1e8a3824: extra [top/delivery] node done
+    V2-3f31c4a5ff3be692: mismatched [top/delivery] node merge
+    V2-5a41012e57491487: mismatched [top/delivery] node review
+    V2-4daf2985144027b6: extra [top/delivery] node review_post
+  238:
+    V2-ba814f77d3054e49: extra [ingress/triage] admit issue_labeled
+    V2-7a6654648502ee32: missing [ingress/triage] admit project_item_ready

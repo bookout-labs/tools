@@ -18,54 +18,9 @@ For this repository, run `foreman run delivery --repo bookout-labs/tools --issue
 A typed exact restatement of the graph's verified check result needs no fixture.
 
 
+[The v2 blueprint](docs/graph/blueprint/README.md) defines the target and explains the projection check.
+
 <!-- graph:start -->
-### Blueprint
-
-```mermaid
-flowchart TD
-  __start__([New issue]) --> triage["triage<br/>read the issue"]
-  triage -->|question| research["research<br/>answer the question"]
-  research --> done([Done])
-  triage -->|needs a plan| spec["spec<br/>write the plan"]
-  triage -->|one slice| spec_check
-  spec --> spec_check["spec_check<br/>a qualified model checks the plan, preferring another family"]
-  spec -->|override: keep this PR| size
-  spec_check -->|gaps: repair the plan| spec
-  spec_check -->|parent plan| file_slices["file_slices<br/>file the child issues"]
-  file_slices --> done
-  spec_check -->|approved slice| prepare["prepare<br/>create or reuse the PR branch and worktree"]
-  prepare --> implement["implement<br/>a worker writes the change"]
-  implement --> reconcile["reconcile<br/>adopt the tree, reject scratch"]
-  reconcile --> size["size<br/>count every changed line"]
-  size -->|too big: re-plan| spec
-  size -->|fits| commit["commit"]
-  commit --> verify["verify<br/>run the repo's checks"]
-  verify -->|fail: resume same PR branch| prepare
-  verify -->|pass| proof["proof<br/>tool facts are recorded"]
-  proof -->|missing facts: resume same PR branch| prepare
-  proof -->|pass| publish["publish<br/>push and open the PR"]
-  publish --> review["review<br/>a qualified model reviews, preferring another family"]
-  review --> review_post["review_post<br/>post the review"]
-  review_post -->|changes: resume same PR branch| prepare
-  review_post -->|approve| merge["merge<br/>check readiness, arm the merge"]
-  merge -->|head moved: resume same PR branch| prepare
-  merge -->|queue rejected: fix on same PR branch| prepare
-  merge -->|merged| done
-  done --> __end__([End])
-```
-
-Any step can pause (quota wait, human question, waiting on GitHub) and resumes at that step; review rounds are capped by max_review_rounds.
-
-```mermaid
-flowchart TD
-  __start__([Dispatch]) --> plan
-  plan["plan<br/>pick the next eligible model, check the budget, save the attempt"] --> run["call<br/>run one model"]
-  run -->|quota or CLI missing: next model| plan
-  run -->|no eligible model now| wait["wait<br/>pause until a model is available"]
-  wait -->|resume| plan
-  run -->|result| __end__([back to the assembly line])
-```
-
 ### Today's code
 
 ```mermaid
@@ -198,10 +153,8 @@ graph TD;
 ```
 <!-- graph:end -->
 
-Regenerate the native drawings and this README with `foreman diagram --write`.
-The approved blueprint is in `docs/graph/target.mmd`; `gaps.toml` records each topology difference and its closing slice.
-The dispatch drawing stays empty until slice 13 builds the dispatch cell.
-Changes to `docs/graph/` require Joe's written approval on the PR before merge.
+Regenerate the compiled delivery drawing and this README with `foreman diagram --write`.
+Changes to `docs/graph/` require the code owner's written approval on the PR before merge.
 
 The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. Review uses only the configured Opus and Sol list, preferring models outside all successful implementation families. Grok remains in the other model orders. A node does not edit the list, and it does not decide the next node.
 
