@@ -7,7 +7,7 @@ from pydantic import Field, PositiveInt, model_validator
 from foreman.contracts import InvalidOutput
 from foreman.resolution import ResolutionLedger
 from foreman.stage_output import (
-    Contract, FindingResolution, SettledRuling, SpecCandidate, SpecRound as SpecRound,
+    Contract, FindingResolution, PlanState, SettledRuling, SpecCandidate, SpecRound as SpecRound,
     SpecCheckOutput, SpecFinding,
 )
 
@@ -44,6 +44,11 @@ class SpecHistory(Contract):
 
     def accounting(self) -> ResolutionLedger[SpecFinding]:
         return ResolutionLedger(self.rounds, self.settled)
+
+    @classmethod
+    def cleared(cls, plan: PlanState) -> bool:
+        """Whether the checker's saved verdict clears the plan's current candidate."""
+        return plan.spec_candidate is not None and cls.model_validate(plan.spec_history).clears(plan.spec_candidate["revision"])
 
 
 class SpecApproval(Contract):

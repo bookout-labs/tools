@@ -454,9 +454,12 @@ class InvalidSlicePlan(InvalidOutput):
         self.reason: SpecRejection = {"kind": kind, "detail": detail}
 
 
+GateStage = Literal["triage", "research", "spec", "spec_check", "implement", "review"]
+
+
 @with_config(ConfigDict(extra="forbid"))
 class HumanAnswer(TypedDict):
-    stage: Literal["triage", "spec", "spec_check", "implement", "review"]
+    stage: GateStage
     question: str
     answer: str
     revision: NotRequired[str]
@@ -464,9 +467,13 @@ class HumanAnswer(TypedDict):
 
 
 class HumanPrompt(Contract):
-    stage: Literal["triage", "spec", "spec_check", "implement", "review"]
+    stage: GateStage
     question: str
     revision: str | None = None
+    # The paused step's own attempts, path and models, which the state records only once the step finishes.
+    attempts: list[AttemptRecord] = []
+    path: list[str] = []
+    models_used: dict[str, str] = {}
 
     @property
     def answer_marker(self) -> str:
@@ -511,7 +518,7 @@ class SpecHistoryRecord(TypedDict, total=False):
 
 
 class PlanState(BaseModel, frozen=True, extra="forbid"):
-    triage: Literal["", "implement", "spec", "question", "needs_human"] = ""
+    triage: Literal["", "question", "plan", "supplied_slice", "needs_human"] = ""
     spec: str = ""
     spec_gate: Literal["", "ready", "needs_human"] = ""
     human_qa: list[HumanAnswer] = Field(default_factory=list[HumanAnswer])
@@ -521,7 +528,6 @@ class PlanState(BaseModel, frozen=True, extra="forbid"):
     spec_history: SpecHistoryRecord = Field(default_factory=SpecHistoryRecord)
     human_approval: str | None = None
     slices: list[SliceRecord] = Field(default_factory=list[SliceRecord])
-    child_issue_numbers: list[int] = Field(default_factory=list[int])
     slice: SliceRecord | None = None
     issue_kind: Literal["parent", "slice"] | None = None
     work_kind: WorkKind | None = None
@@ -579,15 +585,22 @@ class TriageOutput(HumanQuestionOutput):
     work_kind: WorkKind = Field(
         description="Classify the work. Keep the inherited work_kind when the delivery state already has one for a slice.",
     )
-    triage: Literal["implement", "spec", "question", "needs_human"] = Field(
+    triage: Literal["question", "plan", "supplied_slice", "needs_human"] = Field(
         description=(
-            "Use implement when the behavior is decided and the work ships as one pull request. "
-            "Use spec when it needs a plan or splits at a real dependency."
+            "Use supplied_slice when the behavior and acceptance are decided and the work ships as one pull request. "
+            "Use plan when it needs a plan or splits at a real dependency. Use question when the issue asks for "
+            "information and not a change. Use needs_human when the issue intent is missing."
         ),
     )
     slice: Slice | None = Field(
-        description="For a parent issue that triages as implement, return its single slice. Use null otherwise, including for slice issues.",
+        description="For a parent issue that triages as supplied_slice, return its single slice. Use null otherwise, including for slice issues.",
     )
+
+    @model_validator(mode="after")
+    def asks_when_intent_is_missing(self) -> Self:
+        if self.triage == "needs_human" and not self.human_question:
+            raise ValueError("human_question: required when triage is needs_human")
+        return self
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
@@ -595,19 +608,29 @@ class TriageOutput(HumanQuestionOutput):
         current = plan.model_copy(update={"triage": self.triage, "work_kind": self.work_kind})
         if plan.issue_kind == "slice" and plan.work_kind is not None:
             current = current.model_copy(update={"work_kind": plan.work_kind})
-        if plan.issue_kind == "parent" and self.triage == "implement":
+        if plan.issue_kind == "parent" and self.triage == "supplied_slice":
             if self.slice is None:
-                raise InvalidOutput("slice: required when a parent triages as implement")
+                raise InvalidOutput("slice: required when a parent triages as supplied_slice")
             current = current.model_copy(update={"slice": self.slice.record()})
         return {"plan": current, "human_question": self.human_question or ""}
 
 
-class ResearchOutput(StageOutput):
-    research: Text
+class ResearchOutput(HumanQuestionOutput):
+    research: Text | None = Field(
+        description="The cited answer for the pinned base. Use null only when asking the human for missing evidence.",
+    )
+
+    @model_validator(mode="after")
+    def answers_or_asks(self) -> Self:
+        if (self.research is None) == (self.human_question is None):
+            raise ValueError("research: return exactly one of research and human_question")
+        return self
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
-        return {"research": self.research}
+        if self.research is None:
+            return {"human_question": self.human_question or ""}
+        return {"research": self.research, "human_question": ""}
 
 
 class SpecQuestion(Contract):

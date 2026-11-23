@@ -56,7 +56,7 @@ class SmokeTest(unittest.TestCase):
         fixtures = [
             ({"attempts": []}, "attempts.nonempty"),
             ({"stop": "answered"}, "stop=answered"),
-            ({"stop": "sliced"}, "stop=sliced"),
+            ({"stop": "children_filed"}, "stop=children_filed"),
             ({"stop": "needs_human"}, "stop=needs_human"),
             ({"path": ["merge"]}, "terminal.done"),
             ({"checks": ChecksState(verified_head="abc")}, "checks.verify"),

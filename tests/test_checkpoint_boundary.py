@@ -19,7 +19,7 @@ from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.outcomes import Halt
 from foreman.runner import run_live_delivery
-from foreman.state import DeliveryState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
+from foreman.state import DeliveryState, PlanState, ReviewState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
 from foreman.config import ModelSpec, load_config
 from foreman.worker import CliWorker
 from owner_contract import COUNTERS, OWNERS, assert_channels, historical_channels
@@ -99,7 +99,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                 for owner in OWNERS:
                     with self.subTest(owner=owner.name):
                         self.assertEqual(prompt[owner.name], owner.value.model_dump(mode="json"))
-                return worker_reply(args, {"triage": "implement"})
+                return worker_reply(args, {"triage": "supplied_slice"})
 
             result = CliWorker(Path(directory), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), restored, "Read.")
             self.assertEqual(result.kind, "ran")
@@ -120,10 +120,20 @@ from owner_contract import OWNERS
 
 path, phase, state_json, predecessor = sys.argv[1:]
 config = {"configurable": {"thread_id": "pause"}}
+script = ScriptHandler(triage="needs_human", spec_gate="needs_human")
+
+def ask(node, model, state, instruction):
+    # Every worker asks, so each stage pauses at its own gate.
+    result = script(node, model, state, instruction)
+    if node == "review":
+        result.output["human_question"] = "Which?"
+    return result
+
 with SqliteSaver.from_conn_string(path) as saver:
     saver.serde = checkpoint_serializer()
-    graph = compile_delivery(ScriptHandler(), load_config(),
-                             run=LiveRun(DryRun(), DryRun()), checkpointer=saver)
+    # The checkout sits at the owners' checked head on their branch.
+    graph = compile_delivery(ask, load_config(),
+                             run=LiveRun(DryRun(), DryRun(head="b" * 40, branch="8-change")), checkpointer=saver)
     if phase == "write":
         values = json.loads(state_json)
         for owner in OWNERS:
@@ -131,19 +141,19 @@ with SqliteSaver.from_conn_string(path) as saver:
         graph.update_state(config, values, as_node=predecessor)
         if predecessor != "done":
             graph.invoke(None, config, durability="sync")
-    saved = graph.get_state(config)
+    saved = graph.get_state(config, subgraphs=True)
     assert checkpoint_state(saved.values) is not None
     for owner in OWNERS:
         assert isinstance(saved.values[owner.name], type(owner.value))
-        assert saved.values[owner.name].model_dump(mode="json") == json.loads(state_json)[owner.name]
+        assert saved.values[owner.name].model_dump(mode="json") == json.loads(state_json)[owner.name], owner.name
     print(json.dumps({"values": saved.values, "next": saved.next,
                       "interrupts": [item.value for item in saved.interrupts],
                       "result": snapshot_result(saved)}, sort_keys=True, default=lambda value: value.model_dump(mode="json")))
 '''
         cases = [
-            ("triage", "triage", {}),
-            ("spec", "spec", {}),
-            ("review", "review_post", {}),
+            ("triage", "__start__", {}),
+            ("spec", "triage", {}),
+            ("review", "implement", {}),
         ]
         # The shared quota wait is an interrupt inside dispatch; test_review_availability resumes it in fresh processes.
         cases += [(code.value, "done", {"halt": code.value, "stop": code.value}) for code in Halt]
@@ -157,10 +167,14 @@ with SqliteSaver.from_conn_string(path) as saver:
                                  "commit": "a" * 40, "methods": [], "outcome": "ran", "usage": {
                                      "input": 1, "output": 2, "cache_read": 0, "cache_creation": 0,
                                      "cost_usd": None}}], **extra}
-                    if predecessor == "spec":
-                        plan = plan.model_copy(update={"spec_gate": "needs_human" if name == "spec" else "ready", "spec_rejection": None})
+                    if name == "spec":
+                        plan = PlanState(triage="plan", issue_kind="parent", work_kind="feature")
                     elif name == "triage":
-                        plan = plan.model_copy(update={"triage": "needs_human"})
+                        plan = plan.model_copy(update={"triage": ""})
+                    elif name == "review":
+                        # The checked head has no review yet, so the reviewer runs and asks.
+                        state["review"] = ReviewState()
+                        state["models_used"] = {"implement": "gpt-6.1-sol-high"}
                     state["plan"] = plan
                     checkpoint = str(Path(directory) / f"{name}.sqlite")
                     outputs = []
@@ -173,7 +187,7 @@ with SqliteSaver.from_conn_string(path) as saver:
                         outputs.append(json.loads(process.stdout))
                     self.assertEqual(*outputs)
                     if predecessor != "done":
-                        self.assertEqual(len(outputs[1]["interrupts"]), 1)
+                        self.assertEqual(len(outputs[1]["interrupts"]), 1, outputs[1]["result"].get("halt_detail"))
                         payload = outputs[1]["interrupts"][0]
                         self.assertEqual(payload.get("stage", payload.get("reason")),
                                          "quota_exhausted" if name == "quota" else name)
@@ -189,7 +203,7 @@ from pathlib import Path
 import sys
 from unittest.mock import patch
 from foreman.adapters import Outcome
-from foreman.config import PstackPin, load_config
+from foreman.config import SkillPin, load_config
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.runner import run_live_delivery
@@ -203,7 +217,7 @@ _, owner, field, stop = next(row for row in COUNTERS if row[0] == stage)
 workspace = FakeWorkspace(root)
 workspace.current = WorktreeState(workspace.current.head, True, BRANCH)
 forge = FakeGitHub(["factory"] if stage == "spec" else ["slice"])
-handler = ScriptHandler(triage="spec" if stage == "spec" else "implement", reviews=["changes"] * 3, slices=[SLICE])
+handler = ScriptHandler(triage="plan" if stage == "spec" else "supplied_slice", reviews=["changes"] * 3, slices=[SLICE])
 calls = []
 def count(state):
     value = getattr(state[owner], field)
@@ -221,7 +235,7 @@ def worker(node, model, state, instruction):
         result.output["spec"] += f" {count(state)}"
     return result
 
-config = replace(load_config(), pstack=PstackPin.model_validate_json(pin))
+config = replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_skills=SkillPin.model_validate_json(pin).model_copy(update={"directory": "skills"}))
 with patch("foreman.runner.load_config", return_value=config), patch.object(
     workspace, "run", side_effect=lambda command, **kwargs: 1 if stage == "check" and command == "check" else 0,
 ):

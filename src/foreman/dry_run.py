@@ -7,7 +7,10 @@ from pathlib import Path
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
 from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
-from foreman.github import PullRequest, PublishedPullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt, pull_request_command
+from foreman.github import (
+    BOT_LOGIN, PullRequest, PublishedPullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
+    pull_request_command, render_slice_body,
+)
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.workspace import WorktreeState, ReviewDiff, ImplementationCandidate, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope
@@ -18,7 +21,7 @@ CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
 class ScriptHandler:
     def __init__(
         self,
-        triage: str = "implement",
+        triage: str = "supplied_slice",
         spec_gate: str = "ready",
         reviews: list[str] | None = None,
         spec: str = "Behavior, decisions, and technical design.",
@@ -52,8 +55,9 @@ class ScriptHandler:
                            "budget_usd": DispatchPlan.model_validate(state["dispatch_plan"]).budget_usd if state.get("dispatch_plan") else None})
         if node == "triage":
             return Outcome("ran", {
-                "triage": self.triage, "work_kind": self.work_kind, "human_question": None,
-                "slice": self.slice if self.triage == "implement" and PlanState.model_validate(state["plan"]).issue_kind == "parent" else None,
+                "triage": self.triage, "work_kind": self.work_kind,
+                "human_question": "Which scope should this change cover?" if self.triage == "needs_human" else None,
+                "slice": self.slice if self.triage == "supplied_slice" and PlanState.model_validate(state["plan"]).issue_kind == "parent" else None,
             }, usage=SCRIPTED_USAGE)
         if node == "spec":
             return Outcome("ran", {
@@ -67,7 +71,7 @@ class ScriptHandler:
         if node == "implement":
             return Outcome("ran", {"implementation": self.implementation, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "research":
-            return Outcome("ran", {"research": self.research}, usage=SCRIPTED_USAGE)
+            return Outcome("ran", {"research": self.research, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "review":
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = [{
@@ -90,6 +94,9 @@ class DryRun:
     clean: bool = True
     remote: str | None = None
     pull_request: PublishedPullRequest | None = None
+    comments: list[IssueComment] = field(default_factory=list[IssueComment])
+    issues: dict[int, Issue] = field(default_factory=dict[int, Issue])
+    links: dict[int, tuple[int, list[int]]] = field(default_factory=dict[int, tuple[int, list[int]]])
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int:
         return 0
@@ -191,22 +198,28 @@ class DryRun:
         raise NotImplementedError("Not used by dry delivery")
 
     def load_issue(self, repo: str, number: int) -> Issue:
-        raise NotImplementedError("Not used by dry delivery")
+        return self.issues[number]
 
     def open_issues(self, repo: str) -> list[OpenIssue]:
         raise NotImplementedError("Not used by dry delivery")
 
     def marked_issues(self, repo: str, marker: str) -> list[int]:
-        raise NotImplementedError("Not used by dry delivery")
+        return [number for number, issue in self.issues.items() if marker in issue["body"]]
 
     def sub_issues(self, repo: str, number: int) -> list[LinkedIssue]:
         raise NotImplementedError("Not used by dry delivery")
 
     def parent_issue(self, repo: str, number: int) -> LinkedIssue | None:
-        raise NotImplementedError("Not used by dry delivery")
+        if number not in self.links:
+            return None
+        parent = self.links[number][0]
+        # The dry run's parent is the issue placeholder, which GitHub would never number.
+        return LinkedIssue.model_construct(id=parent, number=parent, title="", repository_url=f"https://api.github.com/repos/{repo}",
+                                           html_url=f"https://github.com/{repo}/issues/{parent}", state="open")
 
     def add_sub_issue(self, repo: str, number: int, child: int) -> None:
-        raise NotImplementedError("Not used by dry delivery")
+        self.commands.append(["gh", "api", f"repos/{repo}/issues/{number}/sub_issues", "--method", "POST", "-F", f"sub_issue_id=<#{child}>"])
+        self.links[child] = (number, [])
 
     def update_issue_body(self, repo: str, number: int, body: str) -> None:
         raise NotImplementedError("Not used by dry delivery")
@@ -215,25 +228,36 @@ class DryRun:
         raise NotImplementedError("Not used by dry delivery")
 
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]:
-        return []
+        return list(self.comments)
 
     def comment_issue(self, repo: str, number: int, body: str) -> None:
-        raise NotImplementedError("Not used by dry delivery")
+        self.commands.append(["gh", "issue", "comment", str(number), "--repo", repo, "--body", body])
+        self.comments.append(IssueComment.model_validate({"body": body, "user": {"login": BOT_LOGIN}}))
 
     def create_issue(self, repo: str, title: str, body: str, labels: list[str], *, child: StoredSlice | None = None) -> int:
-        raise NotImplementedError("Not used by dry delivery")
+        if child is not None:
+            body = render_slice_body(body, child)
+        number = len(self.issues) + 1
+        self.commands.append(["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body,
+                              *(argument for label in labels for argument in ("--label", label))])
+        self.issues[number] = {"repo": repo, "number": number, "title": title, "body": body, "labels": list(labels)}
+        return number
 
     def add_blocker(self, repo: str, number: int, blocker: int) -> None:
-        raise NotImplementedError("Not used by dry delivery")
+        self.commands.append(["gh", "api", f"repos/{repo}/issues/{number}/dependencies/blocked_by", "--method", "POST", "-F", f"issue_id=<#{blocker}>"])
+        self.links[number][1].append(blocker)
 
     def blockers(self, repo: str, number: int) -> list[IssueBlocker]:
-        raise NotImplementedError("Not used by dry delivery")
+        return [IssueBlocker(number=blocker, title="", repository_url=f"https://api.github.com/repos/{repo}",
+                             html_url=f"https://github.com/{repo}/issues/{blocker}", state="open")
+                for blocker in self.links.get(number, (0, []))[1]]
 
     def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool:
         return False
 
     def add_label(self, repo: str, number: int, label: str) -> None:
-        raise NotImplementedError("Not used by dry delivery")
+        self.commands.append(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
+        self.issues[number]["labels"].append(label)
 
     def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt:
         raise NotImplementedError("Not used by dry delivery")

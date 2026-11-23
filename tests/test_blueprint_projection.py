@@ -43,9 +43,13 @@ class BlueprintProjectionTests(unittest.TestCase):
     def test_unwaived_alias_on_existing_compiled_edge(self):
         compile_graph = StateGraph.compile
 
+        def unplanned(_):
+            return "unplanned"
+
         def with_new_route(builder, *args, **kwargs):
             if "triage" in builder.nodes:
-                builder.add_conditional_edges("triage", lambda _: "unplanned", {"unplanned": "research"})
+                # A named route, because triage's own route already holds LangGraph's default branch name.
+                builder.add_conditional_edges("triage", unplanned, {"unplanned": "research"})
             return compile_graph(builder, *args, **kwargs)
 
         with patch.object(StateGraph, "compile", with_new_route):

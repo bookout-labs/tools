@@ -42,13 +42,15 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
     if presentation is None or presentation.restored is None:
         _print_run_rows(result, dry_run=dry_run, commands=presentation.commands if presentation else None)
         return
-    rows: list[tuple[str, str | None]] = []
     checks = result["checks"]
     run_state = result["run"]
     current: DeliveryResult = {"review": ReviewState(), "plan": result["plan"], "run": run_state, "checks": ChecksState(check=checks.check), "path": [], "stop": result["stop"]}
     for update in presentation.updates:
         current.update(update)
-        rows.extend((node, update.get("models_used", {}).get(node)) for node in update.get("path", []))
+    # The result repeats the restored path, except the stage a quota pause names while its call waits.
+    restored = presentation.restored["path"][:-1] if presentation.restored["stop"] == "quota_exhausted" else presentation.restored["path"]
+    models = result.get("models_used", {})
+    rows = [(node, models.get(node)) for node in result["path"][len(restored):]]
     _print_run_rows(presentation.restored if rows else result, prefix="restored ")
     if not rows:
         _write_run_log("this invocation: no nodes executed")
@@ -331,6 +333,6 @@ def run_exit_code(result: DeliveryResult) -> int:
         return 3
     if stop == "quota_exhausted":
         return 75
-    if stop in ("verified", "sliced", "answered") and result.get("path", [])[-1:] == ["done"]:
+    if stop in ("answered", "children_filed") or stop == "verified" and result.get("path", [])[-1:] == ["done"]:
         return 0
     return exit_code(result.get("halt"))

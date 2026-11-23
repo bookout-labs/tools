@@ -31,13 +31,34 @@
   "research": {
     "additionalProperties": false,
     "properties": {
+      "human_question": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "When this stage returns needs_human, put the question for the person here. Use null otherwise.",
+        "title": "Human Question"
+      },
       "research": {
-        "pattern": "\\S",
-        "title": "Research",
-        "type": "string"
+        "anyOf": [
+          {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The cited answer for the pinned base. Use null only when asking the human for missing evidence.",
+        "title": "Research"
       }
     },
     "required": [
+      "human_question",
       "research"
     ],
     "title": "ResearchOutput",
@@ -674,14 +695,14 @@
             "type": "null"
           }
         ],
-        "description": "For a parent issue that triages as implement, return its single slice. Use null otherwise, including for slice issues."
+        "description": "For a parent issue that triages as supplied_slice, return its single slice. Use null otherwise, including for slice issues."
       },
       "triage": {
-        "description": "Use implement when the behavior is decided and the work ships as one pull request. Use spec when it needs a plan or splits at a real dependency.",
+        "description": "Use supplied_slice when the behavior and acceptance are decided and the work ships as one pull request. Use plan when it needs a plan or splits at a real dependency. Use question when the issue asks for information and not a change. Use needs_human when the issue intent is missing.",
         "enum": [
-          "implement",
-          "spec",
           "question",
+          "plan",
+          "supplied_slice",
           "needs_human"
         ],
         "title": "Triage",

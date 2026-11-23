@@ -29,38 +29,27 @@ graph TD;
 	implement(implement)
 	review(review)
 	review_post(review_post)
-	needs_human(needs_human)
 	merge(merge)
 	done(done)
 	__end__([<p>__end__</p>]):::last
-	__start__ -.-> done;
-	__start__ -.-> triage;
+	__start__ --> triage;
 	implement -. &nbsp;cancelled&nbsp; .-> __end__;
 	implement -. &nbsp;published&nbsp; .-> review;
 	merge --> done;
-	needs_human -.-> done;
-	needs_human -.-> review;
-	needs_human -.-> spec;
-	needs_human -.-> triage;
-	research -.-> done;
+	research -. &nbsp;answered&nbsp; .-> __end__;
 	review -.-> done;
 	review -.-> implement;
 	review -.-> merge;
-	review -.-> needs_human;
 	review -.-> review_post;
 	review_post -.-> done;
 	review_post -.-> implement;
 	review_post -.-> merge;
-	review_post -.-> needs_human;
-	spec -.-> done;
+	spec -. &nbsp;cancelled&nbsp; .-> __end__;
 	spec -. &nbsp;validated_single&nbsp; .-> implement;
-	spec -.-> needs_human;
-	triage -.-> done;
-	triage -.-> needs_human;
-	triage -.-> research;
-	triage -.-> spec;
+	triage -. &nbsp;cancelled&nbsp; .-> __end__;
+	triage -. &nbsp;question&nbsp; .-> research;
+	triage -. &nbsp;plan&nbsp; .-> spec;
 	done --> __end__;
-	spec -.-> spec;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
@@ -106,11 +95,11 @@ Stage prompts live in `src/foreman/stages/`. The graph selects worker methods fr
 
 Before live dispatch, Foreman exports the pstack skills from the repository and commit pinned in `src/foreman/config.py`. It records that pin in the checkpoint and reuses it on resume. A failed fetch or export stops with `skill_missing` and reports `pin unavailable` with the commit. A missing method in a successful export reports `method missing at pin` with the path and commit. Dry runs print `pstack pin not checked (dry run)`.
 
-A parent or slice goes straight to implement when the behavior is decided and the change fits in one pull request. A parent on this route is its own slice. It carries the slice acceptance and files no child issues. Changes that need more than one pull request or leave a product choice open go to spec. An informational request goes to spec on a parent and to research on a slice. An open product choice pauses a live run for a person's answer.
+Triage admits the issue and classifies it. A decided change that fits in one pull request is a supplied slice: a parent on this route is its own slice, carries the slice acceptance and files no child issues, and a `slice` issue supplies its own record. Spec validates a supplied slice and has it checked before implement. A change that needs more than one pull request or leaves a product choice open is a plan, which spec drafts. An informational request goes to research, which posts one answer comment on the issue. An open question pauses a live run for a person's answer.
 
 A ready parent spec lists the seams each slice builds and uses. Foreman checks existing seam paths in the workspace and orders the slices so builders come first. A cycle, dangling seam, duplicate builder, or seam marked existing that a slice also builds sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children. Single-slice parents skip ordering.
 
-Foreman records the ordered plan and stops the parent as `sliced`. Each child issue carries a fenced JSON record of its slice and the parent's work classification, with native GitHub blocked-by links for its dependencies. A live slice run stops as `missing_slice` if the record is missing or invalid. It reports `blocked` before triage while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request. Run the same slice again after its blockers clear. Rerunning the parent restores missing links and adds the `factory` label when a dependent slice is ready.
+Foreman files the checked plan as child issues in dependency order and stops the parent as `children_filed`. Each child issue carries a marker for its parent and title, a fenced JSON record of its slice and the parent's work classification, a sub-issue link to the parent, and native GitHub blocked-by links for its dependencies. Children are created with only the `slice` label. Once every child and link is confirmed, Foreman adds the `factory` label to the children with no unmerged blocker. After a crash or a failed write, rerunning the parent reads GitHub by marker first and writes only what is missing. Duplicate markers, a child with a different body or parent, or a write that GitHub doesn't show stop the parent as `publication_unreconciled`. A finished parent files nothing more, so add the `factory` label to a dependent slice by hand after its blockers merge. A live slice run stops as `missing_slice` if the record is missing or invalid. Admission stops it as `blocked` while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request.
 
 ```json
 {
@@ -146,7 +135,7 @@ route GitHub label events through `foreman accept` and launch accepted runs;
 
 After reporting a halted live run, Foreman watches eligible failures by filing a proposed fix or commenting on the existing open proposal for that cause. It records the watch in SQLite and uses a run marker to avoid duplicate writes after a crash; a new halt can add fresh evidence. `--watch-repo OWNER/NAME` selects the proposal repository (default `bookout-labs/tools`). Skipped halts and watch failures are logged without changing the run's exit code; failures retry on the next invocation. Dry runs never contact Forge.
 
-`foreman run` exits 0 for successful stops (`done verified`, `done sliced`, or `done answered`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a quota pause or a resumable halt (`merge_held`, `merge_not_armed`, or `env_unavailable`), and 1 for every other halt.
+`foreman run` exits 0 for successful stops (`done verified`, `done children_filed`, or `done answered`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a quota pause or a resumable halt (`merge_held`, `merge_not_armed`, or `env_unavailable`), and 1 for every other halt.
 
 ## What enters the graph
 
@@ -211,9 +200,9 @@ foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm r
 
 Foreman pins the repository default branch on admission and creates the slice branch from that commit, checkpoints worker edits, commits them, pushes to the checkout's `origin`, and opens or reuses the branch's pull request. Both origin fetch and push URLs must identify `--repo`. For HTTPS, configure GitHub CLI authentication with `gh auth setup-git` before running. Git calls cannot prompt for credentials. Run the same issue again to resume after a quota stop, temporary Git failure or publication failure. Keep the run's partial edits in place.
 
-The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. For triage, review, and PR size questions, add `--answer "…"` to continue.
+The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Run the same issue again from the same checkout to see its saved state. For review and PR size questions, add `--answer "…"` to continue.
 
-Set `FOREMAN_HUMAN_LOGIN` to the GitHub login authorized to answer planning questions or approve or stop a plan. The planning prompt shows the exact `foreman answer <question digest>` marker. Post it on the issue with the answer on the next line, then rerun the command. A plan clears automatically after validation and the independent check. To record optional approval, post `foreman approve <plan digest>` or `we're good <plan digest>` on the issue. To prevent a build or child filing for a plan, post `foreman stop <plan digest>`.
+Set `FOREMAN_HUMAN_LOGIN` to the GitHub login authorized to answer triage, research and planning questions or approve or stop a plan. The paused prompt shows the exact `foreman answer <question digest>` marker. Post it on the issue with the answer on the next line, then rerun the command. A plan clears automatically after validation and the independent check. To record optional approval, post `foreman approve <plan digest>` or `we're good <plan digest>` on the issue. To prevent a build or child filing for a plan, post `foreman stop <plan digest>`.
 
 After an upgrade, Foreman refuses checkpoints from older releases, including checkpoints
 without a schema version. The refusal names the stored and expected versions and the

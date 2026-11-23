@@ -11,38 +11,27 @@ graph TD;
 	implement(implement)
 	review(review)
 	review_post(review_post)
-	needs_human(needs_human)
 	merge(merge)
 	done(done)
 	__end__([<p>__end__</p>]):::last
-	__start__ -.-> done;
-	__start__ -.-> triage;
+	__start__ --> triage;
 	implement -. &nbsp;cancelled&nbsp; .-> __end__;
 	implement -. &nbsp;published&nbsp; .-> review;
 	merge --> done;
-	needs_human -.-> done;
-	needs_human -.-> review;
-	needs_human -.-> spec;
-	needs_human -.-> triage;
-	research -.-> done;
+	research -. &nbsp;answered&nbsp; .-> __end__;
 	review -.-> done;
 	review -.-> implement;
 	review -.-> merge;
-	review -.-> needs_human;
 	review -.-> review_post;
 	review_post -.-> done;
 	review_post -.-> implement;
 	review_post -.-> merge;
-	review_post -.-> needs_human;
-	spec -.-> done;
+	spec -. &nbsp;cancelled&nbsp; .-> __end__;
 	spec -. &nbsp;validated_single&nbsp; .-> implement;
-	spec -.-> needs_human;
-	triage -.-> done;
-	triage -.-> needs_human;
-	triage -.-> research;
-	triage -.-> spec;
+	triage -. &nbsp;cancelled&nbsp; .-> __end__;
+	triage -. &nbsp;question&nbsp; .-> research;
+	triage -. &nbsp;plan&nbsp; .-> spec;
 	done --> __end__;
-	spec -.-> spec;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

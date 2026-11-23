@@ -9,7 +9,7 @@ import unittest
 from pydantic import ValidationError
 
 from foreman.stages import STAGES
-from foreman.config import PSTACK_PIN
+from foreman.config import MATT_SKILLS_PIN, PSTACK_PIN
 from foreman.skill_rules import PACKAGE_SKILLS, SkillMethod, export_skills
 
 SPAWN_INSTRUCTIONS = re.compile(r"\b(?:subagents?|spawn\w*|delegat\w*|arena|task\s+tool)\b", re.IGNORECASE)
@@ -21,12 +21,13 @@ class SkillRulesTest(unittest.TestCase):
             with self.subTest(lines=lines), self.assertRaises(ValidationError):
                 SkillMethod(path="method/SKILL.md", kind="skill", lines=lines)
 
-    @unittest.skipUnless(os.environ.get("FOREMAN_PINNED_SKILL_REPO"), "requires a local checkout with the pstack pin")
+    @unittest.skipUnless(os.environ.get("FOREMAN_PINNED_SKILL_REPO") and os.environ.get("FOREMAN_PINNED_MATT_SKILLS"),
+                         "requires local checkouts with the pstack and mattpocock/skills pins")
     def test_pinned_methods_have_no_spawn_instructions(self):
-        source = Path(os.environ["FOREMAN_PINNED_SKILL_REPO"]).resolve()
-        pin = PSTACK_PIN.model_copy(update={"repository": source.as_uri()})
+        pins = [pin.model_copy(update={"repository": Path(os.environ[variable]).resolve().as_uri()}) for pin, variable in (
+            (PSTACK_PIN, "FOREMAN_PINNED_SKILL_REPO"), (MATT_SKILLS_PIN, "FOREMAN_PINNED_MATT_SKILLS"))]
         with TemporaryDirectory() as scratch:
-            root = export_skills(pin, Path(scratch))
+            root = export_skills(*pins, Path(scratch))
             for stage, row in STAGES.items():
                 for rule in row.skills:
                     method = rule.skill

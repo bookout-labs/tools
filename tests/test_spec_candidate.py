@@ -14,7 +14,8 @@ from foreman.config import ModelSpec, NodeConfig, load_config
 from foreman.delivery import LiveRun, DEFAULT_TOKEN_CAP, compile_delivery, run_delivery
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.github import render_slice_body
-from foreman.runner import _load_slice, checkpoint_state
+from foreman.runner import checkpoint_state
+from foreman.stage_output import load_stored_slice as _load_slice
 from foreman.stage_output import CandidateSlice, SliceProvenance, SpecAuthor, SpecCandidate, StoredSlice, SpecOutput
 from skill_fixture import skill_fixture
 from foreman.skill_rules import git
@@ -118,7 +119,7 @@ class CandidateTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 config = load_config()
                 nodes = {**config.nodes, stage: NodeConfig("coordinator", tuple(map(ModelSpec.parse, ("gpt-test", "claude-test"))))}
-                script = ScriptHandler(triage="implement" if stage == "triage" else "spec",
+                script = ScriptHandler(triage="supplied_slice" if stage == "triage" else "plan",
                                        slices=[{k: v for k, v in SLICE.items() if k not in {"depends_on", "blocker_numbers"}}])
 
                 def handler(node, model, state, instruction):
@@ -133,13 +134,13 @@ class CandidateTests(unittest.TestCase):
                 self.assertEqual([a["outcome"] for a in attempts], ["quota", "ran"])
                 stored = result["plan"].slice if stage == "triage" else result["plan"].slices[0]
                 self.assertEqual(stored["provenance"], {"revision": candidate.revision, "author": candidate.author.record()})
-                self.assertIn("implement" if stage == "triage" else "done", result["path"])
+                self.assertIn("implement" if stage == "triage" else "spec_check", result["path"])
 
     def test_inherited_slice_author_survives_child_triage_and_spec(self):
         candidate = self.candidate()
         provenance = {"author": candidate.author.record(), "revision": candidate.revision}
         supplied = {**SLICE, "provenance": provenance, "depends_on": [], "blocker_numbers": []}
-        for triage in ("implement", "spec"):
+        for triage in ("supplied_slice", "plan"):
             with skill_fixture() as (config, scratch):
                 result = run_delivery(ScriptHandler(triage=triage), repo="org/repo", request="Save",
                                       slice=supplied, config=config, scratch=scratch)

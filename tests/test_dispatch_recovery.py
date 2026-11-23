@@ -21,7 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 from foreman.adapters import Outcome, Usage
-from foreman.config import PstackPin, load_config
+from foreman.config import SkillPin, load_config
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
 from foreman.usd import BudgetUsd
@@ -50,8 +50,8 @@ def handler(node, model, state, instruction):
     return script(node, model, state, instruction)
 def crash(*args, **kwargs):
     os._exit(19)
-pin = PstackPin.model_validate_json(raw_pin)
-with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
+pin = SkillPin.model_validate_json(raw_pin)
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
     with patch("foreman.dispatch.Attempt.record", side_effect=crash) if mode == "quota-uncommitted" else contextlib.nullcontext():
         with patch("foreman.delivery.stage_update", side_effect=crash) if mode == "success" else contextlib.nullcontext():
             try:

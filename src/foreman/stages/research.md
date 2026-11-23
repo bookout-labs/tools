@@ -1,3 +1,7 @@
-Answer the question from the repository. Do not change code.
+# Answer the question
 
-The model list is config outside this node. Do not edit it.
+Answer the originating question from the issue, pinned target checkout and cited sources.
+Distinguish observed behavior from inference. If available sources cannot resolve the request,
+return a grounded question about the missing evidence for the coordinator or personal agent to relay.
+Otherwise, return the typed answer.
+Foreman posts the answer. Leave repository files untouched.

@@ -23,7 +23,7 @@ from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpo
 from foreman.usd import BudgetUsd
 from foreman.workspace import WorkspaceError
 from tests.skill_fixture import skill_fixture
-from test_runner import FakeGitHub, FakeWorkspace
+from test_runner import FakeGitHub, FakeWorkspace, planning_answer_env
 
 THREAD = {"configurable": {"thread_id": "a/b#8"}}
 NEEDS_HUMAN = {"triage": "needs_human", "work_kind": "feature", "slice": None, "human_question": "Which?"}
@@ -71,7 +71,7 @@ import subprocess
 import sys
 from unittest.mock import patch
 from foreman.cli import main
-from foreman.config import PstackPin, load_config
+from foreman.config import SkillPin, load_config
 from foreman.delivery import LiveRun
 from test_runner import FakeGitHub, FakeWorkspace, fixture_process, worker_reply, quota_with_usage
 
@@ -90,8 +90,8 @@ def worker(args, cwd, env):
         return subprocess.CompletedProcess(args, 1, json.dumps(envelope), "")
     return process
 
-pin = PstackPin.model_validate_json(raw_pin)
-with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin)):
+pin = SkillPin.model_validate_json(raw_pin)
+with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
     sys.exit(main(sys.argv[4:], worker_runner=worker, checkpoint=Path(checkpoint),
                   live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd()))))
 '''
@@ -104,11 +104,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     checkpoint = root / "allowance.sqlite"
                     log = root / "workers.log"
 
-                    def invoke(phase, *flags, expected):
+                    def invoke(phase, *flags, expected, env=None):
                         process = subprocess.run(
                             [sys.executable, "-c", bootstrap + script, str(checkpoint), config.pstack.model_dump_json(),
                              phase, "run", "delivery", "--repo", "a/b", "--issue", "8", "--check", "exit 0", *flags],
-                            cwd=root, text=True, capture_output=True, timeout=30,
+                            cwd=root, text=True, capture_output=True, timeout=30, env=env,
                         )
                         self.assertEqual(process.returncode, expected, process.stdout + process.stderr)
                         return process
@@ -124,7 +124,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                             saver.serde = checkpoint_serializer()
                             graph = compile_delivery(ScriptHandler(), config, run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
                                                      checkpointer=saver)
-                            return snapshot_result(graph.get_state(THREAD))["attempts"]
+                            return snapshot_result(graph.get_state(THREAD, subgraphs=True))["attempts"]
 
                     initial_flags = ("--max-budget-usd", "1.50") if stored else ()
                     first = invoke(pause, *initial_flags, expected=3 if pause == "needs_human" else 75)
@@ -133,12 +133,13 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     before = log.read_text()
                     snapshot, attempts = saved(), saved_attempts()
                     answer = ("--answer", "Only open items.") if pause == "needs_human" else ()
-                    rejected = invoke("quota", *answer, "--max-budget-usd", "2", expected=1)
+                    relayed = planning_answer_env(first.stdout, "Only open items.") if answer else None
+                    rejected = invoke("quota", *answer, "--max-budget-usd", "2", expected=1, env=relayed)
                     self.assertIn("--max-budget-usd differs from the stored dollar allowance", rejected.stderr)
                     self.assertEqual(log.read_text(), before)
                     self.assertEqual(saved(), snapshot)
                     for flags in ((), ("--max-budget-usd", "1.500")) if stored else ((),):
-                        resumed = invoke("quota", *answer, *flags, expected=75)
+                        resumed = invoke("quota", *answer, *flags, expected=75, env=relayed)
                         answer = ()
                         self.assertIn("restored ", resumed.stdout)
                         self.assertIn("paused quota_exhausted", resumed.stdout)
@@ -203,9 +204,12 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                             return Outcome("ran", NEEDS_HUMAN, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.1))
                         return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.0))
 
+                    forge = FakeGitHub()
                     kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=Path(folder) / "allowance.sqlite",
-                                  run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))), dispatcher=handler)
+                                  run=LiveRun(forge, FakeWorkspace(Path(folder)), human_login="fixture-owner"), dispatcher=handler)
                     state = run_live_delivery(**kwargs, max_budget_usd=usd("1.50") if stored else None)
+                    if pause == "needs_human":
+                        forge.answer(state["halt_detail"], "Only open items.")
                     self.assertEqual(state["stop"], pause)
                     self.assertIn("run", state)
                     self.assertEqual(state["run"].max_budget_usd, stored)
@@ -253,7 +257,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
                 graph.update_state(THREAD, {"review": ReviewState(review="changes"), "schema_version": 5, "run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
-                    "pstack_pin": config.pstack.model_dump()}, as_node="review_post")
+                    "pstack_pin": config.pstack.model_dump(), "matt_skills_pin": config.matt_skills.model_dump()}, as_node="review_post")
                 graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                             "path": ["implement", "done"], "plan": PlanState()}, as_node="done")
             with patch("foreman.runner.compile_delivery", wraps=compile_delivery) as compile_graph:
@@ -292,7 +296,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 def handler(node, model, state, instruction):
                     calls.append(node)
                     if node == "triage":
-                        return Outcome("ran", {**NEEDS_HUMAN, "triage": "implement", "human_question": None},
+                        return Outcome("ran", {**NEEDS_HUMAN, "triage": "supplied_slice", "human_question": None},
                                        usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.2))
                     if node == "spec_check":
                         return ScriptHandler()(node, model, state, instruction)

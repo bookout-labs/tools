@@ -38,7 +38,7 @@ class PublicationTest(unittest.TestCase):
 
     def reset_fixture(self):
         self.fixture.close()
-        self.fixture.enter_context(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin)))
+        self.fixture.enter_context(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
         self.base = "main"
         self.branch = BRANCH
         self.ref = REF

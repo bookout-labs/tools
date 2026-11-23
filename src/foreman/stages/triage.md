@@ -1,6 +1,7 @@
-Read the request and set `triage` according to the schema. Use these values for informational or unclear requests.
+# Classify the issue
 
-- question, when the request asks for information and not a change
-- needs_human, when you cannot tell what the request is asking for
-
-The model list is config outside this node. Do not edit it.
+Classify the admitted issue as a question, plan request or supplied slice. Treat the named
+target repository as fixed. Inspect available context before returning a question about
+missing intent for the coordinator or personal agent to relay. Give a bounded change one
+slice when its behavior and acceptance are clear.
+Foreman validates all supplied slices before a build. Return the typed classification.

@@ -39,7 +39,7 @@ class QuotaPause(Contract):
     reason: Literal["quota_exhausted"] = "quota_exhausted"
     detail: str
     stage: str
-    attempts: list[AttemptRecord]
+    attempts: list[AttemptRecord]  # Every attempt of the run, including the paused step's earlier calls.
 
 
 class DispatchInput(TypedDict):
@@ -194,7 +194,7 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
     stage, run, limits = state["stage"], runtime.context, state["caller"]["run"]
     if (reservation := state.get("reservation")) is None:
         tried = "; ".join(a.get("detail") or "" for a in state.get("attempts", []) if a["outcome"] in {"quota", "cli_missing"})
-        interrupt(QuotaPause(stage=stage, attempts=state.get("attempts", []), detail=f"No qualified worker available for {stage}. {tried}".strip()).model_dump())
+        interrupt(QuotaPause(stage=stage, attempts=[*state["caller"].get("attempts", []), *state.get("attempts", [])], detail=f"No qualified worker available for {stage}. {tried}".strip()).model_dump())
         return {"index": 0}
     model = ModelSpec.parse(reservation["model"])
     evidence = run.journal.read(reservation["id"]) if run.journal is not None else True
