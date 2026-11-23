@@ -100,7 +100,9 @@ def rollout_usage(session_id: str) -> Usage | None:
     if len(rollouts) != 1:
         return None
     fields = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
-    total = start = dict.fromkeys(fields, 0)
+    total: dict[str, int] = dict.fromkeys(fields, 0)
+    start: dict[str, int] | None = None
+    counted = False
     try:
         with rollouts[0].open(encoding="utf-8") as lines:
             for line in lines:
@@ -108,11 +110,16 @@ def rollout_usage(session_id: str) -> Usage | None:
                 if not is_dict(payload):
                     continue
                 if payload.get("type") == "task_started":
-                    start = total
-                elif (payload.get("type") == "token_count" and is_dict(info := payload.get("info"))
-                      and is_dict(counts := info.get("total_token_usage"))):
-                    total = {field: value if isinstance(value := counts.get(field), int) else 0 for field in fields}
+                    start, counted = total, False
+                elif payload.get("type") == "token_count" and is_dict(info := payload.get("info")):
+                    counts = info.get("total_token_usage")
+                    if not is_dict(counts) or not all(isinstance(counts.get(field), int) for field in fields):
+                        return None
+                    total, counted = {field: int(str(counts.get(field))) for field in fields}, True
     except (OSError, ValidationError):
+        return None
+    # Model items prove paid work, so a turn whose usage the rollout doesn't show stays unknown, not zero.
+    if start is None or not counted:
         return None
     return read_usage({field: total[field] - start[field] for field in fields})
 
