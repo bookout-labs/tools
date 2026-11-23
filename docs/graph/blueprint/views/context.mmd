@@ -5,25 +5,23 @@ flowchart TD
     n3["Human"]:::stage
     n4["Coordinator or personal agent"]:::stage
     n5["GitHub issue"]:::stage
-    n6["GitHub Project board"]:::stage
-    n7["CARR record layer"]:::stage
-    n8["T3"]:::stage
-    n9["Worker CLIs"]:::stage
-    n10["Target checkout"]:::stage
-    n11["GitHub pull request"]:::stage
+    n6["CARR record layer"]:::stage
+    n7["T3"]:::stage
+    n8["Worker CLIs"]:::stage
+    n9["Target checkout"]:::stage
+    n10["GitHub pull request"]:::stage
     n0 -->|"Enforces repository rules"| n1
     n1 -->|"Reports the merge result"| n2
     n3 -->|"Work and decisions"| n4
     n4 -->|"Files and comments for the human"| n5
     n2 -->|"Gate questions"| n4
-    n6 -->|"Ready webhook"| n2
-    n5 -->|"Work, repository identity, and comments"| n2
-    n2 -->|"Run state"| n6
-    n7 -->|"Authorized team context"| n8
-    n8 -->|"Conversation context"| n4
-    n2 -->|"Assigns a bounded procedure"| n9
-    n9 -->|"Reads or edits within assignment"| n10
-    n2 -->|"Publishes checked changes"| n11
+    n5 -->|"Ready label, work, repository identity, and comments"| n2
+    n2 -->|"Run label and status comment"| n5
+    n6 -->|"Authorized team context"| n7
+    n7 -->|"Conversation context"| n4
+    n2 -->|"Assigns a bounded procedure"| n8
+    n8 -->|"Reads or edits within assignment"| n9
+    n2 -->|"Publishes checked changes"| n10
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36

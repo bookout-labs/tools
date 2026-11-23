@@ -10,10 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 BLUEPRINT = ROOT / "docs" / "graph" / "blueprint"
 GENERATED_TEXT = ("code-map.md", "files.txt", "files.yaml", "index.html", "missing-descriptions.txt")
 PSTACK_REPO = os.environ.get("FOREMAN_PINNED_SKILL_REPO")
+MATT_SKILLS_REPO = os.environ.get("FOREMAN_PINNED_MATT_SKILLS")
 
 
 class BlueprintGenerationTest(unittest.TestCase):
-    @unittest.skipUnless(PSTACK_REPO, "requires a local checkout with the pstack pin")
+    @unittest.skipUnless(PSTACK_REPO and MATT_SKILLS_REPO, "requires local checkouts with the pstack and mattpocock/skills pins")
     def test_generated_text_matches_blueprint(self):
         expected = {Path(name) for name in GENERATED_TEXT}
         expected.update(path.relative_to(BLUEPRINT) for path in (BLUEPRINT / "views").rglob("*.mmd"))
@@ -22,7 +23,7 @@ class BlueprintGenerationTest(unittest.TestCase):
             output = Path(scratch) / "output"
             subprocess.run(
                 [sys.executable, str(BLUEPRINT / "gen.py"), "--pstack", str(PSTACK_REPO),
-                 "--output", str(output), "--no-svg"],
+                 "--matt-skills", str(MATT_SKILLS_REPO), "--output", str(output), "--no-svg"],
                 check=True,
             )
             actual = {path.relative_to(output) for path in output.rglob("*") if path.is_file()}

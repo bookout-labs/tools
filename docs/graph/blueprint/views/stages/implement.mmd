@@ -4,9 +4,9 @@ flowchart TD
     n2(["Builder · Edit and run target repository checks"]):::worker
     n3["Foreman · Commit or adopt the checked tree"]:::step
     n4["Foreman · Publish the checked commit"]:::step
-    n5(["Run stops<br/>Reported on Project card"]):::terminal
-    n6(["Cancelled<br/>Reported on Project card"]):::terminal
-    n7(["No change<br/>Reported on Project card"]):::terminal
+    n5(["Run stops<br/>Reported on the issue"]):::terminal
+    n6(["Cancelled<br/>Reported on the issue"]):::terminal
+    n7(["No change<br/>Reported on the issue"]):::terminal
     n8["Continue to Review stage"]:::stage
     n9{{"Human<br/>• Resolve acceptance choice<br/>• Choose or cancel<br/>• Resume editing"}}:::gate
     n0 --> n1

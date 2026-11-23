@@ -1,13 +1,13 @@
 flowchart TD
-    n0(["GitHub Project issue enters Ready"]):::terminal
+    n0(["Ready label added to an issue"]):::terminal
     n1["Foreman · Validate issue and prerequisites"]:::step
     n2(["Triage worker · Classify the admitted issue"]):::worker
-    n3(["Run stops<br/>Reported on Project card"]):::terminal
+    n3(["Run stops<br/>Reported on the issue"]):::terminal
     n4["Continue to Research stage"]:::stage
     n5["Continue to Spec stage"]:::stage
-    n6(["Cancelled<br/>Reported on Project card"]):::terminal
+    n6(["Cancelled<br/>Reported on the issue"]):::terminal
     n7{{"Human<br/>• Clarify issue intent<br/>• Answer or cancel<br/>• Resume triage"}}:::gate
-    n0 -->|"Project webhook or dependent recheck"| n1
+    n0 -->|"Ready label webhook or dependent recheck"| n1
     n1 -->|"Admitted"| n2
     n1 --> n3
     n2 -->|"Question"| n4

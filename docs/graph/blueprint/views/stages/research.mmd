@@ -2,9 +2,9 @@ flowchart TD
     n0(["Enter stage"]):::terminal
     n1(["Research worker · Return a sourced answer"]):::worker
     n2["Foreman · Post the saved answer"]:::step
-    n3(["Cancelled<br/>Reported on Project card"]):::terminal
-    n4(["Run stops<br/>Reported on Project card"]):::terminal
-    n5(["Answered<br/>Reported on Project card"]):::terminal
+    n3(["Cancelled<br/>Reported on the issue"]):::terminal
+    n4(["Run stops<br/>Reported on the issue"]):::terminal
+    n5(["Answered<br/>Reported on the issue"]):::terminal
     n6{{"Human<br/>• Supply missing source<br/>• Clarify or cancel<br/>• Resume research"}}:::gate
     n0 --> n1
     n1 -->|"Answer"| n2

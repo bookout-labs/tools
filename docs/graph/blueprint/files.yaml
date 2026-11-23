@@ -188,6 +188,18 @@ pstack/skills/benchmark-checklist/SKILL.md:
   repository: cursor/plugins
   revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
   url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/benchmark-checklist/SKILL.md
+pstack/skills/blast-radius/SKILL.md:
+  kind: skill
+  description: Find what a change could break somewhere else before it ships, beyond
+    the diff, and prove the one fact it's safe because of by running real code instead
+    of writing it up. Use for 'blast radius of X', 'what could this break', or reviewing
+    a small diff you don't trust.
+  summary:
+    Method steps: Find the one fact the change is safe because of and what it breaks
+      beyond the diff. (lines 31–37)
+  repository: cursor/plugins
+  revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
+  url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/blast-radius/SKILL.md
 pstack/skills/how/SKILL.md:
   kind: skill
   description: Use for "how does X work", code walkthroughs before changing something,
@@ -244,6 +256,28 @@ pstack/skills/why/SKILL.md:
   repository: cursor/plugins
   revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
   url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/why/SKILL.md
+skills/engineering/diagnosing-bugs/SKILL.md:
+  kind: skill
+  description: Diagnosis loop for hard bugs and performance regressions. Use when
+    the user says "diagnose"/"debug this", or reports something broken/throwing/failing/slow.
+  summary:
+    Method steps: Name a tight feedback loop that reproduces the bug before any hypothesis.
+      (lines 18–37) • Name a tight feedback loop that reproduces the regression before
+      any hypothesis. (lines 18–37)
+  repository: mattpocock/skills
+  revision: abeeaf95660ba9e8b7c753eb38f441ca707a8823
+  url: https://github.com/mattpocock/skills/blob/abeeaf95660ba9e8b7c753eb38f441ca707a8823/skills/engineering/diagnosing-bugs/SKILL.md
+skills/engineering/to-tickets/SKILL.md:
+  kind: skill
+  description: Break a plan, spec, or the current conversation into a set of tracer-bullet
+    tickets, each declaring its blocking edges, published to the configured tracker
+    (edges as text in one file per ticket locally, or native blocking links on a real
+    tracker).
+  summary:
+    Method steps: Cut thin end-to-end slices and name each blocking edge. (lines 29–40)
+  repository: mattpocock/skills
+  revision: abeeaf95660ba9e8b7c753eb38f441ca707a8823
+  url: https://github.com/mattpocock/skills/blob/abeeaf95660ba9e8b7c753eb38f441ca707a8823/skills/engineering/to-tickets/SKILL.md
 src/foreman/accept.py:
   kind: script
   description: Decide whether an outside event enters the graph. This does not call

@@ -4,7 +4,7 @@ Paths are relative to the Foreman repository. Planned owners may be absent at th
 
 ## Triage
 
-Read target_repository issue and dependencies. Update the Project card. No repository edits or PR writes.
+Read target_repository issue and dependencies. Update the issue's run label and status comment. No repository edits or PR writes.
 
 Entry `src/foreman/steps/triage.py::compile_stage`. Maximum 110 physical lines in the owner module.
 
