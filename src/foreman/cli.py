@@ -22,6 +22,7 @@ from foreman.diagrams import write_diagrams
 from foreman.dry_run import ScriptHandler
 from foreman.github import ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
+from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import Halt, exit_code
 from foreman.runner import PAUSES, AnswerError, RunPresentation, run_live_delivery
@@ -307,23 +308,24 @@ def main(
         live_run = replace(live_run, check_log=_write_check_log)
         dispatcher = CliWorker(live_run.workspace.root, worker_runner, scratch_root=checkpoint.parent)
         try:
-            result = run_live_delivery(
-                repo=args.repo,
-                issue=args.issue,
-                check=args.check,
-                preflight=args.preflight,
-                checkpoint=checkpoint,
-                dispatcher=dispatcher,
-                request=args.request,
-                run=live_run,
-                answer=args.answer,
-                presentation=presentation,
-                max_tokens=args.max_tokens,
-                watch_repo=args.watch_repo,
-                report=lambda result: _print_run(result, presentation),
-                log=lambda message: _write_run_log(message, file=sys.stderr),
-                max_budget_usd=args.max_budget_usd,
-            )
+            with signals_end_foreman():
+                result = run_live_delivery(
+                    repo=args.repo,
+                    issue=args.issue,
+                    check=args.check,
+                    preflight=args.preflight,
+                    checkpoint=checkpoint,
+                    dispatcher=dispatcher,
+                    request=args.request,
+                    run=live_run,
+                    answer=args.answer,
+                    presentation=presentation,
+                    max_tokens=args.max_tokens,
+                    watch_repo=args.watch_repo,
+                    report=lambda result: _print_run(result, presentation),
+                    log=lambda message: _write_run_log(message, file=sys.stderr),
+                    max_budget_usd=args.max_budget_usd,
+                )
         except (AnswerError, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1

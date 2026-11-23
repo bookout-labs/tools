@@ -26,7 +26,7 @@ from foreman.config import ModelSpec
 from foreman.adapters import Outcome
 from foreman.dry_run import CLEAR, SCRIPTED_USAGE
 from skill_fixture import skill_fixture
-from test_adapters import codex_events, codex_process, fixture_process
+from test_adapters import codex_events, codex_process, fixture_process, worker_process
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
@@ -296,9 +296,9 @@ class ReviewRoundsTest(unittest.TestCase):
                     settings = Path(args[args.index("--settings") + 1])
                     self.assertTrue(settings.resolve().is_relative_to(Path(scratch).resolve()))
                     self.assertFalse(Path(env["TMPDIR"]).resolve().is_relative_to(workspace.root.resolve()))
-                    with patch("foreman.worker.subprocess.run", return_value=fixture_process(args, "success", 0)) as execute:
+                    with worker_process(fixture_process(args, "success", 0)) as execute:
                         result = run_worker_command(args, cwd, env)
-                    prompt = execute.call_args.kwargs["input"]
+                    prompt = execute.prompt
                     self.assertEqual(prompt.count(instruction), 1)
                     projected_plan = json.loads(prompt.split("Delivery state:\n")[1])["dispatch_plan"]
                     self.assertFalse({"instruction", "scope"} & projected_plan.keys())

@@ -1,9 +1,12 @@
 import tests
 
+from contextlib import contextmanager
 import json
 from pathlib import Path
+import subprocess
 from subprocess import CompletedProcess
 import unittest
+from unittest.mock import MagicMock, patch
 
 from foreman.adapters import Call
 from foreman.adapters.claude import ClaudeAdapter
@@ -22,6 +25,22 @@ def fixture_process(args, name, exit_code):
     return CompletedProcess(args, exit_code, (folder / f"{name}.{suffix}").read_text(),
                             stderr.read_text() if stderr.is_file() else "")
 
+
+@contextmanager
+def worker_process(completed=None):
+    """Stand in for the worker's process group. Yields the Popen mock; its `prompt` is what the worker read on stdin."""
+    completed = completed or CompletedProcess([], 0, "", "")
+
+    def start(command, **kwargs):
+        stdin = kwargs["stdin"]
+        popen.prompt = None if stdin == subprocess.DEVNULL else stdin.read()
+        kwargs["stdout"].write(completed.stdout)
+        kwargs["stderr"].write(completed.stderr)
+        return MagicMock(pid=-1, **{"wait.return_value": completed.returncode})
+
+    with patch("foreman.process_group.subprocess.Popen", side_effect=start) as popen, \
+         patch("foreman.process_group.os.killpg", side_effect=ProcessLookupError):
+        yield popen
 
 class NativeAdaptersTest(unittest.TestCase):
     def test_claude_budget_stop_takes_precedence_and_keeps_usage(self):

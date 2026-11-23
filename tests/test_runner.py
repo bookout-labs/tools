@@ -40,7 +40,7 @@ from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, SpecOutpu
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply
-from test_adapters import codex_events, fixture_process
+from test_adapters import codex_events, fixture_process, worker_process
 from test_spec_candidate import CandidateTests
 from owner_contract import assert_channels
 
@@ -531,12 +531,13 @@ assert dict(os.environ) == inherited
     def test_subprocess_merges_adapter_environment_with_inherited_environment(self):
         inherited = {"PATH": "/bin", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0"}
         adapter_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
-        with patch.dict("os.environ", inherited, clear=True), patch("foreman.worker.subprocess.run") as run:
+        with patch.dict("os.environ", inherited, clear=True), worker_process() as popen:
             run_worker_command(["claude"], Path("engine"), adapter_env)
-        run.assert_called_once_with(
-            ["claude"], cwd=Path("engine"), env={**inherited, **adapter_env},
-            stdin=subprocess.DEVNULL, input=None, capture_output=True, text=True, pass_fds=(),
-        )
+        popen.assert_called_once()
+        self.assertEqual(popen.call_args.args[0], ["claude"])
+        self.assertEqual(popen.call_args.kwargs["env"], {**inherited, **adapter_env})
+        self.assertEqual((popen.call_args.kwargs["cwd"], popen.call_args.kwargs["pass_fds"]), (Path("engine"), ()))
+        self.assertIsNone(popen.prompt)
 
     def test_worker_without_a_model_raises_a_config_error(self):
         worker = CliWorker(Path("."), lambda *_: self.fail("CLI must not run"))
@@ -771,9 +772,9 @@ class LiveRunnerTest(unittest.TestCase):
                     self.assertIn("Network and database connections are unavailable", prompt)
                     return quota_with_usage(args)
                 self.assertIn("exact check command", prompt)
-                with patch("foreman.worker.subprocess.run", return_value=worker_reply(args, {"implementation": "retry"})) as run:
+                with worker_process(worker_reply(args, {"implementation": "retry"})) as popen:
                     run_worker_command(args, cwd, env)
-                    self.assertEqual(run.call_args.kwargs["input"], prompt)
+                self.assertEqual(popen.prompt, prompt)
                 return active.reply(args, {"implementation": "retry"})
             return active.reply(args, checker_reply(args) or next(replies, {"implementation": "first"}))
         def invoke(stop=None):

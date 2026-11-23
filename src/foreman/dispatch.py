@@ -244,7 +244,7 @@ def compile_dispatch() -> CompiledStateGraph[DispatchState, DispatchRun, Dispatc
             .compile().with_config({"metadata": {"contract_id": "dispatch", "stage_declarations": DECLARATIONS}}))
 
 
-DECLARATIONS = {"halts": [Halt.budget_exceeded, Halt.invalid_output, Halt.skill_missing, Halt.model_dependency_missing, Halt.dirty_worktree],
+DECLARATIONS = {"halts": [Halt.budget_exceeded, Halt.invalid_output, Halt.git_failed, Halt.model_dependency_missing, Halt.dirty_worktree],
                 "retries": {"provider_fallback": "eligible configured model order and remaining allowance", "quota_resume": "explicit wake or known provider reset and remaining allowance"}}
 # Calling steps hold this one compiled graph, so introspection finds it nested under each caller.
 DISPATCH = compile_dispatch()

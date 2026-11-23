@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 import fcntl
+import os
 from typing import Any
 import sqlite3
 from tempfile import TemporaryDirectory
@@ -136,11 +137,14 @@ def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: Bu
 
 
 @contextmanager
-def issue_lock(checkpoint: Path, thread: str) -> Generator[None]:
-    """Hold one writer per checkpoint and issue. Worker subprocesses inherit the lock."""
-    locks = checkpoint.parent / "locks"
+def issue_lock(thread: str) -> Generator[None]:
+    """Hold one writer per repository and issue for this user, whichever checkpoint it uses. The worker inherits the lock.
+
+    Locks live in the XDG runtime directory, which neither TMPDIR nor XDG_STATE_HOME moves.
+    """
+    locks = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "foreman-locks"
     locks.mkdir(parents=True, exist_ok=True)
-    with (locks / spec_digest([str(checkpoint.resolve()), thread])).open("a") as lock:
+    with (locks / spec_digest([thread])).open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -178,7 +182,7 @@ def run_live_delivery(
     config: RunnableConfig = {"configurable": {"thread_id": thread}}
     workspace = str(run.workspace.root.resolve())
     client = run.forge
-    with (issue_lock(checkpoint, thread), SqliteSaver.from_conn_string(str(checkpoint)) as saver,
+    with (issue_lock(thread), SqliteSaver.from_conn_string(str(checkpoint)) as saver,
           TemporaryDirectory(prefix="foreman-skills-") as scratch,
           closing(sqlite3.connect(checkpoint, check_same_thread=False)) as connection):
         saver.serde = checkpoint_serializer()

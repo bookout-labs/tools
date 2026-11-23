@@ -201,7 +201,8 @@ class DispatchBudgetTests(unittest.TestCase):
             (Outcome("budget_exhausted", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=99, output_tokens=0)), 100, "budget_exceeded", "usage_unknown"),
             (Outcome("budget_exhausted", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=99, output_tokens=0, total_cost_usd=0.1)),
              100, "budget_exceeded", "spend: $0.9"),
-            (Outcome("ran", NEEDS_HUMAN), 100, "budget_exceeded", "usage_unknown"),
+            (Outcome("ran", NEEDS_HUMAN), 100, "budget_exceeded",
+             "claude-opus-5-5-high was charged the remaining allowance of 99 work tokens. An in-flight attempt can overshoot the cap. usage_unknown:"),
             (Outcome("ran", NEEDS_HUMAN, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=99, output_tokens=0, total_cost_usd=0.2)),
              100, "budget_exceeded", "Run used 100 work tokens; cap is 100"),
         )

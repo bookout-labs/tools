@@ -1,9 +1,12 @@
 """Install the unit suite's offline policy before test modules are imported."""
 
+import atexit
 import ipaddress
 import os
+import shutil
 import socket
 import sys
+import tempfile
 
 
 with socket.socket() as proxy:
@@ -13,6 +16,11 @@ os.environ["GIT_ALLOW_PROTOCOL"] = "file"
 for _name in ("http_proxy", "https_proxy", "all_proxy"):
     os.environ[_name] = os.environ[_name.upper()] = _proxy_url
 os.environ["no_proxy"] = os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
+# Issue locks are per user. Each suite run gets its own runtime directory, shared by the processes it starts, so concurrent runs don't collide.
+_RUNTIME_PREFIX = "foreman-test-runtime-"
+if not os.path.basename(os.environ.get("XDG_RUNTIME_DIR", "")).startswith(_RUNTIME_PREFIX):
+    os.environ["XDG_RUNTIME_DIR"] = tempfile.mkdtemp(prefix=_RUNTIME_PREFIX)
+    atexit.register(shutil.rmtree, os.environ["XDG_RUNTIME_DIR"], True)
 
 
 def _loopback(host):

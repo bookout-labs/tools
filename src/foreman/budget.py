@@ -96,8 +96,9 @@ def budget_stop(cap: int, limit: str | None, attempts: Sequence[AttemptRecord]) 
     if (work := work_tokens(attempts)) is None:
         return "usage_unknown: A launched attempt has unknown work usage; the work cap cannot be enforced."
     if work >= cap and last is not None:
-        return (f"Run used {work} work tokens; cap is {cap}. Last attempt: {last['stage']} {last['model']} used "
-                f"{work_tokens([last])} work tokens. Measured work overshoot: {work - cap}. "
+        spent = (f"was charged the remaining allowance of {last['work_charge']} work tokens"
+                 if "work_charge" in last else f"used {work_tokens([last])} work tokens. Measured work overshoot: {work - cap}")
+        return (f"Run used {work} work tokens; cap is {cap}. Last attempt: {last['stage']} {last['model']} {spent}. "
                 f"An in-flight attempt can overshoot the cap.{charged}")
     match dollar_admission(BudgetUsd(Decimal(limit)), attempts) if limit is not None else None:
         case CostUnknown():

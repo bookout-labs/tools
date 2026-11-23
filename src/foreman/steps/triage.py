@@ -12,7 +12,7 @@ from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun
 from foreman.workspace import WorkspaceError
 
-HALTS = [Halt.missing_slice]
+HALTS = [Halt.missing_slice, Halt.skill_missing, Halt.invalid_output, Halt.git_failed]
 ROUTES = ("question", "plan", "supplied_slice", "cancelled", "halted")
 
 

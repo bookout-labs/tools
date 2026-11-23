@@ -21,6 +21,7 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
+from foreman.process_group import owned_group
 from foreman.state import ChecksState
 from foreman.stage_output import DispatchPlan
 from foreman.stages import STAGES
@@ -82,11 +83,18 @@ ADAPTERS: dict[str, Callable[[ModelSpec], CliAdapter]] = {
 def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
     prompt = args[-1] if args[0] == "claude" and args[-2:-1] == ["-p"] else None
     lock_fd = worker_lock.get()
-    return subprocess.run(
-        args[:-1] if prompt is not None else args, cwd=cwd, env={**os.environ, **adapter_env},
-        stdin=subprocess.DEVNULL if prompt is None else None, input=prompt, capture_output=True, text=True,
-        pass_fds=() if lock_fd is None else (lock_fd,),
-    )
+    command = args[:-1] if prompt is not None else args
+    # Files, not pipes: a process the worker leaves behind can't hold Foreman's read open, and the group ends with the worker.
+    with (tempfile.TemporaryFile("w+", encoding="utf-8") as stdin, tempfile.TemporaryFile("w+", encoding="utf-8") as stdout,
+          tempfile.TemporaryFile("w+", encoding="utf-8") as stderr):
+        stdin.write(prompt or "")
+        stdin.seek(0)
+        with owned_group(command, cwd=cwd, env={**os.environ, **adapter_env}, stdin=subprocess.DEVNULL if prompt is None else stdin,
+                         stdout=stdout, stderr=stderr, pass_fds=() if lock_fd is None else (lock_fd,)) as process:
+            returncode = process.wait()
+        stdout.seek(0)
+        stderr.seek(0)
+        return subprocess.CompletedProcess(command, returncode, stdout.read(), stderr.read())
 
 
 class CliWorker:
