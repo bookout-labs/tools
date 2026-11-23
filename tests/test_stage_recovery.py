@@ -49,7 +49,7 @@ class StageRecoveryTest(unittest.TestCase):
 
     def test_a_child_hidden_from_the_lagging_issue_list_is_adopted_once(self):
         # Found by engine #1048: GitHub listed no issue for the marker right after a successful create.
-        github = self.github = FakeGitHub(["factory"])
+        github = self.github = FakeGitHub(["Ready"])
         create, listed = github.create_issue, github.marked_issues
         fresh: set[int] = set()
 
