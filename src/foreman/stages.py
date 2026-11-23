@@ -191,6 +191,15 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     return update
 
 
+def implement_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
+    """Render the drawn context's exact repository check. The check is granted as written, so a wrapped or split run is denied."""
+    check = state["checks"].check
+    if not check:
+        return "", None, None
+    return (f"\n\nRepository check, granted exactly as written. Run it unchanged, with no wrapper, prefix, suffix or chained command, "
+            f"and never run one segment of it alone:\n{check}"), None, None
+
+
 def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
     review_state, checks = state["review"], state["checks"]
     run_state = state["run"]
@@ -304,7 +313,7 @@ STAGES = {
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill", lines=(13, 27)), when="perf_issue"),
         SkillRule(skill=SkillMethod(path="verify-<app>/SKILL.md", kind="target_skill")),
         SkillRule(skill=SkillMethod(path="formal-<area>/SKILL.md", kind="target_skill")),
-    ), accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review")),
+    ), prepare=implement_preparation, accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review")),
     "review": ReviewStage("review.md", ReviewOutput, (
         SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill", lines=(3, 7))),
         SkillRule(skill=SkillMethod(path="blast-radius/SKILL.md", kind="skill", lines=(31, 37))),

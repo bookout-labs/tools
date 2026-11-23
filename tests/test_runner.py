@@ -408,6 +408,16 @@ class FakeGitHub:
 
 
 class CliWorkerTest(unittest.TestCase):
+    def test_implement_instruction_names_the_exact_granted_check_only(self):
+        check, preflight = "npm run check && ./scripts/smoke.py 9", "npm ci"
+        state = {"checks": ChecksState(check=check, preflight=preflight)}
+        instruction, target, scope = STAGES["implement"].prepare(state, FakeWorkspace(Path(".")), None)
+        self.assertEqual((target, scope), (None, None))
+        self.assertTrue(instruction.endswith(f"granted exactly as written. Run it unchanged, with no wrapper, prefix, suffix or "
+                                             f"chained command, and never run one segment of it alone:\n{check}"))
+        self.assertNotIn(preflight, instruction.replace(check, ""))
+        self.assertEqual(STAGES["implement"].prepare({"checks": ChecksState()}, FakeWorkspace(Path(".")), None), ("", None, None))
+
     def test_spec_worker_receives_paired_questions_once(self):
         qa = [{"stage": "triage", "question": "Which scope?", "answer": "Items"},
               {"stage": "spec", "question": "Which policy?", "answer": "Sort"}]
