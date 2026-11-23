@@ -11,12 +11,13 @@ graph TD;
 	implement(implement)
 	review(review)
 	merge(merge)
-	done(done)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> triage;
 	implement -. &nbsp;cancelled&nbsp; .-> __end__;
 	implement -. &nbsp;published&nbsp; .-> review;
-	merge --> done;
+	merge -. &nbsp;cancelled&nbsp; .-> __end__;
+	merge -. &nbsp;repair&nbsp; .-> implement;
+	merge -. &nbsp;reviewable_head&nbsp; .-> review;
 	research -. &nbsp;answered&nbsp; .-> __end__;
 	review -. &nbsp;cancelled&nbsp; .-> __end__;
 	review -. &nbsp;P0&nbsp; .-> implement;
@@ -26,7 +27,6 @@ graph TD;
 	triage -. &nbsp;cancelled&nbsp; .-> __end__;
 	triage -. &nbsp;question&nbsp; .-> research;
 	triage -. &nbsp;plan&nbsp; .-> spec;
-	done --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

@@ -24,7 +24,6 @@ from foreman.credentials import CredentialFailure, credentials, git_auth
 from foreman.delivery import LiveRun, read_delivery_state
 from foreman.github import BOT_LOGIN, ForgeError, LiveForge
 from foreman.redaction import redact
-from foreman.outcomes import Halt
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.runner import run_live_delivery
 from foreman.smoke import SmokeVerdict, smoke_verdict
@@ -201,7 +200,8 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
                                            run=live,
                                            max_tokens=tokens, max_budget_usd=dollars,
                                            log=lambda message: print(redact(message), flush=True))
-            if result.get("halt") != Halt.ci_pending:
+            # Arm waits for the checks. Once armed, the queued pull request is the smoke's end point.
+            if result["stop"] != "merge_pending" or result.get("merge", MergeState()).status == "armed":
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:

@@ -21,6 +21,8 @@ from foreman.workspace import commit_sha
 
 BOT_LOGIN = "bookout-labs-foreman[bot]"
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
+# Labeling an issue starts its run, so Spec and Merge release issues by adding it.
+RELEASE_LABEL = "factory"
 Model = TypeVar("Model", bound=BaseModel)
 
 
@@ -37,7 +39,7 @@ class HandoffChanged(MergeNotArmed):
 
 
 class QueueRejected(MergeNotArmed):
-    outcome: Literal["queue_rejected"] = "queue_rejected"
+    pass
 
 
 class MergeHoldUnreadable(ForgeError):
@@ -316,6 +318,10 @@ def queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str,
                         identity=identity, status=status)
 
 
+class Comparison(BaseModel, strict=True):
+    status: str
+
+
 class Forge(Protocol):
     def default_branch(self, repo: str) -> str: ...
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
@@ -336,6 +342,7 @@ class Forge(Protocol):
     def add_blocker(self, repo: str, number: int, blocker: int) -> None: ...
     def blockers(self, repo: str, number: int) -> list[IssueBlocker]: ...
     def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool: ...
+    def descends(self, repo: str, ancestor: str, head: str) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt: ...
@@ -677,6 +684,10 @@ class LiveForge:
                 ):
                     return True
         return False
+
+    def descends(self, repo: str, ancestor: str, head: str) -> bool:
+        comparison = self._read(repo, Comparison, ["gh", "api", f"repos/{repo}/compare/{ancestor}...{head}"])
+        return comparison.status in ("ahead", "identical")
 
     def add_label(self, repo: str, number: int, label: str) -> None:
         repo, label = (redact(value) for value in (repo, label))

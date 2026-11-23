@@ -20,8 +20,6 @@ class OwnerCase:
     durable: frozenset[str]
     grouped_at: int
     legacy_keys: dict[str, str]
-    clear_on_head_change: frozenset[str] = frozenset()
-    repair_head_field: str | None = None
 
 
 FINDING = {
@@ -39,15 +37,14 @@ CHECKED = accept(SpecHistory(), CLEAR, CANDIDATE).history
 
 OWNERS = (
     OwnerCase("merge", MergeState(status="not_armed", receipt={"status": "QUEUED"},
-        observation={"outcome": "ready"}, observed_head="c" * 40, command=["gh", "pr", "merge"]),
+        observation={"outcome": "ready"}, merge_commit_sha="e" * 40, observed_head="c" * 40, command=["gh", "pr", "merge"]),
         frozenset({"receipt"}), 2, {"status": "merge", "receipt": "merge_receipt",
-            "observation": "readiness_observation", "observed_head": "merge_observed_head", "command": "merge_command"},
-        clear_on_head_change=frozenset({"receipt"})),
+            "observation": "readiness_observation", "observed_head": "merge_observed_head", "command": "merge_command"}),
     OwnerCase("work", WorkState(branch="8-change", base="main", attempt_head="a" * 40, built=True, owned="tree",
         candidate={"disposition": "adopted", "head": "b" * 40, "tree": "c" * 40, "fingerprint": "tree",
                    "size": {"head": "c" * 40, "merge_base": "a" * 40, "lines": 1}},
         head_sha="b" * 40, published_head="b" * 40, repair_head="d" * 40), frozenset({"branch", "base"}), 3, {"branch": "delivery_branch", "base": "delivery_base",
-            "candidate": "implementation_candidate"}, repair_head_field="repair_head"),
+            "candidate": "implementation_candidate"}),
     OwnerCase("run", RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
         base_branch="main", base_sha="a" * 40, token_cap=100, max_budget_usd="1.5"), frozenset(RunState.model_fields), 4, {}),
     OwnerCase("checks", ChecksState(verify_failures=2, check="true", preflight="env", check_exit_code=0,
@@ -65,8 +62,7 @@ OWNERS = (
         reviewed_head="b" * 40, settled_rulings=[{"id": "design:1", "text": "Keep the seam"}],
         findings=[FINDING], detail="Review complete",
         review_run_id="review-run", review_receipt={"id": 12, "commit_id": "b" * 40, "state": "COMMENTED"}),
-        frozenset(ReviewState.model_fields), 8, {},
-        clear_on_head_change=frozenset({"review", "reviewed_head", "review_receipt", "findings", "detail"})),
+        frozenset(ReviewState.model_fields), 8, {}),
 
 )
 
@@ -113,33 +109,3 @@ def historical_channels(version):
     if version is not None:
         values["schema_version"] = version
     return values
-
-
-def seed_repair_channels(values, *, head_changed=False):
-    for owner in OWNERS:
-        fields = (type(owner.value).model_fields.keys() - owner.durable)
-        if owner.name == "plan":
-            fields.add("rejected_revisions")
-        if owner.name == "checks":
-            fields.add("verify_failures")
-        if head_changed:
-            fields |= owner.clear_on_head_change
-        if owner.name == "review":
-            fields |= {"settled_rulings"}
-        values[owner.name] = values.get(owner.name, type(owner.value)()).model_copy(update=owner.value.model_dump(include=fields))
-
-
-def assert_repaired(test, before, after, *, repair_head):
-    for owner in OWNERS:
-        durable = owner.durable - (owner.clear_on_head_change if repair_head is not None else frozenset())
-        with test.subTest(owner=owner.name, durable=sorted(durable)):
-            defaults = type(owner.value)()
-            for field in type(owner.value).model_fields.keys() - durable:
-                test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
-            required = durable if owner.name == "review" else {field for _, name, field, _ in COUNTERS if name == owner.name}
-            for field in required:
-                test.assertNotEqual(getattr(before[owner.name], field), getattr(defaults, field), field)
-            fields = before[owner.name].model_dump(include=durable)
-            if owner.repair_head_field is not None and repair_head is not None:
-                fields[owner.repair_head_field] = repair_head
-            test.assertEqual(after[owner.name], type(owner.value).model_validate(fields))

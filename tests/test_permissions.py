@@ -78,7 +78,7 @@ class PermissionsTest(unittest.TestCase):
 
                 result = run_delivery(handler, repo="Example/Engine", request="Change", check="sh check.sh",
                                       config=config, slice=EMPTY_SLICE, scratch=scratch)
-                self.assertEqual(result["stop"], "verified")
+                self.assertEqual(result["stop"], "merge_pending")
                 self.assertEqual(len(calls), 2)
 
     def test_readonly_has_no_edit_tools_or_allow_rules(self):

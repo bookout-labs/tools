@@ -33,12 +33,11 @@ FILING = {
 }
 SKIPPED = {"model_dependency_missing", "publication_model_missing", "merge_held", "merge_not_armed", "budget_exceeded",
            "env_unavailable", "publish_failed", "publication_unreconciled",
-           "implementation_rejected", "pr_conflict", "ci_pending", "ci_red",
-           "readiness_unavailable", "queue_rejected"}
+           "implementation_rejected", "readiness_unavailable"}
 
 
 def state(halt="invalid_output", detail="bad output", node="review", model="gpt-6.1-sol-high"):
-    return dict(run=RunState(repo=REPO, issue=8), check="true", path=["triage", node, "done", "done"], stop=halt,
+    return dict(run=RunState(repo=REPO, issue=8), check="true", path=["triage", node], stop=halt,
                 halt=halt, halt_detail=detail, attempts=[dict(stage=node, model=model, outcome="ran",
                                                            commit="pin", methods=[], usage=None)])
 

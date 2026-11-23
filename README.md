@@ -29,12 +29,13 @@ graph TD;
 	implement(implement)
 	review(review)
 	merge(merge)
-	done(done)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> triage;
 	implement -. &nbsp;cancelled&nbsp; .-> __end__;
 	implement -. &nbsp;published&nbsp; .-> review;
-	merge --> done;
+	merge -. &nbsp;cancelled&nbsp; .-> __end__;
+	merge -. &nbsp;repair&nbsp; .-> implement;
+	merge -. &nbsp;reviewable_head&nbsp; .-> review;
 	research -. &nbsp;answered&nbsp; .-> __end__;
 	review -. &nbsp;cancelled&nbsp; .-> __end__;
 	review -. &nbsp;P0&nbsp; .-> implement;
@@ -44,7 +45,6 @@ graph TD;
 	triage -. &nbsp;cancelled&nbsp; .-> __end__;
 	triage -. &nbsp;question&nbsp; .-> research;
 	triage -. &nbsp;plan&nbsp; .-> spec;
-	done --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
@@ -84,7 +84,9 @@ Foreman looks up the local branch by name. If the pull request uses a differentl
 
 Before arming, Foreman reads the target repository's GitHub Actions variable `FOREMAN_MERGE_HOLD`. A non-empty value or a read error pauses the run as `merge_held` and records the value or error. An unset or empty value permits arming. Clear the hold or resolve the read error, then rerun the same command to retry the merge.
 
-If the merge command times out, Foreman checks the same pull request at the verified SHA. An open pull request with a squash auto-merge request or a merged pull request confirms the result. A failed merge check or unconfirmed command pauses the run as `merge_not_armed` and records the reason. Resolve it and rerun the same command to retry. If HEAD moved, run `git reset --keep <verified-sha>` on the PR branch before rerunning. New commits need a new run. A dry run prints `merge skipped (dry run)` with the command template and reports the scripted verification result.
+If the merge command times out, Foreman checks the same pull request at the verified SHA. An open pull request with a squash auto-merge request or a merged pull request confirms the result. A failed merge check or unconfirmed command pauses the run as `merge_not_armed` and records the reason. Resolve it and rerun the same command to retry. If HEAD moved, run `git reset --keep <verified-sha>` on the PR branch before rerunning. New commits need a new run. A dry run prints `merge skipped (dry run)` with the command template and ends `done merge_pending`, where a live run waits for GitHub.
+
+The merge stage waits on GitHub, not on a worker. Pending checks pause the run as `merge_pending`; rerunning the same command reads readiness again and repeats no worker call. Red checks, a conflict or a merge-queue rejection send GitHub's evidence back to implement as a repair, which is reviewed again before it is armed. A base that moved before arming gets a fresh review. A head that moved after arming is repaired when it descends from the checked head, and otherwise a person is asked. Only GitHub's confirmed merge of the reviewed head ends the run as `merged`. Foreman then adds the `factory` label to each sibling issue whose in-repository blockers have all merged. A pull request closed without merge ends as `closed`.
 
 Stage prompts live in `src/foreman/stages/`. The graph selects worker methods from the rule table and validated delivery state.
 
@@ -130,7 +132,7 @@ route GitHub label events through `foreman accept` and launch accepted runs;
 
 After reporting a halted live run, Foreman watches eligible failures by filing a proposed fix or commenting on the existing open proposal for that cause. It records the watch in SQLite and uses a run marker to avoid duplicate writes after a crash; a new halt can add fresh evidence. `--watch-repo OWNER/NAME` selects the proposal repository (default `bookout-labs/tools`). Skipped halts and watch failures are logged without changing the run's exit code; failures retry on the next invocation. Dry runs never contact Forge.
 
-`foreman run` exits 0 for successful stops (`done verified`, `done children_filed`, or `done answered`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a quota pause or a resumable halt (`merge_held`, `merge_not_armed`, or `env_unavailable`), and 1 for every other halt.
+`foreman run` exits 0 for successful stops (`done merged`, `done children_filed`, `done answered`, or a dry run's `done merge_pending`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a quota pause, a merge wait (`paused merge_pending`) or a resumable halt (`merge_held`, `merge_not_armed`, `readiness_unavailable`, or `env_unavailable`), and 1 for every other stop, including a pull request closed without merge.
 
 ## What enters the graph
 

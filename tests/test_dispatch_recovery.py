@@ -99,7 +99,7 @@ class DispatchRecoveryTests(unittest.TestCase):
                             self.assertEqual(result["plan"]["triage"], "")
                         else:
                             # A durable result is adopted with its observed usage; only later work runs.
-                            self.assertEqual(result["stop"], "verified", result.get("halt_detail"))
+                            self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
                             relaunched = [model for node, model in calls if node == "triage"]
                             if mode == "quota-uncommitted":
                                 # Only the next qualified model runs; the adopted quota attempt is not repeated.

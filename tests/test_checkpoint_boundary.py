@@ -88,7 +88,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
             with SqliteSaver.from_conn_string(path) as saver:
                 saver.serde = serde
                 graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun()), checkpointer=saver)
-                graph.update_state(config, {**values, "schema_version": SCHEMA_VERSION}, as_node="done")
+                graph.update_state(config, {**values, "schema_version": SCHEMA_VERSION}, as_node="research")
             with SqliteSaver.from_conn_string(path) as saver:
                 saver.serde = serde
                 restored = saver.get(config)["channel_values"]
@@ -139,7 +139,7 @@ with SqliteSaver.from_conn_string(path) as saver:
         for owner in OWNERS:
             values[owner.name] = type(owner.value).model_validate(values[owner.name])
         graph.update_state(config, values, as_node=predecessor)
-        if predecessor != "done":
+        if predecessor != "merge":
             graph.invoke(None, config, durability="sync")
     saved = graph.get_state(config, subgraphs=True)
     assert checkpoint_state(saved.values) is not None
@@ -156,7 +156,7 @@ with SqliteSaver.from_conn_string(path) as saver:
             ("review", "implement", {}),
         ]
         # The shared quota wait is an interrupt inside dispatch; test_review_availability resumes it in fresh processes.
-        cases += [(code.value, "done", {"halt": code.value, "stop": code.value}) for code in Halt]
+        cases += [(code.value, "merge", {"halt": code.value, "stop": code.value}) for code in Halt]
         env = {**os.environ, "LANGGRAPH_STRICT_MSGPACK": "true",
                "PYTHONPATH": os.pathsep.join([str(Path(__file__).parent), os.environ.get("PYTHONPATH", "")])}
         with TemporaryDirectory() as directory:
@@ -186,7 +186,7 @@ with SqliteSaver.from_conn_string(path) as saver:
                         self.assertEqual(process.stderr, "")
                         outputs.append(json.loads(process.stdout))
                     self.assertEqual(*outputs)
-                    if predecessor != "done":
+                    if predecessor != "merge":
                         self.assertEqual(len(outputs[1]["interrupts"]), 1, outputs[1]["result"].get("halt_detail"))
                         payload = outputs[1]["interrupts"][0]
                         self.assertEqual(payload.get("stage", payload.get("reason")),

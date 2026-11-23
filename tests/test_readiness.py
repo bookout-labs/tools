@@ -3,11 +3,12 @@ import tests
 import json
 import unittest
 from typing import get_args
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from foreman.outcomes import READINESS_HALTS
-from foreman.readiness import Outcome
+from foreman.readiness import Observation, Outcome, PullSnapshot
 from foreman.github import ForgeError, LiveForge, PullRequest
+from foreman.state import ChecksState, PlanState, ReviewState, RunState, WorkState
+from foreman.steps import StageRun, merge
 from test_github import PR, HEAD, BASE, BRANCH, REPO
 
 MERGE = "c" * 40
@@ -19,8 +20,30 @@ QUEUE_RULE = dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))
 RULES.append(QUEUE_RULE)
 
 class ReadinessTest(unittest.TestCase):
-    def test_every_outcome_has_an_explicit_halt_policy(self):
-        self.assertEqual(set(READINESS_HALTS), set(get_args(Outcome)))
+    def test_every_outcome_has_one_typed_arm_route(self):
+        """ME1: stale or failing evidence never arms, and each GitHub outcome is a drawn arm route, a wait or a named halt."""
+        expected = {"ready": "armed", "pending": "wait", "red": "repair", "conflict": "repair", "queue_rejected": "repair",
+                    "policy": "readiness_unavailable", "head_changed": "head_unverified", "closed": "closed_or_merged",
+                    "retargeted": "merge_not_armed"}
+        self.assertEqual(set(expected), set(get_args(Outcome)))
+        state = {"run": RunState(repo=REPO, issue=8), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": [],
+                 "work": WorkState(branch=BRANCH, base="main"), "dispatch_plan": {"target": {"number": 12}},
+                 "review": ReviewState(review_findings=[{"reviewed_head": HEAD, "base": BASE, "findings": [], "provenance": None}],
+                                       review_receipt={"id": 1, "state": "COMMENTED", "commit_id": HEAD})}
+        for outcome, route in expected.items():
+            with self.subTest(outcome=outcome):
+                observed = Observation(repo=REPO, pr=PullSnapshot.model_validate({**READINESS, "merged": False}), checks=[],
+                                       outcome=outcome, recovery="Synthetic.", queue_policy={"merge_method": "SQUASH"})
+                forge = Mock(**{"merge_hold.return_value": None, "readiness.return_value": observed, "arm_auto_merge.return_value": None})
+                run = StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, human_login="", dispatch=None, apply=None)
+                with patch("foreman.steps.merge.interrupt", side_effect=LookupError("wait")):
+                    try:
+                        update = merge.arm(state, run)
+                    except LookupError:
+                        update = {"stop": "wait"}
+                self.assertEqual(update.get("halt") or update["stop"], route)
+                if route != "armed":
+                    forge.arm_auto_merge.assert_not_called()
 
     def observe(self, *, pr=None, runs=None, rules=None, statuses=None, parents=None, after=None, legacy=None, tip=BASE):
         pr = pr or READINESS

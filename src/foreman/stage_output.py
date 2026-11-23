@@ -467,7 +467,8 @@ class HumanAnswer(TypedDict):
 
 
 class HumanPrompt(Contract):
-    stage: GateStage
+    # Merge asks without a worker, at its head_unverified gate.
+    stage: GateStage | Literal["merge"]
     question: str
     revision: str | None = None
     # The paused step's own attempts, path and models, which the state records only once the step finishes.

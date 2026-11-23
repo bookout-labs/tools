@@ -259,6 +259,10 @@ class ImplementStage(Stage):
     step = "implement.edit"
 
 
+class ReviewStage(Stage):
+    step = "review.inspect"
+
+
 def spec_check_models(name: str, state: "DeliveryState", config: Config) -> list[ModelSpec]:
     models = order_for("spec", config, state.get("models_used", {}))
     candidate = state.get("plan")
@@ -300,7 +304,7 @@ STAGES = {
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill", lines=(13, 27)), when="perf_issue"),
         SkillRule(skill=SkillMethod(path="verify-<app>/SKILL.md", kind="target_skill")),
     ), accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review")),
-    "review": Stage("review.md", ReviewOutput, (
+    "review": ReviewStage("review.md", ReviewOutput, (
         SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill", lines=(3, 7))),
         SkillRule(skill=SkillMethod(path="blast-radius/SKILL.md", kind="skill", lines=(31, 37))),
     ), prepare=review_preparation, accept=accept_review, project=review_projection,

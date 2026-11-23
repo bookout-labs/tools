@@ -179,8 +179,18 @@ class MergeReceipt(StrictModel):
 
 
 class MergeState(PydanticModel, frozen=True, extra="forbid"):
-    status: Literal["armed", "skipped", "not_armed"] | None = None
+    status: Literal["armed", "skipped", "not_armed", "merged", "closed"] | None = None
     observation: dict[str, JsonValue] | None = None
     receipt: dict[str, JsonValue] | None = None
+    # A squash or queue merge records its own commit, distinct from the reviewed head it merged.
+    merge_commit_sha: str = ""
     observed_head: str = ""
     command: list[str] = Field(default_factory=list[str])
+
+
+class MergeWait(StrictModel):
+    """The run waits at arm for checks or at observe for the queue, until a GitHub event wakes it."""
+
+    reason: Literal["merge_pending"] = "merge_pending"
+    step: Literal["arm", "observe"]
+    detail: str

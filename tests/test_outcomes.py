@@ -3,12 +3,10 @@ import tests
 from foreman.state import RunState, SCHEMA_VERSION
 
 import unittest
-from typing import get_args
 
 from foreman.delivery import halted
 from foreman.runner import checkpoint_state
-from foreman.readiness import Outcome
-from foreman.outcomes import HALTS, Halt, READINESS_HALTS, RESUMABLE_HALTS, exit_code
+from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS, exit_code
 
 
 class HaltPolicyTest(unittest.TestCase):
@@ -26,16 +24,7 @@ class HaltPolicyTest(unittest.TestCase):
             with self.subTest(code=code), self.assertRaisesRegex(ValueError, code):
                 checkpoint_state(dict(schema_version=SCHEMA_VERSION, halt=code, run=RunState(token_cap=100, repo="Example/Engine"), check="true", path=[]))
 
-    def test_retry_and_merge_recovery_preserve_the_existing_choices(self):
-        merge = {"merge_held", "merge_not_armed", "pr_conflict", "ci_pending", "ci_red",
-                 "readiness_unavailable", "queue_rejected"}
-        self.assertEqual({code for code, row in HALTS.items() if row.recovery == "recheck_merge"}, merge)
-        self.assertEqual(RESUMABLE_HALTS, merge | {"env_unavailable", "publish_failed", "publication_unreconciled", "git_failed",
-                         "implementation_rejected", "review_not_posted"})
-
-    def test_readiness_outcomes_appear_in_exactly_one_row(self):
-        outcomes = [outcome for row in HALTS.values() for outcome in row.readiness]
-        self.assertCountEqual(outcomes, get_args(Outcome))
-        self.assertEqual(READINESS_HALTS, dict(queue_rejected="queue_rejected", ready="merge_not_armed",
-                         conflict="pr_conflict", pending="ci_pending", red="ci_red", policy="readiness_unavailable",
-                         head_changed="merge_not_armed", closed="merge_not_armed", retargeted="merge_not_armed"))
+    def test_merge_halts_retry_and_github_failures_are_routes_not_halts(self):
+        self.assertEqual(RESUMABLE_HALTS, {"merge_held", "merge_not_armed", "readiness_unavailable", "env_unavailable", "publish_failed",
+                                           "publication_unreconciled", "git_failed", "implementation_rejected", "review_not_posted"})
+        self.assertFalse({"pr_conflict", "ci_pending", "ci_red", "queue_rejected"} & {code.value for code in Halt})

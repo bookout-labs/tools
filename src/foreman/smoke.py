@@ -56,9 +56,10 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
     if halt and not unavailable_halt:
         return SmokeVerdict(1, f"halt={halt}", last)
     path = state["path"]
-    if not path or (not paused and path[-1:] != ["done"]):
-        return SmokeVerdict(1, "terminal.done", last)
-    if stop != (halt or ("quota_exhausted" if paused else "verified")):
+    if not path or (not unavailable_halt and path[-1:] != ["merge"]):
+        return SmokeVerdict(1, "terminal.merge", last)
+    # The synthetic pull request ends queued, waiting for GitHub to report the merge, or merged.
+    if stop not in ({halt or "quota_exhausted"} if unavailable_halt else {"merge_pending", "merged"}):
         return SmokeVerdict(1, f"stop={stop or 'missing'}", last)
 
     checks = state["checks"]
@@ -94,7 +95,7 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
         ("reviewed_head", review.reviewed_head == head),
         ("review_receipt", review_receipt is not None and review_receipt["commit_id"] == head),
         ("merge.receipt", receipt is not None and receipt.source_head == head),
-        ("merge.armed", merge.status == "armed"),
+        ("merge.armed", merge.status == ("merged" if stop == "merged" else "armed")),
     ):
         if not passed:
             return SmokeVerdict(1, condition, last)

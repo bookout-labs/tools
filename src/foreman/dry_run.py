@@ -255,6 +255,9 @@ class DryRun:
     def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool:
         return False
 
+    def descends(self, repo: str, ancestor: str, head: str) -> bool:
+        raise NotImplementedError("Not used by dry delivery")
+
     def add_label(self, repo: str, number: int, label: str) -> None:
         self.commands.append(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
         self.issues[number]["labels"].append(label)

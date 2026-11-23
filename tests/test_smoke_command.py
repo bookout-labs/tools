@@ -17,7 +17,7 @@ from unittest.mock import patch, Mock
 
 from foreman.cli import main
 from foreman.github import BOT_LOGIN, ForgeError, LiveForge
-from foreman.outcomes import Halt
+from foreman.readiness import MergeState
 from foreman.smoke_command import SMOKE_REPO, SMOKE_TOKEN_CAP, SMOKE_CLAUDE_USD, run_smoke, smoke_command
 from tests.test_smoke import passing
 
@@ -93,9 +93,10 @@ class SmokeCommandTest(unittest.TestCase):
             forge.create_issue.assert_not_called()
             runner.assert_not_called()
 
-    def test_ci_resume_preserves_checkpoint_and_limits(self):
+    def test_merge_wait_resume_preserves_checkpoint_and_limits(self):
+        waiting = {**passing(), 'merge': MergeState()}
         with self.provision() as (root, forge, process, runner, credentials, errors):
-            runner.side_effect = [{**passing(), 'halt': Halt.ci_pending}, passing()]
+            runner.side_effect = [waiting, passing()]
             with patch('foreman.smoke_command.time.sleep'):
                 self.assertEqual(run_smoke(root, time.monotonic() + 30), 0)
             self.assertEqual(runner.call_count, 2)
@@ -104,7 +105,7 @@ class SmokeCommandTest(unittest.TestCase):
                 self.assertEqual(call.kwargs['max_tokens'], 1_500_000)
                 self.assertEqual(call.kwargs['max_budget_usd'], SMOKE_CLAUDE_USD)
             runner.side_effect = None
-            runner.return_value = {**passing(), 'halt': Halt.ci_pending}
+            runner.return_value = waiting
             self.assertEqual(run_smoke(root, time.monotonic() - 1), 1)
 
     def test_prerequisites_fail_before_issue_and_runner(self):
@@ -335,7 +336,7 @@ class SmokeCommandTest(unittest.TestCase):
                 if filed:
                     self.assertEqual(fake.issue_repos[102], 'bookout-labs/tools')
 
-    def test_real_runner_resumes_ci_without_redispatch_or_resetting_usage(self):
+    def test_real_runner_resumes_the_merge_wait_without_redispatch_or_resetting_usage(self):
         from dataclasses import replace
         from foreman.delivery import LiveRun
         from foreman.dry_run import ScriptHandler
@@ -383,7 +384,8 @@ class SmokeCommandTest(unittest.TestCase):
             with patch('foreman.smoke_command.LiveForge', return_value=transport), patch('foreman.smoke_command.time.sleep'):
                 self.assertEqual(run_smoke(root, time.monotonic() + 30), 0, results)
             self.assertEqual(len(results), 2)
-            self.assertEqual(results[0]['halt'], Halt.ci_pending)
+            self.assertEqual((results[0]['stop'], results[0].get('merge', MergeState()).status), ('merge_pending', None))
+            self.assertNotIn('halt', results[0])
             self.assertEqual(results[0]['attempts'], results[1]['attempts'])
             for attempt in results[1]['attempts']:
                 self.assertEqual(attempt['prompt_bytes'], 123)

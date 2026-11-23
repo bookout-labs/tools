@@ -27,7 +27,7 @@ def passing() -> DeliveryResult:
     return DeliveryResult(
         run=RunState(repo="bookout-labs/foreman-smoke", issue=1), plan=PlanState(),
         checks=ChecksState(verify="pass", check_exit_code=0, verified_head="abc"),
-        path=["prepare", "implement", "check", "commit", "publish", "review", "merge", "done"], stop="verified",
+        path=["prepare", "implement", "check", "commit", "publish", "review", "merge"], stop="merge_pending",
         work=WorkState(head_sha="abc", published_head="abc"),
         review=ReviewState(reviewed_head="abc", review_receipt={"id": 1, "state": "COMMENTED", "commit_id": "abc"}),
         merge=MergeState(status="armed", receipt={
@@ -58,7 +58,8 @@ class SmokeTest(unittest.TestCase):
             ({"stop": "answered"}, "stop=answered"),
             ({"stop": "children_filed"}, "stop=children_filed"),
             ({"stop": "needs_human"}, "stop=needs_human"),
-            ({"path": ["merge"]}, "terminal.done"),
+            ({"path": ["review"]}, "terminal.merge"),
+            ({"stop": "merged"}, "merge.armed"),
             ({"checks": ChecksState(verified_head="abc")}, "checks.verify"),
             ({"checks": ChecksState(verify="pass", check_exit_code=0)}, "verified_head"),
             ({"work": WorkState()}, "published_head"),
@@ -111,17 +112,17 @@ class SmokeTest(unittest.TestCase):
             with self.subTest(halt=halt):
                 # None is the shared quota wait: a paused stop without a halt.
                 state = DeliveryResult(run=RunState(), plan=PlanState(), checks=ChecksState(), review=ReviewState(),
-                                      path=["triage"] if halt is None else ["done"], stop=halt or "quota_exhausted", halt=halt)
+                                      path=["triage"] if halt is None else ["check"], stop=halt or "quota_exhausted", halt=halt)
                 halt = halt or "quota_exhausted"
                 self.assert_verdict(state, 78, f"halt={halt}", "checkpoint")
                 before = state["path"]
                 state["path"] = []
-                self.assert_verdict(state, 1, "terminal.done", "checkpoint")
+                self.assert_verdict(state, 1, "terminal.merge", "checkpoint")
                 state["path"] = before
                 state["merge"] = MergeState(status="armed")
                 self.assert_verdict(state, 1, "merge.armed_with_halt", "checkpoint")
                 state["stop"] = "verified"
-                self.assert_verdict(state, 1, "terminal.done" if halt == "quota_exhausted" else "stop=verified", "checkpoint")
+                self.assert_verdict(state, 1, "terminal.merge" if halt == "quota_exhausted" else "stop=verified", "checkpoint")
 
     def test_halts_are_not_blanket_unavailability(self):
         for halt in Halt:

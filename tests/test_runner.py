@@ -42,13 +42,14 @@ from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply
 from test_adapters import codex_events, fixture_process
 from test_spec_candidate import CandidateTests
-from owner_contract import OWNERS, assert_channels, assert_repaired, seed_repair_channels
+from owner_contract import assert_channels
 
 
 HEAD = "a" * 40
 SYNTHETIC_QUESTION_TOKEN = "ghp_" + "a" * 36
 
 BASE = "b" * 40
+MERGE_COMMIT = "e" * 40
 
 BRANCH = "8-list-items-once"
 CLEAN_WORKTREE = WorktreeState(HEAD, True, BRANCH)
@@ -239,6 +240,8 @@ class FakeGitHub:
         self.hold_reads = []
         self.opened: dict[str, PublishedPullRequest] = {}
         self.branches: dict[str, str] = {}
+        self.queue_merges = True
+        self.foreign_heads: set[str] = set()
 
     def default_branch(self, repo):
         return "main"
@@ -263,10 +266,15 @@ class FakeGitHub:
         self.reviews.append((repo, target.number, target.headRefOid, body, comments))
         return {"id": len(self.reviews), "state": "COMMENTED", "commit_id": target.headRefOid}
     def readiness(self, repo, issue, branch, sha):
-        return Observation(repo=repo, pr=PullSnapshot(number=12, state="open", draft=False,
+        # The queue merges an armed head unless a test holds it in the queue.
+        merged = self.queue_merges and any(call[3] == sha for call in self.merge_calls)
+        return Observation(repo=repo, pr=PullSnapshot(number=12, state="closed" if merged else "open", draft=False, merged=merged,
             head={"sha": sha, "ref": branch}, base={"sha": self.base, "ref": "main"},
-            mergeable=True, merge_commit_sha=None, mergeable_state="clean"),
+            mergeable=True, merge_commit_sha=MERGE_COMMIT if merged else None, mergeable_state="clean"),
             checks=[], outcome="ready", recovery="Eligible.", queue_policy={"merge_method": "SQUASH"})
+
+    def descends(self, repo, ancestor, head):
+        return head not in self.foreign_heads
 
     def reconcile_merge(self, receipt):
         return receipt
@@ -381,7 +389,7 @@ class FakeGitHub:
 
     def blockers(self, repo, number):
         return [
-            IssueBlocker(number=blocker, title=self.created[blocker - 101][0],
+            IssueBlocker(number=blocker, title=self.load_issue(repo, blocker)["title"],
                          repository_url=f"https://api.github.com/repos/{repo}",
                          html_url=f"https://github.com/{repo}/issues/{blocker}",
                          state="closed" if blocker in self.closed or blocker in self.merged else "open")
@@ -827,7 +835,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["checks"].verify, "pass")
         self.assertEqual(result["checks"].failure_output, "")
         self.assertEqual(result["path"].count("publish"), 1)
-        self.assertEqual(result["path"][-5:], ["commit", "publish", "review", "merge", "done"])
+        self.assertEqual(result["path"][-4:], ["commit", "publish", "review", "merge"])
         self.assertEqual(self.github.reviews[-1][2], result["checks"].verified_head)
 
     def test_preflight_output_never_replaces_failed_check_context(self):
@@ -844,24 +852,47 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["checks"].failure_output, "synthetic check failure\n")
         self.assertEqual(result["checks"].verify_failures, 0)
 
-    def test_readiness_halts_resume_without_repeating_workers(self):
-        for outcome, reason in [("pending", "ci_pending"), ("red", "ci_red"), ("conflict", "pr_conflict")]:
-            self.checkpoint = self.cwd / (outcome + ".sqlite3")
-            observed = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
-            observed.outcome = outcome
-            observed.recovery = "Repair or wait, then resume."
-            with patch.object(self.github, "readiness", return_value=observed):
-                result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
-            self.assertEqual(result["stop"], reason)
-            self.assertIsInstance(result["merge"].observation, dict)
-            self.assertIn("PR #12 head=", result["halt_detail"])
-            self.assertIn("base=main@", result["halt_detail"])
-            self.assertEqual(run_exit_code(result), 75)
+    def test_arm_waits_for_checks_and_resumes_without_repeating_workers(self):
+        pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending", "recovery": "Wait for required checks, then resume."})
+        with patch.object(self.github, "readiness", return_value=pending):
+            waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual((waiting["stop"], run_exit_code(waiting)), ("merge_pending", 75))
+            self.assertIn("PR #12 head=", waiting["halt_detail"])
+            self.assertEqual(waiting["path"][-2:], ["review", "merge"])
             count = len(self.calls)
-            resumed = self.walk([])
-            self.assertEqual(resumed["stop"], "verified")
-            self.assertEqual(len(self.calls), count)
-            self.assertEqual(resumed["review"].review_receipt, result["review"].review_receipt)
+            # A duplicate wake reads GitHub again and keeps waiting.
+            self.assertEqual(self.walk([])["stop"], "merge_pending")
+        resumed = self.walk([])
+        self.assertEqual(resumed["stop"], "merged")
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(resumed["review"].review_receipt, waiting["review"].review_receipt)
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
+
+    def test_failed_checks_or_conflict_route_to_repair_with_github_evidence(self):
+        original = self.github.readiness
+        for outcome, step in [("red", "arm"), ("conflict", "arm"), ("red", "observe")]:
+            with self.subTest(outcome=outcome, step=step), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint, self.prompts, self.github.merge_calls, self.github.reviews = Path(directory) / "runs.sqlite3", [], [], []
+                failing = original("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": outcome, "recovery": "Repair, then resume."})
+                readings = iter([failing] if step == "arm" else [])
+                self.github.queue_merges = step == "arm"
+                def observe(*args):
+                    reading = next(readings, None)
+                    if reading is None and step == "observe" and self.github.merge_calls and not self.github.queue_merges:
+                        # The queue drops the armed head after its checks fail, and the repaired head merges.
+                        self.github.queue_merges = True
+                        return failing
+                    return reading or original(*args)
+                with patch.object(self.github, "readiness", side_effect=observe):
+                    result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE, {"implementation": "built"}, APPROVE])
+                self.assertEqual(result["stop"], "merged")
+                repair = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
+                self.assertTrue(repair["checks"]["failure_output"].startswith(f"GitHub: PR #12 head={HEAD}"))
+                self.assertIsNone(repair["review"]["review_receipt"])
+                self.assertEqual(repair["work"]["repair_head"], None)
+                self.assertEqual(len(self.github.reviews), 2)
+                self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
+        self.github.queue_merges = True
 
     def test_resume_rejects_historical_schema_before_missing_usage(self):
         self.github.hold = "Maintenance"
@@ -963,31 +994,43 @@ class LiveRunnerTest(unittest.TestCase):
     def test_saved_receipt_reconciles_before_readiness_without_reenqueue(self):
         for status in ["missing", "merged"]:
             self.checkpoint = self.cwd / (status + ".sqlite3")
+            self.github.merge_calls, self.github.queue_merges = [], status == "merged"
             ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
             with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
                 first = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual(first["stop"], "readiness_unavailable")
             count = len(self.calls)
             receipt = MergeReceipt.model_validate(first["merge"].receipt)
-            effect = QueueRejected(f"Queue receipt {receipt.identity} disappeared") if status == "missing" else None
-            with patch.object(self.github, "readiness", side_effect=AssertionError("readiness ran before receipt")), patch.object(self.github, "arm_auto_merge", side_effect=AssertionError("re-enqueued")), patch.object(self.github, "reconcile_merge", side_effect=effect, return_value=receipt.model_copy(update={"status": "MERGED"})) as read:
-                result = self.walk([])
-            read.assert_called_once_with(receipt)
-            self.assertEqual(len(self.calls), count)
-            self.assertEqual(result["stop"], "queue_rejected" if effect else "verified")
-            if effect:
-                self.assertEqual(run_exit_code(result), 75)
-                self.assertIn(receipt.identity, result["halt_detail"])
+            if status == "merged":
+                with patch.object(self.github, "arm_auto_merge", side_effect=AssertionError("re-enqueued")), patch.object(
+                        self.github, "reconcile_merge", return_value=receipt.model_copy(update={"status": "MERGED"})) as read:
+                    result = self.walk([])
+                read.assert_called_once_with(receipt)
+                self.assertEqual((result["stop"], len(self.calls)), ("merged", count))
+                continue
+            # A vanished queue entry is a rejection: the run repairs, then arms the repaired head once.
+            rejected = QueueRejected(f"Queue receipt {receipt.identity} disappeared")
+            with patch.object(self.github, "reconcile_merge", side_effect=[rejected, receipt]) as read:
+                result = self.walk([{"implementation": "built"}, APPROVE])
+            self.assertEqual(read.call_args_list[0].args, (receipt,))
+            self.assertEqual((result["stop"], len(self.calls)), ("merge_pending", count + 2))
+            self.assertIn(receipt.identity, json.loads(self.prompts[-2].split("Delivery state:\n")[1])["checks"]["failure_output"])
+            self.assertEqual(len(self.github.merge_calls), 2)
+        self.github.queue_merges = True
 
-    def test_changed_saved_handoff_invalidates_receipt_for_renewed_review(self):
+    def test_changed_saved_handoff_reads_github_again_before_arming(self):
+        self.github.queue_merges = False
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
         with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
             self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         with patch.object(self.github, "reconcile_merge", side_effect=HandoffChanged("PR head changed; resume to renew review")):
             result = self.walk([])
-        self.assertEqual(result["stop"], "merge_not_armed")
-        self.assertIsNone(result["merge"].receipt)
-        with patch.object(self.github, "reconcile_merge", side_effect=AssertionError("stale receipt resurrected")):
-            self.assertEqual(self.walk([])["stop"], "verified")
+        # The stale receipt is dropped, and a fresh observation arms through GitHub's existing-entry check.
+        self.assertEqual(result["stop"], "merge_pending")
+        self.assertEqual(len(self.github.merge_calls), 2)
+        self.assertIn("PR head changed", result["halt_detail"])
+        self.github.queue_merges = True
+        self.assertEqual(self.walk([])["stop"], "merged")
 
     def test_fresh_process_reconciles_crash_after_write_or_merge(self):
         script = r"""
@@ -1045,28 +1088,91 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             first = subprocess.run(command, cwd=directory, capture_output=True, text=True)
             self.assertEqual(first.returncode, 17, first.stderr)
             resumed = subprocess.run(command, cwd=directory, capture_output=True, text=True)
-            self.assertEqual(resumed.returncode, 0, resumed.stderr)
-            self.assertIn("done verified", resumed.stdout)
+            # The adopted arm stays pending until GitHub reports the merge.
+            self.assertEqual(resumed.returncode, 0 if mode == "merged" else 75, resumed.stderr)
+            self.assertIn("done merged" if mode == "merged" else "paused merge_pending", resumed.stdout)
             self.assertEqual((directory / "merges.log").read_text(), "merge\n")
             self.assertEqual((directory / "workers.log").read_text().splitlines(), ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "ReviewOutput"])
 
-    def test_readiness_is_reconciled_after_arming(self):
-        ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
-        for outcome, halt in [("conflict", "pr_conflict"), ("red", "ci_red"), ("pending", "ci_pending")]:
-            self.checkpoint = self.cwd / (outcome + "-reconcile.sqlite3")
-            changed = ready.model_copy(update={"outcome": outcome})
-            with patch.object(self.github, "readiness", side_effect=[ready, changed]), patch.object(self.github, "arm_auto_merge", wraps=self.github.arm_auto_merge) as arm:
-                result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
-            arm.assert_called_once()
-            self.assertEqual((result["stop"], result["merge"].status, run_exit_code(result)), (halt, "armed", 75))
-        self.checkpoint = self.cwd / "advanced-base.sqlite3"
-        changed = ready.model_copy(deep=True)
-        changed.pr.base.sha = "c" * 40
-        changed.pr.merge_commit_sha = "d" * 40
-        with patch.object(self.github, "readiness", side_effect=[ready, changed]):
+    def test_queued_pull_request_is_pending_until_github_reports_the_merge(self):
+        self.github.queue_merges = False
+        result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        # A queue receipt alone is not delivery: the run waits at observe without credit.
+        self.assertEqual((result["stop"], result["merge"].status, run_exit_code(result)), ("merge_pending", "armed", 75))
+        self.assertIn("QUEUED", result["halt_detail"])
+        self.github.base = "c" * 40
+        # The queue tests the head on top of the newer base, so the moved base does not reopen review.
+        self.assertEqual(self.walk([])["stop"], "merge_pending")
+        self.github.queue_merges = True
+        merged = self.walk([])
+        self.assertEqual((merged["stop"], merged["merge"].status, merged["merge"].merge_commit_sha), ("merged", "merged", MERGE_COMMIT))
+        self.assertEqual(len(self.github.reviews), 1)
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
+        self.assertEqual(run_exit_code(merged), 0)
+
+    def test_merge_of_an_unreviewed_head_earns_no_credit_or_release(self):
+        self.github.parents[("Example/Engine", 8)] = 7
+        merged = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        merged.pr.state, merged.pr.merged, merged.pr.head.sha = "closed", True, "c" * 40
+        readings = iter([self.github.readiness("Example/Engine", 8, BRANCH, HEAD)])
+        with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, merged)):
             result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["stop"], "merge_not_armed")
-        self.assertIsNone(result["merge"].receipt)
+        self.assertEqual((result["stop"], result["merge"].observed_head), ("merge_not_armed", "c" * 40))
+        self.assertIn("No delivery credit or dependent release", result["halt_detail"])
+        self.assertEqual(self.github.label_calls, [])
+        self.assertEqual(run_exit_code(result), 75)
+
+    def test_ready_dependent_is_released_once_after_rejection_repair_and_matching_merge(self):
+        # ME3: parent 7 holds this issue, a dependent blocked only by it, and one also blocked by an open sibling.
+        dependent = self.github.create_issue("Example/Engine", "Dependent", "Uses the change.", ["slice"])
+        waiting = self.github.create_issue("Example/Engine", "Waiting", "Uses both.", ["slice"])
+        other = self.github.create_issue("Example/Engine", "Other", "Still open.", ["slice"])
+        for number in (8, dependent, waiting, other):
+            self.github.parents[("Example/Engine", number)] = 7
+        self.github.dependencies = {dependent: [8], waiting: [8, other]}
+        self.github.queue_merges = False
+        rejected = []
+
+        def reconcile(receipt):
+            # The queue removes the entry once, on the wake after the duplicate.
+            if rejected == [True]:
+                rejected.append(False)
+                raise QueueRejected(f"PR #12 head={receipt.source_head}: the merge queue removed the entry.")
+            return receipt
+        with patch.object(self.github, "reconcile_merge", side_effect=reconcile):
+            queued = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual((queued["stop"], queued["merge"].status), ("merge_pending", "armed"))
+            # A duplicate wake re-reads GitHub, keeps waiting and releases nothing early.
+            self.assertEqual(self.walk([])["stop"], "merge_pending")
+            self.assertEqual(self.github.label_calls, [])
+            rejected.append(True)
+            repaired = self.walk([{"implementation": "built"}, APPROVE])
+        self.assertEqual(repaired["stop"], "merge_pending")
+        repair = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
+        self.assertIn("merge queue removed the entry", repair["checks"]["failure_output"])
+        self.assertEqual(len(self.github.reviews), 2)
+        self.assertEqual(len(self.github.merge_calls), 2)
+        self.assertEqual(self.github.label_calls, [])
+        self.github.queue_merges = True
+        merged = self.walk([])
+        self.assertEqual((merged["stop"], merged["merge"].merge_commit_sha), ("merged", MERGE_COMMIT))
+        self.assertEqual(self.github.label_calls, [("Example/Engine", dependent, "factory")])
+        # A replayed wake after the merge files no second release.
+        self.assertEqual(self.walk([])["stop"], "merged")
+        self.assertEqual(self.github.label_calls, [("Example/Engine", dependent, "factory")])
+
+    def test_pull_request_closed_without_merge_exits_closed(self):
+        self.github.parents[("Example/Engine", 8)] = 7
+        self.github.queue_merges = False
+        closed = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "closed"})
+        closed.pr.state = "closed"
+        readings = iter([self.github.readiness("Example/Engine", 8, BRANCH, HEAD)])
+        with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, closed)):
+            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual((result["stop"], result["merge"].status, run_exit_code(result)), ("closed", "closed", 1))
+        self.assertNotIn("halt", result)
+        self.assertEqual(result["path"][-1], "merge")
+        self.assertEqual(self.github.label_calls, [])
 
     def test_review_answer_survives_failed_post_and_fresh_process(self):
         script = r"""
@@ -1124,7 +1230,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         interrupted = invoke("answer")
         self.assertEqual(interrupted["stop"], "review_not_posted")
         resumed = invoke("resume")
-        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["stop"], "merged")
         self.assertEqual(resumed["answers"], ["Active items only."])
         self.assertEqual(resumed["qa"], [{"stage": "review", "question": "Should the list include archived items?",
                                            "answer": "Active items only."}])
@@ -1152,43 +1258,60 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertIsNone(result["review"].review_receipt)
                 self.assertFalse(self.github.merge_calls)
 
-    def test_remote_only_repair_fetches_and_renews_review(self):
+    def test_owned_moved_head_is_fetched_repaired_and_reviewed_again(self):
         workspace = FakeWorkspace(self.cwd)
-        ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
-        with patch.object(self.github, "readiness", return_value=ready.model_copy(update={"outcome": "conflict"})):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], workspace=workspace)
-        remote = ready.model_copy(deep=True)
-        remote.outcome, remote.pr.head.sha = "head_changed", "d"*40
+        moved = "d" * 40
+        self.github.queue_merges = False
         observe = self.github.readiness
+        remote = observe("Example/Engine", 8, BRANCH, HEAD).model_copy(deep=True)
+        remote.outcome, remote.pr.head.sha = "head_changed", moved
+
+        def read(repo, issue, branch, sha):
+            if sha == HEAD and self.github.merge_calls:
+                # Someone pushed a descendant of the armed head, which GitHub dequeues.
+                self.github.queue_merges = True
+                return remote
+            return observe(repo, issue, branch, sha)
+
         def refreshed(branch, head):
             workspace.current = WorktreeState(head, True, branch)
-        self.github.branches[BRANCH] = "d" * 40  # The external push moved the remote branch.
-        with patch.object(self.github, "readiness", side_effect=lambda repo, issue, branch, sha: remote if sha == HEAD else observe(repo, issue, branch, sha)), patch.object(workspace, "refresh", side_effect=refreshed) as fetch, patch.object(workspace, "commit", side_effect=lambda message: refreshed(BRANCH, "d"*40)):
-            result = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
-        fetch.assert_called_once_with(BRANCH, "d"*40)
-        self.assertEqual(result["stop"], "verified", result)
-        self.assertEqual((result["checks"].verified_head, result["review"].reviewed_head, result["review"].review_receipt["commit_id"]), ("d"*40,)*3)
+            self.github.branches[BRANCH] = head
+        original_commit = workspace.commit
+        # The repair commits on the fetched head, so its tree is checked and published at that head.
+        commit = lambda message: refreshed(BRANCH, moved) if fetch.called else original_commit(message)
+        with patch.object(self.github, "readiness", side_effect=read), patch.object(workspace, "refresh", side_effect=refreshed) as fetch, \
+                patch.object(workspace, "commit", side_effect=commit), \
+                patch.object(self.github, "descends", wraps=self.github.descends) as lineage:
+            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE, {"implementation": "renewed"}, APPROVE],
+                               workspace=workspace)
+        lineage.assert_called_once_with("Example/Engine", HEAD, moved)
+        fetch.assert_called_once_with(BRANCH, moved)
+        self.assertEqual(result["stop"], "merged", result)
+        self.assertEqual((result["checks"].verified_head, result["review"].reviewed_head, result["review"].review_receipt["commit_id"]), (moved,) * 3)
+        self.assertEqual([call[3] for call in self.github.merge_calls], [HEAD, moved])
 
     def test_external_conflict_repair_renews_entire_lifecycle(self):
         workspace = FakeWorkspace(self.cwd)
-        conflict = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
-        conflict.outcome = "conflict"
-        with patch.object(self.github, "readiness", return_value=conflict):
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], workspace=workspace)
-        self.assertEqual(result["stop"], "pr_conflict")
+        observe = self.github.readiness
+        readings = iter([observe("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "conflict"})])
         repaired = "d" * 40
-        workspace.current = WorktreeState(repaired, True, BRANCH)
+        original_commit, commits = workspace.commit, []
+
         def commit(message):
+            commits.append(message)
+            if len(commits) == 1:
+                return original_commit(message)
             workspace.current = WorktreeState(repaired, True, BRANCH)
-        # The local repair commit descends from the published head, so publishing fast-forwards it.
-        descends = lambda base, commit: (base, commit) == (repaired, HEAD)
-        with patch.object(workspace, "commit", side_effect=commit), patch.object(workspace, "contains_commit", side_effect=descends):
-            resumed = self.walk([{"implementation": "renewed"}, APPROVE], workspace=workspace)
-        self.assertEqual(resumed["stop"], "verified")
-        self.assertEqual(resumed["review"].reviewed_head, repaired)
-        self.assertEqual(resumed["checks"].verified_head, repaired)
-        self.assertEqual(resumed["review"].review_receipt["commit_id"], repaired)
+        with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, None) or observe(*args)), \
+                patch.object(workspace, "commit", side_effect=commit):
+            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE, {"implementation": "renewed"}, APPROVE],
+                               workspace=workspace)
+        self.assertEqual(result["stop"], "merged")
+        repair = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
+        self.assertIn(": conflict;", repair["checks"]["failure_output"])
+        self.assertEqual((result["review"].reviewed_head, result["checks"].verified_head, result["review"].review_receipt["commit_id"]), (repaired,) * 3)
         self.assertEqual(len(self.github.reviews), 2)
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, repaired)])
 
     def test_blocking_findings_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
@@ -1205,7 +1328,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         ]
         built = {"implementation": "Built."}
         result = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": findings}, built, APPROVE])
-        self.assertEqual(result["merge"].status, "armed")
+        self.assertEqual(result["merge"].status, "merged")
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[3])
         _, _, head, body, comments = self.github.reviews[0]
         self.assertEqual(head, HEAD)
@@ -1240,7 +1363,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.calls, calls)
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(result["review"].review_receipt["state"], "COMMENTED")
-        self.assertEqual(result["merge"].status, "armed")
+        self.assertEqual(result["merge"].status, "merged")
 
     def test_review_halts_when_git_fetch_times_out(self):
         real_run = subprocess.run
@@ -1346,11 +1469,9 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.calls, [])
 
     def test_missing_pin_on_resume_preserves_checks(self):
-        pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending"})
-        with patch.object(self.github, "readiness", return_value=pending):
-            halted = self.walk([{"triage": "supplied_slice"},
-                {"implementation": "built"}, APPROVE], preflight="exit 0")
-        self.assertEqual(halted["stop"], "ci_pending")
+        self.github.hold = "Maintenance"
+        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], preflight="exit 0")
+        self.assertEqual(halted["stop"], "merge_held")
         result = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
         assert_channels(self, result, halted, names={"run", "checks", "plan", "review"})
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
@@ -1443,7 +1564,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertTrue(all(a["stage"] == "implement" and a["commit"] == self.pin.commit for a in attempts[2:]))
 
         resumed = self.walk([{"implementation": "built"}, APPROVE])
-        self.assertEqual(resumed["stop"], "verified")
+        self.assertEqual(resumed["stop"], "merged")
         self.assertEqual(resumed["path"].count("triage"), 1)
         self.assertEqual(resumed["attempts"][:len(attempts)], attempts)
         self.assertEqual([a["stage"] for a in resumed["attempts"][len(attempts):]], ["implement", "review"])
@@ -1499,7 +1620,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "factory")])
         child = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], issue=102)
-        self.assertEqual(child["stop"], "verified", child.get("halt_detail"))
+        self.assertEqual(child["stop"], "merged", child.get("halt_detail"))
         self.assertEqual(child["path"][:4], ["triage", "spec_check", "prepare", "implement"])
         self.assertEqual({k: v for k, v in child["plan"].slice.items() if k != "provenance"}, child_payload)
         self.assertEqual(child["plan"].work_kind, "bug_fix")
@@ -1651,12 +1772,12 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             check="test -f expected",
         )
         self.assertEqual(self.calls, ["claude", "codex", "codex", "claude"])
-        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
         self.assertEqual(result["checks"].check_exit_code, 0)
         self.assertEqual(result["checks"].verified_head, HEAD)
         self.assertEqual(result["work"].head_sha, HEAD)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
-        self.assertEqual(result["merge"].status, "armed")
+        self.assertEqual(result["merge"].status, "merged")
 
     def test_cli_redacts_the_check_subprocess_stdout_and_stderr(self):
         check = self.cwd / "verify.sh"
@@ -1676,7 +1797,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
             )
         self.assertEqual(code, 0)
-        self.assertIn("done verified\n", stdout.getvalue())
+        self.assertIn("done merged\n", stdout.getvalue())
         self.assertIn("Check stdout [redacted:GitHub Token]\n", stdout.getvalue())
         self.assertIn("Check stderr [redacted:GitHub Token]\n", stdout.getvalue())
         self.assertEqual(stderr.getvalue(), "")
@@ -1815,10 +1936,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             [{"implementation": "built"}, APPROVE],
             preflight=preflight,
         )
-        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("stop"), "merged")
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertNotIn("halt_detail", result)
-        self.assertEqual(result.get("path"), ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"])
+        self.assertEqual(result.get("path"), ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
 
     def test_answer_resume_is_idempotent_after_environment_halt(self):
         preflight = "test -f ready"
@@ -1833,14 +1954,14 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             self.walk([], answer="All items")
         (self.cwd / "ready").touch()
         resumed = self.walk([{"implementation": "built"}, APPROVE], answer="Only open")
-        self.assertEqual(resumed.get("stop"), "verified")
+        self.assertEqual(resumed.get("stop"), "merged")
         self.assertEqual(resumed.get("human_answers"), ["Only open"])
         revision = resumed["plan"].human_qa[0].get("revision", "")
         self.assertRegex(revision, r"^[0-9a-f]{64}$")
         expected_qa = [{"stage": "triage", "question": "Which items?", "answer": "Only open", "revision": revision}]
         self.assertEqual(resumed["plan"].human_qa, expected_qa)
         repeated = self.walk([], answer="Only open")
-        self.assertEqual(repeated.get("stop"), "verified")
+        self.assertEqual(repeated.get("stop"), "merged")
         self.assertEqual(repeated["plan"].human_qa, expected_qa)
 
     def test_non_implement_routes_skip_preflight(self):
@@ -1867,7 +1988,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     check=f"test -f {marker} || {{ touch {marker}; exit 1; }}",
                     preflight=f"echo probed >> {probe_log}",
                 )
-                self.assertEqual(result.get("stop"), "verified")
+                self.assertEqual(result.get("stop"), "merged")
                 self.assertEqual(len(result["review"].review_findings), 1)
                 self.assertEqual(result.get("path", []).count("implement"), 2)
                 self.assertEqual((self.cwd / probe_log).read_text().splitlines(), ["probed", "probed"])
@@ -1877,7 +1998,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
             preflight="echo probed >> probes",
         )
-        self.assertEqual(result.get("stop"), "verified")
+        self.assertEqual(result.get("stop"), "merged")
         self.assertEqual((self.cwd / "probes").read_text(), "probed\n")
 
     def test_parent_preflight_halts_at_prepare(self):
@@ -1903,7 +2024,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                  "--preflight", "touch preflight.log; exit 9"],
             )
         self.assertEqual(code, 0)
-        self.assertIn("done verified", stdout.getvalue())
+        self.assertIn("done merge_pending", stdout.getvalue())
         self.assertFalse((self.cwd / "preflight.log").exists())
 
     def test_failed_check_with_failed_preflight_preserves_rounds(self):
@@ -1923,7 +2044,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
         (self.cwd / "ready").touch()
         resumed = self.walk([APPROVE], workspace=workspace)
-        self.assertEqual(resumed.get("stop"), "verified")
+        self.assertEqual(resumed.get("stop"), "merged")
         self.assertEqual(resumed["checks"].check_exit_code, 0)
         self.assertEqual(len(resumed["review"].review_findings), 1)
         self.assertEqual(self.calls, ["claude", "codex", "codex", "claude"])
@@ -1937,7 +2058,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     [{"triage": "supplied_slice"}, built, built, APPROVE], issue=issue,
                     check=f"test -f {marker} || {{ touch {marker}; exit 1; }}", preflight=preflight,
                 )
-                self.assertEqual(result.get("stop"), "verified")
+                self.assertEqual(result.get("stop"), "merged")
                 self.assertEqual(len(result["review"].review_findings), 1)
                 self.assertEqual(result.get("path", []).count("implement"), 2)
         self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\nprobed\n")
@@ -1966,7 +2087,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with patch.object(FakeWorkspace, "run", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
             self.walk([{"triage": "supplied_slice"}], preflight="true")
         result = self.walk([{"implementation": "built"}, APPROVE], preflight="true")
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["stop"], "merged")
         self.assertNotIn("interrupted", [a["outcome"] for a in result["attempts"]])
 
     def test_crash_after_prepare_rejects_unowned_edits_before_preflight(self):
@@ -1989,7 +2110,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with patch.object(FakeWorkspace, "run", return_value=9):
             result = self.walk([{"triage": "supplied_slice"}], preflight="true")
         self.assertEqual(result["stop"], "env_unavailable")
-        self.assertEqual(self.walk([{"implementation": "built"}, APPROVE], preflight="true")["stop"], "verified")
+        self.assertEqual(self.walk([{"implementation": "built"}, APPROVE], preflight="true")["stop"], "merged")
 
     def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
         def interrupted_run(node, model, state, instruction):
@@ -2026,27 +2147,6 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertIsNone(result["work"].published_head)
                 self.assertEqual(self.github.merge_calls, [])
 
-    def test_worktree_changes_after_check_leave_the_command_unarmed(self):
-        for snapshot, detail in (
-            (WorktreeState(HEAD, False, BRANCH), "worktree has changes"),
-            (
-                WorktreeState("b" * 40, True, BRANCH),
-                f"git reset --keep {HEAD}\nThen rerun the same command. New commits need a new run.",
-            ),
-            (WorktreeState(HEAD, True, None), "HEAD is detached"),
-        ):
-            with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd) as directory:
-                self.checkpoint = Path(directory) / "runs.sqlite3"
-                result = self.walk(
-                    [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
-                    snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, snapshot),
-                )
-                self.assertEqual(result["checks"].check_exit_code, 0)
-                self.assertEqual(result["merge"].status, "not_armed")
-                self.assertEqual(result["stop"], "merge_not_armed")
-                self.assertIn(detail, result["halt_detail"])
-                self.assertEqual(self.github.merge_calls, [])
-
     def test_head_moved_before_review_re_establishes_checked_evidence(self):
         moved = WorktreeState("b" * 40, True, BRANCH)
         result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {"implementation": "built"}, APPROVE],
@@ -2054,98 +2154,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         # Review exits head_moved before any reviewer call, and Implement checks the current head again.
         self.assertEqual(self.calls, ["claude", "codex", "codex", "codex", "claude"])
         self.assertEqual(result["path"], ["triage", "spec_check", *["prepare", "implement", "check", "commit", "publish"] * 2,
-                                          "review", "merge", "done"])
-        self.assertEqual(result["stop"], "verified")
+                                          "review", "merge"])
+        self.assertEqual(result["stop"], "merged")
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
-
-    def test_retry_after_head_mismatch_repairs_without_stale_observation(self):
-        moved = WorktreeState("c" * 40, True, BRANCH)
-        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
-                          snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, moved))
-        self.assertEqual(halted["merge"].observed_head, moved.head)
-        resumed = self.walk([{"implementation": "built"}, APPROVE], snapshots=(moved,))
-        self.assertEqual(resumed["stop"], "verified")
-        self.assertEqual(resumed["merge"].observed_head, "")
-        repair_prompt = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
-        self.assertEqual(repair_prompt["work"], WorkState(branch=BRANCH, base="main", attempt_head=HEAD).model_dump(mode="json"))
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            _print_run(resumed)
-        self.assertNotIn("HEAD is", out.getvalue())
-
-    def test_multi_round_repair_prepare_halt_clears_attempt_observations(self):
-        self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}), max_review_rounds=2)))
-        workspace = FakeWorkspace(self.cwd)
-        heads = iter(("1" * 40, "2" * 40))
-
-        def commit(message):
-            workspace.current = WorktreeState(next(heads), True, BRANCH)
-
-        changes = {**APPROVE, "findings": [FINDING]}
-        resolved = APPROVE
-        ready = self.github.readiness("Example/Engine", 8, BRANCH, "2" * 40)
-        with patch.object(workspace, "commit", side_effect=commit), patch.object(
-            self.github, "readiness", return_value=ready.model_copy(update={"outcome": "conflict"}),
-        ):
-            halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "first"}, changes,
-                                {"implementation": "second"}, resolved], workspace=workspace, preflight="exit 0")
-        self.assertEqual(halted["checks"].preflight, "exit 0")
-        self.assertEqual(halted["stop"], "pr_conflict")
-        self.assertEqual(halted["work"].head_sha, "2" * 40)
-        seed_repair_channels(halted, head_changed=True)
-        # An empty receipt is non-default and still permits the head recheck.
-        halted["merge"] = halted["merge"].model_copy(update={"receipt": {}})
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saver.serde = checkpoint_serializer()
-            graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(self.github, workspace), checkpointer=saver)
-            graph.update_state({"configurable": {"thread_id": "example/engine#8"}},
-                               {owner.name: halted[owner.name] for owner in OWNERS}, as_node="done")
-        remote = ready.model_copy(deep=True)
-        remote.outcome, remote.pr.head.sha = "head_changed", "3" * 40
-        workspace.current = WorktreeState("2" * 40, False, BRANCH)
-        with patch.object(self.github, "readiness", return_value=remote):
-            resumed = self.walk([], workspace=workspace)
-        self.assertEqual(resumed["stop"], "dirty_worktree")
-        assert_repaired(self, halted, resumed, repair_head="3" * 40)
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saver.serde = checkpoint_serializer()
-            saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
-        assert_channels(self, saved.checkpoint["channel_values"], resumed)
-
-    def test_multi_round_repair_halt_preserves_run_and_discards_previous_attempt(self):
-        workspace = FakeWorkspace(self.cwd)
-        create_branch = workspace.create_branch
-        calls = 0
-
-        def prepare_branch(branch, base, *, pinned=""):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise WorktreeInspectionFailed("branch unavailable")
-            return create_branch(branch, base, pinned=pinned)
-
-        changes = {**APPROVE, "findings": [FINDING]}
-        with patch.object(workspace, "create_branch", side_effect=prepare_branch):
-            halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "first"}, changes], workspace=workspace, preflight="exit 0")
-        self.assertEqual(halted["checks"].preflight, "exit 0")
-        self.assertEqual(halted["stop"], "git_failed")
-        self.assertIsNotNone(halted["work"].candidate)
-        seed_repair_channels(halted)
-        halted["merge"] = halted["merge"].model_copy(update={"receipt": {"status": "QUEUED"}})
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saver.serde = checkpoint_serializer()
-            graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(self.github, workspace), checkpointer=saver)
-            graph.update_state({"configurable": {"thread_id": "example/engine#8"}},
-                               {owner.name: halted[owner.name] for owner in OWNERS}, as_node="done")
-        workspace.current = WorktreeState(HEAD, False, BRANCH)
-        resumed = self.walk([], workspace=workspace)
-        self.assertEqual(resumed["stop"], "dirty_worktree")
-        assert_repaired(self, halted, resumed, repair_head=None)
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saver.serde = checkpoint_serializer()
-            saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
-        assert_channels(self, saved.checkpoint["channel_values"], resumed)
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
@@ -2159,95 +2171,12 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         ])
         self.assertEqual(self.github.merge_calls, [])
         released = self.walk([])
-        self.assertEqual(released["stop"], "verified")
-        self.assertEqual(released["merge"].status, "armed")
+        self.assertEqual(released["stop"], "merged")
+        self.assertEqual(released["merge"].status, "merged")
         self.assertEqual(released["path"], held["path"])
         self.assertNotIn("halt_detail", released)
         self.assertEqual(self.walk([]), released)
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
-
-    def test_retry_after_worktree_is_cleaned_arms_once(self):
-        halted = self.walk(
-            [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
-            snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, False, BRANCH)),
-        )
-        self.assertEqual(halted["stop"], "merge_not_armed")
-        self.assertEqual(halted["merge"].status, "not_armed")
-        self.assertEqual(self.github.hold_reads, [])
-        self.assertEqual(self.github.merge_calls, [])
-        released = self.walk([])
-        self.assertEqual(released["stop"], "verified")
-        self.assertEqual(released["merge"].status, "armed")
-        self.assertEqual(released["path"], halted["path"])
-        self.assertEqual(self.walk([]), released)
-        self.assertEqual(self.github.hold_reads, ["Example/Engine"])
-        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
-
-    def test_retry_after_reset_to_verified_head_arms_merge(self):
-        repo = self.cwd / "engine"
-        repo.mkdir()
-
-        def git(*args):
-            return subprocess.run(
-                ["git", "-c", "user.name=Foreman Test", "-c", "user.email=foreman@example.com", *args],
-                cwd=repo, check=True, capture_output=True, text=True,
-            ).stdout.strip()
-
-        git("init", "-b", BRANCH)
-        git("config", "user.name", "Synthetic Test")
-        git("config", "user.email", "synthetic@example.invalid")
-        git("config", "commit.gpgsign", "false")
-        git("commit", "--allow-empty", "-m", "Verified commit")
-        git("branch", "main")
-        git("remote", "add", "origin", ".")
-        verified_head = git("rev-parse", "HEAD")
-        self.github.base = verified_head
-        fake = FakeWorkspace(self.cwd)
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
-
-        def run_worker(args, cwd, env=None):
-            reply = checker_reply(args) or next(replies)
-            if "implementation" in reply:
-                (repo / "items.txt").write_text("synthetic edits")
-            if reply is APPROVE:
-                git("commit", "--allow-empty", "-m", "Commit after verification")
-            return worker_reply(args, reply)
-
-        def run_delivery():
-            return run_live_delivery(
-                repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-                dispatcher=CliWorker(repo, run_worker),
-                run=LiveRun(self.github, FixtureWorkspace(repo, remote=self.github.branches)),
-            )
-
-        with patch.object(LiveWorkspace, "push"):
-            halted = run_delivery()
-        self.assertEqual(halted["stop"], "merge_not_armed", halted)
-        verified_head = halted["checks"].verified_head
-        self.assertEqual(self.github.merge_calls, [])
-        reset = re.search(rf"^  git reset --keep {verified_head}$", halted["halt_detail"], re.MULTILINE)
-        self.assertIsNotNone(reset, halted["halt_detail"])
-        git(*reset.group().split()[1:])
-
-        self.github.hold = "Maintenance window"
-        held = run_delivery()
-        self.assertEqual(held["stop"], "merge_held")
-        self.assertEqual(held["merge"].observed_head, "")
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            _print_run(held)
-        self.assertIn("FOREMAN_MERGE_HOLD is set: Maintenance window", out.getvalue())
-        self.assertNotIn("HEAD is", out.getvalue())
-        self.github.hold = ""
-        resumed = run_delivery()
-        self.assertEqual(resumed["stop"], "verified")
-        self.assertEqual(resumed["merge"].observed_head, "")
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            _print_run(run_delivery())
-        self.assertNotIn("HEAD is", out.getvalue())
-        self.assertEqual(resumed["merge"].status, "armed")
-        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, verified_head)])
 
     def test_live_workspace_reports_head_status_and_branch(self):
         for status, branch in (("", BRANCH + "\n"), ("?? untracked\n", ""), ("", "")):
@@ -2326,9 +2255,9 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["factory"])
         result = self.walk([{"triage": "supplied_slice", "slice": EMPTY_SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"])
-        self.assertEqual(result["merge"].status, "armed")
-        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
+        self.assertEqual(result["merge"].status, "merged")
+        self.assertEqual(result["stop"], "merged")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
         self.assertEqual(self.github.created, [])
 
@@ -2344,7 +2273,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(code, 0)
         self.assertIn(
             "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --squash --match-head-commit '<sha>'\n"
-            "check exit 0\ndone verified",
+            "done merge_pending\nPR #1 at <sha>: dry run, so Foreman did not arm it.",
             transcript(stdout.getvalue()),
         )
         self.assertIn("pstack pin not checked (dry run)", stdout.getvalue())
@@ -2372,11 +2301,11 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         held = invoke()
         self.assertIn(f"done merge_held\nFOREMAN_MERGE_HOLD is set: {self.github.hold}\n", held)
         retried = invoke()
-        self.assertIn("this invocation:\nmerge not armed\ndone merge_held", transcript(retried))
+        self.assertIn("this invocation:\npull request lines 1\nmerge not armed\ncheck exit 0\ndone merge_held", transcript(retried))
         self.assertEqual(self.github.merge_calls, [])
         self.github.hold = ""
         armed = invoke()
-        self.assertIn("merge armed\ndone verified", transcript(armed))
+        self.assertIn("merged " + MERGE_COMMIT + "\ncheck exit 0\ndone merged", transcript(armed))
         terminal = invoke()
         self.assertIn("restored raw tokens 75614", terminal)
         self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
@@ -2718,11 +2647,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(restored.count("restored spec "), 1)
         self.assertNotIn("\ntriage ", current)
         self.assertEqual(sum(line.startswith("spec ") for line in current.splitlines()), 1)
-        self.assertIn("merge armed", completed)
-        self.assertIn("done verified", completed)
+        self.assertIn("merged " + MERGE_COMMIT, completed)
+        self.assertIn("done merged", completed)
         terminal = invoke()
-        self.assertIn("restored done verified", terminal)
-        self.assertIn("restored merge armed", terminal)
+        self.assertIn("restored done merged", terminal)
+        self.assertIn("restored merged " + MERGE_COMMIT, terminal)
         self.assertIn("restored check exit 0", terminal)
         self.assertIn("this invocation: no nodes executed", terminal)
         self.assertEqual((self.cwd / "workers.log").read_text().splitlines(),
@@ -2732,7 +2661,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             saver.serde = checkpoint_serializer()
             stored = saver.get({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(stored["channel_values"]["path"],
-                         ["triage", "spec", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"])
+                         ["triage", "spec", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
 
     def test_restored_snapshot_matches_result_for_merge_and_interrupts(self):
@@ -2840,7 +2769,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     restored, current = retried.split("this invocation:\n")
                     self.assertEqual(saved_path(), previous_path)
                     self.assertIn("restored review ", restored)
-                    self.assertEqual(transcript(current), "merge not armed\ndone merge_held\nFOREMAN_MERGE_HOLD is set: Maintenance\n")
+                    self.assertEqual(transcript(current), "pull request lines 1\nmerge not armed\ncheck exit 0\ndone merge_held\nFOREMAN_MERGE_HOLD is set: Maintenance\n")
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
                                      ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review"])
                     self.assertEqual((root / "check.log").read_text(), "checked\n")
@@ -2855,19 +2784,19 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 restored, current = resumed.split("this invocation:\n")
                 self.assertNotIn("\ntriage ", current)
                 if scenario == "held":
-                    self.assertEqual(transcript(current), "merge armed\ndone verified\n")
+                    self.assertEqual(transcript(current), "pull request lines 1\nmerged " + MERGE_COMMIT + "\ncheck exit 0\ndone merged\n")
                     expected_workers = ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"]
                 else:
                     self.assertRegex(transcript(restored.replace("restored ", "")), r"implement\npaused quota_exhausted")
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
                     # The quota wait pauses inside implement's dispatch, so implement completes once.
-                    self.assertEqual(saved_path(), ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge", "done"])
+                    self.assertEqual(saved_path(), ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
                     expected_workers = (["TriageOutput", "SpecCheckOutput"] + ["ImplementOutput"] * attempts
                                         + ["ImplementOutput", "commit", "push", "ReviewOutput", "post_review", "merge"])
                 terminal = invoke("ready", 0)
-                self.assertIn("restored merge armed", terminal)
+                self.assertIn("restored merged " + MERGE_COMMIT, terminal)
                 self.assertIn("restored check exit 0", terminal)
-                self.assertIn("restored done verified", terminal)
+                self.assertIn("restored done merged", terminal)
                 self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
                 self.assertEqual((root / "effects.log").read_text().splitlines(), expected_workers)
                 self.assertEqual((root / "check.log").read_text(), "checked\n")
@@ -2927,8 +2856,6 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_resumable_halts(self):
         replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
         self.assert_halt(self.live(replies, hold="Maintenance"), "merge_held", "FOREMAN_MERGE_HOLD is set: Maintenance", 75)
-        self.assert_halt(self.live(replies, snapshots=(CLEAN_WORKTREE, CLEAN_WORKTREE, CLEAN_WORKTREE, WorktreeState(HEAD, True, None))),
-                         "merge_not_armed", "HEAD is detached. Merge requires a checked-out branch.", 75)
 
     def test_environment_halts_have_detail_and_resumable_exit(self):
         self.assert_halt(self.live(
@@ -2949,7 +2876,7 @@ class HaltExitCodeTest(unittest.TestCase):
         detail = "Merge arming requires a full 40-hex commit SHA."
         with self.assertRaisesRegex(MergeNotArmed, detail):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
-        result = {"review": ReviewState(), "checks": ChecksState(), "run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge", "done"], "merge": MergeState(status="not_armed"), "plan": PlanState()}
+        result = {"review": ReviewState(), "checks": ChecksState(), "run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge"], "merge": MergeState(status="not_armed"), "plan": PlanState()}
         with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
@@ -2966,7 +2893,7 @@ class HaltExitCodeTest(unittest.TestCase):
 
     def test_dry_run_success_and_human_stops(self):
         for handler, stop, expected in (
-            (ScriptHandler(), "verified", 0),
+            (ScriptHandler(), "merge_pending", 0),
             (ScriptHandler(triage="plan", slices=[EMPTY_SLICE]), "children_filed", 0),
             (ScriptHandler(triage="needs_human"), "needs_human", 3),
             (ScriptHandler(triage="plan", spec_gate="needs_human"), "needs_human", 3),

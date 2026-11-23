@@ -3,7 +3,7 @@
 from uuid import uuid4
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Protocol
 import os
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -16,22 +16,18 @@ from pydantic import TypeAdapter
 from foreman.config import Config, ModelSpec, load_config
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.dispatch import DispatchResult, DispatchRun, Handler, InvalidOutput
-from foreman.github import (
-    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, merge_command,
-)
+from foreman.github import Forge
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.stage_output import (
     PlanState, GateStage, DispatchPlan, DispatchPlanRecord, AttemptRecord, StageOutput, StoredSlice, parse_output, spec_digest,
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
-from foreman.steps import StageRun, implement, research, review, spec, triage
+from foreman.steps import StageRun, implement, merge, research, review, spec, triage
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
-from foreman.readiness import MergeReceipt, MergeState
-from foreman.outcomes import Halt, READINESS_HALTS, halted
-from foreman.review_round import history
+from foreman.outcomes import Halt, halted
 from foreman.usd import BudgetUsd, usd_text
 from foreman.worker import AttemptJournal
-from foreman.workspace import WorkspaceError, CheckLog, Workspace, WorktreeInspectionFailed, head_mismatch_detail
+from foreman.workspace import WorkspaceError, CheckLog, Workspace
 
 GRAPH_NAME = "delivery"
 DEFAULT_TOKEN_CAP = 20_000_000
@@ -55,10 +51,6 @@ def run_tokens(attempts: list[AttemptRecord]) -> int:
 
 
 _DELIVERY_STATE = TypeAdapter(DeliveryResult)
-
-
-def review_count(state: DeliveryState | DeliveryResult) -> int:
-    return sum(round.severity is not None for round in history({"rounds": state["review"].review_findings}).rounds)
 
 
 def read_delivery_state(raw: object) -> DeliveryResult:
@@ -85,20 +77,6 @@ def stage_update(
         used = state.get("models_used", {})
         update["models_used"] = {**used, name: model}
     return update
-
-
-def stop_reason(state: DeliveryState) -> Halt | Literal["verified", "stopped", "cancelled"]:
-    review_state = state["review"]
-    checks = state["checks"]
-    if halt := state.get("halt"):
-        return halt
-    if state.get("stop") == "cancelled":
-        return "cancelled"
-    if review_state.review == "changes":
-        return Halt.review_cap
-    if checks.verify == "pass":
-        return "verified"
-    return "stopped"
 
 
 class DeliveryNode(Protocol):
@@ -174,118 +152,6 @@ def compile_delivery(
             return "halted"
         return "cancelled" if state.get("stop") == "cancelled" else success
 
-    def arm_merge(state: DeliveryState) -> DeliveryUpdate:
-        review_state = state["review"]
-        run_state = state["run"]
-        repo = run_state.repo
-        head = state["checks"].verified_head
-        merge = MergeState(
-            status="not_armed", receipt=state.get("merge", MergeState()).receipt,
-            command=merge_command(repo, "<number>", head or "<sha>"),
-        )
-
-        def merge_halted(halt: Halt, detail: str) -> DeliveryUpdate:
-            return {
-                **halted(halt, detail, "merge"),
-                "merge": merge,
-            }
-
-        forge, workspace = run.forge, run.workspace
-        if not head:
-            return merge_halted(Halt.merge_not_armed, "The run did not record a verified HEAD.")
-        try:
-            worktree = workspace.inspect()
-        except WorktreeInspectionFailed as exc:
-            return merge_halted(Halt.merge_not_armed, str(exc))
-        if not worktree.clean:
-            return merge_halted(Halt.merge_not_armed, "The worktree has changes or Git could not inspect it.")
-        if worktree.head != head:
-            merge = merge.model_copy(update={"observed_head": worktree.head})
-            return merge_halted(Halt.merge_not_armed, head_mismatch_detail(worktree.head, head))
-        if worktree.branch is None:
-            return merge_halted(Halt.merge_not_armed, "HEAD is detached. Merge requires a checked-out branch.")
-        try:
-            hold = forge.merge_hold(repo)
-        except MergeHoldUnreadable as exc:
-            return merge_halted(Halt.merge_held, f"could not read {MERGE_HOLD_VARIABLE}: {exc}")
-        if hold:
-            return merge_halted(Halt.merge_held, f"{MERGE_HOLD_VARIABLE} is set" + (f": {hold}" if hold.strip() else "."))
-        issue = run_state.issue
-        if issue is None:
-            return merge_halted(Halt.merge_not_armed, "Live merge requires an issue number.")
-        receipt = review_state.review_receipt
-        rounds = history({"rounds": review_state.review_findings}).rounds
-        report = rounds[-1] if rounds else None
-        plan = state.get("dispatch_plan")
-        target = plan["target"] if plan else None
-        if (report is None or target is None or report.severity or state.get("human_question")
-                or report.reviewed_head != head or target["headRefOid"] != head or report.base != target["baseRefOid"]
-                or not receipt or receipt["state"] != "COMMENTED" or receipt["commit_id"] != head):
-            return merge_halted(Halt.merge_not_armed, "Renew review and its posted receipt at the verified head.")
-        if previous := merge.receipt:
-            saved = MergeReceipt.model_validate(previous)
-            if saved.source_head == head:
-                if (saved.repo, saved.pr, saved.base, saved.base_ref) != (repo, target["number"], report.base, target["baseRefName"]):
-                    merge = merge.model_copy(update={"receipt": None})
-                    return merge_halted(Halt.merge_not_armed, "The saved handoff does not match the reviewed pull request and base.")
-                try:
-                    confirmed_receipt = forge.reconcile_merge(saved)
-                except HandoffChanged as exc:
-                    merge = merge.model_copy(update={"receipt": None})
-                    return merge_halted(Halt.merge_not_armed, str(exc))
-                except QueueRejected as exc:
-                    return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
-                except MergeNotArmed as exc:
-                    return merge_halted(Halt.merge_not_armed, str(exc))
-                return {"merge": merge.model_copy(update={"status": "armed", "receipt": confirmed_receipt.model_dump(mode="json")}), "path": ["merge"]}
-        try:
-            observation = forge.readiness(repo, issue, worktree.branch, head)
-        except ForgeError as exc:
-            return merge_halted(Halt.readiness_unavailable, f"Platform/policy observation unavailable: {exc}")
-        if observation.outcome != "ready":
-            merge = merge.model_copy(update={"observation": observation.model_dump(mode="json")})
-            return merge_halted(READINESS_HALTS[observation.outcome], observation.detail())
-        if (observation.pr.number, observation.pr.head.sha, observation.pr.base.sha, observation.pr.base.ref) != (
-            target["number"], head, report.base, target["baseRefName"],
-        ):
-            return merge_halted(Halt.merge_not_armed, "The pull request head, base or identity changed after review.")
-        try:
-            receipt = forge.arm_auto_merge(repo, issue, worktree.branch, head, observation)
-            if receipt is None:
-                return {"merge": merge.model_copy(update={"status": "skipped", "command": merge_command(repo, "<number>", head)}), "path": ["merge"]}
-            merge_receipt = receipt.model_dump(mode="json")
-        except QueueRejected as exc:
-            return merge_halted(READINESS_HALTS[exc.outcome], str(exc))
-        except MergeNotArmed as exc:
-            return merge_halted(Halt.merge_not_armed, str(exc))
-        if merge_receipt["status"] == "MERGED":
-            return {"merge": merge.model_copy(update={"status": "armed", "receipt": merge_receipt}), "path": ["merge"]}
-        try:
-            confirmed = forge.readiness(repo, issue, worktree.branch, head)
-        except ForgeError as exc:
-            return {**merge_halted(Halt.readiness_unavailable, str(exc)), "merge": merge.model_copy(update={"status": "armed", "receipt": merge_receipt})}
-        if (confirmed.pr.number, confirmed.pr.head.sha, confirmed.pr.base.sha, confirmed.pr.base.ref) != (
-            observation.pr.number, observation.pr.head.sha, observation.pr.base.sha, observation.pr.base.ref,
-        ):
-            merge = merge.model_copy(update={"observation": confirmed.model_dump(mode="json"), "receipt": None})
-            return merge_halted(Halt.merge_not_armed, "The pull request head, base or identity changed after arming.")
-        update: DeliveryUpdate = {"merge": merge.model_copy(update={
-            "status": "armed", "receipt": merge_receipt, "observation": confirmed.model_dump(mode="json"),
-        }), "path": ["merge"]}
-        if confirmed.outcome != "ready":
-            update.update(halted(READINESS_HALTS[confirmed.outcome], confirmed.detail(), "merge"))
-        elif confirmed.pr.state != observation.pr.state:
-            update.update(halted(Halt.merge_not_armed, confirmed.detail(), "merge"))
-        return update
-
-    def finish(state: DeliveryState) -> DeliveryUpdate:
-        reason = stop_reason(state)
-        if not state.get("halt"):
-            if reason == Halt.review_cap:
-                detail = f"Review requested changes after {review_count(state)} rounds. Last review: {state['review'].detail}"
-                return {**halted(Halt.review_cap, detail, "done"), "stop": str(reason)}
-        return {"stop": str(reason), "path": ["done"]}
-
     def after_implement(state: DeliveryState) -> str:
         if state.get("halt"):
             return "halted"
@@ -301,8 +167,7 @@ def compile_delivery(
     builder.add_node("spec", spec.compile_stage(stage))
     builder.add_node("implement", implement.compile_stage(stage))
     builder.add_node("review", review.compile_stage(stage))
-    builder.add_node("merge", arm_merge)
-    builder.add_node("done", finish)
+    builder.add_node("merge", merge.compile_stage(stage))
     builder.add_edge(START, "triage")
     builder.add_conditional_edges("triage", lambda state: outcome(state, state["plan"].triage),
         {"question": "research", "plan": "spec", "supplied_slice": "spec", "cancelled": END, "halted": END})
@@ -314,10 +179,10 @@ def compile_delivery(
         {"published": "review", "no_change": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("review", lambda state: outcome(state, state.get("stop", "")),
         {"P0": "implement", "P1": "implement", "head_moved": "implement", "none": "merge", "cancelled": END, "halted": END})
-    builder.add_edge("merge", "done")
-    builder.add_edge("done", END)
+    builder.add_conditional_edges("merge", lambda state: outcome(state, state.get("stop", "")),
+        {"merged": END, "closed": END, "reviewable_head": "review", "repair": "implement", "cancelled": END, "halted": END})
     # Each round visits at most all stages, each with one setup and every configured candidate,
-    # plus the implement steps, prompts, merge and done.
+    # plus the implement steps, prompts and merge.
     steps = sum(1 + max(1, len(config.nodes[name].models)) for name in (*MODEL_STAGES, "spec")) + 12
     return builder.compile(checkpointer=checkpointer).with_config({"recursion_limit": steps * (config.max_review_rounds + 1)})
 
@@ -358,7 +223,7 @@ def run_delivery(
         saver = InMemorySaver(serde=checkpoint_serializer())
         graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills), scratch=scratch, checkpointer=saver)
     except SkillMissing as exc:
-        return read_delivery_state({**state, **halted(Halt.skill_missing, str(exc), "done"), "stop": exc.halt,
+        return read_delivery_state({**state, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
                                     "skill_reason": exc.reason})
     from foreman.runner import snapshot_result
 

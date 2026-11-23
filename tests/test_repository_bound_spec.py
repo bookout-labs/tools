@@ -46,9 +46,6 @@ class Forge(FakeGitHub):
         self.builds.append((repo, head, base))
         super().open_pull_request(repo, head, base, title, body)
 
-    def arm_auto_merge(self, *args):
-        receipt = super().arm_auto_merge(*args)
-        return receipt.model_copy(update={"status": "MERGED"})
 
 
 class RepositoryBoundSpecTests(unittest.TestCase):
@@ -142,7 +139,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                 result = self.invoke(draft=lambda: {"spec": "Correction", "spec_gate": "ready", "slices": [EDIT], "questions": []})
                 self.assertEqual(self.calls[:3], ["triage", "spec", "spec_check"])
                 self.assertEqual(result["plan"].spec_failures, 1)
-                self.assertEqual(result["merge"].receipt["status"], "MERGED")
+                self.assertEqual(result["stop"], "merged")
 
     def test_released_child_keeps_its_scope_when_the_blocker_is_in_the_pinned_tree(self):
         seam = {"name": "provided-api", "exists": False, "path": None}
@@ -179,7 +176,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.assertEqual(self.calls[:3], ["triage", "spec_check", "implement"])
         self.assertEqual(result["plan"].spec_failures, 0)
         self.assertEqual(result["plan"].spec_candidate["slices"], [supplied])
-        self.assertEqual(result["merge"].receipt["status"], "MERGED")
+        self.assertEqual(result["stop"], "merged")
 
     def test_changed_origin_on_resume_stops_before_another_dispatch(self):
         ask = lambda *_: {**CLEAR.model_dump(), "human_question": "What sort order?"}
@@ -217,8 +214,8 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.assertNotEqual(*revisions)
         self.assertEqual(result["plan"].spec_failures, 1)
         self.assertEqual(result["plan"].human_approval, revisions[-1])
-        self.assertEqual(result["merge"].receipt["status"], "MERGED")
-        self.assertEqual(result["merge"].receipt["source_head"], result["checks"].verified_head)
+        self.assertEqual(result["stop"], "merged")
+        self.assertIn(result["checks"].verified_head, [call[3] for call in self.forge.merge_calls])
         self.assertEqual(self.calls.count("implement"), 1)
 
     def test_authenticated_stop_blocks_build_and_child_writes(self):
@@ -353,7 +350,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
             self.invoke(ask, answer="Preserve index order")
         self.assertEqual(self.forge.builds, [])
         self.forge.ruling(f"foreman answer {revision}\nPreserve index order")
-        self.assertEqual(self.invoke(ask)["merge"].receipt["status"], "MERGED")
+        self.assertEqual(self.invoke(ask)["stop"], "merged")
 
 
 FINDING = {"id": "scope", "kind": "scope", "section": "slice", "ruling_id": None}
