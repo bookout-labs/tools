@@ -9,11 +9,20 @@ import sys
 from tempfile import TemporaryDirectory
 import time
 import unittest
+from unittest.mock import patch
 
+from foreman.adapters import Call
+from foreman.adapters.codex import CodexAdapter
+from foreman.budget import work_tokens
 from foreman.cli import run_exit_code
+from foreman.config import ModelSpec
+from foreman.dry_run import ScriptHandler
 from foreman.runner import issue_lock
 from foreman.worker import run_worker_command
 from tests.skill_fixture import skill_fixture
+from test_dispatch_budget import GPT, configured, walk
+
+TERRA = ModelSpec.parse("gpt-6.1-terra-high")
 
 
 SCRIPT = '''
@@ -93,6 +102,36 @@ class IssueLockTests(unittest.TestCase):
                 time.sleep(0.05)
             else:
                 self.fail(f"leftover process {pid} outlived its worker")
+
+
+class CodexQuotaFallbackTests(unittest.TestCase):
+    def test_codex_quota_mid_turn_is_charged_its_rollout_and_falls_back(self):
+        # DP3 and D10: a quota stop after model items is charged what Codex logged, and the next qualified model runs.
+        session = "01a1ff05-7685-7282-b515-828a0b63ee12"
+        rollout = [{"type": "event_msg", "payload": {"type": "task_started"}},
+                   {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {
+                       "input_tokens": 1200, "cached_input_tokens": 200, "cache_write_input_tokens": 0, "output_tokens": 30}}}}]
+        events = [{"type": "thread.started", "thread_id": session},
+                  {"type": "item.completed", "item": {"type": "reasoning", "text": "x"}},
+                  {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit. Try again later."}}]
+        script, calls = ScriptHandler(), []
+        with TemporaryDirectory() as home, patch.dict("os.environ", {"CODEX_HOME": home}):
+            day = Path(home, "sessions", "2026", "11", "23")
+            day.mkdir(parents=True)
+            (day / f"rollout-2026-11-23T08-00-00-{session}.jsonl").write_text("\n".join(json.dumps(line) for line in rollout))
+            stream = "\n".join(json.dumps(event) for event in events)
+            stopped = CodexAdapter(GPT).read(subprocess.CompletedProcess(["codex"], 1, stream, ""), Call("prompt", "{}", False, Path(home)))
+
+        def handler(node, model, state, instruction):
+            calls.append((node, model.name))
+            return stopped if len(calls) == 1 else script(node, model, state, instruction)
+
+        result = walk(handler, config=configured("triage", (GPT, TERRA)), limit=None, prior=0.0)
+        self.assertEqual(calls[:2], [("triage", GPT.name), ("triage", TERRA.name)])
+        self.assertNotEqual(result["stop"], "budget_exceeded")
+        first = result["attempts"][1]
+        self.assertEqual((first["model"], first["outcome"], work_tokens([first])), (GPT.name, "quota", 1030))
+        self.assertNotIn("work_charge", first)
 
 
 class DispatchRecoveryTests(unittest.TestCase):

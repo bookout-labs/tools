@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 from subprocess import CompletedProcess
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,7 @@ from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
 
 CALL = Call("", "{}", False, Path("."))
+SESSION = "01a1ff05-7685-7282-b515-828a0b63ee12"
 FIXTURES = Path(__file__).with_name("fixtures")
 
 
@@ -219,10 +221,42 @@ class CodexAdapterTest(unittest.TestCase):
         message = {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit. Try again later."}}
         item = {"type": "item.completed", "item": {"type": "reasoning", "text": "x"}}
         for events, usage in (([message], (0, 0)), ([item, message], None)):
-            with self.subTest(events=len(events)):
-                outcome = self.adapter.read(codex_process([{"type": "thread.started", "thread_id": "t"}, *events], exit_code=1), CALL)
+            with self.subTest(events=len(events)), TemporaryDirectory() as home, patch.dict("os.environ", {"CODEX_HOME": home}):
+                outcome = self.adapter.read(codex_process([{"type": "thread.started", "thread_id": SESSION}, *events], exit_code=1), CALL)
                 self.assertEqual(outcome.kind, "quota")
                 self.assertEqual(outcome.usage and (outcome.usage.input_tokens, outcome.usage.output_tokens), usage)
+
+    def test_quota_after_model_items_is_charged_what_the_rollout_logged_for_the_turn(self):
+        # DP3: a resumed session's rollout is cumulative, so the stopped turn is charged its own responses only.
+        def count(total, cached, output):
+            return {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": total, "cached_input_tokens": cached, "cache_write_input_tokens": 0, "output_tokens": output}}}
+        rollout = [{"type": "session_meta", "payload": {"id": SESSION}},
+                   {"type": "event_msg", "payload": {"type": "task_started"}},
+                   {"type": "event_msg", "payload": count(1000, 0, 10)},
+                   {"type": "event_msg", "payload": {"type": "task_complete"}},
+                   {"type": "event_msg", "payload": {"type": "task_started"}},
+                   {"type": "event_msg", "payload": count(2500, 900, 40)},
+                   {"type": "event_msg", "payload": count(4200, 2400, 75)},
+                   {"type": "event_msg", "payload": {"type": "token_count", "info": None}}]
+        events = [{"type": "thread.started", "thread_id": SESSION},
+                  {"type": "item.completed", "item": {"type": "reasoning", "text": "x"}},
+                  {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit. Try again later."}}]
+        with TemporaryDirectory() as home, patch.dict("os.environ", {"CODEX_HOME": home}):
+            day = Path(home, "sessions", "2026", "11", "23")
+            day.mkdir(parents=True)
+            (day / f"rollout-2026-11-23T08-00-00-{SESSION}.jsonl").write_text("\n".join(json.dumps(line) for line in rollout))
+            outcome = self.adapter.read(codex_process(events, exit_code=1), CALL)
+        self.assertEqual(outcome.kind, "quota")
+        assert outcome.usage is not None
+        self.assertEqual((outcome.usage.input_tokens, outcome.usage.cache_read_input_tokens,
+                          outcome.usage.cache_creation_input_tokens, outcome.usage.output_tokens), (800, 2400, 0, 65))
+
+    def test_every_call_keeps_its_rollout(self):
+        with TemporaryDirectory() as directory:
+            for edit in (False, True):
+                command = self.adapter.command(Call("prompt", "{}", edit, Path(directory)))
+                self.assertNotIn("--ephemeral", command)
 
     def test_stderr_rate_limit_is_a_failure(self):
         process = codex_process([], exit_code=1, stderr='Prompt: Explain "rate limit" and HTTP 429.')
