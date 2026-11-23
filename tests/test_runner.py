@@ -442,7 +442,7 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertNotIn("Output schema:", args[-1])
                     if args[0] == "codex":
                         self.assertIn("--json", args)
-                        self.assertIn("--ephemeral", args)
+                        self.assertNotIn("--ephemeral", args)
                         schema_path = Path(args[args.index("--output-schema") + 1])
                         schema_paths.append(schema_path)
                         schema = json.loads(schema_path.read_text())

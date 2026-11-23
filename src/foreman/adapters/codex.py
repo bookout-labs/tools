@@ -3,6 +3,9 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import json
+import os
+from pathlib import Path
+import re
 import shlex
 from subprocess import CompletedProcess
 from typing import ClassVar
@@ -84,6 +87,43 @@ def read_usage(report: object) -> Usage | None:
     })
 
 
+def rollout_usage(session_id: str) -> Usage | None:
+    """The usage of a session's last turn, from the rollout Codex writes after each model response.
+
+    A turn that stops on quota never reports usage in its stream, but its rollout keeps the cumulative count up to the
+    last response. The turn's usage is that count minus the count when the turn started.
+    """
+    if not re.fullmatch(r"[0-9a-f-]+", session_id):
+        return None
+    sessions = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
+    rollouts = list(sessions.glob(f"*/*/*/rollout-*-{session_id}.jsonl"))
+    if len(rollouts) != 1:
+        return None
+    fields = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
+    total: dict[str, int] = dict.fromkeys(fields, 0)
+    start: dict[str, int] | None = None
+    counted = False
+    try:
+        with rollouts[0].open(encoding="utf-8") as lines:
+            for line in lines:
+                payload = EVENT.validate_json(line).get("payload")
+                if not is_dict(payload):
+                    continue
+                if payload.get("type") == "task_started":
+                    start, counted = total, False
+                elif payload.get("type") == "token_count" and is_dict(info := payload.get("info")):
+                    counts = info.get("total_token_usage")
+                    if not is_dict(counts) or not all(isinstance(counts.get(field), int) for field in fields):
+                        return None
+                    total, counted = {field: int(str(counts.get(field))) for field in fields}, True
+    except (OSError, ValidationError):
+        return None
+    # Model items prove paid work, so a turn whose usage the rollout doesn't show stays unknown, not zero.
+    if start is None or not counted:
+        return None
+    return read_usage({field: total[field] - start[field] for field in fields})
+
+
 @dataclass
 class CodexTurn:
     unread: set[str]
@@ -155,10 +195,11 @@ class CodexAdapter:
         policy = ["--ignore-user-config", "--ignore-rules", "-c", "approval_policy=never",
                   "-c", "default_permissions=foreman", "-c", "permissions.foreman=" + profile]
         effort = ["-c", f"model_reasoning_effort={self.model.effort}"] if self.model.effort else []
-        # Builders keep their session so a verified quota fallback can resume it; `exec resume` has no --color.
+        # Every call keeps its rollout so a quota stop can be charged what it used. Builders resume their session
+        # after a verified quota fallback; `exec resume` has no --color.
         session = [call.resume_session] if call.edit and call.resume_session else []
         return ["codex", "exec", *(["resume"] if session else []), "-m", self.model.model_id, *effort,
-                *([] if call.edit else ["--ephemeral"]), "--json", "--output-schema", str(schema_path),
+                "--json", "--output-schema", str(schema_path),
                 *([] if session else ["--color", "never"]), *policy, *session, call.prompt]
 
     def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
@@ -176,10 +217,14 @@ class CodexAdapter:
             session_id=turn.session_id, detail=detail,
         )
 
-        if outcome.usage is None and kind == "quota" and not turn.worked:
-            # A quota stop before any model item did no paid work. Later quota stops keep usage unknown.
-            outcome = replace(outcome, usage=Usage(input_tokens=0, output_tokens=0, cache_read_input_tokens=0,
-                                                   cache_creation_input_tokens=0))
+        if outcome.usage is None and kind == "quota":
+            # A quota stop before any model item did no paid work. A later one is charged what the session's rollout
+            # logged for the turn, and stays unknown without it.
+            if not turn.worked:
+                usage = Usage(input_tokens=0, output_tokens=0, cache_read_input_tokens=0, cache_creation_input_tokens=0)
+            else:
+                usage = rollout_usage(turn.session_id) if turn.session_id else None
+            outcome = replace(outcome, usage=usage)
         if outcome.usage is None:
             return outcome
         return replace(outcome, native_usage=NativeUsage(

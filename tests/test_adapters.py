@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 from subprocess import CompletedProcess
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,7 @@ from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
 
 CALL = Call("", "{}", False, Path("."))
+SESSION = "01a1ff05-7685-7282-b515-828a0b63ee12"
 FIXTURES = Path(__file__).with_name("fixtures")
 
 
@@ -195,6 +197,14 @@ def codex_process(events, exit_code=0, stderr=""):
     return CompletedProcess(["codex"], exit_code, "\n".join(json.dumps(event, ensure_ascii=False) for event in events), stderr)
 
 
+STARTED = {"type": "event_msg", "payload": {"type": "task_started"}}
+
+
+def rollout_count(total, cached, output):
+    return {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {
+        "input_tokens": total, "cached_input_tokens": cached, "cache_write_input_tokens": 0, "output_tokens": output}}}}
+
+
 class CodexAdapterTest(unittest.TestCase):
     adapter = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high"))
 
@@ -219,10 +229,51 @@ class CodexAdapterTest(unittest.TestCase):
         message = {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit. Try again later."}}
         item = {"type": "item.completed", "item": {"type": "reasoning", "text": "x"}}
         for events, usage in (([message], (0, 0)), ([item, message], None)):
-            with self.subTest(events=len(events)):
-                outcome = self.adapter.read(codex_process([{"type": "thread.started", "thread_id": "t"}, *events], exit_code=1), CALL)
+            with self.subTest(events=len(events)), TemporaryDirectory() as home, patch.dict("os.environ", {"CODEX_HOME": home}):
+                outcome = self.adapter.read(codex_process([{"type": "thread.started", "thread_id": SESSION}, *events], exit_code=1), CALL)
                 self.assertEqual(outcome.kind, "quota")
                 self.assertEqual(outcome.usage and (outcome.usage.input_tokens, outcome.usage.output_tokens), usage)
+
+    def quota_after_model_items(self, rollout):
+        events = [{"type": "thread.started", "thread_id": SESSION},
+                  {"type": "item.completed", "item": {"type": "reasoning", "text": "x"}},
+                  {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit. Try again later."}}]
+        with TemporaryDirectory() as home, patch.dict("os.environ", {"CODEX_HOME": home}):
+            day = Path(home, "sessions", "2026", "11", "23")
+            day.mkdir(parents=True)
+            (day / f"rollout-2026-11-23T08-00-00-{SESSION}.jsonl").write_text("\n".join(json.dumps(line) for line in rollout))
+            outcome = self.adapter.read(codex_process(events, exit_code=1), CALL)
+        self.assertEqual(outcome.kind, "quota")
+        return outcome.usage
+
+    def test_quota_after_model_items_is_charged_what_the_rollout_logged_for_the_turn(self):
+        # DP3: a resumed session's rollout is cumulative, so the stopped turn is charged its own responses only.
+        rollout = [{"type": "session_meta", "payload": {"id": SESSION}},
+                   STARTED, rollout_count(1000, 0, 10), {"type": "event_msg", "payload": {"type": "task_complete"}},
+                   STARTED, rollout_count(2500, 900, 40), rollout_count(4200, 2400, 75),
+                   {"type": "event_msg", "payload": {"type": "token_count", "info": None}}]
+        usage = self.quota_after_model_items(rollout)
+        assert usage is not None
+        self.assertEqual((usage.input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens,
+                          usage.output_tokens), (800, 2400, 0, 65))
+
+    def test_quota_after_model_items_stays_unknown_when_the_rollout_does_not_show_the_turn(self):
+        # D10: model items prove paid work, so a rollout without the stopped turn's complete count charges the worst case.
+        missing_field = rollout_count(1000, 0, 10)
+        del missing_field["payload"]["info"]["total_token_usage"]["cache_write_input_tokens"]
+        for name, rollout in (("empty file", []),
+                              ("no count after the start", [STARTED, rollout_count(1000, 0, 10),
+                                                            {"type": "event_msg", "payload": {"type": "task_complete"}},
+                                                            STARTED]),
+                              ("missing field", [STARTED, missing_field])):
+            with self.subTest(name):
+                self.assertIsNone(self.quota_after_model_items(rollout))
+
+    def test_every_call_keeps_its_rollout(self):
+        with TemporaryDirectory() as directory:
+            for edit in (False, True):
+                command = self.adapter.command(Call("prompt", "{}", edit, Path(directory)))
+                self.assertNotIn("--ephemeral", command)
 
     def test_stderr_rate_limit_is_a_failure(self):
         process = codex_process([], exit_code=1, stderr='Prompt: Explain "rate limit" and HTTP 429.')

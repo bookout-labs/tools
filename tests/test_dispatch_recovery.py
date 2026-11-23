@@ -9,11 +9,19 @@ import sys
 from tempfile import TemporaryDirectory
 import time
 import unittest
+from unittest.mock import patch
 
+from foreman.adapters import Call, Outcome
+from foreman.adapters.codex import CodexAdapter
+from foreman.budget import work_tokens
 from foreman.cli import run_exit_code
+from foreman.config import load_config
+from foreman.dispatch import DispatchRun
+from foreman.dry_run import SCRIPTED_USAGE
 from foreman.runner import issue_lock
-from foreman.worker import run_worker_command
+from foreman.worker import CliWorker, run_worker_command
 from tests.skill_fixture import skill_fixture
+from test_publication import PublicationFixture
 
 
 SCRIPT = '''
@@ -93,6 +101,63 @@ class IssueLockTests(unittest.TestCase):
                 time.sleep(0.05)
             else:
                 self.fail(f"leftover process {pid} outlived its worker")
+
+
+class CodexQuotaResumeTests(PublicationFixture):
+    def test_codex_quota_after_partial_edits_is_charged_its_rollout_and_resumes_its_session(self):
+        # DP3 and D10: a Codex quota stop after edits is charged what its rollout logged, the next models run,
+        # and after the quota wake the same model resumes its saved session on the saved fingerprint.
+        session = "01a1ff05-7685-7282-b515-828a0b63ee12"
+        sol, terra = load_config().nodes["implement"].models[:2]
+        home = Path(self.fixture.enter_context(TemporaryDirectory()))
+        self.fixture.enter_context(patch.dict("os.environ", {"CODEX_HOME": str(home)}))
+        day = home / "sessions" / "2026" / "11" / "23"
+        day.mkdir(parents=True)
+        (day / f"rollout-2026-11-23T08-00-00-{session}.jsonl").write_text("\n".join(json.dumps(line) for line in (
+            {"type": "event_msg", "payload": {"type": "task_started"}},
+            {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": 1200, "cached_input_tokens": 200, "cache_write_input_tokens": 0, "output_tokens": 30}}}})))
+        stream = "\n".join(json.dumps(event) for event in (
+            {"type": "thread.started", "thread_id": session},
+            {"type": "item.completed", "item": {"type": "reasoning", "text": "x"}},
+            {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit. Try again later."}}))
+        launches, commands = [], []
+        launch = DispatchRun.launch
+
+        def observed(run, state, reservation, model):
+            if state["stage"] == "implement":
+                launches.append((model.name, dict(state.get("sessions", {})), state.get("fingerprint"), reservation["fingerprint"]))
+            return launch(run, state, reservation, model)
+
+        def stop(model, state, instruction):
+            if model != sol:
+                return Outcome("quota", usage=SCRIPTED_USAGE)
+            (self.checkout / "items.txt").write_text("partial\n")
+            return CodexAdapter(sol).read(subprocess.CompletedProcess(["codex"], 1, stream, ""), Call("prompt", "{}", True, home))
+
+        def resume(model, state, instruction):
+            # The real worker turns the saved session into the Codex command, then finishes the tree.
+            CliWorker(self.checkout, run=lambda args, cwd, env: commands.append(args) or subprocess.CompletedProcess(args, 0, "", ""))(
+                "implement", model, state, instruction)
+            self.edit()
+
+        with patch.object(DispatchRun, "launch", observed):
+            paused = self.walk(model_edit=stop)
+            self.assertEqual(paused["stop"], "quota_exhausted")
+            implement = [a for a in paused["attempts"] if a["stage"] == "implement"]
+            self.assertEqual([a["model"] for a in implement[:2]], [sol.name, terra.name])
+            self.assertEqual((implement[0]["outcome"], work_tokens([implement[0]])), ("quota", 1030))
+            self.assertNotIn("work_charge", implement[0])
+            (first, *fallbacks) = launches
+            self.assertEqual(first[1], {})
+            saved = fallbacks[0][2]
+            self.assertNotEqual(saved, first[3])
+            self.assertEqual([entry[1:] for entry in fallbacks], [({sol.name: session}, saved, saved)] * len(fallbacks))
+            resumed = self.walk(model_edit=resume)
+        self.assertEqual(resumed["stop"], "merged")
+        self.assertEqual(launches[len(fallbacks) + 1], (sol.name, {sol.name: session}, saved, saved))
+        self.assertEqual(commands[0][:3], ["codex", "exec", "resume"])
+        self.assertEqual(commands[0][-2], session)
 
 
 class DispatchRecoveryTests(unittest.TestCase):
