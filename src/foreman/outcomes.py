@@ -20,8 +20,6 @@ class Halt(StrEnum):
     dirty_worktree = auto()
     missing_slice = auto()
     review_not_posted = auto()
-    # Schema-12 checkpoints from before pre-commit sizing can still carry this halt.
-    pr_size_unavailable = auto()
     git_failed = auto()
     skill_missing = auto()
     merge_held = auto()
@@ -35,7 +33,7 @@ class Halt(StrEnum):
     env_unavailable = auto()
     publish_failed = auto()
     implementation_rejected = auto()
-    failed = auto()
+    publication_unreconciled = auto()
     model_dependency_missing = auto()
     publication_model_missing = auto()
 
@@ -45,6 +43,11 @@ def halted(reason: Halt, detail: str, path: str | None) -> "DeliveryUpdate":
         raise ValueError(f"{reason} requires a nonempty halt detail")
     # Checkpoint codes remain strings after validation as Halt members.
     return {"halt": cast(Halt, reason.value), "halt_detail": detail, "watch": None, "path": [path] if path else []}
+
+
+def stopped(reason: Halt, detail: str, path: str) -> "DeliveryUpdate":
+    """Halt and end the stage, so the stage result carries the named halt."""
+    return {**halted(reason, detail, path), "stop": reason}
 
 
 @dataclass(frozen=True)
@@ -84,9 +87,6 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.review_not_posted: Policy("The accepted review could not be posted.", "retry",
         Watch("Reviews post to the pull request",
               "The accepted review could not be posted.", "src/foreman/github.py")),
-    Halt.pr_size_unavailable: Policy("The pull request size cannot be measured.", "terminal",
-        Watch("Pull request size is measurable before review",
-              "The pull request size could not be measured.", "src/foreman/workspace.py")),
     Halt.git_failed: Policy("A workspace git operation failed.", "retry",
         Watch("Git operations complete before publication",
               "A workspace git operation failed.", "src/foreman/workspace.py")),
@@ -108,7 +108,8 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.env_unavailable: Policy("The implementation environment is unavailable.", "retry", None),
     Halt.publish_failed: Policy("The branch or pull request could not be published.", "retry", None),
     Halt.implementation_rejected: Policy("The code changes did not match what the step reported.", "retry", None),
-    Halt.failed: Policy("The worker failed or produced no usable change.", "terminal", None),
+    Halt.publication_unreconciled: Policy(
+        "A push or pull request write may have landed and GitHub could not confirm it. Rerun to reconcile.", "retry", None),
     Halt.model_dependency_missing: Policy(
         "This step needs a model from an earlier step that never ran. Fix models.toml.", "terminal", None),
     Halt.publication_model_missing: Policy(

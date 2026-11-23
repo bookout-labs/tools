@@ -105,6 +105,10 @@ class PullRequest(PullRequestStatus):
     autoMergeRequest: AutoMergeRequest | None
 
 
+class PublishedPullRequest(PullRequest):
+    body: str
+
+
 class IssueLabel(BaseModel, strict=True):
     name: str
 
@@ -315,6 +319,7 @@ def queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str,
 class Forge(Protocol):
     def default_branch(self, repo: str) -> str: ...
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
+    def pull_request_for(self, repo: str, branch: str) -> PublishedPullRequest | None: ...
     def load_issue(self, repo: str, number: int) -> Issue: ...
     def open_issues(self, repo: str) -> list[OpenIssue]: ...
     def marked_issues(self, repo: str, marker: str) -> list[int]: ...
@@ -429,24 +434,17 @@ class LiveForge:
         return self._defaults[repo]
 
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None:
-        def exists() -> bool:
-            try:
-                pr = self._view_pr(repo, head)
-            except CommandFailed as exc:
-                if "no pull requests found for branch" in str(exc):
-                    return False
-                raise
-            if pr.state != "OPEN" or pr.headRefName != head or pr.baseRefName != base or pr.isCrossRepository:
-                raise ForgeError("The branch pull request must be open on the selected base in this repository.")
-            return True
+        self._run_command(repo, pull_request_command(repo, head, base, title, body))
 
-        if exists():
-            return
+    def pull_request_for(self, repo: str, branch: str) -> PublishedPullRequest | None:
+        command = ["gh", "pr", "view", "--repo", repo, "--json",
+                   "number,state,headRefOid,headRefName,baseRefName,baseRefOid,isCrossRepository,autoMergeRequest,body", "--", branch]
         try:
-            self._run_command(repo, pull_request_command(repo, head, base, title, body))
-        except ForgeError:
-            if not exists():
-                raise
+            return self._read(repo, PublishedPullRequest, command)
+        except CommandFailed as exc:
+            if "no pull requests found for branch" in str(exc):
+                return None
+            raise
 
     def load_issue(self, repo: str, number: int) -> Issue:
         issue = self._read(

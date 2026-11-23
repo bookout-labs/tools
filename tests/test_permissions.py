@@ -1,5 +1,5 @@
 import tests
-from foreman.state import PlanState, ChecksState
+from foreman.state import PlanState, ChecksState, RunState
 
 import json
 from pathlib import Path
@@ -25,13 +25,18 @@ from test_runner import EMPTY_SLICE
 
 class PermissionsTest(unittest.TestCase):
     def test_method_paths_are_covered_by_precise_roots(self):
-        with skill_fixture() as (config, scratch):
+        with skill_fixture() as (config, scratch), TemporaryDirectory() as directory:
             root = export_skills(config.pstack, scratch)
+            # The worker runs in the target checkout, so its own verify skill needs no extra read root.
+            checkout = Path(directory)
+            target_skill = checkout / ".claude/skills/verify-board/SKILL.md"
+            target_skill.parent.mkdir(parents=True)
+            target_skill.write_text("Run the board checks.\n")
             for stage, row in STAGES.items():
                 if not row.skills:
                     continue
                 for kind in ("feature", "bug_fix", "perf_issue"):
-                    state = {"plan": PlanState(work_kind=kind, issue_kind="slice", slice={**EMPTY_SLICE, "stateful": True, "screen": "docs/screens/ui.md", "properties": [{"name": "rule", "constraint": "unique"}]})}
+                    state = {"run": RunState(workspace=str(checkout)), "plan": PlanState(work_kind=kind, issue_kind="slice", slice={**EMPTY_SLICE, "stateful": True, "screen": "docs/screens/ui.md", "properties": [{"name": "rule", "constraint": "unique"}]})}
                     text, methods, roots = stage_methods(stage, state, root)
                     self.assertEqual(len(roots), len(set(roots)))
                     self.assertTrue(set(roots) <= {str(root.resolve()), str(PACKAGE_SKILLS.resolve())})
@@ -40,7 +45,8 @@ class PermissionsTest(unittest.TestCase):
                     for instruction in instructions:
                         path = instruction.split(' of ')[-1].split(' as the method.')[0] if ' of ' in instruction else instruction.removeprefix('Read ').split(' in full')[0]
                         self.assertTrue(Path(path).is_file())
-                        self.assertTrue(any(Path(path).is_relative_to(Path(r)) for r in roots))
+                        self.assertTrue(any(Path(path).is_relative_to(Path(r)) for r in (*roots, checkout)))
+                    self.assertEqual(".claude/skills/verify-board/SKILL.md" in methods, stage == "implement")
 
     def test_first_fix_and_quota_fallback_receive_the_bound_grant(self):
         for fallback in (False, True):

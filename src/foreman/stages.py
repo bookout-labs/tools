@@ -10,13 +10,13 @@ from foreman.config import Config, ModelSpec, order_for, contributors_for, famil
 from foreman.skill_rules import SkillMethod, SkillRule, principle
 from foreman.stage_output import (
     StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput,
-    ImplementOutput, ReviewOutput, VerifyOutput, UpdateContext, Slice, SliceRecord,
-    InvalidSlicePlan as InvalidSlicePlan, PULL_REQUEST_LINES, AttemptRecord, ReviewSelection,
+    ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord,
+    InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection,
 )
 
 from foreman.contracts import InvalidOutput
 from foreman.review_round import history, accept
-from foreman.workspace import Workspace, PullRequestSize, ReviewScope, WorktreeInspectionFailed
+from foreman.workspace import Workspace, ReviewScope, WorktreeInspectionFailed
 from foreman.github import Forge, PullRequest
 from foreman.review_context import ReviewContext
 
@@ -73,13 +73,6 @@ def clean_slices(
     return [{**slices[title].record(), "depends_on": list(graph[title])} for title in ordered]
 
 
-def oversized_pr(state: "DeliveryState") -> PullRequestSize | None:
-    size = state.get("pr_size")
-    if size is not None and size["lines"] > PULL_REQUEST_LINES and size != state.get("pr_size_override"):
-        return size
-    return None
-
-
 def no_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
     return "", None, None
 
@@ -91,18 +84,12 @@ def spec_instructions(state: "DeliveryState", workspace: Workspace, forge: Forge
     plan = state["plan"]
     if plan.spec_candidate and plan.slice and plan.slice.get("blocker_numbers"):
         pinned += "\nThe listed blockers merged into the pinned base. Confirm their pathless seams in that tree."
-    if size := oversized_pr(state):
-        return (
-            pinned + f"\n\nThe pull request has {size['lines']} changed lines. The limit is {PULL_REQUEST_LINES}."
-            " Split the work into independently shippable pull requests."
-            " For a slice issue, describe the split in spec."
-        ), None, None
     return pinned, None, None
 
 
 def accept_output(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     state, model = context.state, context.model
-    return {**output.update(UpdateContext(state["plan"], state["review"], bool(oversized_pr(state)), [], model if isinstance(model, ModelSpec) else None))}
+    return {**output.update(UpdateContext(state["plan"], state["review"], [], model if isinstance(model, ModelSpec) else None))}
 
 
 def accept_spec(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
@@ -119,26 +106,18 @@ def accept_spec(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
         slices = [plan.slice]
     if output.spec_gate == "ready" and not slices:
         raise InvalidOutput("slices: ready spec needs at least one slice")
-    return {**output.update(UpdateContext(plan, state["review"], bool(oversized_pr(state)), slices, model if isinstance(model, ModelSpec) else None))}
+    return {**output.update(UpdateContext(plan, state["review"], slices, model if isinstance(model, ModelSpec) else None))}
 
 
 def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     state, model = context.state, context.model
     assert isinstance(output, ImplementOutput)
-    update: DeliveryUpdate = {"implementation": output.implementation}
+    update: DeliveryUpdate = {"implementation": output.implementation, "human_question": output.human_question or ""}
     if model:
         latest = state.get("models_used", {}).get("implement")
         history = state.get("implement_models", [latest] if latest else [])
         update["implement_models"] = [*history, model.name if isinstance(model, ModelSpec) else model]
     return update
-
-
-def accept_verify(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
-    state = context.state
-    assert isinstance(output, VerifyOutput)
-    checks = state["checks"]
-    return {"checks": checks.model_copy(update={"verify": output.verify,
-        "verify_failures": checks.verify_failures + (output.verify == "fail")})}
 
 
 def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
@@ -216,7 +195,7 @@ class Stage:
     prompt: str | None
     output: type[StageOutput] | None
     skills: tuple[SkillRule, ...] = ()
-    kind: Literal["model", "dormant", "deterministic"] = "model"
+    kind: Literal["model", "dormant"] = "model"
     input_fields: tuple[str, ...] = ()
     prepare: Callable[["DeliveryState", Workspace, Forge], tuple[str, PullRequest | None, ReviewScope | None]] = no_preparation
     accept: Callable[[StageOutput, Acceptance], "DeliveryUpdate"] = accept_output
@@ -231,6 +210,10 @@ class SpecCheckStage(Stage):
     model_dependency = "spec"
     worker = "checker"
     step = "spec.check"
+
+
+class ImplementStage(Stage):
+    step = "implement.edit"
 
 
 def spec_check_models(name: str, state: "DeliveryState", config: Config) -> list[ModelSpec]:
@@ -265,18 +248,18 @@ STAGES = {
         principle("boundary-discipline"),
         principle("type-system-discipline"),
         SkillRule(skill=SkillMethod(path="statechart/SKILL.md", kind="skill"), when="stateful"),
-    ), prepare=spec_instructions, accept=accept_spec, input_fields=("run", "plan", "pr_size", "pr_size_override", "human_question", "human_answers")),
+    ), prepare=spec_instructions, accept=accept_spec, input_fields=("run", "plan", "human_question", "human_answers")),
     "spec_check": SpecCheckStage("spec_check.md", SpecCheckOutput, (
         SkillRule(skill=SkillMethod(path="interrogate/SKILL.md", kind="leaf_prompt", lines=(19, 19))),
     ), prepare=spec_instructions, project=spec_check_projection,
         input_fields=("run", "plan", "human_answers"), models=spec_check_models),
-    "implement": Stage("implement.md", ImplementOutput, (
+    "implement": ImplementStage("implement.md", ImplementOutput, (
         SkillRule(skill=SkillMethod(path="tdd/SKILL.md", kind="skill", lines=(9, 31)), when="bug_fix"),
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill", lines=(13, 27)), when="perf_issue"),
+        SkillRule(skill=SkillMethod(path="verify-<app>/SKILL.md", kind="target_skill")),
     ), accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review")),
     "review": Stage("review.md", ReviewOutput, (
         SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill", lines=(3, 7))),
     ), prepare=review_preparation, accept=accept_review, project=review_projection,
         input_fields=("run", "plan", "work", "checks", "review")),
-    "verify": Stage(None, VerifyOutput, accept=accept_verify, kind="deterministic", input_fields=("checks",)),
 }

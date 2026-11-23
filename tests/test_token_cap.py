@@ -142,8 +142,8 @@ class TokenCapTests(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=live, checkpointer=saver)
-                graph.update_state(invocation, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
-                    "plan": PlanState(triage="implement"), "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
+                graph.update_state(invocation, {"review": ReviewState(review="changes"), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
+                    "plan": PlanState(triage="implement"), "pstack_pin": config.pstack.model_dump()}, as_node="review_post")
                 graph.update_state(invocation, {"review": ReviewState(), "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                                 "path": ["implement", "done"]}, as_node="done")
             with self.assertRaisesRegex(ValueError, "unknown usage history"):

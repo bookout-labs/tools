@@ -101,25 +101,28 @@ def _print_run_rows(
         write_literal(f"pull request lines {size['lines']}")
     if rows is None:
         rows = [(node, models.get(node)) for node in result["path"]]
+    def write_done() -> None:
+        if checks.check_exit_code is not None:
+            write_literal(f"check exit {checks.check_exit_code}")
+        if run_state.token_cap is not None:
+            write_tokens()
+        write(f"done {result['stop']}")
+        if result.get("stop") == Halt.skill_missing:
+            pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
+            if pin_commit:
+                write_literal(f"pstack commit {pin_commit}")
+        observed = commit_sha(result.get("merge", MergeState()).observed_head)
+        verified = commit_sha(checks.verified_head)
+        if observed and verified:
+            write_literal(head_mismatch_detail(observed, verified))
+        elif detail := result.get("halt_detail"):
+            write(detail)
+
     for node, model in rows:
-        if node == "verify":
-            write(f"verify {checks.check or '(no check)'}")
+        if node == "check":
+            write(f"check {checks.check or '(no check)'}")
         elif node == "done":
-            if checks.check_exit_code is not None:
-                write_literal(f"check exit {checks.check_exit_code}")
-            if run_state.token_cap is not None:
-                write_tokens()
-            write(f"done {result['stop']}")
-            if result.get("stop") == Halt.skill_missing:
-                pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
-                if pin_commit:
-                    write_literal(f"pstack commit {pin_commit}")
-            observed = commit_sha(result.get("merge", MergeState()).observed_head)
-            verified = commit_sha(checks.verified_head)
-            if observed and verified:
-                write_literal(head_mismatch_detail(observed, verified))
-            elif detail := result.get("halt_detail"):
-                write(detail)
+            write_done()
         elif node == "merge":
             match outcome := result.get("merge", MergeState()).status:
                 case "armed":
@@ -142,13 +145,18 @@ def _print_run_rows(
                 fields.append(model)
             write(" ".join(fields))
     stop = result.get("stop")
-    if stop in {"needs_human", "quota_exhausted"} and "done" not in result["path"]:
+    if not stop or any(node == "done" for node, _ in rows):
+        return
+    if stop in {"needs_human", "quota_exhausted"}:
         if run_state.token_cap is not None:
             write_tokens()
         label = "done" if stop == "needs_human" and dry_run else "paused"
         write_literal(f"{label} {stop}")
         if detail := result.get("halt_detail"):
             write(detail)
+    else:
+        # A stage that ends the run, such as implement, reports the same summary as done.
+        write_done()
 
 
 def positive_tokens(raw: str) -> int:

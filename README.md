@@ -28,61 +28,37 @@ graph TD;
 	spec(spec)
 	implement(implement)
 	review(review)
-	verify(verify)
-	prepare(prepare)
-	reconcile(reconcile)
-	size(size)
-	commit(commit)
-	publish(publish)
 	review_post(review_post)
 	needs_human(needs_human)
-	decide_pr_size(decide_pr_size)
 	merge(merge)
 	done(done)
 	__end__([<p>__end__</p>]):::last
 	__start__ -.-> done;
 	__start__ -.-> triage;
-	commit -.-> done;
-	commit -.-> verify;
-	decide_pr_size -.-> done;
-	decide_pr_size -.-> size;
-	implement -.-> done;
-	implement -.-> reconcile;
+	implement -. &nbsp;cancelled&nbsp; .-> __end__;
+	implement -. &nbsp;published&nbsp; .-> review;
 	merge --> done;
 	needs_human -.-> done;
 	needs_human -.-> review;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
-	prepare -.-> done;
-	prepare -.-> implement;
-	publish -.-> done;
-	publish -.-> review;
-	reconcile -.-> done;
-	reconcile -.-> size;
 	research -.-> done;
 	review -.-> done;
+	review -.-> implement;
 	review -.-> merge;
 	review -.-> needs_human;
-	review -.-> prepare;
 	review -.-> review_post;
 	review_post -.-> done;
+	review_post -.-> implement;
 	review_post -.-> merge;
 	review_post -.-> needs_human;
-	review_post -.-> prepare;
-	size -. &nbsp;fits&nbsp; .-> commit;
-	size -.-> decide_pr_size;
-	size -. &nbsp;too big: re-plan&nbsp; .-> spec;
-	spec -.-> decide_pr_size;
 	spec -.-> done;
+	spec -. &nbsp;validated_single&nbsp; .-> implement;
 	spec -.-> needs_human;
-	spec -.-> prepare;
 	triage -.-> done;
 	triage -.-> needs_human;
 	triage -.-> research;
 	triage -.-> spec;
-	verify -.-> done;
-	verify -.-> prepare;
-	verify -.-> publish;
 	done --> __end__;
 	spec -.-> spec;
 	classDef default fill:#f2f0ff,line-height:1.2
@@ -106,9 +82,9 @@ Honor applicable settled rulings.
 
 A PR or diff that cannot be read stops the run with `git_failed`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. Every stage shares one dispatch: a quota stop or missing CLI moves to the next qualified model, and the run pauses with `paused quota_exhausted` (exit 75) only when none is left. Missing implementation provenance still stops with `no_reviewer`. The independent spec checker prefers a different model family from the accepted draft author. The record includes `halt_detail` for these stops.
 
-Foreman creates an `<issue>-<slug>` branch from the repository default branch before the first edit. It sizes the reconciled candidate before committing, then verifies the commit before publishing. An attempt with no file changes stops with `failed`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
+Implement runs four steps: prepare, edit, commit and publish. Prepare creates an `<issue>-<slug>` branch from the pinned base before the first edit. Edit reconciles the builder's candidate and runs the check command on that exact tree. A failed check sends the output back to the builder for another round, and a check that changes the tree fails the same way. A passing check binds the tree, and commit publishes only that tree. Foreman reports the changed-line count but does not block on it. An attempt with no file changes stops with `no_change`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
-Live verify stops with `dirty_worktree` if the checkout has changes, HEAD differs from the saved implementation commit, or Git cannot report a full HEAD SHA. Otherwise it runs the check command in the engine checkout and records that SHA if the check passes. Dry runs skip preflight and use a scripted verdict.
+Commit and publish stop with `dirty_worktree` if the checkout differs from the checked tree or HEAD differs from the expected commit. Publish observes the remote branch and pull request before every push or create, so a crash never repeats a completed write. A remote head that moved on the owned pull request starts a new attempt without the earlier check or review authority. Unrecognized remote work stops with `publish_failed`, and a write that GitHub cannot yet confirm stops with `publication_unreconciled`. Dry runs skip preflight and use a scripted verdict.
 
 Use `--preflight <command>` to check environment readiness in the engine checkout. Each new or resumed invocation checks readiness once, after checkout validation and before its first implement dispatch. Review answers resume through prepare, so environment retries retain the answer and implementer history. Routes that never reach implement skip the probe. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
 

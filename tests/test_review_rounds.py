@@ -144,6 +144,7 @@ class ReviewRoundsTest(unittest.TestCase):
             crashed = False
             quota_returned = False
             workspace = Workspace(Path(directory))
+            workspace.remote = self.forge.branches
             implementations = 0
 
             def dispatch(node, model, state, instruction):
@@ -171,7 +172,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
                 implementations += 1
                 workspace.current = type(workspace.current)(workspace.current.head, False, workspace.current.branch)
-                return Outcome("ran", {"implementation": "Fixed."}, usage=SCRIPTED_USAGE)
+                return Outcome("ran", {"implementation": "Fixed.", "human_question": None}, usage=SCRIPTED_USAGE)
 
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint")) as saver:
                 saver.serde = checkpoint_serializer()

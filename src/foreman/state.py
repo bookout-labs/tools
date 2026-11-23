@@ -38,6 +38,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     check_exit_code: int | None = None
     verify: Literal["", "pass", "fail"] = ""
     failure_output: str = ""
+    checked_tree: str = ""
     verified_head: str = ""
 
     def for_attempt(self) -> "ChecksState":
@@ -48,7 +49,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -82,12 +83,19 @@ class WatchRecord(TypedDict):
     action: Literal["filed", "commented"]
 
 
+def extend_attempts(current: list[AttemptRecord], update: list[AttemptRecord]) -> list[AttemptRecord]:
+    """Append attempts. A nested stage returns the attempts it was given, then its own."""
+    if current and update[:len(current)] == current:
+        update = update[len(current):]
+    return current + update
+
+
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
     dispatch_plan: DispatchPlanRecord
     pstack_pin: dict[str, str]
     skill_reason: SkillFailureReason
-    attempts: Annotated[list[AttemptRecord], operator.add]
+    attempts: Annotated[list[AttemptRecord], extend_attempts]
     research: str
     work: WorkState
     implementation: str
@@ -95,7 +103,6 @@ class DeliveryFields(TypedDict, total=False):
     human_question: str
     human_answers: list[str]
     pr_size: PullRequestSize
-    pr_size_override: PullRequestSize
     models_used: dict[str, str]
     implement_models: list[str]
     watch: WatchRecord | None

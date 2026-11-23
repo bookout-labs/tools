@@ -3,7 +3,7 @@ import tests
 from contextlib import ExitStack
 from dataclasses import replace
 import json
-import multiprocessing
+import re
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
@@ -58,6 +58,9 @@ class PublicationTest(unittest.TestCase):
         self.git("push", "origin", self.base)
         self.created = []
         self.published_heads = []
+        self.comments = []
+        self.pr_body = "Closes #8"
+        self.pr_view_error = ""
         self.create_error = False
         self.queued = False
         self.fixture.enter_context(patch("foreman.github.subprocess.run", side_effect=self.subprocess))
@@ -84,6 +87,8 @@ class PublicationTest(unittest.TestCase):
                 response = {"number": 101}
             case ["api", "repos/Example/Engine/issues/8/dependencies/blocked_by"]:
                 response = [[]]
+            case ["api", "repos/Example/Engine/issues/8/comments?per_page=100"]:
+                response = [[{"user": {"login": "fixture-owner"}, "body": body} for body in self.comments]]
             case ["api", "repos/Example/Engine/issues/8"]:
                 response = {"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}", "title": self.slice["title"], "body": slice_body(self.slice), "labels": [{"name": "slice"}]}
             case ["pr", "create"]:
@@ -98,10 +103,13 @@ class PublicationTest(unittest.TestCase):
             case ["variable", "list"]:
                 response = []
             case ["pr", "view"]:
+                if self.pr_view_error:
+                    return subprocess.CompletedProcess(command, 1, "", self.pr_view_error)
                 if not self.created:
                     return subprocess.CompletedProcess(command, 1, "", f'no pull requests found for branch "{self.branch}"')
                 response = {"number": 12, "state": "OPEN", "headRefOid": self.remote_head(), "headRefName": self.branch,
-                            "baseRefName": self.base, "baseRefOid": self.git("--git-dir", str(self.remote), "rev-parse", self.base), "autoMergeRequest": None}
+                            "baseRefName": self.base, "baseRefOid": self.git("--git-dir", str(self.remote), "rev-parse", self.base),
+                            "isCrossRepository": False, "autoMergeRequest": None, "body": self.pr_body}
             case ["api", "graphql"]:
                 response = dict(number=12, state="OPEN", headRefOid=self.remote_head(),
                     baseRefName=self.base, baseRefOid=self.git("--git-dir", str(self.remote), "rev-parse", self.base),
@@ -139,7 +147,7 @@ class PublicationTest(unittest.TestCase):
         self.fail("completed worker must not repeat")
 
     def walk(self, edit=None, reviews=None, family=None,
-             answer=None, preflight="", check_log=None):
+             answer=None, preflight="", check_log=None, check="test -f items.txt", ask=None):
         script = ScriptHandler(reviews=reviews)
         workspace = LiveWorkspace(self.checkout)
 
@@ -154,12 +162,15 @@ class PublicationTest(unittest.TestCase):
                     return outcome
             if node == "review":
                 self.published_heads.append(self.remote_head())
-            return script(node, model, state, instruction)
+            result = script(node, model, state, instruction)
+            if node == "implement" and ask is not None and result.output is not None:
+                result.output["human_question"] = ask()
+            return result
 
         return run_live_delivery(
-            repo=REPO, issue=8, check="test -f items.txt", preflight=preflight, checkpoint=self.checkpoint,
+            repo=REPO, issue=8, check=check, preflight=preflight, checkpoint=self.checkpoint,
             answer=answer,
-            run=LiveRun(LiveForge(), workspace, check_log=check_log), dispatcher=handler,
+            run=LiveRun(LiveForge(), workspace, check_log=check_log, human_login="fixture-owner"), dispatcher=handler,
         )
 
     def advance_origin(self, *, parent=None):
@@ -415,8 +426,9 @@ class PublicationTest(unittest.TestCase):
 
     def test_no_changes_fails_without_pushing(self):
         result = self.walk(lambda: None)
-        self.assertEqual(result.get("stop"), "failed")
-        self.assertEqual(result.get("halt_detail"), "no changes")
+        self.assertEqual(result.get("stop"), "no_change")
+        self.assertIsNone(result.get("halt"))
+        self.assertEqual(result.get("halt_detail"), "No justified change.")
         self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check", "implement"])
         self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
         self.assertEqual(self.created, [])
@@ -728,8 +740,8 @@ class PublicationTest(unittest.TestCase):
             self.worker_commit()
         with patch.object(LiveWorkspace, "reconcile", mutate):
             result = self.walk(edit)
-        self.assertEqual(result["stop"], "git_failed")
-        self.assertIn("expected implementation commit", result["halt_detail"])
+        self.assertEqual(result["stop"], "dirty_worktree")
+        self.assertIn("edits changed after reconciliation", result["halt_detail"])
         self.assertFalse(self.created)
 
     def test_stale_candidate_after_soft_reset_cannot_publish(self):
@@ -744,90 +756,27 @@ class PublicationTest(unittest.TestCase):
             self.walk(edit)
         (self.checkout / "items.txt").write_text("stale change\n")
         result = self.walk(self.no_worker)
-        self.assertEqual(result["stop"], "git_failed")
-        self.assertIn("changed after reconciliation", result["halt_detail"])
+        self.assertEqual(result["stop"], "dirty_worktree")
+        self.assertIn("edits differ from the checked tree", result["halt_detail"])
+        self.assertEqual((self.checkout / "items.txt").read_text(), "stale change\n")
         self.assertFalse(self.created)
 
-    def test_oversized_candidate_continues_in_fresh_process_for_split_and_override(self):
+    def test_oversized_candidate_is_reported_and_published(self):
         for committed in (False, True):
-            for answer in ("split", "override"):
-                with self.subTest(committed=committed, answer=answer):
-                    self.reset_fixture()
-                    def edit():
-                        (self.checkout / "items.txt").write_text("one\n" * 401)
-                        if committed:
-                            self.worker_commit()
-                    original_run = LiveWorkspace.run
-                    checked = []
-                    def check(workspace, command, **kwargs):
-                        self.assertFalse(self.created)
-                        checked.append(self.git("rev-parse", "HEAD"))
-                        return original_run(workspace, command, **kwargs)
-                    with patch.object(LiveWorkspace, "run", check):
-                        paused = self.walk(edit)
-                        self.assertEqual(paused["stop"], "needs_human")
-                        candidate = paused["work"].candidate
-                        self.assertEqual(candidate["disposition"], "adopted" if committed else "edits")
-                        head = self.git("rev-parse", "HEAD")
-                        self.assertFalse(self.created)
-                        self.assertFalse(checked)
-                        receiver, sender = multiprocessing.get_context("fork").Pipe(duplex=False)
-                        def resume():
-                            try:
-                                result = self.walk(self.no_worker, answer=answer)
-                                sender.send((result, checked, self.created))
-                            except BaseException as exc:
-                                sender.send(exc)
-                        process = multiprocessing.get_context("fork").Process(target=resume)
-                        process.start()
-                        sender.close()
-                        try:
-                            self.assertTrue(receiver.poll(30), "resume process did not finish")
-                            result = receiver.recv()
-                            if isinstance(result, BaseException):
-                                raise result
-                            resumed, checked, self.created = result
-                        finally:
-                            receiver.close()
-                            process.join(5)
-                            if process.is_alive():
-                                process.terminate()
-                                process.join()
-                        self.assertEqual(process.exitcode, 0)
-                    self.assertEqual(resumed["work"].candidate, candidate)
-                    if answer == "override":
-                        self.assertEqual(resumed["stop"], "verified")
-                        self.assertEqual(checked, self.created)
-                        self.assertEqual(len(checked), 1)
-                        self.assertEqual(resumed["pr_size_override"], candidate["size"])
-                        self.assertEqual(self.git("rev-parse", "HEAD^{tree}"), candidate["size"]["head"])
-                        self.assertEqual(resumed["path"][-5:], ["verify", "publish", "review", "merge", "done"])
-                    else:
-                        self.assertEqual(resumed["stop"], "pr_split_required")
-                        self.assertEqual(resumed["plan"].pr_split, paused["plan"].pr_split)
-                        self.assertEqual(self.git("rev-parse", "HEAD"), head)
-                        self.assertFalse(checked)
-                        self.assertFalse(self.created)
-                        self.assertNotIn("publish", resumed["path"])
-                        self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
-
-    def test_fix_round_requires_new_size_override_before_publication(self):
-        def edit(text):
-            (self.checkout / "items.txt").write_text(text * 401)
-        self.assertEqual(self.walk(lambda: edit("one\n"))["stop"], "needs_human")
-        first = self.walk(lambda: edit("two\n"), reviews=["changes"], answer="override")
-        self.assertEqual(first["stop"], "needs_human")
-        self.assertEqual(len(self.created), 1)
-        published = self.remote_head()
-        self.assertNotEqual(first["pr_size"], first["pr_size_override"])
-        self.assertEqual(first["checks"].verified_head, "")
-        second = self.walk(self.no_worker, answer="override")
-        self.assertEqual(second["stop"], "verified")
-        self.assertEqual(len(self.created), 1)
-        self.assertEqual(self.git("rev-parse", "HEAD^"), published)
-        self.assertEqual(self.remote_head(), second["checks"].verified_head)
-        self.assertEqual(second["path"].count("verify"), 2)
-        self.assertEqual(second["path"].count("publish"), 2)
+            with self.subTest(committed=committed):
+                self.reset_fixture()
+                def edit():
+                    (self.checkout / "items.txt").write_text("one\n" * 401)
+                    if committed:
+                        self.worker_commit()
+                result = self.walk(edit)
+                self.assertEqual(result["stop"], "verified")
+                candidate = result["work"].candidate
+                self.assertEqual(candidate["disposition"], "adopted" if committed else "edits")
+                self.assertEqual(result["pr_size"], candidate["size"])
+                self.assertEqual(result["pr_size"]["lines"], 401)
+                self.assertEqual(self.git("rev-parse", "HEAD^{tree}"), result["checks"].checked_tree)
+                self.assertEqual(self.created, [result["work"].head_sha])
 
     def test_first_publication_uses_bound_size_without_pr_lookup(self):
         result = self.walk(self.edit)
@@ -836,15 +785,15 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(bound["head"], self.git("rev-parse", "HEAD^{tree}"))
         self.assertEqual(result["pr_size"], bound)
 
-    def test_changed_candidate_cannot_commit_with_stale_size(self):
+    def test_changed_candidate_cannot_commit_after_its_check(self):
         with patch.object(LiveWorkspace, "commit", side_effect=SystemExit("before commit")):
             with self.assertRaises(SystemExit):
                 self.walk(self.edit)
         head = self.git("rev-parse", "HEAD")
         (self.checkout / "new-deliverable.md").write_text("oversized\n" * 401)
         result = self.walk(self.no_worker)
-        self.assertEqual(result["stop"], "git_failed")
-        self.assertIn("size measurement", result["halt_detail"])
+        self.assertEqual(result["stop"], "dirty_worktree")
+        self.assertIn("edits differ from the checked tree", result["halt_detail"])
         self.assertEqual(self.git("rev-parse", "HEAD"), head)
         self.assertFalse(self.created)
 
@@ -855,12 +804,12 @@ class PublicationTest(unittest.TestCase):
         (self.checkout / "items.txt").unlink()
         head = self.git("rev-parse", "HEAD")
         result = self.walk(self.no_worker)
-        self.assertEqual(result["stop"], "git_failed")
-        self.assertIn("checkpointed implementation edits are missing", result["halt_detail"])
+        self.assertEqual(result["stop"], "dirty_worktree")
+        self.assertIn("edits differ from the checked tree", result["halt_detail"])
         self.assertEqual(self.git("rev-parse", "HEAD"), head)
         self.assertFalse(self.created)
 
-    def test_resumed_edits_commit_must_match_measured_tree(self):
+    def test_resumed_edits_commit_must_match_checked_tree(self):
         original = LiveWorkspace.commit
         def crash(workspace, message):
             (self.checkout / "extra.md").write_text("unmeasured\n")
@@ -870,11 +819,11 @@ class PublicationTest(unittest.TestCase):
             self.walk(self.edit)
         result = self.walk(self.no_worker)
         self.assertEqual(result["work"].candidate["disposition"], "edits")
-        self.assertEqual(result["stop"], "git_failed")
-        self.assertIn("Commit differs from the measured implementation tree", result["halt_detail"])
+        self.assertEqual(result["stop"], "dirty_worktree")
+        self.assertIn("commit differs from the checked tree", result["halt_detail"])
         self.assertFalse(self.created)
 
-    def test_verify_rejects_unmeasured_commit(self):
+    def test_check_rejects_commit_after_the_builder_returned(self):
         with patch.object(LiveWorkspace, "run", side_effect=SystemExit("before verification")):
             with self.assertRaises(SystemExit):
                 self.walk(self.edit)
@@ -884,7 +833,7 @@ class PublicationTest(unittest.TestCase):
         result = self.walk(self.no_worker)
         self.assertEqual(result["checks"].verified_head, "")
         self.assertEqual(result["stop"], "dirty_worktree")
-        self.assertIn("implementation commit", result["halt_detail"])
+        self.assertIn("changed after the builder returned", result["halt_detail"])
         self.assertEqual(self.git("rev-parse", "HEAD"), head)
         self.assertEqual(self.published_heads, [])
 
@@ -969,6 +918,129 @@ class PublicationTest(unittest.TestCase):
                 if completed and worker_done:
                     self.assertEqual(self.remote_head(), head)
 
+    def test_failed_repository_check_is_repaired_and_its_receipt_tree_is_published(self):
+        edits = iter((lambda: (self.checkout / "draft.txt").write_text("draft\n"), self.edit))
+        logs = []
+        result = self.walk(lambda: next(edits)(), check_log=logs.append)
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(result["checks"].verify_failures, 1)
+        self.assertEqual([a["stage"] for a in result["attempts"]].count("implement"), 2)
+        self.assertEqual(result["path"].count("check"), 2)
+        head = result["work"].head_sha
+        self.assertEqual((self.remote_head(), self.created), (head, [head]))
+        self.assertEqual(self.git("--git-dir", str(self.remote), "rev-parse", f"{head}^{{tree}}"), result["checks"].checked_tree)
+        self.assertEqual(result["checks"].verified_head, head)
+
+    def test_check_cap_and_tree_changing_checks_never_publish(self):
+        cases = (("failing check", "test -f items.txt", None),
+                 ("tree-changing check", "echo run >> check.log", "changed the candidate tree"))
+        for case, check, failure in cases:
+            with self.subTest(case=case):
+                self.reset_fixture()
+                rounds = []
+                def edit():
+                    rounds.append(1)
+                    (self.checkout / "draft.txt").write_text(f"draft {len(rounds)}\n")
+                result = self.walk(edit, check=check)
+                cap = load_config().max_review_rounds
+                self.assertEqual(result["stop"], "verify_cap")
+                self.assertEqual((len(rounds), result["checks"].verify_failures), (cap, cap))
+                self.assertEqual(result["checks"].verify, "fail")
+                self.assertEqual(result["checks"].checked_tree, "")
+                if failure:
+                    self.assertIn(failure, result["checks"].failure_output)
+                self.assertEqual(self.git("rev-parse", "HEAD"), self.git("rev-parse", "main"))
+                self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
+                self.assertEqual(self.created, [])
+                self.assertEqual((self.checkout / "draft.txt").read_text(), f"draft {cap}\n")
+
+    def test_implement_question_waits_for_a_posted_answer_or_cancel(self):
+        for reply in ("Active items only.", "cancel"):
+            with self.subTest(reply=reply):
+                self.reset_fixture()
+                questions = iter(("Should archived items be listed?", None))
+                paused = self.walk(ask=lambda: next(questions))
+                self.assertEqual(paused["stop"], "needs_human")
+                self.assertIn("Should archived items be listed?", paused["halt_detail"])
+                self.assertEqual((self.checkout / "items.txt").read_text(), "one\n")
+                self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
+                marker = re.search(r"foreman answer [0-9a-f-]{71}", paused["halt_detail"])
+                assert marker is not None
+                self.comments.append(f"{marker[0]}\n{reply}")
+                result = self.walk(self.edit, answer=reply, ask=lambda: next(questions))
+                implements = [a for a in result["attempts"] if a["stage"] == "implement"]
+                if reply == "cancel":
+                    self.assertEqual(result["stop"], "cancelled")
+                    self.assertEqual(len(implements), 1)
+                    self.assertEqual((self.checkout / "items.txt").read_text(), "one\n")
+                    self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
+                    self.assertEqual(self.created, [])
+                else:
+                    self.assertEqual(result["stop"], "verified")
+                    self.assertEqual(len(implements), 2)
+                    self.assertEqual([(qa["stage"], qa["answer"]) for qa in result["plan"].human_qa], [("implement", reply)])
+                    self.assertEqual(self.created, [result["work"].head_sha])
+
+    def test_publication_crashes_replay_twice_against_each_observation(self):
+        from foreman.workspace import WorktreeInspectionFailed
+        windows = (("commit", LiveWorkspace, "commit"), ("push", LiveWorkspace, "push"), ("create", LiveForge, "open_pull_request"))
+        effects_by_window = {"commit": ["commit"], "push": ["commit", "push"], "create": ["commit", "push", "create"]}
+        for window, owner, operation in windows:
+            for observation in ("matching", "mismatched", "unreadable"):
+                with self.subTest(window=window, observation=observation):
+                    self.reset_fixture()
+                    effects, crash = [], [window]
+                    for name, cls, method in windows:
+                        def record(*args, _name=name, _original=getattr(cls, method), **kwargs):
+                            result = _original(*args, **kwargs)
+                            effects.append(_name)
+                            if _name in crash:
+                                crash.clear()
+                                raise SystemExit(f"after {_name}")
+                            return result
+                        self.fixture.enter_context(patch.object(cls, method, record))
+                    with self.assertRaises(SystemExit):
+                        self.walk(self.edit)
+                    self.assertEqual(effects, effects_by_window[window])
+                    head = self.git("rev-parse", "HEAD")
+                    foreign = ""
+                    if observation == "mismatched":
+                        if window == "commit":
+                            self.git("commit", "--amend", "-m", "Foreign message")
+                            foreign = self.git("rev-parse", "HEAD")
+                        elif window == "push":
+                            foreign = self.git("commit-tree", f"{head}^{{tree}}", "-p", head, "-m", "Foreign push")
+                            self.git("push", "origin", f"{foreign}:{self.ref}")
+                        else:
+                            self.pr_body = "Closes #9"
+                    unreadable = {"commit": patch.object(LiveWorkspace, "inspect", side_effect=WorktreeInspectionFailed("status unreadable")),
+                                  "push": patch.object(LiveWorkspace, "remote_head", side_effect=WorkspaceError("ls-remote unreadable"))}
+                    for replay in (1, 2):
+                        with ExitStack() as stack:
+                            if observation == "unreadable" and replay == 1:
+                                if window == "create":
+                                    self.pr_view_error = "HTTP 502"
+                                else:
+                                    stack.enter_context(unreadable[window])
+                            result = self.walk(self.no_worker)
+                            self.pr_view_error = ""
+                        if observation == "unreadable" and replay == 1:
+                            self.assertEqual(result["stop"], "git_failed" if window == "commit" else "publication_unreconciled")
+                            self.assertEqual(effects, effects_by_window[window])
+                        elif observation == "mismatched":
+                            stop = "dirty_worktree" if window == "commit" else "publish_failed"
+                            self.assertEqual(result["stop"], stop)
+                            self.assertEqual(effects, effects_by_window[window])
+                            if window == "commit":
+                                self.assertEqual(self.git("rev-parse", "HEAD"), foreign)
+                            if window == "push":
+                                self.assertEqual(self.remote_head(), foreign)
+                        else:
+                            self.assertEqual(result["stop"], "verified")
+                            self.assertEqual(effects, ["commit", "push", "create"])
+                            self.assertEqual(self.created, [head])
+                            self.assertEqual(self.remote_head(), head)
+
     def test_index_lock_is_resumable(self):
         for phase, before_worker in (("prepare", True), ("commit", False)):
             with self.subTest(phase=phase):
@@ -996,7 +1068,7 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(self.git("branch", "--show-current"), "main")
         self.assertFalse(result.get("work", WorkState()).attempt_head)
         self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check"])
-        self.assertEqual(result["path"][-2:], ["prepare", "done"])
+        self.assertEqual(result["path"][-2:], ["spec_check", "prepare"])
         self.assertIn("unavailable", "".join(logs))
 
     def test_quota_resume_guards_preserve_attempt_and_partial_tree(self):
@@ -1079,12 +1151,13 @@ class PublicationTest(unittest.TestCase):
                     self.assertEqual(self.walk(self.no_worker).get("stop"), "verified")
 
     def test_wrong_base_open_pr_stops_without_creation(self):
-        from foreman.github import ForgeError, PullRequest
-        wrong = PullRequest(number=12, state="OPEN", headRefOid="a" * 40, headRefName=self.branch,
-                            baseRefName="release", baseRefOid="b" * 40, autoMergeRequest=None)
-        with patch.object(LiveForge, "_view_pr", return_value=wrong):
-            with self.assertRaisesRegex(ForgeError, "selected base"):
-                LiveForge().open_pull_request(REPO, self.branch, "main", "Synthetic", "Closes #8")
+        from foreman.github import PublishedPullRequest
+        wrong = PublishedPullRequest(number=12, state="OPEN", headRefOid="a" * 40, headRefName=self.branch,
+                                     baseRefName="release", baseRefOid="b" * 40, autoMergeRequest=None, body="Closes #8")
+        with patch.object(LiveForge, "pull_request_for", return_value=wrong):
+            result = self.walk()
+        self.assertEqual(result["stop"], "publish_failed")
+        self.assertIn("does not match this run's repository, issue, branch and base", result["halt_detail"])
         self.assertEqual(self.created, [])
 
     def test_git_calls_disable_prompts_and_bound_network_and_commit(self):

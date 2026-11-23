@@ -28,12 +28,11 @@ FILING = {
     "dirty_worktree": ("Handle dirty worktree before verify", "stages/implement.md"),
     "missing_slice": ("Slice issues carry a loadable slice", "github.py"),
     "review_not_posted": ("Reviews post to the pull request", "github.py"),
-    "pr_size_unavailable": ("Pull request size is measurable before review", "workspace.py"),
     "git_failed": ("Git operations complete before publication", "workspace.py"),
     "skill_missing": ("Pinned skills are available before dispatch", "skill_rules.py"),
 }
 SKIPPED = {"model_dependency_missing", "publication_model_missing", "merge_held", "merge_not_armed", "budget_exceeded",
-           "env_unavailable", "publish_failed", "failed",
+           "env_unavailable", "publish_failed", "publication_unreconciled",
            "implementation_rejected", "pr_conflict", "ci_pending", "ci_red",
            "readiness_unavailable", "queue_rejected"}
 

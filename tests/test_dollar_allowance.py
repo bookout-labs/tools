@@ -252,8 +252,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with SqliteSaver.from_conn_string(str(historical)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
-                graph.update_state(THREAD, {"review": ReviewState(), "schema_version": 5, "run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
-                    "pstack_pin": config.pstack.model_dump()}, as_node="prepare")
+                graph.update_state(THREAD, {"review": ReviewState(review="changes"), "schema_version": 5, "run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
+                    "pstack_pin": config.pstack.model_dump()}, as_node="review_post")
                 graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                             "path": ["implement", "done"], "plan": PlanState()}, as_node="done")
             with patch("foreman.runner.compile_delivery", wraps=compile_delivery) as compile_graph:

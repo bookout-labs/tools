@@ -10,61 +10,37 @@ graph TD;
 	spec(spec)
 	implement(implement)
 	review(review)
-	verify(verify)
-	prepare(prepare)
-	reconcile(reconcile)
-	size(size)
-	commit(commit)
-	publish(publish)
 	review_post(review_post)
 	needs_human(needs_human)
-	decide_pr_size(decide_pr_size)
 	merge(merge)
 	done(done)
 	__end__([<p>__end__</p>]):::last
 	__start__ -.-> done;
 	__start__ -.-> triage;
-	commit -.-> done;
-	commit -.-> verify;
-	decide_pr_size -.-> done;
-	decide_pr_size -.-> size;
-	implement -.-> done;
-	implement -.-> reconcile;
+	implement -. &nbsp;cancelled&nbsp; .-> __end__;
+	implement -. &nbsp;published&nbsp; .-> review;
 	merge --> done;
 	needs_human -.-> done;
 	needs_human -.-> review;
 	needs_human -.-> spec;
 	needs_human -.-> triage;
-	prepare -.-> done;
-	prepare -.-> implement;
-	publish -.-> done;
-	publish -.-> review;
-	reconcile -.-> done;
-	reconcile -.-> size;
 	research -.-> done;
 	review -.-> done;
+	review -.-> implement;
 	review -.-> merge;
 	review -.-> needs_human;
-	review -.-> prepare;
 	review -.-> review_post;
 	review_post -.-> done;
+	review_post -.-> implement;
 	review_post -.-> merge;
 	review_post -.-> needs_human;
-	review_post -.-> prepare;
-	size -. &nbsp;fits&nbsp; .-> commit;
-	size -.-> decide_pr_size;
-	size -. &nbsp;too big: re-plan&nbsp; .-> spec;
-	spec -.-> decide_pr_size;
 	spec -.-> done;
+	spec -. &nbsp;validated_single&nbsp; .-> implement;
 	spec -.-> needs_human;
-	spec -.-> prepare;
 	triage -.-> done;
 	triage -.-> needs_human;
 	triage -.-> research;
 	triage -.-> spec;
-	verify -.-> done;
-	verify -.-> prepare;
-	verify -.-> publish;
 	done --> __end__;
 	spec -.-> spec;
 	classDef default fill:#f2f0ff,line-height:1.2

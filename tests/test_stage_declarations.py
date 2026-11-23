@@ -191,47 +191,10 @@ class StageDeclarationsTest(unittest.TestCase):
                 current = {**state, "models_used": used}
                 if prior is not None:
                     current["implement_models"] = prior
-                update = stage_update("implement", ImplementOutput(implementation="Done"), current, model)
+                update = stage_update("implement", ImplementOutput(implementation="Done", human_question=None), current, model)
                 self.assertEqual(update["implementation"], "Done")
                 self.assertNotIn("checks", update)
                 self.assertEqual(update.get("implement_models"), expected)
-
-    def test_spec_split_instructions_reach_the_worker(self):
-        from langgraph.checkpoint.memory import InMemorySaver
-        from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery
-        from foreman.dry_run import DryRun
-        from foreman.stage_output import PULL_REQUEST_LINES
-        from foreman.state import ChecksState, ReviewState, RunState, checkpoint_serializer
-
-        for lines, override in ((PULL_REQUEST_LINES + 1, False), (PULL_REQUEST_LINES - 1, False),
-                                (PULL_REQUEST_LINES, False),
-                                (PULL_REQUEST_LINES + 1, True)):
-            with self.subTest(lines=lines, override=override), skill_fixture() as (config, scratch):
-                script, instructions = ScriptHandler(), []
-                def dispatch(stage, model, state, instruction):
-                    if stage == "spec":
-                        instructions.append(instruction)
-                    return script(stage, model, state, instruction)
-                dry = DryRun()
-                graph = compile_delivery(dispatch, config, run=LiveRun(dry, dry),
-                                         scratch=scratch, checkpointer=InMemorySaver(serde=checkpoint_serializer()))
-                size = {"head": "head", "base": "base", "lines": lines}
-                state = {"plan": PlanState(triage="spec", issue_kind="parent"), "review": ReviewState(),
-                         "checks": ChecksState(), "run": RunState(repo="org/repo", token_cap=DEFAULT_TOKEN_CAP),
-                         "pr_size": size, "path": ["triage"]}
-                if override:
-                    state["pr_size_override"] = size
-                thread = {"configurable": {"thread_id": "spec-instructions"}}
-                graph.update_state(thread, state, as_node="triage")
-                graph.invoke(None, thread)
-                self.assertEqual(len(instructions), 1)
-                suffix = (f"\n\nThe pull request has {lines} changed lines. The limit is {PULL_REQUEST_LINES}."
-                          " Split the work into independently shippable pull requests."
-                          " For a slice issue, describe the split in spec.")
-                if lines > PULL_REQUEST_LINES and not override:
-                    self.assertTrue(instructions[0].endswith(suffix))
-                else:
-                    self.assertNotIn("Split the work into independently shippable pull requests.", instructions[0])
 
     def test_implement_acceptance_records_accepted_model_without_model_name(self):
         from foreman.config import ModelSpec
@@ -240,21 +203,10 @@ class StageDeclarationsTest(unittest.TestCase):
         from foreman.state import ChecksState
 
         model = ModelSpec.parse("gpt-6.1-sol-high")
-        output = ImplementOutput(implementation="Done")
+        output = ImplementOutput(implementation="Done", human_question=None)
         update = stage_update("implement", output, {"checks": ChecksState(), "implement_models": ["first"]},
                               accepted_model=model)
         self.assertEqual(update["implement_models"], ["first", model.name])
-
-    def test_verify_row_preserves_checks_and_counts_failures(self):
-        from foreman.stage_output import VerifyOutput
-        from foreman.state import ChecksState
-
-        checks = ChecksState(check="test", verify_failures=2)
-        for verdict, failures in (("pass", 2), ("fail", 3)):
-            with self.subTest(verdict=verdict):
-                update = STAGES["verify"].accept(VerifyOutput(verify=verdict), Acceptance({"checks": checks}))
-                self.assertEqual(update["checks"], checks.model_copy(update={"verify": verdict, "verify_failures": failures}))
-        self.assertEqual(checks.verify_failures, 2)
 
     def test_contract_change_reaches_the_adapter(self):
         with patch.dict(STAGES, triage=replace(STAGES["triage"], output=ResearchOutput)):
@@ -289,8 +241,6 @@ class StageDeclarationsTest(unittest.TestCase):
             if row.prompt is not None:
                 with self.subTest(stage=name):
                     self.assertTrue(stage_text(name))
-        self.assertEqual(STAGES["verify"].kind, "deterministic")
-        self.assertIsNone(STAGES["verify"].prompt)
 
     def test_condition_change_reaches_runtime_methods(self):
         row = STAGES["research"]

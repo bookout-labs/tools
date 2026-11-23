@@ -7,7 +7,7 @@ from pathlib import Path
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
 from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
-from foreman.github import PullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt, pull_request_command
+from foreman.github import PullRequest, PublishedPullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt, pull_request_command
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.workspace import WorktreeState, ReviewDiff, ImplementationCandidate, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope
@@ -65,7 +65,7 @@ class ScriptHandler:
         if node == "spec_check":
             return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
         if node == "implement":
-            return Outcome("ran", {"implementation": self.implementation}, usage=SCRIPTED_USAGE)
+            return Outcome("ran", {"implementation": self.implementation, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "research":
             return Outcome("ran", {"research": self.research}, usage=SCRIPTED_USAGE)
         if node == "review":
@@ -88,6 +88,8 @@ class DryRun:
     branch: str | None = None
     head: str = "<sha>"
     clean: bool = True
+    remote: str | None = None
+    pull_request: PublishedPullRequest | None = None
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int:
         return 0
@@ -120,12 +122,25 @@ class DryRun:
 
     def push(self, branch: str, repo: str) -> None:
         self.commands.append(push_command("origin", branch))
+        self.remote = self.head
+
+    def remote_head(self, branch: str) -> str | None:
+        return self.remote
+
+    def uncommit(self, parent: str) -> None:
+        raise NotImplementedError("Not used by dry delivery")
 
     def default_branch(self, repo: str) -> str:
         return "<default-branch>"
 
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None:
         self.commands.append(pull_request_command(repo, head, base, title, body))
+        self.pull_request = PublishedPullRequest(
+            state="OPEN", number=1, headRefOid=self.head, headRefName=head, baseRefName=base,
+            baseRefOid="<base>", autoMergeRequest=None, body=body)
+
+    def pull_request_for(self, repo: str, branch: str) -> PublishedPullRequest | None:
+        return self.pull_request
 
     def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
         return {"head": head or self.tree(None), "merge_base": merge_base or "<base>", "lines": 0}

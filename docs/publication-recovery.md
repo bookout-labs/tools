@@ -74,6 +74,9 @@ All names below are methods in `tests/test_publication.py`.
 | Reconcile git timeout or lock, halt and retry reconciliation | `test_reconcile_git_errors_remain_git_failed` |
 | Extra commit after reconciliation, halt at commit | `test_reconciled_candidate_mutation_is_rejected_before_publication` |
 | Worker produces no edits, reject | `test_no_changes_fails_without_pushing` |
+| Repository check fails, repair in edit, publish the receipt's tree | `test_failed_repository_check_is_repaired_and_its_receipt_tree_is_published` |
+| Check failures or a tree-changing check reach the cap, publish nothing | `test_check_cap_and_tree_changing_checks_never_publish` |
+| Implement question pauses, posted answer resumes edit or cancel ends the run | `test_implement_question_waits_for_a_posted_answer_or_cancel` |
 | Completed worker checkpoint, crash before commit, retry commit | `test_crash_windows_resume_without_duplicate_completed_work` |
 | Commit lock, halt and retry commit | `test_index_lock_is_resumable` |
 | Commit finishes before checkpoint, crash and recover | `test_crash_windows_resume_without_duplicate_completed_work` |
@@ -85,6 +88,7 @@ All names below are methods in `tests/test_publication.py`.
 | Missing PR, verify and prove before create | `test_graph_commits_and_pushes_before_opening_one_pull_request` |
 | PR create failure, halt and retry | `test_rerun_retries_publication_without_rerunning_the_worker` |
 | PR creation finishes, crash and reuse PR | `test_crash_windows_resume_without_duplicate_completed_work` |
+| Crash after commit, push or PR create, replay twice with matching, mismatched or unreadable observation | `test_publication_crashes_replay_twice_against_each_observation` |
 | Existing PR on wrong base, halt | `test_wrong_base_open_pr_stops_without_creation` |
 | Review changes, next attempt on same branch and PR | `test_second_attempt_adds_a_commit_to_the_same_pull_request` |
 | Fetch, push, ls-remote and commit timeout, typed failure | `test_git_calls_disable_prompts_and_bound_network_and_commit` |

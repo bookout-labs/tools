@@ -71,7 +71,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
         self.assertEqual({owner.name for owner in OWNERS}, model_channels)
         serde = checkpoint_serializer()
         values = {owner.name: owner.value for owner in OWNERS}
-        from foreman.delivery import HumanPrompt
+        from foreman.stage_output import HumanPrompt
         with self.assertNoLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
             for owner in OWNERS:
                 with self.subTest(owner=owner.name):
@@ -140,12 +140,10 @@ with SqliteSaver.from_conn_string(path) as saver:
                       "interrupts": [item.value for item in saved.interrupts],
                       "result": snapshot_result(saved)}, sort_keys=True, default=lambda value: value.model_dump(mode="json")))
 '''
-        size = {"head": "a" * 40, "merge_base": "b" * 40, "lines": 401}
         cases = [
             ("triage", "triage", {}),
             ("spec", "spec", {}),
             ("review", "review_post", {}),
-            ("pr_size", "spec", {"pr_size": size}),
         ]
         # The shared quota wait is an interrupt inside dispatch; test_review_availability resumes it in fresh processes.
         cases += [(code.value, "done", {"halt": code.value, "stop": code.value}) for code in Halt]
@@ -154,14 +152,11 @@ with SqliteSaver.from_conn_string(path) as saver:
         with TemporaryDirectory() as directory:
             for name, predecessor, extra in cases:
                 with self.subTest(pause=name):
-                    stage = "spec" if name == "pr_size" else name
                     plan = next(owner.value for owner in OWNERS if owner.name == "plan")
-                    state = {"schema_version": SCHEMA_VERSION, **{owner.name: owner.value for owner in OWNERS}, "path": [stage], "human_question": "Which?", "halt_detail": "Waiting.", "attempts": [{"stage": "triage", "model": "gpt",
+                    state = {"schema_version": SCHEMA_VERSION, **{owner.name: owner.value for owner in OWNERS}, "path": [name], "human_question": "Which?", "halt_detail": "Waiting.", "attempts": [{"stage": "triage", "model": "gpt",
                                  "commit": "a" * 40, "methods": [], "outcome": "ran", "usage": {
                                      "input": 1, "output": 2, "cache_read": 0, "cache_creation": 0,
                                      "cost_usd": None}}], **extra}
-                    if name == "pr_size":
-                        state["human_question"] = ""
                     if predecessor == "spec":
                         plan = plan.model_copy(update={"spec_gate": "needs_human" if name == "spec" else "ready", "spec_rejection": None})
                     elif name == "triage":
@@ -228,7 +223,7 @@ def worker(node, model, state, instruction):
 
 config = replace(load_config(), pstack=PstackPin.model_validate_json(pin))
 with patch("foreman.runner.load_config", return_value=config), patch.object(
-    workspace, "run", side_effect=lambda command, **kwargs: 1 if stage == "verify" and command == "check" else 0,
+    workspace, "run", side_effect=lambda command, **kwargs: 1 if stage == "check" and command == "check" else 0,
 ):
     result = run_live_delivery(repo="Example/Engine", issue=8, check="check", preflight="env",
         checkpoint=root / "run.sqlite", run=LiveRun(forge, workspace), dispatcher=worker)

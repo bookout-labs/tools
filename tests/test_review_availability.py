@@ -314,7 +314,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 self.assertEqual(len(result["attempts"]) - len(before["attempts"]), len(outcomes) - rounds)
                 self.assertEqual(result["path"][-2:], ["review", "done"])
                 self.assertEqual(result["path"].count("implement"), rounds + 1)
-                self.assertEqual(result["path"].count("verify"), rounds + 1)
+                self.assertEqual(result["path"].count("check"), rounds + 1)
                 self.assertEqual(len(result["review"].review_findings), rounds)
                 self.assertEqual(first["posted"], first["posts_before_rejection"])
                 self.assertEqual((first["posts"], first["merges"]), (rounds, 0))

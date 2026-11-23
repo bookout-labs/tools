@@ -18,20 +18,22 @@ from pydantic import TypeAdapter
 from foreman._raw import is_dict
 from foreman.config import PstackPin, load_config
 from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
-from foreman.delivery import DEFAULT_TOKEN_CAP, HumanPrompt, EnvironmentProbe, LiveRun, PullRequestSizeDecision, compile_delivery, halted, read_delivery_state, human_comments, spec_effect, spec_target
+from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, halted, read_delivery_state, human_comments, spec_effect, spec_target
 from foreman.readiness import MergeState
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, InvalidOutput, QuotaPause
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError
 from foreman.watch import run_key, watch
-from foreman.stage_output import SpecCandidate, spec_digest, StoredSlice, parse_output, load_stored_slice as _load_slice
+from foreman.stage_output import HumanPrompt, SpecCandidate, spec_digest, StoredSlice, parse_output, load_stored_slice as _load_slice
+from foreman.steps import implement
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import WorkState, WorkspaceError
 from foreman.worker import AttemptJournal, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
+IMPLEMENT_PROGRESS = ("implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size")
 
 
 @dataclass
@@ -48,6 +50,10 @@ class RunPresentation:
 
 def snapshot_result(snapshot: StateSnapshot) -> DeliveryResult:
     values = snapshot.values
+    for task in snapshot.tasks:
+        if task.name == "implement" and task.interrupts and isinstance(nested := task.state, StateSnapshot):
+            # A pause inside implement shows the attempt the stage has reached.
+            values = {**values, **nested.values, "path": [*values["path"], *nested.values.get("path", [])]}
     if snapshot.interrupts:
         pause: object = snapshot.interrupts[0].value
         if is_dict(pause) and pause.get("reason") == "quota_exhausted":
@@ -75,8 +81,6 @@ def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
             raise ValueError("The saved candidate targets a different repository, issue or base.")
         expected = candidate.update(plan, single=plan.slice is not None)
         for key in ("slice", "slices", "spec", "work_kind"):
-            if key in {"slice", "spec"} and plan.pr_split is not None:
-                continue
             if getattr(plan, key) != getattr(expected, key):
                 raise ValueError(f"{key} differs from candidate")
     return state
@@ -215,14 +219,9 @@ def run_live_delivery(
                 early_result = read_delivery_state(skill_halt)
             else:
                 graph.update_state(config, skill_halt, as_node="done")
-        def invoke(
-            graph_input: DeliveryState | Command[str] | None,
-            state: DeliveryState,
-            invocation_config: RunnableConfig = config,
-        ) -> None:
-            environment = EnvironmentProbe(run.workspace, state["checks"].preflight, run.check_log)
+        def invoke(graph_input: DeliveryState | Command[str] | None, invocation_config: RunnableConfig = config) -> None:
             for part in graph.stream(
-                graph_input, invocation_config, context=replace(run, environment=environment),
+                graph_input, invocation_config, context=run,
                 durability="sync", stream_mode="updates", version="v2",
             ):
                 if presentation is not None:
@@ -280,12 +279,7 @@ def run_live_delivery(
         if early_result is not None:
             pass
         elif answer is not None and saved.interrupts and saved_values is not None:
-            if parse_output(HumanPrompt, saved.interrupts[0].value).stage == "pr_size":
-                try:
-                    answer = PullRequestSizeDecision(answer).value
-                except ValueError as exc:
-                    raise AnswerError("Answer split or override at the pull request size prompt.") from exc
-            invoke(Command(resume=answer), saved_values)
+            invoke(Command(resume=answer))
         elif saved_values is None:
             assert loaded is not None
             text = loaded["title"] + ("\n\n" + loaded["body"] if loaded["body"] else "")
@@ -327,9 +321,9 @@ def run_live_delivery(
                     initial["stop"] = halt
                 early_result = read_delivery_state(initial)
             else:
-                invoke(initial, initial)
+                invoke(initial)
         elif waiting_for_quota:
-            invoke(Command(resume=True), saved_values)
+            invoke(Command(resume=True))
         elif saved_values.get("halt") in RESUMABLE_HALTS:
             repaired = False
             renew_review = False
@@ -352,8 +346,9 @@ def run_live_delivery(
                         renew_review = (pr.number, pr.head.sha, pr.base.ref) == (
                             target["number"], head, target["baseRefName"],
                         ) and pr.base.sha != target["baseRefOid"]
+            inside = not repaired and saved_values["path"][-1:] in [[step] for step in implement.STEPS]
             before = _checkpoint_before_halt(
-                graph, config, saved_values["path"], "prepare" if repaired else "review" if renew_review else None,
+                graph, config, saved_values["path"], "implement" if repaired or inside else "review" if renew_review else None,
             )
             require_schema_version(before.values, checkpoint, thread)
             require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_budget_usd)
@@ -367,16 +362,20 @@ def run_live_delivery(
                 presentation.restore(before)
             replay = before.config
             receipt = None if repaired else saved_values.get("merge", MergeState()).receipt
-            prior_work = restored.get("work", WorkState())
-            if repaired:
-                prior_work = saved_values.get("work", prior_work)
-            reset_work = repaired or before.next == ("prepare",)
-            work = (WorkState(branch=prior_work.branch, base=prior_work.base, repair_head=repair_head)
-                    if reset_work else prior_work.model_copy(update={"repair_head": None}))
-            prior_checks = restored["checks"]
-            checks = saved_values["checks"].for_attempt() if reset_work else prior_checks
+            progress: DeliveryUpdate = {}
+            prior = saved_values.get("work", WorkState())
+            if repaired or inside and prior.head_sha and prior.published_head == prior.head_sha:
+                # A repair, or a halt before the next attempt started, discards the published attempt.
+                work, checks = WorkState(branch=prior.branch, base=prior.base, repair_head=repair_head), saved_values["checks"].for_attempt()
+            elif inside:
+                # Implement restarts at prepare with the attempt it reached, so no paid call or remote write repeats.
+                work, checks = saved_values.get("work", WorkState()), saved_values["checks"]
+                progress = _DELIVERY_UPDATE.validate_python(
+                    {key: value for key, value in saved_values.items() if key in IMPLEMENT_PROGRESS}, strict=True)
+            else:
+                work, checks = restored.get("work", WorkState()).model_copy(update={"repair_head": None}), restored["checks"]
             assert saved_review is not None
-            retained: DeliveryUpdate = {"plan": restored["plan"].model_copy(update={
+            retained: DeliveryUpdate = {**progress, "plan": (saved_values if inside else restored)["plan"].model_copy(update={
                                             "rejected_revisions": saved_values["plan"].rejected_revisions,
                                         }),
                                         "work": work, "merge": MergeState(receipt=receipt), "checks": checks, "review": (
@@ -386,16 +385,13 @@ def run_live_delivery(
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             if repaired or renew_review:
-                invoke(Command(update=retained), restored, replay)
+                invoke(Command(update=retained), replay)
             else:
-                replay = graph.update_state(replay, retained)
-                restored = checkpoint_state(graph.get_state(replay).values)
-                assert restored is not None
-                invoke(None, restored, replay)
+                invoke(None, graph.update_state(replay, retained))
         elif saved.next and not saved.interrupts:
-            invoke(None, saved_values)
+            invoke(None)
 
-        saved = graph.get_state(config)
+        saved = graph.get_state(config, subgraphs=True)
         result = early_result if early_result is not None else snapshot_result(saved)
         if result.get("stop") == "sliced":
             saved_values = checkpoint_state(saved.values)

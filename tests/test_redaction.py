@@ -193,7 +193,7 @@ class RedactionTest(unittest.TestCase):
         with redirect_stdout(StringIO()) as stdout:
             code = main([*base, "--dry-run", "--request", "Add a field", "--check", f"echo {SYNTHETIC_GITHUB}"])
         self.assertEqual(code, 0)
-        self.assertIn("verify echo [redacted:GitHub Token]\n", stdout.getvalue())
+        self.assertIn("check echo [redacted:GitHub Token]\n", stdout.getvalue())
         self.assertIn("done verified\n", stdout.getvalue())
         self.assertNotIn(SYNTHETIC_GITHUB, stdout.getvalue())
 
@@ -248,13 +248,13 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge.comment_issue"): 1,
             ("github.py", "LiveForge.post_review"): 4,
             ("github.py", "pull_request_command"): 5,
-            ("delivery.py", "compile_delivery.prepare"): 1,
-            ("delivery.py", "compile_delivery.commit"): 2,
-            ("delivery.py", "compile_delivery.publish"): 1,
+            ("steps/implement.py", "prepare"): 1,
+            ("steps/implement.py", "commit"): 2,
+            ("steps/implement.py", "publish"): 1,
             ("workspace.py", "branch_command"): 1,
             ("workspace.py", "commit_commands"): 1,
             ("workspace.py", "push_command"): 1,
             ("workspace.py", "LiveWorkspace.create_branch"): 1,
             ("workspace.py", "LiveWorkspace.committed"): 1,
-            ("workspace.py", "LiveWorkspace.push"): 1,
+            ("workspace.py", "LiveWorkspace.remote_head"): 1,
         })

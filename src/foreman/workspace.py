@@ -76,8 +76,12 @@ class WorkState(BaseModel, frozen=True, extra="forbid"):
     branch: str = ""
     base: str = ""
     attempt_head: str = ""
+    # The builder returned for this round. The fingerprint names the edits the attempt owns.
+    built: bool = False
+    owned: str = ""
     candidate: ImplementationCandidate | None = None
     head_sha: str | None = None
+    published_head: str | None = None
     repair_head: str | None = None
 
 
@@ -185,7 +189,9 @@ class Workspace(Protocol):
     def reconcile(self, parent: str, branch: str, base_branch: str) -> ImplementationCandidate | None: ...
     def tree(self, head: str | None) -> str: ...
     def soft_reset(self, parent: str) -> None: ...
+    def uncommit(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
+    def remote_head(self, branch: str) -> str | None: ...
     def push(self, branch: str, repo: str) -> None: ...
     def has_tracked_file(self, base: str, path: str) -> bool: ...
     def contains_commit(self, base: str, commit: str) -> bool: ...
@@ -419,6 +425,10 @@ class LiveWorkspace:
     def soft_reset(self, parent: str) -> None:
         self._git("reset", "--soft", parent)
 
+    def uncommit(self, parent: str) -> None:
+        """Move the clean branch back to parent, dropping unpublished commits."""
+        self._git("reset", "--keep", parent)
+
     def _validate_remote(self, repo: str) -> list[str]:
         try:
             return validate_remote(repo, self.root, app=credentials.configured)
@@ -433,11 +443,11 @@ class LiveWorkspace:
                 raise WorkspaceError("Push repository differs from the authorized run repository.")
         else:
             self._validate_remote(repo)
-        ref = f"refs/heads/{redact(branch)}"
-        observed = self._git("ls-remote", "origin", ref).split()
-        head = self._git("rev-parse", ref).strip()
-        if not observed or observed[0] != head:
-            self._git(*push_command("origin", branch)[1:])
+        self._git(*push_command("origin", branch)[1:])
+
+    def remote_head(self, branch: str) -> str | None:
+        observed = self._git("ls-remote", "origin", f"refs/heads/{redact(branch)}").split()
+        return os.fsdecode(observed[0]) if observed else None
 
     def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
         merge_base = merge_base or self._base_merge_base(base_branch, head or "HEAD")
