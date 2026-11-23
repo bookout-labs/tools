@@ -252,8 +252,8 @@ class LiveForgeTest(unittest.TestCase):
     @patch("foreman.github.subprocess.run")
     def test_add_label_preserves_existing_labels(self, run):
         run.return_value = gh_result("")
-        LiveForge().add_label("Example/Engine", 2, "factory")
-        self.assertEqual(run.call_args.args[0], ["gh", "issue", "edit", "2", "--repo", "Example/Engine", "--add-label", "factory"])
+        LiveForge().add_label("Example/Engine", 2, "Ready")
+        self.assertEqual(run.call_args.args[0], ["gh", "issue", "edit", "2", "--repo", "Example/Engine", "--add-label", "Ready"])
 
     @patch("foreman.github.subprocess.run")
     def test_create_issue_parses_the_number_and_passes_literal_fields(self, run):
@@ -262,10 +262,10 @@ class LiveForgeTest(unittest.TestCase):
             gh_result('{"number":"42"}'),
         ]
         forge = LiveForge()
-        self.assertEqual(forge.create_issue(REPO, "Plan {repo}", "@draft", ["slice", "factory"], marker=""), 42)
+        self.assertEqual(forge.create_issue(REPO, "Plan {repo}", "@draft", ["slice", "Ready"], marker=""), 42)
         self.assertEqual(run.call_args.args[0], [
             "gh", "api", "repos/Example/Target/issues", "--method", "POST", "-f", "title=Plan {repo}",
-            "-f", "body=@draft", "-f", "labels[]=slice", "-f", "labels[]=factory",
+            "-f", "body=@draft", "-f", "labels[]=slice", "-f", "labels[]=Ready",
         ])
         self.assertIsNone(run.call_args.kwargs["timeout"])
         with self.assertRaises(ForgeError):

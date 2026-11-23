@@ -126,8 +126,8 @@ install the pointer's ref, and a global `foreman` may belong to a different revi
 A missing, unreadable, or empty packaged role stops startup with an error before
 Claude launches.
 
-The factory label is the delivery trigger contract. A host integration must still
-route GitHub label events through `foreman accept` and launch accepted runs;
+The Ready label is the delivery trigger contract. A host integration must still
+route GitHub label deliveries through `foreman accept` and launch accepted runs;
 `foreman coordinator` does not install a webhook or start a polling loop.
 
 After reporting a halted live run, Foreman watches eligible failures by filing a proposed fix or commenting on the existing open proposal for that cause. It records the watch in SQLite and uses a run marker to avoid duplicate writes after a crash; a new halt can add fresh evidence. `--watch-repo OWNER/NAME` selects the proposal repository (default `bookout-labs/tools`). Skipped halts and watch failures are logged without changing the run's exit code; failures retry on the next invocation. Dry runs never contact Forge.
@@ -136,20 +136,13 @@ After reporting a halted live run, Foreman watches eligible failures by filing a
 
 ## What enters the graph
 
-`foreman accept` reads one event and either ignores it or prints the request. It does not call a model.
+`foreman accept` reads one GitHub delivery and either ignores it or prints the issue to run. It does not call a model.
 
-A GitHub event starts when it is `issue_labeled` and the labels include `factory`. The command ignores other GitHub events. It rejects unknown sources.
-
-```yaml
-source: github
-event: issue_labeled
-labels: [factory]
-title: Encode the timecode
-body: The comment thread crashes.
-```
+A delivery starts a run when its `X-GitHub-Event` is `issues`, its action is `labeled`, the label it adds is `Ready`, and the issue is not a pull request. Any other label added to an issue that already carries Ready is ignored. Admission then re-reads the issue from GitHub and admits it only while it still carries Ready, so a delivery that outlived its label leaves the issue unadmitted.
 
 ```sh
-foreman accept event.yaml
+foreman accept --event issues delivery.json
+# start Example/Engine#7
 ```
 
 Promptfoo runs the same contract without a model:

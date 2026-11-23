@@ -384,7 +384,7 @@ class DeliveryTest(unittest.TestCase):
         self.assertTrue(by_node["triage"].startswith(stage_text("triage")))
         for instruction in by_node.values():
             self.assertNotIn("Talk through the work with the person.", instruction)
-            self.assertNotIn("The factory label triggers the delivery graph.", instruction)
+            self.assertNotIn("The Ready label starts the delivery graph.", instruction)
         self.assertTrue(by_node["implement"].startswith(stage_text("implement")))
         self.assertIn("review-quality.md", by_node["review"])
         self.assertNotIn("verify", by_node)

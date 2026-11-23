@@ -60,7 +60,7 @@ class SmokeCommandTest(unittest.TestCase):
             self.assertFalse(os.environ['PATH'].startswith(str(root / 'python/bin')))
             self.assertEqual(process.call_args_list[0].kwargs['env'], credentials.return_value)
             forge.create_issue.assert_called_once()
-            self.assertEqual(forge.create_issue.call_args.args[-1], ['smoke'])
+            self.assertEqual(forge.create_issue.call_args.args[-1], ['smoke', 'Ready'])
             forge.smoke_identity.assert_called_once_with(SMOKE_REPO, 2, 'abc', 1)
             for observed in ((False, True, True), (True, False, True), (True, True, False)):
                 forge.smoke_identity.return_value = observed

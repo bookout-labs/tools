@@ -8,7 +8,7 @@ import re
 from collections.abc import Generator
 from uuid import uuid4
 
-from foreman.github import BOT_LOGIN, ForgeError, LiveForge, SmokeIssue
+from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, LiveForge, SmokeIssue
 
 _RUN = re.compile(r"<!-- foreman-smoke-run: [0-9a-f]{4}(?:-[0-9a-f]{4}){7} -->")
 
@@ -58,7 +58,7 @@ def create_smoke_issue(forge: LiveForge, repo: str) -> int:
     marker = "<!-- foreman-smoke-run: " + "-".join(run[i:i+4] for i in range(0, 32, 4)) + " -->"
     body = "Add smoke_<this issue number>.txt containing exactly smoke <this issue number> and a newline. Change no other files."
     try:
-        return forge.create_issue(repo, "Smoke fixture", body, ["smoke"], marker=marker)
+        return forge.create_issue(repo, "Smoke fixture", body, ["smoke", READY_LABEL], marker=marker)
     except ForgeError:
         matches = [issue.number for issue in forge.smoke_issues(repo)
                    if issue.state == "open" and owned(issue, repo) and _markers(issue.body) == [marker]]

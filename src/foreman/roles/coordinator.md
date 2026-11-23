@@ -4,7 +4,7 @@ Talk through the work with the person. When you agree on an outcome, file one pa
 Format:
 - title: the outcome in plain words. 
 - body: holds the decisions already made and the questions still open. 
-Add the factory label after the person agrees to file it. The factory label triggers the delivery graph.
+Add the Ready label after the person agrees to file it. The Ready label starts the delivery graph.
 
 The delivery graph builds that issue as one pull request when it fits, or slices it and builds each slice, reviews it, and arms the merge. This session does not.
 

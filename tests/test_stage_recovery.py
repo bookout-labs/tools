@@ -34,13 +34,13 @@ class StageRecoveryTest(unittest.TestCase):
         self.assertEqual([title for title, _, _ in self.github.created], [BUILDER["title"], CONSUMER["title"]])
         self.assertEqual(self.github.parents, {(REPO, 101): 8, (REPO, 102): 8})
         self.assertEqual(self.github.dependencies, {102: [101]})
-        self.assertEqual(self.github.label_calls, [(REPO, 101, "factory")])
+        self.assertEqual(self.github.label_calls, [(REPO, 101, "Ready")])
 
     def test_crash_around_each_child_write_replays_twice_without_a_paid_call(self):
         for operation in ("create_issue", "add_sub_issue", "add_blocker"):
             for after_write in (False, True):
                 with self.subTest(operation=operation, after_write=after_write):
-                    self.github = FakeGitHub(["factory"])
+                    self.github = FakeGitHub(["Ready"])
                     paid = self.crash(PLAN, operation, after_write=after_write)
                     for _ in range(2):
                         self.assertEqual(self.walk([])["stop"], "children_filed")
@@ -50,7 +50,7 @@ class StageRecoveryTest(unittest.TestCase):
     def test_crash_around_the_answer_comment_replays_twice_with_one_comment(self):
         for after_write in (False, True):
             with self.subTest(after_write=after_write):
-                self.github = FakeGitHub(["factory"])
+                self.github = FakeGitHub(["Ready"])
                 paid = self.crash(QUESTION, "comment_issue", after_write=after_write)
                 for _ in range(2):
                     self.assertEqual(self.walk([])["stop"], "answered")
@@ -70,7 +70,7 @@ class StageRecoveryTest(unittest.TestCase):
         }
         for name, (tamper, detail) in cases.items():
             with self.subTest(name):
-                self.github = FakeGitHub(["factory"])
+                self.github = FakeGitHub(["Ready"])
                 paid = self.crash(PLAN, "add_sub_issue", after_write=name == "parent")
                 tamper()
                 created = len(self.github.created)

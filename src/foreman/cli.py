@@ -5,14 +5,13 @@ from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from importlib.resources import files
+import json
 import os
 from pathlib import Path
 import re
 import shlex
 import sys
 from typing import TextIO, assert_never
-
-import yaml
 
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
@@ -213,8 +212,9 @@ def main(
     run.add_argument("--max-tokens", type=positive_tokens, help="cap uncached input + cache creation + output work tokens")
     run.add_argument("--max-budget-usd", type=positive_budget)
 
-    accept = commands.add_parser("accept", help="decide whether an event enters the graph")
-    accept.add_argument("path")
+    accept = commands.add_parser("accept", help="decide whether a GitHub delivery starts a run")
+    accept.add_argument("--event", required=True, help="the delivery's X-GitHub-Event header")
+    accept.add_argument("path", help="the delivery's JSON body")
 
     args = parser.parse_args(argv)
     if args.command == "smoke":
@@ -261,16 +261,14 @@ def main(
         return 0
     if args.command == "accept":
         try:
-            event = yaml.safe_load(Path(args.path).read_text())
-            decision = accept_event(event)
-        except (OSError, yaml.YAMLError, AcceptError) as exc:
+            decision = accept_event(args.event, json.loads(Path(args.path).read_text()))
+        except (OSError, json.JSONDecodeError, AcceptError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
         if decision["start"] is False:
             print("ignored")
             return 0
-        print(f"start {decision['source']}")
-        print(decision["request"])
+        print(f"start {decision['repo']}#{decision['issue']}")
         return 0
     if args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)

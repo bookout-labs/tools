@@ -1,11 +1,13 @@
-"""Decide whether an outside event enters the graph. This does not call a model."""
+"""Decide whether a GitHub delivery starts a run. This does not call a model."""
 
+import re
 from typing import Literal
 from typing_extensions import TypedDict
 
-from foreman._raw import is_dict, is_list
+from foreman._raw import is_dict
+from foreman.github import READY_LABEL
 
-FACTORY_LABEL = "factory"
+REPOSITORY = re.compile(r"[\w.-]+/[\w.-]+")
 
 
 class IgnoreEvent(TypedDict):
@@ -14,35 +16,29 @@ class IgnoreEvent(TypedDict):
 
 class StartEvent(TypedDict):
     start: Literal[True]
-    source: Literal["github"]
-    request: str
+    repo: str
+    issue: int
 
 
 class AcceptError(ValueError):
     pass
 
 
-def _request(title: object, body: object) -> str:
-    if not isinstance(title, str) or not title.strip():
-        raise AcceptError("event needs a title")
-    if body is None:
-        body = ""
-    if not isinstance(body, str):
-        raise AcceptError("body must be text")
-    if not body.strip():
-        return title.strip()
-    return f"{title.strip()}\n\n{body.strip()}"
-
-
-def accept_event(event: object) -> IgnoreEvent | StartEvent:
-    if not is_dict(event):
-        raise AcceptError("event must be a mapping")
-    source = event.get("source")
-    if source == "github":
-        if event.get("event") != "issue_labeled":
-            return {"start": False}
-        labels = event.get("labels")
-        if not labels or not is_list(labels) or FACTORY_LABEL not in labels:
-            return {"start": False}
-        return {"start": True, "source": "github", "request": _request(event.get("title"), event.get("body"))}
-    raise AcceptError(f"unknown event source {source}")
+def accept_event(name: str, payload: object) -> IgnoreEvent | StartEvent:
+    """Start on an `issues` delivery whose added label is Ready on a real issue. Admission re-reads the issue live."""
+    if not is_dict(payload):
+        raise AcceptError("payload must be a mapping")
+    if name != "issues" or payload.get("action") != "labeled":
+        return {"start": False}
+    label, issue, repository = payload.get("label"), payload.get("issue"), payload.get("repository")
+    if not (is_dict(label) and is_dict(issue) and is_dict(repository)):
+        raise AcceptError("an issues delivery needs label, issue and repository")
+    # The added label decides, not the issue's full label list, and a pull request is never an issue run.
+    if label.get("name") != READY_LABEL or "pull_request" in issue:
+        return {"start": False}
+    repo, number = repository.get("full_name"), issue.get("number")
+    if not isinstance(repo, str) or not REPOSITORY.fullmatch(repo):
+        raise AcceptError("repository.full_name must be OWNER/NAME")
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise AcceptError("issue.number must be a positive integer")
+    return {"start": True, "repo": repo, "issue": number}

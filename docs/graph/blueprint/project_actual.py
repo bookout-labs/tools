@@ -29,6 +29,7 @@ else:
 SENTINELS = {"__start__": {"kind": "node"}, "__end__": {"kind": "node"}}
 # The migration slices in migration.md: M1-M7 (#232-#238) and M8 Verify (#251).
 MIGRATION_ISSUES = (*range(232, 239), 251)
+DRAWN_EVENTS = {("issues", "labeled"): "issue_labeled"}
 
 
 def module_inventory(source):
@@ -162,17 +163,17 @@ def project():
                 procedure["policy_orders"] = expected_orders
         procedures[name] = procedure
 
-    envelope = {"source": "github", "title": "Synthetic scope", "body": "",
-                "repository": "example/synthetic", "issue_number": 1, "labels": ["factory"],
-                "project_id": "synthetic", "previous_status": "Todo", "status": "Ready"}
-    # The predicate decides which of its source literals are event selectors.
+    # Probe every pair of GitHub event and action literals with a synthetic delivery that adds Ready to an issue.
     intake_source = ast.parse(Path(accept.__file__).read_text())
-    selectors = {node.value for node in ast.walk(intake_source)
-                 if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+    literals = sorted({node.value for node in ast.walk(intake_source)
+                       if isinstance(node, ast.Constant) and isinstance(node.value, str)})
+    delivery = {"label": {"name": "Ready"}, "issue": {"number": 1}, "repository": {"full_name": "example/synthetic"}}
+    started = [(name, action) for name in literals for action in literals
+               if accept.accept_event(name, {**delivery, "action": action})["start"]]
     return {
         "schema_version": 1,
-        "intake": [event for event in sorted(selectors)
-                   if accept.accept_event({**envelope, "event": event})["start"]],
+        # The drawing names GitHub's issues/labeled delivery as Warp's issue_labeled trigger.
+        "intake": [DRAWN_EVENTS.get(pair, ".".join(pair)) for pair in started],
         "graph": graph_snapshot(compiled),
         "procedures": procedures,
         "modules": module_inventory(ROOT),
