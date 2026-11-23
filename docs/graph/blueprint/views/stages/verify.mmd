@@ -1,12 +1,12 @@
 flowchart TD
     n0(["Enter stage"]):::terminal
-    n1(["Verifier · Drive the changed flow at the published head"]):::worker
+    n1(["Verifier · Foreman finds the repository's verify skill, then the verifier drives the changed flow at the published head"]):::worker
     n2["Foreman · Post the evidence comment for the tested head"]:::step
     n3["Continue to Review stage"]:::stage
     n4["Continue to Implement stage"]:::stage
     n5(["Run stops<br/>Reported on the issue"]):::terminal
     n0 --> n1
-    n1 -->|"Unverified"| n3
+    n1 -->|"No skill"| n3
     n1 -->|"PR revision changed"| n4
     n1 --> n5
     n1 -->|"Driven"| n2

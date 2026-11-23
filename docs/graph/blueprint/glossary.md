@@ -4,7 +4,7 @@
 | --- | --- |
 | `foreman_repository` | The `bookout-labs/tools` repository that contains Foreman and its blueprint. |
 | `target_repository` | The repository of the admitted issue and the only destination for that run's changes. |
-| `target_checkout` | The pinned checkout of the target repository. Implementation owns its editable worktree. |
+| `target_checkout` | The pinned checkout of the target repository. Implementation owns its editable worktree. Verify runs the app there read-only and writes captures to its attempt scratch. |
 | Blueprint | The versioned design the human approves for future Foreman runs. |
 | Run | One execution for a GitHub issue under a pinned blueprint and runtime release. |
 | Stage | One of seven LangGraph subgraphs. A stage owns a result and its permitted routes. |
@@ -32,3 +32,5 @@
 | Waiver | An exact, temporary structural difference with a migration issue and a condition for removal. |
 | Scorer | A versioned rubric that assesses recorded work without deciding workflow routes. |
 | Hand fix | A person modifies the change or repairs a run to get the PR to merge. |
+| Criterion | One acceptance criterion of a slice. Verify reports each one as passed, failed or unverified. |
+| Evidence | What the verifier did and observed for each criterion at the tested head, and where its captures are saved. Foreman posts it as one comment for that head, marked stale if the head moved. |

@@ -141,8 +141,11 @@ docs/graph/blueprint/prompts/verify.md:
     What it instructs: 'Foreman supplies the target checkout at the published head
       and the slice acceptance. Confirm that
 
-      HEAD is the named head before you start. Follow the target repository''s verify
-      skill to build and
+      HEAD is the named head before you start. Write captures and scratch files to
+      your attempt scratch,
+
+      never to the checkout. Follow the target repository''s verify skill to build
+      and
 
       start the app with sample data and test accounts, then drive the flow that each
       acceptance

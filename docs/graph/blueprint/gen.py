@@ -313,8 +313,10 @@ def inventory(target, pins):
         owner = contract["implementation"]["module"]
         sections[section].add(owner)
         if section != "dispatch":
-            # A drawn stage may be new: its module, runtime prompt and checks are planned until built.
-            planned.update([owner, *contract["checks"].values(), contract.get("instructions", {}).get("runtime_prompt", owner)])
+            planned.add(owner)
+            if not (ROOT / owner).exists():
+                # A drawn stage that isn't built yet also has its runtime prompt and checks planned. Built stages stay strict.
+                planned.update([*contract["checks"].values(), contract.get("instructions", {}).get("runtime_prompt", owner)])
         sections[section].update(contract["checks"].values())
         add_skills(section, contract.get("skills", []))
     for procedure in target["procedures"].values():

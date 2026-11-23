@@ -76,7 +76,7 @@ Baseline files [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools
 
 ## Verify
 
-Exact published PR head in the exclusive target_checkout, slice acceptance and the repository's verify skill. The verifier runs the app and edits nothing.
+Exact published PR head in the exclusive target_checkout, slice acceptance and the repository's verify skill, which is a `verify-*/SKILL.md` in the target checkout's skills directory at that head. The verifier runs the app and edits nothing.
 
 Entry `src/foreman/steps/verify.py::compile_stage`. Maximum 160 physical lines in the owner module.
 
