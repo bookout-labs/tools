@@ -1,7 +1,6 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from uuid import uuid4
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
@@ -16,23 +15,23 @@ from pydantic import TypeAdapter
 
 from foreman.config import Config, ModelSpec, load_config
 from foreman.dry_run import DryRun, ScriptHandler
-from foreman.dispatch import DISPATCH, DispatchResult, DispatchRun, Handler, InvalidOutput
+from foreman.dispatch import DispatchResult, DispatchRun, Handler, InvalidOutput
 from foreman.github import (
-    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, ReviewComment, merge_command,
+    MERGE_HOLD_VARIABLE, Forge, ForgeError, MergeHoldUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, merge_command,
 )
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.stage_output import (
     PlanState, GateStage, DispatchPlan, DispatchPlanRecord, AttemptRecord, StageOutput, StoredSlice, parse_output, spec_digest,
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
-from foreman.steps import StageRun, implement, research, spec, triage
+from foreman.steps import StageRun, implement, research, review, spec, triage
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.outcomes import Halt, READINESS_HALTS, halted
-from foreman.review_round import ReviewRound, history
+from foreman.review_round import history
 from foreman.usd import BudgetUsd, usd_text
 from foreman.worker import AttemptJournal
-from foreman.workspace import WorkspaceError, CheckLog, ReviewScope, Workspace, WorktreeInspectionFailed, head_mismatch_detail
+from foreman.workspace import WorkspaceError, CheckLog, Workspace, WorktreeInspectionFailed, head_mismatch_detail
 
 GRAPH_NAME = "delivery"
 DEFAULT_TOKEN_CAP = 20_000_000
@@ -86,26 +85,6 @@ def stage_update(
         used = state.get("models_used", {})
         update["models_used"] = {**used, name: model}
     return update
-
-
-def review_submission(output: ReviewRound, scope: ReviewScope) -> tuple[str, list[ReviewComment]]:
-    body = [f"Review route: {output.severity or 'none'}. Head: {output.reviewed_head}. Base ref: {output.base}."]
-    provenance = output.provenance
-    if provenance is not None:
-        reason = provenance.reason.replace("_", " ") if provenance.reason else "not needed"
-        body.append(f"Reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; same-family fallback: {reason}.")
-    comments: list[ReviewComment] = []
-    for finding in sorted(output.findings, key=lambda item: item.severity):
-        location = finding.location
-        path, line = location["path"], location["line"]
-        label = f"Advisory, settled by {finding.ruling_id}" if finding.ruling_id else finding.severity
-        message = f"[{label}] {finding.summary}\n\nImpact: {finding.impact}\n\nEvidence: {finding.evidence}"
-        if location["side"] == "head" and line is not None and (path, line) in scope.inline:
-            comments.append({"path": path, "line": line, "side": "RIGHT", "body": message})
-        else:
-            citation = f"{path}:{line}" if line is not None else path
-            body.append(f"{location['side']} {citation} {message}")
-    return "\n\n".join(body), comments
 
 
 def stop_reason(state: DeliveryState) -> Halt | Literal["verified", "stopped", "cancelled"]:
@@ -189,69 +168,11 @@ def compile_delivery(
         workspace=run.workspace, forge=run.forge, check_log=run.check_log, max_rounds=config.max_review_rounds,
         human_login=run.human_login, dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result))
 
-    def post_review(state: DeliveryState) -> DeliveryUpdate:
-        review_state = state["review"]
-        assert "dispatch_plan" in state and review_state.review_run_id
-        plan = state["dispatch_plan"]
-        assert plan["target"] is not None and plan["scope"] is not None
-        past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
-        report = past.rounds[-1]
-        target = PullRequest.model_validate(plan["target"])
-        if report.reviewed_head != state["checks"].verified_head or (
-            report.reviewed_head, report.base
-        ) != (target.headRefOid, target.baseRefOid):
-            return halted(Halt.review_not_posted, "Review does not match the checked PR head and base.", "review_post")
-        body, comments = review_submission(report, TypeAdapter(ReviewScope).validate_python(plan["scope"]))
-        marker = f"{review_state.review_run_id}:{len(past.rounds)}:{report.base}:{report.reviewed_head}"
-        try:
-            receipt = run.forge.post_review(state["run"].repo, target, body, comments, marker=marker)
-        except ForgeError as exc:
-            return halted(Halt.review_not_posted, str(exc), "review_post")
-        if receipt["state"] != "COMMENTED" or receipt["commit_id"] != report.reviewed_head:
-            return halted(Halt.review_not_posted, "The review receipt does not match the submitted COMMENT.", "review_post")
-        return {"review": review_state.model_copy(update={"review_receipt": receipt})}
-
-    def review(state: DeliveryState) -> DeliveryUpdate:
-        try:
-            head = state["checks"].verified_head
-            if not head:
-                raise WorktreeInspectionFailed("The run did not record a verified HEAD.")
-            worktree = run.workspace.inspect()
-            if worktree.head != head:
-                return {**halted(Halt.merge_not_armed, head_mismatch_detail(worktree.head, head), "review"),
-                        "merge": MergeState(status="not_armed")}
-            if not worktree.clean or worktree.branch is None:
-                raise WorktreeInspectionFailed("The worktree changed after verification.")
-        except WorktreeInspectionFailed as exc:
-            return halted(Halt.git_failed, str(exc), "review")
-
-        return inspect(with_run_id(state))
-
-    def inspect(state: DeliveryState) -> DeliveryUpdate:
-        # #237 makes this call the review stage's own inspect step.
-        def settle(current: DeliveryState, answer: str) -> DeliveryUpdate:
-            # The human's ruling on a disputed scope or rule settles it for the fresh review of this head.
-            review_state = current["review"]
-            past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
-            rulings = [ruling.model_dump() for ruling in past.settled] + [{"id": f"design:{len(past.rounds)}", "text": answer}]
-            return {"review": review_state.model_copy(update={"settled_rulings": rulings})}
-
-        update, _ = stage.consult(DISPATCH, "review", state, None, answered=settle)
-        return update
-
     def outcome(state: DeliveryState, success: str) -> str:
         """The typed result a stage carries to the top router."""
         if state.get("halt") or state.get("stop") == "blocked":
             return "halted"
         return "cancelled" if state.get("stop") == "cancelled" else success
-
-    def after_review(state: DeliveryState) -> str:
-        review_state = state["review"]
-        if state.get("halt"):
-            return "done"
-        if review_state.review == "changes" and review_count(state) >= config.max_review_rounds or state.get("stop") == "cancelled":
-            return "done"
-        return "implement" if review_state.review == "changes" else "merge"
 
     def arm_merge(state: DeliveryState) -> DeliveryUpdate:
         review_state = state["review"]
@@ -375,17 +296,11 @@ def compile_delivery(
         DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun,
     )
 
-    def after_halt(target: str) -> Callable[[DeliveryState], str]:
-        def route(state: DeliveryState) -> str:
-            return "done" if state.get("halt") or state.get("stop") == "cancelled" else target
-        return route
-
     builder.add_node("triage", triage.compile_stage(stage))
     builder.add_node("research", research.compile_stage(stage))
     builder.add_node("spec", spec.compile_stage(stage))
     builder.add_node("implement", implement.compile_stage(stage))
-    builder.add_node("review", review)
-    builder.add_node("review_post", post_review)
+    builder.add_node("review", review.compile_stage(stage))
     builder.add_node("merge", arm_merge)
     builder.add_node("done", finish)
     builder.add_edge(START, "triage")
@@ -397,13 +312,8 @@ def compile_delivery(
         {"validated_single": "implement", "children_filed": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("implement", after_implement,
         {"published": "review", "no_change": END, "cancelled": END, "halted": END})
-    builder.add_conditional_edges(
-        "review",
-        after_halt("review_post"),
-        {"review_post": "review_post", "merge": "merge", "implement": "implement", "done": "done"},
-    )
-    builder.add_conditional_edges("review_post", after_review,
-        {"merge": "merge", "implement": "implement", "done": "done"})
+    builder.add_conditional_edges("review", lambda state: outcome(state, state.get("stop", "")),
+        {"P0": "implement", "P1": "implement", "head_moved": "implement", "none": "merge", "cancelled": END, "halted": END})
     builder.add_edge("merge", "done")
     builder.add_edge("done", END)
     # Each round visits at most all stages, each with one setup and every configured candidate,

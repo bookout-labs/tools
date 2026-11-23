@@ -2047,21 +2047,17 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertIn(detail, result["halt_detail"])
                 self.assertEqual(self.github.merge_calls, [])
 
-    def test_head_moved_before_review_uses_the_existing_merge_stop(self):
+    def test_head_moved_before_review_re_establishes_checked_evidence(self):
         moved = WorktreeState("b" * 40, True, BRANCH)
-        for snapshots in ((CLEAN_WORKTREE, moved),):
-            with self.subTest(snapshots=snapshots), TemporaryDirectory(dir=self.cwd) as directory:
-                self.checkpoint = Path(directory) / "run.sqlite3"
-                result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=snapshots)
-                self.assertEqual(result.get("stop"), "merge_not_armed")
-                self.assertEqual(result.get("merge", MergeState()).status, "not_armed")
-                self.assertIn(f"HEAD is {moved.head}, verification checked {HEAD}.", result.get("halt_detail", ""))
-                self.assertNotIn("review", result.get("models_used", {}))
-                self.assertEqual(self.github.merge_calls, [])
-                resumed = self.walk([APPROVE])
-                self.assertIn("review", resumed.get("models_used", {}))
-                self.assertEqual(resumed.get("merge", MergeState()).status, "armed")
-                self.github.merge_calls.clear()
+        result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {"implementation": "built"}, APPROVE],
+                           snapshots=(CLEAN_WORKTREE, moved))
+        # Review exits head_moved before any reviewer call, and Implement checks the current head again.
+        self.assertEqual(self.calls, ["claude", "codex", "codex", "codex", "claude"])
+        self.assertEqual(result["path"], ["triage", "spec_check", *["prepare", "implement", "check", "commit", "publish"] * 2,
+                                          "review", "merge", "done"])
+        self.assertEqual(result["stop"], "verified")
+        self.assertEqual(len(result["review"].review_findings), 1)
+        self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
 
     def test_retry_after_head_mismatch_repairs_without_stale_observation(self):
         moved = WorktreeState("c" * 40, True, BRANCH)

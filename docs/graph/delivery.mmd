@@ -10,7 +10,6 @@ graph TD;
 	spec(spec)
 	implement(implement)
 	review(review)
-	review_post(review_post)
 	merge(merge)
 	done(done)
 	__end__([<p>__end__</p>]):::last
@@ -19,13 +18,9 @@ graph TD;
 	implement -. &nbsp;published&nbsp; .-> review;
 	merge --> done;
 	research -. &nbsp;answered&nbsp; .-> __end__;
-	review -.-> done;
-	review -.-> implement;
-	review -.-> merge;
-	review -.-> review_post;
-	review_post -.-> done;
-	review_post -.-> implement;
-	review_post -.-> merge;
+	review -. &nbsp;cancelled&nbsp; .-> __end__;
+	review -. &nbsp;P0&nbsp; .-> implement;
+	review -. &nbsp;none&nbsp; .-> merge;
 	spec -. &nbsp;cancelled&nbsp; .-> __end__;
 	spec -. &nbsp;validated_single&nbsp; .-> implement;
 	triage -. &nbsp;cancelled&nbsp; .-> __end__;
