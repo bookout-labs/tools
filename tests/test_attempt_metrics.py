@@ -160,6 +160,23 @@ class AttemptMetricsTests(unittest.TestCase):
         self.assertIsNotNone(blocked.prompt_bytes)
         self.assertIsNone(blocked.native_usage)
 
+    def test_worker_never_reads_the_allowance_and_the_cli_still_enforces_it(self):
+        calls = []
+        def run(args, cwd, env):
+            calls.append(args)
+            return fixture_process(args, "success", 0)
+        state = {"dispatch_plan": {"budget_usd": "0.35", "models": ["claude-opus-5-5-high"], "instruction": "Triage.",
+                                   "methods": [], "target": None, "scope": None},
+                 "run": {"repo": "Example/Engine", "token_cap": 8000000, "max_budget_usd": "3"},
+                 "attempts": [{"stage": "spec", "usage": {"cost_usd": 2.65}, "dollar_charge": "2.65"}]}
+        CliWorker(Path("."), run)("triage", ModelSpec.parse("claude-opus-5-5-high"), state, "Read.")
+        prompt = calls[0][-1]
+        for allowance in ("budget_usd", "token_cap", "max_budget_usd", "cost_usd", "dollar_charge", "0.35", "2.65"):
+            self.assertNotIn(allowance, prompt)
+        self.assertIn("Example/Engine", prompt)
+        self.assertEqual(calls[0][calls[0].index("--max-budget-usd") + 1], "0.35")
+        self.assertEqual(state["dispatch_plan"]["budget_usd"], "0.35")
+
     def test_real_attempt_seam_checkpoint_and_unchanged_ledgers(self):
         config = load_config()
         config.nodes["triage"] = NodeConfig("coordinator", (ModelSpec.parse("claude-opus-5-5-high"),))

@@ -98,7 +98,11 @@ class CheckpointBoundaryTests(unittest.TestCase):
                 prompt = json.loads(args[-1].split("Delivery state:\n")[1])
                 for owner in OWNERS:
                     with self.subTest(owner=owner.name):
-                        self.assertEqual(prompt[owner.name], owner.value.model_dump(mode="json"))
+                        expected = owner.value.model_dump(mode="json")
+                        if owner.name == "run":
+                            # Dispatch owns the allowance, so the worker never reads it.
+                            expected = {key: value for key, value in expected.items() if key not in ("token_cap", "max_budget_usd")}
+                        self.assertEqual(prompt[owner.name], expected)
                 return worker_reply(args, {"triage": "supplied_slice"})
 
             result = CliWorker(Path(directory), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), restored, "Read.")

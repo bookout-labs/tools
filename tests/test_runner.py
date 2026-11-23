@@ -448,7 +448,8 @@ class CliWorkerTest(unittest.TestCase):
                 def run(args, cwd, env):
                     self.assertEqual(args[:len(prefix)], prefix)
                     self.assertEqual(cwd, Path("engine"))
-                    self.assertEqual(json.loads(args[-1].split("Delivery state:\n")[1])["run"], RunState(issue=12).model_dump(mode="json"))
+                    self.assertEqual(json.loads(args[-1].split("Delivery state:\n")[1])["run"],
+                             RunState(issue=12).model_dump(mode="json", exclude={"token_cap", "max_budget_usd"}))
                     expected_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"} if args[0] == "claude" else {}
                     self.assertEqual(env, {**expected_env, "TMPDIR": env["TMPDIR"]})
                     self.assertTrue(Path(env["TMPDIR"]).is_dir())

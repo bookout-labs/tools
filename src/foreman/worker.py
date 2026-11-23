@@ -116,13 +116,15 @@ class CliWorker:
         assert contract is not None
         schema = json.dumps(contract.model_json_schema())
         projected = to_jsonable_python(state)
+        # Dispatch owns the token and dollar allowance. A worker never reads it, so only the CLI's own limit ends a call.
         if plan_state := projected.get("dispatch_plan"):
-            for key in ("instruction", "scope", "resume_session"):
+            for key in ("instruction", "scope", "resume_session", "budget_usd"):
                 plan_state.pop(key, None)
+        if run_state := projected.get("run"):
+            for key in ("token_cap", "max_budget_usd"):
+                run_state.pop(key, None)
         for attempt in projected.get("attempts", []):
-            attempt.pop("prompt_bytes", None)
-            attempt.pop("native_usage", None)
-            for key in ("attempt_id", "work_charge", "dollar_charge"):
+            for key in ("prompt_bytes", "native_usage", "usage", "attempt_id", "work_charge", "dollar_charge"):
                 attempt.pop(key, None)
         if node == "implement":
             prompt += (
