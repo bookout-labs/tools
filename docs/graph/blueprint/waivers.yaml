@@ -17,11 +17,11 @@ waivers:
     V2-a14d48b4c65f3320: missing [steps/verify] halts
     V2-ac636dc8c297e271: mismatched [procedure/implement] skills
     V2-af51f2a4ed383782: missing [top/delivery] node verify
+    V2-b5eb3fd11cd42189: mismatched [procedure/review] prompt
     V2-c0ba8ebd7f2741a3: missing [steps/verify] node drive
     V2-c4ed5ef2cb9bb095: missing [procedure/verify] declaration
     V2-e0bc49acf18660fd: missing [steps/verify] subgraph endpoints
     V2-e1496bab14e215e9: missing [steps/verify] edge drive -> __end__
-    V2-e8993311043047b8: mismatched [procedure/review] prompt
     V2-e8f0e9ac9900113c: missing [steps/dispatch] call from verify.drive
     V2-f40a7a33c594181b: missing [steps/verify] owner src/foreman/steps/verify.py
     V2-f640be403ba68ff1: missing [top/delivery] edge verify -> __end__
