@@ -25,7 +25,7 @@ After an ambiguous write failure, inspect GitHub receipts before retrying.
    uv sync --frozen --no-dev
    ```
 
-   Keep the checkout and its parent directories writable only by Joe.
+   Keep the checkout and its parent directories writable only by the account that runs Foreman.
    Keep `~/.config/bookout-foreman` mode 700 and `app.pem` mode 600.
    The App key stays on Studio.
 2. On MacBook, create a dedicated SSH identity.
@@ -38,7 +38,7 @@ After an ambiguous write failure, inspect GitHub receipts before retrying.
    `ssh-add --apple-use-keychain ~/.ssh/foreman-worker` and add `UseKeychain yes`
    to the host stanza below. Transfer only the public `.pub` line to Studio
    through an authenticated machine channel.
-3. On Studio, enable Remote Login for Joe. Append this line to
+3. On Studio, enable Remote Login for the account that runs Foreman. Append this line to
    `~/.ssh/authorized_keys`, replacing `PUBLIC_KEY` with the public key line.
    Keep `.ssh` mode 700 and `authorized_keys` mode 600.
 
@@ -76,6 +76,6 @@ After an ambiguous write failure, inspect GitHub receipts before retrying.
    ( . /Users/booko/.config/bookout-foreman/worker.env; /Users/booko/.local/share/foreman-worker/.venv/bin/foreman-worker gh pr list )
    ```
 
-   Do not source it in Joe's parent shell. Other Foreman Workspace and Forge
+   Do not source it in your parent shell. Other Foreman Workspace and Forge
    commands that inherit these IDs also enter App mode. Leave the IDs and key
    absent on MacBook and use `--studio foreman-studio` there.
