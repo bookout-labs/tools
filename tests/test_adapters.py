@@ -1,9 +1,11 @@
 import tests
 
+from contextlib import contextmanager
 import json
 from pathlib import Path
 from subprocess import CompletedProcess
 import unittest
+from unittest.mock import MagicMock, patch
 
 from foreman.adapters import Call
 from foreman.adapters.claude import ClaudeAdapter
@@ -21,6 +23,18 @@ def fixture_process(args, name, exit_code):
     suffix = "jsonl" if args[0] == "codex" else "json"
     return CompletedProcess(args, exit_code, (folder / f"{name}.{suffix}").read_text(),
                             stderr.read_text() if stderr.is_file() else "")
+
+
+@contextmanager
+def worker_process(completed=None):
+    """Stand in for the worker's process: yields the Popen mock and the process whose communicate got the prompt."""
+    completed = completed or CompletedProcess([], 0, "", "")
+    process = MagicMock(returncode=completed.returncode)
+    process.__enter__.return_value = process
+    process.communicate.return_value = (completed.stdout, completed.stderr)
+    with patch("foreman.worker.subprocess.Popen", return_value=process) as popen, \
+         patch("foreman.worker.os.killpg", side_effect=ProcessLookupError):
+        yield popen, process
 
 
 class NativeAdaptersTest(unittest.TestCase):

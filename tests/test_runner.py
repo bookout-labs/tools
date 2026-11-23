@@ -40,7 +40,7 @@ from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, SpecOutpu
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply
-from test_adapters import codex_events, fixture_process
+from test_adapters import codex_events, fixture_process, worker_process
 from test_spec_candidate import CandidateTests
 from owner_contract import assert_channels
 
@@ -531,12 +531,13 @@ assert dict(os.environ) == inherited
     def test_subprocess_merges_adapter_environment_with_inherited_environment(self):
         inherited = {"PATH": "/bin", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0"}
         adapter_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
-        with patch.dict("os.environ", inherited, clear=True), patch("foreman.worker.subprocess.run") as run:
+        with patch.dict("os.environ", inherited, clear=True), worker_process() as (popen, process):
             run_worker_command(["claude"], Path("engine"), adapter_env)
-        run.assert_called_once_with(
-            ["claude"], cwd=Path("engine"), env={**inherited, **adapter_env},
-            stdin=subprocess.DEVNULL, input=None, capture_output=True, text=True, pass_fds=(),
+        popen.assert_called_once_with(
+            ["claude"], cwd=Path("engine"), env={**inherited, **adapter_env}, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, pass_fds=(), start_new_session=True,
         )
+        process.communicate.assert_called_once_with(None)
 
     def test_worker_without_a_model_raises_a_config_error(self):
         worker = CliWorker(Path("."), lambda *_: self.fail("CLI must not run"))
@@ -771,9 +772,9 @@ class LiveRunnerTest(unittest.TestCase):
                     self.assertIn("Network and database connections are unavailable", prompt)
                     return quota_with_usage(args)
                 self.assertIn("exact check command", prompt)
-                with patch("foreman.worker.subprocess.run", return_value=worker_reply(args, {"implementation": "retry"})) as run:
+                with worker_process(worker_reply(args, {"implementation": "retry"})) as (_, process):
                     run_worker_command(args, cwd, env)
-                    self.assertEqual(run.call_args.kwargs["input"], prompt)
+                process.communicate.assert_called_once_with(prompt)
                 return active.reply(args, {"implementation": "retry"})
             return active.reply(args, checker_reply(args) or next(replies, {"implementation": "first"}))
         def invoke(stop=None):
