@@ -87,7 +87,7 @@ class SmokeCommandTest(unittest.TestCase):
             with patch('foreman.smoke_command.smoke_lock', side_effect=OSError('lock denied')), \
                  redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
-            self.assertEqual(output.getvalue(), f'smoke {SMOKE_REPO} exit 78 lock attempt prerequisite\n')
+            self.assertEqual(output.getvalue().splitlines()[0], f'smoke {SMOKE_REPO} exit 78 lock attempt prerequisite')
             self.assertIn('lock denied', errors.getvalue())
             credentials.assert_not_called()
             forge.create_issue.assert_not_called()
