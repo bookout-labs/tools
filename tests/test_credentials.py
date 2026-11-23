@@ -10,7 +10,7 @@ from threading import Event
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
 from cryptography.hazmat.primitives import serialization
@@ -36,14 +36,19 @@ class CredentialFixture(unittest.TestCase):
         path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                           serialization.NoEncryption()))
         path.chmod(0o600)
-        self.stack.enter_context(patch.dict(os.environ, FOREMAN_APP_ID='1', FOREMAN_INSTALLATION_ID='2',
+        self.stack.enter_context(patch.dict(os.environ, FOREMAN_APP_ID='1',
                                            FOREMAN_APP_KEY_PATH=str(path), GH_TOKEN='personal'))
         self.clock = self.stack.enter_context(patch('foreman.credentials.time.time', return_value=1000))
         self.http = self.stack.enter_context(patch('foreman.credentials.urlopen'))
-        self.http.return_value.__enter__.return_value.read.side_effect = lambda: json.dumps({
-            'token': 'ghs_' + 'a' * 36,
-            'expires_at': datetime.fromtimestamp(self.clock.return_value + 3600, timezone.utc).isoformat(),
-        }).encode()
+        def respond(request, timeout):
+            # GitHub names the installation for a repository, then mints that installation's token.
+            body = {'id': 2} if request.full_url.endswith('/installation') else {
+                'token': 'ghs_' + 'a' * 36,
+                'expires_at': datetime.fromtimestamp(self.clock.return_value + 3600, timezone.utc).isoformat()}
+            response = MagicMock()
+            response.__enter__.return_value.read.return_value = json.dumps(body).encode()
+            return response
+        self.http.side_effect = self.respond = respond
         self.owner = AppCredentials()
 
 
@@ -51,7 +56,9 @@ class CredentialsTest(CredentialFixture):
     def test_scoped_refresh_and_concurrent_callers(self):
         with ThreadPoolExecutor(max_workers=8) as pool:
             values = list(pool.map(self.owner.environment, ['org/repo'] * 20))
-        self.assertEqual(self.http.call_count, 1)
+        self.assertEqual(self.http.call_count, 2)
+        self.assertEqual(self.http.call_args_list[0].args[0].full_url, 'https://api.github.com/repos/org/repo/installation')
+        self.assertEqual(self.http.call_args.args[0].full_url, 'https://api.github.com/app/installations/2/access_tokens')
         self.assertTrue(all(value['GH_TOKEN'] != 'personal' for value in values))
         request = self.http.call_args.args[0]
         self.assertEqual(json.loads(request.data), {'repositories': ['repo']})
@@ -60,14 +67,14 @@ class CredentialsTest(CredentialFixture):
         self.clock.return_value = 4601 - TOKEN_MARGIN
         self.owner.environment('org/repo')
         self.owner.environment('org/other')
-        self.assertEqual(self.http.call_count, 3)
+        self.assertEqual(self.http.call_count, 6)
         self.assertEqual(json.loads(self.http.call_args.args[0].data), {'repositories': ['other']})
 
     def test_fail_closed_and_sanitize_library_failures(self):
         for error, expected in [(TimeoutError('private material'), 'unavailable'),
                                 (HTTPError('', 401, 'secret', {}, None), 'unauthorized'),
                                 (HTTPError('', 403, 'secret', {}, None), 'permission'),
-                                (HTTPError('', 404, 'secret', {}, None), 'scope'),
+                                (HTTPError('', 404, 'secret', {}, None), 'not installed on org/repo'),
                                 (HTTPError('', 422, 'secret', {}, None), 'scope'),
                                 (HTTPError('', 503, 'secret', {}, None), 'unavailable'),
                                 (HTTPError('', 403, 'secret', {'Retry-After': '30'}, None), 'rate limit')]:
@@ -78,10 +85,10 @@ class CredentialsTest(CredentialFixture):
         with patch.dict(os.environ, FOREMAN_APP_KEY_PATH=str(Path(os.environ['FOREMAN_APP_KEY_PATH']).with_name('missing.pem'))):
             with self.assertRaisesRegex(CredentialFailure, 'unavailable'):
                 self.owner.environment('org/repo')
-        with patch.dict(os.environ, FOREMAN_APP_ID=''):
-            with self.assertRaises(CredentialFailure):
+        with patch.dict(os.environ, FOREMAN_APP_ID='app'):
+            with self.assertRaisesRegex(CredentialFailure, 'FOREMAN_APP_ID'):
                 self.owner.environment('org/repo')
-        with patch.dict(os.environ, FOREMAN_APP_ID='', FOREMAN_INSTALLATION_ID=''):
+        with patch.dict(os.environ, FOREMAN_APP_ID=''):
             self.assertIsNone(self.owner.environment('org/repo'))
 
     def test_gh_command_uses_app_environment_and_preserves_argv(self):
@@ -190,7 +197,7 @@ class CredentialsTest(CredentialFixture):
 
     def test_command_stderr_keeps_shas(self):
         detail = 'expected head 3f786850e387550fdab836ed7e6dc881de23001b got a94a8fe5ccb19ba61c4c0873d391e987982fbbd3'
-        with patch.dict(os.environ, FOREMAN_APP_ID='', FOREMAN_INSTALLATION_ID=''), patch('subprocess.run') as run:
+        with patch.dict(os.environ, FOREMAN_APP_ID=''), patch('subprocess.run') as run:
             for operation in [lambda: LiveForge()._run_command('org/repo', ['gh', 'api', 'repos/org/repo']),
                               lambda: LiveWorkspace(Path.cwd())._git('ls-remote', 'origin')]:
                 run.return_value = subprocess.CompletedProcess([], 1, '', detail)
@@ -203,7 +210,7 @@ class CredentialsTest(CredentialFixture):
         def blocked(*args, **kwargs):
             entered.set()
             release.wait(2)
-            return self.http.return_value
+            return self.respond(*args, **kwargs)
         with patch('foreman.credentials.urlopen', side_effect=blocked), ThreadPoolExecutor(max_workers=2) as pool:
             mint = pool.submit(self.owner.environment, 'org/other')
             self.assertTrue(entered.wait(1))

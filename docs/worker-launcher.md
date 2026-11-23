@@ -43,7 +43,7 @@ After an ambiguous write failure, inspect GitHub receipts before retrying.
    Keep `.ssh` mode 700 and `authorized_keys` mode 600.
 
    ```text
-   restrict,command="cd /Users/booko/.local/share/foreman-worker && FOREMAN_APP_ID=5861795 FOREMAN_INSTALLATION_ID=184333419 .venv/bin/foreman-worker --serve" PUBLIC_KEY
+   restrict,command="cd /Users/booko/.local/share/foreman-worker && FOREMAN_APP_ID=5861795 .venv/bin/foreman-worker --serve" PUBLIC_KEY
    ```
 
    `restrict` disables forwarding, PTY, agent forwarding, X11, and user rc execution.
@@ -67,7 +67,6 @@ After an ambiguous write failure, inspect GitHub receipts before retrying.
 
    ```sh
    export FOREMAN_APP_ID=5861795
-   export FOREMAN_INSTALLATION_ID=184333419
    ```
 
    Source it only inside the launcher's subshell.
