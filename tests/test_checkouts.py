@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
@@ -61,6 +62,12 @@ class ManagedCheckoutTest(unittest.TestCase):
     def test_an_unregistered_empty_directory_becomes_the_worktree(self):
         # A crash between creating the directory and registering the worktree leaves an empty directory.
         self.workspace.root.mkdir(parents=True)
+        self.assertEqual(self.admit(), self.base)
+        self.assertEqual(self.workspace.inspect().head, self.base)
+
+    def test_a_deleted_worktree_directory_is_added_again(self):
+        self.admit()
+        shutil.rmtree(self.workspace.root)
         self.assertEqual(self.admit(), self.base)
         self.assertEqual(self.workspace.inspect().head, self.base)
 

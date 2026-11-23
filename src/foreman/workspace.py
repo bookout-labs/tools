@@ -317,7 +317,7 @@ class LiveWorkspace:
             if self.clone is not None:
                 # Only admission pins a base, so this allocates the issue's checkout exactly once.
                 listed = self._git("worktree", "list", "--porcelain", "-z", cwd=self.clone).split(b"\0")
-                if os.fsencode(f"worktree {self.root}") in listed:
+                if self.root.exists() and os.fsencode(f"worktree {self.root}") in listed:
                     # A crash before the admission checkpoint left the worktree. Nothing has edited it yet.
                     self._git("checkout", "--quiet", "--detach", pinned)
                 else:
