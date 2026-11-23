@@ -55,9 +55,13 @@ else:
 
 
 def run_smoke(directory: Path, deadline: float) -> int:
-    """Serialize cleanup and delivery for the target, including after a crash."""
+    """Serialize cleanup and delivery for each target, including after a crash.
+
+    Every target runs unless one fails: an unavailable target (78) still lets the next one run, and the smoke
+    returns the worst exit code.
+    """
     tokens, dollars = SMOKE_TOKEN_CAP, SMOKE_CLAUDE_USD.amount
-    started = time.monotonic()
+    started, worst = time.monotonic(), 0
     for repo in SMOKE_TARGETS:
         target = directory if repo == SMOKE_REPO else directory / repo.split("/")[-1]
         target.mkdir(exist_ok=True)
@@ -67,10 +71,12 @@ def run_smoke(directory: Path, deadline: float) -> int:
         except (ForgeError, OSError) as exc:
             print(redact(str(exc)), file=sys.stderr, flush=True)
             print(f"smoke {repo} exit 78 lock attempt prerequisite", flush=True)
-            return 78
-        print(f"smoke {repo} exit {code}; work tokens {used}; Claude ${spent}", flush=True)
-        if code:
-            return code
+            code, used, spent = 78, 0, Decimal(0)
+        else:
+            print(f"smoke {repo} exit {code}; work tokens {used}; Claude ${spent}", flush=True)
+        if code == 1:
+            return 1
+        worst = max(worst, code)
         if used is None or spent is None:
             print(f"smoke {repo} exit 1 aggregate usage unknown", flush=True)
             return 1
@@ -79,8 +85,8 @@ def run_smoke(directory: Path, deadline: float) -> int:
             print(f"smoke {repo} exit 1 aggregate budget exhausted", flush=True)
             return 1
     print(f"smoke aggregate work tokens {SMOKE_TOKEN_CAP - tokens}; Claude ${SMOKE_CLAUDE_USD.amount - dollars}; "
-          f"elapsed {time.monotonic() - started:.2f}s", flush=True)
-    return 0
+          f"elapsed {time.monotonic() - started:.2f}s; exit {worst}", flush=True)
+    return worst
 
 
 def seed_old_state(home: Path, repo: str, *issues: int) -> Path:
