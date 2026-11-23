@@ -535,7 +535,7 @@ dispatch:
     - [reconcile, reserve, eligible_fallback]
     - [reconcile, __end__, accepted]
     - [reconcile, __end__, halted]
-  halts: [budget_exceeded, invalid_output, skill_missing, model_dependency_missing, dirty_worktree]
+  halts: [budget_exceeded, invalid_output, git_failed, model_dependency_missing, dirty_worktree]
   retries: {provider_fallback: eligible configured model order and remaining allowance, quota_resume: explicit wake or known provider reset and remaining allowance}
   invariants:
     - Runner acquires a per-repository and issue OS lock before loading the LangGraph checkpoint. Release on pause or process exit.

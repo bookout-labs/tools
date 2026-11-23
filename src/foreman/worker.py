@@ -1,15 +1,18 @@
 """Run a pinned worker and read its final stage result."""
 
 from collections.abc import Mapping
+from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from decimal import Decimal
 import json
 import os
+import signal
 from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import time
 from tempfile import TemporaryDirectory
 from typing import Callable
 
@@ -82,11 +85,22 @@ ADAPTERS: dict[str, Callable[[ModelSpec], CliAdapter]] = {
 def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
     prompt = args[-1] if args[0] == "claude" and args[-2:-1] == ["-p"] else None
     lock_fd = worker_lock.get()
-    return subprocess.run(
-        args[:-1] if prompt is not None else args, cwd=cwd, env={**os.environ, **adapter_env},
-        stdin=subprocess.DEVNULL if prompt is None else None, input=prompt, capture_output=True, text=True,
-        pass_fds=() if lock_fd is None else (lock_fd,),
-    )
+    command = args[:-1] if prompt is not None else args
+    # The worker runs in its own process group, which ends with it, so nothing its tools leave behind keeps the issue lock.
+    with subprocess.Popen(
+        command, cwd=cwd, env={**os.environ, **adapter_env}, stdin=subprocess.DEVNULL if prompt is None else subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, pass_fds=() if lock_fd is None else (lock_fd,), start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(prompt)
+        finally:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+                # The lock is free once every process in the group has exited, which follows the signal shortly.
+                while True:
+                    time.sleep(0.01)
+                    os.killpg(process.pid, 0)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 class CliWorker:

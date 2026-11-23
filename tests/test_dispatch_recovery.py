@@ -11,6 +11,8 @@ import time
 import unittest
 
 from foreman.cli import run_exit_code
+from foreman.runner import issue_lock
+from foreman.worker import run_worker_command
 from tests.skill_fixture import skill_fixture
 
 
@@ -63,6 +65,34 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 sys.exit(17)
 print(json.dumps({"result": result, "calls": calls}, default=lambda value: value.model_dump(mode="json")))
 '''
+
+
+class IssueLockTests(unittest.TestCase):
+    def test_one_writer_per_repository_and_issue_whatever_the_checkpoint(self):
+        with issue_lock("example/lock-test#8"):
+            with self.assertRaisesRegex(ValueError, "already running example/lock-test#8"), issue_lock("example/lock-test#8"):
+                pass
+            with issue_lock("example/lock-test#9"):
+                pass
+
+    def test_processes_a_worker_leaves_behind_end_with_it_and_release_the_lock(self):
+        with TemporaryDirectory() as directory:
+            pidfile = Path(directory) / "leftover.pid"
+            with issue_lock("example/lock-test#8"):
+                # A build tool leaves a background process that inherited the lock, then the worker exits.
+                done = run_worker_command(["sh", "-c", f"sleep 30 >/dev/null 2>&1 & echo $! > {pidfile}", "worker"], Path(directory), {})
+            self.assertEqual(done.returncode, 0)
+            with issue_lock("example/lock-test#8"):
+                pass
+            pid, deadline = int(pidfile.read_text()), time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"leftover process {pid} outlived its worker")
 
 
 class DispatchRecoveryTests(unittest.TestCase):
