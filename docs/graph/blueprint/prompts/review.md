@@ -6,3 +6,5 @@ Give findings with a location, severity, impact and concrete evidence. Reserve P
 substantive correctness, security or scope defects. Report other observations as advisory.
 Return questions about unresolved intent that changes the review verdict for the coordinator or
 personal agent to relay. Foreman posts findings and routes.
+Read the verify evidence for this head. A failed criterion is a P0 or P1 only when it shows a
+correctness or scope defect. Treat unverified criteria and evidence for another head as advisory.

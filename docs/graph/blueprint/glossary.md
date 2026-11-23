@@ -7,7 +7,7 @@
 | `target_checkout` | The pinned checkout of the target repository. Implementation owns its editable worktree. |
 | Blueprint | The versioned design the human approves for future Foreman runs. |
 | Run | One execution for a GitHub issue under a pinned blueprint and runtime release. |
-| Stage | One of six LangGraph subgraphs. A stage owns a result and its permitted routes. |
+| Stage | One of seven LangGraph subgraphs. A stage owns a result and its permitted routes. |
 | Step | A checkpointed node inside a stage or shared dispatch. |
 | Worker | An assigned role that uses a CLI and configured model policy to perform a procedure. |
 | Procedure | The prompt, skills, inputs and typed worker output for a step that calls a worker. |

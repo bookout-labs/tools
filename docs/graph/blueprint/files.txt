@@ -5,6 +5,7 @@ bookout-labs/tools/docs/graph/blueprint/prompts/review.md  —  Review the full 
 bookout-labs/tools/docs/graph/blueprint/prompts/spec.md  —  Draft the plan
 bookout-labs/tools/docs/graph/blueprint/prompts/spec_check.md  —  Check and approve the plan
 bookout-labs/tools/docs/graph/blueprint/prompts/triage.md  —  Classify the issue
+bookout-labs/tools/docs/graph/blueprint/prompts/verify.md  —  Use the change as a user would
 bookout-labs/tools/docs/graph/gaps.toml  —  Exact edge differences. Each slice maps a source to [target, label] pairs.
 bookout-labs/tools/docs/graph/target.mmd
 bookout-labs/tools/evals/corpus/README.md  —  Known-answer corpus v1
@@ -47,6 +48,7 @@ bookout-labs/tools/src/foreman/stages/review.md  —  Review round 1 in full. La
 bookout-labs/tools/src/foreman/stages/spec.md  —  Write the spec. Cover the behavior, the product decisions, and the technical design.
 bookout-labs/tools/src/foreman/stages/spec_check.md  —  Check only the supplied candidate and its proof obligations, seams, contracts, scope and failure paths. Read the repository as needed. Do not edit files, repair the candidate, start subagents or publish issues.
 bookout-labs/tools/src/foreman/stages/triage.md  —  Read the request and set `triage` according to the schema. Use these values for informational or unclear requests.
+bookout-labs/tools/src/foreman/stages/verify.md
 bookout-labs/tools/src/foreman/state.py  —  Delivery graph state channels and their reducers.
 bookout-labs/tools/src/foreman/steps/implement.py
 bookout-labs/tools/src/foreman/steps/merge.py
@@ -54,6 +56,7 @@ bookout-labs/tools/src/foreman/steps/research.py
 bookout-labs/tools/src/foreman/steps/review.py
 bookout-labs/tools/src/foreman/steps/spec.py
 bookout-labs/tools/src/foreman/steps/triage.py
+bookout-labs/tools/src/foreman/steps/verify.py
 bookout-labs/tools/src/foreman/worker.py  —  Run a pinned worker and read its final stage result.
 bookout-labs/tools/src/foreman/worker_auth.py  —  Per-command App authentication for factory network commands.
 bookout-labs/tools/src/foreman/workspace.py  —  Local checkout operations used by delivery runs.
@@ -70,3 +73,4 @@ bookout-labs/tools/tests/test_review_rounds.py  —  Test review rounds.
 bookout-labs/tools/tests/test_runner.py  —  Live runner behavior with offline workers and forge doubles.
 bookout-labs/tools/tests/test_spec_candidate.py
 bookout-labs/tools/tests/test_spec_check.py
+bookout-labs/tools/tests/test_verify.py

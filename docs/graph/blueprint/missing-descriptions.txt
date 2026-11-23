@@ -2,12 +2,14 @@ bookout-labs/tools/.github/workflows/ci.yml
 bookout-labs/tools/docs/graph/target.mmd
 bookout-labs/tools/src/foreman/adapters/claude.py
 bookout-labs/tools/src/foreman/adapters/grok.py
+bookout-labs/tools/src/foreman/stages/verify.md
 bookout-labs/tools/src/foreman/steps/implement.py
 bookout-labs/tools/src/foreman/steps/merge.py
 bookout-labs/tools/src/foreman/steps/research.py
 bookout-labs/tools/src/foreman/steps/review.py
 bookout-labs/tools/src/foreman/steps/spec.py
 bookout-labs/tools/src/foreman/steps/triage.py
+bookout-labs/tools/src/foreman/steps/verify.py
 bookout-labs/tools/tests/test_accept.py
 bookout-labs/tools/tests/test_dispatch_recovery.py
 bookout-labs/tools/tests/test_merge_receipt.py
@@ -16,3 +18,4 @@ bookout-labs/tools/tests/test_readiness.py
 bookout-labs/tools/tests/test_review_context.py
 bookout-labs/tools/tests/test_spec_candidate.py
 bookout-labs/tools/tests/test_spec_check.py
+bookout-labs/tools/tests/test_verify.py

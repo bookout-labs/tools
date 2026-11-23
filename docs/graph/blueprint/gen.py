@@ -313,7 +313,8 @@ def inventory(target, pins):
         owner = contract["implementation"]["module"]
         sections[section].add(owner)
         if section != "dispatch":
-            planned.add(owner)
+            # A drawn stage may be new: its module, runtime prompt and checks are planned until built.
+            planned.update([owner, *contract["checks"].values(), contract.get("instructions", {}).get("runtime_prompt", owner)])
         sections[section].update(contract["checks"].values())
         add_skills(section, contract.get("skills", []))
     for procedure in target["procedures"].values():

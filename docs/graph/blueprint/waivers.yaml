@@ -1,2 +1,27 @@
 # IDs bind each exact difference to its migration issue. Delete the entry when the difference closes.
-waivers: {}
+waivers:
+  251:
+    V2-063170af35697f53: missing [steps/verify] edge post -> __end__
+    V2-0a7de2f23324161e: mismatched [procedure/review] inputs
+    V2-0fd210fef8c34232: extra [top/delivery] edge implement -> review
+    V2-11020c5b7a20e85d: missing [steps/verify] edge drive -> post
+    V2-205a12112dcbe297: missing [steps/verify] edge drive -> __end__
+    V2-24ce443053b10102: missing [steps/verify] owner src/foreman/steps/verify.py
+    V2-3b7bf3f8ca1aaa58: missing [top/delivery] edge verify -> implement
+    V2-41d6b9db2d7574a5: missing [steps/verify] owner src/foreman/steps/verify.py
+    V2-4888b48a8b3ee4be: missing [steps/verify] node post
+    V2-50a5f8a6c9de6c77: mismatched [procedure/review] worker
+    V2-5a2231ff8acbc9ce: missing [steps/verify] edge __start__ -> drive
+    V2-5c5f837efd9fc317: missing [steps/verify] retries
+    V2-6439bd0435be7357: missing [top/delivery] edge implement -> verify
+    V2-7b7596f3beb99681: mismatched [procedure/review] prompt
+    V2-a14d48b4c65f3320: missing [steps/verify] halts
+    V2-ac636dc8c297e271: mismatched [procedure/implement] skills
+    V2-ae00f5327aa82522: missing [top/delivery] edge verify -> review
+    V2-af51f2a4ed383782: missing [top/delivery] node verify
+    V2-c0ba8ebd7f2741a3: missing [steps/verify] node drive
+    V2-c4ed5ef2cb9bb095: missing [procedure/verify] declaration
+    V2-e0bc49acf18660fd: missing [steps/verify] subgraph endpoints
+    V2-e8f0e9ac9900113c: missing [steps/dispatch] call from verify.drive
+    V2-f40a7a33c594181b: missing [steps/verify] owner src/foreman/steps/verify.py
+    V2-f640be403ba68ff1: missing [top/delivery] edge verify -> __end__

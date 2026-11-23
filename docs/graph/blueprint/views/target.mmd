@@ -4,41 +4,45 @@ flowchart TD
     n2["Research · Answer the question"]:::stage
     n3["Spec · Plan and check the work"]:::stage
     n4["Implement · Build and publish the change"]:::stage
-    n5["Review · Review the full pull request"]:::stage
-    n6["Merge · Queue and confirm the merge"]:::stage
-    n7(["Cancelled"]):::terminal
-    n8(["Halted"]):::terminal
-    n9(["Answered"]):::terminal
-    n10(["Children filed"]):::terminal
-    n11(["No change"]):::terminal
-    n12(["Merged"]):::terminal
-    n13(["Closed"]):::terminal
+    n5["Verify · Use the change as a user would"]:::stage
+    n6["Review · Review the full pull request"]:::stage
+    n7["Merge · Queue and confirm the merge"]:::stage
+    n8(["Cancelled"]):::terminal
+    n9(["Halted"]):::terminal
+    n10(["Answered"]):::terminal
+    n11(["Children filed"]):::terminal
+    n12(["No change"]):::terminal
+    n13(["Merged"]):::terminal
+    n14(["Closed"]):::terminal
     n0 -->|"GitHub App webhook"| n1
     n1 -->|"Question"| n2
     n1 -->|"Plan / Supplied slice"| n3
-    n1 --> n7
     n1 --> n8
-    n2 --> n9
-    n2 --> n7
+    n1 --> n9
+    n2 --> n10
     n2 --> n8
+    n2 --> n9
     n3 -->|"One slice clears both checks"| n4
-    n3 --> n10
-    n3 --> n7
+    n3 --> n11
     n3 --> n8
+    n3 --> n9
     n4 -->|"Published"| n5
-    n4 --> n11
-    n4 --> n7
+    n4 --> n12
     n4 --> n8
-    n5 -->|"Critical defect / Serious defect / PR revision changed"| n4
-    n5 -->|"No blocking finding"| n6
-    n5 --> n7
-    n5 --> n8
-    n6 --> n12
-    n6 --> n13
-    n6 -->|"Checked revision"| n5
-    n6 -->|"Repair"| n4
-    n6 --> n7
+    n4 --> n9
+    n5 -->|"Posted / Unverified"| n6
+    n5 -->|"PR revision changed"| n4
+    n5 --> n9
+    n6 -->|"Critical defect / Serious defect / PR revision changed"| n4
+    n6 -->|"No blocking finding"| n7
     n6 --> n8
+    n6 --> n9
+    n7 --> n13
+    n7 --> n14
+    n7 -->|"Checked revision"| n6
+    n7 -->|"Repair"| n4
+    n7 --> n8
+    n7 --> n9
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36
