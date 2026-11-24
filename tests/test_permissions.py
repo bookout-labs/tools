@@ -179,9 +179,16 @@ class PermissionsTest(unittest.TestCase):
                 with self.subTest(model=model):
                     refused = CliWorker(checkout, run, scratch_root=state_dir)("verify", ModelSpec.parse(model), state, "verify")
                     self.assertEqual((refused.kind, list(run_dir.iterdir()), len(seen)), ("cli_missing", [kept], 1))
+            # No short temp directory for Claude, after the attempt directory exists.
+            with patch("foreman.worker.TemporaryDirectory", side_effect=OSError("no /tmp")):
+                outcome = CliWorker(checkout, runner, scratch_root=state_dir)("verify", ModelSpec.parse("claude-opus-5-5-high"), state, "verify")
+            self.assertEqual((outcome.kind, list(run_dir.iterdir()), len(seen)), ("cli_missing", [kept], 1))
+            # Errors before and after the attempt directory exists.
             with self.assertRaises(ValueError):
                 CliWorker(checkout, runner, scratch_root=state_dir)("verify", ModelSpec.parse("claude-opus-5-5-high"),
                                                                     {**state, "dispatch_plan": {"bad": 1}}, "verify")
+            with patch("foreman.worker.ClaudeAdapter.command", side_effect=RuntimeError("adapter broke")), self.assertRaises(RuntimeError):
+                CliWorker(checkout, runner, scratch_root=state_dir)("verify", ModelSpec.parse("claude-opus-5-5-high"), state, "verify")
             self.assertEqual(list(run_dir.iterdir()), [kept])
 
     def test_captured_verifier_reaches_no_network_and_writes_only_the_checkout_and_scratch(self):
