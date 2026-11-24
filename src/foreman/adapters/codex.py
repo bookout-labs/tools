@@ -13,7 +13,7 @@ from typing import ClassVar
 from pydantic import TypeAdapter, ValidationError
 
 from foreman._raw import is_dict
-from foreman.adapters import Call, NativeUsage, NativeUsageTokens, Outcome, OutcomeKind, Usage, build_outcome
+from foreman.adapters import Call, CapabilityUnavailable, NativeUsage, NativeUsageTokens, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.config import ModelSpec
 
 EVENT = TypeAdapter(dict[str, object])
@@ -184,6 +184,9 @@ class CodexAdapter:
     env: ClassVar[Mapping[str, str]] = {}
 
     def command(self, call: Call) -> list[str]:
+        if call.drive:
+            # No capture yet shows Codex's profile confining a verifier that builds and drives the app.
+            raise CapabilityUnavailable("Codex: no captured boundary confines a verifier that builds and drives the app")
         schema_path = call.temp_dir / "output-schema.json"
         schema_path.write_text(call.schema, encoding="utf-8")
         filesystem = {str(root.resolve()): '"read"' for root in call.read_roots}

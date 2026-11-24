@@ -23,6 +23,21 @@ A host that cannot sandbox (no Seatbelt, or Linux without `bwrap` and `socat`) r
 launch, and so does a host with no short temp directory. A sandbox that fails at startup anyway (for example under
 AppArmor or WSL1) makes Claude print "sandbox required but unavailable" and exit, which also reads as `cli_missing`.
 In each case the dispatcher tries the next model. Implement keeps the exact `Bash(<check>)` rule.
+
+The verifier builds and drives the app, so it runs Bash in the same fail-closed sandbox with the same write
+boundary, short temp directory and `cli_missing` cases. It has no Edit or Write tool and no command allow rule, and
+it reaches no network: the capture shows a loopback listener refused (`Operation not permitted`) along with every host.
+Claude Code's `allowLocalBinding` would let an app listen, but on macOS 2.1.329 it also lets the verifier reach every
+loopback service on the host (a probe fetched a page from a host server started outside the sandbox), and its Seatbelt
+profile allows inbound connections on every interface. Until a narrower boundary exists, a criterion that needs a running server is reported unverified.
+A process started in one Bash call doesn't survive into the next. A build may write ignored output in the checkout;
+the verifier writes nothing there itself, and after the drive the Verify stage checks that tracked and untracked
+non-ignored files are unchanged (#251). Its attempt directory, `foreman-verify/<repo>-<issue>/<attempt>` under the
+state directory, outlives the call so the captures it names stay readable as evidence. Every exit before the CLI
+launches removes it. The prompt names the attempt scratch by absolute path, because inside the sandbox `$TMPDIR` is
+Claude's own short temp directory, which the call removes. Codex and Grok calls for the verifier return `cli_missing`
+before launch, because no capture yet shows either confining one.
+
 The native read-only matcher refuses the planned review diff. Review calls therefore
 grant each standalone command from the bound `ReviewScope`, including pinned diffs,
 tree listings and blob reads. The prompt and exact Bash rules share this command list.
@@ -53,7 +68,7 @@ command results independently of model prose.
 
 Reproduce the Claude 2.1.329 captures with
 `.venv/bin/python tests/capture-claude-permissions.py <mode>` for edit, inherited,
-readonly and compound. Each capture contains the exact argv, result envelope and
+readonly, compound and verify. Each capture contains the exact argv, result envelope and
 filesystem observations. Transcript tool calls and results corroborate method reads
 and denied operations. The inherited probe adds permissive project settings.
 The clean edit capture proves source edits, scratch writes, and edits to pyproject.toml
