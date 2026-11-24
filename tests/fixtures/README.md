@@ -86,6 +86,7 @@ execute.
 Foreman calls the GitHub REST API through `gh api`.
 
 - `GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` returns issue objects. Foreman reads `number`, `title`, `repository_url`, `html_url`, and `state` from each page. [GitHub REST API 2026-03-10](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#list-dependencies-an-issue-is-blocked-by)
+- `GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocking` returns the issues it blocks, in any repository, as the same issue objects. Merge release reads it once. [List dependencies an issue is blocking](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#list-dependencies-an-issue-is-blocking)
 - `POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` takes the blocker's numeric `issue_id`. Foreman gets that ID from `GET /repos/{owner}/{repo}/issues/{issue_number}`. [Add a dependency](https://docs.github.com/en/rest/issues/issue-dependencies?apiVersion=2026-03-10#add-a-dependency-an-issue-is-blocked-by), [Get an issue](https://docs.github.com/en/rest/issues/issues?apiVersion=2026-03-10#get-an-issue)
 - `gh api --paginate --slurp` returns an array of pages. `-F issue_id=<id>` sends the ID as a JSON integer. [GitHub CLI 2.102.0](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/api/api.go)
 

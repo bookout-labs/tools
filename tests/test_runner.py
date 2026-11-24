@@ -1178,15 +1178,15 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(run_exit_code(result), 1)
         self.assertEqual(result["watch"]["action"], "filed")
 
-    def test_ready_dependent_is_released_once_after_rejection_repair_and_matching_merge(self):
-        # ME3: parent 7 holds this issue, a dependent blocked only by it, and one also blocked by an open sibling.
+    def test_open_dependents_are_released_once_after_rejection_repair_and_matching_merge(self):
+        # ME3: this issue blocks a dependent, one also blocked by an open sibling, and one already closed.
         other = self.github.create_issue("Example/Engine", "Other", "Still open.", ["slice"], marker="")
         planned = lambda *numbers: slice_body({**EMPTY_SLICE, "depends_on": [f"#{number}" for number in numbers], "blocker_numbers": list(numbers)})
         dependent = self.github.create_issue("Example/Engine", "Dependent", planned(8), ["slice"], marker="")
         waiting = self.github.create_issue("Example/Engine", "Waiting", planned(8, other), ["slice"], marker="")
-        for number in (8, dependent, waiting, other):
-            self.github.parents[("Example/Engine", number)] = 7
-        self.github.dependencies = {dependent: [8], waiting: [8, other]}
+        done = self.github.create_issue("Example/Engine", "Done", planned(8), ["slice"], marker="")
+        self.github.closed.add(done)
+        self.github.dependencies = {dependent: [8], waiting: [8, other], done: [8]}
         self.github.queue_merges = False
         rejected = []
 
@@ -1200,23 +1200,27 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             queued = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
             self.assertEqual((queued["stop"], queued["merge"].status), ("merge_pending", "armed"))
             # A duplicate wake re-reads GitHub, keeps waiting and releases nothing early.
-            self.assertEqual(self.walk([])["stop"], "merge_pending")
-            self.assertEqual(self.github.label_calls, [])
+            waited = self.walk([])
+            self.assertEqual(waited["stop"], "merge_pending")
+            self.assertNotIn("released", waited)
             rejected.append(True)
             repaired = self.walk([{"implementation": "built"}, APPROVE])
         self.assertEqual(repaired["stop"], "merge_pending")
+        self.assertNotIn("released", repaired)
         repair = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
         self.assertIn("merge queue removed the entry", repair["checks"]["failure_output"])
         self.assertEqual(len(self.github.reviews), 2)
         self.assertEqual(len(self.github.merge_calls), 2)
-        self.assertEqual(self.github.label_calls, [])
         self.github.queue_merges = True
         merged = self.walk([])
         self.assertEqual((merged["stop"], merged["merge"].merge_commit_sha), ("merged", MERGE_COMMIT))
-        self.assertEqual(self.github.label_calls, [("Example/Engine", dependent, "Ready")])
-        # A replayed wake after the merge files no second release.
-        self.assertEqual(self.walk([])["stop"], "merged")
-        self.assertEqual(self.github.label_calls, [("Example/Engine", dependent, "Ready")])
+        # Release names every open dependent and writes no label. Admission decides each one from its own prerequisites.
+        names = [f"Example/Engine#{dependent}", f"Example/Engine#{waiting}"]
+        self.assertEqual(merged["released"], names)
+        # A replayed wake after the merge names the same dependents again.
+        replayed = self.walk([])
+        self.assertEqual((replayed["stop"], replayed["released"]), ("merged", names))
+        self.assertEqual(self.github.label_calls, [])
 
     def test_each_merge_wake_reads_github_once(self):
         # A wake restarts the waiting stage, so it never replays the reads of earlier wakes.
@@ -1271,26 +1275,51 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertIn(": conflict;", json.loads(self.prompts[-2].split("Delivery state:\n")[1])["checks"]["failure_output"])
         self.assertEqual(len(self.github.reviews), 2)
 
-    def test_release_waits_for_every_prerequisite_including_other_repositories(self):
-        self.github.parents[("Example/Engine", 8)] = 7
-        planned = slice_body({**EMPTY_SLICE, "depends_on": ["#8"], "blocker_numbers": [8]})
-        held = self.github.create_issue("Example/Engine", "Held", planned, ["slice"], marker="")
-        released = self.github.create_issue("Example/Engine", "Released", planned, ["slice"], marker="")
-        broken = self.github.create_issue("Example/Engine", "Broken", "No slice record.", ["slice"], marker="")
-        for number in (held, released, broken):
-            self.github.parents[("Example/Engine", number)] = 7
-        # Triage could not admit the broken slice, so release leaves it for a person too.
-        self.github.dependencies = {held: [8], released: [8], broken: [8]}
-        listed = self.github.blockers
-
-        def blockers(repo, number):
-            foreign = IssueBlocker(number=3, title="Prerequisite", repository_url="https://api.github.com/repos/Example/Other",
-                                   html_url="https://github.com/Example/Other/issues/3", state="open" if number == held else "closed")
-            return [*listed(repo, number), *([foreign] if number in (held, released) else [])]
-        with patch.object(self.github, "blockers", side_effect=blockers):
+    def test_release_names_dependents_in_other_repositories_and_admission_decides(self):
+        local = self.github.create_issue("Example/Engine", "Local", "No slice record.", ["slice"], marker="")
+        self.github.dependencies = {local: [8]}
+        listed = self.github.blocking
+        foreign = IssueBlocker(number=3, title="Dependent", repository_url="https://api.github.com/repos/Example/Other",
+                               html_url="https://github.com/Example/Other/issues/3", state="open")
+        with patch.object(self.github, "blocking", side_effect=lambda repo, number: [*listed(repo, number), foreign]) as read:
             result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(result["stop"], "merged")
-        self.assertEqual(self.github.label_calls, [("Example/Engine", released, "Ready")])
+        # One read of the issue's blocking list. A broken slice is still named, because admission halts it with evidence.
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(result["released"], [f"Example/Engine#{local}", "Example/Other#3"])
+        self.assertEqual(self.github.label_calls, [])
+
+    def test_release_read_failure_resumes_and_still_ends_merged(self):
+        self.github.dependencies = {101: [8]}
+        self.github.create_issue("Example/Engine", "Dependent", "Body", ["slice"], marker="")
+        listed = self.github.blocking
+        with patch.object(self.github, "blocking", side_effect=[ForgeError("HTTP 503"), *[listed("Example/Engine", 8)] * 2]):
+            failed = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            self.assertEqual((failed["stop"], run_exit_code(failed)), ("readiness_unavailable", 75))
+            self.assertIn("Dependent release could not read GitHub", failed["halt_detail"])
+            resumed = self.walk([])
+        self.assertEqual((resumed["stop"], resumed["released"], run_exit_code(resumed)), ("merged", ["Example/Engine#101"], 0))
+        self.assertEqual(len(self.github.merge_calls), 1)
+        self.assertEqual(len(self.github.reviews), 1)
+
+    def test_prerequisites_merged_together_both_count_before_their_issues_close(self):
+        first, second = (self.github.create_issue("Example/Engine", title, slice_body({**EMPTY_SLICE, "title": title}), ["slice"], marker="")
+                         for title in ("First", "Second"))
+        self.github.bodies[("Example/Engine", 8)] = slice_body(
+            {**EMPTY_SLICE, "depends_on": ["First", "Second"], "blocker_numbers": [first, second]})
+        self.github.dependencies = {8: [first, second]}
+        merged_pulls = set()
+        is_merged = self.github.is_merged
+        # GitHub reports each closing pull request merged while its issue is still open.
+        with patch.object(self.github, "is_merged", side_effect=lambda repo, number, contains=None:
+                          number in merged_pulls or is_merged(repo, number, contains=contains)):
+            merged_pulls.add(first)
+            blocked = self.walk([])
+            self.assertEqual(blocked["stop"], "blocked")
+            self.assertEqual(blocked["halt_detail"], f"Open blockers: https://github.com/Example/Engine/issues/{second}")
+            merged_pulls.add(second)
+            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["stop"], "merged")
 
     def test_unverified_head_answer_is_saved_and_never_answers_the_next_question(self):
         observe, foreign = self.github.readiness, "c" * 40
@@ -1760,27 +1789,25 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(resumed["stop"], "children_filed")
         self.assertEqual([child.number for child in self.github.sub_issues("Example/Engine", 8)], [101, 102])
         self.assertEqual(len(self.github.created), 2)
-        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready")])
+        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready"), ("Example/Engine", 102, "Ready")])
+        self.assertEqual(resumed["released"], ["Example/Engine#101", "Example/Engine#102"])
         self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
-        # An unreleased child is not admitted. Once someone adds Ready, its open blocker still keeps it unadmitted.
-        for label, line in ((None, "#102 does not carry the Ready label."), ("Ready", "Open blockers: https://github.com/Example/Engine/issues/101")):
-            if label:
-                self.github.issue_labels[102].append(label)
-            with contextlib.redirect_stdout(io.StringIO()) as stdout:
-                code = main(
-                    ["run", "delivery", "--repo", "Example/Engine", "--issue", "102", "--check", "exit 0"],
-                    checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
-                    worker_runner=lambda *_: self.fail("An unadmitted issue must not dispatch."),
-                )
-            self.assertEqual(code, 1)
-            self.assertEqual(transcript(stdout.getvalue()), f"admit\ndone blocked\n{line}\n")
+        # The child carries Ready, and its open blocker keeps it unadmitted.
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "102", "--check", "exit 0"],
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                worker_runner=lambda *_: self.fail("An unadmitted issue must not dispatch."),
+            )
+        self.assertEqual(code, 1)
+        self.assertEqual(transcript(stdout.getvalue()), "admit\ndone blocked\nOpen blockers: https://github.com/Example/Engine/issues/101\n")
         self.github.closed.add(101)
         self.assertIn("no merged pull request", self.walk([], issue=102)["halt_detail"])
         self.github.merged.add(101)
-        # The finished parent run files nothing more. Merge release rechecks Ready dependents (#237).
+        # The finished parent run files and labels nothing more. Merge release names the dependents to admit.
         self.assertEqual(self.walk([])["stop"], "children_filed")
         self.assertEqual(self.github.dependencies, {102: [101]})
-        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready")])
+        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready"), ("Example/Engine", 102, "Ready")])
         child = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], issue=102)
         self.assertEqual(child["stop"], "merged", child.get("halt_detail"))
         self.assertEqual(child["path"][:4], ["triage", "spec_check", "prepare", "implement"])
@@ -1966,6 +1993,26 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertIn("Check stderr [redacted:GitHub Token]\n", stdout.getvalue())
         self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, stdout.getvalue() + stderr.getvalue())
+
+    def test_cli_prints_a_start_line_per_released_issue_including_on_replay(self):
+        self.github.create_issue("Example/Engine", "Dependent", "Body", ["slice"], marker="")
+        self.github.create_issue("Example/Engine", "Later", "Body", ["slice"], marker="")
+        self.github.dependencies = {101: [8], 102: [8]}
+        fake = FakeWorkspace(self.cwd)
+        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        outputs = []
+        for _ in range(2):
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                code = main(
+                    ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
+                    worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
+                    checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
+                )
+            self.assertEqual(code, 0)
+            outputs.append([line for line in stdout.getvalue().splitlines() if line.startswith("start ")])
+        # The replay of the finished run prints the same lines, so a host that crashed partway starts the rest.
+        self.assertEqual(outputs, [["start Example/Engine#101", "start Example/Engine#102"]] * 2)
+        self.assertEqual(len(self.github.merge_calls), 1)
 
     def test_check_streams_in_write_order_before_the_command_exits(self):
         check = self.cwd / "stream.py"
