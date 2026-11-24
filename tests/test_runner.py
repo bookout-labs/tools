@@ -6,6 +6,7 @@ from foreman.stages import STAGES
 import contextlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from inspect import signature
 import io
 import json
 import os
@@ -1529,6 +1530,10 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             update, _ = gate.consult(Mock(**{"invoke.return_value": {}}), "review", state, lambda current: [current["checks"].verified_head])
         self.assertEqual((update["stop"], update.get("halt_detail"), update["human_question"]), ("cancelled", None, ""))
         self.assertEqual(github.pr_closes, [])
+
+    def test_a_gate_has_no_route_for_an_unmatched_result(self):
+        """CI proves every route value has a route (rules.routing), so consult takes no route and marks no routing defect."""
+        self.assertEqual(list(signature(StageRun.consult).parameters), ["self", "graph", "name", "state", "scope", "owned", "answered"])
 
     def test_admission_and_a_resumed_halt_read_the_stop_first(self):
         """TR6: triage.admit reads the stop before anything else, and a halted run that resumes sees a stop posted meanwhile."""
