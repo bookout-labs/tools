@@ -198,7 +198,7 @@ class LiveWatchTest(unittest.TestCase):
                 self.run = LiveRun(self.forge, workspace, skills=fixture_skills, human_login="fixture-owner")
                 self.assertEqual(self.invoke(dispatcher=dispatcher)['stop'], stop)
 
-    def test_live_forge_receives_redacted_halt_on_issue_and_repeat_comment(self):
+    def test_live_halt_detail_stays_redacted_on_the_run_issue_and_out_of_the_watch_repo(self):
         secret = 'ghp_' + 'a' * 36
         status = []
         def gh(args, **kwargs):

@@ -93,7 +93,7 @@ class WatchTest(unittest.TestCase):
             "Evidence: Example/Engine#8; stop=invalid_output; attempts=review/gpt-6.1-sol-high=ran\n", marker="<!-- foreman-watch-run: Example/Engine#9@43 -->")
 
     def test_detail_stays_out_of_a_watch_repo_other_than_the_runs(self):
-        for repo, shown in ((REPO, False), (TARGET, True)):
+        for repo, shown in ((REPO, False), (TARGET, True), (TARGET.lower(), True)):
             with self.subTest(repo=repo):
                 fake = FakeGitHub()
                 watch(state(detail="private detail", repo=repo), fake, TARGET, KEY)

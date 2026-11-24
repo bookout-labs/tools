@@ -38,7 +38,7 @@ def watch(state: DeliveryResult, forge: Forge, repo: str, run_key: RunKey) -> Wa
     run_state = state["run"]
     evidence = f"Evidence: {run_state.repo}#{run_state.issue or '<issue>'}; stop={halt}; attempts={attempts}\n"
     # Halt detail quotes the run's repository, so it stays in that run's report when the watch repo is another one.
-    if run_state.repo == repo:
+    if run_state.repo.casefold() == repo.casefold():
         evidence += f"\nDetail:\n\n{indent(state.get('halt_detail', ''), '    ')}\n"
     if matches:
         number = matches[0].number
