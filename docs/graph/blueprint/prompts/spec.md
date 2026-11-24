@@ -6,7 +6,8 @@ non-goals and how each criterion is proven, by test, drive or contract. A test o
 names behavior the base lacks, so its acceptance test fails at the base. Prove a criterion the base
 already meets, as in a refactor or a perf change, by drive. Mark a drive criterion that cannot be driven, with the reason. Never name a code
 edit, an expression or a function to write. Give each slice its depends_on parents and an advisory
-list of files you expect it to touch. List every fact the plan relies on outside the target
+list of files you expect it to touch. List each existing test a slice removes or renames, with the
+reason. List every fact the plan relies on outside the target
 checkout as an assumption, citing a tracked file in a related repository checkout at its pinned
 commit. If you cannot cite it, ask a grounded question instead. A plan that needs a change to the
 check command, CI workflows, the verify skill, accepted tests or the contract file puts that change

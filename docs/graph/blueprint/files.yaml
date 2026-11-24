@@ -188,8 +188,10 @@ docs/graph/blueprint/prompts/spec.md:
       edit, an expression or a function to write. Give each slice its depends_on parents
       and an advisory
 
-      list of files you expect it to touch. List every fact the plan relies on outside
-      the target
+      list of files you expect it to touch. List each existing test a slice removes
+      or renames, with the
+
+      reason. List every fact the plan relies on outside the target
 
       checkout as an assumption, citing a tracked file in a related repository checkout
       at its pinned
@@ -238,8 +240,11 @@ docs/graph/blueprint/prompts/spec_check.md:
       states observable behavior with non-goals and a proof for every criterion, and
       that its
 
-      dependencies are complete. A slice that names a code edit, an expression or
-      a function to write is
+      dependencies are complete. Rule on each test a slice lists as removed or renamed.
+      A reason the
+
+      issue does not support is a finding. A slice that names a code edit, an expression
+      or a function to write is
 
       a finding. A change to a protected file outside its own slice is a finding.
       Cite each concrete
