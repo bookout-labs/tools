@@ -117,6 +117,83 @@ class PermissionsTest(unittest.TestCase):
             readonly = adapter.command(Call("prompt", "{}", False, attempt, read_roots=(root / "methods",)))
             self.assertNotIn("sandbox", json.loads(Path(readonly[readonly.index("--settings") + 1]).read_text()))
 
+    def test_the_verifier_drives_an_app_on_loopback_from_a_sandbox_without_edit_tools(self):
+        adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+        with TemporaryDirectory() as directory:
+            root, attempt = Path(directory), Path(directory) / "attempt"
+            attempt.mkdir()
+            gits = (root / "repo/.git", root / "clone/.git")
+            call = Call("prompt", "{}", False, attempt, read_roots=(root / "methods",), drive=True, git_dirs=gits)
+            with patch("foreman.adapters.claude.platform.system", return_value="Darwin"):
+                args = adapter.command(call)
+            settings = json.loads(Path(args[args.index("--settings") + 1]).read_text())
+            self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep,Bash")
+            self.assertEqual([args[i + 1] for i, a in enumerate(args) if a == "--add-dir"], [str(root / "methods"), str(attempt / "scratch")])
+            forms = lambda paths: list(dict.fromkeys(str(form) for path in paths for form in (path, path.resolve())))
+            self.assertEqual(settings["sandbox"], {
+                "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
+                "network": {"allowedDomains": [], "strictAllowlist": True, "allowLocalBinding": True},
+                "filesystem": {"denyWrite": forms((root / "methods", *gits))}})
+            # No Edit or Write is granted, so their working-directory rules have nothing to govern.
+            self.assertEqual(settings["permissions"], {"allow": [], "deny": [f"Edit(/{path}/**)" for path in forms((root / "methods",))]})
+            refused = CompletedProcess(args, 1, "", "Error: sandbox required but unavailable: sandbox-exec missing\n")
+            self.assertEqual(adapter.read(refused, call).kind, "cli_missing")
+            with patch("foreman.adapters.claude.platform.system", return_value="Windows"), self.assertRaises(CapabilityUnavailable):
+                adapter.command(call)
+            # Codex shows no loopback app under its network-disabled profile, and Grok confines nothing yet.
+            for other in (CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high")), GrokAdapter(ModelSpec.parse("grok-4.7-high"))):
+                with self.subTest(other=type(other).__name__), self.assertRaises(CapabilityUnavailable):
+                    other.command(call)
+
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_the_verifier_keeps_its_attempt_scratch_and_names_it_for_captures(self, _confinable):
+        with TemporaryDirectory() as directory, patch.dict("foreman.worker.STAGES", {"verify": STAGES["review"]}):
+            root = Path(directory).resolve()
+            checkout, state_dir = root / "checkout", root / "state"
+            state_dir.mkdir()
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            seen = []
+            def runner(args, cwd, env):
+                seen.append((args, json.loads(Path(args[args.index("--settings") + 1]).read_text()), env))
+                return fixture_process(args, "success", 0)
+            outcome = CliWorker(checkout, runner, scratch_root=state_dir)("verify", ModelSpec.parse("claude-opus-5-5-high"), {}, "verify")
+            self.assertEqual(outcome.kind, "ran")
+            args, settings, env = seen[0]
+            [kept] = state_dir.iterdir()
+            scratch = kept / "scratch"
+            # The scratch Bash writes outlives the call; Claude's own short temp directory does not.
+            self.assertTrue(kept.name.startswith("foreman-verify-") and scratch.is_dir())
+            self.assertEqual(env["TMPDIR"], str(scratch))
+            self.assertFalse(Path(env["CLAUDE_CODE_TMPDIR"]).exists())
+            self.assertIn(f"Save captures under {scratch} and name each capture's path as its evidence.", args[-1])
+            self.assertIn("reaches no network except loopback", args[-1])
+            self.assertNotIn("Do not return the scratch path as evidence.", args[-1])
+            self.assertEqual(settings["sandbox"]["filesystem"]["denyWrite"][0], str(checkout / ".git"))
+            # A model that cannot drive the app leaves no attempt directory behind.
+            refused = CliWorker(checkout, runner, scratch_root=state_dir)("verify", ModelSpec.parse("gpt-6.1-sol-high"), {}, "verify")
+            self.assertEqual((refused.kind, list(state_dir.iterdir()), len(seen)), ("cli_missing", [kept], 1))
+
+    def test_captured_verifier_serves_on_loopback_and_writes_only_the_checkout_and_scratch(self):
+        capture = json.loads((Path(__file__).parent / "fixtures/claude/permissions/verify.json").read_text())
+        self.assertEqual((capture["returncode"], capture["commits"]), (0, 1))
+        self.assertEqual(capture["argv"][capture["argv"].index("--tools") + 1], "Read,Glob,Grep,Bash")
+        self.assertEqual(capture["stdout"]["permission_denials"], [])
+        content = [c for row in capture["transcript"] for c in row["message"]["content"] if isinstance(c, dict)]
+        text = lambda result: result["content"] if isinstance(result["content"], str) else " ".join(p.get("text", "") for p in result["content"])
+        bash = {use["input"]["command"]: (result.get("is_error", False), text(result)) for use in content
+                if use.get("type") == "tool_use" and use.get("name") == "Bash" for result in content if result.get("tool_use_id") == use["id"]}
+        # The app answers on loopback; the sandbox refuses every other host and every write outside the checkout and scratch.
+        self.assertEqual(bash["sh serve.sh"], (False, "value = 1\ncurl=0"))
+        self.assertEqual({command for command, (failed, _) in bash.items() if not failed},
+                         {"sh serve.sh", "touch <probe>/attempt/scratch/capture.txt", "touch build-output"})
+        for command in ("rm <probe>/methods/method.md", "rm <probe>/outside.txt", "touch <probe>/clone/.git/probe", "git commit -qm x"):
+            self.assertIn("Operation not permitted", bash[command][1])
+        self.assertIn("not on the allow list", bash["curl -sS --max-time 10 https://example.com"][1])
+        files = capture["files"]
+        self.assertEqual((files["repo/build-output"], files["attempt/scratch/capture.txt"]), ("", ""))
+        self.assertEqual((files["methods/method.md"], files["outside.txt"]), ("method original\n", "outside\n"))
+        self.assertNotIn("clone/.git/probe", files)
+
     def test_an_unconfinable_host_has_no_editing_claude_before_launch(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
         call = Call("prompt", "{}", True, Path("/nonexistent"))

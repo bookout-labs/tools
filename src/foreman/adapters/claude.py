@@ -105,7 +105,7 @@ def sandboxed(system: str) -> None:
     missing = [tool for tool in ("bwrap", "socat") if shutil.which(tool) is None] if system == "Linux" else []
     if system not in ("Darwin", "Linux") or missing:
         reason = f"{', '.join(missing)} missing" if missing else "the Bash sandbox is unsupported"
-        raise CapabilityUnavailable(f"Claude on {system}: {reason}, so an editing worker cannot be confined")
+        raise CapabilityUnavailable(f"Claude on {system}: {reason}, so a worker's Bash cannot be confined")
 
 
 class ClaudeAdapter(NativeAdapter):
@@ -115,7 +115,7 @@ class ClaudeAdapter(NativeAdapter):
     @override
     def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
         # A sandbox that cannot start on this host ends the call before any model work, so the next model runs.
-        if call.edit and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
+        if (call.edit or call.drive) and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
             return Outcome("cli_missing", detail=process.stderr.strip())
         return super().read(process, call)
 
@@ -130,16 +130,20 @@ class ClaudeAdapter(NativeAdapter):
         settings: dict[str, object] = {"permissions": permissions}
         directories = [str(root) for root in call.read_roots]
         if call.edit:
-            sandboxed(platform.system())
             # Edit and Write stay inside the working directories and off the git directories.
             permissions["blockWritesOutsideWorkingDirectories"] = True
             deny += [rule for path in both(call.git_dirs) for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")]
+        if call.edit or call.drive:
+            sandboxed(platform.system())
             # Bash runs in Claude Code's OS sandbox, which fails closed: it writes the checkout and the attempt scratch,
-            # never the method roots --add-dir exposes or the git directories, and reaches no network.
+            # never the method roots --add-dir exposes or the git directories, and reaches no network. The verifier
+            # may also listen on loopback, so it can start the app and drive it.
+            network: dict[str, object] = {"allowedDomains": [], "strictAllowlist": True}
+            if call.drive:
+                network["allowLocalBinding"] = True
             settings["sandbox"] = {
                 "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-                "network": {"allowedDomains": [], "strictAllowlist": True},
-                "filesystem": {"denyWrite": both((*call.read_roots, *call.git_dirs))},
+                "network": network, "filesystem": {"denyWrite": both((*call.read_roots, *call.git_dirs))},
             }
             directories.append(str(call.scratch))
         settings_path = call.temp_dir / "claude-settings.json"
@@ -149,6 +153,6 @@ class ClaudeAdapter(NativeAdapter):
         return ["claude", "--model", self.model.model_id, *effort, *resume, "--restricted",
                 "--strict-mcp-config", "--permission-mode", "dontAsk",
                 "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else
-                "Read,Glob,Grep,Bash" if call.checks else "Read,Glob,Grep",
+                "Read,Glob,Grep,Bash" if call.checks or call.drive else "Read,Glob,Grep",
                 *scope, "--settings", str(settings_path),
                 *budget, "--output-format", "json", "--json-schema", call.schema, "-p", call.prompt]

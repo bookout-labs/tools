@@ -23,6 +23,16 @@ A host that cannot sandbox (no Seatbelt, or Linux without `bwrap` and `socat`) r
 launch, and so does a host with no short temp directory. A sandbox that fails at startup anyway (for example under
 AppArmor or WSL1) makes Claude print "sandbox required but unavailable" and exit, which also reads as `cli_missing`.
 In each case the dispatcher tries the next model. Implement keeps the exact `Bash(<check>)` rule.
+
+The verifier builds, starts and drives the app, so it runs Bash in the same fail-closed sandbox with the same write
+boundary, short temp directory and `cli_missing` cases. It has no Edit or Write tool and no command allow rule.
+`allowLocalBinding` lets the app listen on loopback and the driver reach it; every other host stays refused. The
+checkout stays writable for ignored build output; after the drive, the Verify stage checks that tracked and untracked
+non-ignored files are unchanged (#251). Its attempt directory sits under the run's state directory and outlives the call,
+so the captures the prompt tells it to save in the attempt scratch, by absolute path, stay readable as evidence.
+Inside the sandbox `$TMPDIR` is Claude's own short temp directory, which the call removes. Codex and Grok calls for
+the verifier return `cli_missing` before launch: no capture yet shows Codex's network-disabled profile serving a
+loopback app.
 The native read-only matcher refuses the planned review diff. Review calls therefore
 grant each standalone command from the bound `ReviewScope`, including pinned diffs,
 tree listings and blob reads. The prompt and exact Bash rules share this command list.
@@ -53,7 +63,7 @@ command results independently of model prose.
 
 Reproduce the Claude 2.1.329 captures with
 `.venv/bin/python tests/capture-claude-permissions.py <mode>` for edit, inherited,
-readonly and compound. Each capture contains the exact argv, result envelope and
+readonly, compound and verify. Each capture contains the exact argv, result envelope and
 filesystem observations. Transcript tool calls and results corroborate method reads
 and denied operations. The inherited probe adds permissive project settings.
 The clean edit capture proves source edits, scratch writes, and edits to pyproject.toml
