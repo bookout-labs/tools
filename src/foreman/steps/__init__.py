@@ -48,11 +48,14 @@ class StageRun:
     def consult(
         self, graph: DispatchGraph, name: GateStage, state: DeliveryState, scope: Callable[[PlanState], list[object]] | None,
         *, owned: str = "", answered: Callable[[DeliveryState, str], DeliveryUpdate] = lambda state, answer: {},
+        unmatched: Callable[[DeliveryState], str] = lambda state: "",
     ) -> tuple[DeliveryUpdate, str]:
         """Dispatch a worker until it returns no question. Each question waits at the stage's gate for the human.
 
         The scope binds the question to its subject, so only an answer to that question resumes the step.
-        Returns the applied update and the fingerprint of the edits the worker owns."""
+        A valid result that matches no route opens the same gate with the unmatched reason, and its attempt records
+        the routing defect for the scorers (rules.routing). Returns the applied update and the fingerprint of the
+        edits the worker owns."""
         update: DeliveryUpdate = {}
         attempts: list[AttemptRecord] = []
         path: list[str] = []
@@ -69,6 +72,9 @@ class StageRun:
             if halt := update.get("halt"):
                 # The stage ends with the named halt.
                 return {**update, "stop": halt, "attempts": attempts, "path": path}, owned
+            if not question and (question := unmatched({**current, **update})):
+                attempts[-1:] = [{**attempt, "detail": f"routing_defect: {question}"} for attempt in attempts[-1:]]
+                owned = self.dispatch(name, {**current, **update}, "").fingerprint()
             if not question:
                 return {**update, "attempts": attempts, "path": path}, owned
             plan = update.get("plan", state["plan"])

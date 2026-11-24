@@ -19,11 +19,25 @@
         "pattern": "\\S",
         "title": "Implementation",
         "type": "string"
+      },
+      "no_change": {
+        "anyOf": [
+          {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "When the acceptance already holds on the pinned base and no edit is justified, give the evidence. Otherwise null.",
+        "title": "No Change"
       }
     },
     "required": [
       "human_question",
-      "implementation"
+      "implementation",
+      "no_change"
     ],
     "title": "ImplementOutput",
     "type": "object"

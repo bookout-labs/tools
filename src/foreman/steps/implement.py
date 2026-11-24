@@ -16,7 +16,7 @@ from foreman.redaction import redact
 from foreman.stage_output import ReviewState
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun
-from foreman.workspace import ImplementationRejected, WorkState, WorkspaceError
+from foreman.workspace import ImplementationCandidate, ImplementationRejected, WorkState, WorkspaceError
 
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.verify_cap,
          Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled]
@@ -71,9 +71,36 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The path names the builder call and the check run, not the halt's step label.
         return {**update, "work": work, "checks": checks, **result, "path": update.get("path", [])}
 
+    # The reconciliation of the builder's latest result, which the step below reuses.
+    reconciled: list[ImplementationCandidate | None] = []
+
+    def unmatched(current: DeliveryState) -> str:
+        """The builder's tree and its no_change evidence must agree, and no_change fits only a first attempt at the pinned base."""
+        evidence = current.get("no_change", "")
+        reconciled.clear()
+        try:
+            reconciled.append(workspace.reconcile(work.attempt_head, work.branch, work.base))
+        except WorkspaceError:
+            return ""  # The step reconciles again below and stops with the drawn halt.
+        clean = reconciled[0] is None
+        findings = ", ".join(str(finding.get("id")) for finding in state["review"].findings)
+        if clean and evidence and (findings or checks.verify_failures or work.attempt_head != state["run"].base_sha):
+            reason = "The builder reported no_change on a repair round" + (f"; unresolved findings: {findings}." if findings else ".")
+        elif clean and not evidence:
+            reason = "The builder edited nothing and gave no no_change evidence."
+        elif not clean and evidence:
+            reason = "The builder edited the tree and also reported no_change."
+        else:
+            return ""
+        reconciled.clear()
+        if workspace.inspect().head != work.attempt_head:
+            # The resumed call edits on the attempt parent, so a local worker commit becomes edits it owns.
+            workspace.soft_reset(work.attempt_head)
+        return f"{reason} Builder report: {current.get('implementation', '')}"
+
     if not work.built or checks.verify == "fail":
         scope: list[object] = [state["run"].issue, work.attempt_head]
-        consulted, owned = run.consult(DISPATCH, "implement", state, lambda _: scope, owned=work.owned)
+        consulted, owned = run.consult(DISPATCH, "implement", state, lambda _: scope, owned=work.owned, unmatched=unmatched)
         update.update(consulted)
         if update.get("stop"):
             return update
@@ -84,11 +111,10 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     try:
         candidate = work.candidate
         if candidate is None:
-            candidate = workspace.reconcile(work.attempt_head, work.branch, work.base)
+            candidate = reconciled[0] if reconciled else workspace.reconcile(work.attempt_head, work.branch, work.base)
             if candidate is None:
-                findings = ", ".join(str(finding.get("id")) for finding in state["review"].findings)
-                return finish({"stop": "no_change", "halt_detail": "No justified change" + (
-                    f"; unresolved findings: {findings}." if findings else ".")})
+                evidence = update.get("no_change") or state.get("no_change") or "No justified change."
+                return finish({"stop": "no_change", "halt_detail": evidence})
             work = work.model_copy(update={"candidate": candidate, "owned": run.dispatch("implement", state, "").fingerprint()})
         tree = workspace.tree(None)
         if tree != candidate["size"]["head"]:

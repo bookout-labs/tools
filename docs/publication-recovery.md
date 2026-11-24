@@ -72,8 +72,9 @@ All names below are methods in `tests/test_publication.py`.
 | Invalid worker history or changed branch, halt, preserve checkout, rerun after restore | `test_worker_history_rejections_preserve_checkout_and_usage` |
 | Restore rejected worker history as edits, rerun to verified | `test_recovery_with_edits_uses_reconciled_fingerprint` |
 | Reconcile git timeout or lock, halt and retry reconciliation | `test_reconcile_git_errors_remain_git_failed` |
-| Extra commit after reconciliation, halt at commit | `test_reconciled_candidate_mutation_is_rejected_before_publication` |
-| Worker produces no edits, reject | `test_no_changes_fails_without_pushing` |
+| Extra commit after reconciliation, halt before commit | `test_reconciled_candidate_mutation_is_rejected_before_publication` |
+| Worker shows that no change is justified, stop without pushing | `test_no_change_with_evidence_on_a_first_attempt_stops_without_pushing` |
+| Worker result matches no route, open the implement gate | `test_a_builder_result_that_matches_no_route_opens_the_implement_gate` |
 | Repository check fails, repair in edit, publish the receipt's tree | `test_failed_repository_check_is_repaired_and_its_receipt_tree_is_published` |
 | Check failures or a tree-changing check reach the cap, publish nothing | `test_check_cap_and_tree_changing_checks_never_publish` |
 | Implement question pauses, posted answer resumes edit or cancel ends the run | `test_implement_question_waits_for_a_posted_answer_or_cancel` |
