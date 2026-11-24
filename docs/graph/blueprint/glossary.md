@@ -6,10 +6,10 @@
 | `target_repository` | The repository of the admitted issue and the only destination for that run's changes. |
 | `target_checkout` | The pinned checkout of the target repository. Implementation owns its editable worktree. Verify runs the app there read-only and writes captures to its attempt scratch. |
 | Related repository | A repository the target depends on, named in the contract file. Foreman pins it at admission to its default-branch head, records the pin on the run and checks it out read-only and adds it as a read root for the workers. Writes stay in the target repository. |
-| Contract file | `.foreman/contract.yaml`, the one tracked file in a target repository that describes it to Foreman: the check command and the JUnit XML test report it writes, container image and setup, how to start the app and tell it is up, the related repositories, the names of the secrets the app needs, the verify skill path, the mutation command and the production check. |
+| Contract file | `.foreman/contract.yaml`, the one tracked file in a target repository that describes it to Foreman: the check command and the JUnit XML test reports it writes, container image and setup, whether the container keeps the network after setup, how to start the app and tell it is up, the related repositories, the names of the secrets the app needs, the verify skill path, the mutation command and the production check. |
 | Protected file | A file a feature run never changes: the check command, CI workflows, the verify skill, accepted tests and the contract file. A change to one is its own issue with its own Foreman run, checked by the base's unchanged check. |
 | Doctor | `foreman doctor --repo OWNER/NAME`, plain code that checks a target repository is ready. Its quick part runs at admission before any paid call. Its full part runs from the command, and at admission whenever the contract file's current digest has no green full check recorded: it builds the image, runs the check, the mutation command and the production check, starts the app and related services and runs the branch probe. Each failure names the missing requirement and its exact fix. |
-| Attempt container | The container built from the contract file's image and setup commands. Workspace owns the run's container and rebuilds it when the run has none. The builder, the acceptance test writer, the verifier and the reviewer run in it, so they can start the app and its related services. |
+| Attempt container | The container built from the contract file's image and setup commands. Workspace owns the run's container and rebuilds it when the run has none. The worker CLIs run on the Foreman host, where their model credentials stay. Every shell command the builder, the acceptance test writer, the verifier and the reviewer run goes into it, so they can start the app and its related services. A call whose shell cannot be routed into it fails closed and runs no command on the host. It reaches the network only while Foreman runs the setup commands, unless the contract's network is run because the app uses remote test services. After setup it has loopback only. |
 | Blueprint | The versioned design the human approves for future Foreman runs. |
 | Run | One execution for a GitHub issue under a pinned blueprint and runtime release. |
 | Stage | One of seven LangGraph subgraphs. A stage owns a result and its permitted routes. |
@@ -25,7 +25,7 @@
 | Ready | The draft worker says the candidate is complete enough to validate. |
 | Approval | An authorized person's explicit assent for the named choice. The coordinator or personal agent posts it as an issue comment under the human's identity. A plan and a merge need none. |
 | Human's identity | The GitHub login in the `FOREMAN_HUMAN_LOGIN` repository variable. Only issue comments under that login count as the human's answers, cancellations and stops. |
-| Stop | An issue comment under the human's identity whose first line is `foreman stop`. Each stage's first step reads the issue for one before any paid call or write and ends the run cancelled. |
+| Stop | An issue comment under the human's identity whose first line is `foreman stop`, created after Ready was last added to the issue. Each stage's first step reads the issue for one before any paid call or write and ends the run cancelled. |
 | Gate | A saved pause for the human's answer to a specific unresolved choice. The coordinator or personal agent posts the answer or cancellation as an issue comment under the human's identity. |
 | Settled ruling | A saved human answer that later checks of the same issue get as context and cite by ID. |
 | Halt | A named terminal stop with evidence. A provider or GitHub wait keeps the run open. |
@@ -35,6 +35,7 @@
 | Base revision | The Git commit that pins the starting target checkout. A review also records its PR diff base. |
 | Head | The exact commit on the PR's source branch at the moment of observation. |
 | Acceptance tests | Tests and fixtures a separate worker in the verifier role writes from the plan and the base tree before the build. Plain code proves the check collects them and that they fail at the base. The builder cannot edit them. |
+| Test ID | The case's file made relative to the checkout root, empty when the report names none, its enclosing suite names, its classname and its name, read from the contract's JUnit XML test reports. Cases that share an ID are one test with a count: it passed only if every case passed, and a lower count than the base's is a missing test. |
 | Checked tree | The exact tree whose unchanged contents passed the contract's check command, including the accepted tests. |
 | Mutation check | After a passing check, plain code flips a capped sample of changed lines with the contract's pinned tool and reruns the tests. A mutation no test notices goes back to the builder as a finding. The builder adds a test that notices it or names it an equivalent mutation, with the reason no test can, and the next sample leaves it out. Review rules on each claim, and a rejected claim is a blocking finding. |
 | Receipt | Saved evidence of one observed GitHub, Git or worker result. |
@@ -43,7 +44,6 @@
 | P0 / P1 | Typed priorities for critical or serious evidenced correctness, security or scope defects, or a fix-or-patch finding that cites the code it duplicates or works around. |
 | Demonstration | A test or command attached to a blocking review finding that Foreman runs at the reviewed head. A finding whose demonstration does not fail is advisory. |
 | Advisory | A finding that can be posted without requesting implementation again. |
-| Routing defect | A valid result with no matching route. Foreman opens the stage's question gate and records the defect on the run, and the terminal report lists it. |
 | Waiver | An exact, temporary structural difference with a migration issue and a condition for removal. |
 | Scorer | A versioned rubric that assesses recorded work without deciding workflow routes. |
 | Hand fix | A person modifies the change or repairs a run to get the PR to merge. A commit on the PR's branch that the App did not make is recorded as one. After the merge, the human records one with an issue comment whose first line is `foreman escape`. |
