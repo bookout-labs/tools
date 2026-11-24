@@ -1,17 +1,22 @@
 from collections.abc import Mapping
 from math import isclose
+from pathlib import Path
 import json
+import platform
+import shutil
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from typing_extensions import override
 
-from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
+from foreman.adapters import Call, CapabilityUnavailable, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.usd import CostUsd, usd_text
 
 
 QUOTA_ERRORS = {"usage_limit_reached", "model_requires_usage_credits"}
+# Claude Code 2.1.329 prints this and exits at startup when failIfUnavailable meets a sandbox that cannot start.
+SANDBOX_UNAVAILABLE = "sandbox required but unavailable"
 
 
 class PermissionDenial(BaseModel):
@@ -90,9 +95,29 @@ class ClaudeEnvelope(NativeEnvelope):
         )
 
 
+def both(paths: tuple[Path, ...]) -> list[str]:
+    """Each path as given and as resolved, so a denial holds whether a tool names the link or its target."""
+    return list(dict.fromkeys(str(form) for path in paths for form in (path.absolute(), path.resolve())))
+
+
+def sandboxed(system: str) -> None:
+    """Claude Code sandboxes Bash with Seatbelt on macOS, and with bubblewrap and socat on Linux."""
+    missing = [tool for tool in ("bwrap", "socat") if shutil.which(tool) is None] if system == "Linux" else []
+    if system not in ("Darwin", "Linux") or missing:
+        reason = f"{', '.join(missing)} missing" if missing else "the Bash sandbox is unsupported"
+        raise CapabilityUnavailable(f"Claude on {system}: {reason}, so an editing worker cannot be confined")
+
+
 class ClaudeAdapter(NativeAdapter):
     envelope = ClaudeEnvelope
     env: ClassVar[Mapping[str, str]] = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
+
+    @override
+    def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
+        # A sandbox that cannot start on this host ends the call before any model work, so the next model runs.
+        if call.edit and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
+            return Outcome("cli_missing", detail=process.stderr.strip())
+        return super().read(process, call)
 
     def command(self, call: Call) -> list[str]:
         effort = ["--effort", self.model.effort] if self.model.effort else []
@@ -100,14 +125,25 @@ class ClaudeAdapter(NativeAdapter):
         allow = [f"Bash({command})" for command in call.checks]
         if call.edit:
             allow += ["Edit", "Write"]
-        settings = {"permissions": {"allow": allow, "deny": [
-            f"Edit(/{root.resolve()}/**)" for root in call.read_roots
-        ]}}
-        settings_path = call.temp_dir / "claude-settings.json"
-        settings_path.write_text(json.dumps(settings))
+        deny = [f"Edit(/{root}/**)" for root in both(call.read_roots)]
+        permissions: dict[str, object] = {"allow": allow, "deny": deny}
+        settings: dict[str, object] = {"permissions": permissions}
         directories = [str(root) for root in call.read_roots]
         if call.edit:
-            directories.append(str(call.temp_dir))
+            sandboxed(platform.system())
+            # Edit and Write stay inside the working directories and off the git directories.
+            permissions["blockWritesOutsideWorkingDirectories"] = True
+            deny += [rule for path in both(call.git_dirs) for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")]
+            # Bash runs in Claude Code's OS sandbox, which fails closed: it writes the checkout and the attempt scratch,
+            # never the method roots --add-dir exposes or the git directories, and reaches no network.
+            settings["sandbox"] = {
+                "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
+                "network": {"allowedDomains": [], "strictAllowlist": True},
+                "filesystem": {"denyWrite": both((*call.read_roots, *call.git_dirs))},
+            }
+            directories.append(str(call.scratch))
+        settings_path = call.temp_dir / "claude-settings.json"
+        settings_path.write_text(json.dumps(settings))
         scope = [arg for directory in directories for arg in ("--add-dir", directory)]
         resume = ["--resume", call.resume_session, "--fork-session"] if call.edit and call.resume_session else []
         return ["claude", "--model", self.model.model_id, *effort, *resume, "--restricted",

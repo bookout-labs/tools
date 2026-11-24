@@ -6,14 +6,28 @@ extend the tool list. Read, Glob, Grep and Bash are available on every call. Imp
 also approves Edit and Write within the checkout and scratch directory. Method roots
 are added for reading, with absolute Edit denies covering both editing tools protecting those roots.
 
-Implement grants one exact `Bash(<check>)` rule for the configured check string.
-Foreman does not parse shell commands. The compound-check capture demonstrates the
-native matcher accepting the configured compound command under one rule.
+Implement runs Bash in Claude Code's OS sandbox ([sandboxing](https://code.claude.com/docs/en/sandboxing.md)),
+so a worker can delete the files a slice removes. The per-call settings turn it on with `failIfUnavailable`
+and `allowUnsandboxedCommands: false`, so a missing sandbox fails closed and no command retries outside it.
+`autoAllowBashIfSandboxed` runs sandboxed commands under `dontAsk`. Writes reach the checkout and the attempt
+scratch only: `--add-dir` names the method roots and the scratch, never the settings file beside it, and
+`denyWrite` covers the method roots, the checkout's `.git` entry and the git and common directories it resolves to,
+each as given and as resolved. The worker resolves them with `git rev-parse` from the checkout, ignoring any inherited
+`GIT_*` variable, and a `.git` git cannot resolve fails the call closed. A linked worktree's shared clone is therefore
+read-only too, so `git commit` fails. Edit and Write follow `blockWritesOutsideWorkingDirectories` and Edit denies
+for the same git directories. The network allowlist is
+empty and strict. Claude Code points `$TMPDIR` at a per-user directory under `CLAUDE_CODE_TMPDIR`, but falls back
+to the shared `/tmp/claude-<uid>` when that path is too long for its AF_UNIX sockets (about 32 characters
+before `/claude-<uid>` on 2.1.329). The worker therefore gives each call its own short `/tmp/fw*` directory.
+A host that cannot sandbox (no Seatbelt, or Linux without `bwrap` and `socat`) returns `cli_missing` before
+launch, and so does a host with no short temp directory. A sandbox that fails at startup anyway (for example under
+AppArmor or WSL1) makes Claude print "sandbox required but unavailable" and exit, which also reads as `cli_missing`.
+In each case the dispatcher tries the next model. Implement keeps the exact `Bash(<check>)` rule.
 The native read-only matcher refuses the planned review diff. Review calls therefore
 grant each standalone command from the bound `ReviewScope`, including pinned diffs,
 tree listings and blob reads. The prompt and exact Bash rules share this command list.
 Other read-only stages have no allow rules.
-A command permission is not a sandbox. The check itself must be trusted.
+Outside implement, a command permission is not a sandbox. The check itself must be trusted.
 Workers never commit, push or touch the Forge. Foreman owns those operations.
 
 Codex uses a native permissions profile extending `:read-only`. Implement grants
@@ -43,7 +57,13 @@ readonly and compound. Each capture contains the exact argv, result envelope and
 filesystem observations. Transcript tool calls and results corroborate method reads
 and denied operations. The inherited probe adds permissive project settings.
 The clean edit capture proves source edits, scratch writes, and edits to pyproject.toml
-and .github/workflows/ci.yml. Restricted mode can therefore remain enabled.
+and .github/workflows/ci.yml. Restricted mode can therefore remain enabled, and it honors the sandbox block.
+The edit, inherited and compound captures run in a linked worktree of a shared clone. Sandboxed `rm` of a tracked
+file and of a scratch file succeeds. `rm` of a method file or of a file outside the checkout fails, and so do writes
+to the shared clone's `.git` and to `/tmp/claude-<uid>`. `git commit`, `curl` with or without the proxy, and `gh`
+fail too, each with the sandbox's own refusal (`Operation not permitted`, a host not on the allow list). The inherited
+probe adds project settings that disable the sandbox, exclude every command and allow every write and host;
+restricted mode ignores them. Sandbox refusals arrive as failed tool results, not as permission denials.
 
 For the separate Grok editing slice, start with the lighter boundary. PR #144's
 launcher filters command environments and brokers App credentials. It is not merged
@@ -94,5 +114,5 @@ Multiline key bodies are suppressed through their footer or blank separator. Cac
 Foreman App tokens and inherited GH_TOKEN/GITHUB_TOKEN values are also masked.
 Arbitrary transformed secrets and unlabelled low-entropy values are not guaranteed.
 No raw-output companion or environment dump is persisted. Codex still has no network
-or database connections; Claude still receives only the exact check command grant.
+or database connections, and neither does Claude's sandboxed Bash.
 The configured verifier remains authoritative when local reproduction is blocked.

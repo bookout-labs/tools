@@ -330,6 +330,20 @@ class PublicationTest(PublicationFixture):
                 self.assertEqual(LiveWorkspace(self.checkout).inspect(), before)
                 self.assertEqual(self.git("for-each-ref", "--format=%(refname)", self.ref), "")
 
+    def test_a_file_the_worker_deletes_is_committed_and_published(self):
+        (self.checkout / "obsolete.md").write_text("old\n")
+        self.git("add", "obsolete.md")
+        self.git("commit", "-m", "Obsolete")
+        self.git("push", "origin", self.base)
+        def edit():
+            (self.checkout / "obsolete.md").unlink()
+            self.edit()
+        result = self.walk(edit)
+        self.assertEqual(result["stop"], "merged")
+        head = result["work"].head_sha
+        self.assertEqual(self.git("ls-tree", "-r", "--name-only", head).split(), ["items.txt"])
+        self.assertIn(head, self.git("ls-remote", "origin"))
+
     def test_two_review_rounds_count_whole_pr_while_origin_advances(self):
         heads = []
         def edit():

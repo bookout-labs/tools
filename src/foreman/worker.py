@@ -1,6 +1,7 @@
 """Run a pinned worker and read its final stage result."""
 
 from collections.abc import Mapping
+from contextlib import ExitStack
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -80,6 +81,19 @@ ADAPTERS: dict[str, Callable[[ModelSpec], CliAdapter]] = {
 }
 
 
+def git_dirs(checkout: Path) -> tuple[Path, ...]:
+    """The checkout's .git entry and the git and common directories it resolves to, as in a linked worktree."""
+    if not (checkout / ".git").exists():
+        return ()
+    # The checkout's own .git decides, never a GIT_DIR or similar variable Foreman inherited.
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    found = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+                           cwd=checkout, env=env, capture_output=True, text=True)
+    if found.returncode:
+        raise CapabilityUnavailable(f"git cannot resolve the checkout's git directories: {found.stderr.strip()}")
+    return tuple(dict.fromkeys([checkout / ".git", *(Path(line) for line in found.stdout.splitlines())]))
+
+
 def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
     prompt = args[-1] if args[0] == "claude" and args[-2:-1] == ["-p"] else None
     lock_fd = worker_lock.get()
@@ -134,7 +148,9 @@ class CliWorker:
             )
             prompt += (" Network and database connections are unavailable in Codex; network-dependent parts"
                        " of the check may not reproduce locally." if model.family == "gpt" else
-                       " Claude grants the exact check command in checks.check as Bash; no environment parity is implied."
+                       " Claude's Bash runs sandboxed: it writes only the checkout and the attempt scratch, never .git,"
+                       " and has no network, so network-dependent parts of the check may not reproduce locally."
+                       " Delete a file the slice removes with a plain rm <relative-path>."
                        if model.family == "claude" else "")
         prompt += f"\n\nDelivery state:\n{json.dumps(projected)}"
         # Counts only the prompt, excluding the separate output schema,
@@ -157,19 +173,26 @@ class CliWorker:
         temp_root = (self.scratch_root or Path(tempfile.gettempdir())).resolve()
         if temp_root.is_relative_to(checkout):
             temp_root = checkout.parent
-        with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
-            scratch = Path(directory) / "scratch"
-            scratch.mkdir()
-            call = Call(prompt, schema, edit=edit, checks=checks, review=node == "review",
-                        read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
-                        temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None,
-                        resume_session=session)
+        with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory, ExitStack() as stack:
             try:
+                call = Call(prompt, schema, edit=edit, checks=checks, review=node == "review",
+                            read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
+                            temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None,
+                            resume_session=session, git_dirs=git_dirs(self.cwd.absolute()) if edit else ())
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
+            call.scratch.mkdir()
+            env = {**adapter.env, "TMPDIR": str(call.scratch)}
+            if edit and isinstance(adapter, ClaudeAdapter):
+                # Claude Code puts the per-user temp directory sandboxed Bash writes under CLAUDE_CODE_TMPDIR, unless
+                # that path is too long for its AF_UNIX sockets; then it falls back to the shared /tmp/claude-<uid>.
+                try:
+                    env["CLAUDE_CODE_TMPDIR"] = stack.enter_context(TemporaryDirectory(prefix="fw", dir="/tmp"))
+                except OSError as exc:
+                    return Outcome("cli_missing", detail=f"Claude has no private short temp directory: {exc}", prompt_bytes=prompt_bytes)
             try:
-                process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch)})
+                process = self.run(args, self.cwd, env)
             except FileNotFoundError:
                 return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable", prompt_bytes=prompt_bytes)
             return replace(adapter.read(process, call), prompt_bytes=prompt_bytes)

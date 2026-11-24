@@ -189,7 +189,7 @@ class CodexAdapter:
         filesystem = {str(root.resolve()): '"read"' for root in call.read_roots}
         if call.edit:
             filesystem[":workspace_roots"] = '{"."="write", ".git"="read", ".codex"="read"}'
-            filesystem[str((call.temp_dir / "scratch").resolve())] = '"write"'
+            filesystem[str(call.scratch.resolve())] = '"write"'
         entries = ",".join(f"{json.dumps(path, ensure_ascii=False)}={access}" for path, access in filesystem.items())
         profile = '{extends=":read-only",network={enabled=false},filesystem={' + entries + '}}'
         policy = ["--ignore-user-config", "--ignore-rules", "-c", "approval_policy=never",

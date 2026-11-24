@@ -70,6 +70,13 @@ class Call:
     read_roots: tuple[Path, ...] = ()
     review: bool = False
     resume_session: str | None = None
+    # The checkout's .git entry and the directories git resolves it to. Foreman commits, so a worker never writes them.
+    git_dirs: tuple[Path, ...] = ()
+
+    @property
+    def scratch(self) -> Path:
+        """The attempt scratch an editing worker writes besides its checkout."""
+        return self.temp_dir / "scratch"
 
 
 class CapabilityUnavailable(ValueError):

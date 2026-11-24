@@ -795,7 +795,8 @@ class LiveRunnerTest(unittest.TestCase):
             self.question = result.get("halt_detail", "")
         return result
 
-    def test_verify_feedback_reopens_and_fails_over_without_resetting_cap(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_verify_feedback_reopens_and_fails_over_without_resetting_cap(self, _confinable):
         canary = "syntheticlowentropy"
         token = "ghp_" + "A" * 36
         sensitive = [canary, token, "bearercanary", "YmFzaWNjYW5hcnk=", "KEYBODY"]
@@ -830,7 +831,7 @@ class LiveRunnerTest(unittest.TestCase):
                 if args[0] == "codex":
                     self.assertIn("Network and database connections are unavailable", prompt)
                     return quota_with_usage(args)
-                self.assertIn("exact check command", prompt)
+                self.assertIn("Claude's Bash runs sandboxed", prompt)
                 with worker_process(worker_reply(args, {"implementation": "retry"})) as popen:
                     run_worker_command(args, cwd, env)
                 self.assertEqual(popen.prompt, prompt)
@@ -3097,6 +3098,8 @@ from dataclasses import replace
 from pathlib import Path
 import sys
 from unittest.mock import patch
+# A confinable host, as every Claude implement run needs; the host check has its own test.
+patch("foreman.adapters.claude.sandboxed").start()
 from foreman.cli import main
 from foreman.config import SkillPin, load_config
 from foreman.delivery import LiveRun

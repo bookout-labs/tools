@@ -33,7 +33,8 @@ class DollarBudgetTests(unittest.TestCase):
             with self.subTest(amount=amount), self.assertRaises(ValueError):
                 BudgetUsd(Decimal(amount))
 
-    def test_only_claude_receives_the_optional_dollar_budget(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_only_claude_receives_the_optional_dollar_budget(self, _confinable):
         directory = self.enterContext(TemporaryDirectory())
         call = Call(prompt="Do work", schema="{}", edit=True, temp_dir=Path(directory))
         budgeted = replace(call, budget_usd=BudgetUsd(Decimal("0.1")))

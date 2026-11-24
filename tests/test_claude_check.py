@@ -10,6 +10,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from foreman.adapters import Outcome
 from foreman.adapters.claude import ClaudeAdapter
@@ -106,7 +107,8 @@ class ClaudeCheckTest(unittest.TestCase):
         self.assertEqual(result["halt"], "invalid_output")
         self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check", "implement"])
 
-    def test_graph_halts_on_first_fix_and_fallback(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_graph_halts_on_first_fix_and_fallback(self, _confinable):
         for mode in ('first', 'fix', 'fallback'):
             with self.subTest(mode=mode):
                 script, config, count = ScriptHandler(reviews=['changes', 'approve']), load_config(), 0
