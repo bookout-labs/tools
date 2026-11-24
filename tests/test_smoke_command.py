@@ -340,7 +340,7 @@ class SmokeCommandTest(unittest.TestCase):
                 for name in ('open_issues', 'comment_issue', 'marked_issues'):
                     getattr(forge, name).side_effect = getattr(fake, name)
                 def delivery(**kwargs):
-                    kwargs['run'] = LiveRun(forge, FakeWorkspace(root / 'checkout'), skills=fixture_skills)
+                    kwargs['run'] = LiveRun(forge, FakeWorkspace(root / 'checkout'), skills=fixture_skills, human_login="fixture-owner")
                     from foreman.dry_run import ScriptHandler
                     kwargs['dispatcher'] = ScriptHandler() if cap == 1 else lambda *args: Outcome(kind, detail='bad output')
                     with patch('subprocess.run', real_run), patch('subprocess.check_output', real_output):
@@ -392,7 +392,7 @@ class SmokeCommandTest(unittest.TestCase):
                 return observation.model_copy(update={'outcome': 'pending'}) if observations == 1 else observation
             transport.readiness.side_effect = readiness
             def delivery(**kwargs):
-                kwargs['run'] = LiveRun(transport, workspace, skills=fixture_skills)
+                kwargs['run'] = LiveRun(transport, workspace, skills=fixture_skills, human_login="fixture-owner")
                 kwargs['dispatcher'] = dispatch
                 with patch('subprocess.run', real_run), patch('subprocess.check_output', real_output):
                     result = run_live_delivery(**kwargs)

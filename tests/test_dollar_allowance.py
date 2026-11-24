@@ -93,7 +93,7 @@ def worker(args, cwd, env):
 pin = SkillPin.model_validate_json(raw_pin)
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
     sys.exit(main(sys.argv[4:], worker_runner=worker, checkpoint=Path(checkpoint),
-                  live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd()))))
+                  live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd()), human_login="fixture-owner")))
 '''
         bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
                      f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
@@ -122,7 +122,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         """A quota pause keeps its attempts in the nested dispatch checkpoint."""
                         with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                             saver.serde = checkpoint_serializer()
-                            graph = compile_delivery(ScriptHandler(), config, run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
+                            graph = compile_delivery(ScriptHandler(), config, run=LiveRun(FakeGitHub(), FakeWorkspace(root), human_login="fixture-owner"),
                                                      checkpointer=saver)
                             return snapshot_result(graph.get_state(THREAD, subgraphs=True))["attempts"]
 
@@ -234,7 +234,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 return Outcome("quota", usage=SCRIPTED_USAGE)
 
             root = Path(folder)
-            kwargs = dict(repo="a/b", issue=8, check="exit 0", run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
+            kwargs = dict(repo="a/b", issue=8, check="exit 0", run=LiveRun(FakeGitHub(), FakeWorkspace(root), human_login="fixture-owner"),
                           dispatcher=quota)
             first = run_live_delivery(**kwargs, checkpoint=root / "modern.sqlite")
             self.assertEqual(first["stop"], "quota_exhausted")
@@ -246,7 +246,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     legacy = root / f"{snapshot['stop']}.sqlite"
                     with SqliteSaver.from_conn_string(str(legacy)) as saver:
                         saver.serde = checkpoint_serializer()
-                        graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
+                        graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
                         graph.update_state(THREAD, {**snapshot, "schema_version": 3})
                     with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
                         run_live_delivery(**kwargs, checkpoint=legacy)
@@ -269,7 +269,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             finished = root / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(finished)) as saver:
                 saver.serde = checkpoint_serializer()
-                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
+                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
                 graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", token_cap=100, max_budget_usd=None), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}, as_node="research")
             output = printed(run_live_delivery(**kwargs, checkpoint=finished))
             self.assertIn("done answered", output)
@@ -305,7 +305,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
                 checkpoint = root / "replay.sqlite"
-                kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=LiveRun(FakeGitHub(), workspace),
+                kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=LiveRun(FakeGitHub(), workspace, human_login="fixture-owner"),
                               dispatcher=handler, max_budget_usd=usd("1"))
                 halted = run_live_delivery(**kwargs)
                 self.assertEqual(halted["stop"], "git_failed")
@@ -316,7 +316,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 if case == "non_prefix":
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                         saver.serde = checkpoint_serializer()
-                        graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
+                        graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
                         graph.update_state(THREAD, {"attempts": Overwrite(implement)}, as_node="research")
                     with self.assertRaisesRegex(ValueError, "non-prefix attempt history"):
                         run_live_delivery(**kwargs)

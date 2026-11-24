@@ -35,7 +35,7 @@ class LiveWatchTest(unittest.TestCase):
         self.checkpoint = self.root / 'runs.sqlite3'
         self.fake = FakeGitHub()
         self.forge = Mock(spec=Forge, wraps=self.fake)
-        self.run = LiveRun(self.forge, FakeWorkspace(self.root), skills=fixture_skills)
+        self.run = LiveRun(self.forge, FakeWorkspace(self.root), skills=fixture_skills, human_login="fixture-owner")
         self.flags = ['run', 'delivery', '--repo', 'Example/Engine', '--issue', '8', '--check', 'exit 0']
 
     def invoke(self, **kwargs):
@@ -77,7 +77,7 @@ class LiveWatchTest(unittest.TestCase):
 
     def test_pregraph_skill_failure_is_durable_and_files_skill_rules(self):
         missing = Mock(side_effect=SkillMissing(load_config().pstack))
-        self.run = LiveRun(self.forge, self.run.workspace, skills=missing)
+        self.run = LiveRun(self.forge, self.run.workspace, skills=missing, human_login="fixture-owner")
         first = self.invoke()
         stored = self.stored()
         self.assertEqual((stored['run'].issue, stored['run'].workspace, stored['run'].repo, stored['checks'].check, stored['run'].token_cap),
@@ -93,7 +93,7 @@ class LiveWatchTest(unittest.TestCase):
     def test_resumed_git_failure_adds_one_comment_per_new_halt(self):
         workspace = FakeWorkspace(self.root)
         workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
-        self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
+        self.run = LiveRun(self.forge, workspace, skills=fixture_skills, human_login="fixture-owner")
         dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}))
         first = self.invoke(dispatcher=dispatcher)
         self.assertEqual(first['halt'], 'git_failed')
@@ -178,7 +178,7 @@ class LiveWatchTest(unittest.TestCase):
                 self.checkpoint = self.root / f'{stop}.sqlite3'
                 workspace = FakeWorkspace(self.root)
                 workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
-                self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
+                self.run = LiveRun(self.forge, workspace, skills=fixture_skills, human_login="fixture-owner")
                 def dispatch(stage, *args):
                     if stop == 'quota_exhausted':
                         return Outcome('quota', usage=SCRIPTED_USAGE)
@@ -189,13 +189,13 @@ class LiveWatchTest(unittest.TestCase):
                 dispatcher = dispatch
                 self.assertEqual(self.invoke(dispatcher=dispatcher)['stop'], stop)
                 before = self.stored()
-                self.run = LiveRun(self.forge, workspace, skills=Mock(side_effect=SkillMissing(load_config().pstack)))
+                self.run = LiveRun(self.forge, workspace, skills=Mock(side_effect=SkillMissing(load_config().pstack)), human_login="fixture-owner")
                 reports = []
                 failed = self.invoke(dispatcher=dispatcher, report=reports.append)
                 self.assertEqual([result['stop'] for result in reports], ['skill_missing'])
                 self.assertIsNone(failed['watch'])
                 self.assertEqual(self.stored(), before)
-                self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
+                self.run = LiveRun(self.forge, workspace, skills=fixture_skills, human_login="fixture-owner")
                 self.assertEqual(self.invoke(dispatcher=dispatcher)['stop'], stop)
 
     def test_live_forge_receives_redacted_halt_on_issue_and_repeat_comment(self):
@@ -224,7 +224,7 @@ class LiveWatchTest(unittest.TestCase):
             return subprocess.CompletedProcess(args, 0, json.dumps(result), '')
         workspace = FakeWorkspace(self.root)
         workspace.create_branch = Mock(side_effect=WorkspaceError('#48 ' + secret))
-        self.run = LiveRun(LiveForge(), workspace, skills=fixture_skills)
+        self.run = LiveRun(LiveForge(), workspace, skills=fixture_skills, human_login="fixture-owner")
         dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'supplied_slice'}))
         real_run = subprocess.run
         fake_gh = lambda args, **kwargs: gh(args, **kwargs) if args[0] == 'gh' else real_run(args, **kwargs)

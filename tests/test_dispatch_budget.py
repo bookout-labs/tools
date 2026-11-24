@@ -41,7 +41,7 @@ def configured(stage="triage", models=(CLAUDE, NEXT_CLAUDE)):
 def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000, parent=False):
     saver = InMemorySaver(serde=checkpoint_serializer())
     dry = DryRun()
-    graph = compile_delivery(handler, config or configured(), run=LiveRun(forge=dry, workspace=dry), checkpointer=saver).with_config({"configurable": {"thread_id": "budget"}})
+    graph = compile_delivery(handler, config or configured(), run=LiveRun(forge=dry, workspace=dry, human_login="fixture-owner"), checkpointer=saver).with_config({"configurable": {"thread_id": "budget"}})
     graph.invoke({"review": ReviewState(),
         "run": RunState(issue=dry.issue_placeholder, repo="a/b", base_branch="main", base_sha=dry.head, request="x", token_cap=token_cap, max_budget_usd=limit), "checks": ChecksState(check="exit 0"), "path": [], "plan": PlanState(issue_kind="parent") if parent else PlanState(issue_kind="slice", slice=EMPTY_SLICE),
 

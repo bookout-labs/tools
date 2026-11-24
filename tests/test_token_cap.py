@@ -37,14 +37,14 @@ class TokenCapTests(unittest.TestCase):
                 dispatch = handler
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
                     saver.serde = checkpoint_serializer()
-                    graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
+                    graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
                     graph.update_state(invocation, {"review": ReviewState(), "run": RunState(repo="a/b", request="x", token_cap=100, base_sha=DryRun.head), "checks": ChecksState(check=""), "path": [],
                         "plan": PlanState(issue_kind="parent"), "attempts": [{"stage": "spec",
                         "model": "prior", "commit": "a", "methods": [], "outcome": "ran",
                         "usage": {"input": prior, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}, as_node="__start__")
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
                     saver.serde = checkpoint_serializer()
-                    graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
+                    graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
                     graph.invoke(None, invocation, durability="sync")
                     result = snapshot_result(graph.get_state(invocation, subgraphs=True))
                 total = prior + sum(tokens for _, tokens in replies)
@@ -70,7 +70,7 @@ class TokenCapTests(unittest.TestCase):
             self.assertEqual(result["plan"].triage, "")
             self.assertIsNone(result["attempts"][0]["usage"])
             self.assertEqual(run_exit_code(result), 1)
-            graph = compile_delivery(unknown, config, run=LiveRun(forge=DryRun(), workspace=DryRun()))
+            graph = compile_delivery(unknown, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"))
             saved = {"review": ReviewState(), **result, "halt": None, "stop": "", "path": [], "run": RunState(token_cap=1, base_sha=DryRun.head), "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
             stopped = graph.invoke(saved)
             self.assertEqual(stopped["stop"], "budget_exceeded")
@@ -84,7 +84,7 @@ class TokenCapTests(unittest.TestCase):
                 calls.append(node)
                 return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0))
             kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint,
-                          run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))
+                          run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner"))
             first = run_live_delivery(**kwargs, max_tokens=100, dispatcher=quota)
             self.assertEqual(first["stop"], "quota_exhausted")
             with self.assertRaisesRegex(ValueError, "stored token cap"):
@@ -99,7 +99,7 @@ class TokenCapTests(unittest.TestCase):
                 legacy = checkpoint.with_name(str(snapshot["stop"]) + ".sqlite")
                 with SqliteSaver.from_conn_string(str(legacy)) as saver:
                     saver.serde = checkpoint_serializer()
-                    graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
+                    graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
                     graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {"review": ReviewState(), **snapshot, "run": snapshot["run"].model_copy(update={"token_cap": None})})
                 with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
                     run_live_delivery(**{**kwargs, "checkpoint": legacy}, dispatcher=quota)
@@ -109,12 +109,12 @@ class TokenCapTests(unittest.TestCase):
             def quota(*args):
                 return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0))
             kwargs = dict(repo="a/b", issue=8, check="exit 0",
-                          run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))
+                          run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner"))
             first = run_live_delivery(**kwargs, checkpoint=Path(folder) / "a.sqlite", dispatcher=quota)
             legacy = Path(folder) / "legacy.sqlite"
             with SqliteSaver.from_conn_string(str(legacy)) as saver:
                 saver.serde = checkpoint_serializer()
-                graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
+                graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
                                    {"review": ReviewState(), **first, "run": first["run"].model_copy(update={"token_cap": None})})
             with patch("foreman.delivery.export_skills", side_effect=SkillMissing(config.pstack)) as export:
@@ -138,7 +138,7 @@ class TokenCapTests(unittest.TestCase):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
             checkpoint = Path(folder) / "historical.sqlite"
             invocation = {"configurable": {"thread_id": "a/b#8"}}
-            live = LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)))
+            live = LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner")
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=live, checkpointer=saver)
@@ -155,9 +155,9 @@ class TokenCapTests(unittest.TestCase):
             checkpoint = Path(folder) / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 saver.serde = checkpoint_serializer()
-                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
+                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
                                    {"review": ReviewState(), "run": RunState(repo="a/b"), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}, as_node="research")
             with self.assertRaisesRegex(CheckpointVersionError, "Start a new run"):
                 run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint, dispatcher=ScriptHandler(),
-                                  run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))
+                                  run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner"))

@@ -59,7 +59,7 @@ class StateTests(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(path)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), load_config(),
-                                         run=LiveRun(forge=DryRun(), workspace=DryRun()),
+                                         run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"),
                                          checkpointer=saver)
                 graph.update_state(config, original, as_node="triage")
                 before = graph.get_state(config)

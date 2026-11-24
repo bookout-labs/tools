@@ -412,8 +412,7 @@ def unmet_prerequisites(forge: "Forge", repo: str, blockers: list[IssueBlocker],
 
 def human_comments(forge: "Forge", login: str, repo: str, issue: int) -> list[str]:
     """Comments the configured human posted on the issue, which the coordinator relays under their identity."""
-    if not login:
-        return []
+    assert login.strip(), "A run reads human comments only under its configured login."
     return [(comment.body or "").strip() for comment in forge.issue_comment_records(repo, issue)
             if comment.user is not None and comment.user.login.casefold() == login.casefold()]
 

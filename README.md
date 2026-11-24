@@ -152,6 +152,7 @@ foreman start --repo Example/Engine --issue 7
 - After a run returns, `foreman start` and `foreman run` print one `start OWNER/NAME#N` line for each issue the run returns to admission: the open dependents after its merge, or the children it filed. The host starts each line like an accepted delivery, and admission decides from the issue's Ready label and its prerequisites. A replay of a finished run prints the same lines, so a crash before the host starts them loses nothing. A prerequisite counts once its closing pull request merged into the default branch.
 - It reads the run settings from the repository's GitHub Actions variables:
   - `FOREMAN_CHECK` is required.
+  - `FOREMAN_HUMAN_LOGIN` is required: the GitHub login whose issue comments answer, approve or stop the run.
   - `FOREMAN_PREFLIGHT` is optional.
   - `FOREMAN_MAX_TOKENS` defaults to the standard token cap.
   - `FOREMAN_MAX_BUDGET_USD` defaults to $3.
@@ -223,7 +224,7 @@ Foreman pins the repository default branch on admission and creates the slice br
 
 The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Only one run per repository and issue can write at a time for a user, whatever its state directory: the run holds a lock in `$XDG_RUNTIME_DIR/foreman-locks`, or `~/.cache/foreman-locks` by default, and its worker keeps it until the worker's process group ends. Stopping Foreman with TERM or Ctrl-C ends the worker's process group too. Run the same issue again from the same checkout to see its saved state. For review and PR size questions, add `--answer "…"` to continue.
 
-Set `FOREMAN_HUMAN_LOGIN` to the GitHub login authorized to answer triage, research and planning questions or approve or stop a plan. The paused prompt shows the exact `foreman answer <question digest>` marker. Post it on the issue with the answer on the next line, then rerun the command. A plan clears automatically after validation and the independent check. To record optional approval, post `foreman approve <plan digest>` or `we're good <plan digest>` on the issue. To prevent a build or child filing for a plan, post `foreman stop <plan digest>`.
+Foreman counts answers, approvals and stop requests only from one GitHub login, so a run without one does not start. `foreman start` reads it from the `FOREMAN_HUMAN_LOGIN` repository variable. `foreman run`, including a resume of a run `foreman start` began, takes `--human-login` or the `FOREMAN_HUMAN_LOGIN` environment variable. The paused prompt shows the exact `foreman answer <question digest>` marker. Post it on the issue with the answer on the next line, then rerun the command. A plan clears automatically after validation and the independent check. To record optional approval, post `foreman approve <plan digest>` or `we're good <plan digest>` on the issue. To prevent a build or child filing for a plan, post `foreman stop <plan digest>`.
 
 After an upgrade, Foreman refuses checkpoints from older releases, including checkpoints
 without a schema version. The refusal names the stored and expected versions and the

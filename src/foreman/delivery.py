@@ -1,10 +1,9 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from uuid import uuid4
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
-import os
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -35,13 +34,17 @@ PACKAGE = Path(__file__).parent
 MODEL_STAGES = tuple(name for name, stage in STAGES.items() if stage.kind == "model" and name != "spec_check")
 
 
+# GitHub's reserved login for deleted accounts never posts, so a dry run or smoke fixture reads no human comments.
+FIXTURE_HUMAN = "ghost"
+
+
 @dataclass(frozen=True)
 class LiveRun:
     forge: Forge
     workspace: Workspace
     check_log: CheckLog | None = None
     skills: SkillSource = export_skills
-    human_login: str = field(default_factory=lambda: os.environ.get("FOREMAN_HUMAN_LOGIN", ""))
+    human_login: str = ""
     journal: AttemptJournal | None = None
 
 
@@ -221,7 +224,8 @@ def run_delivery(
         state["matt_skills_pin"] = config.matt_skills.model_dump()
     try:
         saver = InMemorySaver(serde=checkpoint_serializer())
-        graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills), scratch=scratch, checkpointer=saver)
+        graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills, human_login=FIXTURE_HUMAN),
+                                 scratch=scratch, checkpointer=saver)
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
                                     "skill_reason": exc.reason})
