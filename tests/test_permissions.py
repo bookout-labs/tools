@@ -54,7 +54,8 @@ class PermissionsTest(unittest.TestCase):
                     for skill in ("verify-board", "formal-recovery"):
                         self.assertEqual(f".claude/skills/{skill}/SKILL.md" in methods, stage == "implement")
 
-    def test_first_fix_and_quota_fallback_receive_the_bound_grant(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_first_fix_and_quota_fallback_receive_the_bound_grant(self, _confinable):
         for fallback in (False, True):
             config = load_config()
             names = (["gpt-6.1-sol-high", "gpt-6.1-terra-high"] if fallback else []) + ["claude-opus-5-5-high"]
@@ -126,7 +127,8 @@ class PermissionsTest(unittest.TestCase):
         with patch("foreman.adapters.claude.platform.system", return_value="Windows"), TemporaryDirectory() as directory:
             self.assertIn("--tools", adapter.command(Call("prompt", "{}", False, Path(directory))))
 
-    def test_editing_claude_gets_its_own_short_temp_directory_and_the_linked_worktree_git_dirs(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_editing_claude_gets_its_own_short_temp_directory_and_the_linked_worktree_git_dirs(self, _confinable):
         with TemporaryDirectory() as directory:
             clone, checkout = Path(directory).resolve() / "clone", Path(directory).resolve() / "checkout"
             clone.mkdir()
@@ -205,7 +207,8 @@ class PermissionsTest(unittest.TestCase):
         self.assertEqual(args["permissions"]["allow"],
                          ["Bash(git diff --no-color abc...def --)"])
 
-    def test_multiline_implementation_check_stays_one_grant(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_multiline_implementation_check_stays_one_grant(self, _confinable):
         check = "# implementation check\npython check.py\npython other.py"
         def runner(args, cwd, env):
             self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep,Bash,Edit,Write")

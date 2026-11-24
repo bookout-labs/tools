@@ -759,7 +759,8 @@ class LiveRunnerTest(unittest.TestCase):
             self.question = result.get("halt_detail", "")
         return result
 
-    def test_verify_feedback_reopens_and_fails_over_without_resetting_cap(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_verify_feedback_reopens_and_fails_over_without_resetting_cap(self, _confinable):
         canary = "syntheticlowentropy"
         token = "ghp_" + "A" * 36
         sensitive = [canary, token, "bearercanary", "YmFzaWNjYW5hcnk=", "KEYBODY"]
@@ -2911,7 +2912,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual(presentation.restored, expected)
                 self.assertEqual(presentation.updates, [])
 
-    def test_fresh_process_retries_quota_and_an_older_merge_checkpoint(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_fresh_process_retries_quota_and_an_older_merge_checkpoint(self, _confinable):
         script = r'''
 import json
 from dataclasses import replace
