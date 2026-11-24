@@ -333,12 +333,12 @@ stages:
       review: Review or merge supplies PR-bound repair evidence, conditional.
     outputs:
       schema: foreman.stage_output.ImplementOutput
-      fields: [implementation, human_question]
+      fields: [implementation, no_change, human_question]
       consumers: [verify, review, operator]
       outcomes: {published: Confirmed PR at checked head, no_change: No justified change, cancelled: The human cancelled, halted: No valid checked publication}
     steps:
       prepare: {actor: Foreman, action: Prepare and reconcile the worktree, result: Trusted checkout and attempt parent, owner: prepare, check: IM1}
-      edit: {actor: Builder, action: Edit and run target repository checks, result: "Checked candidate tree, exact command failure, or the shared optional human_question for the acceptance gate", owner: edit, check: IM2}
+      edit: {actor: Builder, action: Edit and run target repository checks, result: "Checked candidate tree, exact command failure, evidence that no change is justified, or the shared optional human_question for the acceptance gate", owner: edit, check: IM2}
       commit: {actor: Foreman, action: Commit or adopt the checked tree, result: Exact commit with tested tree, owner: commit, check: IM4}
       publish: {actor: Foreman, action: Publish the checked commit, result: "Confirmed repository, PR, branch, base and head", owner: publish, check: PU2}
     transitions:
