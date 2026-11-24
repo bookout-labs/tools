@@ -75,7 +75,7 @@ class Reviewed:
 
 
 def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
-    if late := human_stop(state, run, "merge", Halt.readiness_unavailable):
+    if late := human_stop(state, run, "merge", Halt.readiness_unavailable, merging=True):
         # A stop ends the run here. One that came after GitHub merged the PR goes on to observe the merge.
         return {"stop": "closed_or_merged", **late, "merge": state.get("merge", MergeState())}
     pull, receipt, forge, saved_merge = Reviewed(state, run), state["review"].review_receipt, run.forge, state.get("merge", MergeState())
@@ -141,8 +141,10 @@ def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 def observe(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     pull, forge, merge = Reviewed(state, run), run.forge, state.get("merge", MergeState())
     (repo, _, _, head), (_, number) = pull.target, pull.report
-    if pull.answers[-1:] == ["cancel"] and (cancelled := cancel(state, run, "merge", Halt.readiness_unavailable)).get("stop"):
-        return {**cancelled, "merge": merge}
+    # A cancel answer from the head_unverified question. One that came after GitHub merged the PR is recorded on the merge.
+    late: DeliveryUpdate = cancel(state, run, "merge", Halt.readiness_unavailable, merging=True) if pull.answers[-1:] == ["cancel"] else {}
+    if late.get("stop"):
+        return {**late, "merge": merge}
     observation, merge = pull.observe(merge)
     if observation is None:
         return pull.halt(merge, Halt.readiness_unavailable, "GitHub could not report the pull request.")
@@ -151,7 +153,7 @@ def observe(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         if (pr.number, pr.head.sha) != (number, head):
             return pull.halt(merge.model_copy(update={"observed_head": pr.head.sha}), Halt.merged_unreviewed,
                              f"GitHub merged PR #{pr.number} at {pr.head.sha}, not the reviewed head {head}. No delivery credit or dependent release.")
-        return {"stop": "merged", "merge": merge.model_copy(update={"status": "merged", "merge_commit_sha": pr.merge_commit_sha or ""})}
+        return {**late, "stop": "merged", "merge": merge.model_copy(update={"status": "merged", "merge_commit_sha": pr.merge_commit_sha or ""})}
     if observation.outcome == "closed":
         return {"stop": "closed", "merge": merge.model_copy(update={"status": "closed"})}
     if observation.outcome == "retargeted" or pr.number != number:

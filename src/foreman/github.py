@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Generic, Iterator, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict, NotRequired
 from urllib.parse import quote
 
-from pydantic import BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
+from pydantic import AwareDatetime, BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, QueueEntry, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
 from foreman.credentials import CredentialFailure, credentials, failure, COMMAND_TIMEOUT
@@ -208,6 +208,21 @@ class IssueComment(BaseModel, strict=True):
     id: PositiveInt | None = None
     body: str | None
     user: RepositoryOwner | None = None
+    created_at: AwareDatetime | None = None
+
+
+class EventLabel(BaseModel, strict=True):
+    name: str
+
+
+class IssueEvent(BaseModel, strict=True):
+    event: str
+    created_at: AwareDatetime
+    label: EventLabel | None = None
+
+
+class IssueEventPages(RootModel[list[list[IssueEvent]]], strict=True):
+    pass
 
 
 class RepositoryIssue(BaseModel, strict=True):
@@ -335,6 +350,7 @@ def queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str,
 
 class QueuedPullRequest(BaseModel, strict=True):
     id: str
+    state: Literal["OPEN", "CLOSED", "MERGED"]
     mergeQueueEntry: QueueEntry | None
 
 
@@ -356,6 +372,7 @@ class Forge(Protocol):
     def update_issue_body(self, repo: str, number: int, body: str) -> None: ...
     def issue_comments(self, repo: str, number: int) -> list[str]: ...
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]: ...
+    def ready_labeled_at(self, repo: str, number: int) -> AwareDatetime | None: ...
     def comment_issue(self, repo: str, number: int, body: str, *, marker: str) -> None: ...
     def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> None: ...
     def create_issue(
@@ -424,12 +441,16 @@ def unmet_prerequisites(forge: "Forge", repo: str, blockers: list[IssueBlocker],
     return "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged) if unmerged else ""
 
 
-def human_comments(forge: "Forge", login: str, repo: str, issue: int) -> list[str]:
+def human_comment_records(forge: "Forge", login: str, repo: str, issue: int) -> list[IssueComment]:
     """Comments the configured human posted on the issue, which the coordinator relays under their identity."""
     expected = login.strip().casefold()
     assert expected, "A run reads human comments only under its configured login."
-    return [(comment.body or "").strip() for comment in forge.issue_comment_records(repo, issue)
+    return [comment for comment in forge.issue_comment_records(repo, issue)
             if comment.user is not None and comment.user.login.casefold() == expected]
+
+
+def human_comments(forge: "Forge", login: str, repo: str, issue: int) -> list[str]:
+    return [(comment.body or "").strip() for comment in human_comment_records(forge, login, repo, issue)]
 
 
 def status_body(text: str, facts: list[str], marker: str) -> str:
@@ -629,16 +650,30 @@ class LiveForge:
         self._close_item(repo, f"repos/{repo}/issues/{number}")
 
     def close_pull_request(self, repo: str, number: int, comment: str) -> None:
-        """Take the pull request out of the merge queue when it is queued, comment and close it. The branch stays in place."""
+        """Take the pull request out of the merge queue when it is queued, comment and close it. The branch stays in place.
+
+        A PR that GitHub merged or closed first is left alone, and a merge that beats the dequeue wins (DQ1)."""
         owner, name = repo.split("/", 1)
         query = """query($owner:String!, $name:String!, $number:Int!) {
-          repository(owner:$owner, name:$name) { pullRequest(number:$number) { id mergeQueueEntry { id state } } }
+          repository(owner:$owner, name:$name) { pullRequest(number:$number) { id state mergeQueueEntry { id state } } }
         }"""
-        queued = self._read(repo, QueuedPullRequest, ["gh", "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
-                            "-f", f"name={name}", "-F", f"number={number}", "--jq", ".data.repository.pullRequest"])
+
+        def read() -> QueuedPullRequest:
+            return self._read(repo, QueuedPullRequest, ["gh", "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
+                              "-f", f"name={name}", "-F", f"number={number}", "--jq", ".data.repository.pullRequest"])
+
+        queued = read()
+        if queued.state != "OPEN":
+            return
         if queued.mergeQueueEntry is not None:
-            self._run_command(repo, ["gh", "api", "graphql", "-f", "query=mutation($id:ID!) { dequeuePullRequest(input:{id:$id}) { clientMutationId } }",
-                                     "-f", f"id={queued.id}"])
+            try:
+                self._run_command(repo, ["gh", "api", "graphql", "-f",
+                                         "query=mutation($id:ID!) { dequeuePullRequest(input:{id:$id}) { clientMutationId } }",
+                                         "-f", f"id={queued.id}"])
+            except CommandFailed:
+                if read().state != "OPEN":
+                    return
+                raise
         self.upsert_comment(repo, number, comment, [], marker=CLOSE_MARKER)
         self._close_item(repo, f"repos/{repo}/pulls/{number}")
 
@@ -673,6 +708,14 @@ class LiveForge:
             "gh", "api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate", "--slurp",
         ])
         return [comment for page in pages.root for comment in page]
+
+    def ready_labeled_at(self, repo: str, number: int) -> AwareDatetime | None:
+        """When the issue's latest Ready label event happened, or None when it never had one."""
+        pages = self._read(repo, IssueEventPages, [
+            "gh", "api", f"repos/{repo}/issues/{number}/events?per_page=100", "--paginate", "--slurp",
+        ])
+        return max((event.created_at for page in pages.root for event in page
+                    if event.event == "labeled" and event.label is not None and event.label.name == READY_LABEL), default=None)
 
     def marked_issues(self, repo: str, marker: str) -> list[int]:
         pages = self._read(repo, OpenIssuePages, [

@@ -15,11 +15,12 @@ from foreman.stage_output import HumanAnswer, VerifyOutput
 from foreman.stages import STAGES, Acceptance
 from foreman.skill_rules import TargetSkillUnreadable, target_skills
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, VerifyState
-from foreman.steps import verify
+from foreman.steps import CANCELLATION, StageRun, verify
 from foreman.workspace import WorkState, WorkspaceError, WorktreeState
 from pydantic import TypeAdapter, ValidationError
 
 HEAD, MOVED = "b" * 40, "c" * 40
+LOGIN = "fixture-owner"
 CRITERION = {"criterion": "The page lists items.", "result": "failed", "observation": "The list was empty.",
              "evidence": "captures/items.png"}
 
@@ -37,11 +38,22 @@ class Forge:
     # Each comment read takes the next entry: None reads the posted comments, an exception fails the read.
     reads: list[Exception | None] = field(default_factory=list[Exception | None])
     lands: bool = False
+    # Comments the human posted, and the pull requests the run closed.
+    human: list[str] = field(default_factory=list[str])
+    closes: list[tuple[str, int, str]] = field(default_factory=list[tuple[str, int, str]])
 
     def issue_comment_records(self, repo, number):
         if self.reads and (failure := self.reads.pop(0)) is not None:
             raise failure
-        return [IssueComment.model_validate({"user": {"login": BOT_LOGIN}, "body": body}) for body in self.posted]
+        return [*(IssueComment.model_validate({"user": {"login": LOGIN}, "body": body}) for body in self.human),
+                *(IssueComment.model_validate({"user": {"login": BOT_LOGIN}, "body": body}) for body in self.posted)]
+
+    def ready_labeled_at(self, repo, number):
+        return None
+
+    def close_pull_request(self, repo, number, comment):
+        self.closes.append((repo, number, comment))
+        self.heads = [pr(state="CLOSED")]
 
     def pull_request_for(self, repo, branch):
         head = self.heads.pop(0) if len(self.heads) > 1 else self.heads[0]
@@ -94,7 +106,7 @@ def state(workspace="", **values):
 
 
 def stage(forge=None, workspace=None, applied=None):
-    run = MagicMock(forge=forge or Forge(), workspace=workspace or Workspace())
+    run = MagicMock(forge=forge or Forge(), workspace=workspace or Workspace(), human_login=LOGIN)
     run.apply.return_value = applied if applied is not None else {
         "path": ["verify"], "verify": VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION])}
     return run
@@ -194,6 +206,18 @@ class VerifyTest(unittest.TestCase):
             update = verify.drive(state(root, verify=VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION])), stage())
         self.assertEqual(update, {"stop": ""})
         dispatch.invoke.assert_not_called()
+
+    def test_a_stop_posted_while_verify_was_halted_ends_the_resumed_stage_cancelled(self):
+        """The stop read runs before drive's resume short-circuit, so a resumed driven stage posts nothing and calls no worker."""
+        forge, apply = Forge(human=["foreman stop\nNot needed now."]), MagicMock()
+        run = StageRun(workspace=Workspace(), forge=forge, check_log=None, max_rounds=3, human_login=LOGIN, dispatch=MagicMock(), apply=apply)
+        with checkout(".claude/skills/verify-web/SKILL.md") as root, patch.object(verify, "DISPATCH") as dispatch:
+            ended = verify.compile_stage(run).invoke(state(root, verify=VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION])))
+        self.assertEqual((ended["stop"], ended.get("halt"), ended["path"]), ("cancelled", None, ["verify"]))
+        self.assertEqual(forge.closes, [("a/b", 7, CANCELLATION)])
+        self.assertEqual(forge.posted, [])
+        dispatch.invoke.assert_not_called()
+        apply.assert_not_called()
 
 
 if __name__ == "__main__":

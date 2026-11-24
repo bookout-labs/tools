@@ -62,7 +62,7 @@ def failed(status):
 
 CLEANUP = 'Smoke cleanup.'
 QUEUE_READ = '''query($owner:String!, $name:String!, $number:Int!) {
- repository(owner:$owner, name:$name) { pullRequest(number:$number) { id mergeQueueEntry { id state } } }
+ repository(owner:$owner, name:$name) { pullRequest(number:$number) { id state mergeQueueEntry { id state } } }
 }'''
 
 
@@ -71,7 +71,7 @@ def closing(method, number):
     if method == 'close_issue':
         return [], [], [number]
     comments = f'repos/{REPO}/issues/{number}/comments'
-    return ([{'id': f'PR_{number}', 'mergeQueueEntry': None}, [[]], {}],
+    return ([{'id': f'PR_{number}', 'state': 'OPEN', 'mergeQueueEntry': None}, [[]], {}],
             [['gh', 'api', 'graphql', '-f', f'query={QUEUE_READ}', '-f', 'owner=bookout-labs', '-f', 'name=foreman-smoke',
               '-F', f'number={number}', '--jq', '.data.repository.pullRequest'],
              ['gh', 'api', f'{comments}?per_page=100', '--paginate', '--slurp'],

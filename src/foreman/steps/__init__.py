@@ -8,7 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, DispatchState
-from foreman.github import Forge, ForgeError, human_comments
+from foreman.github import Forge, ForgeError, human_comment_records
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import AttemptRecord, DispatchStage, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
 from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState
@@ -103,26 +103,36 @@ class StageRun:
             current = {**current, **update}
 
 
-def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = Halt.git_failed) -> DeliveryUpdate:
+def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = Halt.git_failed, *,
+               merging: bool = False) -> DeliveryUpdate:
     """Each stage's first step reads the issue for the human's stop before any paid call or write (rules.gates.continuation).
 
-    A stop is a comment under the human's identity whose first line is exactly foreman stop. It ends the run as cancel does."""
+    A stop is a comment under the human's identity whose first line is exactly foreman stop. It ends the run as cancel does.
+    It counts only when GitHub created it after the issue's latest Ready label event, so re-adding Ready starts clean. The
+    event comes from GitHub, since release admits a dependent without a new one, and an edit to an older comment is no stop."""
     target = state["run"]
     assert target.issue is not None
     issue = target.issue
 
     def requested() -> bool:
-        return any(body.partition("\n")[0].strip() == STOP for body in human_comments(run.forge, run.human_login, target.repo, issue))
+        stops = [comment for comment in human_comment_records(run.forge, run.human_login, target.repo, issue)
+                 if (comment.body or "").strip().partition("\n")[0].strip() == STOP]
+        if not stops:
+            return False
+        ready = run.forge.ready_labeled_at(target.repo, issue)
+        return any(ready is None or (comment.created_at is not None and comment.created_at > ready) for comment in stops)
 
-    return cancel(state, run, step, failure, requested)
+    return cancel(state, run, step, failure, requested, merging=merging)
 
 
 def cancel(state: DeliveryState, run: StageRun, step: str, failure: Halt = Halt.git_failed,
-           requested: Callable[[], bool] = lambda: True) -> DeliveryUpdate:
-    """End the run cancelled when requested, closing the run's open PR with the cancellation. The close leaves the branch.
+           requested: Callable[[], bool] = lambda: True, *, merging: bool = False) -> DeliveryUpdate:
+    """End the run cancelled when requested, closing the run's open PR with the cancellation. The close leaves the branch,
+    and a PR that is no longer open is left alone. Returns {} when nothing was requested.
 
-    A stop cannot undo a merge, so the run's PR is read first (DQ1). When GitHub merged it before the close landed, the
-    cancellation is recorded as too late and the run goes on. Returns {} when nothing was requested."""
+    A stop cannot undo a merge, so the run's PR is read first (DQ1). Merge alone reports a PR GitHub merged before the close
+    landed: the update records the stop as too late and carries no stop, so merge goes on to observe the merge. Merge's
+    report adds its own path entry."""
     repo, branch = state["run"].repo, state.get("work", WorkState()).branch
     try:
         pr = run.forge.pull_request_for(repo, branch) if branch else None
@@ -133,6 +143,6 @@ def cancel(state: DeliveryState, run: StageRun, step: str, failure: Halt = Halt.
             pr = run.forge.pull_request_for(repo, branch)
     except ForgeError as exc:
         return stopped(failure, f"GitHub could not settle the cancellation ({exc}).", step)
-    if pr is not None and pr.state == "MERGED":
-        return {"halt_detail": TOO_LATE}
-    return {"stop": "cancelled", "path": [step]}
+    if not merging:
+        return {"stop": "cancelled", "path": [step]}
+    return {"halt_detail": TOO_LATE} if pr is not None and pr.state == "MERGED" else {"stop": "cancelled"}

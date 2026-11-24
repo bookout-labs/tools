@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from foreman.adapters import Outcome, Usage
@@ -241,6 +242,9 @@ class DryRun:
 
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]:
         return list(self.comments)
+
+    def ready_labeled_at(self, repo: str, number: int) -> datetime | None:
+        return None  # The dry run's issue has no label history, so every stop on it counts.
 
     def comment_issue(self, repo: str, number: int, body: str, *, marker: str) -> None:
         body = marked(body, marker)
