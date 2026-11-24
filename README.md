@@ -174,7 +174,8 @@ Foreman mirrors each admitted run onto its issue with one run label and one stat
 | Halted before admission, or a missing setting | `Ready` stays | the reason |
 | A stage runs, or waits for worker capacity or the merge | `Doing` | the stage and its wait |
 | `needs_human` | `Needs answer` | the question and its `foreman answer` line |
-| A finished outcome or a halt | `Done` | the outcome with its pull request, verified head, merge commit and released issues, or the halt with its detail and watch issue |
+| A halt after admission | `Stopped` | the halt with its detail and watch issue |
+| A finished outcome | `Done` | the outcome with its pull request, verified head, merge commit and released issues |
 
 - The status comment ends with `<!-- foreman status -->`. Foreman edits its own marked comment, only when the text changed, and ignores a human comment that quotes the marker.
 - Foreman removes the other run labels, adds the target label only when it is missing and keeps every other label. It creates a missing label before adding it and never changes an existing label's color.

@@ -1,6 +1,6 @@
 import unittest
 
-from foreman.github import DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL
+from foreman.github import DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, STOPPED_LABEL
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt
 from foreman.readiness import MergeState
 from foreman.stage_output import HumanPrompt
@@ -32,7 +32,7 @@ class StatusTest(unittest.TestCase):
             with self.subTest(code=code):
                 halted = result(code.value, halt=code.value, halt_detail="Synthetic detail.", watch={"issue": 26, "action": "filed"})
                 admitted = status_of(halted, "merge", None, "bookout-labs/tools")
-                self.assertEqual(admitted.label, DONE_LABEL)
+                self.assertEqual(admitted.label, STOPPED_LABEL)
                 self.assertIn(f"Foreman halted with {code}. {HALTS[code].reason}", admitted.text)
                 self.assertIn("Synthetic detail.", admitted.text)
                 self.assertEqual("Rerun Foreman on this issue to resume." in admitted.text, HALTS[code].recovery == "retry")

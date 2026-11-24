@@ -7,7 +7,7 @@ Foreman has no dashboard, so the issue holds the run's state. The checkpoint dec
 from dataclasses import dataclass, field
 
 from foreman._raw import is_dict
-from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, READY_LABEL, RUN_LABELS, Forge, run_label
+from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, READY_LABEL, RUN_LABELS, STOPPED_LABEL, Forge, run_label
 from foreman.outcomes import HALTS, PAUSES, Halt
 from foreman.readiness import MergeState
 from foreman.stage_output import HumanPrompt
@@ -57,7 +57,7 @@ def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | N
         record = result.get("watch")
         facts = [f"Watch: {watch_repo}#{record['issue']}"] if record is not None else []
         # Before admission Foreman owns no label, so Ready stays for the rerun that admits the issue.
-        label = DONE_LABEL if result["run"].base_sha else None
+        label = STOPPED_LABEL if result["run"].base_sha else None
         return Status(label, f"Foreman halted with {code}. {policy.reason}{retry}\n\n{detail}", facts)
     if stop == "needs_human":
         # A pending question carries its reply line. A question saved without one shows its recorded text.

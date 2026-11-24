@@ -84,6 +84,13 @@ class SmokeCommandTest(unittest.TestCase):
                     self.assertEqual(run_smoke(root, time.monotonic() + 30), 1)
             # An issue status GitHub can't show fails the smoke instead of passing on the checkpoint's verdict.
             forge.issue_comment_records.return_value = forge.issue_comment_records.return_value[:1]
+            # A run that halts after its merge receipt shows Stopped.
+            runner.return_value = {**passing(), "halt": "env_unavailable", "stop": "env_unavailable",
+                                   "merge": passing()["merge"].model_copy(update={"status": "not_armed"})}
+            for labels, code in ((["smoke", "Stopped"], 78), (["smoke", "Doing"], 1), (["smoke", "Done"], 1)):
+                with self.subTest(labels=labels):
+                    forge.load_issue.return_value = {"repo": SMOKE_REPO, "number": 17, "labels": labels}
+                    self.assertEqual(run_smoke(root, time.monotonic() + 30), code)
             forge.load_issue.side_effect = ForgeError("GitHub is unavailable.")
             with redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(run_smoke(root, time.monotonic() + 30), 1)
