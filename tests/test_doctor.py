@@ -139,6 +139,9 @@ class ContractTest(unittest.TestCase):
             MINIMAL + "<<: {check: c}\n": "merge key '<<'",
             MINIMAL + "start: {<<: {command: a}, health: b, timeout_seconds: 1}\n": "merge key '<<'",
             MINIMAL + "? [a]\n: b\n": "not a scalar",
+            # A !!map tag on a sequence or a scalar is not a mapping.
+            MINIMAL + "start: !!map [1, 2]\n": "is not a mapping",
+            "!!map foo\n": "is not a mapping",
             "- check\n": "the file",
             "check: [unclosed\n": "YAML",
         }

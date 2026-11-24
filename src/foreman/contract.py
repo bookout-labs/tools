@@ -1,8 +1,8 @@
 """The target repository's contract file, parsed strictly (target.yaml target_contract)."""
 
-from collections.abc import Callable, Hashable
+from collections.abc import Hashable
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 from typing_extensions import override
@@ -84,25 +84,35 @@ class Contract(_Strict):
     production_check: ProductionCheck | None = None
 
 
+class _Constructor(Protocol):
+    # PyYAML's stubs leave construct_object's node untyped, so the loader names the signature it calls.
+    def construct_object(self, node: yaml.Node, deep: bool = False) -> object: ...
+
+
+def _construct(constructor: _Constructor, node: yaml.Node, deep: bool) -> object:
+    return constructor.construct_object(node, deep)
+
+
 class _ContractLoader(yaml.SafeLoader):
     """Loads each mapping key as written. YAML keeps the last of two equal keys and folds a merge key's mapping in,
     so the load names a repeated key and refuses a merge key, and every key reaches the strict model."""
 
     @override
-    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Hashable, Any]:
-        # PyYAML's stubs leave construct_object's node untyped, so the loader names its own signature.
-        construct: Callable[[yaml.Node, bool], object] = getattr(self, "construct_object")
+    def construct_mapping(self, node: yaml.Node, deep: bool = False) -> dict[Hashable, Any]:
+        # A !!map tag on a scalar or sequence reaches here too, so the node's kind is checked first.
+        if not isinstance(node, yaml.MappingNode):
+            raise ContractError(f"a {node.tag} value at line {node.start_mark.line + 1} is not a mapping")
         mapping: dict[Hashable, Any] = {}
         for key_node, value_node in node.value:
             line = key_node.start_mark.line + 1
             if key_node.tag == "tag:yaml.org,2002:merge":
                 raise ContractError(f"merge key '<<' at line {line} is not allowed")
-            key = construct(key_node, deep)
+            key = _construct(self, key_node, deep)
             if not isinstance(key, Hashable):
                 raise ContractError(f"key at line {line} is not a scalar")
             if key in mapping:
                 raise ContractError(f"duplicate key {key!r} at line {line}")
-            mapping[key] = construct(value_node, deep)
+            mapping[key] = _construct(self, value_node, deep)
         return mapping
 
 
