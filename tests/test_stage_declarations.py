@@ -252,7 +252,7 @@ class StageDeclarationsTest(unittest.TestCase):
         with skill_fixture() as (config, scratch):
             root = export_skills(config.pstack, config.matt_skills, scratch)
             _, methods, _ = stage_methods("spec_check", {"plan": PlanState()}, root)
-        self.assertEqual(methods, ["interrogate/SKILL.md#L19-L19"])
+        self.assertEqual(methods, ["interrogate/SKILL.md"])
 
     def test_active_and_non_model_resources_stay_distinct(self):
         self.assertEqual(MODEL_STAGES, ("triage", "research", "spec", "implement", "verify", "review"))
@@ -269,4 +269,4 @@ class StageDeclarationsTest(unittest.TestCase):
         skills = tuple(rule.model_copy(update={"when": None}) if rule.skill.path == "why/SKILL.md" else rule for rule in row.skills)
         with patch.dict(STAGES, research=replace(row, skills=skills)):
             calls = capture()["feature/question"]["calls"]
-        self.assertIn("why/SKILL.md#L9-L9", calls[-1]["methods"])
+        self.assertIn("why/SKILL.md", calls[-1]["methods"])

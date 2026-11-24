@@ -17,12 +17,6 @@ waivers:
     V2-6edca03f3a2aea0c: "items 1 and 19: [implement.edit] dispatch retries invalid_answer and budget_resume"
     V2-3bec62f1983b86ba: "items 1 and 19: [verify.drive] dispatch retries invalid_answer and budget_resume"
     V2-be9bd2e3509bb8da: "items 1 and 19: [review.inspect] dispatch retries invalid_answer and budget_resume"
-    # Item 5, skills load whole.
-    V2-e2059fa8889ca34d: "item 5: [procedure/research] skills load whole"
-    V2-ae1cfab28b486262: "item 5: [procedure/spec] skills load whole"
-    V2-f677815f71cef9b8: "item 5: [procedure/spec_check] skills load whole"
-    V2-960c07b529e55643: "item 5: [procedure/implement] skills load whole"
-    V2-a204fc26b68be31d: "item 5: [procedure/review] skills load whole"
     # Item 7, the plan's assumptions list.
     V2-5b3318c64d065300: "item 7: [procedure/spec] output_fields add assumptions"
     # Item 9, acceptance tests before the build.
