@@ -6,14 +6,15 @@ flowchart TD
     n4["Implement · Build and publish the change"]:::stage
     n5["Verify · Use the change as a user would"]:::stage
     n6["Review · Review the full pull request"]:::stage
-    n7["Merge · Queue and confirm the merge"]:::stage
+    n7["Merge · Queue, confirm and, if needed, revert the merge"]:::stage
     n8(["Cancelled"]):::terminal
     n9(["Halted"]):::terminal
     n10(["Answered"]):::terminal
     n11(["Children filed"]):::terminal
     n12(["No change"]):::terminal
     n13(["Merged"]):::terminal
-    n14(["Closed"]):::terminal
+    n14(["Reverted"]):::terminal
+    n15(["Closed"]):::terminal
     n0 -->|"GitHub App webhook"| n1
     n1 -->|"Question"| n2
     n1 -->|"Plan / Supplied slice"| n3
@@ -30,8 +31,9 @@ flowchart TD
     n4 --> n12
     n4 --> n8
     n4 --> n9
-    n5 -->|"Posted / No skill"| n6
-    n5 -->|"PR revision changed"| n4
+    n5 -->|"Posted"| n6
+    n5 -->|"Failed / PR revision changed"| n4
+    n5 --> n8
     n5 --> n9
     n6 -->|"Critical defect / Serious defect / PR revision changed"| n4
     n6 -->|"No blocking finding"| n7
@@ -39,6 +41,7 @@ flowchart TD
     n6 --> n9
     n7 --> n13
     n7 --> n14
+    n7 --> n15
     n7 -->|"Checked revision"| n6
     n7 -->|"Repair"| n4
     n7 --> n8

@@ -17,11 +17,11 @@ Uses Forge, dispatch.
 | triage.admit | `src/foreman/steps/triage.py::admit` | TR1 |
 | triage.route | `src/foreman/steps/triage.py::route` | TR2 |
 
-Baseline files [`src/foreman/accept.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/accept.py), [`src/foreman/runner.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/runner.py), [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py), [`src/foreman/stage_output.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py), [`src/foreman/state.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/state.py).
+Baseline files [`src/foreman/accept.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/accept.py), [`src/foreman/runner.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/runner.py), [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py), [`src/foreman/stage_output.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stage_output.py), [`src/foreman/state.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/state.py), [`src/foreman/cli.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/cli.py).
 
 ## Research
 
-Read target_checkout at the pinned base and the admitted issue. Write one issue answer.
+Read target_checkout at the pinned base, the related repository checkouts and the admitted issue. Write one issue answer.
 
 Entry `src/foreman/steps/research.py::compile_stage`. Maximum 85 physical lines in the owner module.
 
@@ -38,11 +38,11 @@ Baseline files [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools
 
 ## Spec
 
-Read-only target_checkout at pinned base until filing. GitHub child writes stay in target_repository.
+Read-only target_checkout at pinned base and the related repository checkouts until filing. GitHub child writes stay in target_repository.
 
 Entry `src/foreman/steps/spec.py::compile_stage`. Maximum 410 physical lines in the owner module.
 
-Never edit source, choose a replacement target repository.
+Never edit source, choose a replacement target repository, dictate a code edit.
 
 Uses Forge, Workspace, dispatch.
 
@@ -57,18 +57,20 @@ Baseline files [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools
 
 ## Implement
 
-Exclusive target_checkout, candidate issue, attempt parent, owned branch and matching PR. No direct base-branch writes.
+Exclusive target_checkout inside the attempt container, the related repository checkouts read-only, candidate issue, attempt parent, owned branch and matching PR. No direct base-branch writes.
 
 Entry `src/foreman/steps/implement.py::compile_stage`. Maximum 420 physical lines in the owner module.
 
-Never merge the PR, run a standalone proof gate, require a universal tool-fact record.
+Never merge the PR, run a standalone proof gate, require a universal tool-fact record, let the builder edit accepted tests.
 
 Uses Workspace, Forge, dispatch.
 
 | Step | Owner symbol | Scenario |
 | --- | --- | --- |
 | implement.prepare | `src/foreman/steps/implement.py::prepare` | IM1 |
+| implement.tests | `src/foreman/steps/implement.py::tests` | IM5 |
 | implement.edit | `src/foreman/steps/implement.py::edit` | IM2 |
+| implement.mutate | `src/foreman/steps/implement.py::mutate` | IM6 |
 | implement.commit | `src/foreman/steps/implement.py::commit` | IM4 |
 | implement.publish | `src/foreman/steps/implement.py::publish` | PU2 |
 
@@ -76,11 +78,11 @@ Baseline files [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools
 
 ## Verify
 
-Exact published PR head in the exclusive target_checkout, slice acceptance and the repository's verify skill, which is a `verify-*/SKILL.md` in the target checkout's skills directory at that head. The verifier runs the app and edits nothing.
+Exact published PR head in the exclusive target_checkout inside the attempt container, slice acceptance, the related services the contract starts and the verify skill at the contract's path at the pinned base. The verifier runs the app and edits nothing.
 
 Entry `src/foreman/steps/verify.py::compile_stage`. Maximum 160 physical lines in the owner module.
 
-Never edit implementation, route a failed criterion to implement, approve or merge.
+Never edit implementation, approve or merge, mock a contract boundary.
 
 Uses Forge, Workspace, dispatch.
 
@@ -93,17 +95,18 @@ Baseline files [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools
 
 ## Review
 
-Full PR diff at current head and recorded diff base. Review worker has read-only access.
+Full PR diff at current head and recorded diff base, read through one diff command, the issue text, the related repository checkouts, and the contract's check command in the attempt container. The reviewer edits nothing.
 
-Entry `src/foreman/steps/review.py::compile_stage`. Maximum 235 physical lines in the owner module.
+Entry `src/foreman/steps/review.py::compile_stage`. Maximum 300 physical lines in the owner module.
 
-Never edit implementation, submit human approval, impose tool-fact bookkeeping.
+Never edit implementation, submit human approval, impose tool-fact bookkeeping, keep a per-file read list.
 
-Uses Forge, dispatch.
+Uses Forge, Workspace, dispatch.
 
 | Step | Owner symbol | Scenario |
 | --- | --- | --- |
 | review.inspect | `src/foreman/steps/review.py::inspect` | RV1 |
+| review.demonstrate | `src/foreman/steps/review.py::demonstrate` | RV7 |
 | review.post | `src/foreman/steps/review.py::post` | RV2 |
 | review.route | `src/foreman/steps/review.py::route` | RV3 |
 
@@ -111,11 +114,11 @@ Baseline files [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools
 
 ## Merge
 
-Exact target repository PR, branch, base, checked head and GitHub merge receipt.
+Exact target repository PR, branch, base, checked head, GitHub merge receipt and the contract's read-only production check.
 
-Entry `src/foreman/steps/merge.py::compile_stage`. Maximum 240 physical lines in the owner module.
+Entry `src/foreman/steps/merge.py::compile_stage`. Maximum 320 physical lines in the owner module.
 
-Never direct merge, submit human approval, infer merged from queued.
+Never direct merge, submit human approval, infer merged from queued, release dependents before confirmation.
 
 Uses Forge.
 
@@ -123,16 +126,18 @@ Uses Forge.
 | --- | --- | --- |
 | merge.arm | `src/foreman/steps/merge.py::arm` | ME1 |
 | merge.observe | `src/foreman/steps/merge.py::observe` | ME2 |
+| merge.confirm | `src/foreman/steps/merge.py::confirm` | ME6 |
 | merge.release | `src/foreman/steps/merge.py::release` | ME3 |
+| merge.revert | `src/foreman/steps/merge.py::revert` | ME7 |
 | merge.report | `src/foreman/steps/merge.py::report` | DN1 |
 
 Baseline files [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/delivery.py), [`src/foreman/github.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/github.py), [`src/foreman/readiness.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/readiness.py), [`src/foreman/runner.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/runner.py), [`src/foreman/outcomes.py`](https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/outcomes.py).
 
 ## Dispatch
 
-Bound each paid attempt and recover its result once.
+Bound each paid attempt, repair one invalid answer and recover its result once.
 
-Entry `src/foreman/dispatch.py::compile_dispatch`. Maximum 250 physical lines in the owner module.
+Entry `src/foreman/dispatch.py::compile_dispatch`. Maximum 290 physical lines in the owner module.
 
 Never choose workflow routes, publish artifacts, guess usage.
 

@@ -208,7 +208,8 @@ def views(target):
                 links.append((origin, destination, label(route or "")))
         if name == target["entry"]:
             links = [
-                (origin, destination, "Ready label webhook or dependent recheck" if origin == "__start__" else detail)
+                (origin, destination, "Ready label, dependent recheck or revert issue"
+                 if origin == "__start__" and destination in stage["steps"] else detail)
                 for origin, destination, detail in links
             ]
         for gate in gates:
@@ -325,6 +326,9 @@ def inventory(target, pins):
         prompt, runtime_prompt = instructions["prompt"], instructions["runtime_prompt"]
         target_prompts.add(prompt)
         runtime_prompts.add(runtime_prompt)
+        if target["stages"][stage]["instructions"].get("runtime_prompt") in planned:
+            # A procedure added to a stage that is absent at the baseline has its runtime prompt planned too.
+            planned.add(runtime_prompt)
         sections[stage].update([prompt, runtime_prompt, "src/foreman/models.toml"])
         add_skills(stage, procedure.get("skills", []))
 
@@ -397,14 +401,16 @@ def describe(path, source, skills):
             summary["What it does"] = description
     if skills:
         for skill in skills:
-            start, end = skill["lines"]
+            # A skill without a line range loads whole.
+            start, end = skill["lines"] or (1, len(lines))
             if not 1 <= start <= end <= len(lines):
                 raise ValueError(f"Skill excerpt is out of range: {path}:{start}–{end}")
             heading = skill.get("heading")
             if heading and f"# {heading}" not in lines[:start]:
                 raise ValueError(f"Skill heading absent: {path}: {heading}")
-        summary["Method steps"] = " • ".join(f"{skill['method']} (lines {skill['lines'][0]}–{skill['lines'][1]})"
-                                              for skill in skills)
+        summary["Method steps"] = " • ".join(
+            f"{skill['method']} ({'whole file' if not skill['lines'] else 'lines {}–{}'.format(*skill['lines'])})"
+            for skill in skills)
     return {"kind": kind, "description": " ".join(description.split()), "summary": summary}
 
 

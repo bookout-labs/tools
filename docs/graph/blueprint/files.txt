@@ -1,13 +1,12 @@
 bookout-labs/tools/.github/workflows/ci.yml
 bookout-labs/tools/docs/graph/blueprint/prompts/implement.md  —  Implement the slice
+bookout-labs/tools/docs/graph/blueprint/prompts/implement_tests.md  —  Write the acceptance tests
 bookout-labs/tools/docs/graph/blueprint/prompts/research.md  —  Answer the question
 bookout-labs/tools/docs/graph/blueprint/prompts/review.md  —  Review the full pull request
 bookout-labs/tools/docs/graph/blueprint/prompts/spec.md  —  Draft the plan
 bookout-labs/tools/docs/graph/blueprint/prompts/spec_check.md  —  Check and approve the plan
 bookout-labs/tools/docs/graph/blueprint/prompts/triage.md  —  Classify the issue
 bookout-labs/tools/docs/graph/blueprint/prompts/verify.md  —  Use the change as a user would
-bookout-labs/tools/docs/graph/gaps.toml  —  Exact edge differences. Each slice maps a source to [target, label] pairs.
-bookout-labs/tools/docs/graph/target.mmd
 bookout-labs/tools/evals/corpus/README.md  —  Known-answer corpus v1
 bookout-labs/tools/evals/eval.sh  —  Promptfoo's worker does not use the uv environment unless told which interpreter to start.
 bookout-labs/tools/evals/promptfooconfig.yaml  —  yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
@@ -27,6 +26,7 @@ bookout-labs/tools/src/foreman/adapters/codex.py  —  Run one Codex turn and re
 bookout-labs/tools/src/foreman/adapters/grok.py
 bookout-labs/tools/src/foreman/budget.py  —  Pure work-token and Claude dollar accounting over a run's attempt history.
 bookout-labs/tools/src/foreman/check_output.py  —  Bounded, sanitized verifier diagnostics. Raw output is never retained.
+bookout-labs/tools/src/foreman/cli.py  —  Command line for the foreman tool.
 bookout-labs/tools/src/foreman/config.py  —  Model assignment. This is data. A node does not get to rewrite it.
 bookout-labs/tools/src/foreman/delivery.py  —  The delivery graph. Edges live here. Models live in models.toml.
 bookout-labs/tools/src/foreman/dispatch.py  —  Model handler and dispatch errors.
@@ -43,6 +43,7 @@ bookout-labs/tools/src/foreman/spec_check.py  —  Pure candidate-bound spec acc
 bookout-labs/tools/src/foreman/stage_output.py  —  Worker output contracts shared by the CLI prompts and delivery graph.
 bookout-labs/tools/src/foreman/stages.py  —  Canonical worker contracts, methods and callbacks. Graph successors stay in delivery.
 bookout-labs/tools/src/foreman/stages/implement.md  —  Implement the change in the repository. Fix every unresolved finding in findings, including nits.
+bookout-labs/tools/src/foreman/stages/implement_tests.md
 bookout-labs/tools/src/foreman/stages/research.md  —  Answer the question from the repository. Do not change code.
 bookout-labs/tools/src/foreman/stages/review.md  —  Review round 1 in full. Later rounds check unresolved findings and added interdiff lines also in the PR diff.
 bookout-labs/tools/src/foreman/stages/spec.md  —  Write the spec. Cover the behavior, the product decisions, and the technical design.
@@ -61,16 +62,21 @@ bookout-labs/tools/src/foreman/worker.py  —  Run a pinned worker and read its 
 bookout-labs/tools/src/foreman/worker_auth.py  —  Per-command App authentication for factory network commands.
 bookout-labs/tools/src/foreman/workspace.py  —  Local checkout operations used by delivery runs.
 bookout-labs/tools/tests/test_accept.py
+bookout-labs/tools/tests/test_acceptance_tests.py
 bookout-labs/tools/tests/test_delivery.py  —  Test delivery.
 bookout-labs/tools/tests/test_dispatch_budget.py  —  Dollar limits at the delivery and subprocess boundaries.
 bookout-labs/tools/tests/test_dispatch_recovery.py
+bookout-labs/tools/tests/test_doctor.py
 bookout-labs/tools/tests/test_merge_receipt.py
+bookout-labs/tools/tests/test_mutation.py
 bookout-labs/tools/tests/test_publication.py
 bookout-labs/tools/tests/test_readiness.py
 bookout-labs/tools/tests/test_review_availability.py  —  Reviewer eligibility and checkpoint recovery across independent processes.
 bookout-labs/tools/tests/test_review_context.py
 bookout-labs/tools/tests/test_review_rounds.py  —  Test review rounds.
 bookout-labs/tools/tests/test_runner.py  —  Live runner behavior with offline workers and forge doubles.
+bookout-labs/tools/tests/test_skill_rules.py
+bookout-labs/tools/tests/test_smoke.py  —  Recorded checkpoint fixtures for the smoke exit contract.
 bookout-labs/tools/tests/test_spec_candidate.py
 bookout-labs/tools/tests/test_spec_check.py
 bookout-labs/tools/tests/test_verify.py

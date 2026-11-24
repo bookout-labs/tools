@@ -1,36 +1,47 @@
 flowchart TD
     n0(["Enter stage"]):::terminal
-    n1["Foreman · Queue the exact reviewed head"]:::step
+    n1["Foreman · Read the PR from GitHub, then the issue for a stop, then queue the exact reviewed head"]:::step
     n2["Foreman · Read the GitHub merge outcome"]:::step
-    n3["Foreman · Recheck Ready dependent issues"]:::step
-    n4["Foreman · Record the typed merge outcome"]:::step
-    n5(["Merged<br/>Reported on the issue"]):::terminal
-    n6(["Closed<br/>Reported on the issue"]):::terminal
-    n7["Continue to Review stage"]:::stage
-    n8["Continue to Implement stage"]:::stage
-    n9(["Cancelled<br/>Reported on the issue"]):::terminal
-    n10(["Run stops<br/>Reported on the issue"]):::terminal
-    n11{{"Human<br/>• Confirm revision ownership<br/>• Supply evidence or cancel<br/>• Recheck PR revision"}}:::gate
-    n12["Wait for GitHub checks or approval"]:::step
-    n13["Wait for GitHub to report a merge result"]:::step
+    n3["Foreman · Run the contract's production check against the merge commit"]:::step
+    n4["Foreman · Admit Ready dependent issues"]:::step
+    n5["Foreman · File the revert and regression issues"]:::step
+    n6["Foreman · Record the typed merge outcome"]:::step
+    n7(["Merged<br/>Reported on the issue"]):::terminal
+    n8(["Reverted<br/>Reported on the issue"]):::terminal
+    n9(["Closed<br/>Reported on the issue"]):::terminal
+    n10["Continue to Review stage"]:::stage
+    n11["Continue to Implement stage"]:::stage
+    n12(["Cancelled<br/>Reported on the issue"]):::terminal
+    n13(["Run stops<br/>Reported on the issue"]):::terminal
+    n14{{"Human<br/>• Confirm revision ownership<br/>• Supply evidence or cancel<br/>• Recheck PR revision"}}:::gate
+    n15["Wait for GitHub checks or approval"]:::step
+    n16["Wait for GitHub to report a merge result"]:::step
+    n17["Wait for the merge commit to deploy"]:::step
     n0 --> n1
-    n1 -->|"Run stops / Checked revision / Repair"| n4
+    n1 -->|"Run stops / Cancelled / Checked revision / Repair"| n6
     n1 -->|"Armed / Already armed / Closed or merged / Head unverified"| n2
-    n2 -->|"Run stops / Cancelled / Closed / Checked revision / Repair"| n4
+    n2 -->|"Run stops / Cancelled / Closed / Checked revision / Repair"| n6
     n2 -->|"Merged"| n3
-    n3 -->|"Released / Run stops"| n4
-    n4 --> n5
-    n4 --> n6
-    n4 -->|"Checked revision"| n7
-    n4 -->|"Repair"| n8
-    n4 --> n9
-    n4 --> n10
-    n2 -.->|"head unverified"| n11
-    n11 -.-> n2
-    n1 -.->|"Pending"| n12
-    n12 -.->|"Relevant event"| n1
-    n2 -.->|"Pending"| n13
-    n13 -.->|"Relevant event"| n2
+    n3 -->|"Confirmed"| n4
+    n3 -->|"Production failed"| n5
+    n3 -->|"Run stops"| n6
+    n4 -->|"Released / Run stops"| n6
+    n5 -->|"Reverted / Run stops"| n6
+    n6 --> n7
+    n6 --> n8
+    n6 --> n9
+    n6 -->|"Checked revision"| n10
+    n6 -->|"Repair"| n11
+    n6 --> n12
+    n6 --> n13
+    n2 -.->|"head unverified"| n14
+    n14 -.-> n2
+    n1 -.->|"Pending"| n15
+    n15 -.->|"Relevant event"| n1
+    n2 -.->|"Pending"| n16
+    n16 -.->|"Relevant event"| n2
+    n3 -.->|"Pending"| n17
+    n17 -.->|"Relevant event"| n3
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36
