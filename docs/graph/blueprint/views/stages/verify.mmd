@@ -1,18 +1,17 @@
 flowchart TD
     n0(["Enter stage"]):::terminal
-    n1(["Verifier · Foreman finds the repository's verify skill, then the verifier drives the changed flow at the published head"]):::worker
-    n2["Foreman · Post the evidence comment for the tested head"]:::step
-    n3["Continue to Review stage"]:::stage
-    n4["Continue to Implement stage"]:::stage
-    n5(["Run stops<br/>Reported on the issue"]):::terminal
+    n1(["Verifier · Drive the changed flow at the published head with the contract's verify skill"]):::worker
+    n2["Foreman · Post the evidence comment and route on the verdict"]:::step
+    n3["Continue to Implement stage"]:::stage
+    n4(["Run stops<br/>Reported on the issue"]):::terminal
+    n5["Continue to Review stage"]:::stage
     n0 --> n1
-    n1 -->|"No skill"| n3
-    n1 -->|"PR revision changed"| n4
-    n1 --> n5
+    n1 -->|"PR revision changed"| n3
+    n1 --> n4
     n1 -->|"Driven"| n2
-    n2 -->|"PR revision changed"| n4
-    n2 --> n5
-    n2 -->|"Posted"| n3
+    n2 -->|"PR revision changed / Failed"| n3
+    n2 -->|"Unverified"| n4
+    n2 -->|"Posted"| n5
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36

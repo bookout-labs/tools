@@ -5,6 +5,11 @@
 | `foreman_repository` | The `bookout-labs/tools` repository that contains Foreman and its blueprint. |
 | `target_repository` | The repository of the admitted issue and the only destination for that run's changes. |
 | `target_checkout` | The pinned checkout of the target repository. Implementation owns its editable worktree. Verify runs the app there read-only and writes captures to its attempt scratch. |
+| Related repository | A repository the target depends on, named in the contract file with a pinned commit. Foreman checks it out read-only and adds it as a read root for the workers. Writes stay in the target repository. |
+| Contract file | `.foreman/contract.yaml`, the one tracked file in a target repository that describes it to Foreman: the check command, container image and setup, how to start the app and tell it is up, the related repositories, the names of the secrets the app needs, the verify skill path, the mutation command and the production check. |
+| Protected file | A file a feature run never changes: the check command, CI workflows, the verify skill, accepted tests and the contract file. A change to one is its own issue. |
+| Doctor | `foreman doctor --repo OWNER/NAME`, plain code that checks a target repository is ready. Its quick part runs at admission before any paid call. Its full part builds the image, runs the check and starts the app and related services. Each failure names the missing requirement and its exact fix. |
+| Attempt container | The container built from the contract file's image and setup commands. The builder, the acceptance test writer, the verifier and the reviewer run in it, so they can start the app and its related services. |
 | Blueprint | The versioned design the human approves for future Foreman runs. |
 | Run | One execution for a GitHub issue under a pinned blueprint and runtime release. |
 | Stage | One of seven LangGraph subgraphs. A stage owns a result and its permitted routes. |
@@ -12,11 +17,14 @@
 | Worker | An assigned role that uses a CLI and configured model policy to perform a procedure. |
 | Procedure | The prompt, skills, inputs and typed worker output for a step that calls a worker. |
 | Model policy | The existing configuration for eligible models, ordering and fallback. |
-| Slice | One piece of implementation with acceptance, owned seams and declared dependencies. |
-| Seam | A named interface or file a slice provides or uses. |
+| Repair turn | The one extra charged call in the same session that sends a worker its invalid answer's exact validation error. A second invalid answer stops the run. |
+| Slice | One piece of work that ships as one PR. It states observable behavior: acceptance criteria, non-goals and each criterion's proof, plus declared dependencies and an advisory list of files it expects to touch. It never names a code edit. |
+| Proof | How a criterion is proven: test, drive or contract. A drive criterion that cannot be driven is marked not drivable with a reason. |
+| Assumption | A fact the plan relies on that lies outside the target checkout. It cites a tracked file in a related repository at its pinned commit, or it becomes a gate question. |
 | Candidate | A saved plan or supplied slice bound to a repository, issue, base revision and content digest. |
 | Ready | The draft worker says the candidate is complete enough to validate. |
-| Approval | An authorized person's explicit assent for the named choice, plan revision or PR head. For a choice or plan, the coordinator or personal agent posts the approval as an issue comment under the human's identity. |
+| Approval | An authorized person's explicit assent for the named choice or PR head. The coordinator or personal agent posts it as an issue comment under the human's identity. A plan needs none. |
+| Stop | A `foreman stop` comment posted on the issue under the human's identity. Foreman reads it at every stage entry and ends the run cancelled. |
 | Gate | A saved pause for the human's answer to a specific unresolved choice. The coordinator or personal agent posts the answer or cancellation as an issue comment under the human's identity. |
 | Settled ruling | A saved human answer that later checks of the same issue get as context and cite by ID. |
 | Halt | A named terminal stop with evidence. A provider or GitHub wait keeps the run open. |
@@ -25,13 +33,18 @@
 | Attempt | One worker execution identified by its reservation and recorded response or usage. |
 | Base revision | The Git commit that pins the starting target checkout. A review also records its PR diff base. |
 | Head | The exact commit on the PR's source branch at the moment of observation. |
-| Checked tree | The exact tree whose unchanged contents passed the configured target repository check. |
+| Acceptance tests | Tests and fixtures a separate worker in the verifier role writes from the plan and the base tree before the build. Plain code proves the check collects them and that they fail at the base. The builder cannot edit them. |
+| Checked tree | The exact tree whose unchanged contents passed the contract's check command, including the accepted tests. |
+| Mutation check | After a passing check, plain code flips a capped sample of changed lines with the contract's pinned tool and reruns the tests. A mutation no test notices goes back to the builder as a finding. |
 | Receipt | Saved evidence of one observed GitHub, Git or worker result. |
 | Arm | Ask GitHub to queue or auto-merge the exact reviewed commit when eligible. |
+| Production confirmation | The contract's read-only production check, run by Foreman against the merge commit after a merge. A failure files a revert issue and a regression issue. |
 | P0 / P1 | Typed priorities for critical or serious evidenced correctness, security or scope defects. |
+| Demonstration | A test or command attached to a blocking review finding that Foreman runs at the reviewed head. A finding whose demonstration does not fail is advisory. |
 | Advisory | A finding that can be posted without requesting implementation again. |
 | Waiver | An exact, temporary structural difference with a migration issue and a condition for removal. |
 | Scorer | A versioned rubric that assesses recorded work without deciding workflow routes. |
 | Hand fix | A person modifies the change or repairs a run to get the PR to merge. |
+| Escape | A defect that got past Foreman: a hand fix, a revert or a failed production check. Foreman records each one on the run. It is closed by a change to the target repository's tests, verify skill or conventions, or to a prompt, never by a new guard in Foreman. |
 | Criterion | One acceptance criterion of a slice. Verify reports each one as passed, failed or unverified. |
 | Evidence | What the verifier did and observed for each criterion at the tested head, and where its captures are saved. Foreman posts it as one comment for that head, marked stale if the head moved. |

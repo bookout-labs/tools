@@ -14,6 +14,10 @@ The baseline is [`b96293d6`](https://github.com/bookout-labs/tools/commit/b96293
 | [M8](https://github.com/bookout-labs/tools/issues/251) | **Verify · Use the change as a user would before review.** Add the Verify stage between Implement and Review (D11). Drive the published head with the target repository's own `verify-<app>` skill, post one evidence comment for the tested head, and hand the head to Review, which reads the evidence. Move `verify-<app>` from Implement to Verify. Rename the reviewing role to `reviewer` and add the `verifier` worker. Test a repository with no skill, a failed criterion, a moved head, an ambiguous post and a changed tree. | The Verify entries this drawing adds under 251. | 10 | 160 |
 | | **Estimated production total** | | **913** | **665** |
 
+## Redesign (#299)
+
+[Issue #299](https://github.com/bookout-labs/tools/issues/299) owns blueprint v3, drawn from the owner's 2026-11-24 brief, items 1 to 24. Each difference between v3 and the code has a waiver under `299` that names the brief item whose build closes it. Build in the brief's order. First, small: 1, 2, 5, 8, 11, 12, 16 and 18. In parallel, largest: 22 and 23 with 3, then 4, then 24 and the app and engine setup PRs. Then the plan and proof chain: 6, 7, 9, 10, 13, 14, 15 and 17. Last: 19, 20 and 21. Each build adds the scenario its item names in `target.yaml`, deletes its waivers, and ships the prompt change that `target.yaml` describes by updating the drawn and runtime prompts together. The new acceptance test prompt is drawn now and ships to `src/foreman/stages/` with item 9. Text-only items such as 2, 3, 4, 6, 8, 11, 12, 16, 18, 21, 22 and 24 have no structural waiver, so their scenarios are the only proof.
+
 
 [PR #122](https://github.com/bookout-labs/tools/pull/122) already allows same-family fallback when configured candidates fail. Its baseline still returns the review-specific `reviewer_unavailable` halt for quota and missing CLI outcomes when those candidates are exhausted. M3 removes that path and the family-exhaustion halt. Only shared dispatch waits when no qualified model is available.
 

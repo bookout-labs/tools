@@ -1,7 +1,9 @@
 flowchart LR
-    n0(["Use the change as a user would"]):::worker
-    n1["Foreman finds the repository's verify skill, then the verifier drives the changed flow at the published head"]:::step
+    n0(["Prove the change independently"]):::worker
+    n1["Write acceptance tests from the plan and the base tree"]:::step
+    n2["Drive the changed flow at the published head with the contract's verify skill"]:::step
     n0 -->|"Assignment"| n1
+    n0 -->|"Assignment"| n2
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36

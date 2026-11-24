@@ -1,2 +1,83 @@
 # IDs bind each exact difference to its migration issue. Delete the entry when the difference closes.
-waivers: {}
+# #299 is the redesign brief. Each subject names the brief item whose build closes it.
+waivers:
+  299:
+    # Item 1, one repair turn for an invalid answer, and item 19, a resumable budget_exceeded, in shared dispatch.
+    V2-26f6d92ff2bb2f15: "item 1: [triage.route] edge reconcile -> reserve repair_turn"
+    V2-d3016639cd43acf6: "item 1: [research.answer] edge reconcile -> reserve repair_turn"
+    V2-dfd3b02a99442c7f: "item 1: [spec.draft] edge reconcile -> reserve repair_turn"
+    V2-a38a3f3111bb60ff: "item 1: [spec.check] edge reconcile -> reserve repair_turn"
+    V2-e2962dafd69ec3ce: "item 1: [implement.edit] edge reconcile -> reserve repair_turn"
+    V2-614766af213ab62f: "item 1: [verify.drive] edge reconcile -> reserve repair_turn"
+    V2-635f3428bdbc957d: "item 1: [review.inspect] edge reconcile -> reserve repair_turn"
+    V2-b2e86bf0353bf197: "items 1 and 19: [triage.route] dispatch retries invalid_answer and budget_resume"
+    V2-2d9bca1386371808: "items 1 and 19: [research.answer] dispatch retries invalid_answer and budget_resume"
+    V2-8e0a59aba66a4807: "items 1 and 19: [spec.draft] dispatch retries invalid_answer and budget_resume"
+    V2-abd614fda7cf536b: "items 1 and 19: [spec.check] dispatch retries invalid_answer and budget_resume"
+    V2-8fdc648cc5750151: "items 1 and 19: [implement.edit] dispatch retries invalid_answer and budget_resume"
+    V2-7eb10b8d3b8b22b4: "items 1 and 19: [verify.drive] dispatch retries invalid_answer and budget_resume"
+    V2-d934afd47e823b50: "items 1 and 19: [review.inspect] dispatch retries invalid_answer and budget_resume"
+    # Item 5, skills load whole.
+    V2-e2059fa8889ca34d: "item 5: [procedure/research] skills load whole"
+    V2-ae1cfab28b486262: "item 5: [procedure/spec] skills load whole"
+    V2-f677815f71cef9b8: "item 5: [procedure/spec_check] skills load whole"
+    V2-960c07b529e55643: "item 5: [procedure/implement] skills load whole"
+    V2-a204fc26b68be31d: "item 5: [procedure/review] skills load whole"
+    # Item 7, the plan's assumptions list.
+    V2-5b3318c64d065300: "item 7: [procedure/spec] output_fields add assumptions"
+    # Item 9, acceptance tests before the build.
+    V2-1d71058add0e9a14: "item 9: [procedure/implement_tests] declaration"
+    V2-2edf3e3eafee0b4a: "item 9: [dispatch] call from implement.tests"
+    V2-94ef52c601ef2cdc: "item 9: [implement] node tests"
+    V2-268a7396fe977d30: "item 9: [implement] owner implement.py::tests"
+    V2-1ee77d451331d56f: "item 9: [implement] edge prepare -> tests"
+    V2-611e028f60565597: "item 9: [implement] edge tests -> tests"
+    V2-e0fbde7bf94559f6: "item 9: [implement] edge tests -> edit"
+    V2-2e88ef897fe77045: "item 9: [implement] edge tests -> __end__"
+    V2-a4fadc3ae9d7e92e: "item 9: [implement] halts add base_check_failed"
+    V2-154b6ea2890d2409: "item 9: [halts] base_check_failed"
+    # Item 10, the builder cannot weaken the checks.
+    V2-685cea20851efc63: "item 10: [implement] edge commit -> edit checks_weakened"
+    # Items 12 and 14, typed no_change and failed criteria for the builder.
+    V2-5d62efb18bc12c44: "item 12: [procedure/implement] output_fields add no_change"
+    V2-7a49e4a050d4e500: "item 14: [procedure/implement] inputs add verify"
+    # Item 14, Verify's verdict routes.
+    V2-484186d696ccdd49: "item 14: [verify] edge drive -> __end__ drops no_skill"
+    V2-4c2870647bf96a40: "item 14: [verify] edge post -> __end__ adds failed and unverified"
+    V2-7ae0337016465b27: "item 14: [verify] halts add criterion_unverified"
+    V2-3890aa0dee79eefc: "item 14: [halts] criterion_unverified"
+    V2-f3b9b64a1a2999c6: "item 14: [delivery] edge verify -> implement adds failed"
+    V2-ebed68d43e05577d: "item 14: [delivery] edge verify -> review drops no_skill"
+    # Item 15, the mutation check.
+    V2-b06d9aea35728a9a: "item 15: [implement] node mutate"
+    V2-0e7e17ebbffa3e0a: "item 15: [implement] owner implement.py::mutate"
+    V2-0ee85f2e85f0f855: "item 15: [implement] edge edit -> mutate"
+    V2-05b2c98c92678c0f: "item 15: [implement] edge edit -> commit becomes mutate -> commit"
+    V2-ab8016d046753804: "item 15: [implement] edge mutate -> commit"
+    V2-dad9431a38aa5923: "item 15: [implement] edge mutate -> edit"
+    V2-8df8d75ad03f787e: "item 15: [implement] edge mutate -> __end__"
+    # Item 17, plain code runs each review demonstration.
+    V2-b222c5a155e7abe8: "item 17: [review] node demonstrate"
+    V2-d8c1a98269622ecd: "item 17: [review] owner review.py::demonstrate"
+    V2-111e1dcf5c6b6dcb: "item 17: [review] edge inspect -> demonstrate"
+    V2-f25e1d9cfeab4fa3: "item 17: [review] edge inspect -> post becomes demonstrate -> post"
+    V2-3fae48fb6cac2e50: "item 17: [review] edge demonstrate -> post"
+    V2-69f97d835255ffc9: "item 17: [review] edge demonstrate -> __end__"
+    # Item 20, production confirmation and revert.
+    V2-fa311dc44efe7334: "item 20: [merge] node confirm"
+    V2-c9dc2bbf6d233ef1: "item 20: [merge] owner merge.py::confirm"
+    V2-89cdd1610eb3ed58: "item 20: [merge] node revert"
+    V2-4a3b9f881b412647: "item 20: [merge] owner merge.py::revert"
+    V2-58b25a190dc15a7f: "item 20: [merge] edge observe -> confirm"
+    V2-e9f99effb4bf3f40: "item 20: [merge] edge observe -> release becomes confirm -> release"
+    V2-69997bb9c5d538f9: "item 20: [merge] edge confirm -> release"
+    V2-a25144a997f4450b: "item 20: [merge] edge confirm -> revert"
+    V2-ea342d50b439fa22: "item 20: [merge] edge confirm -> report"
+    V2-935a5b321141c363: "item 20: [merge] edge revert -> report"
+    V2-2744814365f27851: "item 20: [merge] halts add production_unconfirmed"
+    V2-fe7b51f959c31436: "item 20: [halts] production_unconfirmed"
+    V2-8cfd976895b95870: "item 20: [delivery] edge merge -> __end__ adds reverted"
+    # Item 23, doctor's quick check at admission.
+    V2-d1bd4e51aa5359a8: "item 23: [triage] edge admit -> __end__ adds not_ready"
+    V2-7e9072f37d78ab48: "item 23: [triage] halts add not_ready"
+    V2-2d1956f7583b3a2f: "item 23: [halts] not_ready"

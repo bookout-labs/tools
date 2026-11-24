@@ -1,11 +1,12 @@
 schema_version: 1
-blueprint_version: 2
+blueprint_version: 3
 status: approved
 baseline: b96293d6e6403e854097cb8c2c3d94afe747e286
 repositories:
   foreman_repository: bookout-labs/tools
   target_repository: Canonical repository of the admitted GitHub issue.
   target_checkout: Exclusive Git checkout of target_repository, with base revision pinned at admission.
+  related_repositories: Read-only Git checkouts of the repositories the target contract names, each at the commit the contract pins. Workers read them. Nothing writes to them.
   pstack:
     repository: cursor/plugins
     revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
@@ -26,8 +27,8 @@ intake:
     done: Show a typed terminal result.
   policy: >-
     Verify the App webhook and that the App is installed on the issue's repository, then read the current issue, repository and labels from GitHub.
-    Admit only real issues that carry the Ready label. Check admission on a verified Ready label event
-    or after a matching prerequisite merge for a dependent that still carries Ready. Ignore duplicate and stale
+    Admit only real issues that carry the Ready label in a repository that passes doctor's quick check. Check admission on a verified Ready label event,
+    after a matching prerequisite merge for a dependent that still carries Ready, or for a revert issue Foreman filed. Ignore duplicate and stale
     deliveries and Foreman's own label updates. Reuse the per-issue checkpoint and lock. Mirror checkpoint state
     as one run label and one status comment with the typed result and its links. Labels do not grant authority to
     merge or answer gates.
@@ -41,26 +42,78 @@ overview:
 terminal_outcomes:
   answered: GitHub confirms the answer on the originating issue.
   children_filed: GitHub confirms the planned child issues and dependency links.
-  merged: GitHub reports merged=true and the PR head SHA at merge equals the reviewed head. Foreman records merge_commit_sha separately and rechecks eligible Ready dependents.
+  merged: GitHub reports merged=true, the PR head SHA at merge equals the reviewed head, and the production check confirms the merge commit. Foreman records merge_commit_sha separately and admits eligible Ready dependents.
+  reverted: The production check failed for Foreman's merge. Foreman filed a Ready revert issue for the merge commit and a regression issue with the evidence, and released no dependents.
   closed: GitHub confirms the pull request closed without a merge.
-  cancelled: The human explicitly cancels at a human gate.
-  no_change: Implementation identifies no justified change and has published nothing.
+  cancelled: The human explicitly cancels at a human gate or posts a foreman stop comment on the issue.
+  no_change: The builder returned a typed no_change answer with its reason and Foreman has published nothing.
   halted: Foreman saves a named halt and its evidence.
 evidence:
   introspection: [compiled node kind, owner binding, compiled edge and route label, procedure input fields, output schema and fields, model policy selector and dependency, prompt path, skill selector, declared halts and retries, owner module line budget]
-  tests: [route priority and result typing, gate authority and continuation, effects, input provenance, identity, recovery, skill activation, checked tree identity, prompt assembly]
+  tests: [route priority and result typing, gate authority and continuation, effects, input provenance, identity, recovery, skill activation, checked tree identity, prompt assembly, readiness, protected files, acceptance test proof, mutation sample, production confirmation]
   review: [purpose, scope, prompt content, method quality, line budget choices, allowed dependencies, Warp fit, decisions]
   note: Resolve model order from the configured policy rather than duplicating model names. Behavioral scenarios verify effective fallback and family eligibility.
+
+# The brief in tools #299 (items 1-24) is the source of every change in blueprint v3. Each changed rule names its item.
+target_contract:
+  path: .foreman/contract.yaml
+  purpose: >-
+    One tracked file in target_repository holds everything that describes the repository to Foreman (item 22).
+    It is versioned with the code it checks. It replaces the FOREMAN_CHECK variable, tools #292's .foreman/environment.yaml
+    and the requirements that today are spread over the App install notes, cli.py, github.py, skill_rules.py and README.md.
+  fields:
+    check: The repository check command. Foreman runs it in the attempt container and requires exit 0 on an unchanged tree.
+    image: The container image that the builder, the acceptance test writer, the verifier and the reviewer run in (item 3).
+    setup: Setup commands that run in order in a fresh attempt container before any worker starts.
+    start: The command that starts the app, a health command that exits 0 once the app is up, and the time limit to wait for it.
+    related_repositories: Each related repository as OWNER/NAME with a pinned commit and the command that starts its service in the attempt container (item 4).
+    secrets: The names of the secrets the app needs to start. Foreman supplies test values. Production credentials are never used.
+    verify_skill: The path of the repository's verify skill. The skill says how to start the app, how to sign in with a test account and what counts as evidence.
+    mutation: The pinned mutation tool command and the sample cap for the mutation check (item 15). Foreman stays language-neutral.
+    production_check: A read-only command that confirms a merge commit in production, the exit code that means the commit is not deployed yet, and the time limit for production confirmation (item 20). A repository with no deployment names a check of its default branch at the merge commit.
+  operator_variables: Repository variables keep only what the operator controls, which are FOREMAN_HUMAN_LOGIN, the budget caps and FOREMAN_MERGE_HOLD.
+  protected_files: [the check command, CI workflows under .github/workflows, the verify skill, accepted tests, the contract file]
+  protected_rule: >-
+    A feature run never changes a protected file (item 20). A change to one is filed as its own issue without the Ready label,
+    and the feature that needs it depends on that issue. Foreman never builds a protected-file change.
+  warp: {equivalent: Runner image and setup commands, factory repositories and secrets, page: https://docs.warp.dev/factories/runners/, also: [https://docs.warp.dev/factories/environments/, https://docs.warp.dev/factories/secrets/, https://docs.warp.dev/factories/guides/multi-repository-factory/], divergence: "Warp keeps the image, setup commands, repositories and secrets in the factory definition (runners/linux-build.yaml and factory.yaml in warp-factory-examples 02-sdlc-issue-to-pr). Foreman serves many target repositories from one installation, so each target repository carries its own contract, versioned with the code it checks."}
+doctor:
+  command: foreman doctor --repo OWNER/NAME
+  purpose: >-
+    Plain code that proves a target repository is ready (item 23). It replaces the start-time variable errors (cli.py:200, cli.py:203),
+    Verify's no_skill route (review.py:72) and the missing label or merge queue found partway through a run.
+  quick:
+    when: Run by the command and by triage.admit before any paid call.
+    requirements: [the GitHub App is installed on the repository, FOREMAN_HUMAN_LOGIN and the budget caps are set, the Ready label exists, a merge queue ruleset protects the base branch, the contract file parses and validates, the verify skill exists at the contract's path]
+  full:
+    when: Run on demand, and by the first admission after the contract file changes at the base.
+    requirements: [the contract image builds, the setup commands succeed, the check passes on the default branch, the app starts and its health command answers, each related repository checks out at its pin and its service starts]
+  failure: Every failure prints the one missing requirement and the exact fix. At admission it stops with not_ready and no run starts.
+  setup_page: >-
+    docs/target-repo-setup.md lists each requirement, why Foreman needs it and how to supply it (item 24). It is generated from doctor's
+    requirement list and a test fails if the two differ. App and engine are set up by ordinary PRs in those repositories with a green
+    doctor as their acceptance test. No onboarding command is built until a third repository needs one.
+  warp: {equivalent: Environment setup checks, page: https://docs.warp.dev/factories/environments/troubleshooting-environments/, divergence: "Warp reports environment_setup_failed when a run's setup fails. Foreman checks readiness at admission so a repository that is not ready never starts a paid run."}
+scorers:
+  rule: >-
+    Scorers read recorded work and never decide routes (item 21). Each scored run stores its label and reason with the run.
+    Foreman records each escape on the run. An escape is closed by a change to the target repository's tests, verify skill or
+    conventions, or to a Foreman prompt. It is never closed by a new guard in Foreman.
+  task_compliance: {judges: implement, question: "Did the merged PR deliver what the issue asked for, and only that? Judge scope from the issue text, not from the PR's description of itself.", labels: [compliant, partial, non_compliant]}
+  review_quality: {judges: review, question: "Did each blocking finding carry a failing demonstration or a cited file:line, and did the review miss a defect that later escaped?", labels: [actionable, vague, empty_or_noise]}
+  warp: {equivalent: Scorers, page: https://docs.warp.dev/factories/measure-and-improve/scorers/, divergence: "Same two scorers as scorers/task-compliance and scorers/review-quality in warp-factory-examples 02-sdlc-issue-to-pr. Foreman scores every run and feeds escapes, not only a sample."}
 rules:
   routing: >-
     A step emits one typed outcome. CI checks that every value of each typed route enum has exactly one
     route in its router. Use the transition order when checks overlap. Apply exit_normalization
     before returning from a stage, preserving the named halt and evidence.
     A stage result carries its typed outcome and artifact. The top router reads that outcome.
-    An invalid worker result stops at dispatch. If a valid result still has no matching route at runtime,
+    An invalid worker answer gets one repair turn (item 1). Dispatch sends the exact validation error back into the
+    same session once. A second invalid answer stops at dispatch with invalid_output.
+    If a valid result still has no matching route at runtime,
     open the stage's question gate and record the unmatched result as a routing defect for the scorers.
   routing_source: https://docs.warp.dev/factories/blueprints/routes/
-  exit_normalization: {foreign_repository: halted, exhausted: halted}
+  exit_normalization: {foreign_repository: halted, exhausted: halted, not_ready: halted, unverified: halted}
   gates:
     continuation: >-
       The coordinator or personal agent relays the question and posts the answer or cancellation on
@@ -68,11 +121,20 @@ rules:
       Only an answer to the open question continues the run. Silence keeps the gate open.
       An unrelated reply does not count. Gates are only for unresolved questions.
       Plan approval never waits on the human.
-    checkpoint: Save the question, its exact issue or artifact identity, and the human's answer from the issue comment. Explicit cancellation for that question emits cancelled.
+      At every stage entry Foreman reads the issue for a foreman stop comment under the human's identity (item 8).
+      A stop ends the run cancelled before the stage makes a paid call or a write.
+    checkpoint: Save the question, its exact issue or artifact identity, and the human's answer from the issue comment. Every gate, review's included, posts its reply marker on the issue (item 18). Explicit cancellation for that question emits cancelled.
   prompts: Load the target prompt as the complete worker instructions and supply the declared run context separately. Deploy the prompt by replacing the runtime file.
+  skills: Load each skill whole at its pinned commit (item 5). No skill is cut to a line range.
   publication_halt: publication_unreconciled
-  paths: Existing seam paths must name Git-tracked regular files in the pinned target_checkout tree. Reject absolute paths, traversal, directories and symlinks. A seam under builds has one owner. An edit-only slice names its existing seams under uses.
-  reporting: Each terminal result includes issue, blueprint version, furthest stage, saved evidence, known work and raw tokens, Claude spend where known, rounds and any hand fix. Unsupported metrics are unknown.
+  paths: >-
+    A slice's file list is advisory (item 6). Each listed existing path must name a Git-tracked regular file in the pinned
+    target_checkout tree. A listed path may be absent when the slice adds the file. Reject absolute paths, traversal, directories
+    and symlinks. An assumption's citation names a Git-tracked regular file in a related repository checkout at its pinned commit.
+  reporting: >-
+    Each terminal result includes issue, blueprint version, furthest stage, saved evidence, known work and raw tokens,
+    Claude spend where known and rounds. Foreman records each escape on the run (item 21): a hand fix, a revert or a failed
+    production check, with its evidence and the change that closed it. Unsupported metrics are unknown.
 context:
   - [GitHub checks, GitHub merge queue, Enforces repository rules]
   - [GitHub merge queue, Foreman, Reports the merge result]
@@ -83,47 +145,69 @@ context:
   - [Foreman, GitHub issue, Run label and status comment]
   - [CARR record layer, T3, Authorized team context]
   - [T3, Coordinator or personal agent, Conversation context]
+  - [Foreman, Attempt container, Builds the contract image and runs setup]
   - [Foreman, Worker CLIs, Assigns a bounded procedure]
   - [Worker CLIs, Target checkout, Reads or edits within assignment]
+  - [Worker CLIs, Related repository checkouts, Read only at pinned commits]
   - [Foreman, GitHub pull request, Publishes checked changes]
+  - [Foreman, Production, Runs the read-only production check]
 workers:
   coordinator:
     title: Investigate and plan
     steps: [triage.route, research.answer, spec.draft]
-    method: Inspect the repository or issue assigned to the run and report a typed route, sourced answer or candidate.
-    permissions: Read issue and pinned target_checkout.
+    method: Inspect the repository or issue assigned to the run and report a typed route, sourced answer or candidate. A plan cites each fact it relies on outside the target checkout.
+    permissions: Read the issue, the pinned target_checkout and the related repository checkouts (item 4).
     conversation: Use a fresh assignment with saved questions and candidate evidence when revising.
   checker:
     title: Challenge the plan
     steps: [spec.check]
-    method: Probe issue fit and each slice in the target repository, including when both repositories contain the named path.
-    permissions: Read pinned target_checkout and exact candidate. Return typed findings.
+    method: Probe issue fit, each slice and each cited assumption in the target and related repositories, including when both repositories contain the named path.
+    permissions: Read pinned target_checkout, the related repository checkouts and the exact candidate. Return typed findings.
     conversation: Use a fresh independent session per candidate, with a qualified different family preferred.
   builder:
     title: Build and check the change
     steps: [implement.edit]
-    method: Edit within acceptance, run the target repository checks and report the result.
-    permissions: Write exclusive target_checkout and its attempt scratch. Foreman commits and publishes.
-    conversation: Resume the verified native session for the same run, issue, target repository, PR lineage and CLI. If unavailable, start fresh from durable artifacts after reconciliation.
+    method: >-
+      Edit within acceptance, run the contract's check command and the accepted tests in the attempt container and report the result (item 3).
+      If the code contradicts a fact in the plan, ask through implement's question gate instead of building it (item 11).
+      Report that no change is needed only as a typed no_change answer with its reason (item 12).
+    permissions: >-
+      Write the exclusive target_checkout and its attempt scratch inside the attempt container, except the accepted tests and the
+      protected files (item 10). The container can start the app and its related services. Read the related repository checkouts.
+      Foreman commits and publishes.
+    conversation: >-
+      Keep one conversation for the life of the PR (D5, item 2). Dispatch saves the native session on every accepted answer.
+      A failed check, a failed criterion, a review finding or a merge repair resumes it when the checkout fingerprint matches the
+      saved one. Otherwise start fresh from durable artifacts after reconciliation.
   verifier:
-    title: Use the change as a user would
-    steps: [verify.drive]
-    method: Build and start the app at the exact published head with the target repository's own verify skill, drive the changed flow and report each acceptance criterion as passed, failed or unverified with evidence.
-    permissions: Run the app from the exclusive target_checkout at the published head with sample data and test accounts, read-only, and write captures and scratch files to its attempt scratch. No edits, commits, pushes, approvals or merges. Foreman posts the report.
-    conversation: Start a fresh session for every head. Prefer a qualified model from a different family from the builders. If none is available, use the next available qualified model in models.toml order, including the builder's family.
+    title: Prove the change independently
+    steps: [implement.tests, verify.drive]
+    method: >-
+      At implement.tests, write acceptance tests and fixtures from the plan and the base tree before any build (item 9).
+      At verify.drive, build and start the app at the exact published head with the target repository's own verify skill,
+      drive the changed flow and report each acceptance criterion as passed, failed or unverified with evidence. A contract
+      criterion runs against the related repository's real service or its recorded contract at the pinned commit (item 13).
+    permissions: >-
+      Run in the attempt container and read the related repository checkouts. At implement.tests, write only test and fixture files
+      in the exclusive target_checkout. At verify.drive, run the app at the published head with test values for the contract's
+      secrets and test accounts, read-only, and write captures and scratch files to its attempt scratch. No source edits, commits,
+      pushes, approvals or merges. Foreman keeps the accepted tests for the build and posts the report.
+    conversation: Start a fresh session for every assignment. Prefer a qualified model from a different family from the builders. If none is available, use the next available qualified model in models.toml order, including the builder's family.
   reviewer:
     title: Review the full change
     steps: [review.inspect]
-    method: Review the complete current PR against acceptance and cite each finding.
-    permissions: Read pinned diff evidence for the exact PR head and diff base. Foreman posts the report.
-    conversation: Start a fresh session every round. Prefer a qualified model family that did not build the change when one is available. Use the next available qualified model in models.toml order when needed, including the builder's family.
+    method: Review the complete current PR in three fresh passes, each answering one fixed question, and cite each finding (item 17).
+    permissions: >-
+      Read the exact PR head and diff base through the one granted diff command, and read the related repository checkouts (item 16).
+      Run the contract's check command in the attempt container. Foreman runs each demonstration and posts the report.
+    conversation: Start a fresh session for every pass of every round. Prefer a qualified model family that did not build the change when one is available. Use the next available qualified model in models.toml order when needed, including the builder's family.
 
 stages:
   triage:
     title: Route the issue
     purpose: Choose research or planning for one admitted issue.
     scope: Read target_repository issue and dependencies. Update the issue's run label and status comment. No repository edits or PR writes.
-    entry: A verified Ready label event or a recheck for a dependent that still carries Ready after a prerequisite merge. A saved answer resumes the route step.
+    entry: A verified Ready label event, a recheck for a dependent that still carries Ready after a prerequisite merge, or a revert issue Foreman filed. A saved answer resumes the route step.
     worker: coordinator
     model_policy: nodes.triage
     instructions:
@@ -134,6 +218,7 @@ stages:
     inputs:
       run: Intake supplies canonical repo and issue, required for every admission.
       plan: GitHub supplies stored slice and dependencies for existing child issues.
+      contract: The target contract at the pinned base, read by doctor's quick check, required.
       human_answers: On resume, Foreman supplies the saved answer the agent posted on the issue under the human's identity.
     outputs:
       schema: foreman.stage_output.TriageOutput
@@ -143,8 +228,8 @@ stages:
     steps:
       admit:
         actor: Foreman
-        action: Validate issue and prerequisites
-        result: Canonical issue identity and pinned base
+        action: Check repository readiness, then validate the issue and prerequisites
+        result: Doctor's quick check passed, canonical issue identity and pinned base
         owner: admit
         check: TR1
       route:
@@ -156,6 +241,7 @@ stages:
     transitions:
       - [__start__, admit, null]
       - [admit, route, admitted]
+      - [admit, __end__, not_ready]
       - [admit, __end__, halted]
       - [route, __end__, question]
       - [route, __end__, plan]
@@ -166,36 +252,42 @@ stages:
     gates:
       - {answerer: Human, question: Decide the missing issue intent, accepted: answer or cancel, saved: Issue-bound answer, resume: route, bullets: [Clarify issue intent, Answer or cancel, Resume triage]}
     effects: [Foreman reads GitHub and saves admission and route records., Foreman uses the GitHub adapter to mirror checkpoint state as the issue's run label and status comment.]
-    invariants: [GitHub repository identity and run configuration agree., Open dependencies prevent admission and later eligibility is read from GitHub.]
+    invariants:
+      - GitHub repository identity and run configuration agree.
+      - Open dependencies prevent admission and later eligibility is read from GitHub.
+      - Admission runs doctor's quick check before any paid call or build checkout (item 23). A repository that fails it starts no run, and the halt names the one missing requirement and its exact fix.
     failure_and_resume:
-      halts: [missing_slice, skill_missing, invalid_output, git_failed]
+      halts: [missing_slice, skill_missing, invalid_output, git_failed, not_ready]
       retries: {}
-      recovery: Missing child payload stops admission. A pstack pin that can't be fetched or exported stops admission with skill_missing, an issue whose identity differs from the assignment with invalid_output, and a GitHub or checkout failure with git_failed. An open dependency leaves the issue unadmitted. Worker dispatch failures use shared dispatch. The human's answer resumes route.
-    implementation: {module: src/foreman/steps/triage.py, entry: compile_stage, max_lines: 110, allowed_imports: [state, stage_output, github, dispatch], shared: [Forge, dispatch], never_does: [create child issues, edit source]}
-    checks: {TR1: tests/test_runner.py, TR2: tests/test_delivery.py, TR3: tests/test_accept.py}
+      recovery: A failed readiness requirement stops admission with not_ready. Supply the named requirement and add Ready again. Missing child payload stops admission. A pstack pin that can't be fetched or exported stops admission with skill_missing, an issue whose identity differs from the assignment with invalid_output, and a GitHub or checkout failure with git_failed. An open dependency leaves the issue unadmitted. Worker dispatch failures use shared dispatch. The human's answer resumes route.
+    implementation: {module: src/foreman/steps/triage.py, entry: compile_stage, max_lines: 110, allowed_imports: [state, stage_output, github, dispatch, doctor], shared: [Forge, dispatch], never_does: [create child issues, edit source]}
+    checks: {TR1: tests/test_runner.py, TR2: tests/test_delivery.py, TR3: tests/test_accept.py, TR4: tests/test_doctor.py, TR5: tests/test_doctor.py, TR6: tests/test_runner.py}
     scenarios:
       TR1: {given: The requested issue names another repository or a dependency is still open, expect: Stop before a paid call or build checkout allocation.}
       TR2: {given: A parent-labelled question and a separately supplied single slice, expect: Route the question to research and the supplied slice to spec.validate.}
       TR3: {given: A verified Ready label event arrives twice and the App adds the Doing label, expect: One admitted checkpoint and one run with the issue showing its state.}
-    decisions: [D3, D6, D9]
-    warp: {equivalent: Intake and conditional triage, page: https://docs.warp.dev/factories/how-factories-work/, divergence: Foreman binds GitHub issue and dependency identity before classification to prevent cross-repository work.}
+      TR4: {given: "A scratch repository with each quick requirement removed in turn: App install, variables, Ready label, merge queue ruleset, contract file, verify skill", expect: "Doctor names the missing requirement and its exact fix each time, admission stops with not_ready and no run or paid call starts."}
+      TR5: {given: docs/target-repo-setup.md and doctor's requirement list differ by one requirement, expect: The page test fails.}
+      TR6: {given: "A foreman stop comment under the human's identity, and one under another login, posted while a run waits between stages", expect: "The next stage entry ends the run cancelled before any paid call. The comment under another login changes nothing."}
+    decisions: [D3, D6, D9, D14]
+    warp: {equivalent: Intake and conditional triage, page: https://docs.warp.dev/factories/how-factories-work/, also: [https://docs.warp.dev/factories/environments/troubleshooting-environments/], divergence: "Foreman binds GitHub issue and dependency identity before classification to prevent cross-repository work. Warp finds a setup failure when a run's environment starts. Foreman runs doctor's quick check at admission so a repository that is not ready never starts a paid run."}
 
   research:
     title: Answer the question
     purpose: Post one sourced answer on the originating issue.
-    scope: Read target_checkout at the pinned base and the admitted issue. Write one issue answer.
+    scope: Read target_checkout at the pinned base, the related repository checkouts and the admitted issue. Write one issue answer.
     entry: Triage returns question.
     worker: coordinator
     model_policy: nodes.research
     instructions:
       prompt: docs/graph/blueprint/prompts/research.md
       runtime_prompt: src/foreman/stages/research.md
-      context: [Question, canonical repository and pinned base]
+      context: [Question, canonical repository and pinned base, related repository checkouts]
     skills:
-      - {ref: how/SKILL.md, when: always, kind: leaf_prompt, lines: [17, 17], method: Inspect the code and explain its architecture from source.}
-      - {ref: why/SKILL.md, when: bug_fix, kind: skill, lines: [9, 9], method: Read author records and mark inferences.}
-      - {ref: engineering/diagnosing-bugs/SKILL.md, repository: matt_skills, when: bug_fix, kind: skill, lines: [18, 37], method: Name a tight feedback loop that reproduces the bug before any hypothesis.}
-      - {ref: engineering/diagnosing-bugs/SKILL.md, repository: matt_skills, when: perf_issue, kind: skill, lines: [18, 37], method: Name a tight feedback loop that reproduces the regression before any hypothesis.}
+      - {ref: how/SKILL.md, when: always, kind: leaf_prompt, lines: null, method: Inspect the code and explain its architecture from source.}
+      - {ref: why/SKILL.md, when: bug_fix, kind: skill, lines: null, method: Read author records and mark inferences.}
+      - {ref: engineering/diagnosing-bugs/SKILL.md, repository: matt_skills, when: bug_fix, kind: skill, lines: null, method: Name a tight feedback loop that reproduces the bug before any hypothesis.}
+      - {ref: engineering/diagnosing-bugs/SKILL.md, repository: matt_skills, when: perf_issue, kind: skill, lines: null, method: Name a tight feedback loop that reproduces the regression before any hypothesis.}
     inputs:
       run: Triage supplies origin issue, repository, base and question, required.
       human_answers: On resume, Foreman supplies the saved source or clarification the agent posted on the issue under the human's identity.
@@ -219,47 +311,48 @@ stages:
     gates:
       - {answerer: Human, question: Provide the missing external source or clarify the question, accepted: source or answer or cancel, saved: Issue-bound answer, resume: answer, bullets: [Supply missing source, Clarify or cancel, Resume research]}
     effects: [Foreman posts an issue comment keyed by run and answer digest.]
-    invariants: [The worker reads the named repository and cites source evidence., Publication cannot allocate a PR.]
+    invariants: [The worker reads the named repository and cites source evidence., Publication cannot allocate a PR., Each skill loads whole at its pinned commit.]
     failure_and_resume:
       halts: [git_failed, publication_unreconciled]
       retries: {}
       recovery: At post read the origin issue for the saved marker before another write. Adopt the matching comment. If the write remains ambiguous, stop with publication_unreconciled. Dispatch owns worker failures.
     implementation: {module: src/foreman/steps/research.py, entry: compile_stage, max_lines: 85, allowed_imports: [stage_output, github, dispatch], shared: [Forge, dispatch], never_does: [edit source, file child issues]}
-    checks: {RE1: tests/test_delivery.py, RE2: tests/test_delivery.py, RE3: tests/test_delivery.py}
+    checks: {RE1: tests/test_delivery.py, RE2: tests/test_delivery.py, RE3: tests/test_delivery.py, RE4: tests/test_skill_rules.py}
     scenarios:
       RE1: {given: GitHub accepts the answer before the checkpoint fails, expect: Adopt the matching comment once or report publication_unreconciled if the prior write cannot be confirmed.}
       RE2: {given: A question about a revision-sensitive symbol, expect: Return a cited answer from the pinned target base and open no PR.}
       RE3: {given: The answer needs external evidence absent from the issue and pinned checkout, expect: Pause before posting and resume answer with the human’s clarification.}
+      RE4: {given: A worker method names a pinned pstack skill, expect: "The instructions tell the worker to read the whole SKILL.md at the pinned commit, with no line range."}
     decisions: [D7]
-    warp: {equivalent: Research and answer, page: https://docs.warp.dev/factories/factory-agents/, divergence: Foreman confirms one issue comment because the source is GitHub.}
+    warp: {equivalent: Research and answer, page: https://docs.warp.dev/factories/factory-agents/, also: [https://docs.warp.dev/factories/factory-skills/], divergence: "Foreman confirms one issue comment because the source is GitHub. Skills load whole at a pinned commit, as Warp loads a SKILL.md."}
 
   spec:
     title: Plan and check the work
-    purpose: Clear an exact repository-bound candidate or file its linked child issues.
-    scope: Read-only target_checkout at pinned base until filing. GitHub child writes stay in target_repository.
+    purpose: Clear an exact repository-bound candidate that states behavior, or file its linked child issues.
+    scope: Read-only target_checkout at pinned base and the related repository checkouts until filing. GitHub child writes stay in target_repository.
     entry: Triage requests a draft or supplies a slice for common validation. Revisions stay within this stage.
     worker: coordinator
     model_policy: nodes.spec
     instructions:
       prompt: docs/graph/blueprint/prompts/spec.md
       runtime_prompt: src/foreman/stages/spec.md
-      context: [Canonical repository and pinned base, prior candidate and findings, the human's saved answer]
+      context: [Canonical repository and pinned base, related repository checkouts, prior candidate and findings, the human's saved answer]
     skills:
-      - {ref: architect/SKILL.md, when: always, kind: skill, lines: [9, 9], method: Trace affected systems and sketch two ownership shapes.}
-      - {ref: statechart/SKILL.md, when: stateful, kind: skill, lines: [23, 27], method: Describe state transitions and invariants.}
-      - {ref: engineering/to-tickets/SKILL.md, repository: matt_skills, when: parent, kind: skill, lines: [29, 40], method: Cut thin end-to-end slices and name each blocking edge.}
+      - {ref: architect/SKILL.md, when: always, kind: skill, lines: null, method: Trace affected systems and sketch two ownership shapes.}
+      - {ref: statechart/SKILL.md, when: stateful, kind: skill, lines: null, method: Describe state transitions and invariants.}
+      - {ref: engineering/to-tickets/SKILL.md, repository: matt_skills, when: parent, kind: skill, lines: null, method: Cut thin end-to-end slices and name each blocking edge.}
     inputs:
       run: Triage supplies canonical issue, target repository and pinned base, required.
       plan: Triage supplies a stored slice, or spec supplies a draft and bound prior findings for revision.
-      human_answers: Foreman reads clarifications, comments, approvals and stop requests the agent posts on the issue under the human's identity.
+      human_answers: Foreman reads clarifications, comments and answers the agent posts on the issue under the human's identity.
     outputs:
       schema: foreman.stage_output.SpecOutput
-      fields: [questions, slices, spec, spec_gate]
+      fields: [assumptions, questions, slices, spec, spec_gate]
       consumers: [implement, child issue runs, operator]
       outcomes: {ready: Worker supplied a candidate for validation, needs_human: The human must answer grounded questions, validated_single: One candidate slice cleared both checks, children_filed: All children and links confirmed, cancelled: The human cancelled, halted: Planning stopped}
     steps:
-      draft: {actor: Spec worker, action: Draft repository-bound slices, result: Candidate and grounded questions when present, owner: draft, check: SP1}
-      validate: {actor: Foreman, action: Validate repository and seam paths, result: Ordered exact candidate or typed defect, owner: validate, check: SC1}
+      draft: {actor: Spec worker, action: Draft behavior slices with a cited assumptions list, result: "Candidate with acceptance criteria, non-goals, a proof for each criterion and cited assumptions, or grounded questions", owner: draft, check: SP1}
+      validate: {actor: Foreman, action: "Validate repository, file list and assumption citations", result: Ordered exact candidate or typed defect, owner: validate, check: SC1}
       check: {actor: Independent checker, action: Check and approve the plan, result: Model approval or findings for the checked candidate, owner: check, check: SC2}
       file_children: {actor: Foreman, action: File and link child issues, result: Observed children and dependency links, owner: file_children, check: FS1}
     transitions:
@@ -282,185 +375,218 @@ stages:
       - [file_children, __end__, halted]
     exits: {validated_single: implement, children_filed: __end__, cancelled: __end__, halted: __end__}
     gates:
-      - {answerer: Human, question: "Decide the unresolved product, repository, architecture or policy choice", accepted: explicit choice or cancel, saved: Answer scoped to the candidate and choice, resume: draft, bullets: [Resolve planning choice, Choose or cancel, Resume drafting]}
+      - {answerer: Human, question: "Decide the unresolved product, repository, architecture or policy choice, or confirm a fact the plan cannot cite", accepted: explicit choice or cancel, saved: Answer scoped to the candidate and choice, resume: draft, bullets: [Resolve planning choice, Choose or cancel, Resume drafting]}
       - {answerer: Human, question: Resolve an intent choice identified by the independent checker, accepted: explicit choice or cancel, saved: A settled ruling for the issue. Later candidates are checked with it as context., resume: check, bullets: [Resolve checker question, Choose or cancel, Resume plan check]}
     effects: [Foreman saves draft and verdict by candidate revision., Only file_children creates or adopts child issues and links by stable parent issue and slice marker.]
     invariants:
       - The candidate digest binds target_repository, pinned base, issue and approved content scope. A changed digest needs fresh validation and checking.
       - Validate explicit repository and path identity before a paid plan check. The checker independently assesses ambiguous issue intent and repository ownership.
-      - Every existing seam is a Git-tracked regular file in the pinned target_checkout. Reject directories and symlinks for all slices, including directly supplied and edit-only slices. A built seam has a single provider. Slice titles are unique. Dependencies are acyclic. Existing edits use existing seams without inventing a new seam.
+      - A slice states observable behavior (item 6). It gives acceptance criteria, non-goals and how each criterion is proven, by test, drive or contract. A drive criterion that cannot be driven says so with a reason. A slice never names a code edit. It keeps depends_on for its parents and an advisory list of files it expects to touch. Slices have no builds or uses seams. Slice titles are unique. Dependencies are acyclic.
+      - The candidate carries an assumptions list (item 7). Each fact the plan relies on outside target_checkout cites a Git-tracked file in a related repository checkout at its pinned commit, or becomes a grounded gate question. Validate rejects an uncited assumption as a typed defect and returns the candidate to draft. A contract criterion names the related repository and the assumption it proves.
       - The independent model checker can approve the plan after validation. Ready is the drafter's claim of completeness.
-      - The human may comment on, approve or stop a plan through their coordinator or personal agent. The agent posts each response as an issue comment under the human's identity. Record “we're good” as approval of the identified plan. Continue after the validator and model check clear the plan even without the human's review. A recorded stop prevents further filing or building. A separate clarification gate only asks the human to resolve an open choice.
+      - The plan proceeds when the validator and the model check clear it, without the human's review. The human may comment through their coordinator or personal agent. A foreman stop comment under the human's identity ends the run cancelled at the next stage entry (item 8). Spec keeps no digest approval. A separate clarification gate only asks the human to resolve an open choice.
+      - A slice that would change a protected file of the target contract is filed as its own child issue without Ready, and the feature slice depends on it (item 20).
       - File children from the cleared candidate only. Adoption verifies marker, repository, parent, body and links. Release only eligible children.
     failure_and_resume:
       halts: [invalid_output, spec_cap, git_failed, publication_unreconciled]
       retries: {plan_revisions: src/foreman/models.toml#max_review_rounds}
-      recovery: Explicit foreign scope reports invalid_output before the checker. Other candidate defects save evidence, count each rejected digest once, and return to draft only while rejections remain below max_review_rounds. Dispatch reconciles paid calls before any repeat. At file_children, inspect the issue marker and links before repeating an ambiguous write. If the outcome stays ambiguous, stop with publication_unreconciled.
-    implementation: {module: src/foreman/steps/spec.py, entry: compile_stage, max_lines: 410, allowed_imports: [state, stage_output, github, dispatch, spec_check, workspace], shared: [Forge, Workspace, dispatch], never_does: [edit source, choose a replacement target repository]}
-    checks: {SP1: tests/test_spec_candidate.py, SP2: tests/test_spec_candidate.py, SC1: tests/test_spec_check.py, SC2: tests/test_spec_check.py, SC3: tests/test_spec_check.py, SC4: tests/test_spec_check.py, SC5: tests/test_spec_check.py, FS1: tests/test_runner.py}
+      recovery: Explicit foreign scope reports invalid_output before the checker. Other candidate defects, an uncited assumption included, save evidence, count each rejected digest once, and return to draft only while rejections remain below max_review_rounds. Dispatch reconciles paid calls before any repeat. At file_children, inspect the issue marker and links before repeating an ambiguous write. If the outcome stays ambiguous, stop with publication_unreconciled.
+    implementation: {module: src/foreman/steps/spec.py, entry: compile_stage, max_lines: 410, allowed_imports: [state, stage_output, github, dispatch, spec_check, workspace], shared: [Forge, Workspace, dispatch], never_does: [edit source, choose a replacement target repository, dictate a code edit]}
+    checks: {SP1: tests/test_spec_candidate.py, SP2: tests/test_spec_candidate.py, SP3: tests/test_spec_candidate.py, SP4: tests/test_spec_candidate.py, SC1: tests/test_spec_check.py, SC2: tests/test_spec_check.py, SC3: tests/test_spec_check.py, SC4: tests/test_spec_check.py, SC5: tests/test_spec_check.py, SC6: tests/test_spec_check.py, FS1: tests/test_runner.py}
     scenarios:
-      SP1: {given: The issue names a seam also present in Foreman's installation, expect: Brief names target_repository and pinned target_checkout.}
+      SP1: {given: The issue names a file also present in Foreman's installation, expect: Brief names target_repository and pinned target_checkout.}
       SP2: {given: Valid typed draft, expect: "Save one digest scoped to issue, base and repo before independent check."}
-      SC1: {given: A slice names a foreign repository or a seam available only in foreman_repository, expect: Explicit mismatch stops and wrong root rejects before any builder call.}
-      SC2: {given: Synthetic wrong-repository issue with matching seam names in both repositories, expect: Checker rejects implied foreign intent and no build or child filing occurs.}
+      SP3: {given: A draft whose slice dictates a code expression or leaves a criterion without its proof, expect: Validate returns it to draft as a typed defect before any checker call.}
+      SP4: {given: "Replayed app #1375: the plan relies on an engine route outside the app checkout", expect: "The draft cites the engine route file in the pinned related checkout or asks a grounded question. Seeded with the uncited wrong assumption, validate rejects it before any checker call."}
+      SC1: {given: A slice names a foreign repository or a file available only in foreman_repository, expect: Explicit mismatch stops and wrong root rejects before any builder call.}
+      SC2: {given: Synthetic wrong-repository issue with matching file names in both repositories, expect: Checker rejects implied foreign intent and no build or child filing occurs.}
       SC3: {given: The human answers a choice on candidate A then candidate B changes scope, expect: Validate and check B with settled rulings as context. Ask again only a choice they don't settle.}
-      SC4: {given: Invalid singleton seam or cyclic parent dependencies, expect: Common validator rejects both and the final allowed rejection reports spec_cap.}
-      SC5: {given: The model clears a validated plan with no human response or after the agent posts optional human approval on the issue, expect: Proceed without a manual approval step. Honor a stop the agent posts under the human's identity before implementing or filing.}
+      SC4: {given: A listed path that is a directory or symlink or cyclic parent dependencies, expect: Common validator rejects both and the final allowed rejection reports spec_cap.}
+      SC5: {given: The model clears a validated plan with no human response, expect: Proceed without a manual approval step. A foreman stop comment under the human's identity ends the run cancelled before implementing or filing.}
+      SC6: {given: A plan that needs a change to the repository's check command, expect: File that change as its own child issue without Ready, make the feature depend on it, and build nothing that changes the check command.}
       FS1: {given: A child issue or link write times out, expect: Adopt the matching result once and complete missing links. Report publication_unreconciled if the write cannot be confirmed.}
     decisions: [D3, D7, D8, D9]
-    warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: "Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and the human's review is optional. A checker's intent answer settles the issue, not one plan revision. Warp's gates page re-asks only approval for a revised plan."}
+    warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: "Foreman validates repository, file list and assumption citations deterministically. The independent model checker can approve the plan and the human's review is optional. A checker's intent answer settles the issue, not one plan revision. Warp's gates page re-asks only approval for a revised plan. Warp's spec agent states desired behavior, non-goals and validation criteria (agents/spec in 02-sdlc-issue-to-pr). Foreman adds a cited assumptions list because a planner that cannot read a dependency guesses its API (app #1067)."}
 
   implement:
     title: Build and publish the change
-    purpose: Publish exactly the tree that passed the target repository's checks.
-    scope: Exclusive target_checkout, candidate issue, attempt parent, owned branch and matching PR. No direct base-branch writes.
-    entry: Spec clears one slice, verify or review reports a moved head, review returns a blocking finding, or merge returns a verified repair route.
+    purpose: Publish exactly the tree that passed the repository check, the accepted tests and the mutation check.
+    scope: Exclusive target_checkout inside the attempt container, the related repository checkouts read-only, candidate issue, attempt parent, owned branch and matching PR. No direct base-branch writes.
+    entry: Spec clears one slice, verify reports a failed criterion or a moved head, review reports a blocking finding or a moved head, or merge returns a verified repair route.
     worker: builder
     model_policy: nodes.implement
     instructions:
       prompt: docs/graph/blueprint/prompts/implement.md
       runtime_prompt: src/foreman/stages/implement.md
-      context: [Candidate and acceptance, existing PR and head, exact repository checks, blocking repair evidence]
+      context: [Candidate and acceptance, assumptions, accepted tests, existing PR and head, exact repository checks, blocking repair evidence, failed criteria, surviving mutations]
     skills:
-      - {ref: tdd/SKILL.md, when: bug_fix, kind: skill, lines: [9, 31], method: Reproduce cheaply and rerun the focused regression check.}
-      - {ref: benchmark-checklist/SKILL.md, when: perf_issue, kind: skill, lines: [13, 27], method: Verify benchmark conditions, result and relevance.}
+      - {ref: tdd/SKILL.md, when: bug_fix, kind: skill, lines: null, method: Reproduce cheaply and rerun the focused regression check.}
+      - {ref: benchmark-checklist/SKILL.md, when: perf_issue, kind: skill, lines: null, method: Verify benchmark conditions, result and relevance.}
       - {ref: formal-<area>/SKILL.md, repository: target_repository, when: always, kind: target_skill, lines: null, method: "When the target repository has its own formal verification skill, created by pstack create-formal-verification-skill, run its check on any change that touches the verified code. When the change is intended, update the verification with maintain-formal-verification-skill."}
     inputs:
       run: Intake supplies issue, repo and pinned base, required.
-      plan: Spec supplies one cleared slice and matching candidate revision, required.
-      work: Prepare supplies exclusive checkout, branch and pinned attempt parent before edit.
-      checks: Repository configuration supplies preflight and the check command, required.
+      plan: Spec supplies one cleared slice, its assumptions and matching candidate revision, required.
+      work: Prepare supplies the attempt container, exclusive checkout, branch and pinned attempt parent before edit.
+      checks: The target contract at the pinned base supplies the check command, image, setup and mutation command, required.
       review: Review or merge supplies PR-bound repair evidence, conditional.
+      verify: Verify supplies failed criteria and their evidence, conditional.
     outputs:
       schema: foreman.stage_output.ImplementOutput
-      fields: [implementation, human_question]
+      fields: [implementation, human_question, no_change]
       consumers: [verify, review, operator]
-      outcomes: {published: Confirmed PR at checked head, no_change: No justified change, cancelled: The human cancelled, halted: No valid checked publication}
+      outcomes: {published: Confirmed PR at checked head, no_change: Typed builder answer with its reason, cancelled: The human cancelled, halted: No valid checked publication}
     steps:
-      prepare: {actor: Foreman, action: Prepare and reconcile the worktree, result: Trusted checkout and attempt parent, owner: prepare, check: IM1}
-      edit: {actor: Builder, action: Edit and run target repository checks, result: "Checked candidate tree, exact command failure, or the shared optional human_question for the acceptance gate", owner: edit, check: IM2}
-      commit: {actor: Foreman, action: Commit or adopt the checked tree, result: Exact commit with tested tree, owner: commit, check: IM4}
+      prepare: {actor: Foreman, action: Prepare the attempt container and reconcile the worktree, result: "Trusted checkout, attempt parent and a container built from the contract image and setup", owner: prepare, check: IM1}
+      tests: {actor: Acceptance test writer, action: Write acceptance tests from the plan and the base tree, result: "Accepted tests that the check collects and that fail at the base, or the exact evidence against them", owner: tests, check: IM5}
+      edit: {actor: Builder, action: Edit and run the check with the accepted tests, result: "Checked candidate tree, exact command failure, a typed no_change answer with its reason, or the shared optional human_question for the acceptance gate", owner: edit, check: IM2}
+      mutate: {actor: Foreman, action: Mutate a capped sample of changed lines, result: "Every sampled mutation fails a test, or the surviving mutations as findings", owner: mutate, check: IM6}
+      commit: {actor: Foreman, action: Commit or adopt the checked tree, result: "Exact commit with tested tree, or the weakened checks as findings", owner: commit, check: IM4}
       publish: {actor: Foreman, action: Publish the checked commit, result: "Confirmed repository, PR, branch, base and head", owner: publish, check: PU2}
     transitions:
       - [__start__, prepare, null]
       - [prepare, __end__, halted]
+      - [prepare, tests, needs_tests]
       - [prepare, edit, prepared]
+      - [tests, __end__, halted]
+      - [tests, tests, tests_rejected]
+      - [tests, edit, tests_accepted]
       - [edit, __end__, cancelled]
       - [edit, __end__, no_change]
       - [edit, __end__, halted]
       - [edit, edit, check_failed]
-      - [edit, commit, checked]
+      - [edit, mutate, checked]
+      - [mutate, __end__, halted]
+      - [mutate, edit, mutation_survived]
+      - [mutate, commit, mutations_caught]
       - [commit, __end__, halted]
+      - [commit, edit, checks_weakened]
       - [commit, publish, committed]
       - [publish, __end__, halted]
       - [publish, prepare, owned_head_moved]
       - [publish, __end__, published]
     exits: {published: verify, no_change: __end__, cancelled: __end__, halted: __end__}
     gates:
-      - {answerer: Human, question: Decide an unresolved acceptance choice before further editing, accepted: explicit choice or cancel, saved: Answer bound to issue and current attempt, resume: edit, bullets: [Resolve acceptance choice, Choose or cancel, Resume editing]}
-    effects: [Foreman allocates and inspects the owned worktree., Builder edits source and runs checks., Foreman checks exact tree, commits and publishes through existing adapters.]
+      - {answerer: Human, question: "Decide an unresolved acceptance choice, a plan fact the code contradicts, or a clean tree the builder did not explain, before further editing", accepted: explicit choice or cancel, saved: Answer bound to issue and current attempt, resume: edit, bullets: [Resolve acceptance choice, Choose or cancel, Resume editing]}
+    effects: [Foreman builds the attempt container and allocates and inspects the owned worktree., The acceptance test writer adds tests and fixtures., Builder edits source and runs checks., Foreman runs the mutation sample and checks the exact tree, commits and publishes through existing adapters.]
     invariants:
       - Preserve the tree on branch, ancestry or fingerprint mismatch. Reject scratch files and unexpected outside edits before commit. No force push.
-      - Run the deterministic required repository command in edit against the final candidate. Capture the candidate tree before and after a successful command. Commit may publish only the unchanged checked tree. Receipt binds command, result and tree.
-      - Use the owned PR branch for repairs. Only a confirmed GitHub conflict allows a base merge.
+      - Every step runs in the attempt container built from the contract's image and setup commands (item 3). The builder can start the app and its related services there, so it runs the same checks the verifier drives.
+      - Before the first build of a candidate, a separate worker in the verifier role writes acceptance tests and fixtures from the plan and the base tree (item 9). It writes only test and fixture files. Foreman proves the contract's check passes at the base without the new tests, that the check collects them and that they fail. Tests that pass at the base or are not collected return to the writer with the exact evidence. A failing base check stops with base_check_failed. Foreman records the accepted tests' paths and content digest.
+      - Run the contract's check command in edit against the final candidate. The check includes the accepted tests, and Foreman proves they pass. Capture the candidate tree before and after a successful command. Commit may publish only the unchanged checked tree. Receipt binds command, result and tree.
+      - After a passing check, Foreman flips a capped sample of changed lines with the contract's pinned mutation tool and reruns the accepted and changed tests (item 15). A mutation that no test notices returns to edit as a finding.
+      - The builder cannot edit the accepted tests or the protected files (item 10). Commit compares the checked tree with the attempt parent and returns to edit with the exact files when it finds a deleted test, an added skip, an edited accepted test or a changed protected file.
+      - Rejected tests, failed checks, surviving mutations, weakened checks and failed Verify criteria each count once toward the failed-check cap.
+      - If the code contradicts a fact in the plan, the builder does not build it and asks through implement's question gate, citing the plan fact and the code (item 11).
+      - no_change is a typed builder answer with its reason (item 12). A clean tree without that answer is an unmatched result. It opens implement's question gate and records a routing defect.
+      - Use the owned PR branch for repairs. Only a confirmed GitHub conflict allows a base merge. Repairs resume the builder's saved session when the checkout fingerprint matches (D5).
       - Publication validates repository, issue marker, branch, base and exact head. A moved head loses prior check and review authority. Unrecognized work is preserved and never adopted.
       - Report the changed-line count for the checked tree. Change size does not block publication. Acceptance-specific evidence stays in the issue and tests.
     failure_and_resume:
-      halts: [dirty_worktree, env_unavailable, git_failed, implementation_rejected, verify_cap, publish_failed, publication_model_missing, publication_unreconciled]
+      halts: [dirty_worktree, env_unavailable, git_failed, implementation_rejected, verify_cap, publish_failed, publication_model_missing, publication_unreconciled, base_check_failed]
       retries: {failed_checks: src/foreman/models.toml#max_review_rounds}
-      recovery: Save failed command and exit evidence and increment the check-failure count before comparison. Below the existing cap resume edit on the reconciled candidate. At the cap report verify_cap. Re-enter commit by validating the recorded parent and expected tree. Re-enter publish by reading the remote branch and matching PR before any repeated write. If the outcome remains ambiguous, stop with publication_unreconciled. Dispatch owns paid attempt accounting.
-    implementation: {module: src/foreman/steps/implement.py, entry: compile_stage, max_lines: 420, allowed_imports: [workspace, github, stage_output, dispatch, budget, check_output], shared: [Workspace, Forge, dispatch], never_does: [merge the PR, run a standalone proof gate, require a universal tool-fact record]}
-    checks: {IM1: tests/test_dispatch_recovery.py, IM2: tests/test_delivery.py, IM3: tests/test_publication.py, IM4: tests/test_publication.py, PU1: tests/test_publication.py, PU2: tests/test_publication.py}
+      recovery: Save the failed command, test, mutation or file evidence and increment the failed-check count before comparison. Below the existing cap resume the owning step on the reconciled candidate. At the cap report verify_cap. A container that does not build or a setup command that fails stops with env_unavailable. Re-enter commit by validating the recorded parent and expected tree. Re-enter publish by reading the remote branch and matching PR before any repeated write. If the outcome remains ambiguous, stop with publication_unreconciled. Dispatch owns paid attempt accounting.
+    implementation: {module: src/foreman/steps/implement.py, entry: compile_stage, max_lines: 560, allowed_imports: [workspace, github, stage_output, dispatch, budget, check_output, contract], shared: [Workspace, Forge, dispatch], never_does: [merge the PR, run a standalone proof gate, require a universal tool-fact record, let the builder edit accepted tests]}
+    checks: {IM1: tests/test_dispatch_recovery.py, IM2: tests/test_delivery.py, IM3: tests/test_publication.py, IM4: tests/test_publication.py, IM5: tests/test_acceptance_tests.py, IM6: tests/test_mutation.py, IM7: tests/test_publication.py, IM8: tests/test_delivery.py, IM9: tests/test_delivery.py, IM10: tests/test_smoke.py, PU1: tests/test_publication.py, PU2: tests/test_publication.py}
     scenarios:
       IM1: {given: A saved session and partial edits with unexpected branch or fingerprint, expect: Preserve work and refuse unsafe resume.}
       IM2: {given: A local check fails then passes within the allowance, expect: Return exact failure to edit and publish only the tested tree.}
       IM3: {given: "Detached HEAD, unrelated history, scratch inclusion or tree changes after checks", expect: Stop before push and preserve evidence.}
       IM4: {given: Commit succeeded before checkpoint failure with recorded parent and expected tree, expect: Adopt the matching clean commit once.}
+      IM5: {given: "Acceptance tests that pass at the base, or that the check does not collect", expect: Return the exact evidence to the writer and start no builder call until the check collects them and they fail at the base.}
+      IM6: {given: A passing change with a sampled mutated line that no test notices, expect: Return the surviving mutation to edit as a finding and commit only after every sampled mutation fails a test.}
+      IM7: {given: "The builder deletes a test, adds a skip, edits an accepted test or changes the check command", expect: Commit returns the exact files to edit and nothing is published until they are restored.}
+      IM8: {given: The builder leaves a clean tree without a no_change answer, expect: "Open implement's question gate as an unmatched result and record a routing defect. A typed no_change answer with a reason ends no_change."}
+      IM9: {given: The plan states a field an engine route returns and the related checkout shows the route does not return it, expect: The builder asks through the question gate citing both and builds nothing.}
+      IM10: {given: A smoke repository whose check needs a local server, expect: "The builder starts the server in the attempt container and runs the check itself, and Verify reports the criterion passed with a capture."}
       PU1: {given: Timed-out push already placed the checked head on the remote, expect: Adopt without a second push.}
       PU2: {given: A PR open times out, expect: Adopt the verified matching PR once or report publication_unreconciled if observation cannot establish the outcome.}
-    decisions: [D4, D5, D7, D8]
-    warp: {equivalent: Building and revisions, page: https://docs.warp.dev/guides/agent-workflows/running-an-issue-to-pr-blueprint/, divergence: Foreman owns Git integrity and exact publication recovery across local CLI interruptions.}
+    decisions: [D4, D5, D7, D8, D14]
+    warp: {equivalent: Building and revisions, page: https://docs.warp.dev/factories/runners/, also: [https://docs.warp.dev/guides/agent-workflows/running-an-issue-to-pr-blueprint/], divergence: "Warp's implementer runs on a runner whose image and setup commands live in the factory definition (runners/linux-build.yaml in 02-sdlc-issue-to-pr). Foreman reads them from the target repository's contract file. Warp's implementer writes its own tests. Foreman has a separate worker write acceptance tests first and proves them and the mutation sample with plain code, because a builder can weaken checks it controls (tools #162, #163). Foreman owns Git integrity and exact publication recovery across local CLI interruptions."}
 
   verify:
     title: Use the change as a user would
-    purpose: Drive the published head with the target repository's own verify skill and post the evidence for review.
-    scope: Exact published PR head in the exclusive target_checkout, slice acceptance and the repository's verify skill, which is a `verify-*/SKILL.md` in the target checkout's skills directory at that head. The verifier runs the app and edits nothing.
+    purpose: Drive the published head with the target repository's own verify skill, post the evidence and route on the verdict.
+    scope: Exact published PR head in the exclusive target_checkout inside the attempt container, slice acceptance, the related services the contract starts and the verify skill at the contract's path at that head. The verifier runs the app and edits nothing.
     entry: Implement confirms the published checked head.
     worker: verifier
     model_policy: nodes.verify
     instructions:
       prompt: docs/graph/blueprint/prompts/verify.md
       runtime_prompt: src/foreman/stages/verify.md
-      context: [Published PR and head, slice and acceptance, the repository's verify skill]
+      context: [Published PR and head, slice and acceptance, assumptions, the repository's verify skill, related services from the contract]
     skills:
-      - {ref: verify-<app>/SKILL.md, repository: target_repository, when: always, kind: target_skill, lines: null, method: "Drive the change with the target repository's own skill, created by pstack create-verification-skill and kept current by maintain-verification-skill."}
+      - {ref: verify-<app>/SKILL.md, repository: target_repository, when: always, kind: target_skill, lines: null, method: "Drive the change with the target repository's own skill at the contract's verify_skill path, created by pstack create-verification-skill and kept current by maintain-verification-skill."}
     inputs:
       run: Intake supplies issue, repo and pinned base, required.
-      plan: Spec supplies the slice and its acceptance criteria, required.
-      work: Implement supplies the exclusive checkout, PR identity and published head, required.
+      plan: Spec supplies the slice, its acceptance criteria and their proofs, required.
+      work: Implement supplies the attempt container, exclusive checkout, PR identity and published head, required.
       checks: Implement supplies the exact checked head, required.
     outputs:
       schema: foreman.stage_output.VerifyOutput
       fields: [tested_head, criteria]
-      consumers: [review, operator]
-      outcomes: {posted: Evidence posted for the tested head, no_skill: The repository has no verify skill, head_moved: The PR head moved after publication, halted: Verify stopped}
+      consumers: [review, implement, operator]
+      outcomes: {posted: Every drivable criterion passed, failed: A criterion failed, unverified: A drivable criterion is unverified, head_moved: The PR head moved after publication, halted: Verify stopped}
     steps:
-      drive: {actor: Verifier, action: "Foreman finds the repository's verify skill, then the verifier drives the changed flow at the published head", result: "Each criterion passed, failed or unverified with evidence, or no_skill without a call when the repository has no verify skill", owner: drive, check: VF1}
-      post: {actor: Foreman, action: Post the evidence comment for the tested head, result: Observed GitHub comment bound to the tested head, owner: post, check: VF2}
+      drive: {actor: Verifier, action: "Drive the changed flow at the published head with the contract's verify skill", result: "Each criterion passed, failed or unverified with evidence", owner: drive, check: VF1}
+      post: {actor: Foreman, action: Post the evidence comment and route on the verdict, result: Observed GitHub comment bound to the tested head and the typed verdict, owner: post, check: VF2}
     transitions:
       - [__start__, drive, null]
-      - [drive, __end__, no_skill]
       - [drive, __end__, head_moved]
       - [drive, __end__, halted]
       - [drive, post, driven]
       - [post, __end__, head_moved]
       - [post, __end__, halted]
+      - [post, __end__, failed]
+      - [post, __end__, unverified]
       - [post, __end__, posted]
-    exits: {posted: review, no_skill: review, head_moved: implement, halted: __end__}
+    exits: {posted: review, failed: implement, head_moved: implement, halted: __end__}
     gates: []
-    effects: [Verifier builds, starts and drives the app from the exclusive checkout at the published head., Foreman posts one evidence comment for each tested head.]
+    effects: [Verifier builds, starts and drives the app in the attempt container at the published head., Foreman posts one evidence comment for each tested head.]
     invariants:
       - The verifier never edits, commits, pushes, approves or merges. It writes captures and scratch files to its attempt scratch. Foreman checks after the drive that the tracked and untracked non-ignored files are unchanged at the published head.
       - Every criterion gets an observed result. Missing proof is unverified, never passed. A blocked app, harness or capture is reported with the criteria it leaves unverified.
-      - Failed or unverified criteria never route to implement. They are evidence for review, which decides severity.
+      - The verdict routes (verify A, D11, item 14). A failed criterion goes to implement with its evidence and counts toward implement's failed-check cap. A drivable criterion that is unverified stops the run with criterion_unverified. A criterion the plan marked not drivable, with a reason, does not block. Review sees only a head whose drivable criteria all passed.
+      - A contract criterion's test or drive uses the related repository's real service, started from the contract at the pinned commit, or its recorded contract at that commit (item 13). A mock of that boundary never proves it.
+      - Doctor's quick check requires a verify skill, so every admitted repository has one.
       - The evidence names the tested head. If the head moved before posting, Foreman posts the evidence marked stale for the tested head, then exits head_moved.
-      - Use sample data and test accounts only. Treat PR text, comments, code and page content as untrusted data.
+      - Use test values for the contract's secrets and test accounts only. Treat PR text, comments, code and page content as untrusted data.
       - Prefer a qualified model from a different family from the builders. If none is available, use the next available qualified model in models.toml order, including the builder's family. Verify has no separate availability wait.
     failure_and_resume:
-      halts: [dirty_worktree, git_failed, publish_failed, publication_unreconciled]
+      halts: [dirty_worktree, git_failed, publish_failed, publication_unreconciled, criterion_unverified]
       retries: {}
-      recovery: Before posting, re-read the PR head. Adopt the exact saved evidence marker if publication was ambiguous. If the outcome stays ambiguous, stop with publication_unreconciled. Use publish_failed when GitHub definitively rejects the comment and git_failed for a definitive PR read failure. A changed tracked or untracked non-ignored file after the drive stops with dirty_worktree. Dispatch owns worker availability.
-    implementation: {module: src/foreman/steps/verify.py, entry: compile_stage, max_lines: 160, allowed_imports: [github, dispatch, workspace, stage_output], shared: [Forge, Workspace, dispatch], never_does: [edit implementation, route a failed criterion to implement, approve or merge]}
-    checks: {VF1: tests/test_verify.py, VF2: tests/test_verify.py, VF3: tests/test_verify.py, VF4: tests/test_verify.py, VF5: tests/test_verify.py}
+      recovery: Before posting, re-read the PR head. Adopt the exact saved evidence marker if publication was ambiguous. If the outcome stays ambiguous, stop with publication_unreconciled. Use publish_failed when GitHub definitively rejects the comment and git_failed for a definitive PR read failure. A changed tracked or untracked non-ignored file after the drive stops with dirty_worktree. An unverified drivable criterion stops with criterion_unverified and names what blocked it. Fix the verify skill, the contract or the plan's proof and rerun. Dispatch owns worker availability.
+    implementation: {module: src/foreman/steps/verify.py, entry: compile_stage, max_lines: 160, allowed_imports: [github, dispatch, workspace, stage_output], shared: [Forge, Workspace, dispatch], never_does: [edit implementation, approve or merge, mock a contract boundary]}
+    checks: {VF1: tests/test_verify.py, VF2: tests/test_verify.py, VF3: tests/test_verify.py, VF4: tests/test_verify.py, VF5: tests/test_verify.py, VF6: tests/test_verify.py}
     scenarios:
-      VF1: {given: The target repository has no verify skill, expect: Record no_skill in the run state with no worker call and no comment and hand the head to review. Review's report names it.}
-      VF2: {given: A criterion fails in the driven app, expect: Post it as failed with its evidence and hand the head to review with no direct repair route.}
+      VF1: {given: A criterion fails in the driven app, expect: "Post it as failed with its evidence and route to implement, counting once toward the failed-check cap."}
+      VF2: {given: A drivable criterion is unverified and another the plan marked not drivable with a reason, expect: Post the evidence and stop with criterion_unverified for the drivable one only. Review never runs on that head.}
       VF3: {given: The PR head moves during the drive, expect: Post the evidence marked stale for the tested head and exit head_moved without presenting it as current.}
       VF4: {given: Posting the evidence times out, expect: Adopt only the exact saved marker or report publication_unreconciled.}
       VF5: {given: The verifier changes a tracked file or leaves an untracked non-ignored file, expect: Stop with dirty_worktree before posting.}
+      VF6: {given: A contract criterion against a related service, expect: "The drive calls the service started from the related checkout at its pin, or its recorded contract, and the capture shows the call."}
     decisions: [D7, D11]
-    warp: {equivalent: Computer Use verification, page: https://docs.warp.dev/factories/use-cases/computer-use-verification/, divergence: "Foreman runs unattended, so verification runs in-line before review instead of on a maintainer's label and Review reads its evidence. A moved head returns to Implement, as Review's does, because Foreman must reconcile the head before anything verifies it again."}
+    warp: {equivalent: Computer Use verification, page: https://docs.warp.dev/factories/use-cases/computer-use-verification/, divergence: "Foreman runs unattended, so verification runs in-line on every published head before review instead of on a maintainer's label. Warp's recipe reports evidence for a maintainer. Foreman routes on it because no person stands between Verify and the merge (verify A). A moved head returns to Implement, as Review's does, because Foreman must reconcile the head before anything verifies it again."}
 
   review:
     title: Review the full pull request
-    purpose: Post evidence for the current head and route on typed severity.
-    scope: Full PR diff at current head and recorded diff base. Review worker has read-only access.
-    entry: Verify hands over the published checked head with its evidence. Merge can return a known checked head for fresh review, which keeps the evidence already posted for that head.
+    purpose: Answer three fixed questions about the current head and route on typed severity.
+    scope: Full PR diff at current head and recorded diff base, read through one diff command, the issue text, the related repository checkouts, and the contract's check command in the attempt container. The reviewer edits nothing.
+    entry: Verify hands over the published checked head whose drivable criteria all passed. Merge can return a known checked head for fresh review, which keeps the evidence already posted for that head.
     worker: reviewer
     model_policy: nodes.review
     instructions:
       prompt: docs/graph/blueprint/prompts/review.md
       runtime_prompt: src/foreman/stages/review.md
-      context: [Exact full diff and base, slice and acceptance, verify evidence for the head, prior settled rulings]
+      context: [Issue text, exact full diff and base, slice acceptance, file list and assumptions, verify evidence for the head, prior settled rulings]
     skills:
-      - {ref: src/foreman/skills/review-quality.md, when: always, kind: repository_skill, heading: Review quality, lines: [3, 7], method: Cite evidence and assign severity.}
-      - {ref: blast-radius/SKILL.md, when: always, kind: skill, lines: [31, 37], method: Find the one fact the change is safe because of and what it breaks beyond the diff.}
+      - {ref: src/foreman/skills/review-quality.md, when: always, kind: repository_skill, heading: Review quality, lines: null, method: Cite evidence and assign severity.}
+      - {ref: blast-radius/SKILL.md, when: always, kind: skill, lines: null, method: Find the one fact the change is safe because of and what it breaks beyond the diff.}
     inputs:
-      run: Intake supplies origin issue identity, required.
-      plan: Spec supplies bound acceptance, required.
+      run: Intake supplies origin issue identity and issue text, required.
+      plan: Spec supplies bound acceptance, the file list and the assumptions, required.
       work: GitHub provides repository, PR identity, full diff base and head, required.
       checks: Implement supplies exact checked head, required.
-      verify: Verify supplies each criterion's result and evidence for the head, or no_skill when the repository has no verify skill. A known checked head that Merge returns for fresh review keeps the evidence already posted for it, required.
+      verify: Verify supplies each criterion's result and evidence for the head. A known checked head that Merge returns for fresh review keeps the evidence already posted for it, required.
       review: Prior settled rulings and findings are context when present.
     outputs:
       schema: foreman.stage_output.ReviewOutput
@@ -468,7 +594,8 @@ stages:
       consumers: [implement, merge, operator]
       outcomes: {P0: Repair critical evidenced defect, P1: Repair serious evidenced defect, none: Hand off exact current head with advisory comments, head_moved: Re-establish checked evidence, cancelled: The human cancelled, halted: Review stopped}
     steps:
-      inspect: {actor: Reviewer, action: Assess the complete current PR, result: Typed findings pinned to head and base, owner: inspect, check: RV1}
+      inspect: {actor: Reviewer, action: Answer three fixed questions in three fresh passes, result: "Typed findings pinned to head and base, each blocking one with a demonstration or a cited file:line", owner: inspect, check: RV1}
+      demonstrate: {actor: Foreman, action: Run each blocking demonstration at the reviewed head, result: "Blocking findings whose demonstration fails, the rest advisory, plus Foreman's finding for files outside the plan's list", owner: demonstrate, check: RV7}
       post: {actor: Foreman, action: Post exact-head findings, result: Observed GitHub report and typed severity, owner: post, check: RV2}
       route: {actor: Foreman, action: Route by finding severity, result: Repair or merge or named stop, owner: route, check: RV3}
     transitions:
@@ -476,7 +603,10 @@ stages:
       - [inspect, __end__, head_moved]
       - [inspect, __end__, cancelled]
       - [inspect, __end__, halted]
-      - [inspect, post, assessed]
+      - [inspect, demonstrate, assessed]
+      - [demonstrate, __end__, head_moved]
+      - [demonstrate, __end__, halted]
+      - [demonstrate, post, demonstrated]
       - [post, __end__, head_moved]
       - [post, __end__, halted]
       - [post, route, posted]
@@ -486,20 +616,26 @@ stages:
       - [route, __end__, none]
     exits: {P0: implement, P1: implement, head_moved: implement, none: merge, cancelled: __end__, halted: __end__}
     gates:
-      - {answerer: Human, question: Decide a disputed scope or product rule for the reviewed head, accepted: scoped ruling or cancel, saved: Ruling bound to finding and head, resume: inspect, bullets: [Resolve scope or rule, Decide or cancel, Resume review]}
-    effects: [Foreman reads the full diff and posts one COMMENT review for each exact report., Foreman records the head and typed route.]
+      - {answerer: Human, question: Decide a disputed scope or product rule for the reviewed head, accepted: scoped ruling or cancel, saved: "Ruling bound to finding and head. The question posts its reply marker on the issue, so the human's reply resumes review.", resume: inspect, bullets: [Resolve scope or rule, Decide or cancel, Resume review]}
+    effects: [Foreman grants one diff command, runs each demonstration and posts one COMMENT review for each exact report., Foreman records the head and typed route.]
     invariants:
-      - Every round starts a fresh session and assesses the full current PR. Prior diffs or rulings are context and cannot carry review authority across heads.
+      - "Every round runs three passes over the full current PR, each in a fresh session (item 17). Pass (a), against the issue text and not the plan, asks whether the change delivers the issue, and only the issue. Pass (b) asks what the change breaks beyond the diff in callers, data and security. Pass (c) asks whether it is a fix or a patch: does it remove the cause, or add a guard, retry, wrapper or flag the plan did not name, duplicate existing code or ignore the repository's pattern? The three passes post together as one report."
+      - A blocking finding from pass (a) or (b) carries a failing demonstration, a test or command that Foreman runs at the head in the attempt container. If the demonstration does not fail, the finding is advisory. A blocking finding from pass (c) cites the file:line of the existing code it duplicates or works around.
+      - Foreman adds one advisory finding itself that names each changed file outside the plan's file list and the tests.
+      - A new test that mocks a boundary named in the plan's assumptions list is a blocking finding from pass (b) (item 13). Its demonstration runs that test against the real related service.
+      - The reviewer reads the diff through the one granted diff command and may run the contract's check command (item 16). Foreman keeps no per-file read list and parses no proof of reading.
+      - Prior diffs or rulings are context and cannot carry review authority across heads.
       - Prefer a qualified model from a different family from the builders. If none is available, use the next available qualified model in models.toml order, including the builder's family. Review has no separate availability wait.
       - Severity is an enum with P0 then P1 then none. Only concrete correctness, security or scope defects qualify. P2 and lower remain comments.
       - The missing optional tool record alone cannot be classified as a defect. A reviewer cannot approve or merge.
-      - Verify evidence is input, not a verdict. A failed criterion becomes a P0 or P1 only when the reviewer judges it a correctness or scope defect. Unverified criteria are advisory.
+      - Verify evidence is context. Review runs only on a head whose drivable criteria all passed.
+      - A review question is bound to the head and finding and posts its reply marker like every other gate (item 18).
     failure_and_resume:
       halts: [review_cap, review_not_posted, git_failed, publication_unreconciled]
       retries: {blocking_rounds: src/foreman/models.toml#max_review_rounds}
       recovery: Before posting, re-read the current head. Adopt the exact saved report marker if publication was ambiguous. If the outcome stays ambiguous, stop with publication_unreconciled. Use git_failed for a definitive PR or diff read failure. Count each completed blocking round once before comparison. At the cap report review_cap without another repair. Reconcile an owned moved head before re-review. Dispatch owns worker availability.
-    implementation: {module: src/foreman/steps/review.py, entry: compile_stage, max_lines: 235, allowed_imports: [github, dispatch, review_context, stage_output], shared: [Forge, dispatch], never_does: [edit implementation, submit human approval, impose tool-fact bookkeeping]}
-    checks: {RV1: tests/test_review_context.py, RV2: tests/test_review_rounds.py, RV3: tests/test_review_rounds.py, RV4: tests/test_review_availability.py, RV5: tests/test_review_availability.py, RV6: tests/test_review_availability.py}
+    implementation: {module: src/foreman/steps/review.py, entry: compile_stage, max_lines: 300, allowed_imports: [github, dispatch, review_context, stage_output, workspace], shared: [Forge, Workspace, dispatch], never_does: [edit implementation, submit human approval, impose tool-fact bookkeeping, keep a per-file read list]}
+    checks: {RV1: tests/test_review_context.py, RV2: tests/test_review_rounds.py, RV3: tests/test_review_rounds.py, RV4: tests/test_review_availability.py, RV5: tests/test_review_availability.py, RV6: tests/test_review_availability.py, RV7: tests/test_review_rounds.py, RV8: tests/test_review_rounds.py, RV9: tests/test_runner.py, RV10: tests/test_review_context.py}
     scenarios:
       RV1: {given: A later revision retains a defective unchanged hunk, expect: Detect it in the full pinned diff and discard earlier clearance.}
       RV2: {given: A correct change lacks an optional tool record, expect: Post an advisory note and route none with zero repair calls for that note.}
@@ -507,13 +643,17 @@ stages:
       RV4: {given: A legitimate repair completes and a previous optional evidence note reappears, expect: No second repair for that note and fresh full review at the current head.}
       RV5: {given: Preferred reviewers run out of quota or have no installed CLI, expect: Start a fresh session with the next available qualified model. Pause in the shared quota wait only if all qualified models are unavailable. Resume selection there. Review emits no availability halt.}
       RV6: {given: Posting a review times out, expect: Adopt only the exact saved report marker or report publication_unreconciled when the write cannot be reconciled.}
-    decisions: [D1, D5, D7, D8, D11]
-    warp: {equivalent: Reviewing and revision routing, page: https://docs.warp.dev/factories/blueprints/routes/, divergence: Foreman uses a separate reviewer and a typed P0 or P1 route while GitHub retains approval authority.}
+      RV7: {given: A pass (a) finding marked P1 whose demonstration passes at the head, expect: Post it as advisory and route none for it.}
+      RV8: {given: A change that touches a file outside the plan's file list and its tests, expect: Foreman's advisory finding names the file. A pass (c) finding without a cited file:line is advisory.}
+      RV9: {given: The reviewer asks about a disputed rule and the human replies on the issue, expect: "The question is bound to head and finding, posts its reply marker, and the reply resumes review."}
+      RV10: {given: One review round, expect: "Three fresh sessions, one per fixed question, one diff command and no per-file read list, and one posted report."}
+    decisions: [D1, D5, D7, D8, D11, D13]
+    warp: {equivalent: Reviewing and revision routing, page: https://docs.warp.dev/factories/use-cases/code-review/, also: [https://docs.warp.dev/factories/blueprints/routes/], divergence: "Warp's review checks the change against the issue's acceptance criteria and runs current-head validation from a review-policy skill, and its verdict is advisory for a human who merges. Foreman fixes three questions, has plain code run each demonstration, and routes P0 or P1 itself because no person merges (merge B) and models favour their own output."}
 
   merge:
-    title: Queue and confirm the merge
-    purpose: Arm only the reviewed checked head and report GitHub's observed result.
-    scope: Exact target repository PR, branch, base, checked head and GitHub merge receipt.
+    title: Queue, confirm and, if needed, revert the merge
+    purpose: Arm only the reviewed checked head, confirm the merge commit in production, and revert Foreman's own merge when the confirmation fails.
+    scope: Exact target repository PR, branch, base, checked head, GitHub merge receipt and the contract's read-only production check.
     entry: Review returns none for this checked head. Authenticated GitHub wakes resume the saved step.
     worker: null
     model_policy: null
@@ -525,16 +665,19 @@ stages:
       checks: Local evidence binds checked head, required.
       review: Exact-head report and typed none, required.
       merge: Fresh GitHub checks, approvals, queue and PR evidence at every decision.
+      contract: The target contract supplies the production check and its time limit, required.
     outputs:
       schema: foreman.readiness.MergeReceipt
       merge_binding: The GitHub PR record captured at merge must show merged=true and head.sha equal to the reviewed head. Record merge_commit_sha separately because a squash or queue merge can produce a different SHA.
       source: https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request
       consumers: [operator, eligible child runs]
-      outcomes: {merged: Reviewed revision merged, closed: PR closed without merge, reviewable_head: New observed head has valid build evidence, repair: Owning run must repair, cancelled: The human cancelled, halted: Merge cannot proceed}
+      outcomes: {merged: Reviewed revision merged and confirmed in production, reverted: Production check failed and the revert and regression issues are filed, closed: PR closed without merge, reviewable_head: New observed head has valid build evidence, repair: Owning run must repair, cancelled: The human cancelled, halted: Merge cannot proceed}
     steps:
       arm: {actor: Foreman, action: Queue the exact reviewed head, result: Observed queue or arm receipt, owner: arm, check: ME1}
       observe: {actor: Foreman, action: Read the GitHub merge outcome, result: Matching merge receipt or typed alternate outcome, owner: observe, check: ME2}
-      release: {actor: Foreman, action: Recheck Ready dependent issues, result: Eligible issues return to admission without another Ready label event, owner: release, check: ME3}
+      confirm: {actor: Foreman, action: "Run the contract's production check against the merge commit", result: Production confirmation or the failed check's evidence, owner: confirm, check: ME6}
+      release: {actor: Foreman, action: Admit Ready dependent issues, result: Each eligible dependent starts through triage.admit, owner: release, check: ME3}
+      revert: {actor: Foreman, action: File the revert and regression issues, result: A Ready revert issue for the merge commit and a regression issue with the evidence, owner: revert, check: ME7}
       report: {actor: Foreman, action: Record the typed merge outcome, result: Persisted run result or repair route, owner: report, check: DN1}
     transitions:
       - [__start__, arm, null]
@@ -550,73 +693,92 @@ stages:
       - [observe, report, closed]
       - [observe, report, reviewable_head]
       - [observe, report, repair]
-      - [observe, release, merged]
+      - [observe, confirm, merged]
+      - [confirm, release, confirmed]
+      - [confirm, revert, production_failed]
+      - [confirm, report, halted]
       - [release, report, released]
       - [release, report, halted]
+      - [revert, report, reverted]
+      - [revert, report, halted]
       - [report, __end__, null]
-    exits: {merged: __end__, closed: __end__, reviewable_head: review, repair: implement, cancelled: __end__, halted: __end__}
+    exits: {merged: __end__, reverted: __end__, closed: __end__, reviewable_head: review, repair: implement, cancelled: __end__, halted: __end__}
     gates:
       - {route: head_unverified, answerer: Human, question: Provide evidence for the ownership of the unexpected PR revision, accepted: scoped evidence or cancel, saved: Evidence bound to PR and observed head, resume: observe, bullets: [Confirm revision ownership, Supply evidence or cancel, Recheck PR revision]}
-    effects: [Foreman arms the exact head through GitHub App., Foreman records observed outcome and releases only eligible dependency links.]
+    effects: [Foreman arms the exact head through GitHub App., Foreman runs the read-only production check., Foreman files the revert and regression issues on a failed check., Foreman admits only eligible dependents after confirmation.]
     invariants:
       - Required CI is green and GitHub eligibility is fresh for the assessed head before arm. GitHub enforces approvals, rulesets and merge-group checks.
+      - Merge needs a merge queue ruleset on the target repository's base branch (item 19, github.py:838). Doctor's quick check requires it, so only repositories with one can finish a run.
+      - Foreman merges even when the reviewer is the builder's model family (merge B, D13). No step waits for a human approval or merge.
       - Expand queue authority through synthetic replays, live smoke, about three real issues and normal volume.
-      - Keep merge_held until a synthetic repository probe proves that neither an outside writer nor the App can move the source branch while the arm is open. The exact-head arm argument protects only the request.
+      - merge_held is the default (item 19). Foreman arms only in a repository whose synthetic branch probe proves that neither an outside writer nor the App can move the source branch while the arm is open. FOREMAN_MERGE_HOLD still holds a proven repository. The exact-head arm argument protects only the request.
       - A queue acknowledgment stays pending. An authenticated relevant GitHub event wakes the checkpoint and Foreman re-reads GitHub.
-      - After a matching merge, recheck admission for every dependent that still carries Ready. Admit only when all of its prerequisites merged. Reuse intake deduplication and keep the Ready label until admitted.
+      - After a matching merge Foreman runs the contract's production check against merge_commit_sha within its time limit (D12, item 20). A commit that is not deployed yet keeps confirm waiting. Production credentials are never used and the check is read-only.
+      - A failed production check files a revert issue carrying Ready, whose supplied slice reverts merge_commit_sha, so the revert runs through the normal path and Foreman merges it (rollback A). Foreman also files a regression issue with the failed check's evidence, records the escape on the run and releases no dependents. A revert run whose own production check fails stops with production_unconfirmed and files no further revert.
+      - After confirmation, release admits each dependent that still carries Ready through triage.admit, which starts its run once all its prerequisites merged (item 19). Reuse intake deduplication and keep the Ready label until admitted. Release prints nothing for a person to start.
       - Foreman verifies the repository, PR, issue and owned branch from GitHub evidence and verifies Git ancestry against the saved owned revision. The human's ruling supplies evidence. Keep the head_unverified gate open until Foreman verifies both. Only verified heads can route to review or repair.
     failure_and_resume:
-      halts: [merge_held, merge_not_armed, readiness_unavailable, merged_unreviewed]
+      halts: [merge_held, merge_not_armed, readiness_unavailable, merged_unreviewed, production_unconfirmed]
       retries: {}
-      waits: {arm: Wait for GitHub checks or approval, observe: Wait for GitHub to report a merge result}
-      recovery: Pending checks or approvals pause arm. Pending queue pauses observe. Reconcile the saved PR and arm receipt before a repeated write. A fixable owned head, queue or CI failure routes to implement. A known already checked head routes to review. Preserve an unrecognized head and open the head_unverified gate. Report a mismatched merge revision without credit or dependency release.
-    implementation: {module: src/foreman/steps/merge.py, entry: compile_stage, max_lines: 240, allowed_imports: [github, readiness, state], shared: [Forge], never_does: [direct merge, submit human approval, infer merged from queued]}
-    checks: {ME1: tests/test_readiness.py, ME2: tests/test_merge_receipt.py, ME3: tests/test_runner.py, ME4: tests/test_merge_receipt.py, ME5: tests/test_merge_receipt.py, DN1: tests/test_delivery.py}
+      waits: {arm: Wait for GitHub checks or approval, observe: Wait for GitHub to report a merge result, confirm: Wait for the merge commit to deploy}
+      recovery: Pending checks or approvals pause arm. Pending queue pauses observe. A merge commit that is not deployed yet pauses confirm until the production check's time limit, after which the check counts as failed. Reconcile the saved PR and arm receipt before a repeated write. A fixable owned head, queue or CI failure routes to implement. A known already checked head routes to review. Preserve an unrecognized head and open the head_unverified gate. Report a mismatched merge revision without credit or dependency release. Before filing a revert or regression issue, read the target repository for the saved marker and adopt a matching issue.
+    implementation: {module: src/foreman/steps/merge.py, entry: compile_stage, max_lines: 320, allowed_imports: [github, readiness, state, contract], shared: [Forge], never_does: [direct merge, submit human approval, infer merged from queued, release dependents before confirmation]}
+    checks: {ME1: tests/test_readiness.py, ME2: tests/test_merge_receipt.py, ME3: tests/test_runner.py, ME4: tests/test_merge_receipt.py, ME5: tests/test_merge_receipt.py, ME6: tests/test_merge_receipt.py, ME7: tests/test_merge_receipt.py, ME8: tests/test_readiness.py, DN1: tests/test_delivery.py}
     scenarios:
-      ME1: {given: The PR moves before arm or source policy has no accepted probe, expect: Stale evidence cannot arm and unproven policy reports merge_held.}
+      ME1: {given: The PR moves before arm or the repository has no accepted branch probe and no FOREMAN_MERGE_HOLD, expect: Stale evidence cannot arm and an unproven repository reports merge_held.}
       ME2: {given: GitHub reports a squash or queue merge with a distinct merge commit SHA, expect: Record both SHAs and accept the merge only when the PR head at merge matches the reviewed head.}
-      ME3: {given: "Queue pending and rejection precede the matching merge of the last prerequisite for an issue that still carries Ready, with duplicate wakes", expect: "Wait, repair, then recheck admission and admit the dependent once without another Ready label event."}
+      ME3: {given: "Queue pending and rejection precede the confirmed merge of the last prerequisite for an issue that still carries Ready, with duplicate wakes", expect: "Wait, repair, then admit the dependent once through triage.admit without another Ready label event and without a printed start line."}
       ME4: {given: The human says an unexpected head belongs to the run but lineage has no verification, expect: Stay at head_unverified without adopting or repairing the revision.}
       ME5: {given: GitHub arms the PR before interruption or reports a merge of an unreviewed head, expect: Adopt the existing arm once and give no delivery credit or dependent release to the unreviewed head.}
-      DN1: {given: "An answer, child issue plan, cancellation, queued PR, closed PR and confirmed merge", expect: Distinct typed exits with no completion for a queued PR.}
-    decisions: [D2, D10]
-    warp: {equivalent: Handoff and completion after merge, page: https://docs.warp.dev/factories/how-factories-work/, divergence: Foreman arms a checked head to meet the autonomous finish line, subject to proven branch policy and GitHub's authority.}
+      ME6: {given: The production check reports the merge commit not deployed then passing, expect: Wait in confirm, then release dependents and end merged.}
+      ME7: {given: The production check fails for the merge commit, or a revert run's own check fails, expect: "File one Ready revert issue for merge_commit_sha and one regression issue, record the escape and end reverted with no dependent release. A failing revert run stops with production_unconfirmed and files no further revert."}
+      ME8: {given: A run is reviewed with the builder's family as reviewer in a proven repository, expect: Arm the reviewed head with no human approval step.}
+      DN1: {given: "An answer, child issue plan, cancellation, queued PR, closed PR, confirmed merge and revert", expect: Distinct typed exits with no completion for a queued PR.}
+    decisions: [D2, D10, D12, D13]
+    warp: {equivalent: Handoff and completion after merge, page: https://docs.warp.dev/factories/how-factories-work/, also: [https://docs.warp.dev/factories/use-cases/production-incident-resolution/], divergence: "Warp hands the PR to a person to merge, and its incident recipe investigates production read-only and leaves rollback to people. Foreman merges the reviewed head (merge B) and reverts its own merge on a failed production check (rollback A) because no person stands between review and production. Arming needs proven branch policy, a merge queue and GitHub's authority."}
 
 dispatch:
   title: Run or resume a worker attempt
-  purpose: Bound each paid attempt and recover its result once.
+  purpose: Bound each paid attempt, repair one invalid answer and recover its result once.
   invocation: >-
     Each calling step holds the shared compiled dispatch graph as a statically discoverable closure.
     Inherit the parent checkpointer. Use synchronous durability before CLI launch. Preparation before
     calling is read-only because an interrupt can re-enter the calling function.
-  callers: [triage.route, research.answer, spec.draft, spec.check, implement.edit, verify.drive, review.inspect]
-  warp: {equivalent: Worker invocation and conversation reuse, page: https://docs.warp.dev/factories/factory-agents/, divergence: Local CLIs need crash recovery and token and dollar accounting at one shared boundary.}
-  implementation: {module: src/foreman/dispatch.py, entry: compile_dispatch, max_lines: 250, shared: [runner, worker, budget], never_does: [choose workflow routes, publish artifacts, guess usage]}
+  callers: [triage.route, research.answer, spec.draft, spec.check, implement.tests, implement.edit, verify.drive, review.inspect]
+  warp: {equivalent: Worker invocation and conversation reuse, page: https://docs.warp.dev/factories/factory-agents/, divergence: "Local CLIs need crash recovery and token and dollar accounting at one shared boundary. Warp continues a worker's conversation for follow-ups and revisions. Foreman saves the builder's session on every accepted answer and resumes it when the checkout fingerprint matches. Warp's stage outputs are instructions, not typed schemas, so Foreman adds one repair turn for an answer that fails its schema."}
+  implementation: {module: src/foreman/dispatch.py, entry: compile_dispatch, max_lines: 290, shared: [runner, worker, budget], never_does: [choose workflow routes, publish artifacts, guess usage]}
   steps:
     reserve: {actor: Foreman, action: Save the paid-call reservation, result: Durable authorized attempt identity, owner: reserve, check: DP4}
-    reconcile: {actor: Foreman, action: Reconcile or run the worker call, result: Typed output and usage record or a pause or halt, owner: reconcile, check: DP2}
+    reconcile: {actor: Foreman, action: Reconcile or run the worker call, result: "Typed output and usage record, a repair turn, or a pause or halt", owner: reconcile, check: DP2}
   transitions:
     - [__start__, reserve, null]
     - [reserve, reconcile, admitted]
     - [reserve, __end__, halted]
     - [reconcile, reserve, eligible_fallback]
+    - [reconcile, reserve, repair_turn]
     - [reconcile, __end__, accepted]
     - [reconcile, __end__, halted]
   halts: [budget_exceeded, invalid_output, git_failed, model_dependency_missing, dirty_worktree]
-  retries: {provider_fallback: eligible configured model order and remaining allowance, quota_resume: explicit wake or known provider reset and remaining allowance}
+  retries: {provider_fallback: eligible configured model order and remaining allowance, quota_resume: explicit wake or known provider reset and remaining allowance, invalid_answer: one repair turn in the same session with the exact validation error, budget_resume: rerun after the operator raises the budget cap}
   invariants:
     - Runner acquires a per-repository and issue OS lock before loading the LangGraph checkpoint. Release on pause or process exit.
     - Save run, worker procedure, candidate or head, attempt id, allowance and worktree identity before every paid call.
     - Resolve worker model and CLI configuration independently of the stage procedure. The procedure owns instructions and typed outputs.
     - Resume at the interrupted step and reconcile before any repeat. A reservation alone does not establish whether the call launched. Charge each attempt once. If usage is ambiguous, charge the worst case to the budget, log usage unknown, and continue within the remaining allowance.
+    - An answer that fails its schema gets one repair turn (item 1). Dispatch reserves a charged call that resumes the same session with the exact validation error. A second invalid answer stops with invalid_output.
+    - Save the native session in run state on every accepted answer as well as on quota (item 2). A later call for the same procedure and PR resumes it only when the checkout fingerprint matches the saved one. Otherwise it starts fresh.
+    - budget_exceeded is resumable (item 19). After the operator raises the cap, a rerun resumes at the interrupted step within the new allowance.
     - Try available qualified models within the token and dollar allowance. Review prefers another model family and falls back in configured order once that preference cannot be met. A quota or missing CLI moves to the next qualified model. Use the shared quota wait only when none is available. Retain the caller's continuation and recheck branch, parent and fingerprint before continuing partial edits.
   waits: {reconcile: Wait until a qualified model becomes available}
-  checks: {DP1: tests/test_dispatch_budget.py, DP2: tests/test_dispatch_recovery.py, DP3: tests/test_dispatch_recovery.py, DP4: tests/test_dispatch_recovery.py}
+  checks: {DP1: tests/test_dispatch_budget.py, DP2: tests/test_dispatch_recovery.py, DP3: tests/test_dispatch_recovery.py, DP4: tests/test_dispatch_recovery.py, DP5: tests/test_dispatch_recovery.py, DP6: tests/test_dispatch_recovery.py, DP7: tests/test_dispatch_budget.py}
   scenarios:
     DP1: {given: The charged result is replayed, expect: One ledger row and accepted response.}
     DP2: {given: "Crash before launch, after ambiguous send, or after a durable result", expect: "Reconcile at the interrupted step before repeating. Adopt a finished result. When usage is ambiguous, log usage unknown, charge the worst case once, and continue within the remaining allowance."}
     DP3: {given: Quota exhaustion after partial edits, expect: Verified caller and fingerprint resume under remaining allowance.}
     DP4: {given: Two wakes for one issue checkpoint, expect: "At most one active writer, no duplicate charge or external write."}
+    DP5: {given: A scripted worker returns one invalid answer then a valid one, expect: The stage finishes with one extra charged call in the same session. Two invalid answers stop with invalid_output.}
+    DP6: {given: An accepted builder answer then a failed check at a matching fingerprint, expect: The repair call carries the saved session's resume flag. A changed fingerprint starts fresh.}
+    DP7: {given: A run stopped with budget_exceeded and the operator raises the cap, expect: The rerun resumes at the interrupted step without a duplicate charge.}
 
 # Structural declarations match the actual projection format. A worker procedure can
 # share a policy selector while keeping an independently registered worker identity.
@@ -633,18 +795,29 @@ procedures:
     instructions:
       prompt: docs/graph/blueprint/prompts/spec_check.md
       runtime_prompt: src/foreman/stages/spec_check.md
-      context: [Candidate digest, Scope and Intent, pinned target repository and base, settled rulings]
+      context: [Candidate digest, Scope and Intent, assumptions and citations, pinned target repository and base, related repository checkouts, settled rulings]
     skills:
-      - {ref: interrogate/SKILL.md, when: always, kind: leaf_prompt, lines: [19, 19], method: Probe the candidate in one independent session and cite verified findings.}
+      - {ref: interrogate/SKILL.md, when: always, kind: leaf_prompt, lines: null, method: Probe the candidate in one independent session and cite verified findings.}
     output: {schema: foreman.stage_output.SpecCheckOutput, fields: [findings, notes, human_question]}
-  implement: {step: implement.edit, role: builder, model_policy: nodes.implement, inputs: [run, plan, work, checks, review]}
+  implement_tests:
+    step: implement.tests
+    role: verifier
+    model_policy: nodes.verify
+    inputs: [run, plan, work, checks]
+    instructions:
+      prompt: docs/graph/blueprint/prompts/implement_tests.md
+      runtime_prompt: src/foreman/stages/implement_tests.md
+      context: [Slice acceptance criteria and their proofs, assumptions, pinned base tree, related repository checkouts, rejected test evidence]
+    skills: []
+    output: {schema: foreman.stage_output.AcceptanceTestsOutput, fields: [tests]}
+  implement: {step: implement.edit, role: builder, model_policy: nodes.implement, inputs: [run, plan, work, checks, review, verify]}
   verify: {step: verify.drive, role: verifier, model_policy: nodes.verify, model_dependency: implement, inputs: [run, plan, work, checks]}
   review: {step: review.inspect, role: reviewer, model_policy: nodes.review, model_dependency: implement, inputs: [run, plan, work, checks, verify, review]}
 
 # Baseline paths supply source evidence and descriptions. Proposed owner paths
 # in the stage contracts are checked separately as explicit missing owners.
 source_map:
-  triage: [src/foreman/accept.py, src/foreman/runner.py, src/foreman/delivery.py, src/foreman/stage_output.py, src/foreman/state.py]
+  triage: [src/foreman/accept.py, src/foreman/runner.py, src/foreman/delivery.py, src/foreman/stage_output.py, src/foreman/state.py, src/foreman/cli.py]
   research: [src/foreman/delivery.py, src/foreman/github.py, src/foreman/stage_output.py]
   spec: [src/foreman/delivery.py, src/foreman/stages.py, src/foreman/spec_check.py, src/foreman/stage_output.py, src/foreman/github.py, src/foreman/workspace.py, src/foreman/runner.py]
   implement: [src/foreman/delivery.py, src/foreman/workspace.py, src/foreman/check_output.py, src/foreman/github.py, src/foreman/stage_output.py]

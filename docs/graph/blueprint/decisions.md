@@ -11,20 +11,21 @@ Agreed by the owner 2026-11-22. “i agree with all of your take aways from this
 - Add scorers, benchmarks and fix PRs driven by observed failures. Agreed by the owner 2026-11-22.
 - Complete delivery on an observed merge. Agreed by the owner 2026-11-22.
 - Keep typed outputs, budgets and exact-head checks. Agreed by the owner 2026-11-22.
+- Redesign Foreman from the owner's 2026-11-24 brief, items 1 to 24, as one drawing approved once before any build (tools #299). The merge waits on checks the builder cannot influence, and plain code is preferred over a model's opinion. Every item replaces or removes something. The redesign folds in tools #160 to #165, #248, #274 and #292.
 
 [Notion’s book (archived)](https://web.archive.org/web/20261121015523/https://www.notion.com/a-new-shape-for-work)
 
 ## D1. What sends a pull request back?
 
-Agreed by the owner 2026-11-22. Only a concrete P0 or P1 correctness, security or scope defect in the full current pull request sends it back. All other findings are comments. Every review uses a fresh session. Another model family is a preference. If that family is unavailable, dispatch uses the next qualified model in models.toml order, including the builder's family. Only the shared quota wait applies when no qualified model is available. Warp workers advise and can suggest revisions. [Warp transitions](https://docs.warp.dev/factories/blueprints/routes/)
+Agreed by the owner 2026-11-22. Only a concrete P0 or P1 correctness, security or scope defect in the full current pull request sends it back. All other findings are comments. Revised by the 2026-11-24 brief (#299, item 17): review asks three fixed questions, each in a fresh pass. A blocking finding about issue fit or breakage carries a failing demonstration that Foreman runs at the head. If it does not fail, the finding is advisory. A blocking fix-or-patch finding cites the file:line of the code it duplicates or works around. Another model family is a preference. If that family is unavailable, dispatch uses the next qualified model in models.toml order, including the builder's family. Only the shared quota wait applies when no qualified model is available. Warp workers advise and can suggest revisions. [Warp code review](https://docs.warp.dev/factories/use-cases/code-review/)
 
 ## D2. Who queues the pull request?
 
-Agreed by the owner 2026-11-22. “I'm good with the trust ladder”. Foreman queues the exact reviewed revision after required checks pass, under the authority earned through synthetic replays, live smoke, a limited batch of about three real issues and normal volume. GitHub enforces approvals and queue rules. Keep merge_held until a synthetic repository test proves the App and outside writers cannot move the branch during an open merge request. Release dependents only after GitHub confirms the observed merge. A person decides when to merge in Warp. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)
+Agreed by the owner 2026-11-22. “I'm good with the trust ladder”. Foreman queues the exact reviewed revision after required checks pass, under the authority earned through synthetic replays, live smoke, a limited batch of about three real issues and normal volume. GitHub enforces approvals and queue rules. Revised by the 2026-11-24 brief (#299, item 19): merge_held is the default until a synthetic repository test proves the App and outside writers cannot move the branch during an open merge request, and merge needs a merge queue ruleset. Release dependents through admission only after the production check confirms the merge (D12). A person decides when to merge in Warp. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)
 
 ## D3. Who approves a plan?
 
-Agreed by the owner 2026-11-22. The checking model can approve the plan once Foreman validates the repository and seams. The plan proceeds when the independent check clears it. The human may comment on, approve or stop a plan through their coordinator or personal agent. The agent posts each response as an issue comment under the human's identity. Record the human’s “we're good” as approval of the plan they identified. The human's review is optional. Ask the human through the agent when an unresolved choice needs their judgment. Warp's default planning flow asks for human approval. [Warp gates](https://docs.warp.dev/factories/blueprints/gates/)
+Agreed by the owner 2026-11-22. Revised by the 2026-11-24 brief (#299, item 8). The checking model can approve the plan once Foreman validates the repository, the file list and the assumption citations. The plan proceeds when the independent check clears it, without the human's review. The human may comment through their coordinator or personal agent. A `foreman stop` comment posted on the issue under the human's identity ends the run cancelled at the next stage entry. The digest approval is deleted, because nobody was shown the digest and no step waited on it. Ask the human through the agent when an unresolved choice needs their judgment. Warp's default planning flow asks for human approval. [Warp gates](https://docs.warp.dev/factories/blueprints/gates/)
 
 ## D4. Keep the 400-line cap?
 
@@ -32,7 +33,7 @@ Agreed by the owner 2026-11-22. Remove the 400-line gate and its override. Repor
 
 ## D5. Which conversation continues?
 
-Agreed by the owner 2026-11-22. Resume the builder's conversation when the same verified run and PR lineage continue on a compatible CLI. A fresh review session reads the full current PR each round. Warp can continue a worker's conversation during revisions. [Warp workers](https://docs.warp.dev/factories/factory-agents/)
+Agreed by the owner 2026-11-22. Revised by the 2026-11-24 brief (#299, item 2). The builder keeps one conversation for the life of the PR. Dispatch saves its session on every accepted answer, not only on quota. A failed check, a failed criterion, a review finding or a merge repair resumes it when the checkout fingerprint matches the saved one. Otherwise the builder starts fresh. Each review pass and each Verify drive uses a fresh session. Warp continues a worker's conversation during revisions. [Warp workers](https://docs.warp.dev/factories/factory-agents/)
 
 ## D6. How does a run start and show its state?
 
@@ -40,7 +41,7 @@ Agreed by the owner 2026-11-22: A. A run starts when the Ready label is added to
 
 ## D7. Which worker methods belong in each step?
 
-Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to workers. Keep the pinned how and why excerpts for research, architect for planning, statechart for stateful work, interrogate's evidence probe for the independent plan review, practical TDD for bug fixes, benchmark-checklist for performance work and review-quality's evidence rubric. Add five methods:
+Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to workers. Keep the pinned how and why skills for research, architect for planning, statechart for stateful work, interrogate's evidence probe for the independent plan review, practical TDD for bug fixes, benchmark-checklist for performance work and review-quality's evidence rubric. Revised by the 2026-11-24 brief (#299, item 5): every skill loads whole at its pinned commit, as Warp loads a SKILL.md. No skill is cut to a line range. Add five methods:
 
 - Research on bugs and regressions builds a feedback loop first with Matt Pocock's `diagnosing-bugs`.
 - Spec applies the vertical-slice and blocking-edge rules from Matt Pocock's `to-tickets` when a parent splits into children.
@@ -53,11 +54,11 @@ Leave out `to-spec` and Matt Pocock's `triage` and `code-review`. Measure the se
 
 ## D8. Where should checks and evidence live?
 
-Agreed by the owner 2026-11-22. Delete the proof step and universal tool-fact veto. Run Foreman's exact-tree check inside the editing loop, keep evidence the issue asks for, and let GitHub run its required checks. Warp's builder runs repository checks. [Warp issue-to-PR guide](https://docs.warp.dev/guides/agent-workflows/running-an-issue-to-pr-blueprint/)
+Agreed by the owner 2026-11-22. Delete the proof step and universal tool-fact veto. Run Foreman's exact-tree check inside the editing loop, keep evidence the issue asks for, and let GitHub run its required checks. Revised by the 2026-11-24 brief (#299, items 9, 10 and 15): before the build, a separate worker in the verifier role writes acceptance tests that plain code proves fail at the base. The builder cannot edit them or the protected files. After a passing check, plain code mutates a capped sample of changed lines and sends any mutation no test notices back to the builder. Warp's builder runs repository checks. [Warp issue-to-PR guide](https://docs.warp.dev/guides/agent-workflows/running-an-issue-to-pr-blueprint/)
 
-## D9. Which paths count as existing seams?
+## D9. Which paths can a slice name?
 
-Agreed by the owner 2026-11-22: (a). Only Git-tracked regular files in the pinned target checkout qualify as existing seams. Reject directories and symlinks. Apply the same rule to directly supplied and edit-only slices before the independent plan check. Warp exposes a plan gate. Foreman validates exact paths to bind the plan to the pinned checkout. [Warp gates](https://docs.warp.dev/factories/blueprints/gates/)
+Agreed by the owner 2026-11-22: (a). Revised by the 2026-11-24 brief (#299, items 6 and 7). A slice states observable behavior, non-goals and how each criterion is proven, and never names a code edit. Builds and uses seams are removed. A slice keeps depends_on and an advisory list of files it expects to touch. Each listed existing path is a Git-tracked regular file in the pinned target checkout. Reject directories and symlinks. Each fact the plan relies on outside the target checkout cites a tracked file in a related repository at its pinned commit or becomes a gate question. Warp's spec states desired behavior, non-goals and validation criteria. Foreman validates exact paths and citations to bind the plan to pinned checkouts. [Warp gates](https://docs.warp.dev/factories/blueprints/gates/)
 
 ## D10. What happens after an interruption?
 
@@ -67,12 +68,24 @@ Agreed by the owner 2026-11-22: (a) with (ii). Resume at the interrupted step an
 
 Agreed by the owner 2026-11-23: "2. Warp does it that way for a reason. It's the better design choice", then "1-A, 2-yes, 3-yes". Warp runs user-level verification as its own stage with its own worker. The worker builds and starts the app from the pull request, uses it as a user would, and reports each criterion as passed, failed or unverified with evidence. It never edits, approves or merges, and the evidence complements code review rather than replacing it.
 
-- A Verify stage runs between Implement and Review. It drives the published head with the target repository's own `verify-<app>` skill, found as a `verify-*/SKILL.md` in the target checkout. A repository without that skill gets `no_skill`, with no worker call.
+- A Verify stage runs between Implement and Review. It drives the published head with the target repository's own `verify-<app>` skill, found at the contract file's verify skill path. Doctor's readiness check requires that skill, so the `no_skill` route is removed.
 - Foreman posts one evidence comment for the tested head. If the head moved, Foreman posts the evidence marked stale and returns to Implement, which reconciles the moved head as it does after Review. Warp's publication step ends instead. Foreman diverges because nothing may verify or review a head until Foreman has reconciled it.
 - A known checked head that Merge returns for fresh review keeps the evidence already posted for it. Its code is unchanged, so Verify doesn't run again.
 - The verifier prefers a qualified model from a different family from the builders, as the reviewer does.
-- A failed criterion never routes straight to Implement. Review reads the evidence and decides severity.
+- Revised by the owner 2026-11-24, verify A (decision 67c6553f): a failed criterion goes back to Implement and counts toward the failed-check cap. An unverified criterion blocks the merge unless the plan marked it not drivable with a reason. This reverses the earlier line "a failed criterion never routes straight to Implement".
 - `verify-<app>` moves from Implement to the Verify worker, so the builder runs only the repository checks.
 - The worker that reviews is called `reviewer`, and the new worker is called `verifier`, matching Warp's terms.
 
-Warp's recipe starts on a maintainer's label. Foreman runs unattended, so Verify runs on every published head and feeds Review. [Warp Computer Use verification](https://docs.warp.dev/factories/use-cases/computer-use-verification/)
+Warp's recipe starts on a maintainer's label. Foreman runs unattended, so Verify runs on every published head and gates Review. [Warp Computer Use verification](https://docs.warp.dev/factories/use-cases/computer-use-verification/)
+
+## D12. What happens when a merge fails in production?
+
+Agreed by the owner 2026-11-24, rollback A (decision 74a43493). After Foreman's merge, Foreman runs the target contract's read-only production check against the merge commit. If it fails, Foreman files a revert issue carrying Ready whose slice reverts the merge commit, so the revert runs through the normal path, and files a regression issue with the evidence. The run ends `reverted` and releases no dependents. This supersedes only the "a person decides on rollback" part of the 2026-11-23 ruling (tools #26). Warp's incident recipe investigates production read-only and leaves rollback to people. Foreman reverts its own merge because no person stands between review and production. [Warp production incidents](https://docs.warp.dev/factories/use-cases/production-incident-resolution/)
+
+## D13. Can Foreman merge when the reviewer shares the builder's family?
+
+Agreed by the owner 2026-11-24, merge B (decision 57aa3a15). Foreman merges even when the reviewer is the builder's model family. No change may add a human approval or merge step. The merge instead waits on checks the builder cannot influence: acceptance tests written before the build, the mutation check, Verify's verdict and review demonstrations that plain code runs. Warp's reviewer runs on a different model, and a human merges. [Warp code review](https://docs.warp.dev/factories/use-cases/code-review/)
+
+## D14. What must a target repository supply?
+
+From the owner's 2026-11-24 update to the brief (#299, items 22 to 24). Each target repository carries one contract file, `.foreman/contract.yaml`, holding the check command, container image and setup commands, how to start the app and tell it is up, the related repositories with pinned commits, the names of the secrets the app needs, the verify skill path, the mutation command and the production check. Repository variables keep only the human login, the budget caps and the merge hold. `foreman doctor --repo OWNER/NAME` checks readiness in plain code. Its quick part runs at admission before any paid call, and a repository that fails it starts no run. `docs/target-repo-setup.md` is generated from doctor's list. Two choices are the auditor's, not audit findings, and stay open to pushback: moving the check command from a repository variable into the contract file, and not building an onboarding command until a third repository needs one. Warp keeps the image, setup commands, repositories and secrets in the factory definition. [Warp runners](https://docs.warp.dev/factories/runners/)

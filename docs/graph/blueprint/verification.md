@@ -12,13 +12,18 @@ Run independent expectations for every scenario in [target.yaml](target.yaml) wi
 
 | Release fixture | Exact expected behavior |
 | --- | --- |
-| Synthetic wrong-repository slice, shaped by #1174 | Two public fixtures have the same seam name. A foreign assignment stops before a build or child write. A candidate legitimately revised for the intended repository passes both spec checks and merges. |
+| Synthetic wrong-repository slice, shaped by #1174 | Two public fixtures have the same file name. A foreign assignment stops before a build or child write. A candidate legitimately revised for the intended repository passes both spec checks and merges. |
 | Synthetic optional tool record, shaped by #1173 | A passing change in foreman-smoke has an advisory finding about an optional diagnostic record. Zero repair calls for the note and the observed merge uses the checked head. |
 | Synthetic repeated note, shaped by #1169 | In foreman-smoke-npm, repair one real P1. On the next full review the old optional evidence note remains advisory. Exactly one repair and an observed merge. |
+| Replay of app #1375, for the redesign (#299) | Either the planner cites the engine route file in the pinned related checkout or asks a grounded question. Seeded with the wrong plan, the contract criterion fails before review runs. |
+| Smoke repository whose check needs a local server (#299, item 3) | The builder starts the server in the attempt container and runs the check itself. Verify reports the criterion passed with a capture. |
+| Scratch repository with each readiness requirement removed in turn (#299, item 23) | Doctor names each missing requirement and its exact fix, and no run starts. |
+
+The redesign is done when doctor is green on app and engine, the batch 6 issues are rerun and the same three issues are also run through one plain agent session plus a review as a baseline, with both in the T16 table, and three real issues in a row merge with no hand fix.
 
 Keep only invented issue text, changes and outputs in public smoke repos and `evals/corpus`. Test that a real P1 still blocks. Simulate ambiguous publication in Research, Implement and Review. Verify the shared halt and no duplicate write when reconciliation cannot establish the outcome. Test merge-time `head.sha` against the reviewed SHA and record `merge_commit_sha` separately. Exercise squash and queue result shapes, an unverified head after the human supplies ownership evidence, and an already-Ready dependent with duplicate merge wakes. [GitHub PR API](https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request)
 
-Run review with preferred models throttled or unavailable, with an available same-family fallback, and with all qualified models unavailable. Verify fresh sessions in both family cases and entry to the shared quota wait only in the last case. Exercise model approval without a human response. Exercise a plan comment, optional approval and explicit stop posted on the issue by the coordinator or personal agent under the human's identity. Before enabling auto-merge, exercise an outstanding arm in a synthetic repository and verify both an outside writer and the App cannot move that source branch. GitHub's required rules and approvals still apply. Record the actual policy and the denied writes. Keep `merge_held` until this evidence exists.
+Run review with preferred models throttled or unavailable, with an available same-family fallback, and with all qualified models unavailable. Verify fresh sessions in both family cases and entry to the shared quota wait only in the last case. Exercise model approval without a human response. Exercise a plan comment and a `foreman stop` comment posted on the issue by the coordinator or personal agent under the human's identity, read at the next stage entry. Before enabling auto-merge, exercise an outstanding arm in a synthetic repository and verify both an outside writer and the App cannot move that source branch. GitHub's required rules and approvals still apply. Record the actual policy and the denied writes. Keep `merge_held` until this evidence exists.
 
 ## Judgment
 
@@ -28,10 +33,11 @@ Run all three synthetic fixtures with real configured workers on every release c
 | --- | --- |
 | Triage | Correct repository and route from the admitted issue. |
 | Research | Answer resolves the question with sources at the pinned revision. |
-| Spec | Candidate fits the issue and repository, builds only needed seams, and links dependencies correctly. |
-| Implement | Change fits acceptance and publishes the checked tree within the assigned branch. |
-| Review | Findings are evidenced, severity fits real risk, and every round sees the full PR. |
-| Merge | Report matches GitHub's result and dependents become eligible at the right time. |
+| Spec | Candidate fits the issue and repository, states behavior without dictating code, cites every outside assumption, and links dependencies correctly. |
+| Implement | Change fits acceptance, passes the accepted tests and the mutation sample, and publishes the checked tree within the assigned branch. The task compliance scorer grades it. |
+| Verify | Each criterion's result matches what the capture shows. |
+| Review | Each blocking finding has a failing demonstration or a cited file:line, severity fits real risk, and every round sees the full PR. The review quality scorer grades it. |
+| Merge | Report matches GitHub's result, production confirmation matches the deployed merge commit, and dependents become eligible at the right time. |
 
 Store evidence and reason alongside each result. Track hard measures separately, including merge without hand fixes, work and raw tokens, known cost, and edit and review rounds. Pin comparison bands and calibrate rubric labels with human audit before gating on score changes. A hard failure or confirmed regression against the last accepted release blocks the candidate. Repeat uncertain comparisons on both releases. Score live runs with the same rubric outside delivery. Retain private evidence in authorized run storage. The field finish line is three real eligible issues merged in a row with zero hand fixes. [Warp Scorers](https://docs.warp.dev/factories/measure-and-improve/scorers/) · [Warp Benchmarks](https://docs.warp.dev/factories/benchmarks/)
 

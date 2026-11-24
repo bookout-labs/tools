@@ -23,6 +23,41 @@ docs/graph/blueprint/prompts/implement.md:
   repository: bookout-labs/tools
   revision: target
   url: prompts/implement.md
+docs/graph/blueprint/prompts/implement_tests.md:
+  kind: target prompt
+  description: Write the acceptance tests
+  summary:
+    What it instructs: 'Foreman supplies the target checkout at the pinned base, the
+      slice with its acceptance criteria and
+
+      their proofs, the plan''s assumptions and the related repository checkouts.
+      Nothing is built yet.
+
+      Write tests and fixtures that prove each criterion the plan marks as proven
+      by test or contract,
+
+      following the repository''s test conventions. Write only test and fixture files.
+      Do not edit source,
+
+      the check command, CI workflows, the verify skill or the contract file. A contract
+      criterion tests
+
+      against the related repository''s real service, started as the contract says,
+      or its recorded
+
+      contract at the pinned commit, never a mock of that boundary. Each test must
+      fail at the base for
+
+      the reason its criterion names. Report each test''s path and the criterion it
+      proves. Foreman runs
+
+      the check, proves that the base passes without your tests, that the check collects
+      them and that
+
+      they fail, and keeps them unchanged for the build.'
+  repository: bookout-labs/tools
+  revision: target
+  url: prompts/implement_tests.md
 docs/graph/blueprint/prompts/research.md:
   kind: target prompt
   description: Answer the question
@@ -242,7 +277,7 @@ pstack/skills/architect/SKILL.md:
     'design this', or non-trivial work where jumping to code would lock in the wrong
     shape.
   summary:
-    Method steps: Trace affected systems and sketch two ownership shapes. (lines 9–9)
+    Method steps: Trace affected systems and sketch two ownership shapes. (whole file)
   repository: cursor/plugins
   revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
   url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/architect/SKILL.md
@@ -252,7 +287,7 @@ pstack/skills/benchmark-checklist/SKILL.md:
     relevance, and whether the work happened) before you report or act on it. Use
     when you run a benchmark or report a speedup or regression you measured.
   summary:
-    Method steps: Verify benchmark conditions (lines 13–27)
+    Method steps: Verify benchmark conditions (whole file)
   repository: cursor/plugins
   revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
   url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/benchmark-checklist/SKILL.md
@@ -264,7 +299,7 @@ pstack/skills/blast-radius/SKILL.md:
     a small diff you don't trust.
   summary:
     Method steps: Find the one fact the change is safe because of and what it breaks
-      beyond the diff. (lines 31–37)
+      beyond the diff. (whole file)
   repository: cursor/plugins
   revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
   url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/blast-radius/SKILL.md
@@ -275,8 +310,8 @@ pstack/skills/how/SKILL.md:
     package owns this", "is this the right layer"). Explains subsystem architecture,
     runtime flow, onboarding mental models. Use why for motivation.
   summary:
-    Method steps: Inspect the code and explain its architecture from source. (lines
-      17–17)
+    Method steps: Inspect the code and explain its architecture from source. (whole
+      file)
   repository: cursor/plugins
   revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
   url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/how/SKILL.md
@@ -288,7 +323,7 @@ pstack/skills/interrogate/SKILL.md:
     survive.
   summary:
     Method steps: Probe the candidate in one independent session and cite verified
-      findings. (lines 19–19)
+      findings. (whole file)
   repository: cursor/plugins
   revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
   url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/interrogate/SKILL.md
@@ -299,7 +334,7 @@ pstack/skills/statechart/SKILL.md:
     report gives the shortest path to each state that breaks a rule. Use for /statechart,
     or to show a bug as a path through states.
   summary:
-    Method steps: Describe state transitions and invariants. (lines 23–27)
+    Method steps: Describe state transitions and invariants. (whole file)
   repository: cursor/plugins
   revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
   url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/statechart/SKILL.md
@@ -309,8 +344,8 @@ pstack/skills/tdd/SKILL.md:
     a regression test, OR when the bug has an obvious cheap local test target. Skip
     when the test path is unclear, expensive, integration-heavy, or not requested.
   summary:
-    Method steps: Reproduce cheaply and rerun the focused regression check. (lines
-      9–31)
+    Method steps: Reproduce cheaply and rerun the focused regression check. (whole
+      file)
   repository: cursor/plugins
   revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
   url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/tdd/SKILL.md
@@ -320,7 +355,7 @@ pstack/skills/why/SKILL.md:
     regressions, postmortems, or data-backed thresholds. Returns a cited read on decisions
     and tradeoffs. Use how for runtime behavior.
   summary:
-    Method steps: Read author records and mark inferences. (lines 9–9)
+    Method steps: Read author records and mark inferences. (whole file)
   repository: cursor/plugins
   revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
   url: https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/why/SKILL.md
@@ -330,8 +365,8 @@ skills/engineering/diagnosing-bugs/SKILL.md:
     the user says "diagnose"/"debug this", or reports something broken/throwing/failing/slow.
   summary:
     Method steps: Name a tight feedback loop that reproduces the bug before any hypothesis.
-      (lines 18–37) • Name a tight feedback loop that reproduces the regression before
-      any hypothesis. (lines 18–37)
+      (whole file) • Name a tight feedback loop that reproduces the regression before
+      any hypothesis. (whole file)
   repository: mattpocock/skills
   revision: abeeaf95660ba9e8b7c753eb38f441ca707a8823
   url: https://github.com/mattpocock/skills/blob/abeeaf95660ba9e8b7c753eb38f441ca707a8823/skills/engineering/diagnosing-bugs/SKILL.md
@@ -342,7 +377,7 @@ skills/engineering/to-tickets/SKILL.md:
     (edges as text in one file per ticket locally, or native blocking links on a real
     tracker).
   summary:
-    Method steps: Cut thin end-to-end slices and name each blocking edge. (lines 29–40)
+    Method steps: Cut thin end-to-end slices and name each blocking edge. (whole file)
   repository: mattpocock/skills
   revision: abeeaf95660ba9e8b7c753eb38f441ca707a8823
   url: https://github.com/mattpocock/skills/blob/abeeaf95660ba9e8b7c753eb38f441ca707a8823/skills/engineering/to-tickets/SKILL.md
@@ -412,6 +447,18 @@ src/foreman/check_output.py:
   repository: bookout-labs/tools
   revision: b96293d6e6403e854097cb8c2c3d94afe747e286
   url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/check_output.py
+src/foreman/cli.py:
+  kind: script
+  description: Command line for the foreman tool.
+  summary:
+    What it does: positive_tokens • positive_budget • main
+    Inputs: 'positive_tokens(raw: str) • positive_budget(raw: str) • main(argv: list[str]
+      | None=None, *, worker_runner: CommandRunner=run_worker_command, checkpoint:
+      Path | None=None, live_run: LiveRun | None=None)'
+    Outputs: positive_tokens → int • positive_budget → BudgetUsd • main → int
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/cli.py
 src/foreman/config.py:
   kind: script
   description: Model assignment. This is data. A node does not get to rewrite it.
@@ -536,7 +583,7 @@ src/foreman/skills/review-quality.md:
   kind: skill
   description: Review quality
   summary:
-    Method steps: Cite evidence and assign severity. (lines 3–7)
+    Method steps: Cite evidence and assign severity. (whole file)
   repository: bookout-labs/tools
   revision: b96293d6e6403e854097cb8c2c3d94afe747e286
   url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/skills/review-quality.md
@@ -596,6 +643,12 @@ src/foreman/stages/implement.md:
   repository: bookout-labs/tools
   revision: b96293d6e6403e854097cb8c2c3d94afe747e286
   url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/src/foreman/stages/implement.md
+src/foreman/stages/implement_tests.md:
+  kind: baseline prompt
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
 src/foreman/stages/research.md:
   kind: baseline prompt
   description: Answer the question from the repository. Do not change code.
@@ -819,6 +872,12 @@ tests/test_accept.py:
   repository: bookout-labs/tools
   revision: b96293d6e6403e854097cb8c2c3d94afe747e286
   url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_accept.py
+tests/test_acceptance_tests.py:
+  kind: planned script
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
 tests/test_delivery.py:
   kind: test
   description: Test delivery.
@@ -848,6 +907,12 @@ tests/test_dispatch_recovery.py:
   repository: bookout-labs/tools
   revision: b96293d6e6403e854097cb8c2c3d94afe747e286
   url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_dispatch_recovery.py
+tests/test_doctor.py:
+  kind: planned script
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
 tests/test_merge_receipt.py:
   kind: test
   description: ''
@@ -859,6 +924,12 @@ tests/test_merge_receipt.py:
   repository: bookout-labs/tools
   revision: b96293d6e6403e854097cb8c2c3d94afe747e286
   url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_merge_receipt.py
+tests/test_mutation.py:
+  kind: planned script
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
 tests/test_publication.py:
   kind: test
   description: ''
@@ -923,6 +994,24 @@ tests/test_runner.py:
   repository: bookout-labs/tools
   revision: b96293d6e6403e854097cb8c2c3d94afe747e286
   url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_runner.py
+tests/test_skill_rules.py:
+  kind: test
+  description: ''
+  summary:
+    What it checks: line ranges are positive and ordered • pinned methods have no
+      spawn instructions
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_skill_rules.py
+tests/test_smoke.py:
+  kind: test
+  description: Recorded checkpoint fixtures for the smoke exit contract.
+  summary:
+    What it checks: pass and purity • recovered review denial • each completion predicate
+      • stale heads • unavailable then ran
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_smoke.py
 tests/test_spec_candidate.py:
   kind: test
   description: ''

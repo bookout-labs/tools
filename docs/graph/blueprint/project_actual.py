@@ -27,8 +27,8 @@ else:
 
 
 SENTINELS = {"__start__": {"kind": "node"}, "__end__": {"kind": "node"}}
-# The migration slices in migration.md: M1-M7 (#232-#238) and M8 Verify (#251).
-MIGRATION_ISSUES = (*range(232, 239), 251)
+# The migration slices in migration.md: M1-M7 (#232-#238), M8 Verify (#251) and the redesign (#299).
+MIGRATION_ISSUES = (*range(232, 239), 251, 299)
 DRAWN_EVENTS = {("issues", "labeled"): "issue_labeled"}
 
 
