@@ -13,7 +13,7 @@ from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, human_comments, 
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
-    CandidateSlice, InvalidSlicePlan, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, load_stored_slice, parse_output, spec_digest,
+    CandidateSlice, InvalidSlicePlan, SettledRuling, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, load_stored_slice, parse_output, spec_digest,
 )
 from foreman.stages import clean_slices, reject_candidate
 from foreman.state import DeliveryState, DeliveryUpdate
@@ -94,8 +94,17 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 def check(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     plan = state["plan"]
     update: DeliveryUpdate = {}
+
+    def settle(current: DeliveryState, answer: str) -> DeliveryUpdate:
+        # The human's answer to a checker question settles that choice for every later check of the issue.
+        asked = current["plan"]
+        past = SpecHistory.model_validate(asked.spec_history)
+        ruling = SettledRuling(id=f"spec:{len(past.settled) + 1}", text=f"{asked.human_qa[-1]['question']}\nAnswer: {answer}")
+        return {"plan": asked.model_copy(update={"spec_history": {"rounds": past.rounds, "settled": [*past.settled, ruling]}})}
+
     if not SpecHistory.cleared(plan):
-        update, _ = run.consult(DISPATCH, "spec_check", state, lambda plan: [(plan.spec_candidate or {}).get("revision")])
+        update, _ = run.consult(DISPATCH, "spec_check", state, lambda plan: [(plan.spec_candidate or {}).get("revision")],
+                                answered=settle)
         plan = update.get("plan", plan)
         if update.get("halt") or update.get("stop") or not SpecHistory.cleared(plan):
             return update

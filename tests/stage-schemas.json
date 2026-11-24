@@ -550,7 +550,7 @@
     "additionalProperties": false,
     "properties": {
       "findings": {
-        "description": "All blocking gaps in the current candidate.",
+        "description": "All blocking gaps a revised candidate could fix.",
         "items": {
           "anyOf": [
             {
@@ -574,7 +574,7 @@
             "type": "null"
           }
         ],
-        "description": "Ask an unresolved choice on this candidate only when findings is empty.",
+        "description": "Ask only when the issue's own text cannot be met by any candidate, citing the issue line. Leave findings empty and put candidate defects in notes.",
         "title": "Human Question"
       },
       "notes": {

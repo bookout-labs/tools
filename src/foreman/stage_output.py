@@ -788,8 +788,10 @@ class VerifyOutput(StageOutput):
 
 
 class SpecCheckOutput(HumanQuestionOutput):
-    human_question: TrimmedText | None = Field(description="Ask an unresolved choice on this candidate only when findings is empty.")
-    findings: list[SpecFinding] = Field(description="All blocking gaps in the current candidate.")
+    human_question: TrimmedText | None = Field(description=(
+        "Ask only when the issue's own text cannot be met by any candidate, citing the issue line. "
+        "Leave findings empty and put candidate defects in notes."))
+    findings: list[SpecFinding] = Field(description="All blocking gaps a revised candidate could fix.")
     notes: list[SpecFinding] = Field(description="Nonblocking observations, separate from requested fixes.")
 
     @model_validator(mode="after")

@@ -12,6 +12,7 @@ from foreman.dry_run import CLEAR, SCRIPTED_USAGE, ScriptHandler
 from foreman.github import IssueBlocker
 from foreman.runner import AnswerError, issue_thread, run_live_delivery, saved_workspace
 from foreman.skill_rules import git
+from foreman.spec_check import SpecHistory
 from foreman.stage_output import SpecCandidate, StoredSlice
 from foreman.steps import spec as spec_step
 from foreman.workspace import LiveWorkspace
@@ -299,6 +300,44 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         result = self.invoke(draft=draft)
         self.assertEqual([qa["answer"] for qa in result["plan"].human_qa], ["Yes", "Use a stable sort"])
         self.assertEqual(result["stop"], "children_filed")
+
+    def test_checker_answer_settles_the_issue_for_later_candidates(self):
+        question = "Should closed items stay hidden?"
+        ruling = {"id": "spec:1", "text": f"{question}\nAnswer: Keep them hidden"}
+        for later in ("same", "revised"):
+            with self.subTest(later=later):
+                self.checkpoint = self.checkpoint.with_name(f"settled-{later}.sqlite3")
+                self.calls.clear()
+                self.forge = Forge()
+                self.forge.base, self.forge.body, self.forge.labels = self.base, slice_body(EDIT), ["Ready"]
+                self.script.triage = "plan"
+                drafts = iter([{"spec": "First", "spec_gate": "ready", "slices": [EDIT], "questions": []},
+                               {"spec": "Second", "spec_gate": "ready", "questions": [],
+                                "slices": [{**EDIT, "acceptance": "Keep closed items hidden in the index."}]}])
+                seen = []
+
+                def check(_model, state, _instruction):
+                    plan = state["plan"]
+                    seen.append((plan.spec_candidate["revision"], SpecHistory.model_validate(plan.spec_history)))
+                    if len(seen) == 1:
+                        return {**CLEAR.model_dump(), "human_question": question}
+                    if len(seen) == 2 and later == "revised":
+                        return {**CLEAR.model_dump(), "findings": [{**FINDING, "slice": EDIT["title"],
+                                                                   "summary": "Acceptance must name the hidden items."}]}
+                    return CLEAR.model_dump()
+
+                first = self.invoke(check, draft=lambda: next(drafts))
+                self.assertEqual(first["stop"], "needs_human")
+                self.forge.ruling(re.search(r"foreman answer [0-9a-f-]{71}", first["halt_detail"])[0] + "\nKeep them hidden")
+                result = self.invoke(check, draft=lambda: next(drafts))
+                self.assertEqual(seen[0][1].settled, [])
+                self.assertEqual([[r.model_dump() for r in history.settled] for _, history in seen[1:]], [[ruling]] * (len(seen) - 1))
+                self.assertTrue(all(not history.rounds for _, history in seen))
+                self.assertEqual(len({revision for revision, _ in seen}), 1 if later == "same" else 2)
+                self.assertEqual(result["plan"].spec_failures, 0 if later == "same" else 1)
+                self.assertEqual(self.calls.count("spec_check"), 2 if later == "same" else 3)
+                self.assertNotEqual(result.get("halt"), "spec_cap")
+                self.assertEqual(result["stop"], "children_filed")
 
     def test_verdict_for_another_scope_blocks_both_effects(self):
         for entry in ("stored", "drafted"):
