@@ -308,7 +308,7 @@ stages:
       SC5: {given: The model clears a validated plan with no human response or after the agent posts optional human approval on the issue, expect: Proceed without a manual approval step. Honor a stop the agent posts under the human's identity before implementing or filing.}
       FS1: {given: A child issue or link write times out, expect: Adopt the matching result once and complete missing links. Report publication_unreconciled if the write cannot be confirmed.}
     decisions: [D3, D7, D8, D9]
-    warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and the human's review is optional. A checker's intent answer settles the issue, not one plan revision. Warp's gates page re-asks only approval for a revised plan.}
+    warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: "Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and the human's review is optional. A checker's intent answer settles the issue, not one plan revision. Warp's gates page re-asks only approval for a revised plan."}
 
   implement:
     title: Build and publish the change

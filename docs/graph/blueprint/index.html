@@ -781,7 +781,7 @@ in `why_code_unanswered`. On `ready`, return `questions: []`.</dd></dl>
     </li></ul></section>
       <div class="columns"><section><h2>What happens</h2><ol class="steps"><li><strong>Draft repository-bound slices</strong><p>Candidate and grounded questions when present</p></li><li><strong>Validate repository and seam paths</strong><p>Ordered exact candidate or typed defect</p></li><li><strong>Check and approve the plan</strong><p>Model approval or findings for the checked candidate</p></li><li><strong>File and link child issues</strong><p>Observed children and dependency links</p></li></ol></section>
       <section><h2>Warp equivalent</h2><p><strong>Planning and plan gate</strong></p>
-      <p>Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and the human&#x27;s review is optional. A checker&#x27;s intent answer settles the issue</p><p><a href="https://docs.warp.dev/factories/blueprints/gates/">Read Warp’s documentation ↗</a></p>
+      <p>Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and the human&#x27;s review is optional. A checker&#x27;s intent answer settles the issue, not one plan revision. Warp&#x27;s gates page re-asks only approval for a revised plan.</p><p><a href="https://docs.warp.dev/factories/blueprints/gates/">Read Warp’s documentation ↗</a></p>
       <h2>Human gates</h2><ul class="gate-list"><li>
       <button type="button" popovertarget="spec-gate-draft">Resolve planning choice</button>
       <div class="gate-pop" id="spec-gate-draft" popover aria-labelledby="spec-gate-draft-title">
