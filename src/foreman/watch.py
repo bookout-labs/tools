@@ -34,10 +34,12 @@ def watch(state: DeliveryResult, forge: Forge, repo: str, run_key: RunKey) -> Wa
     for issue in matches:
         if any(run_marker in comment.splitlines() for comment in forge.issue_comments(repo, issue.number)):
             return {"issue": issue.number, "action": "commented"}
-    detail = indent(state.get("halt_detail", ""), "    ")
     attempts = ", ".join(f"{a['stage']}/{a['model']}={a['outcome']}" for a in state.get("attempts", []))
     run_state = state["run"]
-    evidence = f"Evidence: {run_state.repo}#{run_state.issue or '<issue>'}; stop={halt}; attempts={attempts}\n\nDetail:\n\n{detail}\n"
+    evidence = f"Evidence: {run_state.repo}#{run_state.issue or '<issue>'}; stop={halt}; attempts={attempts}\n"
+    # Halt detail quotes the run's repository, so it stays in that run's report when the watch repo is another one.
+    if run_state.repo == repo:
+        evidence += f"\nDetail:\n\n{indent(state.get('halt_detail', ''), '    ')}\n"
     if matches:
         number = matches[0].number
         forge.comment_issue(repo, number, evidence, marker=run_marker)
