@@ -50,13 +50,14 @@ class StageRun:
         return node
 
     def consult(
-        self, graph: DispatchGraph, name: GateStage, state: DeliveryState, scope: Callable[[PlanState], list[object]] | None,
+        self, graph: DispatchGraph, name: GateStage, state: DeliveryState, scope: Callable[[DeliveryState], list[object]],
         *, owned: str = "", answered: Callable[[DeliveryState, str], DeliveryUpdate] = lambda state, answer: {},
         route: Callable[[DeliveryState, DispatchResult], tuple[DeliveryUpdate, str]] = lambda state, result: ({}, result.get("fingerprint", "")),
     ) -> tuple[DeliveryUpdate, str]:
         """Dispatch a worker until it returns no question. Each question waits at the stage's gate for the human.
 
-        The scope binds the question to its subject, so only an answer to that question resumes the step.
+        The scope reads the Delivery state the worker's answer left and binds the question to its subject, so the question
+        posts its reply marker and only the human's reply to that question resumes the step (rules.gates.checkpoint).
         Route reads a result without a question and returns the stage's stop or a question for the result that matches
         no route, with the fingerprint of the edits the worker then owns. That question opens the same gate, and its
         attempt records the routing defect for the scorers (rules.routing). A resumed step replays route, so route
@@ -77,23 +78,22 @@ class StageRun:
             if not update.get("halt") and not update.get("human_question"):
                 routed, owned = route({**current, **update}, result)
                 update.update(routed)
-            question = update.get("human_question")
             if halt := update.get("halt"):
                 # The stage ends with the named halt.
                 return {**update, "stop": halt, "attempts": attempts, "path": path}, owned
+            question = update.get("human_question")
             if routed.get("human_question"):
                 attempts[-1:] = [{**attempt, "detail": f"routing_defect: {question}"} for attempt in attempts[-1:]]
             if not question:
                 return {**update, "attempts": attempts, "path": path}, owned
-            plan = update.get("plan", state["plan"])
-            revision = spec_digest([name, *scope(plan), question]) if scope else None
+            current = {**current, **update}
+            plan = current["plan"]
+            revision = spec_digest([name, *scope(current), question])
             answer = interrupt(HumanPrompt(stage=name, question=question, revision=revision, attempts=attempts, path=path,
                                            models_used=update.get("models_used", {})).model_dump())
             if answer == "cancel":
                 return {**update, "human_question": "", "attempts": attempts, **cancel(current, self, name), "path": path}, owned
-            asked: HumanAnswer = {"stage": name, "question": question, "answer": answer}
-            if revision:
-                asked["revision"] = revision
+            asked: HumanAnswer = {"stage": name, "question": question, "answer": answer, "revision": revision}
             if name == "spec_check" and plan.spec_candidate is not None:
                 asked["candidate"] = plan.spec_candidate["revision"]
             update.update(human_question="", human_answers=[*update.get("human_answers", state.get("human_answers", [])), answer],

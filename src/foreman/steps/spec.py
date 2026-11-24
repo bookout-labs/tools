@@ -32,7 +32,12 @@ def draft(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # A resumed stage keeps the candidate it already drafted.
         return {}
     target = state["run"].target()
-    update, _ = run.consult(DISPATCH, "spec", state, lambda plan: [target, plan.spec, plan.work_kind, plan.slice, plan.slices])
+
+    def bound(current: DeliveryState) -> list[object]:
+        plan = current["plan"]
+        return [target, plan.spec, plan.work_kind, plan.slice, plan.slices]
+
+    update, _ = run.consult(DISPATCH, "spec", state, bound)
     return update
 
 
@@ -107,7 +112,7 @@ def check(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return {"plan": asked.model_copy(update={"spec_history": {"rounds": past.rounds, "settled": [*past.settled, ruling]}})}
 
     if not SpecHistory.cleared(plan):
-        update, _ = run.consult(DISPATCH, "spec_check", state, lambda plan: [(plan.spec_candidate or {}).get("revision")],
+        update, _ = run.consult(DISPATCH, "spec_check", state, lambda current: [(current["plan"].spec_candidate or {}).get("revision")],
                                 answered=settle)
         plan = update.get("plan", plan)
         if update.get("halt") or update.get("stop") or not SpecHistory.cleared(plan):
