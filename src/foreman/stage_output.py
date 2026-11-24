@@ -712,7 +712,8 @@ class ImplementOutput(HumanQuestionOutput):
         description="Only on a first attempt with no edits and no human_question: the checks showing the acceptance already "
                     "holds on the pinned base, and their results. Otherwise null.")
     human_question: TrimmedText | None = Field(
-        description="Ask only when an unresolved acceptance choice blocks further editing. Otherwise null.")
+        description="Ask only when an unresolved acceptance choice blocks further editing, or when the code contradicts a "
+                    "fact the plan states. Then cite the plan fact and the code, and build nothing. Otherwise null.")
 
     @model_validator(mode="after")
     def asks_or_reports_no_change(self) -> Self:
