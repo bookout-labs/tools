@@ -156,7 +156,7 @@ foreman start --repo Example/Engine --issue 7
 - After a run returns, `foreman start` and `foreman run` print one `start OWNER/NAME#N` line for each issue the run returns to admission: the open dependents after its merge, or the children it filed. The host starts each line like an accepted delivery, and admission decides from the issue's Ready label and its prerequisites. A replay of a finished run prints the same lines, so a crash before the host starts them loses nothing. A prerequisite counts once its closing pull request merged into the default branch.
 - It reads the run settings from the repository's GitHub Actions variables:
   - `FOREMAN_CHECK` is required.
-  - `FOREMAN_HUMAN_LOGIN` is required: the GitHub login whose issue comments answer, approve or stop the run.
+  - `FOREMAN_HUMAN_LOGIN` is required: the GitHub login whose issue comments answer or stop the run.
   - `FOREMAN_PREFLIGHT` is optional.
   - `FOREMAN_MAX_TOKENS` defaults to the standard token cap.
   - `FOREMAN_MAX_BUDGET_USD` defaults to $3.

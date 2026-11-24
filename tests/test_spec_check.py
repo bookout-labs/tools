@@ -39,14 +39,14 @@ class SpecCheckTests(unittest.TestCase):
                  "plan": plan.model_copy(update={"spec_history": {"rounds": accept(SpecHistory(), output(), checked).history.rounds}})}
         for comments, stop in (([], None), (["foreman stop"], "cancelled")):
             with self.subTest(stop=stop):
-                forge = Mock(**{"issue_comment_records.return_value": [
+                forge = Mock(**{"ready_labeled_at.return_value": None, "issue_comment_records.return_value": [
                     IssueComment.model_validate({"user": {"login": "fixture-owner"}, "body": body}) for body in comments]})
                 run = StageRun(workspace=Mock(), forge=forge, check_log=None, max_rounds=3, human_login="fixture-owner",
                                dispatch=Mock(side_effect=AssertionError("no worker call")), apply=Mock())
                 ended = spec.compile_stage(run).invoke(state)
                 self.assertEqual((ended.get("stop"), ended.get("halt"), ended.get("path")), (stop, None, ["spec"] if stop else []))
                 self.assertTrue(SpecHistory.cleared(ended["plan"]))
-                self.assertEqual({call[0] for call in forge.method_calls}, {"issue_comment_records"})
+                self.assertEqual({call[0] for call in forge.method_calls}, {"issue_comment_records", *(["ready_labeled_at"] if stop else [])})
                 self.assertNotIn("human_approval", PlanState.model_fields)
 
     def test_native_fixture_and_contradictions(self):

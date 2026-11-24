@@ -5,6 +5,7 @@ from foreman.stages import STAGES
 
 import contextlib
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 import io
 import json
 import os
@@ -34,7 +35,7 @@ from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
 from foreman.github import human_comments, marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
 from foreman.status import STATUS_MARKER, Status, running, shows, write_status
-from foreman.steps import CANCELLATION, StageRun, review
+from foreman.steps import CANCELLATION, StageRun, implement, review, verify
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, issue_thread, run_live_delivery, saved_workspace, snapshot_result
@@ -268,6 +269,13 @@ class FakeGitHub:
         self.queue_merges = True
         self.foreign_heads: set[str] = set()
         self.pr_closes: list[tuple[str, int, str]] = []
+        # GitHub's clock: each human comment and Ready label event takes the next second. The issue starts Ready.
+        self.seconds = 0
+        self.ready_events = [self.now()]
+
+    def now(self):
+        self.seconds += 1
+        return datetime(2026, 11, 24, tzinfo=UTC) + timedelta(seconds=self.seconds)
 
     def default_branch(self, repo):
         return "main"
@@ -397,7 +405,10 @@ class FakeGitHub:
         self._fail("upsert_comment", after_write=True)
 
     def ruling(self, body, login="fixture-owner"):
-        self.rulings.append(IssueComment.model_validate({"user": {"login": login}, "body": body}))
+        self.rulings.append(IssueComment.model_validate({"user": {"login": login}, "body": body, "created_at": self.now()}))
+
+    def ready_labeled_at(self, repo, number):
+        return max(self.ready_events)
 
     def answer(self, detail, answer, login="fixture-owner"):
         """Post the human's reply to the paused question, as the coordinator relays it under their identity."""
@@ -474,6 +485,7 @@ class FakeGitHub:
         labels = self.issue_labels.get(number, self.edited.get(number))
         if labels is not None and any(label in RUN_LABELS for label in labels):
             labels[:] = [label for label in labels if label not in RUN_LABELS] + ["Ready"]
+            self.ready_events.append(self.now())
 
 
 class CliWorkerTest(unittest.TestCase):
@@ -1496,6 +1508,28 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.github.ruling("foreman stop " + "a" * 64)
         self.assertEqual((self.walk([APPROVE])["stop"], self.github.pr_closes), ("merged", []))
 
+    def test_a_cancellation_outside_merge_leaves_a_merged_pull_request_and_ends_cancelled(self):
+        """Only merge records a stop as too late. Elsewhere a stop or a gate's cancel answer leaves a PR that GitHub merged
+        alone and still ends the run cancelled, before any worker call."""
+        github = FakeGitHub()
+        github.open_pull_request("Example/Engine", BRANCH, "main", "Change", "Closes #8")
+        github.opened[BRANCH] = github.opened[BRANCH].model_copy(update={"state": "MERGED"})
+        github.ruling("foreman stop")
+        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, human_login="fixture-owner",
+                         dispatch=Mock(side_effect=AssertionError("no worker call")), apply=None)
+        state = {"run": RunState(repo="Example/Engine", issue=8), "work": WorkState(branch=BRANCH, published_head=HEAD),
+                 "review": ReviewState(), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": []}
+        for step, label in ((implement.prepare, "prepare"), (verify.drive, "verify"), (review.inspect, "review")):
+            with self.subTest(label):
+                self.assertEqual(step(state, stage), {"stop": "cancelled", "path": [label]})
+        github.rulings.clear()
+        gate = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, human_login="fixture-owner", dispatch=Mock(),
+                        apply=Mock(return_value={"human_question": "Which sort order should the repair keep?"}))
+        with patch("foreman.steps.interrupt", return_value="cancel"):
+            update, _ = gate.consult(Mock(**{"invoke.return_value": {}}), "review", state, None)
+        self.assertEqual((update["stop"], update.get("halt_detail"), update["human_question"]), ("cancelled", None, ""))
+        self.assertEqual(github.pr_closes, [])
+
     def test_admission_and_a_resumed_halt_read_the_stop_first(self):
         """TR6: triage.admit reads the stop before anything else, and a halted run that resumes sees a stop posted meanwhile."""
         self.github.ruling("foreman stop")
@@ -1509,6 +1543,22 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         resumed = self.walk([])
         self.assertEqual((resumed["stop"], resumed["path"][-1], self.github.merge_calls), ("cancelled", "merge", []))
         self.assertEqual(self.github.pr_closes, [("Example/Engine", 12, CANCELLATION)])
+
+    def test_a_stop_counts_only_after_the_latest_ready_event(self):
+        """TR6: a stop counts only when GitHub created it after the issue's latest Ready label event. Removing and re-adding
+        Ready spends an old stop, and an old comment edited into a stop is no new one. A stop after that event still cancels."""
+        self.github.ruling("foreman stop")
+        self.github.ruling("Looks fine.")
+        self.assertEqual(self.walk([])["stop"], "cancelled")
+        self.github.ready_events.append(self.github.now())  # The human removes and re-adds Ready.
+        edited = self.github.rulings[-1]
+        self.github.rulings[-1] = edited.model_copy(update={"body": "foreman stop"})  # GitHub keeps its created time.
+        self.checkpoint, self.github.queue_merges = self.cwd / "ready-again.sqlite3", False
+        waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual((waiting["stop"], waiting["path"][-1], self.github.pr_closes), ("merge_pending", "merge", []))
+        self.github.ruling("foreman stop")
+        stopped = self.walk([])
+        self.assertEqual((stopped["stop"], self.github.pr_closes), ("cancelled", [("Example/Engine", 12, CANCELLATION)]))
 
     def test_a_failed_stop_read_or_close_stops_with_the_stage_github_halt(self):
         """A stop read or PR close that GitHub fails stops with git_failed, and with readiness_unavailable in merge."""
