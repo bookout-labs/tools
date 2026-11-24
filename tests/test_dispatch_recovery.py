@@ -198,7 +198,7 @@ class DispatchRecoveryTests(unittest.TestCase):
                             # The call may have launched: charge the worst case once and never relaunch it.
                             self.assertEqual(calls, [])
                             self.assertEqual(result["stop"], "budget_exceeded")
-                            self.assertEqual(run_exit_code(result), 1)
+                            self.assertEqual(run_exit_code(result), 75)
                             self.assertIn("usage_unknown", result["halt_detail"])
                             self.assertEqual([a["outcome"] for a in triage], ["quota", "interrupted"] if mode == "quota" else ["interrupted"])
                             self.assertIn("work_charge", triage[-1])

@@ -61,7 +61,7 @@ class StartTest(unittest.TestCase):
         self.assertEqual((checks.check, checks.preflight), ("exit 0", "exit 0"))
         self.assertEqual((run.token_cap, run.max_budget_usd), (900000, "3"))
         calls = self.worker_calls
-        # A repeated delivery is a no-op, whatever stop the run reached.
+        # A repeated delivery for a finished run is a no-op.
         self.assertEqual(self.start(variables)[:2], (0, f"already started {THREAD}\n"))
         self.assertEqual(self.worker_calls, calls)
 
@@ -128,6 +128,26 @@ class StartTest(unittest.TestCase):
         self.assertEqual(self.forge.status_writes, writes)
         self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Doing"])
         self.assertEqual(list(self.forge.status), [("Example/Engine", 8)])
+
+    def test_ready_again_resumes_a_budget_halt_with_the_raised_repository_cap(self):
+        replies = [{"triage": "supplied_slice"}, {"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
+        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, replies[:1])
+        self.assertEqual(code, 75, out + err)
+        self.assertEqual((self.stored()[0].token_cap, self.worker_calls), (1, 1))
+        self.forge.ready_again(8)
+        # An unchanged cap stops again before any worker call, and a lowered one is refused.
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"})[0], 75)
+        self.forge.ready_again(8)
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1", "FOREMAN_MAX_BUDGET_USD": "2"})[0], 1)
+        self.assertEqual(self.worker_calls, 1)
+        self.forge.ready_again(8)
+        # The halted triage answer was never applied, so the resumed route asks again, and the plan checker answers too.
+        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"}, replies[1:])
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("done merged", out)
+        self.assertEqual((self.stored()[0].token_cap, self.worker_calls), (900000, 5))
+        # A finished run is never started again.
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
 
     def test_without_app_credentials_nothing_is_read_or_run(self):
         self.app.return_value = None

@@ -99,7 +99,9 @@ HALTS: Final[Mapping[Halt, Policy]] = {
         Watch("Investigate a merge at an unreviewed head",
               "GitHub merged the pull request at a head Foreman did not review, so the run earned no credit or dependent release.",
               "src/foreman/steps/merge.py")),
-    Halt.budget_exceeded: Policy("The run reached its token or dollar budget.", "terminal", None),
+    Halt.budget_exceeded: Policy(
+        "The run reached its token or dollar budget. Raise the FOREMAN_MAX_TOKENS or FOREMAN_MAX_BUDGET_USD variable before resuming.",
+        "retry", None),
     Halt.env_unavailable: Policy("The implementation environment is unavailable.", "retry", None),
     Halt.publish_failed: Policy("The branch or pull request could not be published.", "retry", None),
     Halt.implementation_rejected: Policy("The code changes did not match what the step reported.", "retry", None),

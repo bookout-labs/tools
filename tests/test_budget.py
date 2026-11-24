@@ -92,7 +92,7 @@ class DollarBudgetTests(unittest.TestCase):
                                                         "cache_creation": 0, "cost_usd": 0.1})
                 self.assertEqual((state["halt"], state["stop"]), ("budget_exceeded", "budget_exceeded"))
                 self.assertIn("dollar", state["halt_detail"])
-                self.assertEqual(run_exit_code(state), 1)
+                self.assertEqual(run_exit_code(state), 75)
                 self.assertFalse(getattr(state["plan"], stage)) if stage in {"triage", "spec"} else self.assertNotIn(stage, state)
                 self.assertNotIn(stage, state.get("models_used", {}))
                 self.assertNotIn("commit", state["path"])
