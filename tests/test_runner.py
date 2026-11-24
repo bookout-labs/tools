@@ -190,6 +190,8 @@ def worker_reply(args, reply):
             reply = {"work_kind": "feature", "slice": None, "human_question": None, **reply}
         if "spec" in reply:
             reply = {"slices": None, "questions": [], **reply}
+        if "implementation" in reply:
+            reply = {"no_change": None, **reply}
         if "implementation" in reply or "research" in reply:
             reply = {"human_question": None, **reply}
     # A review reads every granted scope command, which its prompt lists.
@@ -749,7 +751,7 @@ class StageOutputTest(unittest.TestCase):
 
     def test_implementation_rejects_worker_head(self):
         with self.assertRaisesRegex(InvalidOutput, r"^head_sha:"):
-            parse_output(ImplementOutput, {"implementation": "Done", "human_question": None, "head_sha": HEAD})
+            parse_output(ImplementOutput, {"implementation": "Done", "no_change": None, "human_question": None, "head_sha": HEAD})
 
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):

@@ -206,7 +206,7 @@ class StageDeclarationsTest(unittest.TestCase):
                 current = {**state, "models_used": used}
                 if prior is not None:
                     current["implement_models"] = prior
-                update = stage_update("implement", ImplementOutput(implementation="Done", human_question=None), current, model)
+                update = stage_update("implement", ImplementOutput(implementation="Done", no_change=None, human_question=None), current, model)
                 self.assertEqual(update["implementation"], "Done")
                 self.assertNotIn("checks", update)
                 self.assertEqual(update.get("implement_models"), expected)
@@ -218,10 +218,17 @@ class StageDeclarationsTest(unittest.TestCase):
         from foreman.state import ChecksState
 
         model = ModelSpec.parse("gpt-6.1-sol-high")
-        output = ImplementOutput(implementation="Done", human_question=None)
+        output = ImplementOutput(implementation="Done", no_change=None, human_question=None)
         update = stage_update("implement", output, {"checks": ChecksState(), "implement_models": ["first"]},
                               accepted_model=model)
         self.assertEqual(update["implement_models"], ["first", model.name])
+
+    def test_implement_output_reports_no_change_or_asks_not_both(self):
+        from pydantic import ValidationError
+        from foreman.stage_output import ImplementOutput
+
+        with self.assertRaisesRegex(ValidationError, "at most one of human_question and no_change"):
+            ImplementOutput(implementation="Done", no_change="The acceptance already holds.", human_question="Which items?")
 
     def test_contract_change_reaches_the_adapter(self):
         with patch.dict(STAGES, triage=replace(STAGES["triage"], output=ResearchOutput)):

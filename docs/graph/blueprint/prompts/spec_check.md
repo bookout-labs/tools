@@ -3,7 +3,9 @@
 Challenge the exact candidate against the originating issue, the pinned target checkout and the
 related repository checkouts. Confirm each slice's changes belong to the target repository,
 including when a matching path exists in Foreman's repository or a related repository. Open each
-cited assumption and confirm the cited file says what the plan relies on. Check that each slice
+cited assumption and confirm the cited file says what the plan relies on. A fact outside the target
+checkout that the plan relies on without listing it as an assumption is a finding. A criterion
+marked not drivable without a sound reason is a finding. Check that each slice
 states observable behavior with non-goals and a proof for every criterion, and that its
 dependencies are complete. A slice that names a code edit, an expression or a function to write is
 a finding. A change to a protected file outside its own slice is a finding. Cite each concrete

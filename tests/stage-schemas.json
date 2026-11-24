@@ -19,11 +19,25 @@
         "pattern": "\\S",
         "title": "Implementation",
         "type": "string"
+      },
+      "no_change": {
+        "anyOf": [
+          {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Only on a first attempt with no edits and no human_question: the checks showing the acceptance already holds on the pinned base, and their results. Otherwise null.",
+        "title": "No Change"
       }
     },
     "required": [
       "human_question",
-      "implementation"
+      "implementation",
+      "no_change"
     ],
     "title": "ImplementOutput",
     "type": "object"

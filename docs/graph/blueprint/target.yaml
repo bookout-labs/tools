@@ -6,7 +6,7 @@ repositories:
   foreman_repository: bookout-labs/tools
   target_repository: Canonical repository of the admitted GitHub issue.
   target_checkout: Exclusive Git checkout of target_repository, with base revision pinned at admission.
-  related_repositories: Read-only Git checkouts of the repositories the target contract names, each at the commit the contract pins. Workers read them. Nothing writes to them.
+  related_repositories: Read-only Git checkouts of the repositories the target contract names, each pinned at admission to its default-branch head and recorded on the run. Workers read them. Nothing writes to them.
   pstack:
     repository: cursor/plugins
     revision: d42aff08aa58965d2735c4ead61a9af82b89d0d0
@@ -48,7 +48,7 @@ terminal_outcomes:
   reverted: The production check failed for Foreman's merge. Foreman filed a Ready revert issue for the merge commit and a regression issue with the evidence, and released no dependents.
   closed: GitHub confirms the pull request closed without a merge.
   cancelled: The human explicitly cancels at a human gate or posts a stop comment on the issue. Foreman closes the run's open PR, if any, with the cancellation.
-  no_change: The builder returned a typed no_change answer with its reason. Foreman published nothing, or closed the run's open PR with that reason.
+  no_change: On a first attempt the builder returned typed evidence that the acceptance already holds at the base. Foreman published nothing.
   halted: Foreman saves a named halt and its evidence.
 evidence:
   introspection: [compiled node kind, owner binding, compiled edge and route label, procedure input fields, output schema and fields, model policy selector and dependency, prompt path, skill selector, declared halts and retries, owner module line budget]
@@ -69,7 +69,7 @@ target_contract:
     image: "image: a string. The container image that the builder, the acceptance test writer, the verifier and the reviewer run in (item 3)."
     setup: "setup: a list of strings. Setup commands that run in order in a fresh attempt container before any worker starts."
     start: "start: a map with command, the command that starts the app, health, a command that exits 0 once the app is up, and timeout_seconds, how long to wait for health."
-    related_repositories: "related_repositories: a list of maps, each with repository as OWNER/NAME, commit as the pinned full SHA and start as the command that starts its service in the attempt container (item 4)."
+    related_repositories: "related_repositories: a list of maps, each with repository as OWNER/NAME and start as the command that starts its service in the attempt container (item 4). The contract pins no commit. Admission pins each one for the run."
     secrets: "secrets: a list of names. The secrets the app needs to start. Foreman supplies each one's test value from the Foreman host's environment variable FOREMAN_TEST_<NAME>. Production credentials are never used."
     verify_skill: "verify_skill: a path. The repository's verify skill. The skill says how to start the app, how to sign in with a test account and what counts as evidence."
     mutation: "mutation: a map with command, the pinned mutation tool command, and sample_cap, the most changed lines the mutation check flips (item 15). Foreman stays language-neutral."
@@ -79,9 +79,10 @@ target_contract:
     human's, the budget caps FOREMAN_MAX_BUDGET_USD and FOREMAN_MAX_TOKENS, and FOREMAN_MERGE_HOLD.
   protected_files: [the check command, CI workflows under .github/workflows, the verify skill, accepted tests, the contract file]
   protected_rule: >-
-    A feature run never changes a protected file (item 20). A change to one is filed as its own issue without the Ready label,
-    and the feature that needs it depends on that issue. Foreman never builds a protected-file change. A person changes it, and
-    its issue closing rechecks the dependent feature. A revert run is not a feature run (merge.revert).
+    A feature run never changes a protected file (item 20). A change to one is filed as its own issue carrying Ready, and the
+    feature that needs it depends on that issue. That issue gets its own Foreman run, whose candidate is checked by the check command
+    and verify skill of the pinned base, unchanged, so a change never checks itself. Its merge.release admits the dependent feature.
+    A revert run is not a feature run (merge.revert).
   warp: {equivalent: Runner image and setup commands, factory repositories and secrets, page: https://docs.warp.dev/factories/runners/, also: [https://docs.warp.dev/factories/environments/, https://docs.warp.dev/factories/secrets/, https://docs.warp.dev/factories/guides/multi-repository-factory/], divergence: "Warp keeps the image, setup commands, repositories and secrets in the factory definition (runners/linux-build.yaml and factory.yaml in warp-factory-examples 02-sdlc-issue-to-pr). Foreman serves many target repositories from one installation, so each target repository carries its own contract, versioned with the code it checks."}
 doctor:
   command: foreman doctor --repo OWNER/NAME
@@ -91,13 +92,13 @@ doctor:
     the branch probe that merge_held waits on (item 19).
   quick:
     when: Run by the command and by triage.admit before any paid call. It reads GitHub and the contract file and starts no container.
-    requirements: [the GitHub App is installed on the repository, FOREMAN_HUMAN_LOGIN and the budget caps are set, the Ready label exists, a merge queue ruleset protects the base branch, the contract file parses and validates, the verify skill exists at the contract's path, a green full check is recorded for the contract file's digest at the base]
+    requirements: [the GitHub App is installed on the repository, FOREMAN_HUMAN_LOGIN and the budget caps are set, the Ready label exists, a merge queue ruleset protects the base branch, the contract file parses and validates, the verify skill exists at the contract's path]
   full:
     when: >-
-      Run on demand by the command, which runs the quick part and then the full part and records a green full check for the contract
-      file's digest. A change to the contract file at the base has no record for its new digest, so the next admission stops not_ready
-      and names the command as the fix. Admission never builds an image.
-    requirements: [the contract image builds, the setup commands succeed, the check passes on the default branch, the app starts and its health command answers, each related repository checks out at its pin and its service starts, the synthetic branch probe shows that neither an outside writer nor the App can move a PR's source branch while its arm is open]
+      Run by the command after the quick part, and by triage.admit after the quick part whenever no green full check is recorded for
+      the contract file's digest at the base, so a change to the contract file is checked once at the next admission. Each green
+      full check is recorded for that digest. A failed full check stops admission with not_ready.
+    requirements: [the contract image builds, the setup commands succeed, the check passes on the default branch, the mutation command runs on the default branch, the production check command runs against the default branch head, the app starts and its health command answers, each related repository checks out at its default-branch head and its service starts, the synthetic branch probe shows that neither an outside writer nor the App can move a PR's source branch while its arm is open]
   failure: Every failure prints the one missing requirement and the exact fix. At admission it stops with not_ready and no run starts.
   setup_page: >-
     docs/target-repo-setup.md lists each requirement, why Foreman needs it and how to supply it (item 24). It is generated from doctor's
@@ -179,7 +180,7 @@ workers:
   checker:
     title: Challenge the plan
     steps: [spec.check]
-    method: Probe issue fit, each slice and each cited assumption in the target and related repositories, including when both repositories contain the named path.
+    method: Probe issue fit, each slice and each cited assumption in the target and related repositories, including when both repositories contain the named path. An outside fact the plan relies on without listing it, or a not-drivable mark without a sound reason, is a finding.
     permissions: Read pinned target_checkout, the related repository checkouts and the exact candidate. Return typed findings.
     conversation: Use a fresh independent session per candidate, with a qualified different family preferred.
   builder:
@@ -188,7 +189,7 @@ workers:
     method: >-
       Edit within acceptance, run the contract's check command and the accepted tests in the attempt container and report the result (item 3).
       If the code contradicts a fact in the plan, ask through implement's question gate instead of building it (item 11).
-      Report that no change is needed only as a typed no_change answer with its reason (item 12).
+      Report that no change is needed only as typed no_change evidence on a first attempt: the checks showing the acceptance already holds at the base and what they showed (item 12).
       For a surviving mutation, add a test that notices it or answer that it is equivalent, with the reason no test can notice it.
     permissions: >-
       Write the exclusive target_checkout and its attempt scratch inside the attempt container, except the accepted tests and the
@@ -275,18 +276,19 @@ stages:
     invariants:
       - GitHub repository identity and run configuration agree.
       - Open dependencies prevent admission and later eligibility is read from GitHub.
-      - Admission runs doctor's quick check before any paid call or build checkout (item 23). A repository that fails it starts no run, and the halt names the one missing requirement and its exact fix.
+      - Admission runs doctor's quick check, and its full check when the contract file's digest has no green record, before any paid call or build checkout (item 23). A repository that fails either starts no run, and the halt names the one missing requirement and its exact fix.
     failure_and_resume:
       halts: [missing_slice, skill_missing, invalid_output, git_failed, not_ready]
       retries: {}
       recovery: A failed readiness requirement stops admission with not_ready. Supply the named requirement and add Ready again. Missing child payload stops admission. A pstack pin that can't be fetched or exported stops admission with skill_missing, an issue whose identity differs from the assignment with invalid_output, and a GitHub or checkout failure with git_failed. An open dependency leaves the issue unadmitted. Worker dispatch failures use shared dispatch. The human's answer resumes route.
     implementation: {module: src/foreman/steps/triage.py, entry: compile_stage, max_lines: 110, allowed_imports: [state, stage_output, github, dispatch, doctor], shared: [Forge, dispatch], never_does: [create child issues, edit source]}
-    checks: {TR1: tests/test_runner.py, TR2: tests/test_delivery.py, TR3: tests/test_accept.py, TR4: tests/test_doctor.py, TR5: tests/test_doctor.py, TR6: tests/test_runner.py}
+    checks: {TR1: tests/test_runner.py, TR2: tests/test_delivery.py, TR3: tests/test_accept.py, TR4: tests/test_doctor.py, TR5: tests/test_doctor.py, TR6: tests/test_runner.py, TR7: tests/test_doctor.py}
     scenarios:
       TR1: {given: The requested issue names another repository or a dependency is still open, expect: Stop before a paid call or build checkout allocation.}
       TR2: {given: A parent-labelled question and a separately supplied single slice, expect: Route the question to research and the supplied slice to spec.validate.}
       TR3: {given: A verified Ready label event arrives twice and the App adds the Doing label, expect: One admitted checkpoint and one run with the issue showing its state.}
       TR4: {given: "A scratch repository with each quick requirement removed in turn: App install, variables, Ready label, merge queue ruleset, contract file, verify skill", expect: "Doctor names the missing requirement and its exact fix each time, admission stops with not_ready and no run or paid call starts."}
+      TR7: {given: "A contract file change at the base, once with a passing full check and once with a failing check command", expect: "The next admission runs the full check once and records it green before admitting. The failing one stops not_ready naming the check, and no run or paid call starts."}
       TR5: {given: docs/target-repo-setup.md and doctor's requirement list differ by one requirement, expect: The page test fails.}
       TR6: {given: "A foreman stop comment under the human's identity, and one under another login, posted while a run waits between stages", expect: "The next stage entry ends the run cancelled before any paid call. The comment under another login changes nothing."}
     decisions: [D3, D6, D9, D14]
@@ -402,11 +404,11 @@ stages:
     invariants:
       - The candidate digest binds target_repository, pinned base, issue and approved content scope. A changed digest needs fresh validation and checking.
       - Validate explicit repository and path identity before a paid plan check. The checker independently assesses ambiguous issue intent and repository ownership. The foreign-repository rejection stays for write scope (item 4). A slice whose changes belong in another repository, a related repository included, stops with foreign_repository. Related repositories are read roots only.
-      - A slice states observable behavior (item 6). It gives acceptance criteria, non-goals and how each criterion is proven, by test, drive or contract. A test proof names behavior the base lacks, so its test can fail at the base. A criterion the base already meets, as in a refactor or a perf slice, is proven by drive or contract. A drive criterion that cannot be driven says so with a reason. A slice never names a code edit. It keeps depends_on for its parents and an advisory list of files it expects to touch. Slices have no builds or uses seams. Slice titles are unique. Dependencies are acyclic.
+      - A slice states observable behavior (item 6). It gives acceptance criteria, non-goals and how each criterion is proven, by test, drive or contract. A test or contract proof names behavior the base lacks, so its acceptance test can fail at the base. A criterion the base already meets, as in a refactor or a perf slice, is proven by drive. A drive criterion that cannot be driven says so with a reason. A slice never names a code edit. It keeps depends_on for its parents and an advisory list of files it expects to touch. Slices have no builds or uses seams. Slice titles are unique. Dependencies are acyclic.
       - The candidate carries an assumptions list (item 7). Each fact the plan relies on outside target_checkout cites a Git-tracked file in a related repository checkout at its pinned commit, or becomes a grounded gate question. Validate rejects an uncited assumption as a typed defect and returns the candidate to draft. A contract criterion names the related repository and the assumption it proves.
       - The independent model checker can approve the plan after validation. Ready is the drafter's claim of completeness.
       - The plan proceeds when the validator and the model check clear it, without the human's review. The human may comment through their coordinator or personal agent. A foreman stop comment under the human's identity ends the run cancelled at the next stage entry (item 8). Spec keeps no digest approval. A separate clarification gate only asks the human to resolve an open choice.
-      - A plan that needs a change to a protected file of the target contract is a parent plan, even when it has one feature slice (item 20). The protected change is its own slice, filed as a child issue without Ready, and the feature slice depends on it. Check routes the plan validated_parent to file_children.
+      - A plan that needs a change to a protected file of the target contract is a parent plan, even when it has one feature slice (item 20). The protected change is its own slice, filed as a child issue carrying Ready, and the feature slice depends on it. Check routes the plan validated_parent to file_children, and the protected child runs first through its own Foreman run.
       - File children from the cleared candidate only. Adoption verifies marker, repository, parent, body and links. Release only eligible children.
       - Validate checks what the slice schema shows, such as a criterion without its proof, a builds or uses field, or an uncited assumption. Whether a slice's prose dictates a code edit is the checker's finding, guided by the spec prompt.
     failure_and_resume:
@@ -425,7 +427,7 @@ stages:
       SC3: {given: The human answers a choice on candidate A then candidate B changes scope, expect: Validate and check B with settled rulings as context. Ask again only a choice they don't settle.}
       SC4: {given: A listed path that is a directory or symlink or cyclic parent dependencies, expect: Common validator rejects both and the final allowed rejection reports spec_cap.}
       SC5: {given: The model clears a validated plan with no human response, expect: Proceed without a manual approval step. A foreman stop comment under the human's identity ends the run cancelled before implementing or filing.}
-      SC6: {given: A one-slice plan that needs a change to the repository's check command, expect: "The plan becomes a parent with the check command change as its own slice. Check routes it validated_parent, file_children files that slice without Ready and the feature with a dependency on it, and nothing builds the check command change."}
+      SC6: {given: A one-slice plan that needs a change to the repository's check command, expect: "The plan becomes a parent with the check command change as its own slice. Check routes it validated_parent and file_children files that slice with Ready and the feature with a dependency on it. The check command change runs as its own run, checked by the base's unchanged check, and its merge admits the feature."}
       SC7: {given: A validated slice whose acceptance dictates the exact code expression to write, expect: The checker returns a finding that the slice names a code edit and the candidate goes back to draft.}
       FS1: {given: A child issue or link write times out, expect: Adopt the matching result once and complete missing links. Report publication_unreconciled if the write cannot be confirmed.}
     decisions: [D3, D7, D8, D9]
@@ -455,13 +457,13 @@ stages:
       verify: Verify supplies failed criteria and their evidence, conditional.
     outputs:
       schema: foreman.stage_output.ImplementOutput
-      fields: [implementation, human_question, no_change, equivalent_mutations]
+      fields: [implementation, no_change, human_question, equivalent_mutations]
       consumers: [verify, review, operator]
-      outcomes: {published: Confirmed PR at checked head, no_change: Typed builder answer with its reason, cancelled: The human cancelled, halted: No valid checked publication}
+      outcomes: {published: Confirmed PR at checked head, no_change: Typed builder evidence that the acceptance already holds, cancelled: The human cancelled, halted: No valid checked publication}
     steps:
       prepare: {actor: Foreman, action: "Read the issue for a stop, then prepare the attempt container and reconcile the worktree", result: "Trusted checkout, attempt parent and a container built from the contract image and setup, or a stop", owner: prepare, check: IM1}
       tests: {actor: Acceptance test writer, action: Write acceptance tests from the plan and the base tree, result: "Accepted tests that the check collects and that fail at the base, or the exact evidence against them", owner: tests, check: IM5}
-      edit: {actor: Builder, action: Edit and run the check with the accepted tests, result: "Checked candidate tree, exact command failure, the weakened checks as findings, a typed no_change answer with its reason, or the shared optional human_question for the acceptance gate", owner: edit, check: IM2}
+      edit: {actor: Builder, action: Edit and run the check with the accepted tests, result: "Checked candidate tree, exact command failure, the weakened checks as findings, typed no_change evidence that no change is justified, or the shared optional human_question for the acceptance gate", owner: edit, check: IM2}
       mutate: {actor: Foreman, action: Mutate a capped sample of changed lines, result: "Every sampled mutation fails a test, or the surviving mutations as findings", owner: mutate, check: IM6}
       commit: {actor: Foreman, action: Commit or adopt the checked tree, result: Exact commit with tested tree, owner: commit, check: IM4}
       publish: {actor: Foreman, action: Publish the checked commit, result: "Confirmed repository, PR, branch, base and head", owner: publish, check: PU2}
@@ -490,19 +492,19 @@ stages:
       - [publish, __end__, published]
     exits: {published: verify, no_change: __end__, cancelled: __end__, halted: __end__}
     gates:
-      - {answerer: Human, question: "Decide an unresolved acceptance choice, a plan fact the code contradicts, or a clean tree the builder did not explain, before further editing", accepted: explicit choice or cancel, saved: Answer bound to issue and current attempt, resume: edit, bullets: [Resolve acceptance choice, Choose or cancel, Resume editing]}
+      - {answerer: Human, question: "Decide an unresolved acceptance choice or a plan fact the code contradicts, before further editing", accepted: explicit choice or cancel, saved: Answer bound to issue and current attempt, resume: edit, bullets: [Resolve acceptance choice, Choose or cancel, Resume editing]}
     effects: [Foreman builds the attempt container and allocates and inspects the owned worktree., The acceptance test writer adds tests and fixtures., Builder edits source and runs checks., Foreman runs the mutation sample and checks the exact tree, commits and publishes through existing adapters.]
     invariants:
       - Preserve the tree on branch, ancestry or fingerprint mismatch. Reject scratch files and unexpected outside edits before commit. No force push.
       - The worker steps tests and edit, and the checks Foreman runs at edit and mutate, run in the attempt container built from the contract's image and setup commands (item 3). Prepare builds the container. Commit and publish run Git and GitHub App operations on the Foreman host, and App credentials never enter the container. The builder can start the app and its related services in the container, so it runs the same checks the verifier drives.
       - Before the first build of a candidate with a criterion proven by test or contract, prepare routes needs_tests, and a separate worker in the verifier role writes acceptance tests and fixtures from the plan and the base tree (item 9). It writes only test and fixture files. Foreman proves the contract's check passes at the base without the new tests, that the check collects them and that they fail. Tests that pass at the base or are not collected return to the writer with the exact evidence. A failing base check stops with base_check_failed. Foreman records the accepted tests' paths and content digest. A candidate with no criterion proven by test or contract, such as a refactor proven by drive or a revert slice, routes prepared straight to edit.
       - Run the contract's check command in edit against the final candidate. The check includes the accepted tests, and Foreman proves they pass. Capture the candidate tree before and after a successful command. Commit may publish only the unchanged checked tree. Receipt binds command, result and tree.
-      - The builder cannot weaken the checks (item 10). After the builder answers, edit compares the candidate tree with the recorded accepted tests' paths and digest and with the pinned base. A deleted or skipped test that exists at the base or among the accepted tests, an edited accepted test or a changed protected file returns to edit as checks_weakened with the exact files, before mutate runs. A revert slice may delete only the tests that merge_commit_sha added.
-      - After a passing check, Foreman flips a capped sample of changed lines with the contract's pinned mutation tool and reruns the accepted and changed tests (item 15). A mutation that no test notices returns to edit as a finding. The builder adds a test that notices it or names it in equivalent_mutations with the reason no test can notice it. Foreman leaves a named equivalent mutation out of the next sample, and review gets each one as context. A revert slice restores code from before merge_commit_sha, so mutate samples none of its lines.
+      - The builder cannot weaken the checks (item 10). After the builder answers, edit compares the candidate tree with the recorded accepted tests' paths and digest and with the pinned base. A deleted or skipped test that exists at the base or among the accepted tests, an edited accepted test or a changed protected file returns to edit as checks_weakened with the exact files, before mutate runs. A protected-file slice may change only the protected files it names. A revert slice may delete only the tests that merge_commit_sha added.
+      - After a passing check, Foreman flips a capped sample of changed lines with the contract's pinned mutation tool and reruns the accepted and changed tests (item 15). A mutation that no test notices returns to edit as a finding. The builder adds a test that notices it or names it in equivalent_mutations with the reason no test can notice it. Foreman leaves a named equivalent mutation out of the next sample, and review pass (b) rules on each claim. A rejected claim is a blocking pass (b) finding that gives the reason the mutation changes behavior. It needs no demonstration, because Foreman's mutation run already showed that no test notices it, and the repair's next sample includes it again. A revert slice restores code from before merge_commit_sha, so mutate samples none of its lines.
       - Rejected tests, failed checks, weakened checks, surviving mutations and failed Verify criteria each count once toward the failed-check cap.
       - If the code contradicts a fact in the plan, the builder does not build it and asks through implement's question gate, citing the plan fact and the code (item 11).
-      - no_change is a typed builder answer with its reason (item 12). A clean tree without that answer is an unmatched result. It opens implement's question gate and records a routing defect on the run.
-      - On a repair the run's PR is already open. A no_change answer there closes the PR with the builder's reason, and a cancellation closes it with the cancellation, so no open PR outlives its run.
+      - no_change is typed builder evidence (item 12): on a first attempt with no edits, the checks showing the acceptance already holds on the pinned base and their results. A clean tree without that evidence, no_change with edits, or no_change on a repair fails edit's own check of the answer. It is an invalid answer, so dispatch gives it the one repair turn (item 1), and a second invalid answer stops with invalid_output.
+      - On a repair the run's PR is already open. A cancellation there closes it with the cancellation, so no open PR outlives its run.
       - Plain code for the acceptance test proof and the mutation sample lives in src/foreman/proof.py, so implement.py stays a router within its line ceiling.
       - Use the owned PR branch for repairs. Only a confirmed GitHub conflict allows a base merge. Repairs resume the builder's saved session when the checkout fingerprint matches (D5).
       - Publication validates repository, issue marker, branch, base and exact head. A moved head loses prior check and review authority. Unrecognized work is preserved and never adopted.
@@ -521,11 +523,11 @@ stages:
       IM5: {given: "Acceptance tests that pass at the base, or that the check does not collect", expect: Return the exact evidence to the writer and start no builder call until the check collects them and they fail at the base.}
       IM6: {given: A passing change with a sampled mutated line that no test notices, expect: Return the surviving mutation to edit as a finding and commit only after every sampled mutation fails a test.}
       IM7: {given: "The builder deletes a test, adds a skip, edits an accepted test or changes the check command", expect: Edit returns the exact files as checks_weakened before mutate runs, and nothing is published until they are restored.}
-      IM8: {given: The builder leaves a clean tree without a no_change answer, expect: "Open implement's question gate as an unmatched result and record a routing defect. A typed no_change answer with a reason ends no_change."}
+      IM8: {given: "The builder leaves a clean tree without no_change evidence, or returns no_change on a repair", expect: "Dispatch sends the exact validation error back for one repair turn, and a second invalid answer stops with invalid_output. No question gate opens. Typed no_change evidence on a first attempt with a clean tree ends no_change."}
       IM9: {given: The plan states a field an engine route returns and the related checkout shows the route does not return it, expect: The builder asks through the question gate citing both and builds nothing.}
       IM10: {given: A smoke repository whose check needs a local server, expect: "The builder starts the server in the attempt container and runs the check itself, and Verify reports the criterion passed with a capture."}
       IM11: {given: A Ready revert issue whose slice reverts a merge commit that added acceptance tests, expect: "Prepare skips the acceptance tests, edit accepts the removal of exactly the tests that commit added, mutate samples nothing and the revert publishes."}
-      IM12: {given: "A surviving mutation that the builder names as equivalent with a reason, and a refactor slice proven by drive", expect: "The next sample leaves that mutation out and review gets the reason. The refactor routes prepared to edit without acceptance tests."}
+      IM12: {given: "A surviving mutation that the builder names as equivalent with a reason, and a refactor slice proven by drive", expect: "The next sample leaves that mutation out and review pass (b) rules on the claim. A rejected claim routes to implement and the next sample includes the mutation again. The refactor routes prepared to edit without acceptance tests."}
       PU1: {given: Timed-out push already placed the checked head on the remote, expect: Adopt without a second push.}
       PU2: {given: A PR open times out, expect: Adopt the verified matching PR once or report publication_unreconciled if observation cannot establish the outcome.}
     decisions: [D4, D5, D7, D8, D14]
@@ -534,7 +536,7 @@ stages:
   verify:
     title: Use the change as a user would
     purpose: Drive the published head with the target repository's own verify skill, post the evidence and route on the verdict.
-    scope: Exact published PR head in the exclusive target_checkout inside the attempt container, slice acceptance, the related services the contract starts and the verify skill at the contract's path at that head. The verifier runs the app and edits nothing.
+    scope: Exact published PR head in the exclusive target_checkout inside the attempt container, slice acceptance, the related services the contract starts and the verify skill at the contract's path at the pinned base. The verifier runs the app and edits nothing.
     entry: Implement confirms the published checked head.
     worker: verifier
     model_policy: nodes.verify
@@ -655,7 +657,7 @@ stages:
       - The reviewer reads the diff through the one granted diff command and may run the contract's check command (item 16). Foreman keeps no per-file read list and parses no proof of reading.
       - Prior diffs or rulings are context and cannot carry review authority across heads.
       - Prefer a qualified model from a different family from the builders. If none is available, use the next available qualified model in models.toml order, including the builder's family. Review has no separate availability wait.
-      - Severity is an enum with P0 then P1 then none. Only concrete correctness, security or scope defects qualify. P2 and lower remain comments.
+      - Severity is an enum with P0 then P1 then none. Only concrete correctness, security or scope defects, or a pass (c) patch that cites the code it duplicates or works around, qualify. P2 and lower remain comments.
       - The missing optional tool record alone cannot be classified as a defect. A reviewer cannot approve or merge.
       - Verify evidence is context. Review runs only on a head whose drivable criteria all passed.
       - A review question is bound to the head and finding and posts its reply marker like every other gate (item 18).
@@ -742,9 +744,9 @@ stages:
       - Merge needs a merge queue ruleset on the target repository's base branch (item 19, github.py:838). Doctor's quick check requires it, so only repositories with one can finish a run.
       - Foreman merges even when the reviewer is the builder's model family (merge B, D13). No step waits for a human approval or merge.
       - Expand queue authority through synthetic replays, live smoke, about three real issues and normal volume.
-      - merge_held is the default until the synthetic branch probe passes (item 19). The probe is part of doctor's full check, and admission requires a recorded green full check, so every admitted repository has passed it. FOREMAN_MERGE_HOLD still holds a proven repository. The exact-head arm argument protects only the request.
+      - merge_held is the default until the synthetic branch probe passes (item 19). The probe is part of doctor's full check, and admission runs the full check whenever the contract file's digest has no green record, so every admitted repository has passed it. FOREMAN_MERGE_HOLD still holds a proven repository. The exact-head arm argument protects only the request.
       - A queue acknowledgment stays pending. An authenticated relevant GitHub event wakes the checkpoint and Foreman re-reads GitHub.
-      - After a matching merge Foreman runs the contract's production check against merge_commit_sha within its time limit (D12, item 20). A commit that is not deployed yet keeps confirm waiting. Production credentials are never used and the check is read-only.
+      - After a matching merge Foreman runs the contract's production check against merge_commit_sha within its time limit (D12, item 20). A commit that is not deployed yet keeps confirm waiting. If it is still not deployed at the time limit, the run stops with production_unconfirmed and files no revert. Only a check that ran against the deployed commit and failed files a revert. Production credentials are never used and the check is read-only.
       - A failed production check files a revert issue carrying Ready, whose supplied slice reverts merge_commit_sha (rollback A). Revert then admits that issue through triage.admit, as release admits a dependent, so the revert runs through the normal path and Foreman merges it. A revert run is not a feature run. It has no test or contract criterion, so it skips implement.tests, mutate samples none of its lines, and edit lets it delete exactly the tests merge_commit_sha added. Foreman also files a regression issue with the failed check's evidence, records the escape on the run and releases no dependents. A revert run whose own production check fails stops with production_unconfirmed and files no further revert.
       - After confirmation, release admits each dependent that still carries Ready through triage.admit, which starts its run once all its prerequisites merged (item 19). Reuse intake deduplication and keep the Ready label until admitted. Release prints nothing for a person to start.
       - Foreman verifies the repository, PR, issue and owned branch from GitHub evidence and verifies Git ancestry against the saved owned revision. The human's ruling supplies evidence. Keep the head_unverified gate open until Foreman verifies both. Only verified heads can route to review or repair.
@@ -752,7 +754,7 @@ stages:
       halts: [merge_held, merge_not_armed, readiness_unavailable, merged_unreviewed, production_unconfirmed]
       retries: {}
       waits: {arm: Wait for GitHub checks or approval, observe: Wait for GitHub to report a merge result, confirm: Wait for the merge commit to deploy}
-      recovery: Pending checks or approvals pause arm. Pending queue pauses observe. A merge commit that is not deployed yet pauses confirm until the production check's time limit, after which the check counts as failed. Reconcile the saved PR and arm receipt before a repeated write. A fixable owned head, queue or CI failure routes to implement. A known already checked head routes to review. Preserve an unrecognized head and open the head_unverified gate. Report a mismatched merge revision without credit or dependency release. Before filing a revert or regression issue, read the target repository for the saved marker and adopt a matching issue.
+      recovery: Pending checks or approvals pause arm. Pending queue pauses observe. A merge commit that is not deployed yet pauses confirm until the production check's time limit, after which confirm stops with production_unconfirmed and files no revert. Reconcile the saved PR and arm receipt before a repeated write. A fixable owned head, queue or CI failure routes to implement. A known already checked head routes to review. Preserve an unrecognized head and open the head_unverified gate. Report a mismatched merge revision without credit or dependency release. Before filing a revert or regression issue, read the target repository for the saved marker and adopt a matching issue.
     implementation: {module: src/foreman/steps/merge.py, entry: compile_stage, max_lines: 320, allowed_imports: [github, readiness, state, contract], shared: [Forge], never_does: [direct merge, submit human approval, infer merged from queued, release dependents before confirmation]}
     checks: {ME1: tests/test_readiness.py, ME2: tests/test_merge_receipt.py, ME3: tests/test_runner.py, ME4: tests/test_merge_receipt.py, ME5: tests/test_merge_receipt.py, ME6: tests/test_merge_receipt.py, ME7: tests/test_merge_receipt.py, ME8: tests/test_readiness.py, DN1: tests/test_delivery.py}
     scenarios:
@@ -761,7 +763,7 @@ stages:
       ME3: {given: "Queue pending and rejection precede the confirmed merge of the last prerequisite for an issue that still carries Ready, with duplicate wakes", expect: "Wait, repair, then admit the dependent once through triage.admit without another Ready label event and without a printed start line."}
       ME4: {given: The human says an unexpected head belongs to the run but lineage has no verification, expect: Stay at head_unverified without adopting or repairing the revision.}
       ME5: {given: GitHub arms the PR before interruption or reports a merge of an unreviewed head, expect: Adopt the existing arm once and give no delivery credit or dependent release to the unreviewed head.}
-      ME6: {given: The production check reports the merge commit not deployed then passing, expect: Wait in confirm, then release dependents and end merged.}
+      ME6: {given: "The production check reports the merge commit not deployed then passing, or not deployed past its time limit", expect: "Wait in confirm, then release dependents and end merged. Past the time limit stop with production_unconfirmed and file no revert."}
       ME7: {given: The production check fails for the merge commit, or a revert run's own check fails, expect: "File one Ready revert issue for merge_commit_sha and one regression issue, record the escape and end reverted with no dependent release. A failing revert run stops with production_unconfirmed and files no further revert."}
       ME8: {given: A run is reviewed with the builder's family as reviewer in a proven repository, expect: Arm the reviewed head with no human approval step.}
       DN1: {given: "An answer, child issue plan, cancellation, queued PR, closed PR, confirmed merge and revert", expect: Distinct typed exits with no completion for a queued PR.}

@@ -706,8 +706,17 @@ class SpecOutput(StageOutput):
 
 class ImplementOutput(HumanQuestionOutput):
     implementation: Text
+    no_change: TrimmedText | None = Field(
+        description="Only on a first attempt with no edits and no human_question: the checks showing the acceptance already "
+                    "holds on the pinned base, and their results. Otherwise null.")
     human_question: TrimmedText | None = Field(
         description="Ask only when an unresolved acceptance choice blocks further editing. Otherwise null.")
+
+    @model_validator(mode="after")
+    def asks_or_reports_no_change(self) -> Self:
+        if self.human_question and self.no_change:
+            raise ValueError("no_change: return at most one of human_question and no_change")
+        return self
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:

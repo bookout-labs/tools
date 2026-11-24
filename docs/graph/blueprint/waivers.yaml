@@ -40,8 +40,8 @@ waivers:
     V2-bd4e3c00cdabb593: "items 9, 10, 14 and 15: [halts] verify_cap becomes failed_check_cap"
     # Item 10, the builder cannot weaken the checks.
     V2-5445dbe67dfe8ee0: "item 10: [implement] edge edit -> edit adds checks_weakened, before mutate"
-    # Items 12, 14 and 15, typed no_change, failed criteria and equivalent mutations for the builder.
-    V2-68f28fbd823b6e19: "items 12 and 15: [procedure/implement] output_fields add no_change and equivalent_mutations"
+    # Items 14 and 15, failed criteria and equivalent mutations for the builder.
+    V2-7da4ee149c3d358a: "item 15: [procedure/implement] output_fields add equivalent_mutations"
     V2-7a49e4a050d4e500: "item 14: [procedure/implement] inputs add verify"
     # Item 14, Verify's verdict routes.
     V2-ad3f469cd15dcfe7: "items 8 and 14: [verify] edge drive -> __end__ drops no_skill and adds cancelled"
@@ -89,9 +89,9 @@ waivers:
     V2-21e4c1d9bc1bac95: "item 8: [merge] edge arm -> report adds cancelled"
     V2-75bd7b82a935e5c3: "item 8: [delivery] edge verify -> __end__ adds cancelled"
     # The drawn v3 prompts. Each build that ships its item copies the prompt to src/foreman/stages/.
-    V2-d958b5e9e1612199: "items 4, 6, 7 and 20: [procedure/spec] prompt"
-    V2-5f3e566345ef84da: "items 4, 6, 7 and 20: [procedure/spec_check] prompt"
-    V2-0a7fa5e2cabee016: "items 3, 10, 11, 12 and 15: [procedure/implement] prompt"
+    V2-85b148b7892c3c44: "items 4, 6, 7 and 20: [procedure/spec] prompt"
+    V2-f5fa8e52103c076f: "items 4, 6, 7, 14 and 20: [procedure/spec_check] prompt"
+    V2-b8604ecd915ee6ee: "items 3, 10, 11, 12, 15 and 20: [procedure/implement] prompt"
     V2-f74f15cbe6ff424e: "items 3 and 13: [procedure/verify] prompt"
-    V2-57e8117c459c0b1c: "items 13, 16 and 17: [procedure/review] prompt"
+    V2-3f5f4b6e4bc99ccd: "items 13, 15, 16 and 17: [procedure/review] prompt"
     V2-20daa2aff18faf86: "item 4: [procedure/research] prompt"

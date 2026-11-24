@@ -21,25 +21,32 @@ docs/graph/blueprint/prompts/implement.md:
       Never edit, delete or skip the accepted tests or an existing test, and never
       change the check
 
-      command, CI workflows, the verify skill or the contract file. If the code contradicts
-      a fact the
+      command, CI workflows, the verify skill or the contract file, except the protected
+      files your slice
+
+      names. A revert slice may delete the tests its merge commit added. If the code
+      contradicts a fact the
 
       plan states, do not build it. Ask a question that cites the plan fact and the
-      code. If no change is
+      code. On a first
 
-      needed, return no_change with the reason. A clean tree without that answer is
-      not an answer. On a
+      attempt whose acceptance already holds on the pinned base, edit nothing and
+      set no_change to the
 
-      repair, address the evidenced findings, failed checks, failed criteria or surviving
-      mutations on
+      checks you ran and what they showed. With any edit, a repair or a human_question,
+      leave no_change
 
-      the existing PR. For a surviving mutation, add a test that notices it, or name
-      it as equivalent
+      null. A clean tree without that evidence is an invalid answer. On a repair,
+      address the evidenced
 
-      with the reason no test can notice it. Summarize the actual edits and checks.
-      Foreman verifies the
+      findings, failed checks, failed criteria or surviving mutations on the existing
+      PR. For a surviving
 
-      final tree, commits and publishes.'
+      mutation, add a test that notices it, or name it as equivalent with the reason
+      no test can notice
+
+      it. Summarize the actual edits and checks. Foreman verifies the final tree,
+      commits and publishes.'
   repository: bookout-labs/tools
   revision: target
   url: prompts/implement.md
@@ -124,8 +131,10 @@ docs/graph/blueprint/prompts/review.md:
       Give each finding a location, severity, impact and evidence. Reserve P0 and
       P1 for concrete
 
-      correctness, security or scope defects. A blocking finding from pass (a) or
-      (b) carries a
+      correctness, security or scope defects, and for a pass (c) patch that cites
+      the code it duplicates
+
+      or works around. A blocking finding from pass (a) or (b) carries a
 
       demonstration that fails at the head: a command, or a test file''s path and
       content that Foreman
@@ -140,10 +149,15 @@ docs/graph/blueprint/prompts/review.md:
       Report other
 
       observations as advisory. Honor settled rulings while their evidence applies.
-      Verify evidence and
+      Verify evidence is
 
-      the equivalent mutations the builder named are context. Return a question about
-      unresolved
+      context. In pass (b), rule on each mutation the builder named as equivalent.
+      If the mutation can
+
+      change behavior, report a blocking finding that names it and the input it changes.
+      Foreman''s
+
+      mutation run is its demonstration. Return a question about unresolved
 
       intent that changes the verdict for the coordinator or personal agent to relay.
       Foreman runs the
@@ -163,13 +177,13 @@ docs/graph/blueprint/prompts/spec.md:
       acceptance criteria,
 
       non-goals and how each criterion is proven, by test, drive or contract. A test
-      proof names behavior
+      or contract proof
 
-      the base lacks. Prove a criterion the base already meets, as in a refactor or
-      a perf change, by
+      names behavior the base lacks, so its acceptance test fails at the base. Prove
+      a criterion the base
 
-      drive or contract. Mark a drive criterion that cannot be driven, with the reason.
-      Never name a code
+      already meets, as in a refactor or a perf change, by drive. Mark a drive criterion
+      that cannot be driven, with the reason. Never name a code
 
       edit, an expression or a function to write. Give each slice its depends_on parents
       and an advisory
@@ -186,8 +200,8 @@ docs/graph/blueprint/prompts/spec.md:
       check command, CI workflows, the verify skill, accepted tests or the contract
       file puts that change
 
-      in its own slice, which the feature slice depends on. On revision, use the saved
-      candidate,
+      in its own slice, which runs first as its own issue and which the feature slice
+      depends on. On revision, use the saved candidate,
 
       findings and settled rulings. Return one typed draft or grounded questions about
       product,
@@ -210,8 +224,13 @@ docs/graph/blueprint/prompts/spec_check.md:
       including when a matching path exists in Foreman''s repository or a related
       repository. Open each
 
-      cited assumption and confirm the cited file says what the plan relies on. Check
-      that each slice
+      cited assumption and confirm the cited file says what the plan relies on. A
+      fact outside the target
+
+      checkout that the plan relies on without listing it as an assumption is a finding.
+      A criterion
+
+      marked not drivable without a sound reason is a finding. Check that each slice
 
       states observable behavior with non-goals and a proof for every criterion, and
       that its

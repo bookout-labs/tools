@@ -48,11 +48,15 @@ class StageRun:
     def consult(
         self, graph: DispatchGraph, name: GateStage, state: DeliveryState, scope: Callable[[PlanState], list[object]] | None,
         *, owned: str = "", answered: Callable[[DeliveryState, str], DeliveryUpdate] = lambda state, answer: {},
+        route: Callable[[DeliveryState, DispatchResult], tuple[DeliveryUpdate, str]] = lambda state, result: ({}, result.get("fingerprint", "")),
     ) -> tuple[DeliveryUpdate, str]:
         """Dispatch a worker until it returns no question. Each question waits at the stage's gate for the human.
 
         The scope binds the question to its subject, so only an answer to that question resumes the step.
-        Returns the applied update and the fingerprint of the edits the worker owns."""
+        Route reads a result without a question and returns the stage's stop or a question for the result that matches
+        no route, with the fingerprint of the edits the worker then owns. That question opens the same gate, and its
+        attempt records the routing defect for the scorers (rules.routing). A resumed step replays route, so route
+        returns its first answer again. Returns the applied update and the fingerprint of the edits the worker owns."""
         update: DeliveryUpdate = {}
         attempts: list[AttemptRecord] = []
         path: list[str] = []
@@ -65,10 +69,16 @@ class StageRun:
             path += applied.pop("path", [])
             update.update(applied)
             owned = result.get("fingerprint", owned)
+            routed: DeliveryUpdate = {}
+            if not update.get("halt") and not update.get("human_question"):
+                routed, owned = route({**current, **update}, result)
+                update.update(routed)
             question = update.get("human_question")
             if halt := update.get("halt"):
                 # The stage ends with the named halt.
                 return {**update, "stop": halt, "attempts": attempts, "path": path}, owned
+            if routed.get("human_question"):
+                attempts[-1:] = [{**attempt, "detail": f"routing_defect: {question}"} for attempt in attempts[-1:]]
             if not question:
                 return {**update, "attempts": attempts, "path": path}, owned
             plan = update.get("plan", state["plan"])
