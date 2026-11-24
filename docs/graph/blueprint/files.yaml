@@ -52,11 +52,11 @@ docs/graph/blueprint/prompts/review.md:
       files through the supplied read-only view. Honor settled rulings while their
       evidence applies.
 
-      Run only the listed read commands, each by itself and exactly as written. The
-      read-only view
+      Run only the listed read commands, each by itself and exactly as written. A
+      chained or piped
 
-      grants each listed command alone and denies any other command, including chained
-      or piped ones.
+      variant never counts as a listed read, and a review that hasn''t run the full
+      diff read is rejected.
 
       Give findings with a location, severity, impact and concrete evidence. Reserve
       P0 and P1 for
