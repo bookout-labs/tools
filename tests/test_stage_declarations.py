@@ -191,10 +191,12 @@ class StageDeclarationsTest(unittest.TestCase):
     def test_implement_acceptance_keeps_model_history(self):
         from foreman.delivery import stage_update
         from foreman.stage_output import ImplementOutput
+        from foreman.dry_run import DryRun
         from foreman.state import ChecksState, ReviewState, RunState
+        from foreman.workspace import WorkState
 
         state = {"plan": PlanState(), "review": ReviewState(), "run": RunState(repo="org/repo"),
-                 "checks": ChecksState(check="test", verify_failures=2), "path": []}
+                 "checks": ChecksState(check="test", verify_failures=2), "work": WorkState(), "path": []}
         for used, prior, model, expected in (
             ({}, None, "first", ["first"]),
             ({"implement": "first"}, None, "second", ["first", "second"]),
@@ -206,7 +208,8 @@ class StageDeclarationsTest(unittest.TestCase):
                 current = {**state, "models_used": used}
                 if prior is not None:
                     current["implement_models"] = prior
-                update = stage_update("implement", ImplementOutput(implementation="Done", no_change=None, human_question=None), current, model)
+                update = stage_update("implement", ImplementOutput(implementation="Done", no_change=None, human_question=None), current, model,
+                                      workspace=DryRun(clean=False))
                 self.assertEqual(update["implementation"], "Done")
                 self.assertNotIn("checks", update)
                 self.assertEqual(update.get("implement_models"), expected)
@@ -214,13 +217,16 @@ class StageDeclarationsTest(unittest.TestCase):
     def test_implement_acceptance_records_accepted_model_without_model_name(self):
         from foreman.config import ModelSpec
         from foreman.delivery import stage_update
+        from foreman.dry_run import DryRun
         from foreman.stage_output import ImplementOutput
-        from foreman.state import ChecksState
+        from foreman.state import ChecksState, ReviewState, RunState
+        from foreman.workspace import WorkState
 
         model = ModelSpec.parse("gpt-6.1-sol-high")
         output = ImplementOutput(implementation="Done", no_change=None, human_question=None)
-        update = stage_update("implement", output, {"checks": ChecksState(), "implement_models": ["first"]},
-                              accepted_model=model)
+        update = stage_update("implement", output, {"checks": ChecksState(), "review": ReviewState(), "run": RunState(repo="org/repo"),
+                                                    "work": WorkState(), "implement_models": ["first"]},
+                              workspace=DryRun(clean=False), accepted_model=model)
         self.assertEqual(update["implement_models"], ["first", model.name])
 
     def test_implement_output_reports_no_change_or_asks_not_both(self):

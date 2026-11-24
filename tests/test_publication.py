@@ -530,12 +530,15 @@ class PublicationTest(PublicationFixture):
                 self.reset_fixture()
                 edits, claims, repairs = iter((edit, self.edit)), iter((claim, None)), []
                 def build(model, state, instruction):
-                    repairs.append(state["dispatch_plan"].get("repair"))
+                    plan = state["dispatch_plan"]
+                    repairs.append((plan.get("repair"), plan.get("resume_session")))
                     return self.answer(next(edits), next(claims))
                 result = self.walk(model_edit=build)
                 self.assertEqual(result["stop"], "merged")
-                self.assertIsNone(repairs[0])
-                self.assertIn(error, repairs[1])
+                (first, opened), (repair, resumed) = repairs
+                self.assertEqual((first, opened), (None, None))
+                self.assertIn(error, repair)
+                self.assertEqual(resumed, "builder-session")
                 self.assertEqual([a["stage"] for a in result["attempts"]].count("implement"), 2)
                 self.assertEqual(result["plan"].human_qa, [])
 
