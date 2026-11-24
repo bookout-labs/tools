@@ -24,8 +24,8 @@ MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
 # A Ready label event starts an issue run, so Spec releases the children it files by adding it.
 READY_LABEL = "Ready"
 # The run labels, one at a time on an issue: the run's checkpoint decides, and a label never grants authority.
-DOING_LABEL, NEEDS_ANSWER_LABEL, DONE_LABEL = "Doing", "Needs answer", "Done"
-RUN_LABELS: dict[str, str] = {READY_LABEL: "0e8a16", DOING_LABEL: "1d76db", NEEDS_ANSWER_LABEL: "d93f0b", DONE_LABEL: "5319e7"}
+DOING_LABEL, NEEDS_ANSWER_LABEL, STOPPED_LABEL, DONE_LABEL = "Doing", "Needs answer", "Stopped", "Done"
+RUN_LABELS: dict[str, str] = {READY_LABEL: "0e8a16", DOING_LABEL: "1d76db", NEEDS_ANSWER_LABEL: "d93f0b", STOPPED_LABEL: "b60205", DONE_LABEL: "5319e7"}
 
 
 def run_label(name: str) -> str | None:

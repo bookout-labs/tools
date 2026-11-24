@@ -23,14 +23,15 @@ intake:
     ready: Show eligible work waiting to start.
     doing: Show the admitted run and its current stage.
     needs_answer: Show a saved question that requires the human's decision.
-    done: Show a typed terminal result.
+    stopped: Show an admitted run's halt with its name and evidence.
+    done: Show a typed terminal result that is not a halt, such as merged, closed or cancelled.
   policy: >-
     Verify the App webhook and that the App is installed on the issue's repository, then read the current issue, repository and labels from GitHub.
     Admit only real issues that carry the Ready label. Check admission on a verified Ready label event
     or after a matching prerequisite merge for a dependent that still carries Ready. Ignore duplicate and stale
     deliveries and Foreman's own label updates. Reuse the per-issue checkpoint and lock. Mirror checkpoint state
-    as one run label and one status comment with the typed result and its links. Labels do not grant authority to
-    merge or answer gates.
+    as one run label and one status comment with the typed result and its links. A halt before admission keeps the
+    Ready label. Labels do not grant authority to merge or answer gates.
   settings: >-
     Works for organization and personal repositories (D6). A Project board is an optional view. An organization board
     can collect labeled issues with GitHub's built-in auto-add workflow.

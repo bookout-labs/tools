@@ -21,7 +21,7 @@ from foreman.cli import main
 from foreman.state import SCHEMA_VERSION, DeliveryResult, checkpoint_serializer
 from foreman.credentials import CredentialFailure, credentials, git_auth
 from foreman.delivery import FIXTURE_HUMAN, LiveRun
-from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, ForgeError, LiveForge
+from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, STOPPED_LABEL, ForgeError, LiveForge
 from foreman.process_group import owned_group, signals_end_foreman
 from foreman.redaction import redact
 from foreman.readiness import MergeReceipt, MergeState
@@ -228,9 +228,10 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
                 verdict = SmokeVerdict(1, condition, "GitHub identity")
             else:
                 print(f"smoke identity {BOT_LOGIN} PR {receipt.pr} commit {receipt.source_head} COMMENT review {review['id']}", flush=True)
-                # The fixture's issue mirrors its saved run: only Doing while armed, or Done once merged, and one status comment.
+                # The fixture's issue mirrors its saved run: only Doing while armed, Stopped after a halt or Done once merged, and one status comment.
                 verdict = SmokeVerdict(1, "status.unavailable", "GitHub issue status")
-                shown = shows(forge, repo, issue, DONE_LABEL if result["stop"] == "merged" else DOING_LABEL)
+                label = STOPPED_LABEL if result.get("halt") else DONE_LABEL if result["stop"] == "merged" else DOING_LABEL
+                shown = shows(forge, repo, issue, label)
                 verdict = checkpoint_verdict if shown else SmokeVerdict(1, "status.issue", "GitHub issue status")
         print(f"smoke stop {result['stop']}; head {result['checks'].verified_head}; merge {result.get('merge')}", flush=True)
     except (AssertionError, KeyError, CredentialFailure, ForgeError, OSError, subprocess.SubprocessError, ValueError) as exc:
