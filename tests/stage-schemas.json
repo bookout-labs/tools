@@ -30,7 +30,7 @@
             "type": "null"
           }
         ],
-        "description": "When the acceptance already holds on the pinned base and no edit is justified, give the evidence. Otherwise null.",
+        "description": "Only on a first attempt with no edits and no human_question: the checks showing the acceptance already holds on the pinned base, and their results. Otherwise null.",
         "title": "No Change"
       }
     },

@@ -75,6 +75,10 @@ All names below are methods in `tests/test_publication.py`.
 | Extra commit after reconciliation, halt before commit | `test_reconciled_candidate_mutation_is_rejected_before_publication` |
 | Worker shows that no change is justified, stop without pushing | `test_no_change_with_evidence_on_a_first_attempt_stops_without_pushing` |
 | Worker result matches no route, open the implement gate | `test_a_builder_result_that_matches_no_route_opens_the_implement_gate` |
+| A second gate resumes, replay the first routing decision from its checkpoint | `test_a_second_gate_resumes_by_replaying_the_first_routing_decision` |
+| Git fails while routing, halt with the builder's edits owned, rerun asks the builder again | `test_a_git_failure_while_routing_resumes_by_asking_the_builder_again` |
+| Worker reports no change after a failed check, open the gate, answer resumes the repair | `test_no_change_after_a_failed_check_opens_the_gate_and_the_answer_resumes_the_repair` |
+| Checkout curated back to the attempt parent after a rejection, halt, rerun asks the builder again | `test_a_checkout_curated_to_the_attempt_parent_asks_the_builder_again` |
 | Repository check fails, repair in edit, publish the receipt's tree | `test_failed_repository_check_is_repaired_and_its_receipt_tree_is_published` |
 | Check failures or a tree-changing check reach the cap, publish nothing | `test_check_cap_and_tree_changing_checks_never_publish` |
 | Implement question pauses, posted answer resumes edit or cancel ends the run | `test_implement_question_waits_for_a_posted_answer_or_cancel` |

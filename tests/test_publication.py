@@ -510,6 +510,83 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(paused["stop"], "needs_human")
         self.assertIn("The builder reported no_change on a repair round; unresolved findings:", paused["halt_detail"])
         self.assertEqual(len(self.created), 1)
+        repair = [a for a in paused["attempts"] if a["stage"] == "implement"][-1]
+        self.assertRegex(repair.get("detail", ""), r"^routing_defect: The builder reported no_change on a repair round; unresolved findings: \S")
+
+    def test_no_change_after_a_failed_check_opens_the_gate_and_the_answer_resumes_the_repair(self):
+        def draft():
+            (self.checkout / "draft.txt").write_text("draft\n")
+        def revert():
+            (self.checkout / "draft.txt").unlink()
+        edits = iter((draft, revert, self.edit))
+        claims = iter((None, "The check already passes on the base.", None))
+        paused = self.walk(lambda: next(edits)(), no_change=lambda: next(claims))
+        self.assertEqual(paused["stop"], "needs_human")
+        self.assertIn("The builder reported no_change on a repair round.", paused["halt_detail"])
+        self.assertEqual(paused["checks"].verify_failures, 1)
+        self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
+        marker = re.search(r"foreman answer [0-9a-f-]{71}", paused["halt_detail"])
+        assert marker is not None
+        self.comments.append(f"{marker[0]}\nWrite items.txt.")
+        result = self.walk(lambda: next(edits)(), answer="Write items.txt.", no_change=lambda: next(claims))
+        self.assertEqual(result["stop"], "merged")
+        implements = [a for a in result["attempts"] if a["stage"] == "implement"]
+        self.assertEqual(len(implements), 3)
+        self.assertEqual(implements[1]["detail"], "routing_defect: The builder reported no_change on a repair round. Builder report: diff")
+
+    def test_a_second_gate_resumes_by_replaying_the_first_routing_decision(self):
+        edits = iter((lambda: None, self.edit, self.edit))
+        questions = iter((None, "Should archived items be listed?", None))
+        def reply(paused, answer):
+            marker = re.search(r"foreman answer [0-9a-f-]{71}", paused["halt_detail"])
+            assert marker is not None
+            self.comments.append(f"{marker[0]}\n{answer}")
+            return self.walk(lambda: next(edits)(), answer=answer, ask=lambda: next(questions))
+        first = self.walk(lambda: next(edits)(), ask=lambda: next(questions))
+        self.assertIn("edited nothing and gave no no_change evidence", first["halt_detail"])
+        second = reply(first, "Build the change.")
+        # The replayed first call routes from its checkpoint, not from the edits the second call made.
+        self.assertEqual(second["stop"], "needs_human")
+        self.assertIn("Should archived items be listed?", second["halt_detail"])
+        result = reply(second, "Active items only.")
+        self.assertEqual(result["stop"], "merged")
+        implements = [a for a in result["attempts"] if a["stage"] == "implement"]
+        self.assertEqual(len(implements), 3)
+        self.assertTrue(implements[0]["detail"].startswith("routing_defect: The builder edited nothing"))
+        self.assertEqual([qa["answer"] for qa in result["plan"].human_qa], ["Build the change.", "Active items only."])
+
+    def test_a_git_failure_while_routing_resumes_by_asking_the_builder_again(self):
+        original = LiveWorkspace.reconcile
+        failures = ["git fetch timed out"]
+        def flaky(workspace, *args):
+            if failures:
+                raise WorkspaceError(failures.pop())
+            return original(workspace, *args)
+        claims = iter(("The acceptance already holds.", None))
+        with patch.object(LiveWorkspace, "reconcile", flaky):
+            failed = self.walk(self.edit, no_change=lambda: next(claims))
+            self.assertEqual(failed["stop"], "git_failed")
+            self.assertIn("git fetch timed out", failed["halt_detail"])
+            self.assertFalse(failed["work"].built)
+            result = self.walk(self.edit, no_change=lambda: next(claims))
+        self.assertEqual(result["stop"], "merged")
+        self.assertEqual([a["stage"] for a in result["attempts"]].count("implement"), 2)
+
+    def test_a_checkout_curated_to_the_attempt_parent_asks_the_builder_again(self):
+        def edit():
+            self.edit()
+            self.worker_commit()
+            (self.checkout / "extra.txt").write_text("uncommitted\n")
+        rejected = self.walk(edit)
+        self.assertEqual(rejected["stop"], "implementation_rejected")
+        (self.checkout / "extra.txt").unlink()
+        self.git("reset", "--keep", "main")
+        emptied = self.walk(self.no_worker)
+        self.assertEqual(emptied["stop"], "implementation_rejected")
+        self.assertIn("none of the edits the builder returned", emptied["halt_detail"])
+        result = self.walk(self.edit)
+        self.assertEqual(result["stop"], "merged")
+        self.assertEqual([a["stage"] for a in result["attempts"]].count("implement"), 2)
 
     def test_worker_commit_is_detected_using_the_actual_head(self):
         def commit():
@@ -818,9 +895,8 @@ class PublicationTest(PublicationFixture):
             self.worker_commit()
         with patch.object(LiveWorkspace, "reconcile", mutate):
             result = self.walk(edit)
-        # Edit reconciles the builder's result inside the consult loop, so the ownership check sees the extra commit.
         self.assertEqual(result["stop"], "dirty_worktree")
-        self.assertIn("The worktree changed after the builder returned", result["halt_detail"])
+        self.assertIn("edits changed after reconciliation", result["halt_detail"])
         self.assertFalse(self.created)
 
     def test_stale_candidate_after_soft_reset_cannot_publish(self):

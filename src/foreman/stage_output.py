@@ -707,7 +707,8 @@ class SpecOutput(StageOutput):
 class ImplementOutput(HumanQuestionOutput):
     implementation: Text
     no_change: TrimmedText | None = Field(
-        description="When the acceptance already holds on the pinned base and no edit is justified, give the evidence. Otherwise null.")
+        description="Only on a first attempt with no edits and no human_question: the checks showing the acceptance already "
+                    "holds on the pinned base, and their results. Otherwise null.")
     human_question: TrimmedText | None = Field(
         description="Ask only when an unresolved acceptance choice blocks further editing. Otherwise null.")
 

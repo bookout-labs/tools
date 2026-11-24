@@ -143,8 +143,7 @@ def accept_spec_check(output: StageOutput, context: Acceptance) -> "DeliveryUpda
 def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     state, model = context.state, context.model
     assert isinstance(output, ImplementOutput)
-    update: DeliveryUpdate = {"implementation": output.implementation, "no_change": output.no_change or "",
-                              "human_question": output.human_question or ""}
+    update: DeliveryUpdate = {"implementation": output.implementation, "human_question": output.human_question or ""}
     if model:
         latest = state.get("models_used", {}).get("implement")
         history = state.get("implement_models", [latest] if latest else [])

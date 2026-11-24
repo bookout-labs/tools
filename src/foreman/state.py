@@ -105,8 +105,6 @@ class DeliveryFields(TypedDict, total=False):
     research: str
     work: WorkState
     implementation: str
-    # The builder's evidence that the acceptance already holds on the pinned base.
-    no_change: str
     merge: MergeState
     human_question: str
     human_answers: list[str]
