@@ -234,7 +234,7 @@ class Forge:
         if phase == 'issue': os.kill(os.getpid(), signal.SIGKILL)
         return item['number']
     def smoke_identity(self, *args): return True, True, True
-    def load_issue(self, repo, number): return {'labels': ['smoke', 'Doing']}
+    def load_issue(self, repo, number): return {'repo': repo, 'number': number, 'labels': ['smoke', 'Doing']}
     def issue_comment_records(self, repo, number):
         return [IssueComment.model_validate({'id': 1, 'user': {'login': BOT_LOGIN}, 'body': STATUS_MARKER})]
 forge = Forge()

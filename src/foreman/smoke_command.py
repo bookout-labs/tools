@@ -224,12 +224,14 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
             verdict = SmokeVerdict(1, "identity.unavailable", "GitHub identity")
             observed = forge.smoke_identity(repo, receipt.pr, result["checks"].verified_head or "", review["id"])
             condition = next((name for name, valid in zip(("identity.pr", "identity.commit", "identity.review"), observed) if not valid), "")
-            verdict = SmokeVerdict(1, condition, "GitHub identity") if condition else checkpoint_verdict
-            if not condition:
+            if condition:
+                verdict = SmokeVerdict(1, condition, "GitHub identity")
+            else:
                 print(f"smoke identity {BOT_LOGIN} PR {receipt.pr} commit {receipt.source_head} COMMENT review {review['id']}", flush=True)
                 # The fixture's issue mirrors its saved run: only Doing while armed, or Done once merged, and one status comment.
-                if not shows(forge, repo, issue, DONE_LABEL if result["stop"] == "merged" else DOING_LABEL):
-                    verdict = SmokeVerdict(1, "status.issue", "GitHub issue status")
+                verdict = SmokeVerdict(1, "status.unavailable", "GitHub issue status")
+                shown = shows(forge, repo, issue, DONE_LABEL if result["stop"] == "merged" else DOING_LABEL)
+                verdict = checkpoint_verdict if shown else SmokeVerdict(1, "status.issue", "GitHub issue status")
         print(f"smoke stop {result['stop']}; head {result['checks'].verified_head}; merge {result.get('merge')}", flush=True)
     except (AssertionError, KeyError, CredentialFailure, ForgeError, OSError, subprocess.SubprocessError, ValueError) as exc:
         detail = str(exc)

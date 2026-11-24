@@ -26,6 +26,11 @@ READY_LABEL = "Ready"
 # The run labels, one at a time on an issue: the run's checkpoint decides, and a label never grants authority.
 DOING_LABEL, NEEDS_ANSWER_LABEL, DONE_LABEL = "Doing", "Needs answer", "Done"
 RUN_LABELS: dict[str, str] = {READY_LABEL: "0e8a16", DOING_LABEL: "1d76db", NEEDS_ANSWER_LABEL: "d93f0b", DONE_LABEL: "5319e7"}
+
+
+def run_label(name: str) -> str | None:
+    """The run label a live label name is. GitHub matches label names case-insensitively and keeps an existing label's case."""
+    return next((label for label in RUN_LABELS if label.casefold() == name.casefold()), None)
 Model = TypeVar("Model", bound=BaseModel)
 
 

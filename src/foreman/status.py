@@ -7,7 +7,7 @@ Foreman has no dashboard, so the issue holds the run's state. The checkpoint dec
 from dataclasses import dataclass, field
 
 from foreman._raw import is_dict
-from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, READY_LABEL, RUN_LABELS, Forge
+from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, READY_LABEL, RUN_LABELS, Forge, run_label
 from foreman.outcomes import HALTS, PAUSES, Halt
 from foreman.readiness import MergeState
 from foreman.stage_output import HumanPrompt
@@ -77,23 +77,32 @@ def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | N
     return Status(DONE_LABEL, text, facts)
 
 
+def _run_labels(forge: Forge, repo: str, number: int) -> list[str] | None:
+    """The run labels the issue shows, as GitHub names them, or None when GitHub answers for another issue."""
+    issue = forge.load_issue(repo, number)
+    if (issue["repo"].lower(), issue["number"]) != (repo.lower(), number):
+        return None
+    return [name for name in issue["labels"] if run_label(name)]
+
+
 def shows(forge: Forge, repo: str, number: int, label: str) -> bool:
     """The issue carries only this run label and one Foreman status comment."""
-    labels = [name for name in forge.load_issue(repo, number)["labels"] if name in RUN_LABELS]
+    labels = _run_labels(forge, repo, number)
     owned = [comment for comment in forge.issue_comment_records(repo, number) if comment.user is not None
              and comment.user.login.casefold() == BOT_LOGIN.casefold() and (comment.body or "").endswith(STATUS_MARKER)]
-    return labels == [label] and len(owned) == 1
+    return labels is not None and [run_label(name) for name in labels] == [label] and len(owned) == 1
 
 
 def write_status(forge: Forge, repo: str, number: int, status: Status) -> None:
     """Converge the issue on the status, writing only what differs. Other labels stay."""
-    labels = forge.load_issue(repo, number)["labels"]
+    if (labels := _run_labels(forge, repo, number)) is None:
+        return  # Another issue never takes this run's status.
     if status.label is None:
-        if READY_LABEL not in labels:
+        if READY_LABEL not in map(run_label, labels):
             return  # A delivery that outlived its label leaves the issue alone.
     else:
-        add = [status.label] if status.label not in labels else []
-        remove = [label for label in RUN_LABELS if label in labels and label != status.label]
+        add = [] if status.label in map(run_label, labels) else [status.label]
+        remove = [name for name in labels if run_label(name) != status.label]
         if add:
             forge.ensure_label(repo, status.label, RUN_LABELS[status.label])
         if add or remove:

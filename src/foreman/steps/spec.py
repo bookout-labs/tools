@@ -9,7 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.config import family
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, human_comments, render_slice_body
+from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, human_comments, render_slice_body, run_label
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
@@ -171,7 +171,7 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             def release() -> None:
                 forge.ensure_label(repo, READY_LABEL, RUN_LABELS[READY_LABEL])
                 forge.edit_labels(repo, number, [READY_LABEL], [])
-            if not ensure(lambda: any(label in RUN_LABELS for label in forge.load_issue(repo, number)["labels"]), release):
+            if not ensure(lambda: any(map(run_label, forge.load_issue(repo, number)["labels"])), release):
                 return unreconciled(f"GitHub does not show #{number} released.")
     except ForgeError as exc:
         return unreconciled(f"GitHub could not confirm the children of #{parent} for {revision} ({exc}).")

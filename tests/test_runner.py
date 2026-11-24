@@ -32,7 +32,7 @@ from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
 from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
-from foreman.status import STATUS_MARKER
+from foreman.status import STATUS_MARKER, Status, running, shows, write_status
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, issue_thread, run_live_delivery, saved_workspace, snapshot_result
@@ -437,6 +437,7 @@ class FakeGitHub:
         self.label_calls.append((repo, number, add, remove))
         labels = self.issue_labels[number] if number in self.issue_labels else self.edited.setdefault(number, list(self.labels))
         labels[:] = [label for label in labels if label not in remove] + [label for label in add if label not in labels]
+        self._fail("edit_labels", after_write=True)
 
     def release_labels(self, run_issue=8):
         """Label writes on issues other than the run's own, whose labels the status mirror writes."""
@@ -447,7 +448,6 @@ class FakeGitHub:
         labels = self.issue_labels.get(number, self.edited.get(number))
         if labels is not None and any(label in RUN_LABELS for label in labels):
             labels[:] = [label for label in labels if label not in RUN_LABELS] + ["Ready"]
-        self._fail("edit_labels", after_write=True)
 
 
 class CliWorkerTest(unittest.TestCase):
@@ -2093,6 +2093,34 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.walk([])["stop"], "merged")
         self.assertTrue(self.github.status["Example/Engine", 8].startswith("The reviewed pull request merged."))
 
+    def test_a_status_write_that_fails_after_its_label_lands_converges_on_the_next_write(self):
+        self.github.fail_next("edit_labels", after_write=True)
+        with self.assertRaises(ForgeError):
+            write_status(self.github, "Example/Engine", 8, running("triage"))
+        self.assertEqual((self.run_labels(), self.github.status), (["Doing"], {}))
+        write_status(self.github, "Example/Engine", 8, running("triage"))
+        self.assertEqual(self.github.label_calls, [("Example/Engine", 8, ["Doing"], ["Ready"])])
+        self.assertTrue(self.github.status["Example/Engine", 8].startswith("Foreman is running triage."))
+
+    def test_an_issue_github_answers_for_under_another_identity_never_takes_the_status(self):
+        load = self.github.load_issue
+        for foreign in ({"repo": "Other/Engine"}, {"number": 9}):
+            with self.subTest(foreign=foreign), patch.object(self.github, "load_issue",
+                                                             side_effect=lambda repo, number: {**load(repo, number), **foreign}):
+                write_status(self.github, "Example/Engine", 8, running("triage"))
+                self.assertFalse(shows(self.github, "Example/Engine", 8, "Ready"))
+        self.assertEqual((self.github.label_calls, self.github.status), ([], {}))
+
+    def test_run_labels_match_whatever_case_github_keeps(self):
+        # GitHub keeps an existing label's case when Foreman adds it by its own name.
+        self.github.edited[8] = ["slice", "doing"]
+        write_status(self.github, "Example/Engine", 8, running("implement"))
+        self.assertEqual(self.github.label_calls, [])
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Doing"))
+        write_status(self.github, "Example/Engine", 8, Status("Done", "The reviewed pull request merged."))
+        self.assertEqual(self.github.label_calls, [("Example/Engine", 8, ["Done"], ["doing"])])
+        self.assertEqual(self.github.load_issue("Example/Engine", 8)["labels"], ["slice", "Done"])
+
     def test_a_halt_before_admission_comments_and_keeps_ready_for_the_rerun(self):
         with patch.object(self.github, "default_branch", side_effect=ForgeError("GitHub is unavailable.")):
             halted = self.walk([])
@@ -2125,10 +2153,11 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with patch.object(self.github, "edit_labels", side_effect=unavailable_for_102):
             halted = self.walk([{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}])
         self.assertEqual((halted["stop"], halted["halt_detail"]), ("publication_unreconciled", "GitHub does not show #102 released."))
-        self.github.issue_labels[101][:] = ["slice", "Doing"]  # The released child's own run started.
+        # The released child's own run started, under a label whose case GitHub kept.
+        self.github.issue_labels[101][:] = ["slice", "doing"]
         self.assertEqual(self.walk([])["stop"], "children_filed")
         self.assertEqual(self.github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
-        self.assertEqual(self.github.issue_labels[101], ["slice", "Doing"])
+        self.assertEqual(self.github.issue_labels[101], ["slice", "doing"])
 
     def test_injected_workers_reach_merge_after_a_real_check_in_the_repo(self):
         (self.cwd / "expected").touch()

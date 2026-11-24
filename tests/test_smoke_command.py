@@ -41,7 +41,7 @@ class SmokeCommandTest(unittest.TestCase):
                 forge.return_value.create_issue.return_value = 17
                 forge.return_value.default_branch.return_value = "trunk"
                 forge.return_value.smoke_identity.return_value = (True, True, True)
-                forge.return_value.load_issue.return_value = {"labels": ["smoke", "Doing"]}
+                forge.return_value.load_issue.return_value = {"repo": SMOKE_REPO, "number": 17, "labels": ["smoke", "Doing"]}
                 forge.return_value.issue_comment_records.return_value = [IssueComment.model_validate(
                     {"id": 1, "user": {"login": BOT_LOGIN}, "body": f"Foreman is running merge.\n\n{STATUS_MARKER}"})]
                 yield root, forge.return_value, process, runner, credentials, errors
@@ -77,9 +77,15 @@ class SmokeCommandTest(unittest.TestCase):
             # The armed fixture shows only Doing and one status comment.
             for labels, comments in ((["smoke", "Doing", "Done"], 1), (["smoke", "Ready"], 1), (["smoke", "Doing"], 2)):
                 with self.subTest(labels=labels, comments=comments):
-                    forge.load_issue.return_value = {"labels": labels}
+                    forge.load_issue.return_value = {"repo": SMOKE_REPO, "number": 17, "labels": labels}
                     forge.issue_comment_records.return_value = forge.issue_comment_records.return_value[:1] * comments
                     self.assertEqual(run_smoke(root, time.monotonic() + 30), 1)
+            # An issue status GitHub can't show fails the smoke instead of passing on the checkpoint's verdict.
+            forge.issue_comment_records.return_value = forge.issue_comment_records.return_value[:1]
+            forge.load_issue.side_effect = ForgeError("GitHub is unavailable.")
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(run_smoke(root, time.monotonic() + 30), 1)
+            self.assertIn("smoke exit 1 status.unavailable attempt GitHub issue status", output.getvalue())
 
     def test_cleanup_failure_stops_before_filing_and_reports_error(self):
         with self.provision() as (root, forge, process, runner, credentials, errors):
