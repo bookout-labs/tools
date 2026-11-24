@@ -7,8 +7,6 @@ bookout-labs/tools/docs/graph/blueprint/prompts/spec.md  —  Draft the plan
 bookout-labs/tools/docs/graph/blueprint/prompts/spec_check.md  —  Check and approve the plan
 bookout-labs/tools/docs/graph/blueprint/prompts/triage.md  —  Classify the issue
 bookout-labs/tools/docs/graph/blueprint/prompts/verify.md  —  Use the change as a user would
-bookout-labs/tools/docs/graph/gaps.toml  —  Exact edge differences. Each slice maps a source to [target, label] pairs.
-bookout-labs/tools/docs/graph/target.mmd
 bookout-labs/tools/evals/corpus/README.md  —  Known-answer corpus v1
 bookout-labs/tools/evals/eval.sh  —  Promptfoo's worker does not use the uv environment unless told which interpreter to start.
 bookout-labs/tools/evals/promptfooconfig.yaml  —  yaml-language-server: $schema=https://promptfoo.dev/config-schema.json

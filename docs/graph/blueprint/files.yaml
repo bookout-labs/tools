@@ -335,21 +335,6 @@ docs/graph/blueprint/prompts/verify.md:
   repository: bookout-labs/tools
   revision: target
   url: prompts/verify.md
-docs/graph/gaps.toml:
-  kind: config
-  description: Exact edge differences. Each slice maps a source to [target, label]
-    pairs.
-  summary: {}
-  repository: bookout-labs/tools
-  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
-  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/docs/graph/gaps.toml
-docs/graph/target.mmd:
-  kind: diagram
-  description: ''
-  summary: {}
-  repository: bookout-labs/tools
-  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
-  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/docs/graph/target.mmd
 evals/corpus/README.md:
   kind: document
   description: Known-answer corpus v1

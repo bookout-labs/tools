@@ -46,10 +46,12 @@ waivers:
     # Item 14, Verify's verdict routes.
     V2-ad3f469cd15dcfe7: "items 8 and 14: [verify] edge drive -> __end__ drops no_skill and adds cancelled"
     V2-4c2870647bf96a40: "item 14: [verify] edge post -> __end__ adds failed and unverified"
-    V2-7ae0337016465b27: "item 14: [verify] halts add criterion_unverified"
+    V2-5ba3232d0348a5bf: "items 3 and 14: [verify] halts add env_unavailable and criterion_unverified"
     V2-3890aa0dee79eefc: "item 14: [halts] criterion_unverified"
     V2-f3b9b64a1a2999c6: "item 14: [delivery] edge verify -> implement adds failed"
     V2-ebed68d43e05577d: "item 14: [delivery] edge verify -> review drops no_skill"
+    # Item 3, Workspace's attempt container for review.
+    V2-624e90c97fa14426: "item 3: [review] halts add env_unavailable"
     # Item 15, the mutation check.
     V2-b06d9aea35728a9a: "item 15: [implement] node mutate"
     V2-0e7e17ebbffa3e0a: "item 15: [implement] owner implement.py::mutate"

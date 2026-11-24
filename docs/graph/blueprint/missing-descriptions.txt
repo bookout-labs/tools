@@ -1,5 +1,4 @@
 bookout-labs/tools/.github/workflows/ci.yml
-bookout-labs/tools/docs/graph/target.mmd
 bookout-labs/tools/src/foreman/adapters/claude.py
 bookout-labs/tools/src/foreman/adapters/grok.py
 bookout-labs/tools/src/foreman/stages/implement_tests.md
