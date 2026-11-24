@@ -990,7 +990,8 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(len(released), 1)
         self.assertIn(HEAD, released[0])
         self.assertFalse(captures[8].parent.exists())
-        halted = self.walk([{"triage": "not-a-route"}], issue=9, workspace=Releasing(self.cwd))
+        # The invalid answer and its one repair turn both fail, so the run halts.
+        halted = self.walk([{"triage": "not-a-route"}] * 2, issue=9, workspace=Releasing(self.cwd))
         self.assertIsNotNone(halted.get("halt"))
         self.assertEqual(len(released), 1)
         self.assertTrue(captures[9].is_dir())
@@ -2125,9 +2126,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     self.assertIsNone(result["plan"].spec_candidate)
                     self.assertEqual(self.github.sub_issues("Example/Engine", 8), [])
                     self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
+                    # The invalid draft and its repair turn, which answers with the same mislabel, are both charged.
                     attempts = [a for a in result["attempts"] if a["stage"] == "spec"]
-                    self.assertEqual(len(attempts), 1)
-                    self.assertTrue(attempts[0]["usage"])
+                    self.assertEqual(len(attempts), 2)
+                    self.assertTrue(all(attempt["usage"] for attempt in attempts))
 
     def test_existing_seam_resolves_in_workspace_and_skips_a_dependency(self):
         self.github = FakeGitHub(["Ready"])
@@ -2453,11 +2455,12 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             with self.subTest(triage=triage), TemporaryDirectory(dir=self.cwd) as directory:
                 self.checkpoint = Path(directory) / "run.sqlite3"
                 self.calls.clear()
-                result = self.walk([triage, {"implementation": "built"}, APPROVE])
+                result = self.walk([triage, triage, {"implementation": "built"}, APPROVE])
                 self.assertEqual(result["path"], ["triage"])
                 self.assertEqual(result["stop"], "invalid_output")
                 self.assertTrue(result["halt_detail"].startswith("triage output from claude-opus-5-5-high: slice:"))
-                self.assertEqual(len(self.calls), 1)
+                # The repair turn repeats the missing slice, so the second invalid answer stops the run.
+                self.assertEqual(self.calls, ["claude", "claude"])
                 self.assertEqual(self.github.merge_calls, [])
                 self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 

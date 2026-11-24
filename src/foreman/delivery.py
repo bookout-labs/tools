@@ -14,7 +14,7 @@ from pydantic import TypeAdapter
 
 from foreman.config import Config, ModelSpec, load_config
 from foreman.dry_run import DryRun, ScriptHandler
-from foreman.dispatch import DispatchResult, DispatchRun, Handler, InvalidOutput
+from foreman.dispatch import DispatchResult, DispatchRun, Handler
 from foreman.github import Forge
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.stage_output import (
@@ -22,7 +22,7 @@ from foreman.stage_output import (
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
 from foreman.steps import StageRun, implement, merge, research, review, spec, triage, verify
-from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
+from foreman.state import BuilderSession, ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.outcomes import Halt, halted
 from foreman.usd import BudgetUsd, usd_text
 from foreman.worker import AttemptJournal
@@ -116,10 +116,26 @@ def compile_delivery(
                                 methods=methods, read_roots=read_roots, target=target,
                                 scope=scope.record() if scope else None).record()
 
-        return DispatchRun(dispatcher, run.workspace, run.journal, config.pstack.commit, name == "implement", prepare_plan, owned)
+        def validate(plan: DispatchPlanRecord, model: str, output: dict[str, object]) -> None:
+            try:
+                answer(name, {**state, "dispatch_plan": plan}, model, output)
+            except InvalidSlicePlan:
+                pass  # A rejected candidate is a plan revision that spec counts, not an invalid answer to repair.
+
+        return DispatchRun(dispatcher, run.workspace, run.journal, config.pstack.commit, name == "implement", prepare_plan, validate, owned)
+
+    def answer(name: DispatchStage, state: DeliveryState, model: str | None, output: dict[str, object],
+               attempt: AttemptRecord | None = None) -> DeliveryUpdate:
+        """The stage's update for an answer, after its schema and the stage's own checks of it."""
+        contract = STAGES[name].output
+        assert contract is not None
+        _, citation_context = STAGES[name].project(state, run.workspace)
+        parsed = parse_output(contract, output, context=citation_context)
+        return stage_update(name, parsed, state, model, workspace=run.workspace,
+                            accepted_model=ModelSpec.parse(model) if model else None, config=config, attempt=attempt)
 
     def apply(name: DispatchStage, state: DeliveryState, result: DispatchResult) -> DeliveryUpdate:
-        # The nested graph owns the paid attempts. The stage applies a result once.
+        # The nested graph owns the paid attempts and has already checked the answer. The stage applies a result once.
         attempts = result.get("attempts", [])
         stopped: DeliveryUpdate = {"path": [name], "attempts": attempts}
         if "halt" in result:
@@ -129,19 +145,16 @@ def compile_delivery(
         model = attempts[-1]["model"]
         state = {**state, "dispatch_plan": plan}
         try:
-            contract = STAGES[name].output
-            assert contract is not None
-            _, citation_context = STAGES[name].project(state, run.workspace)
-            output = parse_output(contract, result["output"], context=citation_context)
-            update = stage_update(name, output, state, model, workspace=run.workspace,
-                                  accepted_model=ModelSpec.parse(model) if model else None, config=config, attempt=attempts[-1])
+            update = answer(name, state, model, result["output"], attempts[-1])
         except InvalidSlicePlan as exc:
             revision = spec_digest([state["run"].target(), result["output"]])
             return {**stopped, **reject_candidate(state["plan"], revision, str(exc), config.max_review_rounds, exc.reason)}
-        except InvalidOutput as exc:
-            return {**stopped, **halted(Halt.invalid_output, f"{name} output from {model}: {exc}", name)}
         except WorkspaceError as exc:
             return {**stopped, **halted(Halt.git_failed, str(exc), name)}
+        if "session" in result:
+            # The builder keeps the conversation its latest accepted answer returned, bound to that checkout (D5).
+            session = BuilderSession(model=model or "", session=result["session"], fingerprint=result.get("fingerprint", ""))
+            update["builder_session"] = session if result["session"] else None
         return {"review": state["review"], **update, "dispatch_plan": plan,
                 "attempts": [*attempts[:-1], *update.get("attempts", attempts[-1:])]}
 

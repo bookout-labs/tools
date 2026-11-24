@@ -2,21 +2,14 @@
 # #299 is the redesign brief. Each subject names the brief item whose build closes it.
 waivers:
   299:
-    # Item 1, one repair turn for an invalid answer, and item 19, a resumable budget_exceeded, in shared dispatch.
-    V2-26f6d92ff2bb2f15: "item 1: [triage.route] edge reconcile -> reserve repair_turn"
-    V2-d3016639cd43acf6: "item 1: [research.answer] edge reconcile -> reserve repair_turn"
-    V2-dfd3b02a99442c7f: "item 1: [spec.draft] edge reconcile -> reserve repair_turn"
-    V2-a38a3f3111bb60ff: "item 1: [spec.check] edge reconcile -> reserve repair_turn"
-    V2-e2962dafd69ec3ce: "item 1: [implement.edit] edge reconcile -> reserve repair_turn"
-    V2-614766af213ab62f: "item 1: [verify.drive] edge reconcile -> reserve repair_turn"
-    V2-635f3428bdbc957d: "item 1: [review.inspect] edge reconcile -> reserve repair_turn"
-    V2-34c8b95b4809b856: "items 1 and 19: [triage.route] dispatch retries invalid_answer and budget_resume"
-    V2-d8e9346ebae87502: "items 1 and 19: [research.answer] dispatch retries invalid_answer and budget_resume"
-    V2-a833572cf283a02d: "items 1 and 19: [spec.draft] dispatch retries invalid_answer and budget_resume"
-    V2-7870b63c0390c502: "items 1 and 19: [spec.check] dispatch retries invalid_answer and budget_resume"
-    V2-6edca03f3a2aea0c: "items 1 and 19: [implement.edit] dispatch retries invalid_answer and budget_resume"
-    V2-3bec62f1983b86ba: "items 1 and 19: [verify.drive] dispatch retries invalid_answer and budget_resume"
-    V2-be9bd2e3509bb8da: "items 1 and 19: [review.inspect] dispatch retries invalid_answer and budget_resume"
+    # Item 19, a resumable budget_exceeded, in shared dispatch.
+    V2-9cb1b829f2ac67b8: "item 19: [triage.route] dispatch retries budget_resume"
+    V2-eec74d774c1f45b3: "item 19: [research.answer] dispatch retries budget_resume"
+    V2-8839a416ee7fe358: "item 19: [spec.draft] dispatch retries budget_resume"
+    V2-17f7eaf883d915b1: "item 19: [spec.check] dispatch retries budget_resume"
+    V2-2034aecc18c90aef: "item 19: [implement.edit] dispatch retries budget_resume"
+    V2-0c5574d2e23430a4: "item 19: [verify.drive] dispatch retries budget_resume"
+    V2-83631c2886d7f014: "item 19: [review.inspect] dispatch retries budget_resume"
     # Item 7, the plan's assumptions list.
     V2-5b3318c64d065300: "item 7: [procedure/spec] output_fields add assumptions"
     # Item 9, acceptance tests before the build.

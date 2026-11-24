@@ -16,7 +16,7 @@ from foreman.outcomes import Halt, halted, stopped
 from foreman.redaction import redact
 from foreman.stage_output import ReviewState
 from foreman.state import DeliveryState, DeliveryUpdate
-from foreman.steps import StageInput, StageRun, human_stop
+from foreman.steps import StageInput, StageRun, follow, human_stop
 from foreman.workspace import ImplementationRejected, WorkState, WorkspaceError
 
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.verify_cap,
@@ -114,7 +114,8 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                                        route=lambda current, result: route(current, result).result())
         update.update(consulted)
         if update.get("stop"):
-            return update
+            # A halt after the builder's call keeps the edits it returned owned, so a resumed prepare accepts only those.
+            return {**update, "work": work.model_copy(update={"owned": owned})}
         if run.dispatch("implement", state, "").fingerprint() != owned:
             return finish(stopped(Halt.dirty_worktree, "The worktree changed after the builder returned. It is preserved.", "implement"))
         work = work.model_copy(update={"built": True, "candidate": None, "owned": owned})
@@ -164,9 +165,10 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The next round edits on the attempt parent, so worker commits become edits.
         try:
             workspace.soft_reset(work.attempt_head)
-            work = work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint()})
+            moved, work = work.owned, work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint()})
         except WorkspaceError as exc:
             return finish(stopped(Halt.git_failed, str(exc), "check"))
+        return finish(follow({**state, **update}, moved, work.owned))
     return finish({})
 
 
@@ -200,9 +202,10 @@ def commit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             return stopped(Halt.dirty_worktree, "HEAD differs from the expected checked commit. It is preserved.", "commit")
         if not observed.clean or workspace.tree(observed.head) != checks.checked_tree:
             return stopped(Halt.dirty_worktree, "The commit differs from the checked tree. It is preserved.", "commit")
+        committed = follow(state, work.owned, run.dispatch("implement", state, "").fingerprint(observed))
     except WorkspaceError as exc:
         return stopped(Halt.git_failed, str(exc), "commit")
-    return {"work": work.model_copy(update={"head_sha": observed.head}),
+    return {**committed, "work": work.model_copy(update={"head_sha": observed.head}),
             "checks": checks.model_copy(update={"verified_head": observed.head}), "path": ["commit"]}
 
 

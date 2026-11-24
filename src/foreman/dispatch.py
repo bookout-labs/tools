@@ -28,7 +28,7 @@ from foreman.state import DeliveryState
 from foreman.stages import STAGES
 from foreman.usd import BudgetUsd, usd_text
 from foreman.worker import AttemptJournal, WorkerResult
-from foreman.workspace import WorkState, Workspace, WorkspaceError
+from foreman.workspace import WorkState, Workspace, WorkspaceError, WorktreeState
 
 
 class Handler(Protocol):
@@ -47,6 +47,13 @@ class DispatchInput(TypedDict):
     stage: str
 
 
+class Repair(TypedDict):
+    """The one repair turn (item 1). The session is empty once the repair call stopped on quota, so no call resumes it."""
+    model: str
+    session: str
+    error: str
+
+
 class DispatchResult(TypedDict, total=False):
     attempts: Annotated[list[AttemptRecord], operator.add]
     output: dict[str, object]
@@ -54,12 +61,14 @@ class DispatchResult(TypedDict, total=False):
     detail: str
     plan: DispatchPlanRecord
     fingerprint: str
+    session: str  # The native session of an accepted builder answer, which the builder keeps for the PR (D5).
 
 
 class DispatchState(DispatchInput, DispatchResult):
     index: NotRequired[int]
     reservation: NotRequired[Reservation | None]
     sessions: NotRequired[dict[str, str]]
+    repair: NotRequired[Repair]
 
 
 @dataclass(frozen=True)
@@ -70,16 +79,17 @@ class DispatchRun:
     commit: str
     edits: bool
     prepare: Callable[[], DispatchPlanRecord]
+    validate: Callable[[DispatchPlanRecord, str, dict[str, object]], None]  # The stage's schema and own checks of an answer.
     owned: str = ""
 
     @cached_property
     def plan(self) -> DispatchPlanRecord:
         return self.prepare()
 
-    def fingerprint(self) -> str:
+    def fingerprint(self, tree: WorktreeState | None = None) -> str:
         if not self.edits:
             return ""
-        tree = self.workspace.inspect()
+        tree = tree or self.workspace.inspect()
         return spec_digest([tree.branch, tree.head, self.workspace.fingerprint()])
 
     def moved(self, plan: DispatchPlanRecord) -> bool:
@@ -99,6 +109,22 @@ class DispatchRun:
         return replace(outcome, output={key: scrub(value) for key, value in outcome.output.items()},
                        detail=str(scrub(outcome.detail)))
 
+    @staticmethod
+    def repairing(state: DispatchState, model: ModelSpec) -> Repair | None:
+        """The repair turn this model's call is, if any."""
+        return repair if (repair := state.get("repair")) and repair["model"] == model.name and repair["session"] else None
+
+    def resume(self, state: DispatchState, reservation: Reservation, model: ModelSpec) -> DispatchPlanRecord:
+        """The session a call resumes: its repair turn's, a quota-interrupted call's on the same tree, or the builder's
+        conversation when the checkout matches the one it saved (D5). Every other call starts fresh."""
+        if repair := self.repairing(state, model):
+            return {**self.plan, "resume_session": repair["session"], "repair": repair["error"]}
+        if reservation["fingerprint"] == state.get("fingerprint") and (session := state.get("sessions", {}).get(model.name)):
+            return {**self.plan, "resume_session": session}
+        if self.edits and "repair" not in state and (saved := state["caller"].get("builder_session")) and (saved["model"], saved["fingerprint"]) == (model.name, reservation["fingerprint"]):
+            return {**self.plan, "resume_session": saved["session"]}
+        return {**self.plan}
+
     def launch(self, state: DispatchState, reservation: Reservation, model: ModelSpec) -> WorkerResult | dict[str, object]:
         """Run the reserved call once, or return the halt that prevents it."""
         stage, plan = state["stage"], state.get("plan")
@@ -106,9 +132,7 @@ class DispatchRun:
         try:
             if self.moved(plan):
                 return {"halt": Halt.git_failed, "detail": "The pull request or its diff changed during dispatch."}
-            worker_plan: DispatchPlanRecord = {**self.plan, "budget_usd": reservation["dollar_allowance"]}
-            if self.edits and reservation["fingerprint"] == state.get("fingerprint") and (session := state.get("sessions", {}).get(model.name)):
-                worker_plan["resume_session"] = session
+            worker_plan: DispatchPlanRecord = {**self.resume(state, reservation, model), "budget_usd": reservation["dollar_allowance"]}
             worker_state, _ = STAGES[stage].project({**state["caller"], "dispatch_plan": worker_plan}, self.workspace)
             if reservation["fingerprint"] != self.fingerprint():
                 return {"halt": Halt.dirty_worktree, "detail": "The worktree changed after reservation."}
@@ -163,11 +187,12 @@ def reserve(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, ob
         if index >= len(plan["models"]):
             return {"reservation": None} if plan["models"] else {"halt": Halt.model_dependency_missing, "detail": f"No model is configured for {stage}. Fix models.toml."}
         fingerprint = run.fingerprint()
-        if run.edits:
+        # A checkout this dispatch or the attempt already owns continues as it is, worker commits included.
+        if run.edits and fingerprint not in (saved := {state.get("fingerprint"), run.owned} - {None, ""}):
             worktree, expected = run.workspace.inspect(), caller.get("work", WorkState())
             if (worktree.branch, worktree.head) != (expected.branch, expected.attempt_head):
                 return {"halt": Halt.dirty_worktree, "detail": "Restore the saved branch and parent before continuing edits."}
-            if not worktree.clean and fingerprint not in (saved := {state.get("fingerprint"), run.owned} - {None, ""}):
+            if not worktree.clean:
                 detail = "The worktree edits differ from the saved attempt." if saved else "Unowned edits exist before this attempt."
                 return {"halt": Halt.dirty_worktree, "detail": detail}
     except ModelDependencyMissing as exc:
@@ -196,7 +221,8 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
         tried = "; ".join(a.get("detail") or "" for a in state.get("attempts", []) if a["outcome"] in {"quota", "cli_missing"})
         interrupt(QuotaPause(stage=stage, attempts=[*state["caller"].get("attempts", []), *state.get("attempts", [])], detail=f"No qualified worker available for {stage}. {tried}".strip()).model_dump())
         return {"index": 0}
-    model = ModelSpec.parse(reservation["model"])
+    model, plan = ModelSpec.parse(reservation["model"]), state.get("plan")
+    assert plan is not None
     evidence = run.journal.read(reservation["id"]) if run.journal is not None else True
     if evidence is True:
         evidence = run.launch(state, reservation, model)
@@ -204,7 +230,9 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
             return {**evidence, "reservation": None}
     outcome = evidence.outcome if isinstance(evidence, WorkerResult) else None
     record = run.charge(state, reservation, model, outcome)
-    update: dict[str, object] = {"attempts": [record], "reservation": None}
+    # A returned call keeps the fingerprint of what the worker left, so even a halt hands the caller its edits.
+    returned = {"fingerprint": evidence.fingerprint} if isinstance(evidence, WorkerResult) and evidence.fingerprint is not None else {}
+    update: dict[str, object] = {"attempts": [record], "reservation": None, **returned}
     if outcome and outcome.kind == "failed":  # Invalid output stays stopped, charged like any attempt.
         return {**update, "halt": Halt.invalid_output, "detail": f"{stage} output from {model.name}: {outcome.detail}"}
     attempts = state["caller"].get("attempts", []) + state.get("attempts", []) + [record]
@@ -223,28 +251,40 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
             return {**update, "halt": Halt.dirty_worktree, "detail": "The worktree differs from the saved result."}
         if outcome.kind in {"quota", "cli_missing"}:
             sessions = dict(state.get("sessions", {})) if evidence.fingerprint == reservation["fingerprint"] else {}
-            if run.edits and outcome.session_id:
+            if repair := run.repairing(state, model):
+                # A stopped repair call is never resumed: the next call starts fresh from the original instruction.
+                return {**update, "index": state.get("index", 0) + 1, "sessions": sessions, "repair": {**repair, "session": ""}}
+            if outcome.session_id:
                 sessions[model.name] = outcome.session_id
-            return {**update, "index": state.get("index", 0) + 1, "fingerprint": evidence.fingerprint, "sessions": sessions}
+            return {**update, "index": state.get("index", 0) + 1, "sessions": sessions}
+        run.validate(plan, model.name, outcome.output)
+    except InvalidOutput as exc:
+        if "repair" in state or not outcome.session_id:
+            return {**update, "halt": Halt.invalid_output, "detail": f"{stage} output from {model.name}: {exc}"}
+        sessions = {name: session for name, session in state.get("sessions", {}).items() if name != model.name}
+        return {**update, "sessions": sessions, "repair": Repair(model=model.name, session=outcome.session_id, error=str(exc))}
     except WorkspaceError as exc:
         return {**update, "halt": Halt.git_failed, "detail": str(exc)}
-    return {**update, "output": outcome.output, "fingerprint": evidence.fingerprint}
+    return {**update, "output": outcome.output, **({"session": outcome.session_id or ""} if run.edits else {})}
 
 
 def compile_dispatch() -> CompiledStateGraph[DispatchState, DispatchRun, DispatchInput, DispatchResult]:
     def after_reconcile(state: DispatchState) -> str:
-        return "halted" if "halt" in state else "accepted" if "output" in state else "eligible_fallback"
+        # Only the reconcile that grants the repair leaves a live repair session. Its call ends it.
+        repair = "repair_turn" if state.get("repair", {}).get("session") else "eligible_fallback"
+        return "halted" if "halt" in state else "accepted" if "output" in state else repair
 
     return (StateGraph(DispatchState, input_schema=DispatchInput, output_schema=DispatchResult, context_schema=DispatchRun)
             .add_node("reserve", reserve)
             .add_node("reconcile", reconcile)
             .add_edge(START, "reserve")
             .add_conditional_edges("reserve", lambda state: "halted" if "halt" in state else "admitted", {"admitted": "reconcile", "halted": END})
-            .add_conditional_edges("reconcile", after_reconcile, {"eligible_fallback": "reserve", "accepted": END, "halted": END})
+            .add_conditional_edges("reconcile", after_reconcile, {"eligible_fallback": "reserve", "repair_turn": "reserve", "accepted": END, "halted": END})
             .compile().with_config({"metadata": {"contract_id": "dispatch", "stage_declarations": DECLARATIONS}}))
 
 
 DECLARATIONS = {"halts": [Halt.budget_exceeded, Halt.invalid_output, Halt.git_failed, Halt.model_dependency_missing, Halt.dirty_worktree],
-                "retries": {"provider_fallback": "eligible configured model order and remaining allowance", "quota_resume": "explicit wake or known provider reset and remaining allowance"}}
+                "retries": {"provider_fallback": "eligible configured model order and remaining allowance", "quota_resume": "explicit wake or known provider reset and remaining allowance",
+                            "invalid_answer": "one repair turn in the same session with the exact validation error"}}
 # Calling steps hold this one compiled graph, so introspection finds it nested under each caller.
 DISPATCH = compile_dispatch()

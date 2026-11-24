@@ -13,6 +13,8 @@ from foreman.stage_output import parse_output
 from test_delivery import walk
 from skill_fixture import verify_checkout
 
+SESSION = "00000000-0000-4000-8000-000000000000"
+
 
 class RejectedStageOutputTest(unittest.TestCase):
     def test_every_dispatched_stage_names_the_returning_model_and_keeps_usage(self):
@@ -36,7 +38,9 @@ class RejectedStageOutputTest(unittest.TestCase):
                                 calls.append(model.name if model else None)
                                 if fallback and len(calls) == 1:
                                     return Outcome(fallback, usage=usage if fallback == "quota" else None)
-                                return Outcome(kind, {}, usage=usage, detail="" if kind == "ran" else diagnostic)
+                                # Neither is an answer: a CLI failure, even with a session, or a result with no session.
+                                return Outcome(kind, {}, usage=usage, session_id=None if kind == "ran" else SESSION,
+                                               detail="" if kind == "ran" else diagnostic)
                             return script(node, model, state, instruction)
 
                         if stage in {"research", "spec"}:
