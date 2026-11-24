@@ -10,6 +10,7 @@ list of files you expect it to touch. List every fact the plan relies on outside
 checkout as an assumption, citing a tracked file in a related repository checkout at its pinned
 commit. If you cannot cite it, ask a grounded question instead. A plan that needs a change to the
 check command, CI workflows, the verify skill, accepted tests or the contract file puts that change
-in its own slice, which runs first as its own issue and which the feature slice depends on. On revision, use the saved candidate,
+in its own slice, filed as its own issue that the feature slice depends on. File a CI workflow slice
+without Ready. Every other protected slice carries Ready and runs first. On revision, use the saved candidate,
 findings and settled rulings. Return one typed draft or grounded questions about product,
 repository, architecture or policy for the coordinator or personal agent to relay.

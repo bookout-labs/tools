@@ -89,7 +89,7 @@ waivers:
     V2-21e4c1d9bc1bac95: "item 8: [merge] edge arm -> report adds cancelled"
     V2-75bd7b82a935e5c3: "item 8: [delivery] edge verify -> __end__ adds cancelled"
     # The drawn v3 prompts. Each build that ships its item copies the prompt to src/foreman/stages/.
-    V2-85b148b7892c3c44: "items 4, 6, 7 and 20: [procedure/spec] prompt"
+    V2-acafe1145e4ee251: "items 4, 6, 7 and 20: [procedure/spec] prompt"
     V2-f5fa8e52103c076f: "items 4, 6, 7, 14 and 20: [procedure/spec_check] prompt"
     V2-b8604ecd915ee6ee: "items 3, 10, 11, 12, 15 and 20: [procedure/implement] prompt"
     V2-f74f15cbe6ff424e: "items 3 and 13: [procedure/verify] prompt"
