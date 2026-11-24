@@ -17,6 +17,7 @@ from foreman.runner import IssueLocked, issue_lock, saved_workspace
 from foreman.stage_output import spec_digest
 from foreman.state import checkpoint_serializer
 from foreman.usd import BudgetUsd
+from foreman.workspace import lock_file
 from skill_fixture import checker_reply, fixture_skills
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace
 
@@ -122,6 +123,18 @@ class StartTest(unittest.TestCase):
             unlock.start()
             self.assertEqual(self.start()[:2], (0, f"already started {THREAD}\n"))
             unlock.join()
+
+    def test_start_runs_once_a_blocked_admission_deletes_its_checkpoint_and_unlocks(self):
+        with lock_file(THREAD).open("a") as other:
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # The holder leaves no checkpoint, as a blocked admission does, so the waiting start runs the issue.
+            unlock = threading.Timer(0.3, lambda: fcntl.flock(other, fcntl.LOCK_UN))
+            unlock.start()
+            code, out, err = self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            unlock.join()
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("done merged", out)
+        self.assertEqual(saved_workspace(self.root / "runs.sqlite3", THREAD), str(self.root.resolve()))
 
     def test_the_holder_reenters_its_own_lock(self):
         with issue_lock(THREAD), issue_lock(THREAD):

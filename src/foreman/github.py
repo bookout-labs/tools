@@ -141,7 +141,7 @@ class ClosingPullRequest(BaseModel, strict=True):
 
 
 class IssueClosure(BaseModel, strict=True):
-    closed: bool
+    stateReason: Literal["", "COMPLETED", "NOT_PLANNED", "DUPLICATE", "REOPENED"]
     closedByPullRequestsReferences: list[ClosingPullRequest]
 
 
@@ -238,7 +238,7 @@ class IssueBlocker(BaseModel, strict=True):
     state: Literal["open", "closed"]
 
     def in_repo(self, repo: str) -> bool:
-        return self.repository_url.lower() == f"https://api.github.com/repos/{repo.lower()}"
+        return self.repo.lower() == repo.lower()
 
     @property
     def repo(self) -> str:
@@ -386,15 +386,16 @@ def unmet_prerequisites(forge: "Forge", repo: str, blockers: list[IssueBlocker],
     """Why triage cannot admit an issue yet, or "" once it can.
 
     A blocker counts once its closing pull request merged, even before GitHub closes its issue."""
+    merged = {(blocker.repo.lower(), blocker.number) for blocker in blockers if forge.is_merged(blocker.repo, blocker.number)}
     if open_urls := [blocker.html_url for blocker in blockers
-                     if blocker.state == "open" and not forge.is_merged(blocker.repo, blocker.number)]:
+                     if blocker.state == "open" and (blocker.repo.lower(), blocker.number) not in merged]:
         return "Open blockers: " + ", ".join(open_urls)
     if item is None:
         return ""
     local, planned = {blocker.number for blocker in blockers if blocker.in_repo(repo)}, item.blocker_numbers
     if len(planned) != len(item.depends_on) or not set(planned) <= local:
         return "Planned blocker links are missing."
-    unmerged = [number for number in planned if not forge.is_merged(repo, number)]
+    unmerged = [number for number in planned if (repo.lower(), number) not in merged]
     return "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged) if unmerged else ""
 
 
@@ -697,8 +698,11 @@ class LiveForge:
     def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool:
         issue = self._read(
             repo, IssueClosure, ["gh", "issue", "view", str(number), "--repo", repo, "--json",
-                           "closed,closedByPullRequestsReferences"],
+                           "stateReason,closedByPullRequestsReferences"],
         )
+        # A reopened issue is unfinished whatever its earlier pull request merged.
+        if issue.stateReason == "REOPENED":
+            return False
         # GitHub closes the issue after its pull request merges, so the merged pull request decides.
         for pr in issue.closedByPullRequestsReferences:
             closing_repo = f"{pr.repository.owner.login}/{pr.repository.name}"
