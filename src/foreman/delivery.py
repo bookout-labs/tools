@@ -242,6 +242,7 @@ def run_delivery(
         state["matt_skills_pin"] = config.matt_skills.model_dump()
     try:
         saver = InMemorySaver(serde=checkpoint_serializer())
+        dispatcher = dry.builder(dispatcher)
         graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills, human_login=FIXTURE_HUMAN),
                                  scratch=scratch, checkpointer=saver)
     except SkillMissing as exc:
