@@ -85,10 +85,21 @@ class ClaudeCheckTest(unittest.TestCase):
         # Earlier capture, transcript blocks only: a denied chained diff never reads it, standalone exact grants do.
         capture = json.loads((FIXTURES / "claude/review-denial.json").read_text())
         required = ReviewScope(capture["scope"], frozenset()).required
-        for captured, kind in zip(capture["calls"], ("failed", "ran")):
+        first, retry = capture["calls"]
+        for captured, kind in ((first, "failed"), (retry, "ran")):
             stdout = "".join(json.dumps({"type": "assistant" if block["type"] == "tool_use" else "user", "parent_tool_use_id": None,
                                          "message": {"content": [block]}}) + "\n" for block in captured["blocks"])
             self.assertEqual(review(stdout + json.dumps(captured["envelope"]), required).kind, kind)
+        self.assertLess(sum(c["envelope"]["total_cost_usd"] for c in capture["calls"]), 1)
+        denied_id = first["envelope"]["permission_denials"][0]["tool_use_id"]
+        self.assertTrue(any(b.get("tool_use_id") == denied_id and b.get("is_error") for b in first["blocks"]))
+        # Claude's native matcher runs each exact standalone grant: every tree and blob read returned its content.
+        calls = {b["id"]: b["input"]["command"] for b in retry["blocks"] if b.get("name") == "Bash"}
+        successful = {calls[b["tool_use_id"]]: b["content"] for b in retry["blocks"]
+                      if b.get("tool_use_id") in calls and not b.get("is_error")}
+        self.assertEqual(set(successful), {line for line in capture["scope"].splitlines() if line.startswith("git ")})
+        for content in ("base deletion\n", "unchanged dependency\n", "verified head\n", "previous only\n", "odd path\n"):
+            self.assertIn(content.strip(), successful.values())
 
     def test_review_stream_edges(self):
         envelope = json.loads(fixture_process(['claude'], 'success', 0).stdout)
@@ -97,8 +108,13 @@ class ClaudeCheckTest(unittest.TestCase):
                 self.assertEqual(review(claude_review_stream({**envelope, "permission_denials": denials}, (DIFF,))).kind, "ran")
         listed = claude_review_stream(envelope, (DIFF,)).replace('"content": "output"', '"content": [{"type": "text", "text": "diff"}]')
         nested = claude_review_stream(envelope, (DIFF,)).replace('"parent_tool_use_id": null', '"parent_tool_use_id": "toolu_parent"')
+        background = claude_review_stream(envelope, (DIFF,)).replace('"input": {', '"input": {"run_in_background": true, ', 1)
+        # A JSON string may hold U+2028 raw; only "\n" ends an NDJSON line.
+        separator = claude_review_stream(envelope, (DIFF,)).replace('"content": "output"', '"content": "a\u2028b\u0085c"')
         for name, stdout, kind in (
             ("list content", listed, "ran"),
+            ("line separator in output", separator, "ran"),
+            ("backgrounded read", background, "failed"),
             ("errored read", claude_review_stream(envelope, (), (DIFF,)), "failed"),
             ("subagent read", nested, "failed"),
             ("other reads only", claude_review_stream(envelope, (CHECK,)), "failed"),
@@ -108,11 +124,28 @@ class ClaudeCheckTest(unittest.TestCase):
                 outcome = review(stdout)
                 self.assertEqual(outcome.kind, kind, outcome.detail)
                 self.assertIsNotNone(outcome.usage)
+        # A stop the envelope reports wins over a missing read, and keeps its usage.
         for name, kind in (("quota", "quota"), ("max_budget", "budget_exhausted"), ("wrong_model", "failed")):
             with self.subTest(name=name):
-                stopped = json.loads(fixture_process(['claude'], name, 0).stdout)
-                self.assertEqual(review(claude_review_stream(stopped, (DIFF,))).kind, kind)
+                outcome = review(claude_review_stream(json.loads(fixture_process(['claude'], name, 0).stdout)))
+                self.assertEqual(outcome.kind, kind)
+                self.assertIsNotNone(outcome.usage)
+                if name == "wrong_model":
+                    self.assertIn("modelUsage reported", outcome.detail)
         self.assertEqual(review("", stderr="Claude did not start").detail, "Claude did not start")
+        # A stream cut before its result envelope reports its last line, not the whole stream.
+        cut = claude_review_stream(envelope, (DIFF,)).rstrip("\n").rpartition("\n")[0]
+        self.assertEqual(review(cut).detail, cut.rpartition("\n")[2])
+
+    def test_review_without_a_required_read_never_launches(self):
+        for scope in (None, {"command": "", "inline": []}, {"command": "# base only\n# head only", "inline": []}):
+            with self.subTest(scope=scope):
+                launched = []
+                plan = {"models": [], "instruction": "", "methods": [], "target": None, "scope": scope}
+                outcome = CliWorker(Path("."), run=lambda *args: launched.append(args))(
+                    "review", MODEL, {"dispatch_plan": plan}, "Review.")
+                self.assertEqual((outcome.kind, outcome.detail), ("failed", "Review scope names no full PR diff read"))
+                self.assertEqual(launched, [])
 
     def test_non_review_denial_halts(self):
         script = ScriptHandler()

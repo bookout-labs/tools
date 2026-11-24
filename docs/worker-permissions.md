@@ -46,7 +46,8 @@ Other read-only stages have no allow rules.
 A review counts only once its full PR diff read, `ReviewScope.required`, has completed (#288).
 The read-only view denies every other command, so a denial shows the boundary held; it doesn't void the review.
 Claude review calls stream their events (`--output-format stream-json --verbose`), and the reader joins each
-top-level Bash tool use to its result by id: the exact diff command must have a result that isn't an error.
+top-level foreground Bash tool use to its result by id: the exact diff command must have a result that isn't an error.
+A backgrounded command returns before it finishes, so it never counts.
 Codex clears the required read only on a completed exit 0. A scope with no required read fails before launch.
 This proves the read ran. It doesn't prove the output was untruncated, or complete when split into several reads.
 Claude Code 2.1.329 lets the diff run piped through `head` under its exact grant with no denial, so such a read never counts.

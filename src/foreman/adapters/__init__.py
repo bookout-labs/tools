@@ -151,7 +151,7 @@ class NativeAdapter:
         try:
             envelope = self.envelope.model_validate_json(text)
         except ValidationError as exc:
-            detail = process.stderr.strip() or process.stdout.strip() or exc.errors(include_input=False)[0]["msg"]
+            detail = process.stderr.strip() or text.strip() or exc.errors(include_input=False)[0]["msg"]
             return Outcome("failed", detail=detail)
         outcome = envelope.outcome(process, self.model.model_id, call)
         if outcome.usage is None:

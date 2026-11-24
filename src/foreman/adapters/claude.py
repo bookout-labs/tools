@@ -98,21 +98,24 @@ class ClaudeEnvelope(NativeEnvelope):
 
 
 def completed_reads(stream: str) -> set[str]:
-    """Top-level Bash commands whose tool result came back without an error, joined by tool-use id.
+    """Top-level foreground Bash commands whose tool result came back without an error, joined by tool-use id.
 
-    This proves a read ran, even across compaction. It doesn't prove the output was untruncated, or complete when the
-    reviewer split it into several reads.
+    A backgrounded command returns before it finishes, so it never counts. This proves a read ran, even across
+    compaction. It doesn't prove the output was untruncated, or complete when the reviewer split it into several reads.
     """
     commands: dict[str, str] = {}
     completed: set[str] = set()
-    for line in stream.splitlines():
+    # NDJSON lines end only at "\n"; str.splitlines would also split inside a JSON string at U+2028 and its kin.
+    for line in stream.split("\n"):
         event = EVENT.validate_json(line) if line.strip() else {}
         message = event.get("message")
         if event.get("parent_tool_use_id") is not None or not is_dict(message) or not is_list(blocks := message.get("content")):
             continue
         for block in filter(is_dict, blocks):
             match event.get("type"), block:
-                case "assistant", {"type": "tool_use", "name": "Bash", "id": str(use), "input": {"command": str(command)}}:
+                case "assistant", {"type": "tool_use", "name": "Bash", "id": str(use), "input": call} if (
+                    is_dict(call) and isinstance(command := call.get("command"), str) and call.get("run_in_background") is not True
+                ):
                     commands[use] = command.strip()
                 case "user", {"type": "tool_result", "tool_use_id": str(use)} if use in commands and block.get("is_error") is not True:
                     completed.add(commands[use])

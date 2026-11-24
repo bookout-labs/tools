@@ -23,7 +23,8 @@ from foreman.review_round import history
 from foreman.smoke import smoke_verdict
 from foreman.github import LiveForge
 from foreman.config import ModelSpec
-from foreman.adapters import Outcome
+from foreman.adapters import Call, Outcome
+from foreman.adapters.codex import CodexAdapter
 from foreman.dry_run import CLEAR, SCRIPTED_USAGE
 from skill_fixture import skill_fixture
 from test_adapters import claude_review_stream, codex_events, codex_process, fixture_process, worker_process
@@ -491,6 +492,17 @@ class ReviewRoundsTest(unittest.TestCase):
         for status in ("failed", "declined", "missing"):
             with self.subTest(status=status):
                 self.check_codex_review_reads(SEARCH, read_status=status, failing=" diff ", halt_detail="required read")
+
+    def test_codex_required_read_needs_an_integer_exit_zero(self):
+        diff = "git --no-replace-objects diff --no-color a...b --"
+        for code, kind in ((0, "ran"), (False, "failed"), (None, "failed"), ("0", "failed")):
+            with self.subTest(code=code):
+                events = codex_events()
+                events[-2]["item"]["text"] = json.dumps(APPROVE)
+                events[-2:-2] = [{"type": "item.completed", "item": {"type": "command_execution", "command": diff,
+                                                                     "exit_code": code, "status": "completed"}}]
+                call = Call("", "{}", False, Path("."), review=True, required=(diff,))
+                self.assertEqual(CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high")).read(codex_process(events), call).kind, kind)
 
     def check_codex_review_reads(self, search_template, *, search_exit=1, read_status=None, failing="", halt_detail=None):
         with review_trees() as trees:

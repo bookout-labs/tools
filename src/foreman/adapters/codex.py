@@ -141,7 +141,8 @@ class CodexTurn:
     def record_command(self, result: Mapping[object, object]) -> None:
         # Only a completed read clears a required one. Other commands' failures don't void a review.
         raw = result.get("command")
-        if isinstance(raw, str) and result.get("status") == "completed" and result.get("exit_code") == 0:
+        code = result.get("exit_code")
+        if isinstance(raw, str) and result.get("status") == "completed" and type(code) is int and code == 0:
             self.unread.discard(_shell_command(raw))
 
 
