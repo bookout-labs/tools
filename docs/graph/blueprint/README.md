@@ -28,4 +28,4 @@ Run the same check directly.
 uv run --python 3.12 python docs/graph/blueprint/project_actual.py --check
 ```
 
-Each entry in [`waivers.yaml`](waivers.yaml) names a migration issue and identifies one difference by its scope, expected value, and observed value. After implementing a slice, run the check and delete its stale entries and any empty issue group. Any new or changed difference fails the check. Use the migration issue and the printed diff to investigate before proposing a target change.
+Each entry in [`waivers.yaml`](waivers.yaml) names a migration issue and identifies one difference by its scope, expected value, and observed value. After implementing a slice, run the check and delete its stale entries and any empty issue group. Re-key an entry whose difference only narrowed or whose runtime prompt hash changed, keeping its subject narrowed to the items still open (see [verification](verification.md)). Any new or changed difference fails the check. Use the migration issue and the printed diff to investigate before proposing a target change.

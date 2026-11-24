@@ -4,7 +4,7 @@
 
 On each proposed PR head and merge-group candidate, load the target with duplicate-key and schema checks, compile Foreman with inert adapters, and compare the outer graph and each discovered subgraph. Fail on each difference without an exact waiver, any waiver whose difference disappeared, missing references, unclassified production owners, or stale generated views. Check owner paths, signatures, line budgets, typed schemas, registered halt and retry declarations, and loaded skill and prompt selectors. Enforce the route coverage contract in `target.yaml:rules.routing` against the runtime enums and registered routes. Compare deployed prompts byte for byte to their complete target files. Inventory the actual model order and resolve the expected order from the existing model policy at the admitted release. Judge permissible imports and effects through targeted boundary and runtime checks. A topology match alone cannot certify arbitrary Python or dynamic destinations. [Warp definition checks](https://docs.warp.dev/factories/factory-as-code/)
 
-The projection check and its baseline waivers are a separate migration step. Each waiver must bind one exact difference to a closing issue. A new waiver requires target approval.
+The projection check and its baseline waivers are a separate migration step. Each waiver must bind one exact difference to a closing issue. A new waiver requires target approval. Re-keying a waiver is not a new waiver. When a build closes part of a waiver's difference, the rest keeps its subject, narrowed to the items still open, under its new ID. When a build edits a runtime prompt, its waiver keeps its subject under the ID of the prompt's changed hash. A new waiver means a new subject.
 
 ## Behavior
 

@@ -112,7 +112,7 @@ def repository_page(contract, doctor):
     return f"""<section class="page" id="target-repository"><header class="page-head"><h1>What a target repository supplies</h1>
       <p>{text(contract["purpose"])}</p></header>
       <div class="columns"><section><h2>Contract file <code>{text(contract["path"])}</code></h2><ul>{fields}</ul>
-      <p>{text(contract["operator_variables"])}</p></section>
+      <p>{text(contract["field_rollout"])}</p><p>{text(contract["operator_variables"])}</p></section>
       <section><h2>Protected files</h2><ul>{list_items(contract["protected_files"])}</ul>
       <p>{text(contract["protected_rule"])}</p>{warp_note(contract["warp"])}</section></div>
       <div class="columns"><section><h2>Readiness: <code>{text(doctor["command"])}</code></h2><p>{text(doctor["purpose"])}</p>
@@ -127,10 +127,17 @@ def scorer_page(scorers):
       <p>Judges {text(scorer["judges"])}. {text(scorer["question"])}</p>
       <p>Labels: {text(", ".join(scorer["labels"]))}</p></article>"""
                     for name, scorer in scorers.items() if isinstance(scorer, dict) and "judges" in scorer)
+    implementation = scorers["implementation"]
+    scenarios = "".join(f"<li><strong>{text(case['given'])}</strong><p>{text(case['expect'])}</p></li>"
+                        for case in scorers["scenarios"].values())
     return f"""<section class="page" id="scorers"><header class="page-head"><h1>How runs are scored</h1>
       <p>{text(scorers["rule"])}</p></header>
-      <p>{text(scorers["when"])}</p><p>{text(scorers["model"])}</p>
-      <div class="decision-list">{cards}</div>{warp_note(scorers["warp"])}</section>"""
+      <p>{text(scorers["when"])}</p><p>{text(scorers["escape_input"])}</p><p>{text(scorers["model"])}</p>
+      <div class="decision-list">{cards}</div>{warp_note(scorers["warp"])}
+      <details class="reference"><summary>Module and checks</summary>
+        <p><code>{text(implementation["module"])}</code>, at most {text(implementation["max_lines"])} lines.</p>
+        <h3>Cases the implementation must pass</h3><ul class="steps">{scenarios}</ul>
+      </details></section>"""
 
 
 def render_inline(value):

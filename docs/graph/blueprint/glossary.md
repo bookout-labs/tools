@@ -6,10 +6,10 @@
 | `target_repository` | The repository of the admitted issue and the only destination for that run's changes. |
 | `target_checkout` | The pinned checkout of the target repository. Implementation owns its editable worktree. Verify runs the app there read-only and writes captures to its attempt scratch. |
 | Related repository | A repository the target depends on, named in the contract file. Foreman pins it at admission to its default-branch head, records the pin on the run and checks it out read-only and adds it as a read root for the workers. Writes stay in the target repository. |
-| Contract file | `.foreman/contract.yaml`, the one tracked file in a target repository that describes it to Foreman: the check command, container image and setup, how to start the app and tell it is up, the related repositories, the names of the secrets the app needs, the verify skill path, the mutation command and the production check. |
+| Contract file | `.foreman/contract.yaml`, the one tracked file in a target repository that describes it to Foreman: the check command and the JUnit XML test report it writes, container image and setup, how to start the app and tell it is up, the related repositories, the names of the secrets the app needs, the verify skill path, the mutation command and the production check. |
 | Protected file | A file a feature run never changes: the check command, CI workflows, the verify skill, accepted tests and the contract file. A change to one is its own issue with its own Foreman run, checked by the base's unchanged check. |
 | Doctor | `foreman doctor --repo OWNER/NAME`, plain code that checks a target repository is ready. Its quick part runs at admission before any paid call. Its full part runs from the command, and at admission whenever the contract file's current digest has no green full check recorded: it builds the image, runs the check, the mutation command and the production check, starts the app and related services and runs the branch probe. Each failure names the missing requirement and its exact fix. |
-| Attempt container | The container built from the contract file's image and setup commands. The builder, the acceptance test writer, the verifier and the reviewer run in it, so they can start the app and its related services. |
+| Attempt container | The container built from the contract file's image and setup commands. Workspace owns the run's container and rebuilds it when the run has none. The builder, the acceptance test writer, the verifier and the reviewer run in it, so they can start the app and its related services. |
 | Blueprint | The versioned design the human approves for future Foreman runs. |
 | Run | One execution for a GitHub issue under a pinned blueprint and runtime release. |
 | Stage | One of seven LangGraph subgraphs. A stage owns a result and its permitted routes. |
@@ -18,7 +18,7 @@
 | Procedure | The prompt, skills, inputs and typed worker output for a step that calls a worker. |
 | Model policy | The existing configuration for eligible models, ordering and fallback. |
 | Repair turn | The one extra charged call in the same session that sends a worker its invalid answer's exact validation error. A second invalid answer stops the run. |
-| Slice | One piece of work that ships as one PR. It states observable behavior: acceptance criteria, non-goals and each criterion's proof, plus declared dependencies and an advisory list of files it expects to touch. It never names a code edit. |
+| Slice | One piece of work that ships as one PR. It states observable behavior: acceptance criteria, non-goals and each criterion's proof, plus declared dependencies and an advisory list of files it expects to touch. Its kind is feature, revert or protected. It never names a code edit. |
 | Proof | How a criterion is proven: test, drive or contract. A test or contract proof names behavior the base lacks, so its acceptance test fails at the base. A criterion the base already meets is proven by drive. A drive criterion that cannot be driven is marked not drivable with a reason. |
 | Assumption | A fact the plan relies on that lies outside the target checkout. It cites a tracked file in a related repository at its pinned commit, or it becomes a gate question. |
 | Candidate | A saved plan or supplied slice bound to a repository, issue, base revision and content digest. |
@@ -46,7 +46,7 @@
 | Routing defect | A valid result with no matching route. Foreman opens the stage's question gate and records the defect on the run, and the terminal report lists it. |
 | Waiver | An exact, temporary structural difference with a migration issue and a condition for removal. |
 | Scorer | A versioned rubric that assesses recorded work without deciding workflow routes. |
-| Hand fix | A person modifies the change or repairs a run to get the PR to merge. |
+| Hand fix | A person modifies the change or repairs a run to get the PR to merge. A commit on the PR's branch that the App did not make is recorded as one. After the merge, the human records one with an issue comment whose first line is `foreman escape`. |
 | Escape | A defect that got past Foreman: a hand fix, a revert or a failed production check. Foreman records each one on the run. It is closed by a change to the target repository's tests, verify skill or conventions, or to a prompt, never by a new guard in Foreman. |
 | Criterion | One acceptance criterion of a slice. Verify reports each one as passed, failed or unverified. |
 | Evidence | What the verifier did and observed for each criterion at the tested head, and where its captures are saved. Foreman posts it as one comment for that head, marked stale if the head moved. |
@@ -54,6 +54,6 @@
 | merge B | The owner's ruling 57aa3a15: Foreman merges even when the reviewer is the builder's model family, and no change adds a human approval or merge step (D13). |
 | verify A | The owner's ruling 67c6553f: a failed Verify criterion goes back to Implement, and an unverified drivable criterion blocks the merge (D11). |
 | rollback A | The owner's ruling 74a43493: a failed production check reverts Foreman's own merge through a Ready revert issue (D12). |
-| Revert run | The run of a Ready revert issue that merge.revert files. It is not a feature run: it skips acceptance tests and the mutation sample, and it may delete exactly the tests the reverted merge commit added. |
+| Revert run | The run of a Ready revert issue that merge.revert files. Its slice has kind revert, which only merge.revert sets, and carries the merge commit SHA it undoes. It is not a feature run: it skips acceptance tests and the mutation sample, and it may delete exactly the tests the reverted merge commit added. |
 | CARR record layer | The owner's team record and doctrine store. It supplies authorized team context to the coordinator or personal agent. Foreman never reads it. |
 | T3 Code | The desktop app that hosts the coordinator or personal agent and its conversation context. Foreman never reads it. |
