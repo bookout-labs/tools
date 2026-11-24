@@ -240,6 +240,10 @@ class IssueBlocker(BaseModel, strict=True):
     def in_repo(self, repo: str) -> bool:
         return self.repository_url.lower() == f"https://api.github.com/repos/{repo.lower()}"
 
+    @property
+    def repo(self) -> str:
+        return self.repository_url.removeprefix("https://api.github.com/repos/")
+
 
 class BlockerPages(RootModel[list[list[IssueBlocker]]]):
     pass
@@ -341,6 +345,7 @@ class Forge(Protocol):
     ) -> int: ...
     def add_blocker(self, repo: str, number: int, blocker: int) -> None: ...
     def blockers(self, repo: str, number: int) -> list[IssueBlocker]: ...
+    def blocking(self, repo: str, number: int) -> list[IssueBlocker]: ...
     def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool: ...
     def descends(self, repo: str, ancestor: str, head: str) -> bool: ...
     def add_label(self, repo: str, number: int, label: str) -> None: ...
@@ -377,19 +382,19 @@ def redact_slice(child: StoredSlice) -> StoredSlice:
     })
 
 
-def unmet_prerequisites(forge: "Forge", repo: str, blockers: list[IssueBlocker], item: StoredSlice | None, merged: int | None = None) -> str:
-    """Why triage cannot admit an issue yet, or "" once it can. Release rechecks a dependent with the same rule.
+def unmet_prerequisites(forge: "Forge", repo: str, blockers: list[IssueBlocker], item: StoredSlice | None) -> str:
+    """Why triage cannot admit an issue yet, or "" once it can.
 
-    `merged` names the prerequisite GitHub just reported merged, whose issue may not have closed yet."""
-    blockers = [blocker for blocker in blockers if not (blocker.in_repo(repo) and blocker.number == merged)]
-    if open_urls := [blocker.html_url for blocker in blockers if blocker.state == "open"]:
+    A blocker counts once its closing pull request merged, even before GitHub closes its issue."""
+    if open_urls := [blocker.html_url for blocker in blockers
+                     if blocker.state == "open" and not forge.is_merged(blocker.repo, blocker.number)]:
         return "Open blockers: " + ", ".join(open_urls)
     if item is None:
         return ""
     local, planned = {blocker.number for blocker in blockers if blocker.in_repo(repo)}, item.blocker_numbers
-    if len(planned) != len(item.depends_on) or not set(planned) <= local | {merged}:
+    if len(planned) != len(item.depends_on) or not set(planned) <= local:
         return "Planned blocker links are missing."
-    unmerged = [number for number in planned if number != merged and not forge.is_merged(repo, number)]
+    unmerged = [number for number in planned if not forge.is_merged(repo, number)]
     return "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged) if unmerged else ""
 
 
@@ -678,8 +683,14 @@ class LiveForge:
         ])
 
     def blockers(self, repo: str, number: int) -> list[IssueBlocker]:
+        return self._dependencies(repo, number, "blocked_by")
+
+    def blocking(self, repo: str, number: int) -> list[IssueBlocker]:
+        return self._dependencies(repo, number, "blocking")
+
+    def _dependencies(self, repo: str, number: int, relation: str) -> list[IssueBlocker]:
         pages = self._read(repo, BlockerPages, [
-            "gh", "api", f"repos/{repo}/issues/{number}/dependencies/blocked_by", "--paginate", "--slurp",
+            "gh", "api", f"repos/{repo}/issues/{number}/dependencies/{relation}", "--paginate", "--slurp",
         ])
         return [blocker for page in pages.root for blocker in page]
 
@@ -688,8 +699,7 @@ class LiveForge:
             repo, IssueClosure, ["gh", "issue", "view", str(number), "--repo", repo, "--json",
                            "closed,closedByPullRequestsReferences"],
         )
-        if not issue.closed:
-            return False
+        # GitHub closes the issue after its pull request merges, so the merged pull request decides.
         for pr in issue.closedByPullRequestsReferences:
             closing_repo = f"{pr.repository.owner.login}/{pr.repository.name}"
             if contains is not None and closing_repo.lower() != repo.lower():

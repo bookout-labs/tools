@@ -402,6 +402,15 @@ class FakeGitHub:
             for blocker in self.dependencies.get(number, ())
         ]
 
+    def blocking(self, repo, number):
+        return [
+            IssueBlocker(number=dependent, title=self.load_issue(repo, dependent)["title"],
+                         repository_url=f"https://api.github.com/repos/{repo}",
+                         html_url=f"https://github.com/{repo}/issues/{dependent}",
+                         state="closed" if dependent in self.closed or dependent in self.merged else "open")
+            for dependent, blockers in self.dependencies.items() if number in blockers
+        ]
+
     def add_label(self, repo, number, label):
         self.label_calls.append((repo, number, label))
         self.issue_labels[number].append(label)
@@ -1727,9 +1736,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(result["stop"], "children_filed")
         self.assertEqual([child.number for child in self.github.sub_issues("Example/Engine", 8)], [101, 102])
         self.assertEqual([x[0] for x in self.github.created], [BUILDER["title"], CONSUMER["title"]])
-        # Children are created unreleased. Only a child with no open blocker gets the Ready label, after every link.
+        # Children are created unreleased. Every child gets the Ready label after every link and returns to admission.
         self.assertEqual([labels for _, _, labels in self.github.created], [["slice"], ["slice"]])
-        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready")])
+        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready"), ("Example/Engine", 102, "Ready")])
+        self.assertEqual(result["released"], ["Example/Engine#101", "Example/Engine#102"])
         for text in (SLICE["acceptance"], SLICE["screen"], "unique_item_id"):
             self.assertIn(text, self.github.created[0][1])
         self.assertIn(SLICE["title"], self.github.created[1][1])
@@ -1915,7 +1925,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             self.assertEqual(self.walk([], issue=102)["halt_detail"], "Planned blocker links are missing.")
             self.github.issue_labels[102].remove("Ready")
         self.assertEqual(self.walk([])["stop"], "children_filed")
-        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready")])
+        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready"), ("Example/Engine", 102, "Ready")])
         self.assertEqual(len(self.github.created), 2)
         self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
 
@@ -2602,7 +2612,8 @@ with patch("foreman.runner.load_config", return_value=config):
                 self.assertEqual(reopened, attempts)
                 self.assertEqual((root / "calls.log").read_text(), calls)
                 self.assertEqual(calls.splitlines(), ["TriageOutput", "SpecOutput", "SpecOutput"] + (["SpecCheckOutput"] if count == 4 else []))
-                self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
+                # A replay names the returned issues again after the report.
+                self.assertTrue(re.sub(r"(?m)^start \S+\n", "", terminal).endswith("this invocation: no nodes executed\n"))
                 for line in current.splitlines():
                     if line.startswith(("raw tokens", "work tokens", "attempt ", "input tokens", "output tokens",
                                         "cache_read tokens", "cache_creation tokens")):

@@ -152,7 +152,7 @@ def issue_thread(repo: str, issue: int) -> str:
 
 
 @contextmanager
-def issue_lock(thread: str) -> Generator[None]:
+def issue_lock(thread: str, *, wait: bool = False) -> Generator[None]:
     """Hold one writer per repository and issue for this user, whichever checkpoint it uses. The worker inherits the lock.
 
     A holder that enters again keeps its lock, so a start can check and run under one hold.
@@ -162,7 +162,7 @@ def issue_lock(thread: str) -> Generator[None]:
         return
     with lock_file(thread).open("a") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise IssueLocked(f"Foreman is already running {thread}.") from exc
         token, held = worker_lock.set(lock.fileno()), _held_locks.set(_held_locks.get() | {thread})

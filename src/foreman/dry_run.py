@@ -257,6 +257,11 @@ class DryRun:
                              html_url=f"https://github.com/{repo}/issues/{blocker}", state="open")
                 for blocker in self.links.get(number, (0, []))[1]]
 
+    def blocking(self, repo: str, number: int) -> list[IssueBlocker]:
+        return [IssueBlocker(number=dependent, title="", repository_url=f"https://api.github.com/repos/{repo}",
+                             html_url=f"https://github.com/{repo}/issues/{dependent}", state="open")
+                for dependent, (_, blockers) in self.links.items() if number in blockers]
+
     def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool:
         return False
 

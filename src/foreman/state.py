@@ -112,6 +112,8 @@ class DeliveryFields(TypedDict, total=False):
     models_used: dict[str, str]
     implement_models: list[str]
     watch: WatchRecord | None
+    # Issues the run returns to admission as OWNER/NAME#N: open dependents after its merge, or the children it filed.
+    released: list[str]
     halt: Annotated[Halt, PlainValidator(lambda code: Halt(code).value)] | None
     halt_detail: str
 

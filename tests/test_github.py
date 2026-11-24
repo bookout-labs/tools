@@ -195,9 +195,11 @@ class LiveForgeTest(unittest.TestCase):
         self.assertIsInstance(exc.exception.__cause__, ValidationError)
 
     @patch("foreman.github.subprocess.run")
-    def test_only_closed_issue_with_merged_closing_pull_request_is_merged(self, run):
+    def test_an_issue_counts_merged_once_its_closing_pull_request_merged(self, run):
         for closed, references, state, base, default, expected in (
-            (False, [CLOSING_PR], None, None, None, False),
+            # GitHub closes the issue after the merge, so an open issue with a merged closing pull request counts.
+            (False, [CLOSING_PR], "MERGED", "main", "main", True),
+            (False, [CLOSING_PR], "OPEN", "main", None, False),
             (True, [], None, None, None, False),
             (True, [CLOSING_PR], "CLOSED", "main", None, False),
             (True, [CLOSING_PR], "MERGED", "main", "main", True),
