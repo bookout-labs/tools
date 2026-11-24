@@ -1,6 +1,6 @@
 flowchart TD
     n0(["Enter stage"]):::terminal
-    n1["Foreman · Queue the exact reviewed head"]:::step
+    n1["Foreman · Read the issue for a stop, then queue the exact reviewed head"]:::step
     n2["Foreman · Read the GitHub merge outcome"]:::step
     n3["Foreman · Run the contract's production check against the merge commit"]:::step
     n4["Foreman · Admit Ready dependent issues"]:::step
@@ -18,7 +18,7 @@ flowchart TD
     n16["Wait for GitHub to report a merge result"]:::step
     n17["Wait for the merge commit to deploy"]:::step
     n0 --> n1
-    n1 -->|"Run stops / Checked revision / Repair"| n6
+    n1 -->|"Run stops / Cancelled / Checked revision / Repair"| n6
     n1 -->|"Armed / Already armed / Closed or merged / Head unverified"| n2
     n2 -->|"Run stops / Cancelled / Closed / Checked revision / Repair"| n6
     n2 -->|"Merged"| n3

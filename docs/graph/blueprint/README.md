@@ -1,4 +1,4 @@
-# Foreman v2 blueprint
+# Foreman v3 blueprint
 
 [`target.yaml`](target.yaml) defines the approved target. Review the [workflow diagram](views/target.svg), [glossary](glossary.md), [decisions](decisions.md), [verification plan](verification.md), [migration](migration.md), and [code map](code-map.md). To use the interactive [review index](index.html), open the file in a browser from a local checkout.
 

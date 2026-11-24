@@ -33,6 +33,7 @@ flowchart TD
     n4 --> n9
     n5 -->|"Posted"| n6
     n5 -->|"Failed / PR revision changed"| n4
+    n5 --> n8
     n5 --> n9
     n6 -->|"Critical defect / Serious defect / PR revision changed"| n4
     n6 -->|"No blocking finding"| n7

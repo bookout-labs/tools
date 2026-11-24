@@ -102,6 +102,37 @@ def stage_page(name, stage, files, paths, decisions, gate_rule):
     </section>"""
 
 
+def warp_note(warp):
+    return (f"<p><strong>Warp equivalent: {text(warp['equivalent'])}.</strong> {text(warp['divergence'])} "
+            f'<a href="{text(warp["page"])}">Read Warp’s documentation ↗</a></p>')
+
+
+def repository_page(contract, doctor):
+    fields = list_items(contract["fields"].values())
+    return f"""<section class="page" id="target-repository"><header class="page-head"><h1>What a target repository supplies</h1>
+      <p>{text(contract["purpose"])}</p></header>
+      <div class="columns"><section><h2>Contract file <code>{text(contract["path"])}</code></h2><ul>{fields}</ul>
+      <p>{text(contract["operator_variables"])}</p></section>
+      <section><h2>Protected files</h2><ul>{list_items(contract["protected_files"])}</ul>
+      <p>{text(contract["protected_rule"])}</p>{warp_note(contract["warp"])}</section></div>
+      <div class="columns"><section><h2>Readiness: <code>{text(doctor["command"])}</code></h2><p>{text(doctor["purpose"])}</p>
+      <h3>Quick part</h3><p>{text(doctor["quick"]["when"])}</p><ul>{list_items(doctor["quick"]["requirements"])}</ul></section>
+      <section><h3>Full part</h3><p>{text(doctor["full"]["when"])}</p><ul>{list_items(doctor["full"]["requirements"])}</ul>
+      <p>{text(doctor["failure"])}</p><p>{text(doctor["setup_page"])}</p>{warp_note(doctor["warp"])}</section></div>
+    </section>"""
+
+
+def scorer_page(scorers):
+    cards = "".join(f"""<article><h2>{text(name.replace("_", " ").capitalize())}</h2>
+      <p>Judges {text(scorer["judges"])}. {text(scorer["question"])}</p>
+      <p>Labels: {text(", ".join(scorer["labels"]))}</p></article>"""
+                    for name, scorer in scorers.items() if isinstance(scorer, dict) and "judges" in scorer)
+    return f"""<section class="page" id="scorers"><header class="page-head"><h1>How runs are scored</h1>
+      <p>{text(scorers["rule"])}</p></header>
+      <p>{text(scorers["when"])}</p><p>{text(scorers["model"])}</p>
+      <div class="decision-list">{cards}</div>{warp_note(scorers["warp"])}</section>"""
+
+
 def render_inline(value):
     parts = re.split(r"\[([^\]]+)\]\((https://[^)]+)\)", value)
     result = [text(parts[0])]
@@ -171,7 +202,8 @@ def page(directory, target, files, sections):
 <body>
 <div class="shell"><aside><a class="brand" href="#overview">Foreman <small>Blueprint v{target["blueprint_version"]}</small></a>
 <nav aria-label="Blueprint navigation"><div class="nav-group">
-<a href="#overview">Overview</a><a href="#context">System context</a><a href="#decisions">Blueprint decisions</a>
+<a href="#overview">Overview</a><a href="#context">System context</a><a href="#target-repository">Target repository</a>
+<a href="#scorers">Scorers</a><a href="#decisions">Blueprint decisions</a>
 </div><h2>Stages</h2><div class="nav-group">{stage_links}<a href="#dispatch">Shared dispatch</a></div>
 <h2>Workers</h2><div class="nav-group">{worker_links}</div>
 <h2>Reference</h2><div class="nav-group"><a href="#files">All file paths</a>
@@ -182,14 +214,15 @@ def page(directory, target, files, sections):
 <p>{text(target["overview"]["framing"])} <a href="{text(target["overview"]["source"])}">Notion’s book ↗</a></p></header>
 {diagram("target", "Foreman workflow")}
 <p class="legend"><span>▰ Stage</span><span>▱ Step</span><span>◉ Worker call</span><span>◇ Question gate</span><span>○ Result</span></p>
-<p class="legend">{text(gate_rule)} If a valid result has no matching route, Foreman opens the stage's question gate and records a routing defect for the scorers.</p>
+<p class="legend">{text(gate_rule)} If a valid result has no matching route, Foreman opens the stage's question gate and records a routing defect on the run.</p>
 <div class="stage-grid">{"".join(f'<a href="#{key}"><strong>{text(stage["title"])}</strong><span>{text(stage["purpose"])}</span></a>' for key, stage in stages.items())}</div>
 <p class="baseline">{text(target["status"].capitalize())} blueprint · Baseline <a href="https://github.com/{text(target["repositories"]["foreman_repository"])}/commit/{text(target["baseline"])}"><code>{text(target["baseline"][:8])}</code></a></p>
 </section>
 <section class="page" id="context"><header class="page-head"><h1>Where Foreman works</h1>
-<p>The human works through a coordinator or personal agent. The agent files the GitHub issue and posts the human's answers, comments, plan approvals and stop requests as issue comments under the human's identity.</p></header>
+<p>The human works through a coordinator or personal agent. The agent files the GitHub issue and posts the human's answers, comments and stop requests as issue comments under the human's identity.</p></header>
 {diagram("context", "Repository and authority boundaries")}
-<p>Foreman runs from bookout-labs/tools. Each issue names the repository where its changes belong. The Project board mirrors the run state and shows the result on the card. GitHub, the CARR record layer and T3 hold shared context. Git versions the blueprint.</p></section>
+<p>Foreman runs from bookout-labs/tools. Each issue names the repository where its changes belong. The issue's run label and status comment mirror the run state and show the result. GitHub, the CARR record layer (the team's record and doctrine store) and T3 Code (the app that hosts the coordinator or personal agent) hold shared context. Git versions the blueprint.</p></section>
+{repository_page(target["target_contract"], target["doctor"])}{scorer_page(target["scorers"])}
 {stage_pages}{"".join(worker_pages)}
 <section class="page" id="decisions"><header class="page-head"><h1>Blueprint decisions</h1>
 <p>Agreed decisions record the owner’s rulings. Open decisions include a recommendation.</p></header>

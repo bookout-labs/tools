@@ -6,7 +6,7 @@ Agreed by the owner 2026-11-22. “i agree with all of your take aways from this
 
 - Roll out each version and its merge authority through synthetic replays, smoke repositories, about three real issues, then normal volume.
 - Start a run when the Ready label is added to an issue. A webhook delivers the trigger and the issue's run label and status comment mirror the run's state (D6).
-- Use GitHub, the CARR record layer and T3 as the shared context system. Git versions the blueprint.
+- Use GitHub, the CARR record layer (the team's record and doctrine store) and T3 Code (the app that hosts the coordinator or personal agent) as the shared context system. Git versions the blueprint.
 - Keep worker configuration separate from stage procedures. Agreed by the owner 2026-11-22.
 - Add scorers, benchmarks and fix PRs driven by observed failures. Agreed by the owner 2026-11-22.
 - Complete delivery on an observed merge. Agreed by the owner 2026-11-22.
@@ -21,7 +21,7 @@ Agreed by the owner 2026-11-22. Only a concrete P0 or P1 correctness, security o
 
 ## D2. Who queues the pull request?
 
-Agreed by the owner 2026-11-22. “I'm good with the trust ladder”. Foreman queues the exact reviewed revision after required checks pass, under the authority earned through synthetic replays, live smoke, a limited batch of about three real issues and normal volume. GitHub enforces approvals and queue rules. Revised by the 2026-11-24 brief (#299, item 19): merge_held is the default until a synthetic repository test proves the App and outside writers cannot move the branch during an open merge request, and merge needs a merge queue ruleset. Release dependents through admission only after the production check confirms the merge (D12). A person decides when to merge in Warp. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)
+Agreed by the owner 2026-11-22. “I'm good with the trust ladder”. Foreman queues the exact reviewed revision after required checks pass, under the authority earned through synthetic replays, live smoke, a limited batch of about three real issues and normal volume. GitHub enforces approvals and queue rules. Revised by the 2026-11-24 brief (#299, item 19): merge_held is the default until a synthetic branch probe proves the App and outside writers cannot move the branch during an open merge request. The probe is part of doctor's full check, which admission requires, and merge needs a merge queue ruleset. Release dependents through admission only after the production check confirms the merge (D12). A person decides when to merge in Warp. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)
 
 ## D3. Who approves a plan?
 

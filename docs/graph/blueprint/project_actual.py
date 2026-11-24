@@ -1,4 +1,4 @@
-"""Compare the compiled Foreman graph with the v2 blueprint without running it."""
+"""Compare the compiled Foreman graph with the v3 blueprint without running it."""
 
 import argparse
 import ast

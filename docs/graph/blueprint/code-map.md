@@ -59,7 +59,7 @@ Baseline files [`src/foreman/delivery.py`](https://github.com/bookout-labs/tools
 
 Exclusive target_checkout inside the attempt container, the related repository checkouts read-only, candidate issue, attempt parent, owned branch and matching PR. No direct base-branch writes.
 
-Entry `src/foreman/steps/implement.py::compile_stage`. Maximum 560 physical lines in the owner module.
+Entry `src/foreman/steps/implement.py::compile_stage`. Maximum 420 physical lines in the owner module.
 
 Never merge the PR, run a standalone proof gate, require a universal tool-fact record, let the builder edit accepted tests.
 

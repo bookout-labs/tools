@@ -208,7 +208,8 @@ def views(target):
                 links.append((origin, destination, label(route or "")))
         if name == target["entry"]:
             links = [
-                (origin, destination, "Ready label webhook or dependent recheck" if origin == "__start__" else detail)
+                (origin, destination, "Ready label, dependent recheck or revert issue"
+                 if origin == "__start__" and destination in stage["steps"] else detail)
                 for origin, destination, detail in links
             ]
         for gate in gates:
