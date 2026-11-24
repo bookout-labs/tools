@@ -11,13 +11,18 @@ so a worker can delete the files a slice removes. The per-call settings turn it 
 and `allowUnsandboxedCommands: false`, so a missing sandbox fails closed and no command retries outside it.
 `autoAllowBashIfSandboxed` runs sandboxed commands under `dontAsk`. Writes reach the checkout and the attempt
 scratch only: `--add-dir` names the method roots and the scratch, never the settings file beside it, and
-`denyWrite` covers the method roots, the checkout's `.git` entry and the git and common directories it resolves to.
-A linked worktree's shared clone is therefore read-only too, so `git commit` fails. The network allowlist is
+`denyWrite` covers the method roots, the checkout's `.git` entry and the git and common directories it resolves to,
+each as given and as resolved. The worker resolves them with `git rev-parse` from the checkout, ignoring any inherited
+`GIT_*` variable, and a `.git` git cannot resolve fails the call closed. A linked worktree's shared clone is therefore
+read-only too, so `git commit` fails. Edit and Write follow `blockWritesOutsideWorkingDirectories` and Edit denies
+for the same git directories. The network allowlist is
 empty and strict. Claude Code points `$TMPDIR` at a per-user directory under `CLAUDE_CODE_TMPDIR`, but falls back
 to the shared `/tmp/claude-<uid>` when that path is too long for its AF_UNIX sockets (about 32 characters
 before `/claude-<uid>` on 2.1.329). The worker therefore gives each call its own short `/tmp/fw*` directory.
 A host that cannot sandbox (no Seatbelt, or Linux without `bwrap` and `socat`) returns `cli_missing` before
-launch, and the dispatcher tries the next model. Implement keeps the exact `Bash(<check>)` rule.
+launch, and so does a host with no short temp directory. A sandbox that fails at startup anyway (for example under
+AppArmor or WSL1) makes Claude print "sandbox required but unavailable" and exit, which also reads as `cli_missing`.
+In each case the dispatcher tries the next model. Implement keeps the exact `Bash(<check>)` rule.
 The native read-only matcher refuses the planned review diff. Review calls therefore
 grant each standalone command from the bound `ReviewScope`, including pinned diffs,
 tree listings and blob reads. The prompt and exact Bash rules share this command list.
@@ -56,7 +61,9 @@ and .github/workflows/ci.yml. Restricted mode can therefore remain enabled, and 
 The edit, inherited and compound captures run in a linked worktree of a shared clone. Sandboxed `rm` of a tracked
 file and of a scratch file succeeds. `rm` of a method file or of a file outside the checkout fails, and so do writes
 to the shared clone's `.git` and to `/tmp/claude-<uid>`. `git commit`, `curl` with or without the proxy, and `gh`
-fail too. Sandbox refusals arrive as failed tool results, not as permission denials.
+fail too, each with the sandbox's own refusal (`Operation not permitted`, a host not on the allow list). The inherited
+probe adds project settings that disable the sandbox, exclude every command and allow every write and host;
+restricted mode ignores them. Sandbox refusals arrive as failed tool results, not as permission denials.
 
 For the separate Grok editing slice, start with the lighter boundary. PR #144's
 launcher filters command environments and brokers App credentials. It is not merged

@@ -31,7 +31,11 @@ for args in (['init', '-q'], ['add', '.'], ['-c', 'user.name=Probe', '-c', 'user
     subprocess.run(['git', *args], cwd=clone, check=True)
 if mode == 'inherited':
     (repo / '.claude').mkdir()
-    (repo / '.claude/settings.local.json').write_text(json.dumps({'permissions': {'allow': ['Bash(*)', 'Edit', 'Write']}}))
+    # Project settings that would widen every grant and lift the sandbox; restricted mode must ignore them.
+    (repo / '.claude/settings.local.json').write_text(json.dumps({
+        'permissions': {'allow': ['Bash(*)', 'Edit', 'Write']},
+        'sandbox': {'enabled': False, 'allowUnsandboxedCommands': True, 'excludedCommands': ['*'],
+                    'filesystem': {'allowWrite': ['/']}, 'network': {'allowedDomains': ['*']}}}))
 head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
 check = 'touch first && touch second' if mode == 'compound' else 'sh check.sh'
 edit = mode != 'readonly'
@@ -42,7 +46,7 @@ commands = [check, 'touch x', 'rm doomed.py', f'rm {probe.scratch}/scratch-doome
             f'rm {base}/outside.txt', f'touch {clone}/.git/probe', f'touch /tmp/claude-{os.getuid()}/foreman-probe',
             'touch "$TMPDIR/temp-probe" && printenv TMPDIR', 'git commit -qm x',
             'curl -sS --max-time 10 https://example.com', "curl -sS --noproxy '*' --max-time 10 https://example.com",
-            'gh pr list', 'python -c 1'] if edit else [
+            'gh pr list -R octocat/Hello-World', 'python -c 1'] if edit else [
     'git status', f'git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames {head}...{head} --', 'touch x', 'git diff --output=f']
 prompt = f'''Permission probe. Attempt EVERY operation exactly once, including expected denials.
 Do not substitute tools. Read {methods}/method.md with Read.

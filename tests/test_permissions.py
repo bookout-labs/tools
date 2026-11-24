@@ -2,6 +2,7 @@ import tests
 from foreman.state import PlanState, ChecksState, RunState
 
 import json
+import os
 from pathlib import Path
 import unittest
 import tomllib
@@ -19,7 +20,7 @@ from foreman.delivery import run_delivery
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.skill_rules import PACKAGE_SKILLS, export_skills, stage_methods
 from foreman.stages import STAGES
-from foreman.worker import CliWorker
+from foreman.worker import CliWorker, git_dirs
 from skill_fixture import skill_fixture
 from test_adapters import fixture_process
 from test_runner import EMPTY_SLICE
@@ -98,10 +99,20 @@ class PermissionsTest(unittest.TestCase):
             settings = json.loads(Path(args[args.index("--settings") + 1]).read_text())
             # The settings file stays outside every directory a worker writes.
             self.assertEqual([args[i + 1] for i, a in enumerate(args) if a == "--add-dir"], [str(root / "methods"), str(attempt / "scratch")])
+            # Denials name each path as given and as resolved (macOS /var is a link to /private/var).
+            forms = lambda paths: list(dict.fromkeys(str(form) for path in paths for form in (path, path.resolve())))
+            paths = forms((root / "methods", *gits))
             self.assertEqual(settings["sandbox"], {
                 "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-                "network": {"allowedDomains": [], "strictAllowlist": True},
-                "filesystem": {"denyWrite": [str(path.resolve()) for path in (root / "methods", *gits)]}})
+                "network": {"allowedDomains": [], "strictAllowlist": True}, "filesystem": {"denyWrite": paths}})
+            self.assertTrue(settings["permissions"]["blockWritesOutsideWorkingDirectories"])
+            self.assertEqual(settings["permissions"]["deny"], [f"Edit(/{(root / 'methods').resolve()}/**)",
+                                                               *(rule for path in forms(gits) for rule in (f"Edit(/{path})", f"Edit(/{path}/**)"))])
+            # A sandbox that cannot start ends the call before model work, so the dispatcher tries the next model.
+            refused = CompletedProcess(args, 1, "", "Error: sandbox required but unavailable: bwrap: setting up uid map: Permission denied\n"
+                                                    "  Refusing to start without a working sandbox (see sandbox.failIfUnavailable).\n")
+            self.assertEqual(adapter.read(refused, call).kind, "cli_missing")
+            self.assertEqual(adapter.read(refused, Call("prompt", "{}", False, attempt)).kind, "failed")
             readonly = adapter.command(Call("prompt", "{}", False, attempt, read_roots=(root / "methods",)))
             self.assertNotIn("sandbox", json.loads(Path(readonly[readonly.index("--settings") + 1]).read_text()))
 
@@ -134,6 +145,19 @@ class PermissionsTest(unittest.TestCase):
             self.assertTrue(env["CLAUDE_CODE_TMPDIR"].startswith("/tmp/fw"))
             self.assertLessEqual(len(env["CLAUDE_CODE_TMPDIR"]), 24)
             self.assertFalse(Path(env["CLAUDE_CODE_TMPDIR"]).exists())
+            # Only an editing Claude call gets one, and a host without /tmp has no confinable Claude.
+            CliWorker(checkout, runner)("triage", ModelSpec.parse("claude-opus-5-5-high"), {"plan": PlanState()}, "triage")
+            self.assertNotIn("CLAUDE_CODE_TMPDIR", seen[-1][1])
+            with patch("foreman.worker.TemporaryDirectory", side_effect=[TemporaryDirectory(), OSError("no /tmp")]):
+                outcome = CliWorker(checkout, runner)("implement", ModelSpec.parse("claude-opus-5-5-high"), {"checks": ChecksState(check="sh check.sh")}, "implement")
+            self.assertEqual((outcome.kind, len(seen)), ("cli_missing", 2))
+            # The checkout's own .git decides, never an inherited GIT_DIR, and an unreadable one fails closed.
+            with patch.dict(os.environ, {"GIT_DIR": str(clone / ".git")}):
+                self.assertEqual(git_dirs(checkout), (checkout / ".git", clone / ".git/worktrees/checkout", clone / ".git"))
+            (checkout / ".git").write_text("gitdir: /nonexistent\n")
+            with self.assertRaises(CapabilityUnavailable):
+                git_dirs(checkout)
+            self.assertEqual(git_dirs(clone.parent), ())
 
     def test_readonly_has_no_edit_tools_or_allow_rules(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
@@ -203,13 +227,26 @@ class PermissionsTest(unittest.TestCase):
                 self.assertFalse(any(c.startswith("git diff --no-color") for c in commands))
             else:
                 # Sandboxed Bash runs without a prompt; the OS boundary refuses a write or connection as a failed tool result.
-                bash = {use["input"]["command"]: result.get("is_error", False) for use in content if use.get("type") == "tool_use"
-                        and use.get("name") == "Bash" for result in content if result.get("tool_use_id") == use["id"]}
-                refused = {command for command, failed in bash.items() if failed}
-                self.assertEqual(refused, {"rm <probe>/methods/method.md", "rm <probe>/outside.txt", "touch <probe>/clone/.git/probe",
-                                           "touch /tmp/claude-<uid>/foreman-probe", "git commit -qm x", "gh pr list",
-                                           "curl -sS --max-time 10 https://example.com",
-                                           "curl -sS --noproxy '*' --max-time 10 https://example.com"})
+                # The inherited probe's project settings try to lift the sandbox; restricted mode ignores them.
+                def text(result):
+                    body = result.get("content")
+                    return body if isinstance(body, str) else " ".join(part.get("text", "") for part in body or [])
+                bash = {use["input"]["command"]: (result.get("is_error", False), text(result)) for use in content
+                        if use.get("type") == "tool_use" and use.get("name") == "Bash"
+                        for result in content if result.get("tool_use_id") == use["id"]}
+                denied_write, denied_host = "Operation not permitted", "not on the allow list"
+                self.assertEqual({command: evidence for command, (failed, output) in bash.items() if failed
+                                  for evidence in (denied_write, denied_host, "Could not resolve host") if evidence in output}, {
+                    "rm <probe>/methods/method.md": denied_write, "rm <probe>/outside.txt": denied_write,
+                    "touch <probe>/clone/.git/probe": denied_write, "touch /tmp/claude-<uid>/foreman-probe": denied_write,
+                    "git commit -qm x": denied_write, "gh pr list -R octocat/Hello-World": denied_host,
+                    "curl -sS --max-time 10 https://example.com": denied_host,
+                    "curl -sS --noproxy '*' --max-time 10 https://example.com": "Could not resolve host"})
+                check = "touch first && touch second" if mode == "compound" else "sh check.sh"
+                self.assertEqual({command for command, (failed, _) in bash.items() if not failed}, {
+                    check, "touch x", "rm doomed.py", "rm <probe>/attempt/scratch/scratch-doomed.txt",
+                    'touch "$TMPDIR/temp-probe" && printenv TMPDIR', "python -c 1"})
+                self.assertEqual(bash['touch "$TMPDIR/temp-probe" && printenv TMPDIR'][1].strip(), "<temp>/claude-<uid>")
                 self.assertEqual(files["repo/source.py"], "value = 2\n")
                 self.assertEqual(files["attempt/scratch/scratch.txt"], "scratch")
                 self.assertIn('name = "after"', files["repo/pyproject.toml"])

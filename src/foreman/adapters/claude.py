@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from math import isclose
+from pathlib import Path
 import json
 import platform
 import shutil
@@ -14,6 +15,8 @@ from foreman.usd import CostUsd, usd_text
 
 
 QUOTA_ERRORS = {"usage_limit_reached", "model_requires_usage_credits"}
+# Claude Code 2.1.329 prints this and exits at startup when failIfUnavailable meets a sandbox that cannot start.
+SANDBOX_UNAVAILABLE = "sandbox required but unavailable"
 
 
 class PermissionDenial(BaseModel):
@@ -92,6 +95,11 @@ class ClaudeEnvelope(NativeEnvelope):
         )
 
 
+def both(paths: tuple[Path, ...]) -> list[str]:
+    """Each path as given and as resolved, so a denial holds whether a tool names the link or its target."""
+    return list(dict.fromkeys(str(form) for path in paths for form in (path.absolute(), path.resolve())))
+
+
 def sandboxed(system: str) -> None:
     """Claude Code sandboxes Bash with Seatbelt on macOS, and with bubblewrap and socat on Linux."""
     missing = [tool for tool in ("bwrap", "socat") if shutil.which(tool) is None] if system == "Linux" else []
@@ -104,24 +112,34 @@ class ClaudeAdapter(NativeAdapter):
     envelope = ClaudeEnvelope
     env: ClassVar[Mapping[str, str]] = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
 
+    @override
+    def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
+        # A sandbox that cannot start on this host ends the call before any model work, so the next model runs.
+        if call.edit and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
+            return Outcome("cli_missing", detail=process.stderr.strip())
+        return super().read(process, call)
+
     def command(self, call: Call) -> list[str]:
         effort = ["--effort", self.model.effort] if self.model.effort else []
         budget = ["--max-budget-usd", usd_text(call.budget_usd)] if call.budget_usd is not None else []
         allow = [f"Bash({command})" for command in call.checks]
         if call.edit:
             allow += ["Edit", "Write"]
-        settings: dict[str, object] = {"permissions": {"allow": allow, "deny": [
-            f"Edit(/{root.resolve()}/**)" for root in call.read_roots
-        ]}}
+        deny = [f"Edit(/{root.resolve()}/**)" for root in call.read_roots]
+        permissions: dict[str, object] = {"allow": allow, "deny": deny}
+        settings: dict[str, object] = {"permissions": permissions}
         directories = [str(root) for root in call.read_roots]
         if call.edit:
             sandboxed(platform.system())
+            # Edit and Write stay inside the working directories and off the git directories.
+            permissions["blockWritesOutsideWorkingDirectories"] = True
+            deny += [rule for path in both(call.git_dirs) for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")]
             # Bash runs in Claude Code's OS sandbox, which fails closed: it writes the checkout and the attempt scratch,
             # never the method roots --add-dir exposes or the git directories, and reaches no network.
             settings["sandbox"] = {
                 "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
                 "network": {"allowedDomains": [], "strictAllowlist": True},
-                "filesystem": {"denyWrite": [str(path.resolve()) for path in (*call.read_roots, *call.git_dirs)]},
+                "filesystem": {"denyWrite": both((*call.read_roots, *call.git_dirs))},
             }
             directories.append(str(call.scratch))
         settings_path = call.temp_dir / "claude-settings.json"
