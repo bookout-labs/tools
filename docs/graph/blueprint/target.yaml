@@ -32,7 +32,7 @@ intake:
     when merge.release admits a dependent that still carries Ready, when GitHub reports that a prerequisite issue no Foreman run owns has closed,
     whoever closed it, for each dependent that still carries Ready, or when merge.revert files a Ready revert issue. Ignore duplicate and stale
     deliveries and Foreman's own label updates. Reuse the per-issue checkpoint and lock. A Ready label added again to an issue whose run halted
-    resumes its saved checkpoint at the halted step. Mirror checkpoint state
+    resumes its saved checkpoint at the halted step. Ready added to an issue whose run ended cancelled admits a new run. It starts at triage and leaves the cancelled run's closed PR and branch as they are. Mirror checkpoint state
     as one run label and one status comment with the typed result and its links. A halt before admission keeps the
     Ready label. Labels do not grant authority to merge or answer gates.
   settings: >-
@@ -67,10 +67,10 @@ target_contract:
     and the requirements that today are spread over the App install notes, cli.py, github.py, skill_rules.py and README.md.
   fields:
     check: "check: a string. The repository check command. Foreman runs it in the attempt container and requires exit 0 on an unchanged tree."
-    test_report: "test_report: one relative path, or a list of them, inside the checkout, that the check command writes as JUnit XML. The files are generated and need not be tracked. An absolute path or one that leaves the checkout is rejected. Foreman removes them before each check run and reads only what that run wrote. Foreman reads each test case's ID and result from them without knowing the language. A test ID is the case's file made relative to the checkout root, its enclosing suite names, its classname and its name. Cases that share an ID are one test with a count: it passed only if every case passed, and a lower count than the base's is a missing test. The accepted tests are the IDs a report gains over the base's report. implement.tests uses them to prove the accepted tests are collected and fail at the base, and edit compares the test IDs in the reports at the base and the candidate to find a deleted or added skip (items 9 and 10)."
-    image: "image: a string. The container image that the builder, the acceptance test writer, the verifier and the reviewer run in (item 3)."
+    test_report: "test_report: one relative path, or a list of them, inside the checkout, that the check command writes as JUnit XML. The files are generated and need not be tracked. The repository git-ignores them, so the check leaves the tree unchanged and they never enter the checked tree. An absolute path or one that leaves the checkout is rejected. Foreman removes them before each check run and reads only what that run wrote. Foreman reads each test case's ID and result from them without knowing the language. A test ID is the case's file made relative to the checkout root, empty when the report names none, its enclosing suite names, its classname and its name. Cases that share an ID are one test with a count: it passed only if every case passed, and a lower count than the base's is a missing test. The accepted tests are the IDs the base check run with the acceptance tests reports beyond the base's report. implement.tests uses them to prove the accepted tests are collected and fail at the base, and edit compares the test IDs in the reports at the base and the candidate to find a deleted or added skip (items 9 and 10)."
+    image: "image: a string. The image of the attempt container, where every shell command of the builder, the acceptance test writer, the verifier and the reviewer runs (item 3)."
     setup: "setup: a list of strings. Setup commands that run in order in a fresh attempt container before any worker starts."
-    network: "network: setup or run. setup is the default: the container reaches the network only during setup. run keeps it connected, for a repository whose test services are remote, such as a hosted test database or sign-in provider."
+    network: "network: setup or run. setup is the default: the container reaches the network only during setup. run keeps it connected, for a repository whose app uses remote test services, such as a hosted test database or sign-in provider."
     start: "start: a map with command, the command that starts the app, health, a command that exits 0 once the app is up, and timeout_seconds, how long to wait for health."
     related_repositories: "related_repositories: a list of maps, each with repository as OWNER/NAME and start as the command that starts its service in the attempt container (item 4). The contract pins no commit. Admission pins each one for the run."
     secrets: "secrets: a list of names, each a valid environment variable name ([A-Z][A-Z0-9_]*). The secrets the app needs to start. Foreman supplies each one's test value from the Foreman host's environment variable FOREMAN_TEST_<NAME> as a variable of that name in the attempt container. Production credentials are never used. Foreman's redaction also removes each test value the run supplied from every text it writes to GitHub and to its run log."
@@ -108,7 +108,7 @@ doctor:
       the contract file's digest at the base, so a change to the contract file is checked once at the next admission. Each green
       full check is recorded in Foreman's run store on its host, keyed by repository and contract file digest. A failed full check
       stops admission with not_ready.
-    requirements: [the contract image builds, the setup commands succeed, the check passes on the default branch and writes its test report, the mutation command runs on the default branch, the production check command runs against the default branch head, the app starts and its health command answers, each related repository checks out at its default-branch head and its service starts, the synthetic branch probe shows that neither an outside writer nor the App can move a PR's source branch while its arm is open]
+    requirements: [the contract image builds, the setup commands succeed, the check passes on the default branch, writes its test report and leaves the tree unchanged, the mutation command runs on the default branch, the production check command runs against the default branch head, the app starts and its health command answers, each related repository checks out at its default-branch head and its service starts, the synthetic branch probe shows that neither an outside writer nor the App can move a PR's source branch while its arm is open]
   failure: Every failure prints the one missing requirement and the exact fix. At admission it stops with not_ready and no run starts.
   setup_page: >-
     docs/target-repo-setup.md lists each requirement, why Foreman needs it and how to supply it (item 24). It is generated from doctor's
@@ -143,7 +143,7 @@ scorers:
 rules:
   routing: >-
     A step emits one typed outcome. CI checks that every value of each typed route enum has exactly one
-    route in its router. Use the transition order when checks overlap. Apply exit_normalization
+    route in its router. A valid result therefore always has a route (D16). Use the transition order when checks overlap. Apply exit_normalization
     before returning from a stage, preserving the named halt and evidence.
     A stage result carries its typed outcome and artifact. The top router reads that outcome.
     A worker answer that fails output validation, its schema or the stage's own checks of it, gets one repair turn (item 1).
@@ -158,7 +158,7 @@ rules:
       An unrelated reply does not count. Gates are only for unresolved questions.
       Plan approval never waits on the human.
       The human's identity is the GitHub login in FOREMAN_HUMAN_LOGIN. A stop is an issue comment under that login whose
-      first line is foreman stop (item 8). A stop counts only when its comment was created after the latest Ready label event on the issue. Adding Ready again asks for the run again, so an older stop no longer applies. Both times come from GitHub. An edit to an older comment does not make it a new stop. Each stage's first step reads the issue for a stop before it makes a paid call or a write,
+      first line is foreman stop (item 8). A stop counts only when its comment was created after Ready was last added to the issue. Adding Ready again asks for the run again, so an older stop no longer applies. Both times come from GitHub. An edit to an older comment does not make it a new stop. Each stage's first step reads the issue for a stop before it makes a paid call or a write,
       and a stop ends the run cancelled. The App's issue comment webhook wakes a waiting run when the human posts a stop. The read is built once in src/foreman/steps/__init__.py. A first step that calls a worker,
       as research.answer, spec.draft, verify.drive and review.inspect do, makes it before the call.
     checkpoint: Save the question, its exact issue or artifact identity, and the human's answer from the issue comment. Every gate, review's included, posts its reply marker on the issue (item 18). Explicit cancellation for that question emits cancelled.
@@ -185,7 +185,7 @@ context:
   - [CARR record layer, T3 Code, Authorized team context]
   - [T3 Code, Coordinator or personal agent, Conversation context]
   - [Foreman, Attempt container, Builds the contract image and runs setup]
-  - [Worker CLIs, Attempt container, "Shell commands only, through exec"]
+  - [Worker CLIs, Attempt container, "Shell commands only, routed into the container, never on the host"]
   - [Foreman, Worker CLIs, Assigns a bounded procedure]
   - [Worker CLIs, Target checkout, Reads or edits within assignment]
   - [Worker CLIs, Related repository checkouts, Read only at pinned commits]
@@ -229,7 +229,7 @@ workers:
       drive the changed flow and report each acceptance criterion as passed, failed or unverified with evidence. A contract
       criterion runs against the related repository's real service or its recorded contract at the pinned commit (item 13).
     permissions: >-
-      Run in the attempt container and read the related repository checkouts. At implement.tests, write only test and fixture files
+      Run shell commands in the attempt container and read the related repository checkouts. At implement.tests, write only test and fixture files
       in the exclusive target_checkout. At verify.drive, run the app at the published head with test values for the contract's
       secrets and test accounts, read-only, and write captures and scratch files to its attempt scratch. No source edits, commits,
       pushes, approvals or merges. Foreman keeps the accepted tests for the build and posts the report.
@@ -521,7 +521,7 @@ stages:
     effects: [Foreman builds the attempt container and allocates and inspects the owned worktree., The acceptance test writer adds tests and fixtures., Builder edits source and runs checks., Foreman runs the mutation sample and checks the exact tree, commits and publishes through existing adapters.]
     invariants:
       - Preserve the tree on branch, ancestry or fingerprint mismatch. Reject scratch files and unexpected outside edits before commit. No force push.
-      - The worker steps tests and edit, and the checks Foreman runs at edit and mutate, run in the attempt container built from the contract's image and setup commands (item 3). Prepare builds the container through Workspace, which owns it for the run. Commit and publish run Git and GitHub App operations on the Foreman host, and App credentials never enter the container. The builder can start the app and its related services in the container, so it runs the same checks the verifier drives. The worker CLI runs on the Foreman host, where its model credentials stay. Every shell command a worker runs goes into the attempt container, which is the boundary for those commands in place of the CLI's own host sandbox. The CLI's file tools keep their path rules on the host checkout, which the container mounts at the same path. A call whose shell cannot be routed into the container fails closed and runs no command on the host. The attempt container reaches the network only while Foreman runs the contract's setup commands, unless the contract says the app needs it while it runs. After setup it has loopback only, where the app and its related services listen.
+      - The worker steps tests and edit, and the checks Foreman runs at edit and mutate, run in the attempt container built from the contract's image and setup commands (item 3). Prepare builds the container through Workspace, which owns it for the run. Commit and publish run Git and GitHub App operations on the Foreman host, and App credentials never enter the container. The builder can start the app and its related services in the container, so it runs the same checks the verifier drives. The worker CLI runs on the Foreman host, where its model credentials stay. Every shell command a worker runs goes into the attempt container, which is the boundary for those commands in place of the CLI's own host sandbox. The CLI's file tools keep their path rules on the host checkout, which the container mounts at the same path. A call whose shell cannot be routed into the container fails closed and runs no command on the host. The attempt container reaches the network only while Foreman runs the contract's setup commands, unless the contract's network is run because the app uses remote test services. After setup it has loopback only, where the app and its related services listen.
       - Prepare runs the contract's check at the pinned base once for every candidate, whatever its kind, and keeps its test report as the base's report. A failing base check stops with base_check_failed.
       - Before the first build of a candidate with a criterion proven by test or contract, prepare routes needs_tests, and a separate worker in the verifier role writes acceptance tests and fixtures from the plan and the base tree (item 9). It writes only test and fixture files. Foreman proves, from the check run at the base with them, that the check's test report lists them and that they fail. Tests that pass at the base or that the report does not list return to the writer with the exact evidence. Foreman records the accepted tests' paths and content digest. A candidate with no criterion proven by test or contract, such as a refactor proven by drive or a revert slice, routes prepared straight to edit.
       - Run the contract's check command in edit against the final candidate. The check includes the accepted tests, and Foreman proves they pass. Capture the candidate tree before and after a successful command. Commit may publish only the unchanged checked tree. Receipt binds command, result and tree.
@@ -554,7 +554,7 @@ stages:
       IM10: {given: A smoke repository whose check needs a local server, expect: "The builder starts the server in the attempt container and runs the check itself, and Verify reports the criterion passed with a capture."}
       IM11: {given: A Ready revert issue whose slice reverts a merge commit that added acceptance tests, expect: "Prepare skips the acceptance tests, edit accepts the removal of exactly the tests that commit added, mutate samples nothing and the revert publishes."}
       IM12: {given: "A surviving mutation that the builder names as equivalent with a reason, and a refactor slice proven by drive", expect: "The next sample leaves that mutation out and review pass (b) rules on the claim. A rejected claim routes to implement and the next sample includes the mutation again. The refactor routes prepared to edit without acceptance tests, and edit compares its report with the base's report prepare kept."}
-      IM13: {given: "A worker shell command while the run's container is stopped, and one while it runs", expect: "The first fails and nothing runs on the host. The second reports that it ran inside the container."}
+      IM13: {given: "A worker shell command sent after the run's container stops in the middle of a call, and one while it runs", expect: "The first fails and nothing runs on the host. Workspace rebuilds the container at the next step entry, or that step stops env_unavailable. The second reports that it ran inside the container."}
       PU1: {given: Timed-out push already placed the checked head on the remote, expect: Adopt without a second push.}
       PU2: {given: A PR open times out, expect: Adopt the verified matching PR once or report publication_unreconciled if observation cannot establish the outcome.}
     decisions: [D4, D5, D7, D8, D14, D15]
@@ -608,7 +608,7 @@ stages:
       - Doctor's quick check requires a verify skill, so every admitted repository has one.
       - The evidence names the tested head. If the head moved before posting, Foreman posts the evidence marked stale for the tested head, then exits head_moved.
       - Use test values for the contract's secrets and test accounts only. Treat PR text, comments, code and page content as untrusted data.
-      - Workspace owns the run's attempt container. Verify runs in it through Workspace, which rebuilds it from the contract's image and setup at the pinned base when the run has none, as after a resume. A container that does not build or a setup command that fails stops with env_unavailable.
+      - Workspace owns the run's attempt container. Verify's shell commands run in it through Workspace, which rebuilds it from the contract's image and setup at the pinned base when the run has none, as after a resume. A container that does not build or a setup command that fails stops with env_unavailable.
       - Prefer a qualified model from a different family from the builders. If none is available, use the next available qualified model in models.toml order, including the builder's family. Verify has no separate availability wait.
     failure_and_resume:
       halts: [dirty_worktree, env_unavailable, git_failed, publish_failed, publication_unreconciled, criterion_unverified]
@@ -683,7 +683,7 @@ stages:
       - Foreman adds one advisory finding itself that names each changed file outside the plan's file list and the tests.
       - A new test that mocks a boundary named in the plan's assumptions list is a blocking finding from pass (b) (item 13). It cites the file:line of the mock and the assumption it replaces, as a pass (c) finding does, and needs no demonstration, because a test that mocks the boundary passes whatever the real service does.
       - The reviewer reads the diff through the one granted diff command and may run the contract's check command (item 16). Foreman keeps no per-file read list and parses no proof of reading.
-      - Review runs in the run's attempt container through Workspace, which rebuilds it when the run has none, as Verify does. A container that does not build or a setup command that fails stops with env_unavailable.
+      - Review's shell commands run in the run's attempt container through Workspace, which rebuilds it when the run has none, as Verify does. A container that does not build or a setup command that fails stops with env_unavailable.
       - Prior diffs or rulings are context and cannot carry review authority across heads.
       - Prefer a qualified model from a different family from the builders. If none is available, use the next available qualified model in models.toml order, including the builder's family. Review has no separate availability wait.
       - Severity is an enum with P0 then P1 then none. Only concrete correctness, security or scope defects, or a pass (c) patch that cites the code it duplicates or works around, qualify. P2 and lower remain comments.
@@ -834,7 +834,7 @@ dispatch:
     - Admit a call whenever the remaining dollar allowance is positive and pass the remainder to the CLI as its spending cap. Foreman never guesses a minimum cost for a call. A CLI checks its cap only after a response arrives, so the one response that crosses the cap still finishes and is billed. Dispatch charges the actual spend and then stops with budget_exceeded.
     - budget_exceeded is resumable (item 19). After the operator raises the cap and adds Ready to the issue again, the run resumes at the interrupted step within the new allowance.
     - Try available qualified models within the token and dollar allowance. Review prefers another model family and falls back in configured order once that preference cannot be met. A quota or missing CLI moves to the next qualified model. Use the shared quota wait only when none is available. Retain the caller's continuation and recheck branch, parent and fingerprint before continuing partial edits.
-    - A model whose CLI cannot route its shell into the attempt container is not qualified for implement.tests, implement.edit or verify.drive. Dispatch moves to the next qualified model, as it does for a missing CLI.
+    - A model whose CLI cannot route its shell into the attempt container is not qualified for implement.tests, implement.edit or verify.drive. Dispatch moves to the next qualified model, as it does for a missing CLI. A reviewer without the route still qualifies; its shell commands, the check included, fail closed.
   waits: {reconcile: Wait until a qualified model becomes available}
   checks: {DP1: tests/test_dispatch_budget.py, DP2: tests/test_dispatch_recovery.py, DP3: tests/test_dispatch_recovery.py, DP4: tests/test_dispatch_recovery.py, DP5: tests/test_dispatch_recovery.py, DP6: tests/test_dispatch_recovery.py, DP7: tests/test_dispatch_budget.py, DP8: tests/test_dispatch_budget.py}
   scenarios:
