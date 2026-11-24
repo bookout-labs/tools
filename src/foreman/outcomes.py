@@ -9,6 +9,12 @@ if TYPE_CHECKING:
     from foreman.state import DeliveryUpdate
 
 
+# A paused run waits for worker capacity or for GitHub. A later run resumes the same step, or restarts a waiting merge stage.
+PAUSES = frozenset({"quota_exhausted", "merge_pending"})
+# The drawing's terminal outcomes other than halted.
+RELEASED_STOPS = frozenset({"answered", "children_filed", "merged", "closed", "cancelled", "no_change"})
+
+
 class Halt(StrEnum):
     invalid_output = auto()
     verify_cap = auto()

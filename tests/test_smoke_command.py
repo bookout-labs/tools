@@ -16,9 +16,10 @@ import unittest
 from unittest.mock import patch, Mock
 
 from foreman.cli import main
-from foreman.github import BOT_LOGIN, ForgeError, LiveForge
+from foreman.github import BOT_LOGIN, ForgeError, IssueComment, LiveForge
 from foreman.readiness import MergeState
 from foreman.smoke_command import SMOKE_REPO, SMOKE_TOKEN_CAP, SMOKE_CLAUDE_USD, run_smoke, smoke_command
+from foreman.status import STATUS_MARKER
 from tests.test_smoke import passing
 
 
@@ -40,6 +41,9 @@ class SmokeCommandTest(unittest.TestCase):
                 forge.return_value.create_issue.return_value = 17
                 forge.return_value.default_branch.return_value = "trunk"
                 forge.return_value.smoke_identity.return_value = (True, True, True)
+                forge.return_value.load_issue.return_value = {"labels": ["smoke", "Doing"]}
+                forge.return_value.issue_comment_records.return_value = [IssueComment.model_validate(
+                    {"id": 1, "user": {"login": BOT_LOGIN}, "body": f"Foreman is running merge.\n\n{STATUS_MARKER}"})]
                 yield root, forge.return_value, process, runner, credentials, errors
 
     def test_cli_routes_to_smoke(self):
@@ -70,6 +74,12 @@ class SmokeCommandTest(unittest.TestCase):
             forge.smoke_identity.reset_mock()
             self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
             forge.smoke_identity.assert_called_once()
+            # The armed fixture shows only Doing and one status comment.
+            for labels, comments in ((["smoke", "Doing", "Done"], 1), (["smoke", "Ready"], 1), (["smoke", "Doing"], 2)):
+                with self.subTest(labels=labels, comments=comments):
+                    forge.load_issue.return_value = {"labels": labels}
+                    forge.issue_comment_records.return_value = forge.issue_comment_records.return_value[:1] * comments
+                    self.assertEqual(run_smoke(root, time.monotonic() + 30), 1)
 
     def test_cleanup_failure_stops_before_filing_and_reports_error(self):
         with self.provision() as (root, forge, process, runner, credentials, errors):
@@ -78,7 +88,7 @@ class SmokeCommandTest(unittest.TestCase):
                 self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
             self.assertIn('smoke exit 78 cleanup attempt prerequisite', output.getvalue())
             self.assertIn('cleanup denied', errors.getvalue())
-            forge.ensure_smoke_label.assert_called_once_with(SMOKE_REPO)
+            forge.ensure_label.assert_called_once_with(SMOKE_REPO, "smoke", "ededed")
             forge.create_issue.assert_not_called()
             runner.assert_not_called()
 
@@ -353,7 +363,6 @@ class SmokeCommandTest(unittest.TestCase):
             transport.smoke_identity = Mock(return_value=(True, True, True))
             transport.smoke_issues = Mock(return_value=[])
             transport.smoke_pull_requests = Mock(return_value=[])
-            transport.ensure_smoke_label = Mock()
             handler = ScriptHandler()
             workspace = FakeWorkspace(root / 'checkout')
             workspace.run = Mock(return_value=0)

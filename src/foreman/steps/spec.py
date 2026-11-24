@@ -9,7 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.config import family
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.github import READY_LABEL, ForgeError, human_comments, render_slice_body
+from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, human_comments, render_slice_body
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
@@ -166,9 +166,12 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             numbers[child.title] = number
             children.append((number, child))
         # Every child carries Ready once every child and link is confirmed. Admission waits for its prerequisites.
+        # A child that already shows any run label was released, so a retry never puts Ready back on a started child.
         for number, _ in children:
-            if not ensure(lambda: READY_LABEL in forge.load_issue(repo, number)["labels"],
-                          lambda: forge.add_label(repo, number, READY_LABEL)):
+            def release() -> None:
+                forge.ensure_label(repo, READY_LABEL, RUN_LABELS[READY_LABEL])
+                forge.edit_labels(repo, number, [READY_LABEL], [])
+            if not ensure(lambda: any(label in RUN_LABELS for label in forge.load_issue(repo, number)["labels"]), release):
                 return unreconciled(f"GitHub does not show #{number} released.")
     except ForgeError as exc:
         return unreconciled(f"GitHub could not confirm the children of #{parent} for {revision} ({exc}).")

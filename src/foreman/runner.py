@@ -19,7 +19,7 @@ from pydantic import TypeAdapter
 
 from foreman._raw import is_dict
 from foreman.config import SkillPin, load_config
-from foreman.outcomes import HALTS, Halt, RESUMABLE_HALTS
+from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, halted, read_delivery_state
 from foreman.readiness import MergeState, MergeWait
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
@@ -28,6 +28,7 @@ from foreman.skill_rules import SkillMissing
 from foreman.github import ForgeError, human_comments
 from foreman.watch import run_key, watch
 from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
+from foreman.status import Status, running, status_of, write_status
 from foreman.steps import implement
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import WorkState, WorkspaceError, lock_file
@@ -35,8 +36,6 @@ from foreman.worker import AttemptJournal, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
-# A paused run waits for worker capacity or for GitHub. A later run resumes the same step, or restarts a waiting merge stage.
-PAUSES = frozenset({"quota_exhausted", "merge_pending"})
 STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size")
 # Each step a stage records in the path, so a halt inside a stage resumes that stage.
 STEP_STAGES = {"admit": "triage", "triage": "triage", "research": "research", "post": "research",
@@ -81,7 +80,7 @@ def snapshot_result(snapshot: StateSnapshot) -> DeliveryResult:
         prompt = parse_output(HumanPrompt, pause)
         question = prompt.question
         if prompt.revision:
-            question += f"\n\nReply on the issue under the configured GitHub identity. Start with {prompt.answer_marker} and put the answer on the next line."
+            question += f"\n\n{prompt.reply}"
         return read_delivery_state({**values, "stop": "needs_human", "halt_detail": question,
                                     "models_used": {**values.get("models_used", {}), **prompt.models_used},
                                     "path": [*values["path"], *prompt.path],
@@ -134,10 +133,6 @@ def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: Bu
     if run_state.token_cap is None:
         raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run without --answer and with XDG_STATE_HOME set to a new directory.")
     require_same_budget(run_state.max_budget_usd, max_budget_usd)
-
-
-# The drawing's terminal outcomes other than halted.
-RELEASED_STOPS = frozenset({"answered", "children_filed", "merged", "closed", "cancelled", "no_change"})
 
 
 class IssueLocked(ValueError):
@@ -258,13 +253,34 @@ def run_live_delivery(
                 early_result = read_delivery_state(skill_halt)
             else:
                 graph.update_state(config, skill_halt, as_node="triage")
+        def mirror(status: Status) -> None:
+            """The issue shows the checkpoint's state. A GitHub failure here never changes the run."""
+            try:
+                write_status(client, repo, issue, status)
+            except ForgeError as exc:
+                log(f"status not written: {exc}")
+
+        mirrored: list[str | None] = [None]
+
         def invoke(graph_input: DeliveryState | Command[str] | None, invocation_config: RunnableConfig = config) -> None:
             for part in graph.stream(
                 graph_input, invocation_config, context=run,
-                durability="sync", stream_mode="updates", version="v2",
+                durability="sync", stream_mode=["updates", "tasks"], subgraphs=True, version="v2",
             ):
-                if presentation is not None:
-                    for node, raw in part["data"].items():
+                namespace, data = part["ns"], part["data"]
+                if part["type"] == "tasks":
+                    if "input" not in data:
+                        continue
+                    # A task's start carries its input. The first task of each stage on an admitted run shows Doing,
+                    # including the admitted triage task that routes, whose base only its subgraph holds.
+                    stage = namespace[0].split(":")[0] if namespace else data["name"]
+                    task_input: object = data["input"]
+                    target = task_input.get("run") if is_dict(task_input) else None
+                    if isinstance(target, RunState) and target.base_sha and stage != mirrored[0]:
+                        mirrored[0] = stage
+                        mirror(running(stage))
+                elif presentation is not None and not namespace:
+                    for node, raw in data.items():
                         if not node.startswith("__") and raw is not None:
                             presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
@@ -293,6 +309,9 @@ def run_live_delivery(
                                                     "stop": Halt.git_failed})
         pause: object = saved.interrupts[0].value if saved.interrupts else None
         waiting = is_dict(pause) and pause.get("reason") in PAUSES
+        if waiting:
+            # A wake that resumes the paused stage keeps its waiting status, so the comment does not flap.
+            mirrored[0] = STEP_STAGES.get(snapshot_result(saved)["path"][-1])
         merge_wait = is_dict(pause) and pause.get("reason") == "merge_pending"
         prompt: HumanPrompt | None = None
         if saved.interrupts and not waiting and saved_values is not None and early_result is None:
@@ -418,4 +437,11 @@ def run_live_delivery(
                         graph.update_state(config, {"watch": record}, as_node="triage")
                         result["watch"] = record
                         log(f"watch {record['action']} #{record['issue']}")
+        # An early result was never saved, so the issue keeps the status its checkpoint last showed.
+        if early_result is None:
+            pending = saved.interrupts[0].value if saved.interrupts else None
+            prompt = parse_output(HumanPrompt, pending) if result["stop"] == "needs_human" and pending is not None else None
+            last = prompt.stage if prompt is not None else STEP_STAGES.get(next(iter(result["path"][-1:]), ""))
+            if (status := status_of(result, last, prompt, watch_repo)) is not None:
+                mirror(status)
         return result

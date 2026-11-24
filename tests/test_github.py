@@ -254,10 +254,55 @@ class LiveForgeTest(unittest.TestCase):
             self.assertIsInstance(exc.exception.__cause__, ValidationError)
 
     @patch("foreman.github.subprocess.run")
-    def test_add_label_preserves_existing_labels(self, run):
+    def test_edit_labels_adds_and_removes_in_one_edit_and_keeps_other_labels(self, run):
         run.return_value = gh_result("")
-        LiveForge().add_label("Example/Engine", 2, "Ready")
+        forge = LiveForge()
+        forge.edit_labels("Example/Engine", 2, ["Ready"], [])
         self.assertEqual(run.call_args.args[0], ["gh", "issue", "edit", "2", "--repo", "Example/Engine", "--add-label", "Ready"])
+        forge.edit_labels("Example/Engine", 2, ["Needs answer"], ["Ready", "Doing"])
+        self.assertEqual(run.call_args.args[0], ["gh", "issue", "edit", "2", "--repo", "Example/Engine",
+                                                 "--add-label", "Needs answer", "--remove-label", "Ready,Doing"])
+        forge.edit_labels("Example/Engine", 2, [], ["Doing"])
+        self.assertEqual(run.call_args.args[0], ["gh", "issue", "edit", "2", "--repo", "Example/Engine", "--remove-label", "Doing"])
+
+    @patch("foreman.github.subprocess.run")
+    def test_ensure_label_creates_only_a_missing_label(self, run):
+        read = ["gh", "api", "repos/Example/Engine/labels/Needs%20answer"]
+        create = ["gh", "api", "repos/Example/Engine/labels", "--method", "POST", "-f", "name=Needs answer", "-f", "color=d93f0b"]
+        missing = subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+        for responses, commands in (
+            ([gh_result("{}")], [read]),  # An existing label keeps its color.
+            ([missing, gh_result("{}")], [read, create]),
+            ([missing, subprocess.CompletedProcess([], 1, "", "gh: Validation Failed (HTTP 422)")], [read, create]),
+        ):
+            with self.subTest(commands=len(commands)):
+                run.reset_mock()
+                run.side_effect = responses
+                LiveForge().ensure_label("Example/Engine", "Needs answer", "d93f0b")
+                self.assertEqual([entry.args[0] for entry in run.call_args_list], commands)
+        run.side_effect = [subprocess.CompletedProcess([], 1, "", "gh: Forbidden (HTTP 403)")]
+        with self.assertRaises(CommandFailed):
+            LiveForge().ensure_label("Example/Engine", "Doing", "1d76db")
+
+    @patch("foreman.github.subprocess.run")
+    def test_upsert_comment_converges_foreman_own_status_comment(self, run):
+        marker, head, token = "<!-- foreman status -->", "4f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d", "ghp_" + "A" * 36
+        # Full redaction would wipe a real SHA, so a fact keeps it while credentials are still removed.
+        body = f"Done with [redacted:GitHub Token].\n\nVerified head: {head}\n\nLeak: [redacted:GitHub Token]\n\n{marker}"
+        read = ["gh", "api", f"repos/{REPO}/issues/8/comments?per_page=100", "--paginate", "--slurp"]
+        post = ["gh", "api", f"repos/{REPO}/issues/8/comments", "--method", "POST", "-f", f"body={body}"]
+        patch_six = ["gh", "api", f"repos/{REPO}/issues/comments/6", "--method", "PATCH", "-f", f"body={body}"]
+        human = {"id": 5, "user": {"login": "octocat"}, "body": f"Quoting {marker}"}
+
+        def own(text):
+            return {"id": 6, "user": {"login": "bookout-labs-foreman[bot]"}, "body": text}
+
+        for existing, writes in (([human], [post]), ([human, own(f"Older.\n\n{marker}")], [patch_six]), ([own(body)], [])):
+            with self.subTest(writes=writes):
+                run.reset_mock()
+                run.side_effect = [gh_result(json.dumps([existing])), gh_result("{}")]
+                LiveForge().upsert_comment(REPO, 8, f"Done with {token}.", [f"Verified head: {head}", f"Leak: {token}"], marker=marker)
+                self.assertEqual([entry.args[0] for entry in run.call_args_list], [read, *writes])
 
     @patch("foreman.github.subprocess.run")
     def test_create_issue_parses_the_number_and_passes_literal_fields(self, run):

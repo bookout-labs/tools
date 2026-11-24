@@ -25,8 +25,9 @@ from foreman.github import ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
-from foreman.outcomes import Halt, exit_code
-from foreman.runner import PAUSES, AnswerError, IssueLocked, RunPresentation, issue_lock, issue_thread, run_live_delivery, saved_workspace
+from foreman.outcomes import PAUSES, Halt, exit_code
+from foreman.status import Status, write_status
+from foreman.runner import AnswerError, IssueLocked, RunPresentation, issue_lock, issue_thread, run_live_delivery, saved_workspace
 from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
@@ -363,7 +364,15 @@ def main(
                     print(f"already started {thread}")
                     return 0
                 forge = live_run.forge if live_run is not None else LiveForge()
-                settings = RunSettings.from_variables(forge.variables(args.repo))
+                try:
+                    settings = RunSettings.from_variables(forge.variables(args.repo))
+                except ValueError as exc:
+                    # The issue says which setting Ready waits for, once. A delivery that outlived Ready writes nothing.
+                    try:
+                        write_status(forge, args.repo, args.issue, Status(None, f"Foreman cannot start this issue. {exc}"))
+                    except ForgeError as error:
+                        _write_run_log(f"status not written: {error}", file=sys.stderr)
+                    raise
                 return live(args.repo, args.issue, settings, LiveWorkspace.managed(state_home, args.repo, args.issue))
         except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)

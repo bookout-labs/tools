@@ -31,15 +31,16 @@ from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
-from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body
+from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
+from foreman.status import STATUS_MARKER
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
-from foreman.runner import AnswerError, RunPresentation, run_live_delivery, snapshot_result
+from foreman.runner import AnswerError, RunPresentation, issue_thread, run_live_delivery, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
 from foreman.worker import CliWorker, run_worker_command
-from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply
 from test_adapters import codex_events, fixture_process, worker_process
 from test_spec_candidate import CandidateTests
@@ -227,6 +228,11 @@ class FakeGitHub:
         self.closed = set()
         self.merged = set()
         self.label_calls = []
+        self.created_labels: list[str] = []
+        self.status: dict[tuple[str, int], str] = {}
+        self.status_writes: list[tuple[str, int, str]] = []
+        # The labels each issue shows once Foreman has edited them. Other issues show the fixture's labels.
+        self.edited: dict[int, list[str]] = {}
         self.issue_labels: dict[int, list[str]] = {}
         self.issue_repos: dict[int, str] = {}
         self.bodies: dict[tuple[str, int], str] = {}
@@ -296,7 +302,8 @@ class FakeGitHub:
         if number in self.issue_labels:
             title, body, _ = self.created[number - 101]
             return {"repo": repo, "number": number, "title": title, "body": self.bodies.get((repo, number), body), "labels": self.issue_labels[number]}
-        return {"repo": repo, "number": number, "title": "Issue title", "body": self.bodies.get((repo, number), self.body), "labels": self.labels}
+        return {"repo": repo, "number": number, "title": "Issue title", "body": self.bodies.get((repo, number), self.body),
+                "labels": list(self.edited.get(number, self.labels))}
 
     def open_issues(self, repo) -> list[OpenIssue]:
         return [OpenIssue(number=number, body=self.bodies[repo, number])
@@ -352,7 +359,16 @@ class FakeGitHub:
         body = os.environ.get("FOREMAN_FIXTURE_RULING")
         relayed = [IssueComment.model_validate({"user": {"login": "fixture-owner"}, "body": body})] if body else []
         posted = [IssueComment.model_validate({"user": {"login": BOT_LOGIN}, "body": text}) for text in self.comments.get((repo, number), [])]
-        return [*relayed, *self.rulings, *posted]
+        status = [IssueComment.model_validate({"id": 1, "user": {"login": BOT_LOGIN}, "body": self.status[repo, number]})] if (repo, number) in self.status else []
+        return [*relayed, *self.rulings, *posted, *status]
+
+    def upsert_comment(self, repo, number, text, facts, *, marker):
+        body = status_body(text, facts, marker)  # As LiveForge writes it.
+        self._fail("upsert_comment", after_write=False)
+        if self.status.get((repo, number)) != body:
+            self.status[repo, number] = body
+            self.status_writes.append((repo, number, body))
+        self._fail("upsert_comment", after_write=True)
 
     def ruling(self, body, login="fixture-owner"):
         self.rulings.append(IssueComment.model_validate({"user": {"login": login}, "body": body}))
@@ -411,9 +427,27 @@ class FakeGitHub:
             for dependent, blockers in self.dependencies.items() if number in blockers
         ]
 
-    def add_label(self, repo, number, label):
-        self.label_calls.append((repo, number, label))
-        self.issue_labels[number].append(label)
+    def ensure_label(self, repo, name, color):
+        if name not in self.created_labels:
+            self.created_labels.append(name)
+
+    def edit_labels(self, repo, number, add, remove):
+        self._fail("edit_labels", after_write=False)
+        assert all(label in self.created_labels for label in add), "A label is created before it is added."
+        self.label_calls.append((repo, number, add, remove))
+        labels = self.issue_labels[number] if number in self.issue_labels else self.edited.setdefault(number, list(self.labels))
+        labels[:] = [label for label in labels if label not in remove] + [label for label in add if label not in labels]
+
+    def release_labels(self, run_issue=8):
+        """Label writes on issues other than the run's own, whose labels the status mirror writes."""
+        return [call for call in self.label_calls if call[1] != run_issue]
+
+    def ready_again(self, number):
+        """A human puts Ready on an issue a run labelled, which starts a fresh run."""
+        labels = self.issue_labels.get(number, self.edited.get(number))
+        if labels is not None and any(label in RUN_LABELS for label in labels):
+            labels[:] = [label for label in labels if label not in RUN_LABELS] + ["Ready"]
+        self._fail("edit_labels", after_write=True)
 
 
 class CliWorkerTest(unittest.TestCase):
@@ -735,6 +769,8 @@ class LiveRunnerTest(unittest.TestCase):
         self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
 
     def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(), workspace: Workspace | None = None, skills=export_skills, presentation=None):
+        if saved_workspace(self.checkpoint, issue_thread("Example/Engine", issue)) is None:
+            self.github.ready_again(issue)  # A fresh run starts from Ready.
         if answer is not None and "foreman answer " in self.question:
             # The coordinator relays the human's answer to the paused question under their identity.
             self.github.answer(self.question, answer)
@@ -1007,6 +1043,7 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(self.checkpoint.read_bytes(), old_bytes)
                 other_command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "9", "--check", "exit 0"]
                 replies = iter([{"triage": "question"}, {"research": "Other answer"}])
+                self.github.ready_again(9)
                 with (contextlib.chdir(self.cwd),
                       patch.dict(os.environ, XDG_STATE_HOME=str(state_home)),
                       contextlib.redirect_stdout(io.StringIO()) as stdout):
@@ -1023,6 +1060,7 @@ class LiveRunnerTest(unittest.TestCase):
                 fresh_home = self.cwd / f"fresh-{version}"
                 fresh_checkpoint = fresh_home / "foreman" / "checkpoints.sqlite3"
                 replies = iter([{"triage": "question"}, {"research": "Fresh answer"}])
+                self.github.ready_again(8)
                 with (patch.dict(os.environ, XDG_STATE_HOME=str(fresh_home)),
                       contextlib.redirect_stdout(io.StringIO()) as stdout):
                     code = main(command, live_run=live_run,
@@ -1173,7 +1211,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.assertEqual((result["stop"], result["merge"].observed_head), ("merged_unreviewed", "c" * 40))
         self.assertIn("No delivery credit or dependent release", result["halt_detail"])
-        self.assertEqual(self.github.label_calls, [])
+        self.assertEqual(self.github.release_labels(), [])
         # The merge cannot be undone by a retry, so the run ends and a watch tells a person.
         self.assertEqual(run_exit_code(result), 1)
         self.assertEqual(result["watch"]["action"], "filed")
@@ -1244,7 +1282,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertIn(f"done blocked\nOpen blockers: https://github.com/Example/Engine/issues/{other}", blocked[1])
         self.assertEqual(start(names[0]), (0, f"already started example/engine#{dependent}\n"))
         self.assertEqual(next(replies, None), None)
-        self.assertEqual(self.github.label_calls, [])
+        # Each run labels only its own issue, and release labels none: the blocked dependent keeps Ready.
+        self.assertEqual({number for _, number, _, _ in self.github.label_calls}, {8, dependent})
+        self.assertEqual(self.github.load_issue("Example/Engine", waiting)["labels"], ["slice", "Ready"])
 
     def test_each_merge_wake_reads_github_once(self):
         # A wake restarts the waiting stage, so it never replays the reads of earlier wakes.
@@ -1311,7 +1351,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         # One read of the issue's blocking list. A broken slice is still named, because admission halts it with evidence.
         self.assertEqual(read.call_count, 1)
         self.assertEqual(result["released"], [f"Example/Engine#{local}", "Example/Other#3"])
-        self.assertEqual(self.github.label_calls, [])
+        self.assertEqual(self.github.release_labels(), [])
 
     def test_release_read_failure_resumes_and_still_ends_merged(self):
         self.github.dependencies = {101: [8]}
@@ -1380,7 +1420,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual((result["stop"], result["merge"].status, run_exit_code(result)), ("closed", "closed", 1))
         self.assertNotIn("halt", result)
         self.assertEqual(result["path"][-1], "merge")
-        self.assertEqual(self.github.label_calls, [])
+        self.assertEqual(self.github.release_labels(), [])
 
     def test_review_answer_survives_failed_post_and_fresh_process(self):
         script = r"""
@@ -1631,7 +1671,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertIn("done skill_missing", stdout.getvalue())
         self.assertIn(f"method missing at pin ({absent})", stdout.getvalue())
         self.assertIn(commit, stdout.getvalue())
-        load_issue.assert_not_called()
+        # Only the status mirror reads the issue, after the halt.
+        load_issue.assert_called_once_with("Example/Engine", 8)
         worker.assert_not_called()
 
     def test_empty_or_truncated_method_halts_before_dispatch(self):
@@ -1659,7 +1700,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertIn(commit, result.get("halt_detail", ""))
                 self.assertIn(detail, result.get("halt_detail", ""))
                 self.assertEqual(self.calls, [])
-                load_issue.assert_not_called()
+                # Only the status mirror reads the issue, after the halt.
+                load_issue.assert_called_once_with("Example/Engine", 8)
 
     def test_unavailable_pin_has_a_distinct_reason(self):
         commit = "f" * 40
@@ -1791,7 +1833,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual([x[0] for x in self.github.created], [BUILDER["title"], CONSUMER["title"]])
         # Children are created unreleased. Every child gets the Ready label after every link and returns to admission.
         self.assertEqual([labels for _, _, labels in self.github.created], [["slice"], ["slice"]])
-        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready"), ("Example/Engine", 102, "Ready")])
+        self.assertEqual(self.github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
         self.assertEqual(result["released"], ["Example/Engine#101", "Example/Engine#102"])
         for text in (SLICE["acceptance"], SLICE["screen"], "unique_item_id"):
             self.assertIn(text, self.github.created[0][1])
@@ -1813,7 +1855,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(resumed["stop"], "children_filed")
         self.assertEqual([child.number for child in self.github.sub_issues("Example/Engine", 8)], [101, 102])
         self.assertEqual(len(self.github.created), 2)
-        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready"), ("Example/Engine", 102, "Ready")])
+        self.assertEqual(self.github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
         self.assertEqual(resumed["released"], ["Example/Engine#101", "Example/Engine#102"])
         self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
         # The child carries Ready, and its open blocker keeps it unadmitted.
@@ -1831,7 +1873,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         # The finished parent run files and labels nothing more. Merge release names the dependents to admit.
         self.assertEqual(self.walk([])["stop"], "children_filed")
         self.assertEqual(self.github.dependencies, {102: [101]})
-        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready"), ("Example/Engine", 102, "Ready")])
+        self.assertEqual(self.github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
         child = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], issue=102)
         self.assertEqual(child["stop"], "merged", child.get("halt_detail"))
         self.assertEqual(child["path"][:4], ["triage", "spec_check", "prepare", "implement"])
@@ -1971,14 +2013,122 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             }])
             self.assertEqual(halted["stop"], "publication_unreconciled")
             self.assertEqual(halted["halt_detail"], "GitHub does not show #101 blocking #102.")
-            self.assertEqual(self.github.label_calls, [])
+            self.assertEqual(self.github.release_labels(), [])
             self.github.issue_labels[102].append("Ready")
             self.assertEqual(self.walk([], issue=102)["halt_detail"], "Planned blocker links are missing.")
             self.github.issue_labels[102].remove("Ready")
         self.assertEqual(self.walk([])["stop"], "children_filed")
-        self.assertEqual(self.github.label_calls, [("Example/Engine", 101, "Ready"), ("Example/Engine", 102, "Ready")])
+        self.assertEqual(self.github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
         self.assertEqual(len(self.github.created), 2)
         self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
+
+    def run_labels(self, issue=8):
+        return [label for label in self.github.load_issue("Example/Engine", issue)["labels"] if label in RUN_LABELS]
+
+    def test_the_issue_shows_one_run_label_and_one_status_comment_across_the_run(self):
+        paused = self.walk([{"triage": "needs_human", "human_question": "Which items?"}])
+        self.assertEqual(paused["stop"], "needs_human")
+        self.assertEqual(self.run_labels(), ["Needs answer"])
+        status = self.github.status["Example/Engine", 8]
+        self.assertIn("Which items?", status)
+        self.assertRegex(status, r"Start with foreman answer [0-9a-f-]{71} and put the answer on the next line")
+        merged = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], answer="All items.")
+        self.assertEqual(merged["stop"], "merged")
+        self.assertEqual(self.run_labels(), ["Done"])
+        self.assertEqual([(add, remove) for _, _, add, remove in self.github.label_calls],
+                         [(["Doing"], ["Ready"]), (["Needs answer"], ["Doing"]), (["Doing"], ["Needs answer"]), (["Done"], ["Doing"])])
+        self.assertEqual(self.github.created_labels, ["Doing", "Needs answer", "Done"])
+        # Each admitted stage that starts shows on the issue, then the outcome with its links.
+        bodies = [body.split("\n\n")[0] for _, _, body in self.github.status_writes]
+        self.assertEqual(bodies, ["Foreman is running triage.", "Foreman needs an answer in triage.", "Foreman is running triage.",
+                                  "Foreman is running spec.", "Foreman is running implement.", "Foreman is running review.",
+                                  "Foreman is running merge.", "The reviewed pull request merged."])
+        status = self.github.status["Example/Engine", 8]
+        for fact in ("Pull request: #12", f"Verified head: {HEAD}", f"Merge commit: {MERGE_COMMIT}"):
+            self.assertIn(fact, status)
+        self.assertTrue(status.endswith(STATUS_MARKER))
+        owned = [c for c in self.github.issue_comment_records("Example/Engine", 8) if (c.body or "").endswith(STATUS_MARKER)]
+        self.assertEqual(len(owned), 1)
+        # A replay of the finished run writes nothing.
+        writes = (list(self.github.label_calls), list(self.github.status_writes))
+        self.assertEqual(self.walk([])["stop"], "merged")
+        self.assertEqual((self.github.label_calls, self.github.status_writes), writes)
+
+    def test_an_unadmitted_issue_keeps_ready_and_gets_no_status(self):
+        for labels, dependencies in ((["slice"], {}), (["slice", "Ready"], {8: [9]})):
+            with self.subTest(labels=labels), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint, self.github = Path(directory) / "runs.sqlite3", FakeGitHub(labels)
+                self.github.dependencies = dependencies
+                self.assertEqual(self.walk([])["stop"], "blocked")
+                self.assertEqual((self.github.label_calls, self.github.status), ([], {}))
+                self.assertEqual(self.github.load_issue("Example/Engine", 8)["labels"], labels)
+
+    def test_a_pause_stays_doing_and_the_checkpoint_corrects_a_human_label_race(self):
+        self.github.queue_merges = False
+        queued = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(queued["stop"], "merge_pending")
+        self.assertEqual(self.run_labels(), ["Doing"])
+        self.assertIn("waits for GitHub to merge the pull request", self.github.status["Example/Engine", 8])
+        self.assertIn("Pull request: #12", self.github.status["Example/Engine", 8])
+        # A duplicate wake resumes the paused stage and writes nothing.
+        writes = (list(self.github.label_calls), list(self.github.status_writes))
+        self.assertEqual(self.walk([])["stop"], "merge_pending")
+        self.assertEqual((self.github.label_calls, self.github.status_writes), writes)
+        # A human who swaps the run label mid-run changes nothing: the next write follows the checkpoint.
+        self.github.edited[8] = ["slice", "Done", "Ready"]
+        self.assertEqual(self.walk([])["stop"], "merge_pending")
+        self.assertEqual(self.github.load_issue("Example/Engine", 8)["labels"], ["slice", "Doing"])
+
+    def test_a_failed_status_write_never_changes_the_run_and_the_next_invocation_converges(self):
+        self.github.queue_merges = False
+        self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.github.queue_merges = True
+        # The label lands and the comment write fails, as a crash between them would leave it.
+        self.github.fail_next("upsert_comment")
+        merged = self.walk([])
+        self.assertEqual(merged["stop"], "merged")
+        self.assertEqual(self.run_labels(), ["Done"])
+        self.assertIn("waits for GitHub", self.github.status["Example/Engine", 8])
+        self.github.fail_next("edit_labels")
+        self.assertEqual(self.walk([])["stop"], "merged")
+        self.assertTrue(self.github.status["Example/Engine", 8].startswith("The reviewed pull request merged."))
+
+    def test_a_halt_before_admission_comments_and_keeps_ready_for_the_rerun(self):
+        with patch.object(self.github, "default_branch", side_effect=ForgeError("GitHub is unavailable.")):
+            halted = self.walk([])
+        self.assertEqual(halted["stop"], "git_failed")
+        self.assertEqual(self.github.label_calls, [])
+        self.assertEqual(self.github.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
+        self.assertIn("Foreman halted with git_failed.", self.github.status["Example/Engine", 8])
+        self.assertIn("Rerun Foreman on this issue to resume.", self.github.status["Example/Engine", 8])
+        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
+        self.assertEqual(self.run_labels(), ["Done"])
+
+    def test_an_unsaved_early_result_leaves_the_status_alone(self):
+        self.github.queue_merges = False
+        self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        writes = (list(self.github.label_calls), list(self.github.status_writes))
+        moved = FakeWorkspace(self.cwd)
+        moved.validate_origin = Mock(side_effect=WorkspaceError("origin moved"))
+        self.assertEqual(self.walk([], workspace=moved)["stop"], "git_failed")
+        self.assertEqual((self.github.label_calls, self.github.status_writes), writes)
+        self.assertEqual(self.run_labels(), ["Doing"])
+
+    def test_a_retried_release_never_puts_ready_back_on_a_started_child(self):
+        self.github = FakeGitHub(["Ready"])
+        edit = self.github.edit_labels
+
+        def unavailable_for_102(repo, number, add, remove):
+            if number == 102:
+                raise ForgeError("GitHub is unavailable.")
+            edit(repo, number, add, remove)
+        with patch.object(self.github, "edit_labels", side_effect=unavailable_for_102):
+            halted = self.walk([{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}])
+        self.assertEqual((halted["stop"], halted["halt_detail"]), ("publication_unreconciled", "GitHub does not show #102 released."))
+        self.github.issue_labels[101][:] = ["slice", "Doing"]  # The released child's own run started.
+        self.assertEqual(self.walk([])["stop"], "children_filed")
+        self.assertEqual(self.github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
+        self.assertEqual(self.github.issue_labels[101], ["slice", "Doing"])
 
     def test_injected_workers_reach_merge_after_a_real_check_in_the_repo(self):
         (self.cwd / "expected").touch()

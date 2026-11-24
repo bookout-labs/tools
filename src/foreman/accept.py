@@ -5,7 +5,7 @@ from typing import Literal
 from typing_extensions import TypedDict
 
 from foreman._raw import is_dict
-from foreman.github import READY_LABEL
+from foreman.github import BOT_LOGIN, READY_LABEL
 
 REPOSITORY = re.compile(r"[\w.-]+/[\w.-]+")
 
@@ -25,12 +25,18 @@ class AcceptError(ValueError):
 
 
 def accept_event(name: str, payload: object) -> IgnoreEvent | StartEvent:
-    """Start on an `issues` delivery whose added label is Ready on a real issue. Admission re-reads the issue live."""
+    """Start on an `issues` delivery whose added label is Ready on a real issue. Admission re-reads the issue live.
+
+    Foreman's own label writes never start a run, like Warp's default of skipping bot-authored events
+    (https://docs.warp.dev/factories/automation-triggers/). A child Spec labels Ready starts once, from its `start` line.
+    """
     if not is_dict(payload):
         raise AcceptError("payload must be a mapping")
     if name != "issues" or payload.get("action") != "labeled":
         return {"start": False}
-    label, issue, repository = payload.get("label"), payload.get("issue"), payload.get("repository")
+    label, issue, repository, sender = payload.get("label"), payload.get("issue"), payload.get("repository"), payload.get("sender")
+    if is_dict(sender) and isinstance(login := sender.get("login"), str) and login.casefold() == BOT_LOGIN.casefold():
+        return {"start": False}
     if not (is_dict(label) and is_dict(issue) and is_dict(repository)):
         raise AcceptError("an issues delivery needs label, issue and repository")
     # The added label decides, not the issue's full label list, and a pull request is never an issue run.

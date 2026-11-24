@@ -18,7 +18,8 @@ casts or suppressed diagnostics.
 The signatures follow langgraph/graph/state.py and langgraph/pregel/main.py in
 the installed distribution. They cover dictionary state updates, dataclass run
 contexts, string channel versions for SQLite, version v1 and v2 invocation results,
-and version v2 stream updates used to identify the current invocation's path entries.
+and version v2 stream updates and task events, with subgraphs, used to identify the
+current invocation's path entries and the stage each task belongs to.
 The update_state declaration includes as_node for dispatch recovery in #64.
 A compiled subgraph with no run context can be a node, and a graph without a
 run context omits context_schema, for the implement stage in #235. get_state

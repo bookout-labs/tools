@@ -21,11 +21,12 @@ from foreman.cli import main
 from foreman.state import SCHEMA_VERSION, DeliveryResult, checkpoint_serializer
 from foreman.credentials import CredentialFailure, credentials, git_auth
 from foreman.delivery import LiveRun
-from foreman.github import BOT_LOGIN, ForgeError, LiveForge
+from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, ForgeError, LiveForge
 from foreman.process_group import owned_group, signals_end_foreman
 from foreman.redaction import redact
 from foreman.readiness import MergeReceipt, MergeState
 from foreman.runner import run_live_delivery
+from foreman.status import shows
 from foreman.smoke import SmokeVerdict, smoke_verdict
 from foreman.smoke_ownership import cleanup_smoke, create_smoke_issue, smoke_lock
 from foreman.usd import BudgetUsd
@@ -131,7 +132,7 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
         forge = LiveForge()
         base_branch = forge.default_branch(repo)
         verdict = SmokeVerdict(78, "cleanup", "prerequisite")
-        forge.ensure_smoke_label(repo)
+        forge.ensure_label(repo, "smoke", "ededed")
         cleanup_smoke(forge, repo)
         verdict = SmokeVerdict(78, "bootstrap", "prerequisite")
         root = directory / "checkout"
@@ -226,6 +227,9 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
             verdict = SmokeVerdict(1, condition, "GitHub identity") if condition else checkpoint_verdict
             if not condition:
                 print(f"smoke identity {BOT_LOGIN} PR {receipt.pr} commit {receipt.source_head} COMMENT review {review['id']}", flush=True)
+                # The fixture's issue mirrors its saved run: only Doing while armed, or Done once merged, and one status comment.
+                if not shows(forge, repo, issue, DONE_LABEL if result["stop"] == "merged" else DOING_LABEL):
+                    verdict = SmokeVerdict(1, "status.issue", "GitHub issue status")
         print(f"smoke stop {result['stop']}; head {result['checks'].verified_head}; merge {result.get('merge')}", flush=True)
     except (AssertionError, KeyError, CredentialFailure, ForgeError, OSError, subprocess.SubprocessError, ValueError) as exc:
         detail = str(exc)
