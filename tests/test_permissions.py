@@ -6,7 +6,9 @@ from pathlib import Path
 import unittest
 import tomllib
 from tempfile import TemporaryDirectory
+import subprocess
 from subprocess import CompletedProcess
+from unittest.mock import patch
 
 from foreman.adapters import Call, CapabilityUnavailable, Outcome
 from foreman.adapters.claude import ClaudeAdapter
@@ -84,6 +86,55 @@ class PermissionsTest(unittest.TestCase):
                 self.assertEqual(result["stop"], "merge_pending")
                 self.assertEqual(len(calls), 2)
 
+    def test_editing_bash_runs_in_a_fail_closed_sandbox_that_writes_only_the_checkout_and_scratch(self):
+        adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+        with TemporaryDirectory() as directory:
+            root, attempt = Path(directory), Path(directory) / "attempt"
+            attempt.mkdir()
+            gits = (root / "repo/.git", root / "clone/.git/worktrees/repo", root / "clone/.git")
+            call = Call("prompt", "{}", True, attempt, checks=("sh check.sh",), read_roots=(root / "methods",), git_dirs=gits)
+            with patch("foreman.adapters.claude.platform.system", return_value="Darwin"):
+                args = adapter.command(call)
+            settings = json.loads(Path(args[args.index("--settings") + 1]).read_text())
+            # The settings file stays outside every directory a worker writes.
+            self.assertEqual([args[i + 1] for i, a in enumerate(args) if a == "--add-dir"], [str(root / "methods"), str(attempt / "scratch")])
+            self.assertEqual(settings["sandbox"], {
+                "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
+                "network": {"allowedDomains": [], "strictAllowlist": True},
+                "filesystem": {"denyWrite": [str(path.resolve()) for path in (root / "methods", *gits)]}})
+            readonly = adapter.command(Call("prompt", "{}", False, attempt, read_roots=(root / "methods",)))
+            self.assertNotIn("sandbox", json.loads(Path(readonly[readonly.index("--settings") + 1]).read_text()))
+
+    def test_an_unconfinable_host_has_no_editing_claude_before_launch(self):
+        adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+        call = Call("prompt", "{}", True, Path("/nonexistent"))
+        for system, tools, reason in (("Windows", {}, "the Bash sandbox is unsupported"), ("Linux", {"socat": "/usr/bin/socat"}, "bwrap missing")):
+            with self.subTest(system=system), patch("foreman.adapters.claude.platform.system", return_value=system), \
+                    patch("foreman.adapters.claude.shutil.which", side_effect=tools.get), self.assertRaisesRegex(CapabilityUnavailable, reason):
+                adapter.command(call)
+        with patch("foreman.adapters.claude.platform.system", return_value="Windows"), TemporaryDirectory() as directory:
+            self.assertIn("--tools", adapter.command(Call("prompt", "{}", False, Path(directory))))
+
+    def test_editing_claude_gets_its_own_short_temp_directory_and_the_linked_worktree_git_dirs(self):
+        with TemporaryDirectory() as directory:
+            clone, checkout = Path(directory).resolve() / "clone", Path(directory).resolve() / "checkout"
+            clone.mkdir()
+            for args in (["init", "-q"], ["-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "base"],
+                         ["worktree", "add", "-q", str(checkout)]):
+                subprocess.run(["git", *args], cwd=clone, check=True)
+            seen = []
+            def runner(args, cwd, env):
+                seen.append((json.loads(Path(args[args.index("--settings") + 1]).read_text()), env))
+                return fixture_process(args, "success", 0)
+            CliWorker(checkout, runner)("implement", ModelSpec.parse("claude-opus-5-5-high"), {"checks": ChecksState(check="sh check.sh")}, "implement")
+            settings, env = seen[0]
+            self.assertEqual(settings["sandbox"]["filesystem"]["denyWrite"],
+                             [str(checkout / ".git"), str(clone / ".git/worktrees/checkout"), str(clone / ".git")])
+            # Claude Code keeps a per-user temp directory under CLAUDE_CODE_TMPDIR only while the path fits its AF_UNIX sockets.
+            self.assertTrue(env["CLAUDE_CODE_TMPDIR"].startswith("/tmp/fw"))
+            self.assertLessEqual(len(env["CLAUDE_CODE_TMPDIR"]), 24)
+            self.assertFalse(Path(env["CLAUDE_CODE_TMPDIR"]).exists())
+
     def test_readonly_has_no_edit_tools_or_allow_rules(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
         with TemporaryDirectory() as directory:
@@ -139,26 +190,38 @@ class PermissionsTest(unittest.TestCase):
             self.assertEqual(capture["returncode"], 0)
             files = capture["files"]
             self.assertEqual(files["methods/method.md"], "method original\n")
-            self.assertNotIn("repo/x", files)
             self.assertNotIn("repo/f", files)
             denied = capture["stdout"]["permission_denials"]
-            commands = {d["tool_input"].get("command") for d in denied if d["tool_name"] == "Bash"}
-            self.assertIn("touch x", commands)
+            content = [c for row in capture["transcript"] for c in row["message"]["content"] if isinstance(c, dict)]
             if mode == "readonly":
+                commands = {d["tool_input"].get("command") for d in denied if d["tool_name"] == "Bash"}
+                self.assertNotIn("repo/x", files)
+                self.assertIn("touch x", commands)
                 self.assertEqual(files["repo/source.py"], "value = 1\n")
                 self.assertNotIn("scratch/scratch.txt", files)
                 self.assertIn("git diff --output=f", commands)
                 self.assertFalse(any(c.startswith("git diff --no-color") for c in commands))
             else:
+                # Sandboxed Bash runs without a prompt; the OS boundary refuses a write or connection as a failed tool result.
+                bash = {use["input"]["command"]: result.get("is_error", False) for use in content if use.get("type") == "tool_use"
+                        and use.get("name") == "Bash" for result in content if result.get("tool_use_id") == use["id"]}
+                refused = {command for command, failed in bash.items() if failed}
+                self.assertEqual(refused, {"rm <probe>/methods/method.md", "rm <probe>/outside.txt", "touch <probe>/clone/.git/probe",
+                                           "touch /tmp/claude-<uid>/foreman-probe", "git commit -qm x", "gh pr list",
+                                           "curl -sS --max-time 10 https://example.com",
+                                           "curl -sS --noproxy '*' --max-time 10 https://example.com"})
                 self.assertEqual(files["repo/source.py"], "value = 2\n")
-                self.assertEqual(files["scratch/scratch.txt"], "scratch")
+                self.assertEqual(files["attempt/scratch/scratch.txt"], "scratch")
                 self.assertIn('name = "after"', files["repo/pyproject.toml"])
                 self.assertEqual(files["repo/.github/workflows/ci.yml"], "name: after\n")
-                self.assertTrue({"git commit -m x", "gh pr list", "python -c 1"} <= commands)
+                self.assertEqual(files["outside.txt"], "outside\n")
+                self.assertIn("<temp>/claude-<uid>/temp-probe", files)
+                for gone in ("repo/doomed.py", "attempt/scratch/scratch-doomed.txt", "clone/.git/probe", "/tmp/claude-<uid>/foreman-probe"):
+                    self.assertNotIn(gone, files)
+                self.assertEqual(capture["commits"], 1)
                 self.assertTrue(any(d["tool_name"] == "Edit" and "methods/" in d["tool_input"]["file_path"] for d in denied))
                 for marker in (("first", "second") if mode == "compound" else ("checked",)):
                     self.assertIn(f"repo/{marker}", files)
-            content = [c for row in capture["transcript"] for c in row["message"]["content"] if isinstance(c, dict)]
             reads = [c for c in content if c.get("type") == "tool_use" and c.get("name") == "Read" and c["input"]["file_path"].endswith("methods/method.md")]
             self.assertTrue(reads)
             self.assertTrue(any(c.get("type") == "tool_result" and c.get("tool_use_id") == reads[0]["id"] and not c.get("is_error") for c in content))

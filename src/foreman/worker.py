@@ -80,6 +80,14 @@ ADAPTERS: dict[str, Callable[[ModelSpec], CliAdapter]] = {
 }
 
 
+def git_dirs(checkout: Path) -> tuple[Path, ...]:
+    """The checkout's .git entry and the git and common directories it resolves to, as in a linked worktree."""
+    found = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+                           cwd=checkout, capture_output=True, text=True)
+    resolved = [Path(line) for line in found.stdout.splitlines()] if found.returncode == 0 else []
+    return tuple(dict.fromkeys([checkout / ".git", *resolved]))
+
+
 def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
     prompt = args[-1] if args[0] == "claude" and args[-2:-1] == ["-p"] else None
     lock_fd = worker_lock.get()
@@ -134,7 +142,9 @@ class CliWorker:
             )
             prompt += (" Network and database connections are unavailable in Codex; network-dependent parts"
                        " of the check may not reproduce locally." if model.family == "gpt" else
-                       " Claude grants the exact check command in checks.check as Bash; no environment parity is implied."
+                       " Claude's Bash runs sandboxed: it writes only the checkout and the attempt scratch, never .git,"
+                       " and has no network, so network-dependent parts of the check may not reproduce locally."
+                       " Delete a file the slice removes with a plain rm <relative-path>."
                        if model.family == "claude" else "")
         prompt += f"\n\nDelivery state:\n{json.dumps(projected)}"
         # Counts only the prompt, excluding the separate output schema,
@@ -157,19 +167,23 @@ class CliWorker:
         temp_root = (self.scratch_root or Path(tempfile.gettempdir())).resolve()
         if temp_root.is_relative_to(checkout):
             temp_root = checkout.parent
-        with TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory:
-            scratch = Path(directory) / "scratch"
-            scratch.mkdir()
+        # Claude Code puts its per-user temp directory, which sandboxed Bash writes and $TMPDIR names, under
+        # CLAUDE_CODE_TMPDIR, unless that path is too long for its AF_UNIX sockets; then it falls back to the shared
+        # /tmp/claude-<uid>. So each call gets its own short temp directory.
+        with (TemporaryDirectory(prefix="foreman-worker-", dir=temp_root) as directory,
+              TemporaryDirectory(prefix="fw", dir="/tmp") as claude_temp):
             call = Call(prompt, schema, edit=edit, checks=checks, review=node == "review",
                         read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                         temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None,
-                        resume_session=session)
+                        resume_session=session, git_dirs=git_dirs(checkout) if edit else ())
+            scratch = call.scratch
+            scratch.mkdir()
             try:
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
             try:
-                process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch)})
+                process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(scratch), "CLAUDE_CODE_TMPDIR": claude_temp})
             except FileNotFoundError:
                 return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable", prompt_bytes=prompt_bytes)
             return replace(adapter.read(process, call), prompt_bytes=prompt_bytes)

@@ -460,8 +460,9 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertEqual(json.loads(args[-1].split("Delivery state:\n")[1])["run"],
                              RunState(issue=12).model_dump(mode="json", exclude={"token_cap", "max_budget_usd"}))
                     expected_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"} if args[0] == "claude" else {}
-                    self.assertEqual(env, {**expected_env, "TMPDIR": env["TMPDIR"]})
+                    self.assertEqual(env, {**expected_env, "TMPDIR": env["TMPDIR"], "CLAUDE_CODE_TMPDIR": env["CLAUDE_CODE_TMPDIR"]})
                     self.assertTrue(Path(env["TMPDIR"]).is_dir())
+                    self.assertTrue(Path(env["CLAUDE_CODE_TMPDIR"]).is_dir())
                     self.assertNotIn("Output schema:", args[-1])
                     if args[0] == "codex":
                         self.assertIn("--json", args)
@@ -794,7 +795,7 @@ class LiveRunnerTest(unittest.TestCase):
                 if args[0] == "codex":
                     self.assertIn("Network and database connections are unavailable", prompt)
                     return quota_with_usage(args)
-                self.assertIn("exact check command", prompt)
+                self.assertIn("Claude's Bash runs sandboxed", prompt)
                 with worker_process(worker_reply(args, {"implementation": "retry"})) as popen:
                     run_worker_command(args, cwd, env)
                 self.assertEqual(popen.prompt, prompt)

@@ -1,13 +1,15 @@
 from collections.abc import Mapping
 from math import isclose
 import json
+import platform
+import shutil
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from typing_extensions import override
 
-from foreman.adapters import Call, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
+from foreman.adapters import Call, CapabilityUnavailable, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.usd import CostUsd, usd_text
 
 
@@ -90,6 +92,14 @@ class ClaudeEnvelope(NativeEnvelope):
         )
 
 
+def sandboxed(system: str) -> None:
+    """Claude Code sandboxes Bash with Seatbelt on macOS, and with bubblewrap and socat on Linux."""
+    missing = [tool for tool in ("bwrap", "socat") if shutil.which(tool) is None] if system == "Linux" else []
+    if system not in ("Darwin", "Linux") or missing:
+        reason = f"{', '.join(missing)} missing" if missing else "the Bash sandbox is unsupported"
+        raise CapabilityUnavailable(f"Claude on {system}: {reason}, so an editing worker cannot be confined")
+
+
 class ClaudeAdapter(NativeAdapter):
     envelope = ClaudeEnvelope
     env: ClassVar[Mapping[str, str]] = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
@@ -100,14 +110,22 @@ class ClaudeAdapter(NativeAdapter):
         allow = [f"Bash({command})" for command in call.checks]
         if call.edit:
             allow += ["Edit", "Write"]
-        settings = {"permissions": {"allow": allow, "deny": [
+        settings: dict[str, object] = {"permissions": {"allow": allow, "deny": [
             f"Edit(/{root.resolve()}/**)" for root in call.read_roots
         ]}}
-        settings_path = call.temp_dir / "claude-settings.json"
-        settings_path.write_text(json.dumps(settings))
         directories = [str(root) for root in call.read_roots]
         if call.edit:
-            directories.append(str(call.temp_dir))
+            sandboxed(platform.system())
+            # Bash runs in Claude Code's OS sandbox, which fails closed: it writes the checkout and the attempt scratch,
+            # never the method roots --add-dir exposes or the git directories, and reaches no network.
+            settings["sandbox"] = {
+                "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
+                "network": {"allowedDomains": [], "strictAllowlist": True},
+                "filesystem": {"denyWrite": [str(path.resolve()) for path in (*call.read_roots, *call.git_dirs)]},
+            }
+            directories.append(str(call.scratch))
+        settings_path = call.temp_dir / "claude-settings.json"
+        settings_path.write_text(json.dumps(settings))
         scope = [arg for directory in directories for arg in ("--add-dir", directory)]
         resume = ["--resume", call.resume_session, "--fork-session"] if call.edit and call.resume_session else []
         return ["claude", "--model", self.model.model_id, *effort, *resume, "--restricted",
