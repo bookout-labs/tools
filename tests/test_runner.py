@@ -2912,14 +2912,15 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual(presentation.restored, expected)
                 self.assertEqual(presentation.updates, [])
 
-    @patch("foreman.adapters.claude.sandboxed")
-    def test_fresh_process_retries_quota_and_an_older_merge_checkpoint(self, _confinable):
+    def test_fresh_process_retries_quota_and_an_older_merge_checkpoint(self):
         script = r'''
 import json
 from dataclasses import replace
 from pathlib import Path
 import sys
 from unittest.mock import patch
+# A confinable host, as every Claude implement run needs; the host check has its own test.
+patch("foreman.adapters.claude.sandboxed").start()
 from foreman.cli import main
 from foreman.config import SkillPin, load_config
 from foreman.delivery import LiveRun
