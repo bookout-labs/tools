@@ -69,7 +69,7 @@ class ScriptHandler:
         if node == "spec_check":
             return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
         if node == "implement":
-            return Outcome("ran", {"implementation": self.implementation, "human_question": None}, usage=SCRIPTED_USAGE)
+            return Outcome("ran", {"implementation": self.implementation, "no_change": None, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "research":
             return Outcome("ran", {"research": self.research, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "verify":

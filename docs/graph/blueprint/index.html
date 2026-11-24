@@ -835,7 +835,9 @@ in `why_code_unanswered`. On `ready`, return `questions: []`.</dd></dl>
                         └── implement.md</pre><p>Implement the slice</p><dl><dt>What it instructs</dt><dd>Edit the owned worktree within the cleared slice and acceptance. Run the target repository
 checks and fix concrete failures within the allowance. On a repair, address the evidenced
 blocking defects on the existing PR. Keep evidence requested by the issue or repository.
-Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.</dd></dl>
+On a first attempt whose acceptance already holds on the pinned base, edit nothing and set
+no_change to the checks you ran and what they showed. With any edit, a repair or a human_question,
+leave no_change null. Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.</dd></dl>
         </div>
       </details>
     </li><li class="file-chip"><a href="https://github.com/cursor/plugins/blob/d42aff08aa58965d2735c4ead61a9af82b89d0d0/pstack/skills/benchmark-checklist/SKILL.md">SKILL.md</a>
@@ -1000,7 +1002,7 @@ A test must check a behavior the change can break. Do not add a test that restat
         </div>
       </details>
     </li></ul></section>
-      <div class="columns"><section><h2>What happens</h2><ol class="steps"><li><strong>Prepare and reconcile the worktree</strong><p>Trusted checkout and attempt parent</p></li><li><strong>Edit and run target repository checks</strong><p>Checked candidate tree, exact command failure, or the shared optional human_question for the acceptance gate</p></li><li><strong>Commit or adopt the checked tree</strong><p>Exact commit with tested tree</p></li><li><strong>Publish the checked commit</strong><p>Confirmed repository, PR, branch, base and head</p></li></ol></section>
+      <div class="columns"><section><h2>What happens</h2><ol class="steps"><li><strong>Prepare and reconcile the worktree</strong><p>Trusted checkout and attempt parent</p></li><li><strong>Edit and run target repository checks</strong><p>Checked candidate tree, exact command failure, evidence that no change is justified, or the shared optional human_question for the acceptance gate</p></li><li><strong>Commit or adopt the checked tree</strong><p>Exact commit with tested tree</p></li><li><strong>Publish the checked commit</strong><p>Confirmed repository, PR, branch, base and head</p></li></ol></section>
       <section><h2>Warp equivalent</h2><p><strong>Building and revisions</strong></p>
       <p>Foreman owns Git integrity and exact publication recovery across local CLI interruptions.</p><p><a href="https://docs.warp.dev/guides/agent-workflows/running-an-issue-to-pr-blueprint/">Read Warp’s documentation ↗</a></p>
       <h2>Human gates</h2><ul class="gate-list"><li>
@@ -1873,7 +1875,9 @@ Approve the checked candidate when no blocking defect or unresolved choice remai
               <p>Edit the owned worktree within the cleared slice and acceptance. Run the target repository
 checks and fix concrete failures within the allowance. On a repair, address the evidenced
 blocking defects on the existing PR. Keep evidence requested by the issue or repository.
-Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.
+On a first attempt whose acceptance already holds on the pinned base, edit nothing and set
+no_change to the checks you ran and what they showed. With any edit, a repair or a human_question,
+leave no_change null. Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.
 </p></details>
             <ul><li>Reproduce cheaply and rerun the focused regression check. Applied bug fix.</li><li>Verify benchmark conditions Applied perf issue.</li><li>When the target repository has its own formal verification skill, created by pstack create-formal-verification-skill, run its check on any change that touches the verified code. When the change is intended, update the verification with maintain-formal-verification-skill. Applied always.</li></ul></li></ul></section>
         <section><h2>Permissions</h2><p>Write exclusive target_checkout and its attempt scratch. Foreman commits and publishes.</p>
