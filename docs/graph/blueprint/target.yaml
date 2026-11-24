@@ -283,7 +283,7 @@ stages:
     exits: {validated_single: implement, children_filed: __end__, cancelled: __end__, halted: __end__}
     gates:
       - {answerer: Human, question: "Decide the unresolved product, repository, architecture or policy choice", accepted: explicit choice or cancel, saved: Answer scoped to the candidate and choice, resume: draft, bullets: [Resolve planning choice, Choose or cancel, Resume drafting]}
-      - {answerer: Human, question: Resolve an intent choice identified by the independent checker, accepted: explicit choice or cancel, saved: Answer scoped to the candidate and choice, resume: check, bullets: [Resolve checker question, Choose or cancel, Resume plan check]}
+      - {answerer: Human, question: Resolve an intent choice identified by the independent checker, accepted: explicit choice or cancel, saved: A settled ruling for the issue. Later candidates are checked with it as context., resume: check, bullets: [Resolve checker question, Choose or cancel, Resume plan check]}
     effects: [Foreman saves draft and verdict by candidate revision., Only file_children creates or adopts child issues and links by stable parent issue and slice marker.]
     invariants:
       - The candidate digest binds target_repository, pinned base, issue and approved content scope. A changed digest needs fresh validation and checking.
@@ -303,12 +303,12 @@ stages:
       SP2: {given: Valid typed draft, expect: "Save one digest scoped to issue, base and repo before independent check."}
       SC1: {given: A slice names a foreign repository or a seam available only in foreman_repository, expect: Explicit mismatch stops and wrong root rejects before any builder call.}
       SC2: {given: Synthetic wrong-repository issue with matching seam names in both repositories, expect: Checker rejects implied foreign intent and no build or child filing occurs.}
-      SC3: {given: The human answers a choice on candidate A then candidate B changes scope, expect: Validate and check B and ask any unresolved choice again.}
+      SC3: {given: The human answers a choice on candidate A then candidate B changes scope, expect: Validate and check B with settled rulings as context. Ask again only a choice they don't settle.}
       SC4: {given: Invalid singleton seam or cyclic parent dependencies, expect: Common validator rejects both and the final allowed rejection reports spec_cap.}
       SC5: {given: The model clears a validated plan with no human response or after the agent posts optional human approval on the issue, expect: Proceed without a manual approval step. Honor a stop the agent posts under the human's identity before implementing or filing.}
       FS1: {given: A child issue or link write times out, expect: Adopt the matching result once and complete missing links. Report publication_unreconciled if the write cannot be confirmed.}
     decisions: [D3, D7, D8, D9]
-    warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and the human's review is optional.}
+    warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: "Foreman validates repository and dependencies deterministically. The independent model checker can approve the plan and the human's review is optional. A checker's intent answer settles the issue, not one plan revision. Warp's gates page re-asks only approval for a revised plan."}
 
   implement:
     title: Build and publish the change
@@ -633,7 +633,7 @@ procedures:
     instructions:
       prompt: docs/graph/blueprint/prompts/spec_check.md
       runtime_prompt: src/foreman/stages/spec_check.md
-      context: [Candidate digest, Scope and Intent, pinned target repository and base]
+      context: [Candidate digest, Scope and Intent, pinned target repository and base, settled rulings]
     skills:
       - {ref: interrogate/SKILL.md, when: always, kind: leaf_prompt, lines: [19, 19], method: Probe the candidate in one independent session and cite verified findings.}
     output: {schema: foreman.stage_output.SpecCheckOutput, fields: [findings, notes, human_question]}

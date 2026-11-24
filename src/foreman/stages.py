@@ -298,7 +298,8 @@ def spec_check_projection(state: "DeliveryState", workspace: Workspace) -> tuple
     plan = state["plan"]
     assert plan.spec_candidate is not None
     answers = [answer for answer in plan.human_qa if answer.get("candidate") == plan.spec_candidate["revision"]]
-    return {**state, "plan": plan.model_copy(update={"human_qa": answers, "spec_history": {}}),
+    settled = SpecHistory.model_validate(plan.spec_history).settled
+    return {**state, "plan": plan.model_copy(update={"human_qa": answers, "spec_history": {"settled": settled}}),
             "human_answers": [answer["answer"] for answer in answers]}, None
 
 
