@@ -13,7 +13,7 @@ from foreman.spec_check import SpecHistory, accept as accept_checked
 from foreman.stage_output import (
     StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecRejection, PlanState,
     ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord,
-    InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection,
+    InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection, VerifyOutput, VerifyState,
 )
 
 from foreman.contracts import InvalidOutput
@@ -151,6 +151,15 @@ def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdat
     return update
 
 
+def accept_verify(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
+    assert isinstance(output, VerifyOutput)
+    assert "work" in context.state
+    head = context.state["work"].published_head
+    if not head or output.tested_head != head:
+        raise InvalidOutput(f"tested_head {output.tested_head} is not the published head {head}.")
+    return {"verify": VerifyState(outcome="driven", tested_head=head, criteria=[item.record() for item in output.criteria])}
+
+
 def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     state, model, config = context.state, context.model, context.config
     assert isinstance(output, ReviewOutput) and "dispatch_plan" in state
@@ -268,6 +277,10 @@ class ImplementStage(Stage):
     step = "implement.edit"
 
 
+class VerifyStage(Stage):
+    step = "verify.drive"
+
+
 class ReviewStage(Stage):
     step = "review.inspect"
 
@@ -289,6 +302,8 @@ def spec_check_projection(state: "DeliveryState", workspace: Workspace) -> tuple
             "human_answers": [answer["answer"] for answer in answers]}, None
 
 
+# The target repository's own skill, written by pstack create-verification-skill.
+VERIFY_SKILL = SkillMethod(path="verify-<app>/SKILL.md", kind="target_skill")
 DIAGNOSING_BUGS = SkillMethod(path="engineering/diagnosing-bugs/SKILL.md", kind="skill", lines=(18, 37), repository="matt_skills")
 STAGES = {
     "triage": TriageStage("triage.md", TriageOutput, prepare=pinned_instructions, input_fields=("run", "plan", "human_answers")),
@@ -311,12 +326,13 @@ STAGES = {
     "implement": ImplementStage("implement.md", ImplementOutput, (
         SkillRule(skill=SkillMethod(path="tdd/SKILL.md", kind="skill", lines=(9, 31)), when="bug_fix"),
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill", lines=(13, 27)), when="perf_issue"),
-        SkillRule(skill=SkillMethod(path="verify-<app>/SKILL.md", kind="target_skill")),
         SkillRule(skill=SkillMethod(path="formal-<area>/SKILL.md", kind="target_skill")),
     ), prepare=implement_preparation, accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review")),
+    "verify": VerifyStage("verify.md", VerifyOutput, (SkillRule(skill=VERIFY_SKILL),), accept=accept_verify,
+                          input_fields=("run", "plan", "work", "checks")),
     "review": ReviewStage("review.md", ReviewOutput, (
         SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill", lines=(3, 7))),
         SkillRule(skill=SkillMethod(path="blast-radius/SKILL.md", kind="skill", lines=(31, 37))),
     ), prepare=review_preparation, accept=accept_review, project=review_projection,
-        input_fields=("run", "plan", "work", "checks", "review")),
+        input_fields=("run", "plan", "work", "checks", "verify", "review")),
 }

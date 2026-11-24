@@ -21,7 +21,7 @@ from foreman.stage_output import (
     PlanState, DispatchStage, DispatchPlan, DispatchPlanRecord, AttemptRecord, StageOutput, StoredSlice, parse_output, spec_digest,
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
-from foreman.steps import StageRun, implement, merge, research, review, spec, triage
+from foreman.steps import StageRun, implement, merge, research, review, spec, triage, verify
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.outcomes import Halt, halted
 from foreman.usd import BudgetUsd, usd_text
@@ -169,6 +169,7 @@ def compile_delivery(
     builder.add_node("research", research.compile_stage(stage))
     builder.add_node("spec", spec.compile_stage(stage))
     builder.add_node("implement", implement.compile_stage(stage))
+    builder.add_node("verify", verify.compile_stage(stage))
     builder.add_node("review", review.compile_stage(stage))
     builder.add_node("merge", merge.compile_stage(stage))
     builder.add_edge(START, "triage")
@@ -179,7 +180,9 @@ def compile_delivery(
     builder.add_conditional_edges("spec", lambda state: outcome(state, state.get("stop") or "validated_single"),
         {"validated_single": "implement", "children_filed": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("implement", after_implement,
-        {"published": "review", "no_change": END, "cancelled": END, "halted": END})
+        {"published": "verify", "no_change": END, "cancelled": END, "halted": END})
+    builder.add_conditional_edges("verify", lambda state: outcome(state, state.get("stop", "")),
+        {"posted": "review", "no_skill": "review", "head_moved": "implement", "cancelled": END, "halted": END})
     builder.add_conditional_edges("review", lambda state: outcome(state, state.get("stop", "")),
         {"P0": "implement", "P1": "implement", "head_moved": "implement", "none": "merge", "cancelled": END, "halted": END})
     builder.add_conditional_edges("merge", lambda state: outcome(state, state.get("stop", "")),

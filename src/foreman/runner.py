@@ -36,10 +36,10 @@ from foreman.worker import AttemptJournal, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
-STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size")
+STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size", "verify")
 # Each step a stage records in the path, so a halt inside a stage resumes that stage.
 STEP_STAGES = {"admit": "triage", "triage": "triage", "research": "research", "post": "research",
-               "spec": "spec", "spec_check": "spec", "file_children": "spec", "review": "review", "merge": "merge",
+               "spec": "spec", "spec_check": "spec", "file_children": "spec", "verify": "verify", "review": "review", "merge": "merge",
                **dict.fromkeys(implement.STEPS, "implement")}
 
 
