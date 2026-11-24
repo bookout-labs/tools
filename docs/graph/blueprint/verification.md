@@ -48,7 +48,7 @@ The owner agreed to this rollout direction on 2026-11-22. Start with the smalles
 
 Stop promotion on a failure and fix the observed cause. Re-run the earlier rungs for the resulting revision. Limit volume through admission and release controls already in use. Keep open runs on their pinned release.
 
-Use the Ready label webhook to feed the existing intake. Shadow the candidate events in rung 1. In smoke, test an authentic Ready label event, duplicate and stale deliveries, a repository without the App, a personal repository, and Foreman's own label writes. Assert that the Doing, Needs answer and Done labels and the status comment reflect the saved run. Apply the same admission limits for the real batch. [GitHub issues webhook](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issues)
+Use the Ready label webhook to feed the existing intake. Shadow the candidate events in rung 1. In smoke, test an authentic Ready label event, duplicate and stale deliveries, a repository without the App, a personal repository, and Foreman's own label writes. Assert that the Doing, Needs answer, Stopped and Done labels and the status comment reflect the saved run. Apply the same admission limits for the real batch. [GitHub issues webhook](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issues)
 
 ## Changes and versions
 
