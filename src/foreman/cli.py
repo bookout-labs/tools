@@ -322,7 +322,7 @@ def main(
 
     def live(repo: str, issue: int, settings: RunSettings, workspace: LiveWorkspace, *,
              answer: str | None = None, request: str | None = None) -> int:
-        target = live_run or LiveRun(LiveForge(), workspace)
+        target = live_run or LiveRun(LiveForge(), workspace, settings.human_login)
         target = replace(target, check_log=_write_check_log, human_login=settings.human_login)
         dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
 

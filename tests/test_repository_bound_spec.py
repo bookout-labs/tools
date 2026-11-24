@@ -208,34 +208,38 @@ class RepositoryBoundSpecTests(unittest.TestCase):
             if len(revisions) == 1:
                 return {**CLEAR.model_dump(), "findings": [{**FINDING, "kind": "scope",
                     "slice": EDIT["title"], "summary": "Acceptance refers to the tool repository."}]}
+            # The digest phrases are gone: neither stops nor approves, and the model's clearance moves the plan on.
             self.forge.ruling(f"foreman stop {revisions[0]}")
-            self.forge.ruling(f"foreman stop {revisions[1]}", login="untrusted")
+            self.forge.ruling(f"foreman approve {revisions[1]}")
             self.forge.ruling(f"we're good {revisions[1]}")
+            self.forge.ruling("foreman stop", login="untrusted")
             return CLEAR.model_dump()
 
         result = self.invoke(check)
         self.assertNotEqual(*revisions)
         self.assertEqual(result["plan"].spec_failures, 1)
-        self.assertEqual(result["plan"].human_approval, revisions[-1])
+        self.assertNotIn("human_approval", result["plan"].model_dump())
         self.assertEqual(result["stop"], "merged")
         self.assertIn(result["checks"].verified_head, [call[3] for call in self.forge.merge_calls])
         self.assertEqual(self.calls.count("implement"), 1)
 
     def test_authenticated_stop_blocks_build_and_child_writes(self):
+        """SC5: a stop the human posts while the plan is checked ends the run at implement's entry, before any build or filing."""
         for entry in ("stored", "drafted"):
             with self.subTest(entry=entry):
                 self.checkpoint = self.checkpoint.with_name(f"{entry}.sqlite3")
+                self.forge.rulings.clear()
                 if entry == "drafted":
                     self.forge.labels = ["Ready"]
                     self.script.triage = "plan"
                     self.script.slices = [EDIT]
 
                 def check(model, state, instruction):
-                    self.forge.ruling(f"foreman stop {state['plan'].spec_candidate['revision']}")
+                    self.forge.ruling("foreman stop")
                     return CLEAR.model_dump()
 
                 result = self.invoke(check)
-                self.assertEqual(result["stop"], "cancelled")
+                self.assertEqual((result["stop"], result["path"][-1]), ("cancelled", "prepare"))
                 self.assertEqual(self.forge.builds, [])
                 self.assertEqual(self.forge.created, [])
                 self.assertNotIn("implement", self.calls)

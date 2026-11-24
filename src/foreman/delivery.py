@@ -42,9 +42,9 @@ FIXTURE_HUMAN = "ghost"
 class LiveRun:
     forge: Forge
     workspace: Workspace
+    human_login: str
     check_log: CheckLog | None = None
     skills: SkillSource = export_skills
-    human_login: str = ""
     journal: AttemptJournal | None = None
 
 
@@ -182,7 +182,7 @@ def compile_delivery(
     builder.add_conditional_edges("implement", after_implement,
         {"published": "verify", "no_change": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("verify", lambda state: outcome(state, state.get("stop", "")),
-        {"posted": "review", "no_skill": "review", "head_moved": "implement", "halted": END})
+        {"posted": "review", "no_skill": "review", "head_moved": "implement", "cancelled": END, "halted": END})
     builder.add_conditional_edges("review", lambda state: outcome(state, state.get("stop", "")),
         {"P0": "implement", "P1": "implement", "head_moved": "implement", "none": "merge", "cancelled": END, "halted": END})
     builder.add_conditional_edges("merge", lambda state: outcome(state, state.get("stop", "")),
@@ -243,5 +243,5 @@ def run_delivery(
 
 def diagram() -> str:
     dry = DryRun()
-    graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry))
+    graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry, human_login=FIXTURE_HUMAN))
     return graph.get_graph().draw_mermaid()

@@ -14,7 +14,7 @@ from foreman.readiness import MergeReceipt, MergeState, MergeWait, Observation
 from foreman.review_round import ReviewRound, history
 from foreman.stage_output import HumanPrompt, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate, ReviewState, WorkState
-from foreman.steps import StageInput, StageRun
+from foreman.steps import StageInput, StageRun, cancel, human_stop
 
 HALTS = [Halt.merge_held, Halt.merge_not_armed, Halt.readiness_unavailable, Halt.merged_unreviewed]
 # GitHub reports a failure that the owning run repairs on the same pull request.
@@ -75,6 +75,9 @@ class Reviewed:
 
 
 def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    if late := human_stop(state, run, "merge", Halt.readiness_unavailable):
+        # A stop ends the run here. One that came after GitHub merged the PR goes on to observe the merge.
+        return {"stop": "closed_or_merged", **late, "merge": state.get("merge", MergeState())}
     pull, receipt, forge, saved_merge = Reviewed(state, run), state["review"].review_receipt, run.forge, state.get("merge", MergeState())
     (repo, issue, branch, head), (report, number) = pull.target, pull.report
     merge = MergeState(status="not_armed", receipt=saved_merge.receipt, command=merge_command(repo, "<number>", head or "<sha>"))
@@ -138,8 +141,8 @@ def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 def observe(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     pull, forge, merge = Reviewed(state, run), run.forge, state.get("merge", MergeState())
     (repo, _, _, head), (_, number) = pull.target, pull.report
-    if pull.answers[-1:] == ["cancel"]:
-        return {"stop": "cancelled", "merge": merge}
+    if pull.answers[-1:] == ["cancel"] and (cancelled := cancel(state, run, "merge", Halt.readiness_unavailable)).get("stop"):
+        return {**cancelled, "merge": merge}
     observation, merge = pull.observe(merge)
     if observation is None:
         return pull.halt(merge, Halt.readiness_unavailable, "GitHub could not report the pull request.")
@@ -218,7 +221,7 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
             .add_node("report", run.bind(report))
             .add_edge(START, "arm")
             .add_conditional_edges("arm", route, {
-                "halted": "report", "reviewable_head": "report", "repair": "report",
+                "halted": "report", "cancelled": "report", "reviewable_head": "report", "repair": "report",
                 "armed": "observe", "already_armed": "observe", "closed_or_merged": "observe", "head_unverified": "observe"})
             .add_conditional_edges("observe", route, {
                 "halted": "report", "cancelled": "report", "closed": "report", "reviewable_head": "report", "repair": "report",

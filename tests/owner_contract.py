@@ -51,7 +51,7 @@ OWNERS = (
         verify="pass", failure_output="stale failure", checked_tree="c" * 40, verified_head="b" * 40),
         frozenset({"check", "preflight", "verify_failures"}), 5, {}),
     OwnerCase("plan", CANDIDATE.update(PlanState(
-        rejected_revisions=["b" * 64, "c" * 64], human_approval=CANDIDATE.revision,
+        rejected_revisions=["b" * 64, "c" * 64],
         spec_history={"rounds": CHECKED.rounds}, triage="supplied_slice", spec_gate="ready",
         issue_kind="parent", work_kind="feature",
         human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}],

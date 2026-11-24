@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 from foreman.github import BOT_LOGIN, ForgeError, LiveForge, SmokeIssue, SmokeOpenPull
 from foreman.smoke_command import SMOKE_REPO as REPO
-from foreman.smoke_ownership import cleanup_smoke, create_smoke_issue, owned, smoke_lock
+from foreman.smoke_ownership import CLEANUP, cleanup_smoke, create_smoke_issue, owned, smoke_lock
 from tests.test_smoke_forge import connection, issue
 
 MARKER = '<!-- foreman-smoke-run: ' + '0123-4567-89ab-cdef-0123-4567-89ab-cdef' + ' -->'
@@ -83,7 +83,7 @@ class SmokeOwnershipTest(unittest.TestCase):
         forge.smoke_issues.return_value = [fixture(state='closed')]
         cleanup_smoke(forge, REPO)
         forge.close_issue.assert_not_called()
-        forge.close_pull_request.assert_called_with(REPO, 2)
+        forge.close_pull_request.assert_called_with(REPO, 2, CLEANUP)
 
     def test_lost_create_response_reconciles_own_marker(self):
         forge = Mock()
@@ -119,7 +119,7 @@ class SmokeOwnershipTest(unittest.TestCase):
         forge.smoke_issues.return_value = [fixture(repository_url=f'https://api.github.com/repos/{REPO.upper()}')]
         forge.smoke_pull_requests.return_value = [pull(linked_repo=REPO.upper())]
         cleanup_smoke(forge, REPO)
-        forge.close_pull_request.assert_called_once_with(REPO, 2)
+        forge.close_pull_request.assert_called_once_with(REPO, 2, CLEANUP)
         forge.close_issue.assert_called_once_with(REPO, 1)
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'XDG_STATE_HOME': directory}):
             with smoke_lock(REPO.upper()):
@@ -155,7 +155,7 @@ class SmokeOwnershipTest(unittest.TestCase):
         last.closingIssuesReferences.nodes[0].number = 6
         forge.smoke_pull_requests.return_value = [pull(2, linked_repo='other/repo'), first, second, last]
         cleanup_smoke(forge, REPO)
-        forge.close_pull_request.assert_called_once_with(REPO, 7)
+        forge.close_pull_request.assert_called_once_with(REPO, 7, CLEANUP)
         forge.close_issue.assert_called_once_with(REPO, 6)
 
     def test_reconciliation_requires_one_open_owned_exact_marker(self):
@@ -222,7 +222,7 @@ class Forge:
     def close_issue(self, repo, number):
         next(x for x in self.data['issues'] if x['number'] == number)['state'] = 'closed'
         self.save()
-    def close_pull_request(self, repo, number):
+    def close_pull_request(self, repo, number, comment):
         self.data['pulls'] = [x for x in self.data['pulls'] if x['number'] != number]
         self.save()
     def create_issue(self, repo, title, body, labels, *, marker):

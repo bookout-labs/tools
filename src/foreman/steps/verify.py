@@ -10,7 +10,7 @@ from foreman.skill_rules import TargetSkillUnreadable, target_skills
 from foreman.stage_output import VerifyState, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.stages import VERIFY_SKILL
-from foreman.steps import StageInput, StageRun
+from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkState, WorkspaceError
 
 HALTS = [Halt.dirty_worktree, Halt.git_failed, Halt.publish_failed, Halt.publication_unreconciled]
@@ -19,6 +19,8 @@ HEAD_MOVED = "head_moved"
 
 
 def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    if (stop := human_stop(state, run, "verify")).get("stop"):
+        return stop
     work, verify = state.get("work", WorkState()), state.get("verify", VerifyState())
     head = work.published_head
     if head and verify.outcome == "driven" and verify.tested_head == head:
@@ -105,6 +107,6 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
             .add_node("post", run.bind(post))
             .add_edge(START, "drive")
             .add_conditional_edges("drive", lambda state: ended(state, "driven"),
-                                   {"driven": "post", "no_skill": END, HEAD_MOVED: END, "halted": END})
+                                   {"driven": "post", "no_skill": END, HEAD_MOVED: END, "cancelled": END, "halted": END})
             .add_conditional_edges("post", lambda state: ended(state, "posted"), {"posted": END, HEAD_MOVED: END, "halted": END})
             .compile().with_config({"metadata": {"contract_id": "verify", "stage_declarations": declarations}}))

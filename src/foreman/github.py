@@ -25,6 +25,8 @@ MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
 READY_LABEL = "Ready"
 # The run labels, one at a time on an issue: the run's checkpoint decides, and a label never grants authority.
 DOING_LABEL, NEEDS_ANSWER_LABEL, STOPPED_LABEL, DONE_LABEL = "Doing", "Needs answer", "Stopped", "Done"
+# Foreman's one comment on a pull request it closes.
+CLOSE_MARKER = "<!-- foreman close -->"
 RUN_LABELS: dict[str, str] = {READY_LABEL: "0e8a16", DOING_LABEL: "1d76db", NEEDS_ANSWER_LABEL: "d93f0b", STOPPED_LABEL: "b60205", DONE_LABEL: "5319e7"}
 
 
@@ -198,7 +200,7 @@ class SmokeOpenPull(BaseModel, strict=True):
     mergeQueueEntry: QueueEntry | None
 
 
-class SmokeItemState(BaseModel, strict=True):
+class ItemState(BaseModel, strict=True):
     state: Literal["open", "closed"]
 
 
@@ -331,6 +333,11 @@ def queue_receipt(snapshot: QueueSnapshot, repo: str, number: int, head: str,
                         identity=identity, status=status)
 
 
+class QueuedPullRequest(BaseModel, strict=True):
+    id: str
+    mergeQueueEntry: QueueEntry | None
+
+
 class Comparison(BaseModel, strict=True):
     status: str
 
@@ -339,6 +346,7 @@ class Forge(Protocol):
     def default_branch(self, repo: str) -> str: ...
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
     def pull_request_for(self, repo: str, branch: str) -> PublishedPullRequest | None: ...
+    def close_pull_request(self, repo: str, number: int, comment: str) -> None: ...
     def load_issue(self, repo: str, number: int) -> Issue: ...
     def open_issues(self, repo: str) -> list[OpenIssue]: ...
     def marked_issues(self, repo: str, marker: str) -> list[int]: ...
@@ -618,19 +626,30 @@ class LiveForge:
                 raise
 
     def close_issue(self, repo: str, number: int) -> None:
-        self._close_smoke_item(repo, f"repos/{repo}/issues/{number}")
+        self._close_item(repo, f"repos/{repo}/issues/{number}")
 
-    def close_pull_request(self, repo: str, number: int) -> None:
-        self._close_smoke_item(repo, f"repos/{repo}/pulls/{number}")
+    def close_pull_request(self, repo: str, number: int, comment: str) -> None:
+        """Take the pull request out of the merge queue when it is queued, comment and close it. The branch stays in place."""
+        owner, name = repo.split("/", 1)
+        query = """query($owner:String!, $name:String!, $number:Int!) {
+          repository(owner:$owner, name:$name) { pullRequest(number:$number) { id mergeQueueEntry { id state } } }
+        }"""
+        queued = self._read(repo, QueuedPullRequest, ["gh", "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
+                            "-f", f"name={name}", "-F", f"number={number}", "--jq", ".data.repository.pullRequest"])
+        if queued.mergeQueueEntry is not None:
+            self._run_command(repo, ["gh", "api", "graphql", "-f", "query=mutation($id:ID!) { dequeuePullRequest(input:{id:$id}) { clientMutationId } }",
+                                     "-f", f"id={queued.id}"])
+        self.upsert_comment(repo, number, comment, [], marker=CLOSE_MARKER)
+        self._close_item(repo, f"repos/{repo}/pulls/{number}")
 
-    def _close_smoke_item(self, repo: str, endpoint: str) -> None:
+    def _close_item(self, repo: str, endpoint: str) -> None:
         try:
-            item = self._read(repo, SmokeItemState, ["gh", "api", endpoint, "--method", "PATCH", "-f", "state=closed"])
+            item = self._read(repo, ItemState, ["gh", "api", endpoint, "--method", "PATCH", "-f", "state=closed"])
         except (CommandFailed, CommandTimedOut) as original:
             if isinstance(original, CommandFailed) and original.status not in {404, 422}:
                 raise
             try:
-                item = self._read(repo, SmokeItemState, ["gh", "api", endpoint])
+                item = self._read(repo, ItemState, ["gh", "api", endpoint])
             except CommandFailed as exc:
                 if exc.status == 404:
                     try:
@@ -644,7 +663,7 @@ class LiveForge:
             if item.state != "closed":
                 raise original
         if item.state != "closed":
-            raise ForgeError("Smoke item did not close.")
+            raise ForgeError(f"{endpoint} did not close.")
 
     def issue_comments(self, repo: str, number: int) -> list[str]:
         return [comment.body or "" for comment in self.issue_comment_records(repo, number)]

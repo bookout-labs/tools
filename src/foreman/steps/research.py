@@ -8,12 +8,14 @@ from foreman.github import BOT_LOGIN, ForgeError
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate
-from foreman.steps import StageInput, StageRun
+from foreman.steps import StageInput, StageRun, human_stop
 
 HALTS = [Halt.git_failed, Halt.publication_unreconciled]
 
 
 def answer(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    if (stop := human_stop(state, run, "research")).get("stop"):
+        return stop
     if state.get("research"):
         return {}
     target = state["run"]

@@ -11,6 +11,7 @@ from uuid import uuid4
 from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, LiveForge, SmokeIssue
 
 _RUN = re.compile(r"<!-- foreman-smoke-run: [0-9a-f]{4}(?:-[0-9a-f]{4}){7} -->")
+CLEANUP = "Foreman smoke cleanup closed this leftover pull request."
 
 
 @contextmanager
@@ -47,7 +48,7 @@ def cleanup_smoke(forge: LiveForge, repo: str) -> None:
         if pull.autoMergeRequest is not None or pull.mergeQueueEntry is not None:
             protected.update(links)
         elif len(links) == len(pull.closingIssuesReferences.nodes) and links.issubset(issues):
-            forge.close_pull_request(repo, pull.number)
+            forge.close_pull_request(repo, pull.number, CLEANUP)
     for number, issue in issues.items():
         if issue.state == "open" and number not in protected:
             forge.close_issue(repo, number)
