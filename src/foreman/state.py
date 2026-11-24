@@ -14,7 +14,7 @@ from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
     AttemptRecord, DispatchPlanRecord, SpecTarget,
-    PlanState as PlanState, ReviewState as ReviewState,
+    PlanState as PlanState, ReviewState as ReviewState, VerifyState as VerifyState,
 )
 from foreman.workspace import PullRequestSize, WorkState as WorkState
 
@@ -54,11 +54,11 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState, ChecksState, PlanState, ReviewState])
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState, ChecksState, PlanState, ReviewState, VerifyState])
 
 
 class CheckpointVersionError(ValueError):
@@ -111,6 +111,7 @@ class DeliveryFields(TypedDict, total=False):
     pr_size: PullRequestSize
     models_used: dict[str, str]
     implement_models: list[str]
+    verify: VerifyState
     watch: WatchRecord | None
     # Issues the run returns to admission as OWNER/NAME#N: open dependents after its merge, or the children it filed.
     released: list[str]

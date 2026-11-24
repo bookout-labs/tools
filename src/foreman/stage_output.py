@@ -454,6 +454,8 @@ class InvalidSlicePlan(InvalidOutput):
 
 
 GateStage = Literal["triage", "research", "spec", "spec_check", "implement", "review"]
+# Verify dispatches a worker but has no gates, so no human question or answer names it.
+DispatchStage = GateStage | Literal["verify"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -565,6 +567,26 @@ class ReviewState(BaseModel, frozen=True, extra="forbid"):
     detail: str = ""
     review_run_id: str = ""
     review_receipt: ReviewReceipt | None = None
+
+
+VerifyResult = Literal["passed", "failed", "unverified"]
+
+
+class VerifyCriterionRecord(TypedDict):
+    criterion: str
+    result: VerifyResult
+    observation: str
+    evidence: str
+
+
+class VerifyState(BaseModel, frozen=True, extra="forbid"):
+    """What Verify found for one published head: no skill, or the driven criteria and the comment that posts them."""
+
+    outcome: Literal["", "no_skill", "driven", "posted"] = ""
+    tested_head: str = ""
+    criteria: list[VerifyCriterionRecord] = Field(default_factory=list[VerifyCriterionRecord])
+    stale: bool = False
+    comment_id: int | None = None
 
 
 class StageUpdate(TypedDict, total=False):
@@ -741,6 +763,27 @@ class ReviewOutput(HumanQuestionOutput):
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
         raise NotImplementedError("review: use exact-head stage acceptance")
+
+
+class VerifyCriterion(RecordContract[VerifyCriterionRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[VerifyCriterionRecord]:
+        return TypeAdapter(VerifyCriterionRecord)
+
+    criterion: TrimmedText = Field(description="One acceptance criterion, as the slice states it.")
+    result: VerifyResult = Field(description="passed only on observed proof. Missing proof is unverified, never passed.")
+    observation: TrimmedText = Field(description="What you did through the real user path and what you observed.")
+    evidence: TrimmedText = Field(description="Where the capture or log is saved in your attempt scratch, or the blocker.")
+
+
+class VerifyOutput(StageOutput):
+    tested_head: str = Field(pattern=r"^[0-9a-f]{40}$", description="The full SHA of the HEAD you drove.")
+    criteria: list[VerifyCriterion] = Field(min_length=1, description="Every acceptance criterion with its observed result.")
+
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        raise NotImplementedError("verify: use exact-head stage acceptance")
 
 
 class SpecCheckOutput(HumanQuestionOutput):

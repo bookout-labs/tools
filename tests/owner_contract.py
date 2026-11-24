@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 
 from foreman.readiness import MergeState
-from foreman.state import ChecksState, PlanState, RunState, ReviewState
+from foreman.state import ChecksState, PlanState, RunState, ReviewState, VerifyState
 from foreman.workspace import WorkState
 from foreman.dry_run import CLEAR
 from foreman.spec_check import SpecHistory, accept
@@ -63,7 +63,9 @@ OWNERS = (
         findings=[FINDING], detail="Review complete",
         review_run_id="review-run", review_receipt={"id": 12, "commit_id": "b" * 40, "state": "COMMENTED"}),
         frozenset(ReviewState.model_fields), 8, {}),
-
+    OwnerCase("verify", VerifyState(outcome="posted", tested_head="b" * 40, criteria=[{
+        "criterion": "The page lists items.", "result": "failed", "observation": "The list was empty.",
+        "evidence": "captures/items.png"}], stale=True, comment_id=14), frozenset(VerifyState.model_fields), 21, {}),
 )
 
 

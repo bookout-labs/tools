@@ -18,7 +18,7 @@ from foreman.dispatch import DispatchResult, DispatchRun, Handler, InvalidOutput
 from foreman.github import Forge
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.stage_output import (
-    PlanState, GateStage, DispatchPlan, DispatchPlanRecord, AttemptRecord, StageOutput, StoredSlice, parse_output, spec_digest,
+    PlanState, DispatchStage, DispatchPlan, DispatchPlanRecord, AttemptRecord, StageOutput, StoredSlice, parse_output, spec_digest,
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
 from foreman.steps import StageRun, implement, merge, research, review, spec, triage
@@ -104,7 +104,7 @@ def compile_delivery(
         review_state = state["review"]
         return {**state, "review": review_state.model_copy(update={"review_run_id": review_state.review_run_id or uuid4().hex})}
 
-    def dispatch_run(name: GateStage, state: DeliveryState, owned: str = "") -> DispatchRun:
+    def dispatch_run(name: DispatchStage, state: DeliveryState, owned: str = "") -> DispatchRun:
         def prepare_plan() -> DispatchPlanRecord:
             models = STAGES[name].models(name, state, config)
             suffix, target, scope = STAGES[name].prepare(state, run.workspace, run.forge)
@@ -118,7 +118,7 @@ def compile_delivery(
 
         return DispatchRun(dispatcher, run.workspace, run.journal, config.pstack.commit, name == "implement", prepare_plan, owned)
 
-    def apply(name: GateStage, state: DeliveryState, result: DispatchResult) -> DeliveryUpdate:
+    def apply(name: DispatchStage, state: DeliveryState, result: DispatchResult) -> DeliveryUpdate:
         # The nested graph owns the paid attempts. The stage applies a result once.
         attempts = result.get("attempts", [])
         stopped: DeliveryUpdate = {"path": [name], "attempts": attempts}
