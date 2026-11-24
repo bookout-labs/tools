@@ -13,6 +13,7 @@ from unittest.mock import patch
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome
 from foreman.config import load_config
+from foreman.contract import CONTRACT_PATH
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.delivery import LiveRun
 from foreman.redaction import redact
@@ -21,6 +22,7 @@ from foreman.runner import run_live_delivery
 from foreman.steps import CANCELLATION
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
 from skill_fixture import fixture_pin
+from test_delivery import VERIFY_SKILL_PATH, contract_text
 from test_runner import BRANCH, EMPTY_SLICE, slice_body
 
 REPO = "Example/Engine"
@@ -38,7 +40,7 @@ class PublicationFixture(unittest.TestCase):
         self.fixture = self.enterContext(ExitStack())
         self.reset_fixture()
 
-    def reset_fixture(self):
+    def reset_fixture(self, check="test -f items.txt"):
         self.fixture.close()
         self.fixture.enter_context(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
         self.base = "main"
@@ -54,7 +56,13 @@ class PublicationFixture(unittest.TestCase):
         self.git("config", "user.name", "Foreman Test")
         self.git("config", "user.email", "foreman@example.com")
         self.git("config", "commit.gpgsign", "false")
-        self.git("commit", "--allow-empty", "-m", "Base")
+        # The base carries the repository's contract file and the verify skill it names.
+        (self.checkout / CONTRACT_PATH).parent.mkdir()
+        (self.checkout / CONTRACT_PATH).write_bytes(contract_text(check))
+        (self.checkout / VERIFY_SKILL_PATH).parent.mkdir(parents=True)
+        (self.checkout / VERIFY_SKILL_PATH).write_text("# Verify the change\n")
+        self.git("add", "--", CONTRACT_PATH, VERIFY_SKILL_PATH)
+        self.git("commit", "-m", "Base")
         self.git("init", "--bare", str(self.remote))
         self.git("remote", "add", "origin", str(self.remote))
         self.git("push", "origin", self.base)
@@ -186,7 +194,7 @@ class PublicationFixture(unittest.TestCase):
         self.fail("completed worker must not repeat")
 
     def walk(self, edit=None, reviews=None, family=None,
-             answer=None, preflight="", check_log=None, check="test -f items.txt", ask=None, model_edit=None, no_change=None):
+             answer=None, preflight="", check_log=None, ask=None, model_edit=None, no_change=None):
         script = ScriptHandler(reviews=reviews)
         workspace = LiveWorkspace(self.checkout)
 
@@ -209,7 +217,7 @@ class PublicationFixture(unittest.TestCase):
             return result
 
         return run_live_delivery(
-            repo=REPO, issue=8, check=check, preflight=preflight, checkpoint=self.checkpoint,
+            repo=REPO, issue=8, preflight=preflight, checkpoint=self.checkpoint,
             answer=answer,
             run=LiveRun(LiveForge(), workspace, check_log=check_log, human_login="fixture-owner"), dispatcher=handler,
         )
@@ -357,7 +365,7 @@ class PublicationTest(PublicationFixture):
         result = self.walk(edit)
         self.assertEqual(result["stop"], "merged")
         head = result["work"].head_sha
-        self.assertEqual(self.git("ls-tree", "-r", "--name-only", head).split(), ["items.txt"])
+        self.assertEqual(self.git("ls-tree", "-r", "--name-only", head).split(), [VERIFY_SKILL_PATH, CONTRACT_PATH, "items.txt"])
         self.assertIn(head, self.git("ls-remote", "origin"))
 
     def test_two_review_rounds_count_whole_pr_while_origin_advances(self):
@@ -479,7 +487,9 @@ class PublicationTest(PublicationFixture):
                 result = self.walk(answer="cancel")
                 self.assertEqual((result["stop"], result.get("halt")), ("cancelled", None))
                 self.assertEqual((self.closed, self.remote_head()), (True, person))
-                self.assertEqual(self.pr_comments, [] if closed else [f"{CANCELLATION}\n\n{CLOSE_MARKER}"])
+                # The PR keeps Verify's evidence comment and gains only the cancellation.
+                self.assertEqual([comment for comment in self.pr_comments if not comment.startswith("Verify evidence.")],
+                                 [] if closed else [f"{CANCELLATION}\n\n{CLOSE_MARKER}"])
 
     def test_second_attempt_adds_a_commit_to_the_same_pull_request(self):
         edits = iter(("one\n", "two\n"))
@@ -1126,12 +1136,12 @@ class PublicationTest(PublicationFixture):
                  ("tree-changing check", "echo run >> check.log", "changed the candidate tree"))
         for case, check, failure in cases:
             with self.subTest(case=case):
-                self.reset_fixture()
+                self.reset_fixture(check=check)
                 rounds = []
                 def edit():
                     rounds.append(1)
                     (self.checkout / "draft.txt").write_text(f"draft {len(rounds)}\n")
-                result = self.walk(edit, check=check)
+                result = self.walk(edit)
                 cap = load_config().max_review_rounds
                 self.assertEqual(result["stop"], "verify_cap")
                 self.assertEqual((len(rounds), result["checks"].verify_failures), (cap, cap))
@@ -1301,7 +1311,7 @@ class PublicationTest(PublicationFixture):
                 if accepted:
                     self.assertEqual(resumed["stop"], "merged")
                     self.assertEqual([a["stage"] for a in resumed["attempts"][len(attempts):]],
-                                     ["implement", "review"])
+                                     ["implement", "verify", "review"])
                 else:
                     self.assertEqual(resumed["attempts"], attempts)
                     self.assertEqual(resumed["stop"], "dirty_worktree")

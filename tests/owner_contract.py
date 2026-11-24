@@ -47,9 +47,9 @@ OWNERS = (
             "candidate": "implementation_candidate"}),
     OwnerCase("run", RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
         base_branch="main", base_sha="a" * 40, token_cap=100, max_budget_usd="1.5"), frozenset(RunState.model_fields), 4, {}),
-    OwnerCase("checks", ChecksState(verify_failures=2, check="true", preflight="env", check_exit_code=0,
-        verify="pass", failure_output="stale failure", checked_tree="c" * 40, verified_head="b" * 40),
-        frozenset({"check", "preflight", "verify_failures"}), 5, {}),
+    OwnerCase("checks", ChecksState(verify_failures=2, check="true", verify_skill=".claude/skills/verify-web/SKILL.md", preflight="env",
+        check_exit_code=0, verify="pass", failure_output="stale failure", checked_tree="c" * 40, verified_head="b" * 40),
+        frozenset({"check", "verify_skill", "preflight", "verify_failures"}), 5, {}),
     OwnerCase("plan", CANDIDATE.update(PlanState(
         rejected_revisions=["b" * 64, "c" * 64],
         spec_history={"rounds": CHECKED.rounds}, triage="supplied_slice", spec_gate="ready",

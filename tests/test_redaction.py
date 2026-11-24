@@ -5,6 +5,7 @@ import ast
 import json
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
+from functools import partial
 from importlib.metadata import version
 from io import StringIO
 from pathlib import Path
@@ -17,6 +18,7 @@ from detect_secrets.core.scan import scan_line
 from detect_secrets.settings import default_settings, get_plugins
 
 from foreman.cli import main
+from foreman.delivery import run_delivery
 from foreman.github import LiveForge
 from foreman.redaction import redact
 from foreman.stage_output import load_stored_slice as _load_slice
@@ -190,8 +192,10 @@ class RedactionTest(unittest.TestCase):
 
     def test_run_log_redacts_dry_run_check_and_live_error(self):
         base = ["run", "delivery", "--repo", "Example/Target"]
-        with redirect_stdout(StringIO()) as stdout:
-            code = main([*base, "--dry-run", "--request", "Add a field", "--check", f"echo {SYNTHETIC_GITHUB}"])
+        # The dry run's contract fixture names a check that prints a token.
+        contract = f"check: echo {SYNTHETIC_GITHUB}\nverify_skill: .claude/skills/verify-web/SKILL.md\n".encode()
+        with redirect_stdout(StringIO()) as stdout, patch("foreman.cli.run_delivery", partial(run_delivery, contract=contract)):
+            code = main([*base, "--dry-run", "--request", "Add a field"])
         self.assertEqual(code, 0)
         self.assertIn("check echo [redacted:GitHub Token]\n", stdout.getvalue())
         self.assertIn("done merge_pending\n", stdout.getvalue())
@@ -201,7 +205,7 @@ class RedactionTest(unittest.TestCase):
             patch("foreman.cli.run_live_delivery", side_effect=ValueError(f"Worker error {SYNTHETIC_GITHUB}")),
             redirect_stderr(StringIO()) as stderr,
         ):
-            code = main([*base, "--issue", "8", "--check", "exit 0"])
+            code = main([*base, "--issue", "8", ])
         self.assertEqual(code, 1)
         self.assertEqual(stderr.getvalue(), "Worker error [redacted:GitHub Token]\n")
 

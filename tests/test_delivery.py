@@ -4,6 +4,7 @@ import tests
 import unittest
 
 from dataclasses import replace
+import json
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
@@ -42,11 +43,19 @@ SLICES = [
 EMPTY_SLICE = {**SLICES[1], "builds": [], "uses": []}
 
 
+VERIFY_SKILL_PATH = ".claude/skills/verify-web/SKILL.md"
+
+
+def contract_text(check="exit 0"):
+    """A target repository's contract file naming the check and the verify skill."""
+    return f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\n".encode()
+
+
 def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, commands=None, checkout=None):
     with skill_fixture(config) as (fixture_config, scratch):
         return run_delivery(
             handler, repo="DoctorCRE/doctorcre-engine", request="Add a field",
-            check=check, slice=slice, config=fixture_config, scratch=scratch, commands=commands, checkout=checkout,
+            contract=contract_text(check), slice=slice, config=fixture_config, scratch=scratch, commands=commands, checkout=checkout,
         )
 
 

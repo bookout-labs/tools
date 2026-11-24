@@ -1,7 +1,7 @@
 import tests
 import ast
 import re
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 import unittest
@@ -9,10 +9,15 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.memory import InMemorySaver
 from foreman.state import ReviewState, PlanState, ChecksState, RunState
-from foreman.cli import _print_run_rows
-from foreman.delivery import compile_delivery
-from foreman.dry_run import ScriptHandler
+from foreman.cli import _print_run_rows, main
+from foreman.contract import ContractError, parse_contract
+from foreman.delivery import compile_delivery, run_delivery
+from foreman.dry_run import DRY_CONTRACT, ScriptHandler
 from test_delivery import walk
+
+
+def walk_contract(contract):
+    return run_delivery(ScriptHandler(), repo="a/b", request="x", contract=contract)
 
 
 def transcript(text):
@@ -37,6 +42,19 @@ class DryRunTests(unittest.TestCase):
             for node in ast.walk(ast.parse(path.read_text())):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "isinstance":
                     self.assertFalse(any(isinstance(arg, ast.Name) and arg.id == "run" for arg in ast.walk(node.args[0])), str(path))
+    def test_cli_dry_run_takes_its_check_from_the_parsed_contract_fixture(self):
+        output = StringIO()
+        with redirect_stdout(output), patch("foreman.cli.run_delivery", wraps=run_delivery) as dry:
+            self.assertEqual(main(["run", "delivery", "--dry-run", "--repo", "DoctorCRE/doctorcre-engine", "--request", "Add a field"]), 0)
+        self.assertNotIn("contract", dry.call_args.kwargs)
+        self.assertEqual(parse_contract(DRY_CONTRACT).check, "<check from .foreman/contract.yaml>")
+        self.assertIn("check <check from .foreman/contract.yaml>\n", output.getvalue())
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            main(["run", "delivery", "--dry-run", "--repo", "a/b", "--request", "x", "--check", "exit 0"])
+        # A malformed fixture fails in the parser, as a target repository's own file would.
+        with self.assertRaisesRegex(ContractError, "verify_skill"):
+            walk_contract(b"check: exit 0\n")
+
     def test_paused_dry_transcript_keeps_tokens(self):
         output = StringIO()
         with redirect_stdout(output):

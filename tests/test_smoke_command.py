@@ -19,12 +19,22 @@ from foreman.cli import main
 from foreman.github import BOT_LOGIN, ForgeError, IssueComment, LiveForge
 from foreman.delivery import FIXTURE_HUMAN
 from foreman.readiness import MergeState
-from foreman.smoke_command import SMOKE_REPO, SMOKE_TOKEN_CAP, SMOKE_CLAUDE_USD, run_smoke, smoke_command
+from foreman.smoke_command import SMOKE_REPO, SMOKE_TOKEN_CAP, SMOKE_CLAUDE_USD, published_file, run_smoke, smoke_command
 from foreman.status import STATUS_MARKER
 from tests.test_smoke import passing
 
 
 class SmokeCommandTest(unittest.TestCase):
+    @staticmethod
+    def git_output(args, **kwargs):
+        """Git as the clone answers it: the published head adds only the issue's file with its requested line."""
+        match args[1:3]:
+            case ['diff', '--numstat']:
+                return '1\t0\tsmoke_17.txt\n'
+            case ['show', _]:
+                return 'smoke 17\n'
+        return 'abc'
+
     @contextmanager
     def provision(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -33,7 +43,7 @@ class SmokeCommandTest(unittest.TestCase):
                   patch('foreman.smoke_command.credentials.environment', return_value={'PATH': '/app', 'GH_TOKEN': 'app'}) as credentials,
                   patch('foreman.smoke_command.LiveForge') as forge,
                   patch('foreman.smoke_command.subprocess.run') as process,
-                  patch('foreman.smoke_command.subprocess.check_output', return_value='abc'),
+                  patch('foreman.smoke_command.subprocess.check_output', side_effect=self.git_output),
                   patch('foreman.smoke_command.run_live_delivery', return_value=passing()) as runner,
                   patch('foreman.smoke_command.smoke_lock'),
                   patch.dict(os.environ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors):
@@ -165,82 +175,45 @@ class SmokeCommandTest(unittest.TestCase):
             self.assertEqual(run_smoke(Path(directory), time.monotonic() + 30), 78)
             forge.assert_not_called()
 
-    def test_provisioned_check_accepts_worktree_and_commit_rejects_bad_fixtures(self):
-        real_run = subprocess.run
+    def test_the_run_takes_no_check_and_the_published_pull_request_holds_only_the_issue_file(self):
         with self.provision() as (root, forge, process, runner, credentials, errors):
-            checkout = root / 'checkout'
-            checkout.mkdir()
-            (checkout / 'tests').mkdir()
-            (checkout / 'tests/test_fixture.py').write_text('import unittest\nclass Fixture(unittest.TestCase):\n    def test_fixture(self): self.assertTrue(True)\n')
-            (checkout / '.gitignore').write_text('__pycache__/\n')
-            def git(*args):
-                result = real_run(['git', *args], cwd=checkout, capture_output=True, text=True, check=True)
-                return result.stdout.strip()
-            git('init')
-            git('add', '.')
-            git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'base')
-            base = 'refs/remotes/origin/trunk'
-            git('update-ref', base, 'HEAD')
-            def provision(args, **kwargs):
-                if args[0] == 'python3.12':
-                    bin_dir = root / 'python/bin'
-                    bin_dir.mkdir(parents=True)
-                    (bin_dir / 'python').symlink_to(sys.executable)
-            process.side_effect = provision
-            def delivery(**kwargs):
-                (checkout / 'origin.txt').write_text('Intervening origin change')
-                git('add', 'origin.txt')
-                git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'Origin moved')
-                git('update-ref', base, 'HEAD')
-                command = kwargs['check']
-                env = {**os.environ, 'PATH': str(root / 'python/bin') + os.pathsep + os.defpath}
-                def check(code):
-                    result = real_run(command, cwd=checkout, env=env, shell=True, capture_output=True)
-                    self.assertEqual(result.returncode == 0, code, result.stderr.decode())
-                path = checkout / 'smoke_17.txt'
-                check(False)
-                path.write_text('smoke 17\n')
-                check(True)
-                path.write_text('wrong\n')
-                check(False)
-                path.write_text('smoke 17\n')
-                (checkout / 'other').write_text('other')
-                check(False)
-                (checkout / 'other').unlink()
-                git('add', '.')
-                check(False)
-                git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'fixture')
-                check(True)
-                committed = git('rev-parse', 'HEAD')
-                origin_parent = git('rev-parse', base)
-                git('switch', '--detach', origin_parent)
-                (checkout / 'later-origin.txt').write_text('Later origin change')
-                git('add', 'later-origin.txt')
-                git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'Origin advanced again')
-                moved = git('rev-parse', 'HEAD')
-                git('switch', '--detach', committed)
-                git('update-ref', base, moved)
-                check(True)
-                saved_command = command
-                command = command.replace(base, committed)
-                check(False)
-                command = saved_command
-                path.write_text('wrong\n')
-                check(False)
-                git('checkout', '--', 'smoke_17.txt')
-                check(True)
-                path.write_text('old\n')
-                git('add', '.')
-                git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'existing')
-                replacement_base = git('rev-parse', 'HEAD')
-                path.write_text('smoke 17\n')
-                git('add', '.')
-                git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'replace')
-                command = command.replace(base, replacement_base)
-                check(False)
-                return passing()
-            runner.side_effect = delivery
             self.assertEqual(run_smoke(root, time.monotonic() + 30), 0)
+            # The smoke repository's contract file holds the check, so the smoke builds none.
+            self.assertNotIn('check', runner.call_args.kwargs)
+            self.assertFalse((root / 'acceptance.py').exists())
+            for numstat, content in (('1\t0\tsmoke_17.txt\n1\t0\tother\n', 'smoke 17\n'), ('1\t0\tsmoke_17.txt\n', 'wrong\n')):
+                def output(args, **kwargs):
+                    return numstat if args[1:3] == ['diff', '--numstat'] else content if args[1] == 'show' else 'abc'
+                with self.subTest(numstat=numstat, content=content), \
+                        patch('foreman.smoke_command.subprocess.check_output', side_effect=output), redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(run_smoke(root, time.monotonic() + 30), 1)
+                self.assertIn('smoke exit 1 pull_request.file attempt published pull request', out.getvalue())
+
+    def test_published_file_reads_the_real_diff_between_the_base_and_the_published_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+
+            def git(*args):
+                return subprocess.run(['git', '-c', 'user.name=test', '-c', 'user.email=test@example.com', *args], cwd=checkout,
+                                      capture_output=True, text=True, check=True).stdout.strip()
+
+            git('init', '-q')
+            git('commit', '-q', '--allow-empty', '-m', 'base')
+            base = git('rev-parse', 'HEAD')
+            (checkout / 'smoke_17.txt').write_text('smoke 17\n')
+            git('add', '.')
+            git('commit', '-qm', 'fixture')
+            published_file(checkout, 17, base, git('rev-parse', 'HEAD'))
+            (checkout / 'other').write_text('other\n')
+            git('add', '.')
+            git('commit', '-qm', 'more')
+            with self.assertRaisesRegex(AssertionError, 'changes more than smoke_17.txt'):
+                published_file(checkout, 17, base, git('rev-parse', 'HEAD'))
+            with self.assertRaisesRegex(AssertionError, 'requested line'):
+                (checkout / 'smoke_17.txt').write_text('wrong\n')
+                git('rm', '-q', 'other')
+                git('commit', '-qam', 'wrong')
+                published_file(checkout, 17, base, git('rev-parse', 'HEAD'))
 
     def test_observed_identity_receipts(self):
         email = '359513816+' + BOT_LOGIN + '@users.noreply.github.com'
@@ -409,7 +382,9 @@ class SmokeCommandTest(unittest.TestCase):
                 results.append(result)
                 return result
             runner.side_effect = delivery
-            with patch('foreman.smoke_command.LiveForge', return_value=transport), patch('foreman.smoke_command.time.sleep'):
+            # The fake workspace publishes no real commit, so the file check is the other tests' subject.
+            with patch('foreman.smoke_command.LiveForge', return_value=transport), patch('foreman.smoke_command.time.sleep'), \
+                    patch('foreman.smoke_command.published_file'):
                 self.assertEqual(run_smoke(root, time.monotonic() + 30), 0, results)
             self.assertEqual(len(results), 2)
             self.assertEqual((results[0]['stop'], results[0].get('merge', MergeState()).status), ('merge_pending', None))
@@ -425,4 +400,4 @@ class SmokeCommandTest(unittest.TestCase):
             for result in results:
                 self.assertEqual(result['run'].token_cap, SMOKE_TOKEN_CAP)
                 self.assertEqual(result['run'].max_budget_usd, '2')
-            self.assertEqual([call['node'] for call in handler.calls], ['triage', 'spec_check', 'implement', 'review'])
+            self.assertEqual([call['node'] for call in handler.calls], ['triage', 'spec_check', 'implement', 'verify', 'review'])

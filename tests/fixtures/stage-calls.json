@@ -1,15 +1,15 @@
 {
-  "bug_fix/plan": "11126cae47da02767d7e97d2408f0be7edde46bf7b59b0576e64464d84b1edfb",
-  "bug_fix/question": "776d667fa5b06e48b63fab6fc6561991b761de8958d09fcce3e2d476497bccf7",
-  "bug_fix/supplied_slice": "11126cae47da02767d7e97d2408f0be7edde46bf7b59b0576e64464d84b1edfb",
-  "feature/plan": "8d8b2e2e9da5725b23c0faa474708794f0a4eec5ee3af6416cb5e5672b926c68",
-  "feature/question": "93976227ee892b93678d76e1d2072c2f9a4a641a7b66dacfa60be9415b59748b",
-  "feature/supplied_slice": "8d8b2e2e9da5725b23c0faa474708794f0a4eec5ee3af6416cb5e5672b926c68",
-  "feature/supplied_slice/verify_skill": "dbd8aa11bb61b57b2e7c309018bbd5b67e5a437565c0d22ae1806eace34a1bd5",
-  "perf_issue/plan": "c09e2ab9cfa69158ed3551ca91087a91bc50c3e3f728e8281a5916e552025882",
-  "perf_issue/question": "aa43f2d3961f3020eed6bbddf8bb283221fd1ea7ec02eac4f8ce8e725268f7c5",
-  "perf_issue/supplied_slice": "c09e2ab9cfa69158ed3551ca91087a91bc50c3e3f728e8281a5916e552025882",
-  "refactoring/plan": "d3a6bf2e8a68e160c0360678758805ce2b4ffb6959e1cace727c34bc0b89a98a",
-  "refactoring/question": "81a90ed1672fc780a026f8a91cf37b5a66ec21d48e54016d890f91e795197911",
-  "refactoring/supplied_slice": "d3a6bf2e8a68e160c0360678758805ce2b4ffb6959e1cace727c34bc0b89a98a"
+  "feature/plan": "934399c8d4e3c234364fb1a8e9a340d8f729105e41f07539c4528ddca5040098",
+  "feature/question": "78baf9cc44436124e66d44890cf09eeff49bd5ec901f32a5b6f04e013debc6be",
+  "feature/supplied_slice": "934399c8d4e3c234364fb1a8e9a340d8f729105e41f07539c4528ddca5040098",
+  "bug_fix/plan": "2344b73a607cd3ecec54e1cd8feb7dcbe98d72f9e8f6303e9c8aa93895922ac9",
+  "bug_fix/question": "67c1ebf6ec55998c2c6baeefe44897fe580faf41e9ff50da1c8cc18f480b9103",
+  "bug_fix/supplied_slice": "2344b73a607cd3ecec54e1cd8feb7dcbe98d72f9e8f6303e9c8aa93895922ac9",
+  "refactoring/plan": "ca7370c4f0e9e5455ef24fad37fe896256c4bd9246c5d279df4a2dc7e35f2682",
+  "refactoring/question": "fbd25471d4d28983dcf4150781892692a25d526afbf79f5a8e50390bae809dc0",
+  "refactoring/supplied_slice": "ca7370c4f0e9e5455ef24fad37fe896256c4bd9246c5d279df4a2dc7e35f2682",
+  "perf_issue/plan": "d62ee602c65b843f112c7a6274904d960b5ae7af914d6f2ee90e7d2d9db0fbf3",
+  "perf_issue/question": "3a6087ff153b3afd51f048b987d89209e8b3b9fa35262c580d4b96c7534053fd",
+  "perf_issue/supplied_slice": "d62ee602c65b843f112c7a6274904d960b5ae7af914d6f2ee90e7d2d9db0fbf3",
+  "feature/supplied_slice/verify_skill": "ee268ee5bd5311424bc8ab750d4f8e4a75b5243b763bb50771e05b0d8ec61721"
 }

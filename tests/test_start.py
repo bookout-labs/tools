@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.cli import main
+from foreman.cli import RunSettings, main
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun
 from foreman.github import VariablesUnreadable
 from foreman.runner import IssueLocked, issue_lock, saved_workspace
@@ -18,11 +18,12 @@ from foreman.stage_output import spec_digest
 from foreman.state import checkpoint_serializer
 from foreman.usd import BudgetUsd
 from foreman.workspace import lock_file
-from skill_fixture import checker_reply, fixture_skills
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace
+from skill_fixture import fixture_skills
+from test_delivery import VERIFY_SKILL_PATH
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply
 
 THREAD = "example/engine#8"
-SETTINGS = {"FOREMAN_CHECK": "exit 0", "FOREMAN_HUMAN_LOGIN": "fixture-owner"}
+SETTINGS = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
 
 
 class StartTest(unittest.TestCase):
@@ -54,18 +55,19 @@ class StartTest(unittest.TestCase):
         return values["run"], values["checks"]
 
     def test_starts_once_with_the_repository_settings_pinned(self):
-        variables = {**SETTINGS, "FOREMAN_PREFLIGHT": "exit 0", "FOREMAN_MAX_TOKENS": "900000"}
+        # The check comes from the contract file at the pinned base. A leftover FOREMAN_CHECK variable is never read.
+        variables = {**SETTINGS, "FOREMAN_CHECK": "exit 9", "FOREMAN_PREFLIGHT": "exit 0", "FOREMAN_MAX_TOKENS": "900000"}
         code, out, err = self.start(variables, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.assertNotEqual(code, 1, out + err)
         run, checks = self.stored()
-        self.assertEqual((checks.check, checks.preflight), ("exit 0", "exit 0"))
+        self.assertEqual((checks.check, checks.verify_skill, checks.preflight), ("exit 0", VERIFY_SKILL_PATH, "exit 0"))
         self.assertEqual((run.token_cap, run.max_budget_usd), (900000, "3"))
         calls = self.worker_calls
         # A repeated delivery is a no-op, whatever stop the run reached.
         self.assertEqual(self.start(variables)[:2], (0, f"already started {THREAD}\n"))
         self.assertEqual(self.worker_calls, calls)
 
-    def test_a_started_run_resumes_without_a_check_and_a_new_run_needs_one(self):
+    def test_a_started_run_resumes_and_run_takes_no_check_option(self):
         self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         store = self.root / "runs.sqlite3"
         self.assertEqual(saved_workspace(store, THREAD), str(self.root.resolve()))
@@ -74,7 +76,7 @@ class StartTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertNotEqual(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"], checkpoint=store, live_run=live), 2)
             with self.assertRaises(SystemExit) as refused:
-                main(["run", "delivery", "--repo", "Example/Engine", "--issue", "9"], checkpoint=store, live_run=live)
+                main(["run", "delivery", "--repo", "Example/Engine", "--issue", "9", "--check", "exit 0"], checkpoint=store, live_run=live)
         self.assertEqual(refused.exception.code, 2)
 
     def test_settings_default_and_parse(self):
@@ -82,20 +84,33 @@ class StartTest(unittest.TestCase):
         with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: seen.append(kwargs) or {"stop": "merged"}):
             self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "4.50"})[0], 0)
             self.assertEqual(self.start()[0], 0)
-        self.assertEqual([(s["check"], s["preflight"], s["max_tokens"], s["max_budget_usd"]) for s in seen], [
-            ("exit 0", "", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("4.50"))),
-            ("exit 0", "", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("3"))),
+        self.assertEqual([(s["preflight"], s["max_tokens"], s["max_budget_usd"]) for s in seen], [
+            ("", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("4.50"))),
+            ("", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("3"))),
         ])
+        self.assertNotIn("check", seen[0])
+
+    def test_run_settings_read_only_the_operator_variables(self):
+        reads = []
+
+        class Recorded(dict):
+            def get(self, key, default=None):
+                reads.append(key)
+                return super().get(key, default)
+
+        RunSettings.from_variables(Recorded({**SETTINGS, "FOREMAN_CHECK": "exit 0", "FOREMAN_MERGE_HOLD": "x"}))
+        # FOREMAN_PREFLIGHT stays until the contract's setup commands replace it. FOREMAN_MERGE_HOLD is read live at arm.
+        self.assertEqual(set(reads), {"FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD", "FOREMAN_PREFLIGHT"})
 
     def test_missing_or_malformed_settings_fail_closed_before_any_run(self):
-        for variables in ({}, {"FOREMAN_CHECK": " "}, {"FOREMAN_CHECK": "exit 0"}, {**SETTINGS, "FOREMAN_HUMAN_LOGIN": " "},
+        for variables in ({}, {"FOREMAN_CHECK": "exit 0"}, {**SETTINGS, "FOREMAN_HUMAN_LOGIN": " "},
                           {**SETTINGS, "FOREMAN_MAX_TOKENS": "many"},
                           {**SETTINGS, "FOREMAN_MAX_TOKENS": "0"}, {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "-1"},
                           {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": ""}):
             with self.subTest(variables=variables), patch("foreman.cli.run_live_delivery") as run:
                 code, _, err = self.start(variables)
                 self.assertEqual(code, 1)
-                self.assertRegex(err, "FOREMAN_CHECK|FOREMAN_HUMAN_LOGIN|FOREMAN_MAX_TOKENS")
+                self.assertRegex(err, "FOREMAN_HUMAN_LOGIN|FOREMAN_MAX_TOKENS")
                 run.assert_not_called()
         with patch.object(self.forge, "variables", side_effect=VariablesUnreadable("HTTP 403")), \
                 patch("foreman.cli.run_live_delivery") as run, contextlib.redirect_stderr(io.StringIO()) as err:
@@ -108,7 +123,7 @@ class StartTest(unittest.TestCase):
         for _ in range(2):
             self.assertEqual(self.start({})[0], 1)
         self.assertEqual(len(self.forge.status_writes), 1)
-        self.assertIn("Set the FOREMAN_CHECK repository variable", self.forge.status[("Example/Engine", 8)])
+        self.assertIn("Set the FOREMAN_HUMAN_LOGIN repository variable", self.forge.status[("Example/Engine", 8)])
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "-1"})[0], 1)
         self.assertIn("FOREMAN_MAX_BUDGET_USD a positive amount", self.forge.status[("Example/Engine", 8)])
         self.assertEqual(self.forge.label_calls, [])
@@ -127,7 +142,8 @@ class StartTest(unittest.TestCase):
         self.assertEqual(self.start()[:2], (0, f"already started {THREAD}\n"))
         self.assertEqual(self.forge.status_writes, writes)
         self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Doing"])
-        self.assertEqual(list(self.forge.status), [("Example/Engine", 8)])
+        # One status comment on the issue; the pull request carries Verify's evidence comment.
+        self.assertEqual(list(self.forge.status), [("Example/Engine", 8), ("Example/Engine", 12)])
 
     def test_without_app_credentials_nothing_is_read_or_run(self):
         self.app.return_value = None

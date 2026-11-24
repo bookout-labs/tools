@@ -186,7 +186,6 @@ def run_live_delivery(
     *,
     repo: str,
     issue: int,
-    check: str,
     checkpoint: Path,
     run: LiveRun,
     preflight: str = "",
@@ -248,7 +247,7 @@ def run_live_delivery(
                                               max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None,
                                               token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
                                           "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
-                                          "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(check=check, preflight=preflight),
+                                          "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(preflight=preflight),
                                           "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState()}
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
@@ -352,7 +351,7 @@ def run_live_delivery(
                 "run": RunState(repo=repo, issue=issue, workspace=workspace, request=request or "",
                                 token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
                                 max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
-                "checks": ChecksState(check=check, preflight=preflight),
+                "checks": ChecksState(preflight=preflight),
                 "pstack_pin": pin.model_dump(),
                 "matt_skills_pin": matt.model_dump(),
                 "path": [],
@@ -410,10 +409,7 @@ def run_live_delivery(
 
         saved = graph.get_state(config, subgraphs=True)
         result = early_result if early_result is not None else snapshot_result(saved)
-        if result.get("stop") == "blocked":
-            # Open prerequisites leave the issue unadmitted, so a later Ready recheck starts it fresh.
-            saver.delete_thread(thread)
-        elif result.get("stop") in RELEASED_STOPS and early_result is None:
+        if result.get("stop") in RELEASED_STOPS and early_result is None:
             # A finished run's clean checkout is removed. A halted run keeps its checkout as evidence.
             heads = {head for head in (result["run"].base_sha, result.get("work", WorkState()).published_head) if head}
             try:
@@ -453,4 +449,8 @@ def run_live_delivery(
             last = prompt.stage if prompt is not None else STEP_STAGES.get(next(iter(result["path"][-1:]), ""))
             if (status := status_of(result, last, prompt, watch_repo)) is not None:
                 mirror(status)
+        if result.get("stop") in ("blocked", Halt.not_ready):
+            # Open prerequisites or a missing requirement leave the issue unadmitted, so a later Ready starts it fresh.
+            # The status comment already names a missing requirement and its fix.
+            saver.delete_thread(thread)
         return result

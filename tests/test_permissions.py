@@ -21,8 +21,10 @@ from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.skill_rules import PACKAGE_SKILLS, export_skills, git, stage_methods
 from foreman.stages import STAGES
 from foreman.worker import CliWorker, git_dirs
+from foreman.workspace import LiveWorkspace
 from skill_fixture import skill_fixture
 from test_adapters import codex_events, codex_process, fixture_process
+from test_delivery import contract_text
 from test_runner import EMPTY_SLICE
 
 
@@ -47,13 +49,18 @@ class PermissionsTest(unittest.TestCase):
                 if not row.skills:
                     continue
                 for kind in ("feature", "bug_fix", "perf_issue"):
-                    state = {"run": RunState(workspace=str(checkout)), "plan": PlanState(work_kind=kind, issue_kind="slice", slice={**EMPTY_SLICE, "stateful": True, "screen": "docs/screens/ui.md", "properties": [{"name": "rule", "constraint": "unique"}]})}
-                    text, methods, roots = stage_methods(stage, state, root)
+                    state = {"run": RunState(workspace=str(checkout), base_sha=git(checkout, "rev-parse", "HEAD")),
+                             "checks": ChecksState(verify_skill=".claude/skills/verify-board/SKILL.md"), "plan": PlanState(work_kind=kind, issue_kind="slice", slice={**EMPTY_SLICE, "stateful": True, "screen": "docs/screens/ui.md", "properties": [{"name": "rule", "constraint": "unique"}]})}
+                    text, methods, roots = stage_methods(stage, state, root, LiveWorkspace(checkout))
                     self.assertEqual(len(roots), len(set(roots)))
                     self.assertTrue(set(roots) <= {str(root.resolve()), str(PACKAGE_SKILLS.resolve())})
                     instructions = text.split('\n\n') if text else []
                     self.assertEqual(len(instructions), len(methods))
                     for instruction in instructions:
+                        if instruction.startswith("Follow the repository's verify skill"):
+                            # The verify skill is carried as the base's text, so it needs no read root.
+                            self.assertIn("Run the board checks.", instruction)
+                            continue
                         path = instruction.split(' of ')[-1].split(' as the method.')[0] if ' of ' in instruction else instruction.removeprefix('Read ').split(' in full')[0]
                         self.assertTrue(Path(path).is_file())
                         self.assertTrue(any(Path(path).is_relative_to(Path(r)) for r in (*roots, checkout)))
@@ -89,7 +96,7 @@ class PermissionsTest(unittest.TestCase):
                     self.assertEqual(permissions["allow"], ["Bash(sh check.sh)", "Edit", "Write"])
                     return script(node, model, state, instruction)
 
-                result = run_delivery(handler, repo="Example/Engine", request="Change", check="sh check.sh",
+                result = run_delivery(handler, repo="Example/Engine", request="Change", contract=contract_text("sh check.sh"),
                                       config=config, slice=EMPTY_SLICE, scratch=scratch)
                 self.assertEqual(result["stop"], "merge_pending")
                 self.assertEqual(len(calls), 2)

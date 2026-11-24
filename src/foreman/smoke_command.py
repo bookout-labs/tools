@@ -7,7 +7,6 @@ import json
 import re
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -39,20 +38,14 @@ SMOKE_TOKEN_CAP = 1_500_000  # Two review rounds measured 709,054 and 827,368 to
 SMOKE_CLAUDE_USD = BudgetUsd(Decimal("2"))  # Two review rounds measured $0.93 and $0.63 Claude.
 SMOKE_SECONDS = 900  # Two review rounds took 260 s and 241 s; allow CI observation too.
 
-FIXTURE_CHECK = '''import pathlib, subprocess, sys
-issue, base = sys.argv[1:]
-base = subprocess.check_output(["git", "merge-base", "HEAD", base]).decode().strip()
-path = f"smoke_{issue}.txt"
-assert pathlib.Path(path).read_bytes() == f"smoke {issue}\\n".encode()
-status = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=all"]).decode()
-head = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
-if head == base:
-    assert status == f"?? {path}\\n"
-else:
-    assert not status
-    assert subprocess.check_output(["git", "diff", "--name-only", base, "HEAD"]).decode().splitlines() == [path]
-    assert subprocess.check_output(["git", "diff", "--numstat", base, "HEAD"]).decode() == f"1\\t0\\t{path}\\n"
-'''
+
+def published_file(root: Path, issue: int, base: str, head: str) -> None:
+    """The published PR adds exactly the issue's file with its requested line. The smoke repository's own contract holds the check."""
+    path = f"smoke_{issue}.txt"
+    assert subprocess.check_output(["git", "diff", "--numstat", base, head], cwd=root, text=True) == f"1\t0\t{path}\n", \
+        f"the pull request changes more than {path}"
+    assert subprocess.check_output(["git", "show", f"{head}:{path}"], cwd=root, text=True) == f"smoke {issue}\n", \
+        f"{path} does not hold the requested line"
 
 
 def run_smoke(directory: Path, deadline: float) -> int:
@@ -130,7 +123,8 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
         if env is None:
             raise CredentialFailure("Smoke requires Studio App credentials; personal credentials are not supported.")
         forge = LiveForge()
-        base_branch = forge.default_branch(repo)
+        # The App must read the repository before the smoke files anything.
+        forge.default_branch(repo)
         verdict = SmokeVerdict(78, "cleanup", "prerequisite")
         forge.ensure_label(repo, "smoke", "ededed")
         cleanup_smoke(forge, repo)
@@ -160,16 +154,13 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
             subprocess.run(["python3.12", "-m", "venv", str(directory / "python")], capture_output=True, check=True)
             os.environ["PATH"] = str(directory / "python/bin") + os.pathsep + old_path
             subprocess.run(["python", "-c", "import sys; assert sys.version_info[:2] == (3, 12)"], capture_output=True, check=True)
-        script = directory / "acceptance.py"
-        script.write_text(FIXTURE_CHECK)
         issue = create_smoke_issue(forge, repo)
         request = f"Add smoke_{issue}.txt containing exactly 'smoke {issue}\\n'. Change no other files."
-        check = ("npm run check" if npm else "python -m unittest discover -s tests") + " && " + shlex.join([sys.executable if npm else "python", str(script), str(issue), f"refs/remotes/origin/{base_branch}"])
         print(f"smoke issue {issue}; tokens {tokens}; Claude ${dollars.amount}; deadline {SMOKE_SECONDS}s. "
               "Other providers have no dollar cap.", flush=True)
         live = LiveRun(forge, LiveWorkspace(root, repo), human_login=FIXTURE_HUMAN)
         command = ["run", "delivery", "--repo", repo, "--issue", str(issue), "--request", request, "--human-login", FIXTURE_HUMAN,
-                   "--check", check, "--preflight", "npm ci" if npm else "",
+                   "--preflight", "npm ci" if npm else "",
                    "--max-tokens", str(tokens), "--max-budget-usd", str(dollars.amount)]
         checkpoint = directory / "checkpoint.sqlite3"
         if npm:
@@ -201,7 +192,7 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
                     raise ValueError("CLI produced no delivery result")
                 result = reported[-1]
             else:
-                result = run_live_delivery(repo=repo, issue=issue, request=request, check=check,
+                result = run_live_delivery(repo=repo, issue=issue, request=request,
                                            checkpoint=directory / "checkpoint.sqlite3", dispatcher=CliWorker(root, scratch_root=directory),
                                            run=live,
                                            max_tokens=tokens, max_budget_usd=dollars,
@@ -218,6 +209,8 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
         verdict = smoke_verdict(result)
         if verdict.exit_code != 1 and result["checks"].verified_head and result["review"].review_receipt and result.get("merge", MergeState()).receipt:
             checkpoint_verdict = verdict
+            verdict = SmokeVerdict(1, "pull_request.file", "published pull request")
+            published_file(root, issue, result["run"].base_sha, result["checks"].verified_head)
             receipt = MergeReceipt.model_validate(result.get("merge", MergeState()).receipt)
             review = result["review"].review_receipt
             assert review is not None

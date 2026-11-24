@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from foreman.config import SkillPin
 from foreman.stage_output import WorkKind
-from foreman.workspace import WorkspaceError
+from foreman.workspace import Workspace, WorkspaceError
 
 if TYPE_CHECKING:
     from foreman.state import DeliveryState
@@ -140,8 +140,18 @@ def target_skills(workspace: str, path: str) -> list[Path]:
     return list(found.values())
 
 
-def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, list[str], list[str]]:
-    from foreman.stages import STAGES
+def verify_skill(state: "DeliveryState", workspace: Workspace) -> str | None:
+    """The contract's verify skill as the pinned base tracks it, so a PR that edits the skill never changes what Verify follows."""
+    path = state["checks"].verify_skill
+    text = workspace.tracked_file(state["run"].base_sha, path) if path else None
+    try:
+        return text.decode("utf-8") if text is not None else None
+    except UnicodeDecodeError as exc:
+        raise TargetSkillUnreadable(f"The verify skill {path} at the pinned base is not UTF-8 text.") from exc
+
+
+def stage_methods(stage: str, state: "DeliveryState", root: Path, workspace: Workspace) -> tuple[str, list[str], list[str]]:
+    from foreman.stages import STAGES, VERIFY_SKILL
 
     instructions: list[str] = []
     methods: list[str] = []
@@ -150,10 +160,17 @@ def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, 
         if not rule.applies(state):
             continue
         method = rule.skill
+        if method == VERIFY_SKILL:
+            if (skill := verify_skill(state, workspace)) is not None:
+                path = state["checks"].verify_skill
+                methods.append(path)
+                instructions.append(f"Follow the repository's verify skill, {path} at the pinned base {state['run'].base_sha}, "
+                                    f"to verify the change. Its full text follows.\n{skill}")
+            continue
         if method.kind == "target_skill":
-            workspace = state["run"].workspace
-            for found in target_skills(workspace, method.path):
-                methods.append(found.relative_to(workspace).as_posix())
+            checkout = state["run"].workspace
+            for found in target_skills(checkout, method.path):
+                methods.append(found.relative_to(checkout).as_posix())
                 instructions.append(f"Read {found} in full and follow it to verify the change.")
             continue
         path = method.source(root)

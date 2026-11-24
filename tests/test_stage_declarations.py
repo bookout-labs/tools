@@ -74,8 +74,7 @@ def capture():
                 "foreman.skill_rules.PACKAGE_SKILLS", Path("/LOCAL")), patch(
                 "foreman.delivery.PACKAGE", Path(__file__).resolve().parents[1] / "src/foreman"):
                 with patch("foreman.delivery.DryRun", side_effect=lambda **kwargs: DryRun(root=Path("/TARGET"), **kwargs)):
-                    result = run_delivery(dispatch, repo="Example/Engine", request="Change items", check="check",
-                    slice=None if route == "question" else item, scratch=Path("/FIXTURE"), skills=lambda *_: Path("/METHODS"),
+                    result = run_delivery(dispatch, repo="Example/Engine", request="Change items", slice=None if route == "question" else item, scratch=Path("/FIXTURE"), skills=lambda *_: Path("/METHODS"),
                     checkout=checkout if skill else None)
             captures[f"{kind}/{route}" + ("/verify_skill" if skill else "")] = {"calls": records, "stop": result["stop"],
                 "attempts": [(a["stage"], a["model"], a["methods"]) for a in result["attempts"]]}
@@ -251,7 +250,7 @@ class StageDeclarationsTest(unittest.TestCase):
     def test_spec_checker_uses_the_independent_evidence_probe(self):
         with skill_fixture() as (config, scratch):
             root = export_skills(config.pstack, config.matt_skills, scratch)
-            _, methods, _ = stage_methods("spec_check", {"plan": PlanState()}, root)
+            _, methods, _ = stage_methods("spec_check", {"plan": PlanState()}, root, DryRun())
         self.assertEqual(methods, ["interrogate/SKILL.md"])
 
     def test_active_and_non_model_resources_stay_distinct(self):

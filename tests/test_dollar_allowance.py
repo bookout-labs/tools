@@ -107,7 +107,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     def invoke(phase, *flags, expected, env=None):
                         process = subprocess.run(
                             [sys.executable, "-c", bootstrap + script, str(checkpoint), config.pstack.model_dump_json(),
-                             phase, "run", "delivery", "--repo", "a/b", "--issue", "8", "--check", "exit 0", *flags],
+                             phase, "run", "delivery", "--repo", "a/b", "--issue", "8", *flags],
                             cwd=root, text=True, capture_output=True, timeout=30, env=env,
                         )
                         self.assertEqual(process.returncode, expected, process.stdout + process.stderr)
@@ -205,7 +205,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.0))
 
                     forge = FakeGitHub()
-                    kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=Path(folder) / "allowance.sqlite",
+                    kwargs = dict(repo="a/b", issue=8, checkpoint=Path(folder) / "allowance.sqlite",
                                   run=LiveRun(forge, FakeWorkspace(Path(folder)), human_login="fixture-owner"), dispatcher=handler)
                     state = run_live_delivery(**kwargs, max_budget_usd=usd("1.50") if stored else None)
                     if pause == "needs_human":
@@ -234,7 +234,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 return Outcome("quota", usage=SCRIPTED_USAGE)
 
             root = Path(folder)
-            kwargs = dict(repo="a/b", issue=8, check="exit 0", run=LiveRun(FakeGitHub(), FakeWorkspace(root), human_login="fixture-owner"),
+            kwargs = dict(repo="a/b", issue=8, run=LiveRun(FakeGitHub(), FakeWorkspace(root), human_login="fixture-owner"),
                           dispatcher=quota)
             first = run_live_delivery(**kwargs, checkpoint=root / "modern.sqlite")
             self.assertEqual(first["stop"], "quota_exhausted")
@@ -256,7 +256,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with SqliteSaver.from_conn_string(str(historical)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
-                graph.update_state(THREAD, {"review": ReviewState(review="changes"), "stop": "P1", "schema_version": 5, "run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
+                graph.update_state(THREAD, {"review": ReviewState(review="changes"), "stop": "P1", "schema_version": 5, "run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(preflight="exit 1"), "path": ["triage"],
                     "pstack_pin": config.pstack.model_dump(), "matt_skills_pin": config.matt_skills.model_dump()}, as_node="review")
                 graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                             "path": ["implement"], "plan": PlanState()}, as_node="research")
@@ -305,7 +305,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
                 checkpoint = root / "replay.sqlite"
-                kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=LiveRun(FakeGitHub(), workspace, human_login="fixture-owner"),
+                kwargs = dict(repo="a/b", issue=8, checkpoint=checkpoint, run=LiveRun(FakeGitHub(), workspace, human_login="fixture-owner"),
                               dispatcher=handler, max_budget_usd=usd("1"))
                 halted = run_live_delivery(**kwargs)
                 self.assertEqual(halted["stop"], "git_failed")

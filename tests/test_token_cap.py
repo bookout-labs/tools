@@ -83,7 +83,7 @@ class TokenCapTests(unittest.TestCase):
             def quota(node, model, state, instruction):
                 calls.append(node)
                 return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0))
-            kwargs = dict(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint,
+            kwargs = dict(repo="a/b", issue=8, checkpoint=checkpoint,
                           run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner"))
             first = run_live_delivery(**kwargs, max_tokens=100, dispatcher=quota)
             self.assertEqual(first["stop"], "quota_exhausted")
@@ -108,8 +108,7 @@ class TokenCapTests(unittest.TestCase):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
             def quota(*args):
                 return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0))
-            kwargs = dict(repo="a/b", issue=8, check="exit 0",
-                          run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner"))
+            kwargs = dict(repo="a/b", issue=8, run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner"))
             first = run_live_delivery(**kwargs, checkpoint=Path(folder) / "a.sqlite", dispatcher=quota)
             legacy = Path(folder) / "legacy.sqlite"
             with SqliteSaver.from_conn_string(str(legacy)) as saver:
@@ -142,12 +141,12 @@ class TokenCapTests(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), config, run=live, checkpointer=saver)
-                graph.update_state(invocation, {"review": ReviewState(review="changes"), "stop": "P1", "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "checks": ChecksState(check="exit 0", preflight="exit 1"), "path": ["triage"],
+                graph.update_state(invocation, {"review": ReviewState(review="changes"), "stop": "P1", "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "checks": ChecksState(preflight="exit 1"), "path": ["triage"],
                     "plan": PlanState(triage="supplied_slice"), "pstack_pin": config.pstack.model_dump(), "matt_skills_pin": config.matt_skills.model_dump()}, as_node="review")
                 graph.update_state(invocation, {"review": ReviewState(), "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
                                                 "path": ["implement"]}, as_node="research")
             with self.assertRaisesRegex(ValueError, "unknown usage history"):
-                run_live_delivery(repo="a/b", issue=8, check="exit 0", checkpoint=checkpoint, run=live,
+                run_live_delivery(repo="a/b", issue=8, checkpoint=checkpoint, run=live,
                                   dispatcher=ScriptHandler())
 
     def test_finished_legacy_checkpoint_is_refused(self):
@@ -159,5 +158,5 @@ class TokenCapTests(unittest.TestCase):
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
                                    {"review": ReviewState(), "run": RunState(repo="a/b"), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}, as_node="research")
             with self.assertRaisesRegex(CheckpointVersionError, "Start a new run"):
-                run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint, dispatcher=ScriptHandler(),
+                run_live_delivery(repo="a/b", issue=8, checkpoint=checkpoint, dispatcher=ScriptHandler(),
                                   run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner"))

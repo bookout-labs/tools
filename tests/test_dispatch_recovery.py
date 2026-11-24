@@ -65,7 +65,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     with patch("foreman.dispatch.Attempt.record", side_effect=crash) if mode == "quota-uncommitted" else contextlib.nullcontext():
         with patch("foreman.delivery.stage_update", side_effect=crash) if mode == "success" else contextlib.nullcontext():
             try:
-                result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=Path(checkpoint),
+                result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(checkpoint),
                     dispatcher=handler, presentation=RunPresentation(),
                     max_budget_usd=BudgetUsd(Decimal(limit)) if limit else None, run=LiveRun(FakeGitHub(), workspace, human_login="fixture-owner"))
             except ValueError as exc:

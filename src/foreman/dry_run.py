@@ -14,10 +14,15 @@ from foreman.github import (
 )
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
-from foreman.workspace import WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope
+from foreman.workspace import (
+    WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, LiveWorkspace, branch_command, commit_commands, push_command, CheckLog,
+    PullRequestSize, ReviewScope,
+)
 
 SCRIPTED_USAGE = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)
 CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
+# A dry run reads no repository, so it walks with this contract text, parsed like a target repository's own.
+DRY_CONTRACT = b"check: <check from .foreman/contract.yaml>\nverify_skill: .claude/skills/verify-web/SKILL.md\n"
 
 class ScriptHandler:
     def __init__(
@@ -102,6 +107,8 @@ class DryRun:
     comments: list[IssueComment] = field(default_factory=list[IssueComment])
     issues: dict[int, Issue] = field(default_factory=dict[int, Issue])
     links: dict[int, tuple[int, list[int]]] = field(default_factory=dict[int, tuple[int, list[int]]])
+    # A target checkout whose HEAD stands in for the pinned base, so the stages read its tracked skills.
+    checkout: Path | None = None
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int:
         return 0
@@ -202,7 +209,10 @@ class DryRun:
         raise NotImplementedError("Not used by dry delivery")
 
     def has_tracked_file(self, base: str, path: str) -> bool:
-        return False
+        return self.checkout is not None and LiveWorkspace(self.checkout).has_tracked_file("HEAD", path)
+
+    def tracked_file(self, base: str, path: str) -> bytes | None:
+        return LiveWorkspace(self.checkout).tracked_file("HEAD", path) if self.checkout is not None else None
 
     def contains_commit(self, base: str, commit: str) -> bool:
         return False
