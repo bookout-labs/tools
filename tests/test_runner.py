@@ -42,7 +42,7 @@ from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, SpecOutpu
 from foreman.worker import CliWorker, run_worker_command
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply
-from test_adapters import codex_events, fixture_process, worker_process
+from test_adapters import claude_review_stream, codex_events, fixture_process, worker_process
 from test_spec_candidate import CandidateTests
 from owner_contract import assert_channels
 
@@ -174,6 +174,9 @@ def planning_answer_env(detail, answer):
     return env
 
 
+REVIEW_READS = "Read the full PR diff and committed files with these commands in the checkout:"
+
+
 def worker_reply(args, reply):
     reply = checker_reply(args) or reply
     if isinstance(reply, dict):
@@ -183,15 +186,21 @@ def worker_reply(args, reply):
             reply = {"slices": None, "questions": [], **reply}
         if "implementation" in reply or "research" in reply:
             reply = {"human_question": None, **reply}
+    # A review reads every granted scope command, which its prompt lists.
+    prompt = args[-1]
+    reads = [line for line in prompt.split(REVIEW_READS, 1)[1].splitlines() if line.startswith("git ")] if REVIEW_READS in prompt else []
     if args[0] == "codex":
         events = codex_events()
         events[-2]["item"]["text"] = json.dumps(reply) if isinstance(reply, dict) else reply
+        events[-2:-2] = [{"type": "item.completed", "item": {"type": "command_execution", "command": read,
+                                                             "exit_code": 0, "status": "completed"}} for read in reads]
         return subprocess.CompletedProcess(args, 0, "\n".join(map(json.dumps, events)), "")
     recorded = fixture_process(args, "success", 0)
     envelope = json.loads(recorded.stdout)
     field = "structured_output" if args[0] == "claude" else "structuredOutput"
     envelope[field] = reply
-    return subprocess.CompletedProcess(args, recorded.returncode, json.dumps(envelope), recorded.stderr)
+    stdout = claude_review_stream(envelope, reads) if "stream-json" in args else json.dumps(envelope)
+    return subprocess.CompletedProcess(args, recorded.returncode, stdout, recorded.stderr)
 
 
 class FixtureWorkspace(LiveWorkspace):

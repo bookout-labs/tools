@@ -126,6 +126,11 @@ class ReviewScope:
         return tuple(line.strip() for line in self.command.splitlines()
                      if line.strip() and not line.lstrip().startswith("#"))
 
+    @property
+    def required(self) -> tuple[str, ...]:
+        """The full PR diff read, which `review_scope` grants first. A review counts only once it has completed."""
+        return self.commands[:1]
+
     def record(self) -> ReviewScopeRecord:
         return {"command": self.command, "inline": sorted(self.inline)}
 

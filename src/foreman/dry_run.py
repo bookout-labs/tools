@@ -160,7 +160,7 @@ class DryRun:
                            baseRefName=self.default_branch(repo), baseRefOid="<base>", autoMergeRequest=None)
 
     def review_scope(self, base: str, head: str) -> ReviewScope:
-        return ReviewScope("", frozenset({("example.txt", 1)}))
+        return ReviewScope(f"git diff {base}...{head} --", frozenset({("example.txt", 1)}))
 
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt:
         return {"id": 1, "state": "COMMENTED", "commit_id": target.headRefOid}

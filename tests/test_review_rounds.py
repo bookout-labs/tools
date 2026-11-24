@@ -23,10 +23,11 @@ from foreman.review_round import history
 from foreman.smoke import smoke_verdict
 from foreman.github import LiveForge
 from foreman.config import ModelSpec
-from foreman.adapters import Outcome
+from foreman.adapters import Call, Outcome
+from foreman.adapters.codex import CodexAdapter
 from foreman.dry_run import CLEAR, SCRIPTED_USAGE
 from skill_fixture import skill_fixture
-from test_adapters import codex_events, codex_process, fixture_process, worker_process
+from test_adapters import claude_review_stream, codex_events, codex_process, fixture_process, worker_process
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
 
 
@@ -104,6 +105,9 @@ def rendered_patch(workspace, state):
     scope = state["dispatch_plan"]["scope"]["command"]
     diff, = (line for line in scope.splitlines() if line.startswith("git ") and " diff " in line)
     return subprocess.check_output(["sh", "-c", diff], cwd=workspace.root, text=True)
+
+
+SEARCH = "git --no-replace-objects grep -n FOREMAN_REMOVED_PATH {head} -- items.txt"
 
 
 class ReviewRoundsTest(unittest.TestCase):
@@ -227,7 +231,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 current = head if index else previous
                 self.assertIn(f"{tip}...{current} --", diffs[0])
                 outside = ("git status", "git diff --output=escape", "exit 0", "head", "history", "base")
-                denied_commands = ()
+                reads, denied = (), ()
 
                 for command in commands:
                     subprocess.run(["sh", "-c", command], cwd=workspace.root, check=True, stdout=subprocess.PIPE)
@@ -238,22 +242,23 @@ class ReviewRoundsTest(unittest.TestCase):
                     for command in (*outside, commands[0] + " --stat"):
                         self.assertNotIn(f"Bash({command})", permissions["allow"])
                     self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
-                    process = fixture_process(args, "success", 0)
-                    envelope = json.loads(process.stdout)
-                    envelope["permission_denials"] = [
-                        {"tool_name": "Bash", "tool_input": {"command": c}} for c in denied_commands
-                    ]
-                    return subprocess.CompletedProcess(args, 0, json.dumps(envelope), "")
+                    self.assertEqual(args[args.index("--output-format"):][:3], ["--output-format", "stream-json", "--verbose"])
+                    envelope = json.loads(fixture_process(args, "success", 0).stdout)
+                    envelope["permission_denials"] = [{"tool_name": "Bash", "tool_input": {"command": c}} for c in denied]
+                    return subprocess.CompletedProcess(args, 0, claude_review_stream(envelope, reads, denied), "")
 
-                cases = [((), "ran"), (outside, "failed")]
-                for command in commands:
-                    cases.extend(((denied,), "failed") for denied in
-                                 (command, f"bash -lc '{command}'", f"cd . && {command}", command + " --stat"))
-                for denied_commands, expected in cases:
-                    with self.subTest(round=index + 1, denials=denied_commands):
+                # Only the full PR diff read decides; denials of other commands, and reads the reviewer skips, don't.
+                cases = [(commands, (), "ran"), (commands, outside, "ran"), (diffs, (), "ran"),
+                         (commands[1:], (), "failed"), (commands[1:], diffs, "failed")]
+                cases += [((wrapped, *commands[1:]), (), "failed") for wrapped in
+                          (f"bash -lc '{diffs[0]}'", f"cd . && {diffs[0]}", diffs[0] + " --stat", diffs[0] + " | head -5")]
+                for reads, denied, expected in cases:
+                    with self.subTest(round=index + 1, reads=reads[:1], denied=denied):
                         outcome = CliWorker(workspace.root, runner)(
                             node, ModelSpec.parse("claude-opus-5-5-high"), state, instruction)
                         self.assertEqual(outcome.kind, expected, outcome.detail)
+                        if expected == "failed":
+                            self.assertEqual(outcome.detail, f"Claude reviewer did not complete required read: {diffs[0]}")
 
     def test_worker_refuses_scratch_root_inside_checkout(self):
         with TemporaryDirectory() as directory:
@@ -261,16 +266,20 @@ class ReviewRoundsTest(unittest.TestCase):
             checkout.mkdir()
             nested = checkout / "scratch"
             nested.mkdir()
+            diff = "git diff a...b --"
+            state = {"dispatch_plan": {"models": [], "instruction": "", "methods": [], "target": None,
+                                       "scope": {"command": diff, "inline": []}}}
             for scratch_root in (checkout, nested):
                 with self.subTest(scratch_root=scratch_root):
                     def runner(args, cwd, env):
                         self.assertFalse(Path(env["TMPDIR"]).resolve().is_relative_to(checkout.resolve()))
                         settings = Path(args[args.index("--settings") + 1])
                         self.assertFalse(settings.resolve().is_relative_to(checkout.resolve()))
-                        return fixture_process(args, "success", 0)
+                        envelope = json.loads(fixture_process(args, "success", 0).stdout)
+                        return subprocess.CompletedProcess(args, 0, claude_review_stream(envelope, (diff,)), "")
                     outcome = CliWorker(checkout, runner, scratch_root=scratch_root)(
-                        "review", ModelSpec.parse("claude-opus-5-5-high"), {}, "Review.")
-                    self.assertEqual(outcome.kind, "ran")
+                        "review", ModelSpec.parse("claude-opus-5-5-high"), state, "Review.")
+                    self.assertEqual(outcome.kind, "ran", outcome.detail)
             self.assertEqual(list(checkout.iterdir()), [nested])
             self.assertEqual(list(nested.iterdir()), [])
 
@@ -464,58 +473,49 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertFalse(self.forge.reviews)
         self.assertFalse(self.forge.merge_calls)
 
-    def test_codex_review_accepts_no_match_after_required_reads(self):
-        for search in (
-            "git --no-replace-objects grep -n FOREMAN_REMOVED_PATH {head} -- items.txt",
-            "git grep -F '|' {head} -- items.txt",
-            'git grep -F "&&" {head} -- items.txt',
-            "git grep -F ';' {head} -- items.txt",
-            "git grep -F '>' {head} -- items.txt",
-            r"git grep -F \| {head} -- items.txt",
+    def test_codex_review_ignores_failures_of_other_commands(self):
+        for search, code in (
+            ("git --no-replace-objects grep -n FOREMAN_REMOVED_PATH {head} -- items.txt", 1),
+            ("git grep -F '|' {head} -- items.txt", 1),
+            ("git grep -F one {head} -- items.txt | grep -F FOREMAN_REMOVED_PATH", 1),
+            ("git grep -F FOREMAN_REMOVED_PATH {head} -- items.txt; false", 1),
+            ("git grep -F FOREMAN_REMOVED_PATH {head} -- items.txt > search-output.txt", 1),
+            ("git grep -G '[' {head} -- items.txt", 128),
         ):
             with self.subTest(search=search):
-                self.check_codex_review_reads(search)
+                self.check_codex_review_reads(search, search_exit=code)
+        for status in ("failed", "declined", "missing"):
+            with self.subTest(blob=status):
+                self.check_codex_review_reads(SEARCH, read_status=status, failing="cat-file blob")
 
-    def test_codex_review_rejects_compound_searches_with_exit_one(self):
-        for search in (
-            "git grep -F one {head} -- items.txt | grep -F FOREMAN_REMOVED_PATH",
-            "git grep -F one {head} -- items.txt|grep -F FOREMAN_REMOVED_PATH",
-            "git grep -F FOREMAN_REMOVED_PATH {head} -- items.txt && true",
-            "git grep -F FOREMAN_REMOVED_PATH {head} -- items.txt; false",
-            "git grep -F FOREMAN_REMOVED_PATH {head} -- items.txt > search-output.txt",
-        ):
-            with self.subTest(search=search):
-                self.check_codex_review_reads(search, halt_detail="exit 1")
-
-    def test_codex_review_rejects_git_grep_error(self):
-        self.check_codex_review_reads(
-            "git grep -G '[' {head} -- items.txt", search_exit=128, halt_detail="exit 128",
-        )
-
-    def test_codex_review_rejects_failed_denied_or_missing_reads(self):
-        for status, halt_detail in (
-            ("failed", "exit 128"),
-            ("declined", "command failed"),
-            ("missing", "required read"),
-        ):
+    def test_codex_review_requires_the_full_diff_read(self):
+        for status in ("failed", "declined", "missing"):
             with self.subTest(status=status):
-                self.check_codex_review_reads(
-                    "git --no-replace-objects grep -n FOREMAN_REMOVED_PATH {head} -- items.txt",
-                    read_status=status, halt_detail=halt_detail,
-                )
+                self.check_codex_review_reads(SEARCH, read_status=status, failing=" diff ", halt_detail="required read")
 
-    def check_codex_review_reads(self, search_template, *, search_exit=1, read_status=None, halt_detail=None):
+    def test_codex_required_read_needs_an_integer_exit_zero(self):
+        diff = "git --no-replace-objects diff --no-color a...b --"
+        for code, kind in ((0, "ran"), (False, "failed"), (None, "failed"), ("0", "failed")):
+            with self.subTest(code=code):
+                events = codex_events()
+                events[-2]["item"]["text"] = json.dumps(APPROVE)
+                events[-2:-2] = [{"type": "item.completed", "item": {"type": "command_execution", "command": diff,
+                                                                     "exit_code": code, "status": "completed"}}]
+                call = Call("", "{}", False, Path("."), review=True, required=(diff,))
+                self.assertEqual(CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high")).read(codex_process(events), call).kind, kind)
+
+    def check_codex_review_reads(self, search_template, *, search_exit=1, read_status=None, failing="", halt_detail=None):
         with review_trees() as trees:
             workspace = trees[0]
 
             def review(state, instruction):
                 required = [line for line in instruction.splitlines() if line.startswith("git ")]
-                blob = next(command for command in required if "cat-file blob" in command)
+                target = next((command for command in required if failing and failing in command), None)
                 head = state["dispatch_plan"]["target"]["headRefOid"]
                 search = search_template.format(head=head)
                 commands = []
                 for command in [*required, search]:
-                    status = read_status if command == blob else None
+                    status = read_status if command == target else None
                     if status == "missing":
                         continue
                     code, output = None, ""

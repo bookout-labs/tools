@@ -181,11 +181,13 @@ class CliWorker:
         session = plan.resume_session if edit and plan else None
         budget = plan.budget_usd if plan else None
         checks: tuple[str, ...] = ()
+        required: tuple[str, ...] = ()
         if edit:
             check = ChecksState.model_validate(state["checks"]).check
             checks = (check,) if check else ()
         elif node == "review" and plan and plan.scope:
-            checks = TypeAdapter(ReviewScope).validate_python(plan.scope).commands
+            scope = TypeAdapter(ReviewScope).validate_python(plan.scope)
+            checks, required = scope.commands, scope.required
         adapter = ADAPTERS[model.family](model)
         launched = False
         with ExitStack() as stack:
@@ -195,13 +197,16 @@ class CliWorker:
                 stack.callback(lambda: launched or shutil.rmtree(kept))
             directory = kept or Path(stack.enter_context(TemporaryDirectory(prefix="foreman-worker-", dir=temp_root)))
             try:
-                call = Call(prompt, schema, edit=edit, checks=checks, review=node == "review", drive=drive,
+                call = Call(prompt, schema, edit=edit, checks=checks, review=node == "review", required=required, drive=drive,
                             read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                             temp_dir=directory, budget_usd=BudgetUsd(Decimal(budget)) if budget else None,
                             resume_session=session, git_dirs=git_dirs(self.cwd.absolute()) if edit or drive else ())
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
+            if call.review and not call.required:
+                # A review counts only once it has read the full PR diff, so a scope without that read never launches.
+                return Outcome("failed", detail="Review scope names no full PR diff read", prompt_bytes=prompt_bytes)
             call.scratch.mkdir()
             env = {**adapter.env, "TMPDIR": str(call.scratch)}
             if (edit or drive) and isinstance(adapter, ClaudeAdapter):

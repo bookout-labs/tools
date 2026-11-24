@@ -69,6 +69,8 @@ class Call:
     checks: tuple[str, ...] = ()
     read_roots: tuple[Path, ...] = ()
     review: bool = False
+    # The reads a review must complete to count. Denials of other commands don't void it.
+    required: tuple[str, ...] = ()
     # The verifier builds and drives the app: sandboxed Bash with no network, no Edit or Write.
     drive: bool = False
     resume_session: str | None = None
@@ -143,10 +145,13 @@ class NativeAdapter:
     env: ClassVar[Mapping[str, str]] = {}
 
     def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
+        return self.read_envelope(process.stdout, process, call)
+
+    def read_envelope(self, text: str, process: CompletedProcess[str], call: Call) -> Outcome:
         try:
-            envelope = self.envelope.model_validate_json(process.stdout)
+            envelope = self.envelope.model_validate_json(text)
         except ValidationError as exc:
-            detail = process.stderr.strip() or process.stdout.strip() or exc.errors(include_input=False)[0]["msg"]
+            detail = process.stderr.strip() or text.strip() or exc.errors(include_input=False)[0]["msg"]
             return Outcome("failed", detail=detail)
         outcome = envelope.outcome(process, self.model.model_id, call)
         if outcome.usage is None:

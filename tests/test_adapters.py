@@ -28,6 +28,18 @@ def fixture_process(args, name, exit_code):
                             stderr.read_text() if stderr.is_file() else "")
 
 
+def claude_review_stream(envelope, reads=(), errors=()):
+    """A Claude review's stream-json stdout: one top-level Bash call per command, then the result envelope."""
+    events = []
+    for index, command in enumerate((*reads, *errors)):
+        use = f"toolu_{index:02}"
+        events += [{"type": "assistant", "parent_tool_use_id": None, "message": {"content": [
+                       {"type": "tool_use", "id": use, "name": "Bash", "input": {"command": command}}]}},
+                   {"type": "user", "parent_tool_use_id": None, "message": {"content": [
+                       {"type": "tool_result", "tool_use_id": use, "content": "output", "is_error": command in errors}]}}]
+    return "".join(json.dumps(event) + "\n" for event in (*events, envelope))
+
+
 @contextmanager
 def worker_process(completed=None):
     """Stand in for the worker's process group. Yields the Popen mock; its `prompt` is what the worker read on stdin."""
