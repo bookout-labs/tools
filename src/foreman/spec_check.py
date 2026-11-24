@@ -6,7 +6,7 @@ from pydantic import Field, PositiveInt, model_validator
 
 from foreman.contracts import InvalidOutput
 from foreman.stage_output import (
-    Contract, PlanState, SettledRuling, SpecCandidate, SpecRound as SpecRound, SpecCheckOutput, SpecFinding,
+    Contract, PlanState, SettledRuling, SpecCandidate, SpecRound as SpecRound, SpecCheckOutput, SpecFinding, SliceFinding,
 )
 
 
@@ -64,7 +64,7 @@ def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate)
         raise InvalidOutput("findings: IDs must be unique within a round, including notes")
     rulings = {ruling.id for ruling in past.settled}
     for finding in reported:
-        if finding.slice not in slices:
+        if isinstance(finding, SliceFinding) and finding.slice not in slices:
             raise InvalidOutput("findings.slice: unknown candidate slice")
         if finding.ruling_id is not None and finding.ruling_id not in rulings:
             raise InvalidOutput("findings.ruling_id: unknown settled ruling")

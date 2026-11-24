@@ -428,7 +428,7 @@
   },
   "spec_check": {
     "$defs": {
-      "SpecFinding": {
+      "PlanFinding": {
         "additionalProperties": false,
         "properties": {
           "id": {
@@ -460,15 +460,70 @@
             "title": "Ruling Id"
           },
           "section": {
+            "description": "The finding concerns the candidate's spec or work_kind, not one slice.",
             "enum": [
-              "slice",
               "spec",
               "work_kind"
             ],
             "title": "Section",
             "type": "string"
           },
+          "summary": {
+            "maxLength": 200,
+            "pattern": "\\S",
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "summary",
+          "ruling_id",
+          "section"
+        ],
+        "title": "PlanFinding",
+        "type": "object"
+      },
+      "SliceFinding": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "proof-obligation",
+              "seam",
+              "failure-path",
+              "contract",
+              "scope"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "ruling_id": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ruling Id"
+          },
+          "section": {
+            "const": "slice",
+            "description": "The finding concerns one candidate slice.",
+            "title": "Section",
+            "type": "string"
+          },
           "slice": {
+            "description": "The exact title of that candidate slice.",
             "pattern": "\\S",
             "title": "Slice",
             "type": "string"
@@ -483,12 +538,12 @@
         "required": [
           "id",
           "kind",
-          "slice",
-          "section",
           "summary",
-          "ruling_id"
+          "ruling_id",
+          "section",
+          "slice"
         ],
-        "title": "SpecFinding",
+        "title": "SliceFinding",
         "type": "object"
       }
     },
@@ -497,7 +552,14 @@
       "findings": {
         "description": "All blocking gaps in the current candidate.",
         "items": {
-          "$ref": "#/$defs/SpecFinding"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SliceFinding"
+            },
+            {
+              "$ref": "#/$defs/PlanFinding"
+            }
+          ]
         },
         "title": "Findings",
         "type": "array"
@@ -518,7 +580,14 @@
       "notes": {
         "description": "Nonblocking observations, separate from requested fixes.",
         "items": {
-          "$ref": "#/$defs/SpecFinding"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SliceFinding"
+            },
+            {
+              "$ref": "#/$defs/PlanFinding"
+            }
+          ]
         },
         "title": "Notes",
         "type": "array"
