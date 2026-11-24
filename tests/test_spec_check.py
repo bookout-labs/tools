@@ -76,6 +76,24 @@ class SpecCheckTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "titles must be unique"):
             candidate(slices=[SLICE, SLICE])
 
+    def test_a_plan_level_finding_names_no_slice(self):
+        # App #1067 run b: a clear verdict whose one note concerns the plan's spec, not a slice.
+        plan_note = dict(id="N1", kind="proof-obligation", section="spec", summary="Name the proof for the whole plan.", ruling_id=None)
+        accepted = accept(SpecHistory(), output(notes=[plan_note]), candidate())
+        self.assertEqual(accepted.verdict, "clear")
+        self.assertTrue(accepted.approval.matches(candidate()))
+        self.assertEqual(SpecHistory.model_validate_json(accepted.history.model_dump_json()), accepted.history)
+        work_kind = dict(plan_note, id="f2", section="work_kind")
+        self.assertEqual(accept(SpecHistory(), output([work_kind]), candidate()).verdict, "gaps")
+        # The schema itself rules out an invented slice on a plan finding and a missing one on a slice finding.
+        for bad in ({**plan_note, "slice": "plan"}, {**FINDING, "section": "spec"}, {k: v for k, v in FINDING.items() if k != "slice"}):
+            with self.subTest(bad=bad), self.assertRaises(InvalidOutput):
+                output(notes=[bad])
+        shapes = SpecCheckOutput.model_json_schema()["$defs"]
+        self.assertEqual(shapes["PlanFinding"]["properties"]["section"]["enum"], ["spec", "work_kind"])
+        self.assertNotIn("slice", shapes["PlanFinding"]["properties"])
+        self.assertIn("slice", shapes["SliceFinding"]["required"])
+
     def test_ids_are_unique_within_a_round_only(self):
         for payload in (dict(findings=[FINDING, FINDING]), dict(findings=[FINDING], notes=[FINDING])):
             with self.subTest(payload=payload), self.assertRaisesRegex(InvalidOutput, "unique within a round"):

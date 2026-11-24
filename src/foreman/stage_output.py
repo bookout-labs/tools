@@ -490,17 +490,28 @@ class SettledRuling(Contract):
     text: Text
 
 
-class SpecFinding(Contract):
+class _SpecFinding(Contract):
     id: TrimmedText
     kind: Literal["proof-obligation", "seam", "failure-path", "contract", "scope"]
-    slice: TrimmedText
-    section: Literal["slice", "spec", "work_kind"]
     summary: TrimmedText = Field(max_length=200)
     ruling_id: TrimmedText | None
 
     @property
     def severity(self) -> Literal["blocking"]:
         return "blocking"
+
+
+class SliceFinding(_SpecFinding):
+    section: Literal["slice"] = Field(description="The finding concerns one candidate slice.")
+    slice: TrimmedText = Field(description="The exact title of that candidate slice.")
+
+
+class PlanFinding(_SpecFinding):
+    section: Literal["spec", "work_kind"] = Field(description="The finding concerns the candidate's spec or work_kind, not one slice.")
+
+
+# A finding about the whole plan names no slice, so the schema itself rules out an invented slice title.
+SpecFinding = SliceFinding | PlanFinding
 
 
 class SpecRound(Contract):
