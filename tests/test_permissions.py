@@ -106,7 +106,7 @@ class PermissionsTest(unittest.TestCase):
                 "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
                 "network": {"allowedDomains": [], "strictAllowlist": True}, "filesystem": {"denyWrite": paths}})
             self.assertTrue(settings["permissions"]["blockWritesOutsideWorkingDirectories"])
-            self.assertEqual(settings["permissions"]["deny"], [f"Edit(/{(root / 'methods').resolve()}/**)",
+            self.assertEqual(settings["permissions"]["deny"], [*(f"Edit(/{path}/**)" for path in forms((root / "methods",))),
                                                                *(rule for path in forms(gits) for rule in (f"Edit(/{path})", f"Edit(/{path}/**)"))])
             # A sandbox that cannot start ends the call before model work, so the dispatcher tries the next model.
             refused = CompletedProcess(args, 1, "", "Error: sandbox required but unavailable: bwrap: setting up uid map: Permission denied\n"
@@ -133,6 +133,15 @@ class PermissionsTest(unittest.TestCase):
             for args in (["init", "-q"], ["-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "base"],
                          ["worktree", "add", "-q", str(checkout)]):
                 subprocess.run(["git", *args], cwd=clone, check=True)
+            # A worker started through a link denies the linked path and its target.
+            (Path(directory) / "link").symlink_to(checkout)
+            linked = []
+            def linked_runner(args, cwd, env):
+                linked.append(json.loads(Path(args[args.index("--settings") + 1]).read_text())["sandbox"]["filesystem"]["denyWrite"])
+                return fixture_process(args, "success", 0)
+            CliWorker(Path(directory) / "link", linked_runner)("implement", ModelSpec.parse("claude-opus-5-5-high"),
+                                                              {"checks": ChecksState(check="sh check.sh")}, "implement")
+            self.assertEqual(linked[0][:2], [str(Path(directory).absolute() / "link/.git"), str(checkout / ".git")])
             seen = []
             def runner(args, cwd, env):
                 seen.append((json.loads(Path(args[args.index("--settings") + 1]).read_text()), env))

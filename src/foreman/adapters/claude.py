@@ -125,7 +125,7 @@ class ClaudeAdapter(NativeAdapter):
         allow = [f"Bash({command})" for command in call.checks]
         if call.edit:
             allow += ["Edit", "Write"]
-        deny = [f"Edit(/{root.resolve()}/**)" for root in call.read_roots]
+        deny = [f"Edit(/{root}/**)" for root in both(call.read_roots)]
         permissions: dict[str, object] = {"allow": allow, "deny": deny}
         settings: dict[str, object] = {"permissions": permissions}
         directories = [str(root) for root in call.read_roots]

@@ -178,7 +178,7 @@ class CliWorker:
                 call = Call(prompt, schema, edit=edit, checks=checks, review=node == "review",
                             read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                             temp_dir=Path(directory), budget_usd=BudgetUsd(Decimal(budget)) if budget else None,
-                            resume_session=session, git_dirs=git_dirs(checkout) if edit else ())
+                            resume_session=session, git_dirs=git_dirs(self.cwd.absolute()) if edit else ())
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
