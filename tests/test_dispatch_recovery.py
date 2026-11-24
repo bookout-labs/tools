@@ -218,9 +218,13 @@ class DispatchRecoveryTests(unittest.TestCase):
                                 self.assertEqual(relaunched, [])
                                 self.assertEqual([a["outcome"] for a in triage], ["ran"])
                         self.assertEqual(len({a["attempt_id"] for a in triage}), len(triage))
-                        again = self.invoke(config, checkpoint, "recover", limit)
-                        self.assertEqual(json.loads(again.stdout)["result"], result)
-                        self.assertEqual(json.loads(again.stdout)["calls"], [])
+                        again = json.loads(self.invoke(config, checkpoint, "recover", limit).stdout)
+                        self.assertEqual(again["calls"], [])
+                        if mode in {"entry", "quota"}:
+                            # A budget halt resumes, and with an unchanged cap it stops again before any worker call (item 19).
+                            self.assertEqual((again["result"]["stop"], again["result"]["attempts"]), ("budget_exceeded", result["attempts"]))
+                        else:
+                            self.assertEqual(again["result"], result)
 
     def test_surviving_worker_blocks_a_second_writer(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder:
