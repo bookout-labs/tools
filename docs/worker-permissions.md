@@ -34,7 +34,8 @@ A process started in one Bash call doesn't survive into the next. A build may wr
 the verifier writes nothing there itself, and after the drive the Verify stage checks that tracked and untracked
 non-ignored files are unchanged (#251). Its attempt directory, `foreman-verify/<repo>-<issue>/<attempt>` under the
 state directory, outlives the call so the captures it names stay readable as evidence. Every exit before the CLI
-launches removes it. The prompt names the attempt scratch by absolute path, because inside the sandbox `$TMPDIR` is
+launches removes it. A run that finishes removes its attempt directories with its checkout; a halted run keeps both
+as evidence. The prompt names the attempt scratch by absolute path, because inside the sandbox `$TMPDIR` is
 Claude's own short temp directory, which the call removes. Codex and Grok calls for the verifier return `cli_missing`
 before launch, because no capture yet shows either confining one.
 

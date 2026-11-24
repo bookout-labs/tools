@@ -342,10 +342,10 @@ class SmokeCommandTest(unittest.TestCase):
                 for name in ('open_issues', 'comment_issue', 'marked_issues'):
                     getattr(forge, name).side_effect = getattr(fake, name)
                 def delivery(**kwargs):
-                    kwargs['run'] = LiveRun(forge, FakeWorkspace(root / 'checkout'), skills=fixture_skills, human_login=kwargs['run'].human_login)
                     from foreman.dry_run import ScriptHandler
                     kwargs['dispatcher'] = ScriptHandler() if cap == 1 else lambda *args: Outcome(kind, detail='bad output')
                     with patch('subprocess.run', real_run), patch('subprocess.check_output', real_output):
+                        kwargs['run'] = LiveRun(forge, FakeWorkspace(root / 'checkout'), skills=fixture_skills, human_login=kwargs['run'].human_login)
                         result = run_live_delivery(**kwargs)
                     self.assertEqual(result.get('watch') is not None, filed)
                     self.assertEqual(result['run'].token_cap, cap)
@@ -372,7 +372,8 @@ class SmokeCommandTest(unittest.TestCase):
             transport.smoke_issues = Mock(return_value=[])
             transport.smoke_pull_requests = Mock(return_value=[])
             handler = ScriptHandler()
-            workspace = FakeWorkspace(root / 'checkout')
+            with patch('subprocess.run', real_run):
+                workspace = FakeWorkspace(root / 'checkout')
             workspace.run = Mock(return_value=0)
             def dispatch(node, *args):
                 if node == 'implement':

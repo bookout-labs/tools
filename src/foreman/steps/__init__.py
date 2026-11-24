@@ -9,7 +9,7 @@ from langgraph.types import interrupt
 
 from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, DispatchState
 from foreman.github import Forge
-from foreman.stage_output import AttemptRecord, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
+from foreman.stage_output import AttemptRecord, DispatchStage, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
 from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState
 from foreman.workspace import CheckLog, Workspace
 
@@ -35,8 +35,8 @@ class StageRun:
     check_log: CheckLog | None
     max_rounds: int
     human_login: str
-    dispatch: Callable[[GateStage, DeliveryState, str], DispatchRun]
-    apply: Callable[[GateStage, DeliveryState, DispatchResult], DeliveryUpdate]
+    dispatch: Callable[[DispatchStage, DeliveryState, str], DispatchRun]
+    apply: Callable[[DispatchStage, DeliveryState, DispatchResult], DeliveryUpdate]
 
     def bind(self, step: Callable[[DeliveryState, "StageRun"], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
         """The step as a graph node. The node keeps the step's identity, so introspection names the step as its owner."""

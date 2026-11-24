@@ -87,6 +87,10 @@ class WorkState(BaseModel, frozen=True, extra="forbid"):
     published_head: str | None = None
     repair_head: str | None = None
 
+    def moved_to(self, head: str | None) -> "WorkState":
+        """The handoff to Implement when the PR head moved: it fetches the moved head and rebuilds on it."""
+        return WorkState(branch=self.branch, base=self.base, repair_head=head)
+
 
 class WorktreeInspectionFailed(WorkspaceError):
     pass

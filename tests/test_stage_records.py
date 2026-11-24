@@ -1,7 +1,7 @@
 """Stage records and ownership contracts."""
 import tests
 from foreman.stages import STAGES
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, WorkState
 from test_runner import FINDING
 from skill_fixture import AUTHOR
 from foreman.config import load_config
@@ -149,12 +149,14 @@ class StageOwnershipTests(unittest.TestCase):
             if (contract := row.output) is None:
                 continue
             with self.subTest(stage=stage):
-                payload = handler(stage, None, state, "").output
+                # Verify drives the published head, so its state names one.
+                current = {**state, "work": WorkState(published_head="a" * 40)} if stage == "verify" else state
+                payload = handler(stage, None, current, "").output
                 output = parse_output(contract, payload, context=SCRIPTED_REVIEW_CONTEXT)
                 # The checker records its verdict on the candidate it checked.
                 checked = {**state, "plan": SpecCandidate(slices=[CandidateSlice.model_validate(handler.slices[0])], spec="Ship",
                     work_kind="feature", author=AUTHOR).update(PlanState(issue_kind="slice", spec_gate="ready"), single=True)}
-                update = stage_update(stage, output, checked if stage == "spec_check" else state, "model",
+                update = stage_update(stage, output, checked if stage == "spec_check" else current, "model",
                                       workspace=workspace, config=load_config())
                 key = {"implement": "implementation", "review": "review", "triage": "plan", "spec": "plan", "spec_check": "plan"}.get(stage, stage)
                 self.assertIn(key, update)

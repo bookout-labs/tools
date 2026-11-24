@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 import fcntl
+import shutil
 from typing import Any
 import sqlite3
 from tempfile import TemporaryDirectory
@@ -32,14 +33,14 @@ from foreman.status import Status, running, status_of, write_status
 from foreman.steps import implement
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import WorkState, WorkspaceError, lock_file
-from foreman.worker import AttemptJournal, worker_lock
+from foreman.worker import AttemptJournal, verify_attempts, worker_lock, worker_scratch
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
-STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size")
+STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size", "verify")
 # Each step a stage records in the path, so a halt inside a stage resumes that stage.
 STEP_STAGES = {"admit": "triage", "triage": "triage", "research": "research", "post": "research",
-               "spec": "spec", "spec_check": "spec", "file_children": "spec", "review": "review", "merge": "merge",
+               "spec": "spec", "spec_check": "spec", "file_children": "spec", "verify": "verify", "review": "review", "merge": "merge",
                **dict.fromkeys(implement.STEPS, "implement")}
 
 
@@ -420,6 +421,14 @@ def run_live_delivery(
                     log(f"released {run.workspace.root}")
             except WorkspaceError as exc:
                 log(f"checkout kept: {exc}")
+            # The CLI worker keeps its scratch beside the checkpoint, so the run removes its verifier captures with its checkout.
+            attempts = verify_attempts(worker_scratch(checkpoint.parent, run.workspace.root), result["run"].repo, result["run"].issue)
+            try:
+                if attempts.exists():
+                    shutil.rmtree(attempts)
+                    log(f"released {attempts}")
+            except OSError as exc:
+                log(f"verify captures kept: {exc}")
         report(result)
         if (halt := result.get("halt")) is not None:
             if HALTS[halt].watch is None:

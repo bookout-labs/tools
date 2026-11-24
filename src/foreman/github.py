@@ -368,6 +368,12 @@ class Forge(Protocol):
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str, observation: Observation) -> MergeReceipt | None: ...
 
 
+def owned_comment(comments: list[IssueComment], marker: str) -> IssueComment | None:
+    """The first comment Foreman itself posted with this marker. A comment by anyone else never counts."""
+    return next((comment for comment in comments if comment.user is not None
+                 and comment.user.login.casefold() == BOT_LOGIN.casefold() and (comment.body or "").endswith(marker)), None)
+
+
 def pull_request_command(repo: str, head: str, base: str, title: str, body: str) -> list[str]:
     return ["gh", "pr", "create", "--repo", redact(repo), "--base", redact(base), "--head", redact(head),
             "--title", redact(" ".join(title.split())), "--body", redact(body)]
@@ -694,8 +700,7 @@ class LiveForge:
     def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> None:
         """Converge Foreman's one marked comment: patch the first one it posted when its body differs, or post it."""
         body = status_body(text, facts, marker)
-        owned = next((comment for comment in self.issue_comment_records(repo, number) if comment.user is not None
-                      and comment.user.login.casefold() == BOT_LOGIN.casefold() and (comment.body or "").endswith(marker)), None)
+        owned = owned_comment(self.issue_comment_records(repo, number), marker)
         if owned is None:
             self._run_command(repo, ["gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}"])
         elif owned.body != body:

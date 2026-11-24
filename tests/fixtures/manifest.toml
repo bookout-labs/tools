@@ -1221,7 +1221,7 @@ kind = "captured_run"
 tool = "Python typing.get_type_hints"
 version = "3.14.7"
 argv = ["python", "-c", "import json; from typing import get_type_hints; from foreman.delivery import DeliveryState; print(json.dumps(sorted(get_type_hints(DeliveryState))))"]
-notes = "State channel inventory captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73."
+notes = "State channel inventory captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73, plus the verify channel M8b (#251) adds at schema 21."
 
 [fixtures."claude/review-denial.json"]
 kind = "captured_run"

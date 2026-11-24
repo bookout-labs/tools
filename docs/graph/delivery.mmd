@@ -9,12 +9,13 @@ graph TD;
 	research(research)
 	spec(spec)
 	implement(implement)
+	verify(verify)
 	review(review)
 	merge(merge)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> triage;
 	implement -. &nbsp;cancelled&nbsp; .-> __end__;
-	implement -. &nbsp;published&nbsp; .-> review;
+	implement -. &nbsp;published&nbsp; .-> verify;
 	merge -. &nbsp;cancelled&nbsp; .-> __end__;
 	merge -. &nbsp;repair&nbsp; .-> implement;
 	merge -. &nbsp;reviewable_head&nbsp; .-> review;
@@ -27,6 +28,9 @@ graph TD;
 	triage -. &nbsp;cancelled&nbsp; .-> __end__;
 	triage -. &nbsp;question&nbsp; .-> research;
 	triage -. &nbsp;plan&nbsp; .-> spec;
+	verify -. &nbsp;halted&nbsp; .-> __end__;
+	verify -. &nbsp;head_moved&nbsp; .-> implement;
+	verify -. &nbsp;no_skill&nbsp; .-> review;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

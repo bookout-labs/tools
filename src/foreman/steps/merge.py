@@ -69,7 +69,7 @@ class Reviewed:
         checks = self.state["checks"].for_attempt().model_copy(update={"verify": "fail", "failure_output": f"GitHub: {detail}"})
         # A repaired head needs a fresh arm, so the old receipt is never reconciled again.
         return {"stop": "repair", "merge": merge.model_copy(update={"status": "not_armed", "receipt": None}), "checks": checks,
-                "work": WorkState(branch=work.branch, base=work.base, repair_head=moved),
+                "work": work.moved_to(moved),
                 "review": ReviewState(review_findings=review.review_findings, settled_rulings=review.settled_rulings,
                                       review_run_id=review.review_run_id)}
 

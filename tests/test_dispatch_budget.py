@@ -20,6 +20,7 @@ from foreman.runner import snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer
 from foreman.worker import CliWorker
 from test_dollar_allowance import NEEDS_HUMAN, attempt
+from skill_fixture import verify_checkout
 from test_runner import EMPTY_SLICE, fixture_process, worker_reply
 
 
@@ -38,12 +39,12 @@ def configured(stage="triage", models=(CLAUDE, NEXT_CLAUDE)):
     return replace(config, nodes=nodes)
 
 
-def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000, parent=False):
+def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000, parent=False, checkout=""):
     saver = InMemorySaver(serde=checkpoint_serializer())
     dry = DryRun()
     graph = compile_delivery(handler, config or configured(), run=LiveRun(forge=dry, workspace=dry, human_login="fixture-owner"), checkpointer=saver).with_config({"configurable": {"thread_id": "budget"}})
     graph.invoke({"review": ReviewState(),
-        "run": RunState(issue=dry.issue_placeholder, repo="a/b", base_branch="main", base_sha=dry.head, request="x", token_cap=token_cap, max_budget_usd=limit), "checks": ChecksState(check="exit 0"), "path": [], "plan": PlanState(issue_kind="parent") if parent else PlanState(issue_kind="slice", slice=EMPTY_SLICE),
+        "run": RunState(issue=dry.issue_placeholder, repo="a/b", base_branch="main", base_sha=dry.head, request="x", token_cap=token_cap, max_budget_usd=limit, workspace=checkout), "checks": ChecksState(check="exit 0"), "path": [], "plan": PlanState(issue_kind="parent") if parent else PlanState(issue_kind="slice", slice=EMPTY_SLICE),
 
         "attempts": [attempt(CLAUDE.name, prior)],
     })
@@ -66,7 +67,9 @@ class DispatchBudgetTests(unittest.TestCase):
                     cost = 0.01 if model and model.family == "claude" else 5.0
                     return replace(reply, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
-                result = walk(handler, config=configured(stage), parent=stage in {"research", "spec"})
+                with verify_checkout() as checkout:
+                    result = walk(handler, config=configured(stage), parent=stage in {"research", "spec"},
+                                  checkout=str(checkout) if stage == "verify" else "")
                 self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(stage, "merge_pending"))
                 self.assertEqual(calls, [(CLAUDE.name, "0.2"), (NEXT_CLAUDE.name, "0.1")])
                 self.assertTrue(getattr(result["plan"], stage) if stage in {"triage", "spec"} else result["implementation" if stage == "implement" else stage])

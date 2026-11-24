@@ -42,11 +42,11 @@ SLICES = [
 EMPTY_SLICE = {**SLICES[1], "builds": [], "uses": []}
 
 
-def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, commands=None):
+def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, commands=None, checkout=None):
     with skill_fixture(config) as (fixture_config, scratch):
         return run_delivery(
             handler, repo="DoctorCRE/doctorcre-engine", request="Add a field",
-            check=check, slice=slice, config=fixture_config, scratch=scratch, commands=commands,
+            check=check, slice=slice, config=fixture_config, scratch=scratch, commands=commands, checkout=checkout,
         )
 
 

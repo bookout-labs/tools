@@ -9,11 +9,11 @@ from foreman.config import ModelSpec
 from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import (
     BOT_LOGIN, PullRequest, PublishedPullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
-    marked, pull_request_command, render_slice_body,
+    marked, pull_request_command, render_slice_body, status_body,
 )
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
-from foreman.workspace import WorktreeState, ReviewDiff, ImplementationCandidate, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope
+from foreman.workspace import WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, branch_command, commit_commands, push_command, CheckLog, PullRequestSize, ReviewScope
 
 SCRIPTED_USAGE = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)
 CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
@@ -72,6 +72,10 @@ class ScriptHandler:
             return Outcome("ran", {"implementation": self.implementation, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "research":
             return Outcome("ran", {"research": self.research, "human_question": None}, usage=SCRIPTED_USAGE)
+        if node == "verify":
+            return Outcome("ran", {"tested_head": WorkState.model_validate(state.get("work") or {}).published_head, "criteria": [{
+                "criterion": str(self.slice["acceptance"]), "result": "passed",
+                "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}]}, usage=SCRIPTED_USAGE)
         if node == "review":
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = [{
@@ -239,7 +243,7 @@ class DryRun:
         self.comments.append(IssueComment.model_validate({"body": body, "user": {"login": BOT_LOGIN}}))
 
     def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> None:
-        raise NotImplementedError("Not used by dry delivery")
+        self.commands.append(["gh", "pr", "comment", str(number), "--repo", repo, "--body", status_body(text, facts, marker)])
 
     def create_issue(self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None) -> int:
         body = marked(body, marker)

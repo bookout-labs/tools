@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import shlex
+import shutil
 import sys
 from tempfile import TemporaryDirectory
 import unittest
@@ -39,7 +40,7 @@ from foreman.runner import AnswerError, RunPresentation, issue_thread, run_live_
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
-from foreman.worker import CliWorker, run_worker_command
+from foreman.worker import CliWorker, run_worker_command, verify_attempts, worker_scratch
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply
 from test_adapters import claude_review_stream, codex_events, fixture_process, worker_process
@@ -85,6 +86,11 @@ def slice_body(item):
 class FakeWorkspace(LiveWorkspace):
     def __init__(self, cwd, snapshots=()):
         super().__init__(cwd)
+        if not (Path(cwd) / ".git").exists():
+            # Stages read the target repository's own skills from Git at HEAD, as in a real checkout.
+            subprocess.run(["git", "init", "-q", str(cwd)], check=True)
+            subprocess.run(["git", "-c", "user.name=Foreman Test", "-c", "user.email=test@example.invalid", "-C", str(cwd),
+                            "commit", "-q", "--allow-empty", "-m", "Empty checkout"], check=True)
         self.snapshots = iter(snapshots)
         self.current = CLEAN_WORKTREE
         self.committed = False
@@ -949,13 +955,22 @@ class LiveRunnerTest(unittest.TestCase):
                 released.append(set(heads))
                 return True
 
+        # Verifier captures go with the checkout: a finished run removes its own, a halted run keeps them as evidence.
+        captures = {issue: verify_attempts(worker_scratch(self.checkpoint.parent, self.cwd), "Example/Engine", issue) / "attempt"
+                    for issue in (8, 9)}
+        for capture in captures.values():
+            capture.mkdir(parents=True)
+            # The checkpoint sits in the test checkout, so the scratch moves beside it, outside this test's directory.
+            self.addCleanup(shutil.rmtree, capture.parent, ignore_errors=True)
         self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
                                    workspace=Releasing(self.cwd))["stop"], "merged")
         self.assertEqual(len(released), 1)
         self.assertIn(HEAD, released[0])
+        self.assertFalse(captures[8].parent.exists())
         halted = self.walk([{"triage": "not-a-route"}], issue=9, workspace=Releasing(self.cwd))
         self.assertIsNotNone(halted.get("halt"))
         self.assertEqual(len(released), 1)
+        self.assertTrue(captures[9].is_dir())
 
     def test_a_waiting_run_rechecks_its_origin_before_resuming(self):
         pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending", "recovery": "Wait."})
@@ -2051,7 +2066,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         # Each admitted stage that starts shows on the issue, then the outcome with its links.
         bodies = [body.split("\n\n")[0] for _, _, body in self.github.status_writes]
         self.assertEqual(bodies, ["Foreman is running triage.", "Foreman needs an answer in triage.", "Foreman is running triage.",
-                                  "Foreman is running spec.", "Foreman is running implement.", "Foreman is running review.",
+                                  "Foreman is running spec.", "Foreman is running implement.", "Foreman is running verify.",
+                                  "Foreman is running review.",
                                   "Foreman is running merge.", "The reviewed pull request merged."])
         status = self.github.status["Example/Engine", 8]
         for fact in ("Pull request: #12", f"Verified head: {HEAD}", f"Merge commit: {MERGE_COMMIT}"):
@@ -2595,11 +2611,43 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertIsNone(result["work"].published_head)
                 self.assertEqual(self.github.merge_calls, [])
 
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_a_moved_base_reviews_the_head_again_with_its_verify_evidence(self, _confinable):
+        # Merge returns a known checked head to Review. Verify doesn't drive it again, and Review keeps its evidence.
+        evidence = {"tested_head": HEAD, "criteria": [{"criterion": "The page lists items.", "result": "passed",
+                                                       "observation": "The list showed items.", "evidence": "captures/items.png"}]}
+        for skill in (False, True):
+            with self.subTest(skill=skill), TemporaryDirectory(dir=self.cwd) as directory:
+                self.checkpoint, self.github, self.prompts = Path(directory) / "runs.sqlite3", FakeGitHub(), []
+                FakeWorkspace(self.cwd)
+                if skill:
+                    (self.cwd / ".claude/skills/verify-web").mkdir(parents=True)
+                    (self.cwd / ".claude/skills/verify-web/SKILL.md").write_text("# Verify the web app\n")
+                    subprocess.run(["git", "-C", str(self.cwd), "add", ".claude"], check=True)
+                    subprocess.run(["git", "-c", "user.name=Foreman Test", "-c", "user.email=test@example.invalid", "-C", str(self.cwd),
+                                    "commit", "-q", "-m", "Verify skill"], check=True)
+                observe = self.github.readiness
+
+                def base_moves_after_the_first_review(*args):
+                    if len(self.github.reviews) == 1:
+                        self.github.base = "c" * 40
+                    return observe(*args)
+
+                with patch.object(self.github, "readiness", side_effect=base_moves_after_the_first_review):
+                    result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, *[evidence] * skill, APPROVE, APPROVE])
+                self.assertEqual(result["stop"], "merged")
+                self.assertEqual([review[2] for review in self.github.reviews], [HEAD, HEAD])
+                self.assertEqual(sum("# Use the change as a user would" in prompt for prompt in self.prompts), int(skill))
+                self.assertEqual((result["verify"].outcome, result["verify"].tested_head), ("posted" if skill else "no_skill", HEAD))
+                no_skill = "Verify: the repository has no verify skill"
+                self.assertEqual([no_skill in review[3] for review in self.github.reviews], [not skill] * 2)
+                self.assertEqual(len([body for _, number, body in self.github.status_writes if number == 12]), int(skill))
+
     def test_head_moved_before_review_re_establishes_checked_evidence(self):
         moved = WorktreeState("b" * 40, True, BRANCH)
         result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {"implementation": "built"}, APPROVE],
                            snapshots=(CLEAN_WORKTREE, moved))
-        # Review exits head_moved before any reviewer call, and Implement checks the current head again.
+        # Verify exits head_moved before any worker call, and Implement checks the current head again.
         self.assertEqual(self.calls, ["claude", "codex", "codex", "codex", "claude"])
         self.assertEqual(result["path"], ["triage", "spec_check", *["prepare", "implement", "check", "commit", "publish"] * 2,
                                           "review", "merge"])

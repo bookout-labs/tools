@@ -1,7 +1,7 @@
 """Worker methods selected by delivery state."""
 
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tarfile
@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from foreman.config import SkillPin
 from foreman.stage_output import WorkKind
+from foreman.workspace import WorkspaceError
 
 if TYPE_CHECKING:
     from foreman.state import DeliveryState
@@ -123,6 +124,36 @@ def export_skills(pin: SkillPin, matt_skills: SkillPin, scratch: Path) -> Path:
     return root
 
 
+class TargetSkillUnreadable(WorkspaceError):
+    """Git could not list the target checkout's skills at its HEAD."""
+
+
+def target_skills(workspace: str, path: str) -> list[Path]:
+    """The target repository's own skills matching a `<name>` path: Git-tracked regular files at the checkout's HEAD.
+
+    A symlink or an untracked file never counts. The first skills directory wins a name both directories hold.
+    A dry run has no checkout, so it finds none."""
+    if not workspace:
+        return []
+    checkout, pattern = Path(workspace), re.sub(r"<[a-z]+>", "*", path)
+    depth = len(PurePosixPath(pattern).parts)
+    try:
+        listed = subprocess.run(["git", "--no-replace-objects", "ls-tree", "-rz", "HEAD", "--", *TARGET_SKILL_DIRECTORIES],
+                                cwd=checkout, capture_output=True, check=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TargetSkillUnreadable(f"The target checkout's skills could not be listed: {exc}") from exc
+    files = {entry.split(b"\t", 1)[1].decode(): entry.split(b" ", 1)[0] for entry in listed.split(b"\0") if entry}
+    found: dict[str, Path] = {}
+    for directory in TARGET_SKILL_DIRECTORIES:
+        for name, mode in sorted(files.items()):
+            relative = PurePosixPath(name).relative_to(directory) if name.startswith(f"{directory}/") else None
+            # match() anchors only at the right, so the depth must agree too.
+            if (relative is not None and mode in (b"100644", b"100755") and len(relative.parts) == depth
+                    and relative.match(pattern)):
+                found.setdefault(relative.parts[0], checkout / name)
+    return list(found.values())
+
+
 def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, list[str], list[str]]:
     from foreman.stages import STAGES
 
@@ -134,11 +165,10 @@ def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, 
             continue
         method = rule.skill
         if method.kind == "target_skill":
-            if workspace := state["run"].workspace:
-                checkout, pattern = Path(workspace), re.sub(r"<[a-z]+>", "*", method.path)
-                for found in sorted(path for directory in TARGET_SKILL_DIRECTORIES for path in checkout.glob(f"{directory}/{pattern}")):
-                    methods.append(found.relative_to(checkout).as_posix())
-                    instructions.append(f"Read {found} in full and follow it to verify the change.")
+            workspace = state["run"].workspace
+            for found in target_skills(workspace, method.path):
+                methods.append(found.relative_to(workspace).as_posix())
+                instructions.append(f"Read {found} in full and follow it to verify the change.")
             continue
         path = method.source(root)
         read_root = str((PACKAGE_SKILLS if method.kind == "repository_skill" else root).resolve())

@@ -10,7 +10,7 @@ from foreman._raw import is_dict, is_list
 from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_PATH = Path(__file__).with_name("models.toml")
-ROLES = {"coordinator", "builder", "verifier", "check"}
+ROLES = {"coordinator", "builder", "reviewer", "verifier"}
 FAMILIES = {"claude", "gpt", "grok"}
 EFFORTS = {
     # Claude Code 2.1.329 --help, --effort.
@@ -113,9 +113,7 @@ def parse_config(data: object) -> Config:
             raise ConfigError(f"{name} has an unknown role")
         if not _model_names(models):
             raise ConfigError(f"{name} models must be a list of names")
-        if role == "check" and models:
-            raise ConfigError(f"{name} is a check and takes no model")
-        if role != "check" and not models:
+        if not models:
             raise ConfigError(f"{name} needs at least one model")
         if other is not None and not isinstance(other, str):
             raise ConfigError(f"{name} other_family_from must be a node name")
@@ -138,11 +136,13 @@ def load_config(path: Path | None = None) -> Config:
 def contributors_for(
     node: str, config: Config, models_used: dict[str, str], implement_models: list[str] | None = None,
 ) -> tuple[list[str], set[str]]:
-    source = "implement" if node == "review" else config.nodes[node].other_family_from
+    # Review and Verify count every builder of the PR, not only the latest.
+    every_builder = node in ("review", "verify")
+    source = "implement" if every_builder else config.nodes[node].other_family_from
     if not source:
         return [], set()
     latest = models_used.get(source)
-    used = (implement_models if node == "review" else None) or ([latest] if latest else [])
+    used = (implement_models if every_builder else None) or ([latest] if latest else [])
     if not used:
         raise ModelDependencyMissing(f"{node} needs the {source} model")
     return list(dict.fromkeys(used)), {family(model) for model in used}

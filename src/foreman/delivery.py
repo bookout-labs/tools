@@ -18,10 +18,10 @@ from foreman.dispatch import DispatchResult, DispatchRun, Handler, InvalidOutput
 from foreman.github import Forge
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.stage_output import (
-    PlanState, GateStage, DispatchPlan, DispatchPlanRecord, AttemptRecord, StageOutput, StoredSlice, parse_output, spec_digest,
+    PlanState, DispatchStage, DispatchPlan, DispatchPlanRecord, AttemptRecord, StageOutput, StoredSlice, parse_output, spec_digest,
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
-from foreman.steps import StageRun, implement, merge, research, review, spec, triage
+from foreman.steps import StageRun, implement, merge, research, review, spec, triage, verify
 from foreman.state import ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.outcomes import Halt, halted
 from foreman.usd import BudgetUsd, usd_text
@@ -104,7 +104,7 @@ def compile_delivery(
         review_state = state["review"]
         return {**state, "review": review_state.model_copy(update={"review_run_id": review_state.review_run_id or uuid4().hex})}
 
-    def dispatch_run(name: GateStage, state: DeliveryState, owned: str = "") -> DispatchRun:
+    def dispatch_run(name: DispatchStage, state: DeliveryState, owned: str = "") -> DispatchRun:
         def prepare_plan() -> DispatchPlanRecord:
             models = STAGES[name].models(name, state, config)
             suffix, target, scope = STAGES[name].prepare(state, run.workspace, run.forge)
@@ -118,7 +118,7 @@ def compile_delivery(
 
         return DispatchRun(dispatcher, run.workspace, run.journal, config.pstack.commit, name == "implement", prepare_plan, owned)
 
-    def apply(name: GateStage, state: DeliveryState, result: DispatchResult) -> DeliveryUpdate:
+    def apply(name: DispatchStage, state: DeliveryState, result: DispatchResult) -> DeliveryUpdate:
         # The nested graph owns the paid attempts. The stage applies a result once.
         attempts = result.get("attempts", [])
         stopped: DeliveryUpdate = {"path": [name], "attempts": attempts}
@@ -169,6 +169,7 @@ def compile_delivery(
     builder.add_node("research", research.compile_stage(stage))
     builder.add_node("spec", spec.compile_stage(stage))
     builder.add_node("implement", implement.compile_stage(stage))
+    builder.add_node("verify", verify.compile_stage(stage))
     builder.add_node("review", review.compile_stage(stage))
     builder.add_node("merge", merge.compile_stage(stage))
     builder.add_edge(START, "triage")
@@ -179,7 +180,9 @@ def compile_delivery(
     builder.add_conditional_edges("spec", lambda state: outcome(state, state.get("stop") or "validated_single"),
         {"validated_single": "implement", "children_filed": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("implement", after_implement,
-        {"published": "review", "no_change": END, "cancelled": END, "halted": END})
+        {"published": "verify", "no_change": END, "cancelled": END, "halted": END})
+    builder.add_conditional_edges("verify", lambda state: outcome(state, state.get("stop", "")),
+        {"posted": "review", "no_skill": "review", "head_moved": "implement", "halted": END})
     builder.add_conditional_edges("review", lambda state: outcome(state, state.get("stop", "")),
         {"P0": "implement", "P1": "implement", "head_moved": "implement", "none": "merge", "cancelled": END, "halted": END})
     builder.add_conditional_edges("merge", lambda state: outcome(state, state.get("stop", "")),
@@ -203,11 +206,13 @@ def run_delivery(
     max_budget_usd: BudgetUsd | None = None,
     skills: SkillSource = export_skills,
     commands: list[list[str]] | None = None,
+    checkout: Path | None = None,
 ) -> DeliveryResult:
+    """Walk the graph offline. `checkout` is a target checkout whose tracked skills the stages read; without one there are none."""
     dry = DryRun(commands=commands if commands is not None else [])
     state: DeliveryState = {
         "schema_version": SCHEMA_VERSION,
-        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens,
+        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens, workspace=str(checkout or ""),
                         base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo)),
                         max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
         "checks": ChecksState(check=check),

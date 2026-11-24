@@ -24,11 +24,12 @@ models = [
   "grok-4.7-high",
 ]
 
-[nodes.review]
+[nodes.verify]
 role = "verifier"
 other_family_from = "implement"
 models = ["claude-opus-5-5-high", "gpt-6.1-sol-high"]
 
-[nodes.verify]
-role = "check"
-models = []
+[nodes.review]
+role = "reviewer"
+other_family_from = "implement"
+models = ["claude-opus-5-5-high", "gpt-6.1-sol-high"]
