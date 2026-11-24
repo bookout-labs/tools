@@ -131,7 +131,7 @@ def project():
                                "kind": "repository_skill", "lines": None})
             else:
                 skills.append({"ref": method.path, "when": rule.when or "always", "kind": method.kind,
-                               "lines": list(method.lines) if method.lines else None})
+                               "lines": None})
         output = stage.output
         prompt = None
         if stage.prompt:

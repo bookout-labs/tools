@@ -305,35 +305,35 @@ def spec_check_projection(state: "DeliveryState", workspace: Workspace) -> tuple
 
 # The target repository's own skill, written by pstack create-verification-skill.
 VERIFY_SKILL = SkillMethod(path="verify-<app>/SKILL.md", kind="target_skill")
-DIAGNOSING_BUGS = SkillMethod(path="engineering/diagnosing-bugs/SKILL.md", kind="skill", lines=(18, 37), repository="matt_skills")
+DIAGNOSING_BUGS = SkillMethod(path="engineering/diagnosing-bugs/SKILL.md", kind="skill", repository="matt_skills")
 STAGES = {
     "triage": TriageStage("triage.md", TriageOutput, prepare=pinned_instructions, input_fields=("run", "plan", "human_answers")),
     "research": ResearchStage("research.md", ResearchOutput, (
-        SkillRule(skill=SkillMethod(path="how/SKILL.md", kind="leaf_prompt", lines=(17, 17))),
-        SkillRule(skill=SkillMethod(path="why/SKILL.md", kind="skill", lines=(9, 9)), when="bug_fix"),
+        SkillRule(skill=SkillMethod(path="how/SKILL.md", kind="leaf_prompt")),
+        SkillRule(skill=SkillMethod(path="why/SKILL.md", kind="skill"), when="bug_fix"),
         SkillRule(skill=DIAGNOSING_BUGS, when="bug_fix"),
         SkillRule(skill=DIAGNOSING_BUGS, when="perf_issue"),
     ), prepare=pinned_instructions, input_fields=("run", "plan", "human_answers")),
     "spec": SpecStage("spec.md", SpecOutput, (
-        SkillRule(skill=SkillMethod(path="architect/SKILL.md", kind="skill", lines=(9, 9))),
-        SkillRule(skill=SkillMethod(path="statechart/SKILL.md", kind="skill", lines=(23, 27)), when="stateful"),
-        SkillRule(skill=SkillMethod(path="engineering/to-tickets/SKILL.md", kind="skill", lines=(29, 40),
+        SkillRule(skill=SkillMethod(path="architect/SKILL.md", kind="skill")),
+        SkillRule(skill=SkillMethod(path="statechart/SKILL.md", kind="skill"), when="stateful"),
+        SkillRule(skill=SkillMethod(path="engineering/to-tickets/SKILL.md", kind="skill",
                                     repository="matt_skills"), when="parent"),
     ), prepare=pinned_instructions, accept=accept_spec, input_fields=("run", "plan", "human_answers")),
     "spec_check": SpecCheckStage("spec_check.md", SpecCheckOutput, (
-        SkillRule(skill=SkillMethod(path="interrogate/SKILL.md", kind="leaf_prompt", lines=(19, 19))),
+        SkillRule(skill=SkillMethod(path="interrogate/SKILL.md", kind="leaf_prompt")),
     ), prepare=pinned_instructions, accept=accept_spec_check, project=spec_check_projection,
         input_fields=("run", "plan", "human_answers"), models=spec_check_models),
     "implement": ImplementStage("implement.md", ImplementOutput, (
-        SkillRule(skill=SkillMethod(path="tdd/SKILL.md", kind="skill", lines=(9, 31)), when="bug_fix"),
-        SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill", lines=(13, 27)), when="perf_issue"),
+        SkillRule(skill=SkillMethod(path="tdd/SKILL.md", kind="skill"), when="bug_fix"),
+        SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill"), when="perf_issue"),
         SkillRule(skill=SkillMethod(path="formal-<area>/SKILL.md", kind="target_skill")),
     ), prepare=implement_preparation, accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review")),
     "verify": VerifyStage("verify.md", VerifyOutput, (SkillRule(skill=VERIFY_SKILL),), accept=accept_verify,
                           input_fields=("run", "plan", "work", "checks")),
     "review": ReviewStage("review.md", ReviewOutput, (
-        SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill", lines=(3, 7))),
-        SkillRule(skill=SkillMethod(path="blast-radius/SKILL.md", kind="skill", lines=(31, 37))),
+        SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill")),
+        SkillRule(skill=SkillMethod(path="blast-radius/SKILL.md", kind="skill")),
     ), prepare=review_preparation, accept=accept_review, project=review_projection,
         input_fields=("run", "plan", "work", "checks", "verify", "review")),
 }

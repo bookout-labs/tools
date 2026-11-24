@@ -5,9 +5,9 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tarfile
-from typing import Annotated, Literal, TYPE_CHECKING
+from typing import Literal, TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict
 
 from foreman.config import SkillPin
 from foreman.stage_output import WorkKind
@@ -21,7 +21,6 @@ SkillSource = Callable[[SkillPin, SkillPin, Path], Path]
 Condition = WorkKind | Literal["stateful", "parent"]
 Repository = Literal["pstack", "matt_skills"]
 SkillFailureReason = Literal["pin_unavailable", "method_missing"]
-LineNumber = Annotated[int, Field(ge=1)]
 PACKAGE_SKILLS = Path(__file__).resolve().with_name("skills")
 # pstack create-verification-skill writes the target repository's own skill under one of these.
 TARGET_SKILL_DIRECTORIES = (".cursor/skills", ".claude/skills")
@@ -32,20 +31,12 @@ class SkillMethod(BaseModel):
 
     path: str
     kind: Literal["skill", "leaf_prompt", "repository_skill", "target_skill"]
-    lines: tuple[LineNumber, LineNumber] | None = None
     repository: Repository = "pstack"
 
     def source(self, root: Path) -> Path:
         if self.kind == "repository_skill":
             return PACKAGE_SKILLS / Path(self.path).name
         return root / self.path if self.repository == "pstack" else root / self.repository / self.path
-
-    @field_validator("lines")
-    @classmethod
-    def ordered_lines(cls, lines: tuple[int, int] | None) -> tuple[int, int] | None:
-        if lines is not None and lines[1] < lines[0]:
-            raise ValueError("end must be at least start")
-        return lines
 
 
 class SkillRule(BaseModel):
@@ -111,11 +102,6 @@ def export_skills(pin: SkillPin, matt_skills: SkillPin, scratch: Path) -> Path:
             raise SkillMissing(pin, name, source=method.repository) from exc
         if not content.strip():
             raise SkillMissing(pin, name, "method is empty", source=method.repository)
-        if method.lines:
-            first, last = method.lines
-            if len(content.splitlines()) < last:
-                raise SkillMissing(pin, name, f"requires lines {first} through {last}, has {len(content.splitlines())}",
-                                   source=method.repository)
 
     for path in sorted(root.rglob("*"), key=lambda entry: -len(entry.parts)):
         if not path.is_symlink():
@@ -174,11 +160,6 @@ def stage_methods(stage: str, state: "DeliveryState", root: Path) -> tuple[str, 
         read_root = str((PACKAGE_SKILLS if method.kind == "repository_skill" else root).resolve())
         if read_root not in roots:
             roots.append(read_root)
-        if method.lines:
-            first, last = method.lines
-            methods.append(f"{method.path}#L{first}-L{last}")
-            instructions.append(f"Use only lines {first} through {last} of {path} as the method.")
-        else:
-            methods.append(method.path)
-            instructions.append(f"Read {path} in full and follow it.")
+        methods.append(method.path)
+        instructions.append(f"Read {path} in full and follow it.")
     return "\n\n".join(instructions), methods, roots

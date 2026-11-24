@@ -395,13 +395,13 @@ class DeliveryTest(unittest.TestCase):
             with self.subTest(kind=kind):
                 built = walk(ScriptHandler(work_kind=kind))
                 methods = next(record["methods"] for record in built["attempts"] if record["stage"] == "implement")
-                self.assertEqual("tdd/SKILL.md#L9-L31" in methods, kind == "bug_fix")
-                self.assertEqual("benchmark-checklist/SKILL.md#L13-L27" in methods, kind == "perf_issue")
+                self.assertEqual("tdd/SKILL.md" in methods, kind == "bug_fix")
+                self.assertEqual("benchmark-checklist/SKILL.md" in methods, kind == "perf_issue")
 
                 researched = walk(ScriptHandler(triage="question", work_kind=kind), slice=None)
                 research = researched["attempts"][-1]["methods"]
-                self.assertIn("how/SKILL.md#L17-L17", research)
-                self.assertEqual("why/SKILL.md#L9-L9" in research, kind == "bug_fix")
+                self.assertIn("how/SKILL.md", research)
+                self.assertEqual("why/SKILL.md" in research, kind == "bug_fix")
 
     def test_draft_uses_statechart_when_revising_a_stored_stateful_slice(self):
         absent = {"name": "policy", "exists": True, "path": "missing.py"}
@@ -410,13 +410,13 @@ class DeliveryTest(unittest.TestCase):
             with self.subTest(item=item):
                 result = walk(ScriptHandler(triage="plan", slices=[{**EMPTY_SLICE, "stateful": True}]), slice=item)
                 methods = next(record["methods"] for record in result["attempts"] if record["stage"] == "spec")
-                self.assertEqual("statechart/SKILL.md#L23-L27" in methods, item is not None and item["stateful"])
+                self.assertEqual("statechart/SKILL.md" in methods, item is not None and item["stateful"])
 
     def test_worker_gets_absolute_read_only_method_paths(self):
         script = ScriptHandler(triage="plan")
 
         def read_methods(node, model, state, instruction):
-            paths = re.findall(r"^(?:Read |Use only lines \d+ through \d+ of )(/.*?\.md) ", instruction, re.M)
+            paths = re.findall(r"^Read (/.*?\.md) ", instruction, re.M)
             # Triage draws no skills, and implement's verify skill lives in the target repository.
             if node not in {"triage", "implement"}:
                 self.assertTrue(paths)
