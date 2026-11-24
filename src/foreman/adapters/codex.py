@@ -185,8 +185,8 @@ class CodexAdapter:
 
     def command(self, call: Call) -> list[str]:
         if call.drive:
-            # Its profile disables every network path, and no capture yet shows an app it starts answering on loopback.
-            raise CapabilityUnavailable("Codex: no captured boundary lets a verifier start and drive an app on loopback")
+            # No capture yet shows Codex's profile confining a verifier that builds and drives the app.
+            raise CapabilityUnavailable("Codex: no captured boundary confines a verifier that builds and drives the app")
         schema_path = call.temp_dir / "output-schema.json"
         schema_path.write_text(call.schema, encoding="utf-8")
         filesystem = {str(root.resolve()): '"read"' for root in call.read_roots}

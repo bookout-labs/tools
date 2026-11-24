@@ -117,7 +117,7 @@ class PermissionsTest(unittest.TestCase):
             readonly = adapter.command(Call("prompt", "{}", False, attempt, read_roots=(root / "methods",)))
             self.assertNotIn("sandbox", json.loads(Path(readonly[readonly.index("--settings") + 1]).read_text()))
 
-    def test_the_verifier_drives_an_app_on_loopback_from_a_sandbox_without_edit_tools(self):
+    def test_the_verifier_drives_the_app_from_a_networkless_sandbox_without_edit_tools(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
         with TemporaryDirectory() as directory:
             root, attempt = Path(directory), Path(directory) / "attempt"
@@ -132,7 +132,7 @@ class PermissionsTest(unittest.TestCase):
             forms = lambda paths: list(dict.fromkeys(str(form) for path in paths for form in (path, path.resolve())))
             self.assertEqual(settings["sandbox"], {
                 "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-                "network": {"allowedDomains": [], "strictAllowlist": True, "allowLocalBinding": True},
+                "network": {"allowedDomains": [], "strictAllowlist": True},
                 "filesystem": {"denyWrite": forms((root / "methods", *gits))}})
             # No Edit or Write is granted, so their working-directory rules have nothing to govern.
             self.assertEqual(settings["permissions"], {"allow": [], "deny": [f"Edit(/{path}/**)" for path in forms((root / "methods",))]})
@@ -140,7 +140,7 @@ class PermissionsTest(unittest.TestCase):
             self.assertEqual(adapter.read(refused, call).kind, "cli_missing")
             with patch("foreman.adapters.claude.platform.system", return_value="Windows"), self.assertRaises(CapabilityUnavailable):
                 adapter.command(call)
-            # Codex shows no loopback app under its network-disabled profile, and Grok confines nothing yet.
+            # No capture shows Codex confining a verifier yet, and Grok confines nothing.
             for other in (CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high")), GrokAdapter(ModelSpec.parse("grok-4.7-high"))):
                 with self.subTest(other=type(other).__name__), self.assertRaises(CapabilityUnavailable):
                     other.command(call)
@@ -156,24 +156,35 @@ class PermissionsTest(unittest.TestCase):
             def runner(args, cwd, env):
                 seen.append((args, json.loads(Path(args[args.index("--settings") + 1]).read_text()), env))
                 return fixture_process(args, "success", 0)
-            outcome = CliWorker(checkout, runner, scratch_root=state_dir)("verify", ModelSpec.parse("claude-opus-5-5-high"), {}, "verify")
+            state = {"run": RunState(repo="Org/App", issue=7)}
+            outcome = CliWorker(checkout, runner, scratch_root=state_dir)("verify", ModelSpec.parse("claude-opus-5-5-high"), state, "verify")
             self.assertEqual(outcome.kind, "ran")
             args, settings, env = seen[0]
-            [kept] = state_dir.iterdir()
+            # The scratch Bash writes outlives the call under its run's own directory; Claude's short temp directory does not.
+            run_dir = state_dir / "foreman-verify" / "Org-App-7"
+            [kept] = run_dir.iterdir()
             scratch = kept / "scratch"
-            # The scratch Bash writes outlives the call; Claude's own short temp directory does not.
-            self.assertTrue(kept.name.startswith("foreman-verify-") and scratch.is_dir())
+            self.assertTrue(scratch.is_dir())
             self.assertEqual(env["TMPDIR"], str(scratch))
             self.assertFalse(Path(env["CLAUDE_CODE_TMPDIR"]).exists())
-            self.assertIn(f"Save captures under {scratch} and name each capture's path as its evidence.", args[-1])
-            self.assertIn("reaches no network except loopback", args[-1])
+            self.assertIn(f"Write scratch and captures under {scratch} and name each capture's path as its evidence.", args[-1])
+            self.assertIn("Bash runs sandboxed with no network.", args[-1])
             self.assertNotIn("Do not return the scratch path as evidence.", args[-1])
             self.assertEqual(settings["sandbox"]["filesystem"]["denyWrite"][0], str(checkout / ".git"))
-            # A model that cannot drive the app leaves no attempt directory behind.
-            refused = CliWorker(checkout, runner, scratch_root=state_dir)("verify", ModelSpec.parse("gpt-6.1-sol-high"), {}, "verify")
-            self.assertEqual((refused.kind, list(state_dir.iterdir()), len(seen)), ("cli_missing", [kept], 1))
+            # Every exit before launch leaves no attempt directory behind: a model that cannot drive the app,
+            # a missing executable, and an error before the call.
+            def missing(args, cwd, env):
+                raise FileNotFoundError(args[0])
+            for model, run in (("gpt-6.1-sol-high", runner), ("claude-opus-5-5-high", missing)):
+                with self.subTest(model=model):
+                    refused = CliWorker(checkout, run, scratch_root=state_dir)("verify", ModelSpec.parse(model), state, "verify")
+                    self.assertEqual((refused.kind, list(run_dir.iterdir()), len(seen)), ("cli_missing", [kept], 1))
+            with self.assertRaises(ValueError):
+                CliWorker(checkout, runner, scratch_root=state_dir)("verify", ModelSpec.parse("claude-opus-5-5-high"),
+                                                                    {**state, "dispatch_plan": {"bad": 1}}, "verify")
+            self.assertEqual(list(run_dir.iterdir()), [kept])
 
-    def test_captured_verifier_serves_on_loopback_and_writes_only_the_checkout_and_scratch(self):
+    def test_captured_verifier_reaches_no_network_and_writes_only_the_checkout_and_scratch(self):
         capture = json.loads((Path(__file__).parent / "fixtures/claude/permissions/verify.json").read_text())
         self.assertEqual((capture["returncode"], capture["commits"]), (0, 1))
         self.assertEqual(capture["argv"][capture["argv"].index("--tools") + 1], "Read,Glob,Grep,Bash")
@@ -182,8 +193,9 @@ class PermissionsTest(unittest.TestCase):
         text = lambda result: result["content"] if isinstance(result["content"], str) else " ".join(p.get("text", "") for p in result["content"])
         bash = {use["input"]["command"]: (result.get("is_error", False), text(result)) for use in content
                 if use.get("type") == "tool_use" and use.get("name") == "Bash" for result in content if result.get("tool_use_id") == use["id"]}
-        # The app answers on loopback; the sandbox refuses every other host and every write outside the checkout and scratch.
-        self.assertEqual(bash["sh serve.sh"], (False, "value = 1\ncurl=0"))
+        # The sandbox refuses a loopback listener, every host, and every write outside the checkout and scratch.
+        self.assertIn("Operation not permitted", bash["sh serve.sh"][1])
+        self.assertIn("curl=7", bash["sh serve.sh"][1])
         self.assertEqual({command for command, (failed, _) in bash.items() if not failed},
                          {"sh serve.sh", "touch <probe>/attempt/scratch/capture.txt", "touch build-output"})
         for command in ("rm <probe>/methods/method.md", "rm <probe>/outside.txt", "touch <probe>/clone/.git/probe", "git commit -qm x"):

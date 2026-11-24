@@ -136,14 +136,11 @@ class ClaudeAdapter(NativeAdapter):
         if call.edit or call.drive:
             sandboxed(platform.system())
             # Bash runs in Claude Code's OS sandbox, which fails closed: it writes the checkout and the attempt scratch,
-            # never the method roots --add-dir exposes or the git directories, and reaches no network. The verifier
-            # may also listen on loopback, so it can start the app and drive it.
-            network: dict[str, object] = {"allowedDomains": [], "strictAllowlist": True}
-            if call.drive:
-                network["allowLocalBinding"] = True
+            # never the method roots --add-dir exposes or the git directories, and reaches no network.
             settings["sandbox"] = {
                 "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-                "network": network, "filesystem": {"denyWrite": both((*call.read_roots, *call.git_dirs))},
+                "network": {"allowedDomains": [], "strictAllowlist": True},
+                "filesystem": {"denyWrite": both((*call.read_roots, *call.git_dirs))},
             }
             directories.append(str(call.scratch))
         settings_path = call.temp_dir / "claude-settings.json"

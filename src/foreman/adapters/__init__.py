@@ -69,7 +69,7 @@ class Call:
     checks: tuple[str, ...] = ()
     read_roots: tuple[Path, ...] = ()
     review: bool = False
-    # The verifier builds, starts and drives the app: sandboxed Bash with loopback, no Edit or Write.
+    # The verifier builds and drives the app: sandboxed Bash with no network, no Edit or Write.
     drive: bool = False
     resume_session: str | None = None
     # The checkout's .git entry and the directories git resolves it to. Foreman commits, so a worker never writes them.

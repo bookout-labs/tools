@@ -8,11 +8,14 @@ from decimal import Decimal
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import sqlite3
 import subprocess
 import tempfile
 from tempfile import TemporaryDirectory
 from typing import Callable
+from uuid import uuid4
 
 from pydantic import TypeAdapter
 from pydantic_core import to_jsonable_python
@@ -23,7 +26,7 @@ from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
 from foreman.process_group import owned_group
-from foreman.state import ChecksState
+from foreman.state import ChecksState, RunState
 from foreman.stage_output import DispatchPlan
 from foreman.stages import STAGES
 from foreman.usd import BudgetUsd
@@ -125,14 +128,18 @@ class CliWorker:
         temp_root = (self.scratch_root or Path(tempfile.gettempdir())).resolve()
         if temp_root.is_relative_to(checkout):
             temp_root = checkout.parent
-        # The verifier's attempt directory outlives the call, so the captures it names stay readable as evidence.
-        kept = Path(tempfile.mkdtemp(prefix="foreman-verify-", dir=temp_root)) if drive else None
+        kept = None
+        if drive:
+            # The verifier's attempt directory outlives the call, so the captures it names stay readable as evidence.
+            # It sits under its run's directory, so the run can remove its own when it stops.
+            run = RunState.model_validate(state.get("run") or {})
+            kept = temp_root / "foreman-verify" / re.sub(r"[^A-Za-z0-9_.-]", "-", f"{run.repo}-{run.issue}") / uuid4().hex
         prompt = (
             f"{instruction}\n\nReturn exactly one JSON object that matches the output schema. "
             "Use null for inapplicable nullable fields. Do not arm a merge."
             " Write disposable scratch only under $TMPDIR, outside the checkout."
         )
-        prompt += (f" Save captures under {kept / 'scratch'} and name each capture's path as its evidence." if kept else
+        prompt += (f" Write scratch and captures under {kept / 'scratch'} and name each capture's path as its evidence." if kept else
                    " Do not return the scratch path as evidence.")
         contract = STAGES[node].output
         assert contract is not None
@@ -161,9 +168,9 @@ class CliWorker:
                        " Delete a file the slice removes with a plain rm <relative-path>."
                        if model.family == "claude" else "")
         elif drive:
-            prompt += (" Bash runs sandboxed: it writes the checkout's ignored build output and the attempt scratch, never .git, and"
-                       " reaches no network except loopback, so start the app on 127.0.0.1 with the dependencies"
-                       " already in the checkout.")
+            prompt += (" Bash runs sandboxed with no network. A build may write its ignored output in the checkout, but write"
+                       " nothing there yourself. Report a criterion that needs network access, including a local server, as"
+                       " unverified with that blocker.")
         prompt += f"\n\nDelivery state:\n{json.dumps(projected)}"
         # Counts only the prompt, excluding the separate output schema,
         # CLI system prompts, tool definitions/results and hidden model work.
@@ -180,7 +187,12 @@ class CliWorker:
         elif node == "review" and plan and plan.scope:
             checks = TypeAdapter(ReviewScope).validate_python(plan.scope).commands
         adapter = ADAPTERS[model.family](model)
+        launched = False
         with ExitStack() as stack:
+            if kept:
+                kept.mkdir(parents=True)
+                # Kept only once the CLI launches; every earlier exit removes it.
+                stack.callback(lambda: launched or shutil.rmtree(kept))
             directory = kept or Path(stack.enter_context(TemporaryDirectory(prefix="foreman-worker-", dir=temp_root)))
             try:
                 call = Call(prompt, schema, edit=edit, checks=checks, review=node == "review", drive=drive,
@@ -189,8 +201,6 @@ class CliWorker:
                             resume_session=session, git_dirs=git_dirs(self.cwd.absolute()) if edit or drive else ())
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
-                if kept:
-                    kept.rmdir()
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
             call.scratch.mkdir()
             env = {**adapter.env, "TMPDIR": str(call.scratch)}
@@ -202,7 +212,9 @@ class CliWorker:
                 except OSError as exc:
                     return Outcome("cli_missing", detail=f"Claude has no private short temp directory: {exc}", prompt_bytes=prompt_bytes)
             try:
+                launched = True
                 process = self.run(args, self.cwd, env)
             except FileNotFoundError:
+                launched = False
                 return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable", prompt_bytes=prompt_bytes)
             return replace(adapter.read(process, call), prompt_bytes=prompt_bytes)

@@ -27,9 +27,10 @@ for folder in (clone, methods, attempt):
 (clone / '.github/workflows/ci.yml').write_text('name: before\n')
 (clone / 'check.sh').write_text('touch checked\n')
 if mode == 'verify':
-    # The verifier's app: it listens on loopback and the driver fetches a page from it.
-    (clone / 'serve.sh').write_text('python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 & server=$!\n'
-                                    'sleep 2; curl -sS --max-time 5 http://127.0.0.1:8765/source.py; echo "curl=$?"; kill $server\n')
+    # An app that listens on loopback and a driver that fetches a page from it; the networkless sandbox refuses both.
+    (clone / 'serve.sh').write_text('python3 -m http.server 8765 --bind 127.0.0.1 >server.log 2>&1 & server=$!\n'
+                                    'sleep 2; curl -sS --max-time 5 http://127.0.0.1:8765/source.py; echo "curl=$?"\n'
+                                    'wait $server; tail -1 server.log\n')
 for args in (['init', '-q'], ['add', '.'], ['-c', 'user.name=Probe', '-c', 'user.email=probe@example.test', 'commit', '-qm', 'initial'],
              ['worktree', 'add', '-q', '-b', 'probe', str(repo)]):
     subprocess.run(['git', *args], cwd=clone, check=True)
