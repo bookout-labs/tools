@@ -198,12 +198,15 @@ class LiveWatchTest(unittest.TestCase):
                 self.run = LiveRun(self.forge, workspace, skills=fixture_skills, human_login="fixture-owner")
                 self.assertEqual(self.invoke(dispatcher=dispatcher)['stop'], stop)
 
-    def test_live_forge_receives_redacted_halt_on_issue_and_repeat_comment(self):
+    def test_live_halt_detail_stays_redacted_on_the_run_issue_and_out_of_the_watch_repo(self):
         secret = 'ghp_' + 'a' * 36
+        status = []
         def gh(args, **kwargs):
             endpoint = args[2]
             fields = dict(arg.split('=', 1) for arg in args if '=' in arg and not arg.startswith('repos/'))
             if args[1] == 'issue' or endpoint.startswith(('repos/Example/Engine/labels', 'repos/Example/Engine/issues/8/comments')):
+                if '--method' in args and 'body' in fields:
+                    status.append(fields['body'])
                 result = [[]] if '?' in endpoint else {}  # Foreman's status mirror on the run's own issue.
             elif endpoint == 'repos/Example/Engine/issues/8':
                 result = {'number': 8, 'repository_url': 'https://api.github.com/repos/Example/Engine', 'title': 'Issue', 'body': self.fake.body, 'labels': [{'name': 'slice'}, {'name': 'Ready'}]}
@@ -231,9 +234,14 @@ class LiveWatchTest(unittest.TestCase):
         with patch('foreman.github.subprocess.run', side_effect=fake_gh):
             self.invoke(dispatcher=dispatcher)
             self.invoke(dispatcher=dispatcher)
+        # The watch repo is another repository, so the halt detail stays on the run's own issue, redacted.
         for body in (self.fake.created[0][1], self.fake.comments['bookout-labs/tools', 101][0]):
             self.assertNotIn(secret, body)
-            self.assertIn('#48 [redacted:GitHub Token]', body)
+            self.assertNotIn('#48', body)
+        self.assertTrue(status)
+        for body in status:
+            self.assertNotIn(secret, body)
+        self.assertTrue(any('#48 [redacted:GitHub Token]' in body for body in status))
 
     def test_watch_errors_keep_exit_codes_are_redacted_ordered_and_retried(self):
         secret = 'ghp_' + 'a' * 36

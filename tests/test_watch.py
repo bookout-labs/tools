@@ -37,8 +37,8 @@ SKIPPED = {"model_dependency_missing", "publication_model_missing", "merge_held"
            "implementation_rejected", "readiness_unavailable"}
 
 
-def state(halt="invalid_output", detail="bad output", node="review", model="gpt-6.1-sol-high"):
-    return dict(run=RunState(repo=REPO, issue=8), check="true", path=["triage", node], stop=halt,
+def state(halt="invalid_output", detail="bad output", node="review", model="gpt-6.1-sol-high", repo=REPO):
+    return dict(run=RunState(repo=repo, issue=8), check="true", path=["triage", node], stop=halt,
                 halt=halt, halt_detail=detail, attempts=[dict(stage=node, model=model, outcome="ran",
                                                            commit="pin", methods=[], usage=None)])
 
@@ -90,8 +90,18 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(watch(state(detail="yet another detail"), self.forge, TARGET, other), {"issue": 101, "action": "commented"})
         self.forge.create_issue.assert_called_once()
         self.forge.comment_issue.assert_called_once_with(TARGET, 101,
-            "Evidence: Example/Engine#8; stop=invalid_output; attempts=review/gpt-6.1-sol-high=ran\n\n"
-            "Detail:\n\n    another detail\n", marker="<!-- foreman-watch-run: Example/Engine#9@43 -->")
+            "Evidence: Example/Engine#8; stop=invalid_output; attempts=review/gpt-6.1-sol-high=ran\n", marker="<!-- foreman-watch-run: Example/Engine#9@43 -->")
+
+    def test_detail_stays_out_of_a_watch_repo_other_than_the_runs(self):
+        for repo, shown in ((REPO, False), (TARGET, True), (TARGET.lower(), True)):
+            with self.subTest(repo=repo):
+                fake = FakeGitHub()
+                watch(state(detail="private detail", repo=repo), fake, TARGET, KEY)
+                watch(state(detail="private detail", repo=repo), fake, TARGET, run_key(REPO, 8, 43))
+                for body in (fake.created[0][1], fake.comments[TARGET, 101][0]):
+                    self.assertIn(f"Evidence: {repo}#8; stop=invalid_output; attempts=review/gpt-6.1-sol-high=ran\n", body)
+                    self.assertEqual("private detail" in body, shown)
+                    self.assertEqual("Detail:" in body, shown)
 
     def test_different_nodes_are_different_causes(self):
         watch(state(), self.forge, TARGET, KEY)
@@ -135,7 +145,7 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(self.forge.create_issue.call_count, 2)
 
     def test_multiline_detail_keeps_line_breaks_in_both_writes(self):
-        halted = state(detail="first\r\nsecond\nthird with literal `\\n`")
+        halted = state(detail="first\r\nsecond\nthird with literal `\\n`", repo=TARGET)
         watch(halted, self.forge, TARGET, KEY)
         watch(halted, self.forge, TARGET, run_key(REPO, 8, 43))
         for body in (self.fake.created[0][1], self.fake.comments[TARGET, 101][0]):
@@ -145,7 +155,7 @@ class WatchTest(unittest.TestCase):
     def test_marker_in_detail_does_not_suppress_a_later_run(self):
         other = run_key(REPO, 8, 43)
         marker = f"<!-- foreman-watch-run: {other} -->"
-        halted = state(detail=f"first\n{marker}\nthird")
+        halted = state(detail=f"first\n{marker}\nthird", repo=TARGET)
         watch(halted, self.forge, TARGET, KEY)
         self.assertEqual(watch(halted, self.forge, TARGET, other), {"issue": 101, "action": "commented"})
         for body in (self.fake.created[0][1], self.fake.comments[TARGET, 101][0]):
@@ -174,7 +184,7 @@ class WatchTest(unittest.TestCase):
         gh.side_effect = respond
         forge = LiveForge()
         secret = "ghp_" + "a" * 36
-        halted = state(detail="#48 " + secret)
+        halted = state(detail="#48 " + secret, repo=TARGET)
         watch(halted, forge, TARGET, KEY)
         self.assertEqual(watch(halted, forge, TARGET, run_key(REPO, 8, 43)), {"issue": 101, "action": "commented"})
         for body in (self.fake.created[0][1], self.fake.comments[TARGET, 101][0]):
