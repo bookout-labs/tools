@@ -2348,11 +2348,17 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertIn("--human-login or FOREMAN_HUMAN_LOGIN", stderr.getvalue())
         with self.assertRaises(AssertionError):
             human_comments(self.github, " ", "Example/Engine", 8)
-        # The CLI's login reaches an injected run, so a reply under another login answers nothing.
         marker = re.search(r"foreman answer [0-9a-f-]{71}", self.github.status["Example/Engine", 8]).group(0)
-        self.github.ruling(f"{marker}\nAll items.", login="someone-else")
-        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
-            main([*command, "--human-login", "fixture-owner"], checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+        self.github.ruling(f"{marker}\nAll items.", login="Fixture-Owner")
+        self.assertEqual(human_comments(self.github, " fixture-owner ", "Example/Engine", 8)[-1], f"{marker}\nAll items.")
+        # The CLI's login, not the injected run's or the environment's, decides, so a reply under another login answers nothing.
+        def no_worker(*args):
+            raise AssertionError("an unanswered question dispatches no worker")
+        environ = {name: value for name, value in os.environ.items() if name != "FOREMAN_HUMAN_LOGIN"}
+        with patch.dict(os.environ, environ, clear=True), contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
+            code = main([*command, "--human-login", "someone-else"], checkpoint=self.checkpoint, worker_runner=no_worker,
+                        live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"))
+        self.assertEqual(code, 3)
         self.assertIn("Foreman needs an answer in triage.", self.github.status["Example/Engine", 8])
 
     def test_rerunning_same_command_after_preflight_recovers_without_using_a_round(self):

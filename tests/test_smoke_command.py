@@ -17,6 +17,7 @@ from unittest.mock import patch, Mock
 
 from foreman.cli import main
 from foreman.github import BOT_LOGIN, ForgeError, IssueComment, LiveForge
+from foreman.delivery import FIXTURE_HUMAN
 from foreman.readiness import MergeState
 from foreman.smoke_command import SMOKE_REPO, SMOKE_TOKEN_CAP, SMOKE_CLAUDE_USD, run_smoke, smoke_command
 from foreman.status import STATUS_MARKER
@@ -61,6 +62,7 @@ class SmokeCommandTest(unittest.TestCase):
             self.assertEqual(kwargs['max_budget_usd'], SMOKE_CLAUDE_USD)
             self.assertEqual(kwargs['run'].workspace.root, root / 'checkout')
             self.assertIs(kwargs['run'].forge, forge)
+            self.assertEqual(kwargs['run'].human_login, FIXTURE_HUMAN)
             self.assertFalse(os.environ['PATH'].startswith(str(root / 'python/bin')))
             self.assertEqual(process.call_args_list[0].kwargs['env'], credentials.return_value)
             forge.create_issue.assert_called_once()
@@ -340,7 +342,7 @@ class SmokeCommandTest(unittest.TestCase):
                 for name in ('open_issues', 'comment_issue', 'marked_issues'):
                     getattr(forge, name).side_effect = getattr(fake, name)
                 def delivery(**kwargs):
-                    kwargs['run'] = LiveRun(forge, FakeWorkspace(root / 'checkout'), skills=fixture_skills, human_login="fixture-owner")
+                    kwargs['run'] = LiveRun(forge, FakeWorkspace(root / 'checkout'), skills=fixture_skills, human_login=kwargs['run'].human_login)
                     from foreman.dry_run import ScriptHandler
                     kwargs['dispatcher'] = ScriptHandler() if cap == 1 else lambda *args: Outcome(kind, detail='bad output')
                     with patch('subprocess.run', real_run), patch('subprocess.check_output', real_output):
@@ -392,7 +394,7 @@ class SmokeCommandTest(unittest.TestCase):
                 return observation.model_copy(update={'outcome': 'pending'}) if observations == 1 else observation
             transport.readiness.side_effect = readiness
             def delivery(**kwargs):
-                kwargs['run'] = LiveRun(transport, workspace, skills=fixture_skills, human_login="fixture-owner")
+                kwargs['run'] = LiveRun(transport, workspace, skills=fixture_skills, human_login=kwargs['run'].human_login)
                 kwargs['dispatcher'] = dispatch
                 with patch('subprocess.run', real_run), patch('subprocess.check_output', real_output):
                     result = run_live_delivery(**kwargs)
