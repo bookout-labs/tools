@@ -32,6 +32,16 @@ class AcceptTest(unittest.TestCase):
         self.assertEqual(accept_event("issues", delivery(action="unlabeled")), {"start": False})
         self.assertEqual(accept_event("issues", delivery(pull_request={"url": "https://example.test/pull/7"})), {"start": False})
 
+    def test_foreman_own_label_writes_never_start_a_run(self):
+        # Spec labels each child Ready as the App, and the child starts once, from its start line.
+        for login in ("bookout-labs-foreman[bot]", "Bookout-Labs-Foreman[bot]"):
+            with self.subTest(login=login):
+                self.assertEqual(accept_event("issues", {**delivery(), "sender": {"login": login}}), {"start": False})
+        # A delivery without a sender, like the blueprint's synthetic one, is decided by its label.
+        payload = delivery()
+        del payload["sender"]
+        self.assertEqual(accept_event("issues", payload), {"start": True, "repo": "Example/Engine", "issue": 7})
+
     def test_the_retired_factory_label_is_ignored(self):
         self.assertEqual(accept_event("issues", delivery(label="factory")), {"start": False})
 

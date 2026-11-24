@@ -21,8 +21,16 @@ from foreman.workspace import commit_sha
 
 BOT_LOGIN = "bookout-labs-foreman[bot]"
 MERGE_HOLD_VARIABLE = "FOREMAN_MERGE_HOLD"
-# A Ready label event starts an issue run, so Spec and Merge release issues by adding it.
+# A Ready label event starts an issue run, so Spec releases the children it files by adding it.
 READY_LABEL = "Ready"
+# The run labels, one at a time on an issue: the run's checkpoint decides, and a label never grants authority.
+DOING_LABEL, NEEDS_ANSWER_LABEL, DONE_LABEL = "Doing", "Needs answer", "Done"
+RUN_LABELS: dict[str, str] = {READY_LABEL: "0e8a16", DOING_LABEL: "1d76db", NEEDS_ANSWER_LABEL: "d93f0b", DONE_LABEL: "5319e7"}
+
+
+def run_label(name: str) -> str | None:
+    """The run label a live label name is. GitHub matches label names case-insensitively and keeps an existing label's case."""
+    return next((label for label in RUN_LABELS if label.casefold() == name.casefold()), None)
 Model = TypeVar("Model", bound=BaseModel)
 
 
@@ -195,6 +203,7 @@ class SmokeItemState(BaseModel, strict=True):
 
 
 class IssueComment(BaseModel, strict=True):
+    id: PositiveInt | None = None
     body: str | None
     user: RepositoryOwner | None = None
 
@@ -340,6 +349,7 @@ class Forge(Protocol):
     def issue_comments(self, repo: str, number: int) -> list[str]: ...
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]: ...
     def comment_issue(self, repo: str, number: int, body: str, *, marker: str) -> None: ...
+    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> None: ...
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None,
     ) -> int: ...
@@ -348,7 +358,8 @@ class Forge(Protocol):
     def blocking(self, repo: str, number: int) -> list[IssueBlocker]: ...
     def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool: ...
     def descends(self, repo: str, ancestor: str, head: str) -> bool: ...
-    def add_label(self, repo: str, number: int, label: str) -> None: ...
+    def ensure_label(self, repo: str, name: str, color: str) -> None: ...
+    def edit_labels(self, repo: str, number: int, add: list[str], remove: list[str]) -> None: ...
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt: ...
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation: ...
@@ -405,6 +416,11 @@ def human_comments(forge: "Forge", login: str, repo: str, issue: int) -> list[st
         return []
     return [(comment.body or "").strip() for comment in forge.issue_comment_records(repo, issue)
             if comment.user is not None and comment.user.login.casefold() == login.casefold()]
+
+
+def status_body(text: str, facts: list[str], marker: str) -> str:
+    """Foreman's status comment. The text is redacted, while facts keep validated SHAs, which full redaction would wipe."""
+    return marked("\n\n".join(part for part in (redact(text), *(redact(fact, credentials_only=True) for fact in facts)) if part), marker)
 
 
 def marked(content: str, marker: str) -> str:
@@ -580,8 +596,20 @@ class LiveForge:
             seen.add(cursor)
             page = self._read(repo, SmokeConnection[model], [*command, "-f", f"endCursor={cursor}"])
 
-    def ensure_smoke_label(self, repo: str) -> None:
-        self._run_command(repo, ["gh", "label", "create", "smoke", "--repo", repo, "--color", "ededed", "--force"])
+    def ensure_label(self, repo: str, name: str, color: str) -> None:
+        """Create the label only when it is missing, so an existing label keeps its color."""
+        repo, name = (redact(value) for value in (repo, name))
+        try:
+            self._run_command(repo, ["gh", "api", f"repos/{repo}/labels/{quote(name, safe='')}"])
+            return
+        except CommandFailed as exc:
+            if exc.status != 404:
+                raise
+        try:
+            self._run_command(repo, ["gh", "api", f"repos/{repo}/labels", "--method", "POST", "-f", f"name={name}", "-f", f"color={color}"])
+        except CommandFailed as exc:
+            if exc.status != 422:  # Another writer created it first.
+                raise
 
     def close_issue(self, repo: str, number: int) -> None:
         self._close_smoke_item(repo, f"repos/{repo}/issues/{number}")
@@ -663,6 +691,18 @@ class LiveForge:
             "gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}",
         ])
 
+    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> None:
+        """Converge Foreman's one marked comment: patch the first one it posted when its body differs, or post it."""
+        body = status_body(text, facts, marker)
+        owned = next((comment for comment in self.issue_comment_records(repo, number) if comment.user is not None
+                      and comment.user.login.casefold() == BOT_LOGIN.casefold() and (comment.body or "").endswith(marker)), None)
+        if owned is None:
+            self._run_command(repo, ["gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}"])
+        elif owned.body != body:
+            if owned.id is None:
+                raise ForgeError("GitHub returned Foreman's status comment without its id.")
+            self._run_command(repo, ["gh", "api", f"repos/{repo}/issues/comments/{owned.id}", "--method", "PATCH", "-f", f"body={body}"])
+
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None,
     ) -> int:
@@ -726,9 +766,14 @@ class LiveForge:
         comparison = self._read(repo, Comparison, ["gh", "api", f"repos/{repo}/compare/{ancestor}...{head}"])
         return comparison.status in ("ahead", "identical")
 
-    def add_label(self, repo: str, number: int, label: str) -> None:
-        repo, label = (redact(value) for value in (repo, label))
-        self._run_command(repo, ["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
+    def edit_labels(self, repo: str, number: int, add: list[str], remove: list[str]) -> None:
+        """One edit adds and removes labels, and leaves every other label on the issue."""
+        repo, *labels = (redact(value) for value in (repo, *add, *remove))
+        command = ["gh", "issue", "edit", str(number), "--repo", repo]
+        for flag, names in (("--add-label", labels[:len(add)]), ("--remove-label", labels[len(add):])):
+            if names:
+                command.extend([flag, ",".join(names)])
+        self._run_command(repo, command)
 
     def post_review(self, repo: str, target: PullRequest, body: str, comments: list[ReviewComment], *, marker: str) -> ReviewReceipt:
         current = self._view_pr(repo, str(target.number))

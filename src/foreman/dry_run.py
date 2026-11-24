@@ -238,6 +238,9 @@ class DryRun:
         self.commands.append(["gh", "issue", "comment", str(number), "--repo", repo, "--body", body])
         self.comments.append(IssueComment.model_validate({"body": body, "user": {"login": BOT_LOGIN}}))
 
+    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> None:
+        raise NotImplementedError("Not used by dry delivery")
+
     def create_issue(self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None) -> int:
         body = marked(body, marker)
         if child is not None:
@@ -268,9 +271,15 @@ class DryRun:
     def descends(self, repo: str, ancestor: str, head: str) -> bool:
         raise NotImplementedError("Not used by dry delivery")
 
-    def add_label(self, repo: str, number: int, label: str) -> None:
-        self.commands.append(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
-        self.issues[number]["labels"].append(label)
+    def ensure_label(self, repo: str, name: str, color: str) -> None:
+        pass  # The dry run's issues carry any label.
+
+    def edit_labels(self, repo: str, number: int, add: list[str], remove: list[str]) -> None:
+        self.commands.append(["gh", "issue", "edit", str(number), "--repo", repo,
+                              *(argument for label in add for argument in ("--add-label", label)),
+                              *(argument for label in remove for argument in ("--remove-label", label))])
+        labels = self.issues[number]["labels"]
+        labels[:] = [label for label in labels if label not in remove] + [label for label in add if label not in labels]
 
     def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt:
         raise NotImplementedError("Not used by dry delivery")

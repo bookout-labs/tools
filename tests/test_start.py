@@ -103,6 +103,31 @@ class StartTest(unittest.TestCase):
         self.assertEqual((code, "HTTP 403" in err.getvalue()), (1, True))
         run.assert_not_called()
 
+    def test_a_missing_setting_is_commented_once_while_ready_waits(self):
+        for _ in range(2):
+            self.assertEqual(self.start({})[0], 1)
+        self.assertEqual(len(self.forge.status_writes), 1)
+        self.assertIn("Set the FOREMAN_CHECK repository variable", self.forge.status[("Example/Engine", 8)])
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "-1"})[0], 1)
+        self.assertIn("FOREMAN_MAX_BUDGET_USD a positive amount", self.forge.status[("Example/Engine", 8)])
+        self.assertEqual(self.forge.label_calls, [])
+        self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
+
+    def test_a_stale_delivery_without_ready_is_not_commented(self):
+        self.forge = FakeGitHub(["slice"])
+        self.assertEqual(self.start({})[0], 1)
+        self.assertEqual((self.forge.status, self.forge.label_calls), ({}, []))
+
+    def test_a_duplicate_ready_gives_one_checkpoint_and_the_issue_shows_doing(self):
+        self.forge.queue_merges = False
+        code, out, err = self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(code, 75, out + err)
+        writes = list(self.forge.status_writes)
+        self.assertEqual(self.start()[:2], (0, f"already started {THREAD}\n"))
+        self.assertEqual(self.forge.status_writes, writes)
+        self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Doing"])
+        self.assertEqual(list(self.forge.status), [("Example/Engine", 8)])
+
     def test_without_app_credentials_nothing_is_read_or_run(self):
         self.app.return_value = None
         with patch.object(self.forge, "variables") as variables, patch("foreman.cli.run_live_delivery") as run:

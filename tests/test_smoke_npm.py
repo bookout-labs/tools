@@ -34,7 +34,6 @@ class NpmSmokeTest(unittest.TestCase):
             forge.smoke_identity = Mock(return_value=(True, True, True))
             forge.smoke_issues = Mock(return_value=[])
             forge.smoke_pull_requests = Mock(return_value=[])
-            forge.ensure_smoke_label = Mock()
             real_run, real_main = subprocess.run, cli.main
             commands, reconciled, checkouts = [], [], []
             pins = {name: subprocess.check_output([name, '--version'], text=True).strip().removeprefix('v') for name in ('node', 'npm')}

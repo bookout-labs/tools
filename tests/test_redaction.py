@@ -105,7 +105,7 @@ class RedactionTest(unittest.TestCase):
         forge.create_issue("Example/Target", "Synthetic fixture", body, [SYNTHETIC_GITHUB], marker="")
         self.assertIn("body=[redacted:GitHub Token] # pragma: allowlist secret", gh.call_args.args[0])
         self.assertIn("labels[]=[redacted:GitHub Token]", gh.call_args.args[0])
-        forge.add_label("Example/Target", 42, SYNTHETIC_GITHUB)
+        forge.edit_labels("Example/Target", 42, [SYNTHETIC_GITHUB], [])
         self.assertEqual(gh.call_args.args[0][-1], "[redacted:GitHub Token]")
 
     def test_keyword_redacts_only_the_assigned_synthetic_value(self):
@@ -240,7 +240,9 @@ class RedactionTest(unittest.TestCase):
             ("workspace.py", "LiveWorkspace._git"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,
             ("github.py", "redact_slice"): 10,
-            ("github.py", "LiveForge.add_label"): 1,
+            ("github.py", "status_body"): 2,
+            ("github.py", "LiveForge.ensure_label"): 1,
+            ("github.py", "LiveForge.edit_labels"): 1,
             ("github.py", "LiveForge.add_blocker"): 1,
             ("github.py", "LiveForge.add_sub_issue"): 1,
             ("github.py", "LiveForge.update_issue_body"): 1,

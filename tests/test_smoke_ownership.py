@@ -204,8 +204,9 @@ class SmokeOwnershipTest(unittest.TestCase):
 import json, os, signal, sys, time
 from pathlib import Path
 from unittest.mock import patch
-from foreman.github import SmokeIssue, SmokeOpenPull
+from foreman.github import BOT_LOGIN, IssueComment, SmokeIssue, SmokeOpenPull
 from foreman.smoke_command import run_smoke
+from foreman.status import STATUS_MARKER
 from foreman import smoke_command
 smoke_command.SMOKE_TARGETS = (smoke_command.SMOKE_REPO,)
 from tests.test_smoke import passing
@@ -215,7 +216,7 @@ class Forge:
     def __init__(self): self.data = json.loads(path.read_text())
     def save(self): path.write_text(json.dumps(self.data))
     def default_branch(self, repo): return 'main'
-    def ensure_smoke_label(self, repo): pass
+    def ensure_label(self, repo, name, color): pass
     def smoke_issues(self, repo): return [SmokeIssue.model_validate(x) for x in self.data['issues']]
     def smoke_pull_requests(self, repo): return [SmokeOpenPull.model_validate(x) for x in self.data['pulls']]
     def close_issue(self, repo, number):
@@ -233,6 +234,9 @@ class Forge:
         if phase == 'issue': os.kill(os.getpid(), signal.SIGKILL)
         return item['number']
     def smoke_identity(self, *args): return True, True, True
+    def load_issue(self, repo, number): return {'repo': repo, 'number': number, 'labels': ['smoke', 'Doing']}
+    def issue_comment_records(self, repo, number):
+        return [IssueComment.model_validate({'id': 1, 'user': {'login': BOT_LOGIN}, 'body': STATUS_MARKER})]
 forge = Forge()
 def runner(**kwargs):
     if phase in ('pr', 'armed'):

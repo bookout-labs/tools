@@ -480,6 +480,10 @@ class HumanPrompt(Contract):
         assert self.revision is not None
         return "foreman answer " + "-".join(self.revision[i:i + 8] for i in range(0, len(self.revision), 8))
 
+    @property
+    def reply(self) -> str:
+        return f"Reply on the issue under the configured GitHub identity. Start with {self.answer_marker} and put the answer on the next line."
+
 
 class SettledRuling(Contract):
     id: TrimmedText

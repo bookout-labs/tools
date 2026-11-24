@@ -35,7 +35,7 @@ class StageRecoveryTest(unittest.TestCase):
         self.assertEqual(self.github.parents, {(REPO, 101): 8, (REPO, 102): 8})
         self.assertEqual(self.github.dependencies, {102: [101]})
         # Every child carries Ready, and admission holds the blocked one until its prerequisite merges.
-        self.assertEqual(self.github.label_calls, [(REPO, 101, "Ready"), (REPO, 102, "Ready")])
+        self.assertEqual(self.github.release_labels(), [(REPO, 101, ["Ready"], []), (REPO, 102, ["Ready"], [])])
 
     def test_crash_around_each_child_write_replays_twice_without_a_paid_call(self):
         for operation in ("create_issue", "add_sub_issue", "add_blocker"):
@@ -103,7 +103,7 @@ class StageRecoveryTest(unittest.TestCase):
                 self.assertEqual(len(self.calls), paid)
                 self.assertEqual(len(self.github.created), created)
                 self.assertEqual(self.github.dependencies, {})
-                self.assertEqual(self.github.label_calls, [])
+                self.assertEqual(self.github.release_labels(), [])
 
 
 if __name__ == "__main__":

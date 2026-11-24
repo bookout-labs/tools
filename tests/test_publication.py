@@ -16,7 +16,7 @@ from foreman.config import load_config
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.delivery import LiveRun
 from foreman.redaction import redact
-from foreman.github import LiveForge
+from foreman.github import BOT_LOGIN, LiveForge
 from foreman.runner import run_live_delivery
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
 from skill_fixture import fixture_pin
@@ -60,6 +60,8 @@ class PublicationFixture(unittest.TestCase):
         self.created = []
         self.published_heads = []
         self.comments = []
+        self.labels = ["slice", "Ready"]
+        self.status: str | None = None  # Foreman's status comment on the issue.
         self.pr_body = "Closes #8"
         self.pr_view_error = ""
         self.create_error = False
@@ -97,9 +99,23 @@ class PublicationFixture(unittest.TestCase):
             case ["api", "repos/Example/Engine/issues/8/dependencies/blocked_by"]:
                 response = [[]]
             case ["api", "repos/Example/Engine/issues/8/comments?per_page=100"]:
-                response = [[{"user": {"login": "fixture-owner"}, "body": body} for body in self.comments]]
+                response = [[*({"user": {"login": "fixture-owner"}, "body": body} for body in self.comments),
+                             *([{"id": 1, "user": {"login": BOT_LOGIN}, "body": self.status}] if self.status else [])]]
+            case ["api", "repos/Example/Engine/issues/8/comments" | "repos/Example/Engine/issues/comments/1"]:
+                self.status = next(arg.removeprefix("body=") for arg in command if arg.startswith("body="))
+                response = {}
+            case ["api", url] if url.startswith("repos/Example/Engine/labels"):
+                response = {}
+            case ["issue", "edit"]:
+                for flag, names in zip(command, command[1:]):
+                    if flag == "--remove-label":
+                        self.labels = [label for label in self.labels if label not in names.split(",")]
+                    elif flag == "--add-label":
+                        self.labels += [label for label in names.split(",") if label not in self.labels]
+                response = {}
             case ["api", "repos/Example/Engine/issues/8"]:
-                response = {"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}", "title": self.slice["title"], "body": slice_body(self.slice), "labels": [{"name": "slice"}, {"name": "Ready"}]}
+                response = {"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}", "title": self.slice["title"], "body": slice_body(self.slice),
+                            "labels": [{"name": label} for label in self.labels]}
             case ["pr", "create"]:
                 self.assertEqual(command[3:], [
                     "--repo", REPO, "--base", self.base, "--head", self.branch,

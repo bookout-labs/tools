@@ -18,7 +18,7 @@ from foreman.cli import main
 from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.github import Forge, ForgeError, LiveForge
-from foreman.runner import run_live_delivery
+from foreman.runner import run_live_delivery, saved_workspace
 from foreman.skill_rules import SkillMissing
 from foreman.workspace import WorkspaceError
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
@@ -39,6 +39,8 @@ class LiveWatchTest(unittest.TestCase):
         self.flags = ['run', 'delivery', '--repo', 'Example/Engine', '--issue', '8', '--check', 'exit 0']
 
     def invoke(self, **kwargs):
+        if saved_workspace(self.checkpoint, 'example/engine#8') is None:
+            self.fake.ready_again(8)  # A fresh run starts from Ready.
         return run_live_delivery(repo='Example/Engine', issue=8, check='exit 0',
                                  checkpoint=self.checkpoint, run=self.run, **({'dispatcher': lambda *args: Outcome('failed', detail='bad output', usage=SCRIPTED_USAGE)} | kwargs))
 
@@ -84,7 +86,8 @@ class LiveWatchTest(unittest.TestCase):
         self.assertIn('File to change: src/foreman/skill_rules.py', self.fake.created[0][1])
         self.assertEqual(self.invoke(), first)
         missing.assert_called_once()
-        self.forge.load_issue.assert_not_called()
+        # The halt comes before triage. Only the status mirror reads the issue, once per invocation.
+        self.assertEqual([call.args for call in self.forge.load_issue.call_args_list], [('Example/Engine', 8)] * 2)
         self.forge.create_issue.assert_called_once()
 
     def test_resumed_git_failure_adds_one_comment_per_new_halt(self):
@@ -111,6 +114,7 @@ class LiveWatchTest(unittest.TestCase):
             self.checkpoint = self.root / f'{target is None}.sqlite3'
             self.forge.open_issues.return_value = []
             flags = self.flags + (['--watch-repo', target] if target else [])
+            self.fake.ready_again(8)
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(main(flags, checkpoint=self.checkpoint, live_run=self.run, worker_runner=lambda *args: subprocess.CompletedProcess([], 0, 'invalid', '')), 1)
             self.assertEqual(self.forge.create_issue.call_args.args[0], target or 'bookout-labs/tools')
@@ -162,9 +166,10 @@ class LiveWatchTest(unittest.TestCase):
         self.assertGreater(len(again['attempts']), len(paused['attempts']))
         self.assertEqual([attempt['stage'] for attempt in again['attempts']].count('triage'), 1)
         reads = [call.args[-1] for call in self.forge.load_issue.call_args_list]
+        # The status mirror reads the issue's labels at each admitted stage start and after each invocation.
         # Resuming the quota wait re-enters spec's check step: the runner rereads the issue identity,
         # and validate's checkpointed result stands, so the blocker is not read again.
-        self.assertEqual(reads, [8, 8, number, 8])
+        self.assertEqual(reads, [8, 8, 8, 8, number, 8, 8, 8])
         self.assertEqual({attempt['stage'] for attempt in again['attempts']}, {'triage', 'spec_check'})
 
     def test_skill_failure_preserves_resumable_checkpoints(self):
@@ -198,7 +203,9 @@ class LiveWatchTest(unittest.TestCase):
         def gh(args, **kwargs):
             endpoint = args[2]
             fields = dict(arg.split('=', 1) for arg in args if '=' in arg and not arg.startswith('repos/'))
-            if endpoint == 'repos/Example/Engine/issues/8':
+            if args[1] == 'issue' or endpoint.startswith(('repos/Example/Engine/labels', 'repos/Example/Engine/issues/8/comments')):
+                result = [[]] if '?' in endpoint else {}  # Foreman's status mirror on the run's own issue.
+            elif endpoint == 'repos/Example/Engine/issues/8':
                 result = {'number': 8, 'repository_url': 'https://api.github.com/repos/Example/Engine', 'title': 'Issue', 'body': self.fake.body, 'labels': [{'name': 'slice'}, {'name': 'Ready'}]}
             elif args[1] == 'repo':
                 result = {'defaultBranchRef': {'name': 'main'}}

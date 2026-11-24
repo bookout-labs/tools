@@ -86,7 +86,7 @@ Before arming, Foreman reads the target repository's GitHub Actions variable `FO
 
 If the merge command times out, Foreman checks the same pull request at the verified SHA. An open pull request with a squash auto-merge request or a merged pull request confirms the result. A failed merge check or unconfirmed command pauses the run as `merge_not_armed` and records the reason. Resolve it and rerun the same command to retry. If HEAD moved, run `git reset --keep <verified-sha>` on the PR branch before rerunning. New commits need a new run. A dry run prints `merge skipped (dry run)` with the command template and ends `done merge_pending`, where a live run waits for GitHub.
 
-The merge stage waits on GitHub, not on a worker. Pending checks pause the run as `merge_pending`; rerunning the same command restarts the merge stage, reads readiness once and repeats no worker call. Red checks, a conflict or a merge-queue rejection send GitHub's evidence back to implement as a repair, which is reviewed again before it is armed. A base that moved before arming gets a fresh review. A head that moved after arming is repaired when it descends from the checked head, and otherwise a person is asked. Only GitHub's confirmed merge of the reviewed head ends the run as `merged`. A merge of any other head ends as `merged_unreviewed`, with no credit or release, and files a watch issue. Foreman then adds the `Ready` label to each sibling issue that this one blocked and that triage would now admit: no blocker in any repository is open, and every planned blocker merged. A pull request closed without merge ends as `closed`.
+The merge stage waits on GitHub, not on a worker. Pending checks pause the run as `merge_pending`; rerunning the same command restarts the merge stage, reads readiness once and repeats no worker call. Red checks, a conflict or a merge-queue rejection send GitHub's evidence back to implement as a repair, which is reviewed again before it is armed. A base that moved before arming gets a fresh review. A head that moved after arming is repaired when it descends from the checked head, and otherwise a person is asked. Only GitHub's confirmed merge of the reviewed head ends the run as `merged`. A merge of any other head ends as `merged_unreviewed`, with no credit or release, and files a watch issue. The run then names each open issue this one blocked, in any repository, as a `start` line, and admission decides each one. A pull request closed without merge ends as `closed`.
 
 Stage prompts live in `src/foreman/stages/`. The graph selects worker methods from the rule table and validated delivery state.
 
@@ -96,7 +96,7 @@ Triage admits the issue and classifies it. A decided change that fits in one pul
 
 A ready parent spec lists the seams each slice builds and uses. Foreman checks existing seam paths in the workspace and orders the slices so builders come first. A cycle, dangling seam, duplicate builder, or seam marked existing that a slice also builds sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children. Single-slice parents skip ordering.
 
-Foreman files the checked plan as child issues in dependency order and stops the parent as `children_filed`. Each child issue carries a marker for its parent and title, a fenced JSON record of its slice and the parent's work classification, a sub-issue link to the parent, and native GitHub blocked-by links for its dependencies. Children are created with only the `slice` label. Once every child and link is confirmed, Foreman adds the `Ready` label to the children with no unmerged blocker. After a crash or a failed write, rerunning the parent reads GitHub by marker first and writes only what is missing. Duplicate markers, a child with a different body or parent, or a write that GitHub doesn't show stop the parent as `publication_unreconciled`. A finished parent files nothing more, so add the `Ready` label to a dependent slice by hand after its blockers merge. A live slice run stops as `missing_slice` if the record is missing or invalid. Admission stops it as `blocked` while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request.
+Foreman files the checked plan as child issues in dependency order and stops the parent as `children_filed`. Each child issue carries a marker for its parent and title, a fenced JSON record of its slice and the parent's work classification, a sub-issue link to the parent, and native GitHub blocked-by links for its dependencies. Children are created with only the `slice` label. Once every child and link is confirmed, Foreman adds the `Ready` label to every child that shows no run label yet and names each child as a `start` line. Admission keeps a child unadmitted while its blockers are open. After a crash or a failed write, rerunning the parent reads GitHub by marker first and writes only what is missing. Duplicate markers, a child with a different body or parent, or a write that GitHub doesn't show stop the parent as `publication_unreconciled`. A live slice run stops as `missing_slice` if the record is missing or invalid. Admission stops it as `blocked` while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request.
 
 ```json
 {
@@ -158,6 +158,23 @@ foreman start --repo Example/Engine --issue 7
 - A missing check, a malformed value or an unreadable variable list stops with exit 1 before any run. The checkpoint pins the settings when the run starts.
 - The run works in its own checkout, not the current directory. Each repository has one shared clone at `$XDG_STATE_HOME/foreman/checkouts/<owner>/<name>`. Admission adds the issue's worktree at `$XDG_STATE_HOME/foreman/runs/<owner>/<name>/<issue>`, detached at the pinned base, so an issue that isn't admitted gets no checkout. A finished run removes a clean worktree. A halted run keeps it as evidence.
 - Resume with `foreman run --repo <owner>/<name> --issue <n> --answer ...` from any directory. It uses the issue's checkout and the saved checks, so `--check` is needed only for a new run.
+
+### What the issue shows
+
+Foreman mirrors each admitted run onto its issue with one run label and one status comment, like Warp's progress in the originating issue ([GitHub integration](https://docs.warp.dev/factories/integrations/github/)). The run's checkpoint decides. A label never grants authority, and a human label change is corrected by the next write.
+
+| Run | Label | Status comment |
+|---|---|---|
+| Unadmitted (`blocked`) | `Ready` stays | none |
+| Halted before admission, or a missing setting | `Ready` stays | the reason |
+| A stage runs, or waits for worker capacity or the merge | `Doing` | the stage and its wait |
+| `needs_human` | `Needs answer` | the question and its `foreman answer` line |
+| A finished outcome or a halt | `Done` | the outcome with its pull request, verified head, merge commit and released issues, or the halt with its detail and watch issue |
+
+- The status comment ends with `<!-- foreman status -->`. Foreman edits its own marked comment, only when the text changed, and ignores a human comment that quotes the marker.
+- Foreman removes the other run labels, adds the target label only when it is missing and keeps every other label. It creates a missing label before adding it and never changes an existing label's color.
+- A replay of a finished run writes nothing, and a crash between the label and the comment converges on the next invocation. A failed write is logged and never changes the run.
+- `foreman accept` ignores deliveries sent by Foreman's App, like Warp's default of skipping bot events ([triggers](https://docs.warp.dev/factories/automation-triggers/)), so a child that Spec labels `Ready` starts once, from its `start` line.
 
 Promptfoo runs the same contract without a model:
 

@@ -117,11 +117,11 @@ class SmokeForgeTest(unittest.TestCase):
         with self.transport([{}, {'state': 'closed'}, {'state': 'closed'}] * 2) as run:
             forge = LiveForge()
             for _ in range(2):
-                forge.ensure_smoke_label(REPO)
+                forge.ensure_label(REPO, "smoke", "ededed")
                 forge.close_issue(REPO, 1)
                 forge.close_pull_request(REPO, 2)
         self.assert_commands(run, [
-            ['gh', 'label', 'create', 'smoke', '--repo', REPO, '--color', 'ededed', '--force'],
+            ['gh', 'api', f'repos/{REPO}/labels/smoke'],
             ['gh', 'api', f'repos/{REPO}/issues/1', '--method', 'PATCH', '-f', 'state=closed'],
             ['gh', 'api', f'repos/{REPO}/pulls/2', '--method', 'PATCH', '-f', 'state=closed']] * 2)
 
@@ -156,8 +156,8 @@ class SmokeForgeTest(unittest.TestCase):
                 getattr(LiveForge(), method)(REPO, 1)
 
     def test_transport_failures_surface_for_every_operation(self):
-        for method in ('ensure_smoke_label', 'close_issue', 'close_pull_request', 'smoke_issues', 'smoke_pull_requests'):
-            args = [] if method.startswith(('ensure', 'smoke')) else [1]
+        for method in ('ensure_label', 'close_issue', 'close_pull_request', 'smoke_issues', 'smoke_pull_requests'):
+            args = ["smoke", "ededed"] if method == 'ensure_label' else [] if method.startswith('smoke') else [1]
             for env in (None, {'GH_TOKEN': 'app-token'}):
                 for error, expected in ((OSError('offline'), CommandFailed),
                                         (subprocess.TimeoutExpired('gh', 30), CommandTimedOut),

@@ -10,7 +10,7 @@ from foreman.adapters import Outcome
 from foreman.delivery import LiveRun
 from foreman.dry_run import CLEAR, SCRIPTED_USAGE, ScriptHandler
 from foreman.github import IssueBlocker
-from foreman.runner import AnswerError, run_live_delivery
+from foreman.runner import AnswerError, issue_thread, run_live_delivery, saved_workspace
 from foreman.skill_rules import git
 from foreman.stage_output import SpecCandidate, StoredSlice
 from foreman.steps import spec as spec_step
@@ -84,6 +84,8 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                 self.workspace.current = type(self.workspace.current)(self.base, False, self.workspace.current.branch)
             return self.script(stage, model, state, instruction)
 
+        if saved_workspace(self.checkpoint, issue_thread(TARGET, 8)) is None:
+            self.forge.ready_again(8)  # A fresh run starts from Ready.
         return run_live_delivery(repo=TARGET, issue=8, check="exit 0", dispatcher=dispatch,
             run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"),
             checkpoint=self.checkpoint, answer=answer)
