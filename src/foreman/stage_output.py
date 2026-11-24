@@ -542,7 +542,6 @@ class PlanState(BaseModel, frozen=True, extra="forbid"):
     spec_rejection: SpecRejection | None = None
     rejected_revisions: list[str] = Field(default_factory=list[str])
     spec_history: SpecHistoryRecord = Field(default_factory=SpecHistoryRecord)
-    human_approval: str | None = None
     slices: list[SliceRecord] = Field(default_factory=list[SliceRecord])
     slice: SliceRecord | None = None
     issue_kind: Literal["parent", "slice"] | None = None
@@ -700,7 +699,7 @@ class SpecOutput(StageOutput):
             f"Checked paths: {', '.join(item.checked_paths) or '(none)'}" for item in self.questions
         )
         current = plan.model_copy(update={"spec": self.spec, "spec_gate": self.spec_gate, "spec_rejection": None,
-            "slices": slices, "spec_candidate": None, "human_approval": None})
+            "slices": slices, "spec_candidate": None})
         return {"plan": current, "human_question": question}
 
 

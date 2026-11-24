@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from foreman.adapters import Outcome, Usage
@@ -156,6 +157,11 @@ class DryRun:
     def pull_request_for(self, repo: str, branch: str) -> PublishedPullRequest | None:
         return self.pull_request
 
+    def close_pull_request(self, repo: str, number: int, comment: str) -> None:
+        self.commands.append(["gh", "pr", "close", str(number), "--repo", repo, "--comment", comment])
+        if self.pull_request is not None:
+            self.pull_request = self.pull_request.model_copy(update={"state": "CLOSED"})
+
     def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
         return {"head": head or self.tree(None), "merge_base": merge_base or "<base>", "lines": 0}
 
@@ -236,6 +242,9 @@ class DryRun:
 
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]:
         return list(self.comments)
+
+    def ready_labeled_at(self, repo: str, number: int) -> datetime | None:
+        return None  # The dry run's issue has no label history, so every stop on it counts.
 
     def comment_issue(self, repo: str, number: int, body: str, *, marker: str) -> None:
         body = marked(body, marker)

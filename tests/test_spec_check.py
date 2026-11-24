@@ -1,10 +1,14 @@
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from foreman.dispatch import InvalidOutput
+from foreman.github import IssueComment
 from foreman.spec_check import AcceptedSpecCheck, SpecHistory, SpecRound, accept
 from foreman.stage_output import PlanState, SpecAuthor, SpecCandidate, SpecCheckOutput, parse_output
+from foreman.state import RunState
+from foreman.steps import StageRun, spec
 from test_spec_candidate import SLICE
 
 
@@ -24,6 +28,26 @@ def candidate(**changes):
 class SpecCheckTests(unittest.TestCase):
     def first(self):
         return accept(SpecHistory(), output([FINDING]), candidate())
+
+    def test_a_cleared_plan_proceeds_without_the_human_and_a_stop_ends_the_run_first(self):
+        """SC5: the model's clearance alone moves a validated plan on. The human's stop, read at the spec entry, ends the run
+        cancelled before any check, build or filing."""
+        target = {"repo": "a/b", "issue": 8, "base": "a" * 40}
+        checked = candidate(target=target)
+        plan = checked.update(PlanState(triage="supplied_slice"), single=True)
+        state = {"run": RunState(repo="a/b", issue=8, base_sha="a" * 40), "path": [],
+                 "plan": plan.model_copy(update={"spec_history": {"rounds": accept(SpecHistory(), output(), checked).history.rounds}})}
+        for comments, stop in (([], None), (["foreman stop"], "cancelled")):
+            with self.subTest(stop=stop):
+                forge = Mock(**{"ready_labeled_at.return_value": None, "issue_comment_records.return_value": [
+                    IssueComment.model_validate({"user": {"login": "fixture-owner"}, "body": body}) for body in comments]})
+                run = StageRun(workspace=Mock(), forge=forge, check_log=None, max_rounds=3, human_login="fixture-owner",
+                               dispatch=Mock(side_effect=AssertionError("no worker call")), apply=Mock())
+                ended = spec.compile_stage(run).invoke(state)
+                self.assertEqual((ended.get("stop"), ended.get("halt"), ended.get("path")), (stop, None, ["spec"] if stop else []))
+                self.assertTrue(SpecHistory.cleared(ended["plan"]))
+                self.assertEqual({call[0] for call in forge.method_calls}, {"issue_comment_records", *(["ready_labeled_at"] if stop else [])})
+                self.assertNotIn("human_approval", PlanState.model_fields)
 
     def test_native_fixture_and_contradictions(self):
         raw = json.loads(Path("tests/fixtures/spec-check.json").read_text())

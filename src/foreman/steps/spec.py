@@ -9,7 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.config import family
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, human_comments, render_slice_body, run_label
+from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, render_slice_body, run_label
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
@@ -17,7 +17,7 @@ from foreman.stage_output import (
 )
 from foreman.stages import clean_slices, reject_candidate
 from foreman.state import DeliveryState, DeliveryUpdate
-from foreman.steps import StageInput, StageRun
+from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkspaceError
 
 HALTS = [Halt.invalid_output, Halt.spec_cap, Halt.git_failed, Halt.publication_unreconciled]
@@ -25,6 +25,8 @@ Observed = TypeVar("Observed")
 
 
 def draft(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    if (stop := human_stop(state, run, "spec")).get("stop"):
+        return stop
     plan = state["plan"]
     if plan.spec_candidate is not None and plan.spec_candidate["revision"] not in plan.rejected_revisions:
         # A resumed stage keeps the candidate it already drafted.
@@ -35,6 +37,8 @@ def draft(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 
 def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    if (stop := human_stop(state, run, "spec")).get("stop"):
+        return stop
     plan = state["plan"]
     if plan.spec_candidate is not None or plan.spec_rejection:
         # Only a new draft replaces the validated candidate or repairs a rejected one.
@@ -108,20 +112,9 @@ def check(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         plan = update.get("plan", plan)
         if update.get("halt") or update.get("stop") or not SpecHistory.cleared(plan):
             return update
-    target = state["run"]
-    assert plan.spec_candidate is not None and target.issue is not None
-    if plan.spec_candidate.get("target") != target.target():
+    assert plan.spec_candidate is not None
+    if plan.spec_candidate.get("target") != state["run"].target():
         return {**update, **stopped(Halt.invalid_output, "The checker verdict does not clear the current repository-bound plan.", "spec")}
-    revision = plan.spec_candidate["revision"]
-    try:
-        # The human's recorded stop prevents any build or filing. Their approval is optional and recorded.
-        for ruling in human_comments(run.forge, run.human_login, target.repo, target.issue):
-            if ruling == f"foreman stop {revision}":
-                return {**update, "stop": "cancelled"}
-            if ruling in {f"foreman approve {revision}", f"we're good {revision}"}:
-                plan = plan.model_copy(update={"human_approval": revision})
-    except ForgeError as exc:
-        return {**update, **stopped(Halt.git_failed, str(exc), "spec")}
     return {**update, "plan": plan}
 
 
@@ -197,6 +190,8 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
     def after_validate(state: DeliveryState) -> str:
         if state.get("halt"):
             return "foreign_repository" if state.get("halt_detail", "").startswith("foreign_repository") else "exhausted"
+        if state.get("stop") == "cancelled":
+            return "cancelled"
         return "valid" if state["plan"].spec_candidate is not None else "repair"
 
     def after_check(state: DeliveryState) -> str:
@@ -217,7 +212,7 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
             .add_conditional_edges("draft", lambda state: "halted" if state.get("halt") else ended(state) or "ready",
                                    {"ready": "validate", "cancelled": END, "halted": END})
             .add_conditional_edges("validate", after_validate,
-                                   {"foreign_repository": END, "exhausted": END, "repair": "draft", "valid": "check"})
+                                   {"foreign_repository": END, "exhausted": END, "cancelled": END, "repair": "draft", "valid": "check"})
             .add_conditional_edges("check", after_check, {"exhausted": END, "changes": "draft", "cancelled": END,
                                                           "validated_single": END, "validated_parent": "file_children", "halted": END})
             .add_conditional_edges("file_children", lambda state: "halted" if state.get("halt") else "children_filed",

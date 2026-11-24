@@ -190,7 +190,7 @@ class RunSettings:
     preflight: str
     max_tokens: int | None
     max_budget_usd: BudgetUsd | None
-    # Answers, approvals and stop requests count only from this login, so a run without one must not start.
+    # Answers and stop requests count only from this login, so a run without one must not start.
     human_login: str
 
     @classmethod
@@ -241,7 +241,7 @@ def main(
     run.add_argument("--request")
     run.add_argument("--check", default="")
     run.add_argument("--human-login", default=os.environ.get("FOREMAN_HUMAN_LOGIN", ""),
-                     help="the GitHub login whose issue comments answer, approve or stop the run (default: FOREMAN_HUMAN_LOGIN)")
+                     help="the GitHub login whose issue comments answer or stop the run (default: FOREMAN_HUMAN_LOGIN)")
     run.add_argument("--preflight", default="")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
@@ -322,7 +322,7 @@ def main(
 
     def live(repo: str, issue: int, settings: RunSettings, workspace: LiveWorkspace, *,
              answer: str | None = None, request: str | None = None) -> int:
-        target = live_run or LiveRun(LiveForge(), workspace)
+        target = live_run or LiveRun(LiveForge(), workspace, settings.human_login)
         target = replace(target, check_log=_write_check_log, human_login=settings.human_login)
         dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
 

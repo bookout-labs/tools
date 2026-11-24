@@ -9,7 +9,7 @@ from foreman.github import READY_LABEL, ForgeError, unmet_prerequisites
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import load_stored_slice
 from foreman.state import DeliveryState, DeliveryUpdate
-from foreman.steps import StageInput, StageRun
+from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkspaceError
 
 HALTS = [Halt.missing_slice, Halt.skill_missing, Halt.invalid_output, Halt.git_failed]
@@ -17,6 +17,8 @@ ROUTES = ("question", "plan", "supplied_slice", "cancelled", "halted")
 
 
 def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    if (stop := human_stop(state, run, "admit")).get("stop"):
+        return stop
     target = state["run"]
     if target.base_sha:
         # A resumed stage keeps the identity and base it admitted.
@@ -80,7 +82,7 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
             .add_node("admit", run.bind(admit))
             .add_node("route", run.bind(route))
             .add_edge(START, "admit")
-            .add_conditional_edges("admit", lambda state: "halted" if outcome(state) == "halted" else "admitted",
-                                   {"admitted": "route", "halted": END})
+            .add_conditional_edges("admit", lambda state: ended if (ended := outcome(state)) in ("cancelled", "halted") else "admitted",
+                                   {"admitted": "route", "cancelled": END, "halted": END})
             .add_conditional_edges("route", outcome, dict.fromkeys(ROUTES, END))
             .compile().with_config({"metadata": {"contract_id": "triage", "stage_declarations": declarations}}))

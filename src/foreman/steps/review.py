@@ -11,7 +11,7 @@ from foreman.outcomes import Halt, stopped
 from foreman.review_round import history
 from foreman.stage_output import VerifyState
 from foreman.state import DeliveryState, DeliveryUpdate
-from foreman.steps import StageInput, StageRun
+from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import ReviewScope, WorktreeInspectionFailed
 
 HALTS = [Halt.review_cap, Halt.review_not_posted, Halt.git_failed, Halt.publication_unreconciled]
@@ -20,6 +20,8 @@ HEAD_MOVED = "head_moved"
 
 
 def inspect(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    if (stop := human_stop(state, run, "review")).get("stop"):
+        return stop
     review = state["review"]
     try:
         rounds = history({"rounds": review.review_findings}).rounds

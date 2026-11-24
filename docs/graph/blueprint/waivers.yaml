@@ -38,7 +38,7 @@ waivers:
     V2-7da4ee149c3d358a: "item 15: [procedure/implement] output_fields add equivalent_mutations"
     V2-7a49e4a050d4e500: "item 14: [procedure/implement] inputs add verify"
     # Item 14, Verify's verdict routes.
-    V2-ad3f469cd15dcfe7: "items 8 and 14: [verify] edge drive -> __end__ drops no_skill and adds cancelled"
+    V2-0099663fccf6c107: "item 14: [verify] edge drive -> __end__ drops no_skill"
     V2-4c2870647bf96a40: "item 14: [verify] edge post -> __end__ adds failed and unverified"
     V2-5ba3232d0348a5bf: "items 3 and 14: [verify] halts add env_unavailable and criterion_unverified"
     V2-3890aa0dee79eefc: "item 14: [halts] criterion_unverified"
@@ -76,14 +76,9 @@ waivers:
     V2-fe7b51f959c31436: "item 20: [halts] production_unconfirmed"
     V2-8cfd976895b95870: "item 20: [delivery] edge merge -> __end__ adds reverted"
     # Item 23, doctor's quick check at admission.
-    V2-72df10f616c4b9fe: "items 8 and 23: [triage] edge admit -> __end__ adds cancelled and not_ready"
+    V2-d971cbf2938d0f98: "item 23: [triage] edge admit -> __end__ adds not_ready"
     V2-7e9072f37d78ab48: "item 23: [triage] halts add not_ready"
     V2-2d1956f7583b3a2f: "item 23: [halts] not_ready"
-    # Item 8, each stage's first step reads the issue for a stop.
-    V2-522d3a72ac17e4db: "item 8: [spec] edge validate -> __end__ adds cancelled"
-    V2-13298a85d5611e31: "item 8: [implement] edge prepare -> __end__ adds cancelled"
-    V2-21e4c1d9bc1bac95: "item 8: [merge] edge arm -> report adds cancelled"
-    V2-75bd7b82a935e5c3: "item 8: [delivery] edge verify -> __end__ adds cancelled"
     # The drawn v3 prompts. Each build that ships its item copies the prompt to src/foreman/stages/.
     V2-ed3e7bd9521ae643: "items 4, 6, 7 and 20: [procedure/spec] prompt"
     V2-6320858f1b37c70b: "items 4, 6, 7, 14 and 20: [procedure/spec_check] prompt"

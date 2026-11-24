@@ -16,8 +16,9 @@ from foreman.config import load_config
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.delivery import LiveRun
 from foreman.redaction import redact
-from foreman.github import BOT_LOGIN, LiveForge
+from foreman.github import BOT_LOGIN, CLOSE_MARKER, LiveForge
 from foreman.runner import run_live_delivery
+from foreman.steps import CANCELLATION
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
 from skill_fixture import fixture_pin
 from test_runner import BRANCH, EMPTY_SLICE, slice_body
@@ -66,6 +67,8 @@ class PublicationFixture(unittest.TestCase):
         self.pr_view_error = ""
         self.create_error = False
         self.queued = False
+        self.closed = False
+        self.pr_comments: list[str] = []
         # The queue merges an armed pull request unless a test holds it.
         self.queue_merges = True
         self.fixture.enter_context(patch("foreman.github.subprocess.run", side_effect=self.subprocess))
@@ -101,6 +104,11 @@ class PublicationFixture(unittest.TestCase):
             case ["api", "repos/Example/Engine/issues/8/comments?per_page=100"]:
                 response = [[*({"user": {"login": "fixture-owner"}, "body": body} for body in self.comments),
                              *([{"id": 1, "user": {"login": BOT_LOGIN}, "body": self.status}] if self.status else [])]]
+            case ["api", "repos/Example/Engine/issues/12/comments?per_page=100"]:
+                response = [[{"id": 2, "user": {"login": BOT_LOGIN}, "body": body} for body in self.pr_comments]]
+            case ["api", "repos/Example/Engine/issues/12/comments"]:
+                self.pr_comments.append(next(arg.removeprefix("body=") for arg in command if arg.startswith("body=")))
+                response = {}
             case ["api", "repos/Example/Engine/issues/8/comments" | "repos/Example/Engine/issues/comments/1"]:
                 self.status = next(arg.removeprefix("body=") for arg in command if arg.startswith("body="))
                 response = {}
@@ -132,17 +140,23 @@ class PublicationFixture(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 1, "", self.pr_view_error)
                 if not self.created:
                     return subprocess.CompletedProcess(command, 1, "", f'no pull requests found for branch "{self.branch}"')
-                response = {"number": 12, "state": "OPEN", "headRefOid": self.remote_head(), "headRefName": self.branch,
+                response = {"number": 12, "state": "CLOSED" if self.closed else "OPEN", "headRefOid": self.remote_head(), "headRefName": self.branch,
                             "baseRefName": self.base, "baseRefOid": self.git("--git-dir", str(self.remote), "rev-parse", self.base),
                             "isCrossRepository": False, "autoMergeRequest": None, "body": self.pr_body}
+            case ["api", "graphql"] if "dequeuePullRequest" in command[4]:
+                self.queued = False
+                response = {}
             case ["api", "graphql"]:
-                response = dict(number=12, state="MERGED" if self.merged else "OPEN", headRefOid=self.remote_head(),
+                response = dict(id="PR_12", number=12, state="MERGED" if self.merged else "OPEN", headRefOid=self.remote_head(),
                     baseRefName=self.base, baseRefOid=self.git("--git-dir", str(self.remote), "rev-parse", self.base),
                     isDraft=False, autoMergeRequest=None,
                     mergeQueueEntry=dict(id="queue-12", state="QUEUED", headCommit=dict(oid=self.remote_head())) if self.queued else None)
             case ["api", "repos/Example/Engine/pulls/12/reviews"]:
                 response = ({"id": 1, "state": "COMMENTED", "commit_id": self.remote_head(), "body": "posted"}
                             if "POST" in command else [[]])
+            case ["api", "repos/Example/Engine/pulls/12"] if "PATCH" in command:
+                self.closed = True
+                response = {"state": "closed"}
             case ["api", "repos/Example/Engine/pulls/12"]:
                 response = dict(number=12, state="closed" if self.merged else "open", draft=False, mergeable=True, mergeable_state="clean",
                     merged=self.merged, merge_commit_sha="e" * 40 if self.merged else None, head=dict(sha=self.remote_head(), ref=self.branch),
@@ -445,6 +459,27 @@ class PublicationTest(PublicationFixture):
                 message = self.git("show", "-s", "--format=%B", "HEAD")
                 self.assertLessEqual(len(message.splitlines()[0]), 72)
                 self.assertTrue(message.endswith(f"Co-Authored-By: {result['models_used']['implement']} <{email}>"))
+
+    def test_a_cancel_at_the_repair_gate_closes_the_pull_request_and_keeps_its_branch(self):
+        """A cancellation after publication closes the run's open PR with one cancellation comment. The close leaves the branch,
+        with a person's commit on it (DQ2). A PR that is no longer open is left alone."""
+        for closed in (False, True):
+            with self.subTest(already_closed=closed):
+                self.reset_fixture()
+                questions = iter((None, "Which sort order should the repair keep?"))
+                paused = self.walk(reviews=["changes"], ask=lambda: next(questions))
+                self.assertEqual(paused["stop"], "needs_human")
+                parent = self.remote_head()
+                person = self.git("commit-tree", f"{parent}^{{tree}}", "-p", parent, "-m", "A person's fix")
+                self.git("push", "origin", f"{person}:{self.ref}")
+                self.closed = closed
+                marker = re.search(r"foreman answer [0-9a-f-]{71}", paused["halt_detail"])
+                assert marker is not None
+                self.comments.append(f"{marker[0]}\ncancel")
+                result = self.walk(answer="cancel")
+                self.assertEqual((result["stop"], result.get("halt")), ("cancelled", None))
+                self.assertEqual((self.closed, self.remote_head()), (True, person))
+                self.assertEqual(self.pr_comments, [] if closed else [f"{CANCELLATION}\n\n{CLOSE_MARKER}"])
 
     def test_second_attempt_adds_a_commit_to_the_same_pull_request(self):
         edits = iter(("one\n", "two\n"))

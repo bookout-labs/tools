@@ -6,9 +6,9 @@ from typing import get_args
 from unittest.mock import Mock, patch
 
 from foreman.readiness import Observation, Outcome, PullSnapshot
-from foreman.github import ForgeError, LiveForge, PullRequest
+from foreman.github import CLOSE_MARKER, CommandFailed, ForgeError, IssueComment, LiveForge, PublishedPullRequest, PullRequest
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, WorkState
-from foreman.steps import StageRun, merge
+from foreman.steps import CANCELLATION, TOO_LATE, StageRun, merge
 from test_github import PR, HEAD, BASE, BRANCH, REPO
 
 MERGE = "c" * 40
@@ -18,6 +18,20 @@ RULES = [dict(type="required_status_checks", parameters=dict(required_status_che
 
 QUEUE_RULE = dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))
 RULES.append(QUEUE_RULE)
+REVIEWED = {"run": RunState(repo=REPO, issue=8), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": [],
+            "work": WorkState(branch=BRANCH, base="main"), "dispatch_plan": {"target": {"number": 12}},
+            "review": ReviewState(review_findings=[{"reviewed_head": HEAD, "base": BASE, "findings": [], "provenance": None}],
+                                  review_receipt={"id": 1, "state": "COMMENTED", "commit_id": HEAD})}
+
+
+def published(state):
+    return PublishedPullRequest(state=state, number=12, headRefOid=HEAD, headRefName=BRANCH, baseRefName="main", baseRefOid=BASE,
+                                autoMergeRequest=None, body="Closes #8")
+
+
+def stage_run(forge):
+    return StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, human_login="fixture-owner", dispatch=None, apply=None)
+
 
 class ReadinessTest(unittest.TestCase):
     def test_every_outcome_has_one_typed_arm_route(self):
@@ -26,16 +40,14 @@ class ReadinessTest(unittest.TestCase):
                     "policy": "readiness_unavailable", "head_changed": "head_unverified", "closed": "closed_or_merged",
                     "retargeted": "merge_not_armed"}
         self.assertEqual(set(expected), set(get_args(Outcome)))
-        state = {"run": RunState(repo=REPO, issue=8), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": [],
-                 "work": WorkState(branch=BRANCH, base="main"), "dispatch_plan": {"target": {"number": 12}},
-                 "review": ReviewState(review_findings=[{"reviewed_head": HEAD, "base": BASE, "findings": [], "provenance": None}],
-                                       review_receipt={"id": 1, "state": "COMMENTED", "commit_id": HEAD})}
+        state = REVIEWED
         for outcome, route in expected.items():
             with self.subTest(outcome=outcome):
                 observed = Observation(repo=REPO, pr=PullSnapshot.model_validate({**READINESS, "merged": False}), checks=[],
                                        outcome=outcome, recovery="Synthetic.", queue_policy={"merge_method": "SQUASH"})
-                forge = Mock(**{"variables.return_value": {}, "readiness.return_value": observed, "arm_auto_merge.return_value": None})
-                run = StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, human_login="", dispatch=None, apply=None)
+                forge = Mock(**{"variables.return_value": {}, "readiness.return_value": observed, "arm_auto_merge.return_value": None,
+                                "issue_comment_records.return_value": [], "pull_request_for.return_value": published("OPEN")})
+                run = stage_run(forge)
                 with patch("foreman.steps.merge.interrupt", side_effect=LookupError("wait")):
                     try:
                         update = merge.arm(state, run)
@@ -44,6 +56,101 @@ class ReadinessTest(unittest.TestCase):
                 self.assertEqual(update.get("halt") or update["stop"], route)
                 if route != "armed":
                     forge.arm_auto_merge.assert_not_called()
+
+    def test_a_stop_cannot_undo_a_merge(self):
+        """ME9: arm reads the PR before the stop. A merged PR records the stop as too late and the run ends merged. An open,
+        queued PR leaves the queue, closes with the cancellation and ends cancelled, unless GitHub merged it before the close."""
+        stop = IssueComment.model_validate({"user": {"login": "fixture-owner"}, "body": "foreman stop\nNot needed."})
+        merged = Observation(repo=REPO, pr=PullSnapshot.model_validate({**READINESS, "state": "closed", "merged": True}), checks=[],
+                             outcome="ready", recovery="Merged.", queue_policy={"merge_method": "SQUASH"})
+        for name, reads, result in (("merged before the stop", ["MERGED"], "merged"), ("queued", ["OPEN", "CLOSED"], "cancelled"),
+                                    ("merged before the close", ["OPEN", "MERGED"], "merged")):
+            with self.subTest(name):
+                forge = Mock(**{"issue_comment_records.return_value": [stop], "readiness.return_value": merged, "blocking.return_value": [],
+                                "ready_labeled_at.return_value": None, "pull_request_for.side_effect": [published(state) for state in reads]})
+                with patch("foreman.steps.merge.interrupt", side_effect=AssertionError("A stop never waits.")):
+                    ended = merge.compile_stage(stage_run(forge)).invoke(REVIEWED)
+                self.assertEqual((ended["stop"], ended.get("halt"), ended["path"]), (result, None, ["merge"]))
+                self.assertEqual(ended.get("halt_detail"), TOO_LATE if result == "merged" else None)
+                self.assertEqual(forge.close_pull_request.call_args_list,
+                                 [] if reads == ["MERGED"] else [((REPO, 12, CANCELLATION),)])
+                forge.arm_auto_merge.assert_not_called()
+
+    def test_a_cancel_answer_after_github_merged_is_recorded_on_the_merge(self):
+        """ME9: a cancel answer at the head_unverified question cannot undo a merge. Merged first, or merged before the close
+        landed, the run goes on merged and records the cancellation as too late."""
+        merged = Observation(repo=REPO, pr=PullSnapshot.model_validate({**READINESS, "state": "closed", "merged": True}), checks=[],
+                             outcome="ready", recovery="Merged.", queue_policy={"merge_method": "SQUASH"})
+        cancelled = {**REVIEWED, "plan": PlanState(human_qa=[{"stage": "merge", "question": "Moved.", "answer": "cancel"}])}
+        for reads in (["MERGED"], ["OPEN", "MERGED"]):
+            with self.subTest(reads=reads):
+                forge = Mock(**{"readiness.return_value": merged, "pull_request_for.side_effect": [published(state) for state in reads]})
+                ended = merge.observe(cancelled, stage_run(forge))
+                self.assertEqual((ended["stop"], ended.get("halt"), ended["halt_detail"]), ("merged", None, TOO_LATE))
+                self.assertEqual(forge.close_pull_request.call_count, len(reads) - 1)
+
+    def test_github_reports_the_latest_ready_event_and_each_comment_creation(self):
+        """The stop read compares a comment's creation with the issue's latest Ready label event, both as GitHub reports them."""
+        events = [[{"event": "labeled", "created_at": "2026-11-20T10:00:00Z", "label": {"name": "Ready", "color": "0e8a16"}},
+                   {"event": "unlabeled", "created_at": "2026-11-21T08:00:00Z", "label": {"name": "Ready", "color": "0e8a16"}},
+                   {"event": "labeled", "created_at": "2026-11-21T09:00:00Z", "label": {"name": "Ready", "color": "0e8a16"}}],
+                  [{"event": "labeled", "created_at": "2026-11-22T09:00:00Z", "label": {"name": "Doing", "color": "1d76db"}},
+                   {"event": "closed", "created_at": "2026-11-23T09:00:00Z", "label": None}]]
+        for pages, latest in ((events, "2026-11-21T09:00:00+00:00"), ([[]], None)):
+            with self.subTest(latest=latest), patch.object(LiveForge, "_run_command", return_value=json.dumps(pages)) as command:
+                found = LiveForge().ready_labeled_at(REPO, 8)
+                self.assertEqual(found.isoformat() if found else None, latest)
+                self.assertEqual(command.call_args.args[1], ["gh", "api", f"repos/{REPO}/issues/8/events?per_page=100", "--paginate", "--slurp"])
+        comment = {"id": 3, "body": "foreman stop", "user": {"login": "fixture-owner"}, "created_at": "2026-11-21T09:00:01Z",
+                   "updated_at": "2026-11-24T09:00:00Z"}
+        with patch.object(LiveForge, "_run_command", return_value=json.dumps([[comment]])):
+            [record] = LiveForge().issue_comment_records(REPO, 8)
+        self.assertEqual(record.created_at and record.created_at.isoformat(), "2026-11-21T09:00:01+00:00")
+
+    def test_the_close_leaves_the_queue_comments_and_keeps_the_branch(self):
+        """The close takes a queued PR out of the merge queue, posts the cancellation once and closes the PR, leaving its branch."""
+        for queued in (True, False):
+            with self.subTest(queued=queued):
+                commands = []
+                def reply(repo, command, **kwargs):
+                    commands.append(command)
+                    if command[2] == "graphql" and "dequeuePullRequest" not in command[4]:
+                        return json.dumps({"id": "PR_12", "state": "OPEN",
+                                           "mergeQueueEntry": {"id": "queue-12", "state": "QUEUED"} if queued else None})
+                    return json.dumps([[]] if command[2].endswith("comments?per_page=100") else {"state": "closed"})
+                with patch.object(LiveForge, "_run_command", side_effect=reply):
+                    LiveForge().close_pull_request(REPO, 12, CANCELLATION)
+                dequeue = [["gh", "api", "graphql", "-f", "query=mutation($id:ID!) { dequeuePullRequest(input:{id:$id}) { clientMutationId } }",
+                            "-f", "id=PR_12"]] if queued else []
+                self.assertEqual(commands[1:], [*dequeue,
+                    ["gh", "api", f"repos/{REPO}/issues/12/comments?per_page=100", "--paginate", "--slurp"],
+                    ["gh", "api", f"repos/{REPO}/issues/12/comments", "--method", "POST", "-f", f"body={CANCELLATION}\n\n{CLOSE_MARKER}"],
+                    ["gh", "api", f"repos/{REPO}/pulls/12", "--method", "PATCH", "-f", "state=closed"]])
+                self.assertFalse([command for command in commands if "DELETE" in command or "refs/heads" in " ".join(command)])
+
+    def test_the_close_leaves_a_pull_request_that_github_merged_first(self):
+        """A PR that merged or closed before the close, or merged while it left the queue, gets no comment and no close (DQ1).
+        A dequeue that fails on a PR still open fails the close."""
+        for name, reads, dequeue_fails, raises in (("merged first", ["MERGED"], False, False), ("closed first", ["CLOSED"], False, False),
+                                                   ("merged before the dequeue", ["OPEN", "MERGED"], True, False),
+                                                   ("queue unreachable", ["OPEN", "OPEN"], True, True)):
+            with self.subTest(name):
+                commands, states = [], iter(reads)
+                def reply(repo, command, **kwargs):
+                    commands.append(command)
+                    if "dequeuePullRequest" in command[4]:
+                        if dequeue_fails:
+                            raise CommandFailed("gh: Pull request is not in the merge queue.", status=1)
+                        return "{}"
+                    return json.dumps({"id": "PR_12", "state": next(states), "mergeQueueEntry": {"id": "queue-12", "state": "QUEUED"}})
+                with patch.object(LiveForge, "_run_command", side_effect=reply):
+                    if raises:
+                        with self.assertRaises(CommandFailed):
+                            LiveForge().close_pull_request(REPO, 12, CANCELLATION)
+                    else:
+                        LiveForge().close_pull_request(REPO, 12, CANCELLATION)
+                self.assertEqual(next(states, None), None)
+                self.assertFalse([command for command in commands if "comments" in command[2] or "PATCH" in command])
 
     def observe(self, *, pr=None, runs=None, rules=None, statuses=None, parents=None, after=None, legacy=None, tip=BASE):
         pr = pr or READINESS

@@ -16,7 +16,7 @@ from foreman.outcomes import Halt, halted, stopped
 from foreman.redaction import redact
 from foreman.stage_output import ReviewState
 from foreman.state import DeliveryState, DeliveryUpdate
-from foreman.steps import StageInput, StageRun
+from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import ImplementationRejected, WorkState, WorkspaceError
 
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.verify_cap,
@@ -27,6 +27,8 @@ STEPS = ("prepare", "implement", "check", "commit", "publish")
 
 
 def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    if (stop := human_stop(state, run, "prepare")).get("stop"):
+        return stop
     work, checks, target = state.get("work", WorkState()), state["checks"], state["run"]
     workspace = run.workspace
     try:
@@ -293,6 +295,8 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
                 return "checked" if state["checks"].verify == "pass" else "check_failed"
             if step == "publish":
                 return "published" if state.get("work", WorkState()).published_head else "owned_head_moved"
+            if step == "prepare" and state.get("stop") == "cancelled":
+                return "cancelled"
             return {"prepare": "prepared", "commit": "committed"}[step]
         return route
 
@@ -304,7 +308,7 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
             .add_node("commit", run.bind(commit))
             .add_node("publish", run.bind(publish))
             .add_edge(START, "prepare")
-            .add_conditional_edges("prepare", after("prepare"), {"prepared": "edit", "halted": END})
+            .add_conditional_edges("prepare", after("prepare"), {"prepared": "edit", "cancelled": END, "halted": END})
             .add_conditional_edges("edit", after("edit"), {"checked": "commit", "check_failed": "edit", "no_change": END,
                                                            "cancelled": END, "halted": END})
             .add_conditional_edges("commit", after("commit"), {"committed": "publish", "halted": END})

@@ -38,7 +38,7 @@ class TokenCapTests(unittest.TestCase):
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
                     saver.serde = checkpoint_serializer()
                     graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
-                    graph.update_state(invocation, {"review": ReviewState(), "run": RunState(repo="a/b", request="x", token_cap=100, base_sha=DryRun.head), "checks": ChecksState(check=""), "path": [],
+                    graph.update_state(invocation, {"review": ReviewState(), "run": RunState(repo="a/b", issue=8, request="x", token_cap=100, base_sha=DryRun.head), "checks": ChecksState(check=""), "path": [],
                         "plan": PlanState(issue_kind="parent"), "attempts": [{"stage": "spec",
                         "model": "prior", "commit": "a", "methods": [], "outcome": "ran",
                         "usage": {"input": prior, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}, as_node="__start__")
@@ -71,7 +71,7 @@ class TokenCapTests(unittest.TestCase):
             self.assertIsNone(result["attempts"][0]["usage"])
             self.assertEqual(run_exit_code(result), 1)
             graph = compile_delivery(unknown, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"))
-            saved = {"review": ReviewState(), **result, "halt": None, "stop": "", "path": [], "run": RunState(token_cap=1, base_sha=DryRun.head), "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
+            saved = {"review": ReviewState(), **result, "halt": None, "stop": "", "path": [], "run": RunState(issue=8, token_cap=1, base_sha=DryRun.head), "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
             stopped = graph.invoke(saved)
             self.assertEqual(stopped["stop"], "budget_exceeded")
             self.assertEqual(calls, ["triage"])

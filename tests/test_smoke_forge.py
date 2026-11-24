@@ -60,6 +60,24 @@ def failed(status):
     return subprocess.CompletedProcess([], 1, '', f'gh: failed (HTTP {status})')
 
 
+CLEANUP = 'Smoke cleanup.'
+QUEUE_READ = '''query($owner:String!, $name:String!, $number:Int!) {
+ repository(owner:$owner, name:$name) { pullRequest(number:$number) { id state mergeQueueEntry { id state } } }
+}'''
+
+
+def closing(method, number):
+    """A pull request close reads its queue entry and posts its one comment before the close the two methods share."""
+    if method == 'close_issue':
+        return [], [], [number]
+    comments = f'repos/{REPO}/issues/{number}/comments'
+    return ([{'id': f'PR_{number}', 'state': 'OPEN', 'mergeQueueEntry': None}, [[]], {}],
+            [['gh', 'api', 'graphql', '-f', f'query={QUEUE_READ}', '-f', 'owner=bookout-labs', '-f', 'name=foreman-smoke',
+              '-F', f'number={number}', '--jq', '.data.repository.pullRequest'],
+             ['gh', 'api', f'{comments}?per_page=100', '--paginate', '--slurp'],
+             ['gh', 'api', comments, '--method', 'POST', '-f', f'body={CLEANUP}\n\n<!-- foreman close -->']], [number, CLEANUP])
+
+
 class SmokeForgeTest(unittest.TestCase):
     def setUp(self):
         self.environment = patch('foreman.github.credentials.environment', return_value=None)
@@ -114,50 +132,56 @@ class SmokeForgeTest(unittest.TestCase):
         self.assert_commands(run, [graphql(OUTER), graphql(OUTER, cursor='outer'), graphql(INNER, True, 'next')])
 
     def test_label_and_close_repeat_with_exact_commands(self):
-        with self.transport([{}, {'state': 'closed'}, {'state': 'closed'}] * 2) as run:
+        outputs, commands, _ = closing('close_pull_request', 2)
+        posted = [[{'id': 9, 'user': {'login': 'bookout-labs-foreman[bot]'}, 'body': f'{CLEANUP}\n\n<!-- foreman close -->'}]]
+        with self.transport([{}, {'state': 'closed'}, *outputs, {'state': 'closed'},
+                             {}, {'state': 'closed'}, outputs[0], posted, {'state': 'closed'}]) as run:
             forge = LiveForge()
             for _ in range(2):
                 forge.ensure_label(REPO, "smoke", "ededed")
                 forge.close_issue(REPO, 1)
-                forge.close_pull_request(REPO, 2)
-        self.assert_commands(run, [
-            ['gh', 'api', f'repos/{REPO}/labels/smoke'],
+                forge.close_pull_request(REPO, 2, CLEANUP)
+        # The repeated close finds its comment, so it posts none.
+        label, issue_close, pull_close = (['gh', 'api', f'repos/{REPO}/labels/smoke'],
             ['gh', 'api', f'repos/{REPO}/issues/1', '--method', 'PATCH', '-f', 'state=closed'],
-            ['gh', 'api', f'repos/{REPO}/pulls/2', '--method', 'PATCH', '-f', 'state=closed']] * 2)
+            ['gh', 'api', f'repos/{REPO}/pulls/2', '--method', 'PATCH', '-f', 'state=closed'])
+        self.assert_commands(run, [label, issue_close, *commands, pull_close, label, issue_close, *commands[:2], pull_close])
 
     def test_close_reconciles_closed_merged_missing_and_timeout(self):
         for method, kind in (('close_issue', 'issues'), ('close_pull_request', 'pulls')):
             endpoint = f'repos/{REPO}/{kind}/1'
+            prefix, before, args = closing(method, 1)
             for env in (None, {'GH_TOKEN': 'app-token'}):
                 for error in (failed(404), failed(422), subprocess.TimeoutExpired('gh', 30)):
                     for missing in (False, True):
                         with self.subTest(method=method, env=env, error=error, missing=missing), \
                              patch('foreman.github.credentials.environment', return_value=env), \
-                             self.transport([error, failed(404), {}] if missing else [error, {'state': 'closed', 'merged': True}]) as run:
-                            self.assertIsNone(getattr(LiveForge(), method)(REPO, 1))
-                        commands = [['gh', 'api', endpoint, '--method', 'PATCH', '-f', 'state=closed'], ['gh', 'api', endpoint]]
+                             self.transport([*prefix, error, failed(404), {}] if missing else [*prefix, error, {'state': 'closed', 'merged': True}]) as run:
+                            self.assertIsNone(getattr(LiveForge(), method)(REPO, *args))
+                        commands = [*before, ['gh', 'api', endpoint, '--method', 'PATCH', '-f', 'state=closed'], ['gh', 'api', endpoint]]
                         self.assert_commands(run, commands + ([['gh', 'api', f'repos/{REPO}']] if missing else []))
 
     def test_close_fails_closed_on_open_state_or_masked_repository(self):
         for method in ('close_issue', 'close_pull_request'):
+            prefix, _, args = closing(method, 1)
             for env in (None, {'GH_TOKEN': 'app-token'}):
                 for outputs in ([failed(422), {'state': 'open'}], [failed(404), failed(404), failed(403)],
                                 [failed(404), failed(404), subprocess.TimeoutExpired('gh', 30)],
                                 [failed(404), failed(403)], [failed(404), {'state': 'bad'}]):
                     with self.subTest(method=method, outputs=outputs, env=env), \
-                         patch('foreman.github.credentials.environment', return_value=env), self.transport(outputs):
+                         patch('foreman.github.credentials.environment', return_value=env), self.transport([*prefix, *outputs]):
                         with self.assertRaises(CommandFailed) as caught:
-                            getattr(LiveForge(), method)(REPO, 1)
+                            getattr(LiveForge(), method)(REPO, *args)
                         self.assertEqual(caught.exception.status, 422 if outputs[0].stderr.endswith('422)') else 404)
             for output in ({'state': 'open'}, {}, []):
-                with self.transport([output]), self.assertRaises(ForgeError):
-                    getattr(LiveForge(), method)(REPO, 1)
-            with self.transport([subprocess.TimeoutExpired('gh', 30), {'state': 'open'}]), self.assertRaises(CommandTimedOut):
-                getattr(LiveForge(), method)(REPO, 1)
+                with self.transport([*prefix, output]), self.assertRaises(ForgeError):
+                    getattr(LiveForge(), method)(REPO, *args)
+            with self.transport([*prefix, subprocess.TimeoutExpired('gh', 30), {'state': 'open'}]), self.assertRaises(CommandTimedOut):
+                getattr(LiveForge(), method)(REPO, *args)
 
     def test_transport_failures_surface_for_every_operation(self):
         for method in ('ensure_label', 'close_issue', 'close_pull_request', 'smoke_issues', 'smoke_pull_requests'):
-            args = ["smoke", "ededed"] if method == 'ensure_label' else [] if method.startswith('smoke') else [1]
+            args = ["smoke", "ededed"] if method == 'ensure_label' else [] if method.startswith('smoke') else closing(method, 1)[2]
             for env in (None, {'GH_TOKEN': 'app-token'}):
                 for error, expected in ((OSError('offline'), CommandFailed),
                                         (subprocess.TimeoutExpired('gh', 30), CommandTimedOut),
