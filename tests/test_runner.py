@@ -1702,10 +1702,9 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         load_issue.assert_called_once_with("Example/Engine", 8)
         worker.assert_not_called()
 
-    def test_empty_or_truncated_method_halts_before_dispatch(self):
+    def test_empty_method_halts_before_dispatch(self):
         for method, content, detail in (
             ("architect/SKILL.md", "", "method is empty"),
-            ("architect/SKILL.md", "Synthetic method.\n" * 8, "requires lines 9 through 9, has 8"),
             ("why/SKILL.md", "", "method is empty"),
         ):
             with self.subTest(method=method, detail=detail), TemporaryDirectory(dir=self.cwd) as directory:

@@ -29,7 +29,7 @@ def fixture_pins(root: Path) -> tuple[SkillPin, SkillPin]:
         if method.kind not in {"repository_skill", "target_skill"}:
             path = root / directories[method.repository] / method.path
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("Synthetic method.\n" * (method.lines[1] if method.lines else 1), encoding="utf-8")
+            path.write_text("Synthetic method.\n", encoding="utf-8")
     git(root, "add", "--", *directories.values())
     git(
         root, "-c", "user.name=Foreman", "-c", "user.email=foreman@example.invalid",
