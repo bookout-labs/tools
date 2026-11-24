@@ -141,9 +141,26 @@ def accept_spec_check(output: StageOutput, context: Acceptance) -> "DeliveryUpda
 
 
 def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
-    state, model = context.state, context.model
+    """Edit's own check of the builder's answer (item 12). Only a first attempt with no edits may report no_change.
+
+    A clean tree is the attempt's branch at its parent with nothing uncommitted. An answer this check rejects is invalid, so
+    dispatch gives it the one repair turn (item 1)."""
+    state, model, workspace = context.state, context.model, context.workspace
     assert isinstance(output, ImplementOutput)
     update: DeliveryUpdate = {"implementation": output.implementation, "human_question": output.human_question or ""}
+    if workspace is not None and "work" in state:
+        work, tree = state["work"], workspace.inspect()
+        clean = tree.clean and (tree.branch, tree.head) == (work.branch, work.attempt_head)
+        first = not state["review"].findings and not state["checks"].verify_failures and work.attempt_head == state["run"].base_sha
+        if output.no_change and not clean:
+            raise InvalidOutput("no_change: the tree has edits, so leave no_change null.")
+        if output.no_change and not first:
+            raise InvalidOutput("no_change: a repair cannot report no_change. Address the evidence with edits.")
+        if clean and not output.no_change and not output.human_question:
+            raise InvalidOutput("no_change: the tree has no edits. Edit within the acceptance, or on a first attempt whose "
+                                "acceptance already holds on the pinned base, set no_change to the checks you ran and what they showed.")
+        if output.no_change:
+            update.update(stop="no_change", halt_detail=output.no_change)
     if model:
         latest = state.get("models_used", {}).get("implement")
         history = state.get("implement_models", [latest] if latest else [])
