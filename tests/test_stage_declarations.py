@@ -183,8 +183,8 @@ class StageDeclarationsTest(unittest.TestCase):
             return outcome
         with patch.dict(STAGES, review=replace(row, project=project)):
             result = walk(dispatch)
-        # Dispatch projects the worker's state; acceptance projects the citation context.
-        self.assertEqual(seen, [True, True])
+        # Dispatch projects the worker's state; its answer check and acceptance each project the citation context.
+        self.assertEqual(seen, [True, True, True])
         self.assertEqual(result["stop"], "merge_pending", result.get("halt_detail"))
         self.assertEqual(result["review"].review_findings[0]["findings"][0]["location"]["path"], "row.py")
 

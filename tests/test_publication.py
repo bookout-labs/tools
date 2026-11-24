@@ -1305,7 +1305,9 @@ class PublicationTest(PublicationFixture):
                 else:
                     self.assertEqual(resumed["attempts"], attempts)
                     self.assertEqual(resumed["stop"], "dirty_worktree")
-                    self.assertEqual(resumed["work"], work)
+                    # The halt keeps the partial edits the quota call returned owned, so the foreign change stays dirty.
+                    self.assertEqual(resumed["work"], work.model_copy(update={"owned": resumed["work"].owned}))
+                    self.assertNotEqual(resumed["work"].owned, "")
 
     def test_dirty_initial_worktree_has_specific_detail(self):
         (self.checkout / "foreign.txt").touch()
