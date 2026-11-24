@@ -205,7 +205,7 @@ class RedactionTest(unittest.TestCase):
             patch("foreman.cli.run_live_delivery", side_effect=ValueError(f"Worker error {SYNTHETIC_GITHUB}")),
             redirect_stderr(StringIO()) as stderr,
         ):
-            code = main([*base, "--issue", "8", ])
+            code = main([*base, "--issue", "8"])
         self.assertEqual(code, 1)
         self.assertEqual(stderr.getvalue(), "Worker error [redacted:GitHub Token]\n")
 

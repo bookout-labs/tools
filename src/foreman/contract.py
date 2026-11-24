@@ -1,8 +1,11 @@
 """The target repository's contract file, parsed strictly (target.yaml target_contract)."""
 
-from typing import Annotated, Literal
+from collections.abc import Callable, Hashable
+import re
+from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from typing_extensions import override
 import yaml
 
 CONTRACT_PATH = ".foreman/contract.yaml"
@@ -20,8 +23,16 @@ def _command(value: str) -> str:
 
 def _relative_path(value: str) -> str:
     # rules.paths: a relative path inside the checkout, with no traversal.
-    if not value or value.startswith("/") or "\\" in value or "\0" in value or any(part in {"", ".", ".."} for part in value.split("/")):
-        raise ValueError("must be a relative path inside the checkout, with no '.', '..' or empty parts")
+    if (not value.strip() or value.startswith("/") or "\\" in value or "\0" in value
+            or any(part in {"", ".", ".."} for part in value.split("/"))):
+        raise ValueError("must be a relative path inside the checkout, with no blank, '.', '..' or empty parts")
+    return value
+
+
+def _repository(value: str) -> str:
+    # OWNER/NAME in GitHub's ASCII name characters. A '.' or '..' segment would leave the checkout it names.
+    if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", value) or any(part in {".", ".."} for part in value.split("/")):
+        raise ValueError("must be OWNER/NAME in letters, digits, '.', '_' and '-', with no '.' or '..' part")
     return value
 
 
@@ -42,7 +53,7 @@ class Start(_Strict):
 
 class RelatedRepository(_Strict):
     # The contract pins no commit: admission pins each one, so a commit or sha key is an unknown key.
-    repository: Annotated[str, StringConstraints(pattern=r"^[\w.-]+/[\w.-]+$")]
+    repository: Annotated[str, AfterValidator(_repository)]
     start: Command
 
 
@@ -62,7 +73,7 @@ class Contract(_Strict):
 
     check: Command
     verify_skill: RelativePath
-    test_report: RelativePath | list[RelativePath] | None = None
+    test_report: RelativePath | Annotated[list[RelativePath], Field(min_length=1)] | None = None
     image: Command | None = None
     setup: list[Command] = []
     network: Literal["setup", "run"] = "setup"
@@ -73,28 +84,31 @@ class Contract(_Strict):
     production_check: ProductionCheck | None = None
 
 
-def _duplicate_key(node: yaml.Node | None) -> str | None:
-    """The first key a mapping repeats. YAML keeps the last of two equal keys, so the parse names it instead."""
-    if isinstance(node, yaml.MappingNode):
-        seen: set[str] = set()
-        for key, value in node.value:
-            if isinstance(key, yaml.ScalarNode):
-                if key.value in seen:
-                    return f"duplicate key {key.value!r} at line {key.start_mark.line + 1}"
-                seen.add(key.value)
-            if found := _duplicate_key(value):
-                return found
-    if isinstance(node, yaml.SequenceNode):
-        return next((found for item in node.value if (found := _duplicate_key(item))), None)
-    return None
+class _ContractLoader(yaml.SafeLoader):
+    """Loads each mapping key as written. YAML keeps the last of two equal keys and folds a merge key's mapping in,
+    so the load names a repeated key and refuses a merge key, and every key reaches the strict model."""
+
+    @override
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Hashable, Any]:
+        # PyYAML's stubs leave construct_object's node untyped, so the loader names its own signature.
+        construct: Callable[[yaml.Node, bool], object] = getattr(self, "construct_object")
+        mapping: dict[Hashable, Any] = {}
+        for key_node, value_node in node.value:
+            line = key_node.start_mark.line + 1
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                raise ContractError(f"merge key '<<' at line {line} is not allowed")
+            key = construct(key_node, deep)
+            if not isinstance(key, Hashable):
+                raise ContractError(f"key at line {line} is not a scalar")
+            if key in mapping:
+                raise ContractError(f"duplicate key {key!r} at line {line}")
+            mapping[key] = construct(value_node, deep)
+        return mapping
 
 
 def parse_contract(text: bytes) -> Contract:
     try:
-        source = text.decode("utf-8")
-        if duplicate := _duplicate_key(yaml.SafeLoader(source).get_single_node()):
-            raise ContractError(duplicate)
-        raw: object = yaml.safe_load(source)
+        raw: object = yaml.load(text.decode("utf-8"), Loader=_ContractLoader)
     except (UnicodeDecodeError, yaml.YAMLError) as exc:
         raise ContractError(f"is not valid UTF-8 YAML: {exc}") from exc
     try:

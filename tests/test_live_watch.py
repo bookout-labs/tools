@@ -36,7 +36,7 @@ class LiveWatchTest(unittest.TestCase):
         self.fake = FakeGitHub()
         self.forge = Mock(spec=Forge, wraps=self.fake)
         self.run = LiveRun(self.forge, FakeWorkspace(self.root), skills=fixture_skills, human_login="fixture-owner")
-        self.flags = ['run', 'delivery', '--repo', 'Example/Engine', '--issue', '8', ]
+        self.flags = ['run', 'delivery', '--repo', 'Example/Engine', '--issue', '8']
 
     def invoke(self, **kwargs):
         if saved_workspace(self.checkpoint, 'example/engine#8') is None:

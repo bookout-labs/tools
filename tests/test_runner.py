@@ -1107,7 +1107,7 @@ class LiveRunnerTest(unittest.TestCase):
                     saver.put(saved.config, saved.checkpoint, saved.metadata, {})
                     before = list(saver.list(config))
                 old_bytes = self.checkpoint.read_bytes()
-                command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", ]
+                command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"]
                 worker = Mock(side_effect=AssertionError("old checkpoint dispatched a worker"))
                 live_run = LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner")
                 with (contextlib.chdir(self.cwd),
@@ -1125,7 +1125,7 @@ class LiveRunnerTest(unittest.TestCase):
                     self.assertIn(text, message)
                 worker.assert_not_called()
                 self.assertEqual(self.checkpoint.read_bytes(), old_bytes)
-                other_command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "9", ]
+                other_command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "9"]
                 replies = iter([{"triage": "question"}, {"research": "Other answer"}])
                 self.github.ready_again(9)
                 with (contextlib.chdir(self.cwd),
@@ -1254,7 +1254,7 @@ def worker(args, cwd, env):
     return worker_reply(args, APPROVE)
 pin = SkillPin.model_validate_json(sys.argv[2])
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
-    sys.exit(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", ],
+    sys.exit(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
                   checkpoint=Path(sys.argv[1]), worker_runner=worker, live_run=LiveRun(Forge(), workspace, human_login="fixture-owner")))
 """
         bootstrap = f"import sys; sys.path[:0] = {[str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]!r}\n"
@@ -1877,7 +1877,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             contextlib.redirect_stdout(io.StringIO()) as stdout,
         ):
             code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", ],
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
                 worker_runner=worker, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
             )
         self.assertEqual(code, 1)
@@ -1944,7 +1944,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_quota_pause_returns_the_resumable_cli_exit_code(self):
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", ],
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
                 worker_runner=lambda args, cwd, env: quota_with_usage(args),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
             )
@@ -2073,7 +2073,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         # The child carries Ready, and its open blocker keeps it unadmitted.
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "102", ],
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "102"],
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
                 worker_runner=lambda *_: self.fail("An unadmitted issue must not dispatch."),
             )
@@ -2422,7 +2422,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         for _ in range(2):
             with contextlib.redirect_stdout(io.StringIO()) as stdout:
                 code = main(
-                    ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", ],
+                    ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
                     worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
                     checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake, human_login="fixture-owner"),
                 )
@@ -2554,7 +2554,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_a_live_run_needs_a_human_login_and_reads_answers_only_under_it(self):
         self.walk([{"triage": "needs_human", "human_question": "Which items?"}])
-        command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", ]
+        command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"]
         stderr = io.StringIO()
         with patch.dict(os.environ, {"FOREMAN_HUMAN_LOGIN": " "}), contextlib.chdir(self.cwd), \
                 contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as refused:
@@ -2927,7 +2927,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             patch.object(self.github, "arm_auto_merge", side_effect=MergeNotArmed(detail)) as arm,
         ):
             code = main(
-                ["run", "delivery", "--repo", "Example/Target", "--issue", "8", ],
+                ["run", "delivery", "--repo", "Example/Target", "--issue", "8"],
                 worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake, human_login="fixture-owner"),
             )
@@ -2974,7 +2974,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         def invoke():
             with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
                 code = main(
-                    ["run", "delivery", "--repo", repo, "--issue", "8", ],
+                    ["run", "delivery", "--repo", repo, "--issue", "8"],
                     worker_runner=lambda args, cwd, env=None: live_run.workspace.reply(args, checker_reply(args) or next(replies)),
                     checkpoint=self.checkpoint, live_run=live_run,
                 )
@@ -3002,7 +3002,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
-                ["run", "delivery", "--repo", "Example/Target", "--issue", "8", ],
+                ["run", "delivery", "--repo", "Example/Target", "--issue", "8"],
                 worker_runner=lambda args, cwd, env=None: workspace.reply(args, checker_reply(args) or next(replies)),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace, human_login="fixture-owner"),
             )
@@ -3574,7 +3574,7 @@ class HaltExitCodeTest(unittest.TestCase):
             LiveForge().arm_auto_merge("Example/Engine", 8, BRANCH, "invalid", FakeGitHub().readiness("Example/Engine", 8, BRANCH, HEAD))
         result = {"review": ReviewState(), "checks": ChecksState(), "run": RunState(repo="Example/Engine"), **halted(Halt.merge_not_armed, detail, "merge"), "stop": "merge_not_armed", "path": ["merge"], "merge": MergeState(status="not_armed"), "plan": PlanState()}
         with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: (kwargs["report"](result), result)[1]), contextlib.redirect_stdout(io.StringIO()) as output:
-            code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", ])
+            code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"])
         self.assert_halt((code, output.getvalue()), "merge_not_armed", detail, 75)
 
     def test_answered_is_success(self):

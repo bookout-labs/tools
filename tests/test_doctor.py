@@ -89,6 +89,12 @@ class ContractTest(unittest.TestCase):
         self.assertEqual((contract.start and contract.start.timeout_seconds, contract.mutation and contract.mutation.sample_cap,
                           contract.production_check and contract.production_check.not_deployed_exit), (60, 20, 3))
 
+    def test_a_related_repository_is_owner_and_name_in_github_name_characters(self):
+        for name in ("Example/Api", "bookout-labs/foreman-smoke.npm", "Owner_1/.github"):
+            with self.subTest(name=name):
+                contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a}}]\n").encode())
+                self.assertEqual(contract.related_repositories[0].repository, name)
+
     def test_only_check_and_verify_skill_are_required(self):
         contract = parse_contract(MINIMAL.encode())
         self.assertEqual((contract.image, contract.setup, contract.network, contract.start, contract.related_repositories,
@@ -107,12 +113,19 @@ class ContractTest(unittest.TestCase):
             "check: x\nverify_skill: a//SKILL.md\n": "verify_skill",
             MINIMAL + "test_report: /tmp/report.xml\n": "test_report",
             MINIMAL + "test_report: [../report.xml]\n": "test_report",
+            MINIMAL + "test_report: []\n": "test_report",
+            MINIMAL + "test_report: '   '\n": "test_report",
+            "check: x\nverify_skill: ' '\n": "verify_skill",
             MINIMAL + "image: [node]\n": "image",
             MINIMAL + "setup: npm ci\n": "setup",
             MINIMAL + "network: always\n": "network",
             MINIMAL + "start: {command: a, health: b}\n": "start.timeout_seconds",
             MINIMAL + "start: {command: a, health: b, timeout_seconds: '60'}\n": "start.timeout_seconds",
             MINIMAL + "related_repositories: [{repository: noslash, start: a}]\n": "related_repositories.0.repository",
+            MINIMAL + "related_repositories: [{repository: ../.., start: a}]\n": "related_repositories.0.repository",
+            MINIMAL + "related_repositories: [{repository: ./., start: a}]\n": "related_repositories.0.repository",
+            MINIMAL + "related_repositories: [{repository: Owner/.., start: a}]\n": "related_repositories.0.repository",
+            MINIMAL + "related_repositories: [{repository: Ówner/name, start: a}]\n": "related_repositories.0.repository",
             MINIMAL + "related_repositories: [{repository: A/B, start: a, commit: abc}]\n": "related_repositories.0.commit",
             MINIMAL + "related_repositories: [{repository: A/B, start: a, sha: abc}]\n": "related_repositories.0.sha",
             MINIMAL + "secrets: [database_url]\n": "secrets.0",
@@ -122,6 +135,10 @@ class ContractTest(unittest.TestCase):
             MINIMAL + "production_check: {command: a, not_deployed_exit: 256, timeout_seconds: 9}\n": "production_check.not_deployed_exit",
             MINIMAL + "deploy: now\n": "deploy",
             MINIMAL + "check: again\n": "duplicate key 'check'",
+            # A merge key would fold keys in past the strict model and the duplicate check.
+            MINIMAL + "<<: {check: c}\n": "merge key '<<'",
+            MINIMAL + "start: {<<: {command: a}, health: b, timeout_seconds: 1}\n": "merge key '<<'",
+            MINIMAL + "? [a]\n: b\n": "not a scalar",
             "- check\n": "the file",
             "check: [unclosed\n": "YAML",
         }
