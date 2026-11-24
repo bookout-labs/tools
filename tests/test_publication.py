@@ -92,8 +92,8 @@ class PublicationFixture(unittest.TestCase):
                 response = [[]]
             case ["api", "repos/bookout-labs/tools/issues"]:
                 response = {"number": 101}
-            case ["api", "repos/Example/Engine/issues/8/parent"]:
-                return subprocess.CompletedProcess(command, 1, "", "gh: No parent issue found (HTTP 404)")
+            case ["api", "repos/Example/Engine/issues/8/dependencies/blocking"]:
+                response = [[]]
             case ["api", "repos/Example/Engine/issues/8/dependencies/blocked_by"]:
                 response = [[]]
             case ["api", "repos/Example/Engine/issues/8/comments?per_page=100"]:

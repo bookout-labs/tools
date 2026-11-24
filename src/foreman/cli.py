@@ -343,6 +343,9 @@ def main(
         except (AnswerError, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
+        # The host starts each returned issue as it starts an accepted delivery, so a replay names them again.
+        for released in result.get("released", []):
+            print(f"start {released}")
         return run_exit_code(result)
 
     if args.command == "start":
@@ -353,7 +356,8 @@ def main(
             # Unattended runs act only as the App installed on the repository, never as a personal gh login.
             if credentials.environment(args.repo) is None:
                 raise CredentialFailure("Configure FOREMAN_APP_ID before starting runs from Ready.")
-            with issue_lock(thread):
+            # A held lock may be a blocked admission about to delete its checkpoint, so start waits for it.
+            with issue_lock(thread, wait=True):
                 if saved_workspace(store, thread) is not None:
                     # A repeated delivery never resumes a paused, waiting or finished run.
                     print(f"already started {thread}")
@@ -361,9 +365,6 @@ def main(
                 forge = live_run.forge if live_run is not None else LiveForge()
                 settings = RunSettings.from_variables(forge.variables(args.repo))
                 return live(args.repo, args.issue, settings, LiveWorkspace.managed(state_home, args.repo, args.issue))
-        except IssueLocked:
-            print(f"already running {thread}")
-            return 0
         except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1

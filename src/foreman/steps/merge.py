@@ -7,13 +7,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from foreman.contracts import InvalidOutput
-from foreman.github import (MERGE_HOLD_VARIABLE, READY_LABEL, ForgeError, HandoffChanged, VariablesUnreadable, MergeNotArmed, QueueRejected,
-                            merge_command, unmet_prerequisites)
+from foreman.github import (MERGE_HOLD_VARIABLE, ForgeError, HandoffChanged, VariablesUnreadable, MergeNotArmed, QueueRejected,
+                            merge_command)
 from foreman.outcomes import Halt, stopped
 from foreman.readiness import MergeReceipt, MergeState, MergeWait, Observation
 from foreman.review_round import ReviewRound, history
-from foreman.stage_output import HumanPrompt, load_stored_slice, spec_digest
+from foreman.stage_output import HumanPrompt, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate, ReviewState, WorkState
 from foreman.steps import StageInput, StageRun
 
@@ -189,25 +188,15 @@ def observe(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 
 def release(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
-    repo, issue, forge = state["run"].repo, state["run"].issue, run.forge
+    repo, issue = state["run"].repo, state["run"].issue
     assert issue is not None
     try:
-        parent = forge.parent_issue(repo, issue)
-        for sibling in forge.sub_issues(repo, parent.number) if parent else []:
-            if sibling.number == issue or sibling.state != "open":
-                continue
-            blockers, dependent = forge.blockers(repo, sibling.number), forge.load_issue(repo, sibling.number)
-            try:  # Triage cannot admit a slice issue without a loadable slice either.
-                item = load_stored_slice(dependent["body"]) if "slice" in dependent["labels"] else None
-            except InvalidOutput:
-                continue
-            # A dependent starts once triage would admit it. Its label marks the release, so a replay adds nothing.
-            if (any(blocker.in_repo(repo) and blocker.number == issue for blocker in blockers) and READY_LABEL not in dependent["labels"]
-                    and not unmet_prerequisites(forge, repo, blockers, item, issue)):
-                forge.add_label(repo, sibling.number, READY_LABEL)
+        dependents = run.forge.blocking(repo, issue)
     except ForgeError as exc:
-        return Reviewed.halt(state.get("merge", MergeState()), Halt.readiness_unavailable, f"Dependent release could not read or label GitHub: {exc}")
-    return {"stop": "released"}
+        return Reviewed.halt(state.get("merge", MergeState()), Halt.readiness_unavailable, f"Dependent release could not read GitHub: {exc}")
+    # Each open dependent returns to admission, which decides from its own Ready label and prerequisites.
+    return {"released": [f"{dependent.repo}#{dependent.number}" for dependent in dependents if dependent.state == "open"],
+            "stop": "released"}
 
 
 def report(state: DeliveryState, run: StageRun) -> DeliveryUpdate:

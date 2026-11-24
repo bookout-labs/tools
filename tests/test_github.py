@@ -195,21 +195,25 @@ class LiveForgeTest(unittest.TestCase):
         self.assertIsInstance(exc.exception.__cause__, ValidationError)
 
     @patch("foreman.github.subprocess.run")
-    def test_only_closed_issue_with_merged_closing_pull_request_is_merged(self, run):
-        for closed, references, state, base, default, expected in (
-            (False, [CLOSING_PR], None, None, None, False),
-            (True, [], None, None, None, False),
-            (True, [CLOSING_PR], "CLOSED", "main", None, False),
-            (True, [CLOSING_PR], "MERGED", "main", "main", True),
-            (True, [CLOSING_PR], "MERGED", "release", "main", False),
-            (True, [CLOSING_PR], "MERGED", "trunk", "trunk", True),
+    def test_an_issue_counts_merged_once_its_closing_pull_request_merged(self, run):
+        for reason, references, state, base, default, expected in (
+            # GitHub closes the issue after the merge, so an open issue with a merged closing pull request counts.
+            ("", [CLOSING_PR], "MERGED", "main", "main", True),
+            ("", [CLOSING_PR], "OPEN", "main", None, False),
+            # A reopened issue is unfinished, so its earlier merged pull request no longer counts.
+            ("REOPENED", [CLOSING_PR], None, None, None, False),
+            ("COMPLETED", [], None, None, None, False),
+            ("COMPLETED", [CLOSING_PR], "CLOSED", "main", None, False),
+            ("COMPLETED", [CLOSING_PR], "MERGED", "main", "main", True),
+            ("COMPLETED", [CLOSING_PR], "MERGED", "release", "main", False),
+            ("COMPLETED", [CLOSING_PR], "MERGED", "trunk", "trunk", True),
         ):
-            with self.subTest(closed=closed, state=state, base=base, default=default):
+            with self.subTest(reason=reason, state=state, base=base, default=default):
                 run.reset_mock()
-                issue = {"closed": closed, "closedByPullRequestsReferences": references}
+                issue = {"stateReason": reason, "closedByPullRequestsReferences": references}
                 replies = [gh_result(json.dumps(issue))]
                 commands = [
-                    ["gh", "issue", "view", "1", "--repo", REPO, "--json", "closed,closedByPullRequestsReferences"],
+                    ["gh", "issue", "view", "1", "--repo", REPO, "--json", "stateReason,closedByPullRequestsReferences"],
                 ]
                 if state is not None:
                     replies.append(gh_result(json.dumps({"state": state, "baseRefName": base})))
@@ -226,7 +230,7 @@ class LiveForgeTest(unittest.TestCase):
         local_pr = {**CLOSING_PR, "repository": {"name": REPO.split("/")[1], "owner": {"login": REPO.split("/")[0]}}}
         merge = "a" * 40
         run.side_effect = [
-            gh_result(json.dumps({"closed": True, "closedByPullRequestsReferences": [CLOSING_PR, local_pr]})),
+            gh_result(json.dumps({"stateReason": "COMPLETED", "closedByPullRequestsReferences": [CLOSING_PR, local_pr]})),
             gh_result(json.dumps({"state": "MERGED", "baseRefName": "main", "mergeCommit": {"oid": merge}})),
             gh_result(json.dumps({"defaultBranchRef": {"name": "main"}})),
         ]
@@ -239,9 +243,9 @@ class LiveForgeTest(unittest.TestCase):
     @patch("foreman.github.subprocess.run")
     def test_is_merged_rejects_invalid_issue_and_pr_responses(self, run):
         run.side_effect = [
-            gh_result('{"closed":"true","closedByPullRequestsReferences":[]}'),
-            gh_result('{"closed":true,"closedByPullRequestsReferences":[{"number":3}]}'),
-            gh_result(json.dumps({"closed": True, "closedByPullRequestsReferences": [CLOSING_PR]})),
+            gh_result('{"stateReason":"reopened","closedByPullRequestsReferences":[]}'),
+            gh_result('{"stateReason":"COMPLETED","closedByPullRequestsReferences":[{"number":3}]}'),
+            gh_result(json.dumps({"stateReason": "COMPLETED", "closedByPullRequestsReferences": [CLOSING_PR]})),
             gh_result('{"state":"COMPLETED"}'),
         ]
         for _ in range(3):

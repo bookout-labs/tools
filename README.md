@@ -148,7 +148,8 @@ foreman start --repo Example/Engine --issue 7
 
 `foreman start` begins an accepted issue's run with nobody at the keyboard:
 - It acts only as the GitHub App installed on that repository and never falls back to a personal `gh` login.
-- It takes the issue's lock first. A held lock, or an existing checkpoint for that issue, prints `already running` or `already started` and exits 0, so a repeated delivery never resumes a paused, waiting or finished run.
+- It takes the issue's lock first, waiting while another Foreman process holds it. An existing checkpoint for that issue then prints `already started` and exits 0, so a repeated delivery never resumes a paused, waiting or finished run.
+- After a run returns, `foreman start` and `foreman run` print one `start OWNER/NAME#N` line for each issue the run returns to admission: the open dependents after its merge, or the children it filed. The host starts each line like an accepted delivery, and admission decides from the issue's Ready label and its prerequisites. A replay of a finished run prints the same lines, so a crash before the host starts them loses nothing. A prerequisite counts once its closing pull request merged into the default branch.
 - It reads the run settings from the repository's GitHub Actions variables:
   - `FOREMAN_CHECK` is required.
   - `FOREMAN_PREFLIGHT` is optional.

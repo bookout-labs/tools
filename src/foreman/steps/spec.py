@@ -165,15 +165,15 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                     return unreconciled(f"GitHub does not show #{blocker} blocking #{number}.")
             numbers[child.title] = number
             children.append((number, child))
-        # Runs start only after every child and link is confirmed.
-        for number, child in children:
-            if all(forge.is_merged(repo, blocker) for blocker in child.blocker_numbers) and not ensure(
-                    lambda: READY_LABEL in forge.load_issue(repo, number)["labels"],
-                    lambda: forge.add_label(repo, number, READY_LABEL)):
+        # Every child carries Ready once every child and link is confirmed. Admission waits for its prerequisites.
+        for number, _ in children:
+            if not ensure(lambda: READY_LABEL in forge.load_issue(repo, number)["labels"],
+                          lambda: forge.add_label(repo, number, READY_LABEL)):
                 return unreconciled(f"GitHub does not show #{number} released.")
     except ForgeError as exc:
         return unreconciled(f"GitHub could not confirm the children of #{parent} for {revision} ({exc}).")
-    return {"stop": "children_filed"}
+    # Intake ignores Foreman's own label writes, so each child returns to admission directly.
+    return {"stop": "children_filed", "released": [f"{repo}#{number}" for number, _ in children]}
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
