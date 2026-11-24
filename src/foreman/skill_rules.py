@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from foreman.config import SkillPin
 from foreman.stage_output import WorkKind
+from foreman.workspace import WorkspaceError
 
 if TYPE_CHECKING:
     from foreman.state import DeliveryState
@@ -123,7 +124,7 @@ def export_skills(pin: SkillPin, matt_skills: SkillPin, scratch: Path) -> Path:
     return root
 
 
-class TargetSkillUnreadable(RuntimeError):
+class TargetSkillUnreadable(WorkspaceError):
     """Git could not list the target checkout's skills at its HEAD."""
 
 
@@ -135,6 +136,7 @@ def target_skills(workspace: str, path: str) -> list[Path]:
     if not workspace:
         return []
     checkout, pattern = Path(workspace), re.sub(r"<[a-z]+>", "*", path)
+    depth = len(PurePosixPath(pattern).parts)
     try:
         listed = subprocess.run(["git", "--no-replace-objects", "ls-tree", "-rz", "HEAD", "--", *TARGET_SKILL_DIRECTORIES],
                                 cwd=checkout, capture_output=True, check=True, timeout=30).stdout
@@ -145,7 +147,9 @@ def target_skills(workspace: str, path: str) -> list[Path]:
     for directory in TARGET_SKILL_DIRECTORIES:
         for name, mode in sorted(files.items()):
             relative = PurePosixPath(name).relative_to(directory) if name.startswith(f"{directory}/") else None
-            if relative is not None and mode in (b"100644", b"100755") and relative.match(pattern):
+            # match() anchors only at the right, so the depth must agree too.
+            if (relative is not None and mode in (b"100644", b"100755") and len(relative.parts) == depth
+                    and relative.match(pattern)):
                 found.setdefault(relative.parts[0], checkout / name)
     return list(found.values())
 

@@ -4,7 +4,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from foreman.dispatch import DISPATCH
-from foreman.github import CommandTimedOut, ForgeError
+from foreman.github import CommandTimedOut, ForgeError, owned_comment
 from foreman.outcomes import Halt, stopped
 from foreman.skill_rules import TargetSkillUnreadable, target_skills
 from foreman.stage_output import VerifyState, spec_digest
@@ -21,6 +21,9 @@ HEAD_MOVED = "head_moved"
 def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     work, verify = state.get("work", WorkState()), state.get("verify", VerifyState())
     head = work.published_head
+    if head and verify.outcome == "driven" and verify.tested_head == head:
+        # A resumed stage posts the evidence it reached for this head; post marks it stale if the head moved.
+        return {"stop": ""}
     try:
         if not head or state["checks"].verified_head != head:
             raise WorkspaceError("Verify needs the published checked head.")
@@ -38,21 +41,21 @@ def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return stopped(Halt.git_failed, str(exc), "verify")
     if pr.headRefOid != head:
         return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt()}
-    if verify.outcome == "driven" and verify.tested_head == head:
-        # A resumed stage keeps the evidence it reached for this head, and posts it.
-        return {"stop": ""}
     if not skills:
         return {"stop": "no_skill", "verify": VerifyState(outcome="no_skill", tested_head=head)}
     result = DISPATCH.invoke({"caller": state, "stage": "verify"}, context=run.dispatch("verify", state, ""))
     update = run.apply("verify", state, result)
     if update.get("halt"):
         return {**update, "stop": update.get("halt") or ""}
+    # Evidence from a drive that left the checkout changed or unreadable is never saved, so a resume can't post it.
+    unchecked: DeliveryUpdate = {**update}
+    unchecked.pop("verify", None)
     try:
         after = run.workspace.inspect()
     except WorkspaceError as exc:
-        return {**update, **stopped(Halt.git_failed, str(exc), "verify")}
+        return {**unchecked, **stopped(Halt.git_failed, str(exc), "verify")}
     if after != before:
-        return {**update, **stopped(Halt.dirty_worktree, "The verifier changed the checkout. It is kept as evidence.", "verify")}
+        return {**unchecked, **stopped(Halt.dirty_worktree, "The verifier changed the checkout. It is kept as evidence.", "verify")}
     return {**update, "stop": ""}
 
 
@@ -72,11 +75,21 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     marker = (f"<!-- foreman-verify:{state['review'].review_run_id}:{pr.number}:{verify.tested_head}:"
               f"{spec_digest(verify.criteria)} -->")
     try:
+        run.forge.issue_comment_records(repo, pr.number)
+    except ForgeError as exc:
+        return stopped(Halt.git_failed, f"The PR comments could not be read before posting: {exc}", "verify")
+    try:
         run.forge.upsert_comment(repo, pr.number, f"{lead}\n\n{results}", [f"Tested head: {verify.tested_head}."], marker=marker)
     except CommandTimedOut as exc:
         return stopped(Halt.publication_unreconciled, f"The evidence may have posted ({exc}). Rerun to adopt it by its marker.", "verify")
     except ForgeError as exc:
-        return stopped(Halt.publish_failed, str(exc), "verify")
+        # A rejection counts only when a re-read confirms the comment is absent.
+        try:
+            landed = owned_comment(run.forge.issue_comment_records(repo, pr.number), marker) is not None
+        except ForgeError as unread:
+            return stopped(Halt.publication_unreconciled, f"The evidence post failed ({exc}) and could not be re-read ({unread}).", "verify")
+        if not landed:
+            return stopped(Halt.publish_failed, str(exc), "verify")
     update: DeliveryUpdate = ({"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt()}
                               if stale else {"stop": "posted"})
     return {**update, "verify": verify.model_copy(update={"outcome": "posted", "stale": stale})}

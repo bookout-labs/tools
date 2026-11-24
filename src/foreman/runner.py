@@ -422,7 +422,7 @@ def run_live_delivery(
             except WorkspaceError as exc:
                 log(f"checkout kept: {exc}")
             # The CLI worker keeps its scratch beside the checkpoint, so the run removes its verifier captures with its checkout.
-            attempts = verify_attempts(worker_scratch(checkpoint.parent, run.workspace.root), repo, issue)
+            attempts = verify_attempts(worker_scratch(checkpoint.parent, run.workspace.root), result["run"].repo, result["run"].issue)
             try:
                 if attempts.exists():
                     shutil.rmtree(attempts)

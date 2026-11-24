@@ -9,11 +9,15 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, patch
 
-from foreman.github import CommandTimedOut, ForgeError, PublishedPullRequest, status_body
-from foreman.skill_rules import target_skills
+from foreman.dispatch import InvalidOutput
+from foreman.github import BOT_LOGIN, CommandTimedOut, ForgeError, IssueComment, PublishedPullRequest, status_body
+from foreman.stage_output import HumanAnswer, VerifyOutput
+from foreman.stages import STAGES, Acceptance
+from foreman.skill_rules import TargetSkillUnreadable, target_skills
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, VerifyState
 from foreman.steps import verify
-from foreman.workspace import WorkState, WorktreeState
+from foreman.workspace import WorkState, WorkspaceError, WorktreeState
+from pydantic import TypeAdapter, ValidationError
 
 HEAD, MOVED = "b" * 40, "c" * 40
 CRITERION = {"criterion": "The page lists items.", "result": "failed", "observation": "The list was empty.",
@@ -30,6 +34,14 @@ class Forge:
     heads: list[object] = field(default_factory=lambda: [pr()])
     posted: list[str] = field(default_factory=list[str])
     error: Exception | None = None
+    # Each comment read takes the next entry: None reads the posted comments, an exception fails the read.
+    reads: list[Exception | None] = field(default_factory=list[Exception | None])
+    lands: bool = False
+
+    def issue_comment_records(self, repo, number):
+        if self.reads and (failure := self.reads.pop(0)) is not None:
+            raise failure
+        return [IssueComment.model_validate({"user": {"login": BOT_LOGIN}, "body": body}) for body in self.posted]
 
     def pull_request_for(self, repo, branch):
         head = self.heads.pop(0) if len(self.heads) > 1 else self.heads[0]
@@ -38,9 +50,11 @@ class Forge:
         return head
 
     def upsert_comment(self, repo, number, text, facts, *, marker):
-        if self.error:
-            raise self.error
         body = status_body(text, facts, marker)
+        if self.error:
+            if self.lands:
+                self.posted.append(body)
+            raise self.error
         if body not in self.posted:
             self.posted.append(body)
 
@@ -98,10 +112,15 @@ class VerifyTest(unittest.TestCase):
 
     def test_skill_lookup_takes_tracked_regular_files_and_the_first_directory(self):
         with checkout(".cursor/skills/verify-web/SKILL.md", ".claude/skills/verify-web/SKILL.md",
-                      ".claude/skills/verify-api/SKILL.md", symlink=".claude/skills/verify-link/SKILL.md") as root:
+                      ".claude/skills/verify-api/SKILL.md", ".claude/skills/nested/verify-deep/SKILL.md",
+                      symlink=".claude/skills/verify-link/SKILL.md") as root:
             found = [path.relative_to(root).as_posix() for path in target_skills(root, "verify-<app>/SKILL.md")]
         self.assertEqual(found, [".cursor/skills/verify-web/SKILL.md", ".claude/skills/verify-api/SKILL.md"])
         self.assertEqual(target_skills("", "verify-<app>/SKILL.md"), [])
+        # Dispatch stops a stage on a WorkspaceError, so an unreadable checkout is a typed halt, never a crash.
+        with TemporaryDirectory() as directory, self.assertRaises(WorkspaceError):
+            target_skills(directory, "verify-<app>/SKILL.md")
+        self.assertTrue(issubclass(TargetSkillUnreadable, WorkspaceError))
 
     def test_vf2_failed_criterion_posts_as_evidence_and_goes_to_review(self):
         run = stage()
@@ -135,9 +154,14 @@ class VerifyTest(unittest.TestCase):
         verify.post(driven, run)
         self.assertEqual(len(run.forge.posted), 1)
         for forge, halt in ((Forge(error=ForgeError("rejected")), "publish_failed"), (Forge(heads=[pr(state="CLOSED")]), "publish_failed"),
-                            (Forge(heads=[None]), "publish_failed"), (Forge(heads=[ForgeError("down")]), "git_failed")):
+                            (Forge(heads=[None]), "publish_failed"), (Forge(heads=[ForgeError("down")]), "git_failed"),
+                            (Forge(reads=[ForgeError("down")]), "git_failed"),
+                            (Forge(error=ForgeError("rejected"), reads=[None, ForgeError("down")]), "publication_unreconciled")):
             with self.subTest(halt=halt, forge=forge):
                 self.assertEqual(verify.post(driven, stage(forge))["halt"], halt)
+        # An error after the comment landed adopts it, as the re-read shows.
+        landed = Forge(error=ForgeError("502"), lands=True)
+        self.assertEqual(verify.post(driven, stage(landed))["stop"], "posted")
 
     def test_vf5_a_changed_checkout_stops_before_posting(self):
         dirty = Workspace([WorktreeState(HEAD, True, "8-items"), WorktreeState(HEAD, False, "8-items")])
@@ -145,7 +169,25 @@ class VerifyTest(unittest.TestCase):
         with checkout(".claude/skills/verify-web/SKILL.md") as root, patch.object(verify, "DISPATCH"):
             update = verify.drive(state(root), run)
         self.assertEqual((update["halt"], update["path"]), ("dirty_worktree", ["verify"]))
+        self.assertNotIn("verify", update)
         self.assertEqual(run.forge.posted, [])
+
+    def test_a_resumed_drive_posts_stale_evidence_when_the_head_moved_meanwhile(self):
+        driven = state(verify=VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION]))
+        run = stage(Forge(heads=[pr(MOVED)]))
+        self.assertEqual(verify.drive(driven, run), {"stop": ""})
+        posted = verify.post(driven, run)
+        self.assertEqual((posted["stop"], posted["verify"].stale), ("head_moved", True))
+        self.assertIn("stale", run.forge.posted[0])
+
+    def test_acceptance_binds_the_published_head_and_answers_reject_verify(self):
+        output = VerifyOutput(tested_head=MOVED, criteria=[CRITERION])
+        with self.assertRaises(InvalidOutput):
+            STAGES["verify"].accept(output, Acceptance(state(), "claude-opus-5-5-high"))
+        with self.assertRaises(ValidationError):
+            TypeAdapter(HumanAnswer).validate_python({"stage": "verify", "question": "Which?", "answer": "This."})
+        with self.assertRaises(ValidationError):
+            VerifyState(criteria=[{**CRITERION, "extra": "field"}])
 
     def test_a_resumed_drive_posts_the_evidence_it_reached(self):
         with checkout(".claude/skills/verify-web/SKILL.md") as root, patch.object(verify, "DISPATCH") as dispatch:

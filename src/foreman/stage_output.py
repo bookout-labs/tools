@@ -572,6 +572,7 @@ class ReviewState(BaseModel, frozen=True, extra="forbid"):
 VerifyResult = Literal["passed", "failed", "unverified"]
 
 
+@with_config(ConfigDict(extra="forbid"))
 class VerifyCriterionRecord(TypedDict):
     criterion: str
     result: VerifyResult
