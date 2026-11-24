@@ -797,5 +797,74 @@
     ],
     "title": "TriageOutput",
     "type": "object"
+  },
+  "verify": {
+    "$defs": {
+      "VerifyCriterion": {
+        "additionalProperties": false,
+        "properties": {
+          "criterion": {
+            "description": "One acceptance criterion, as the slice states it.",
+            "pattern": "\\S",
+            "title": "Criterion",
+            "type": "string"
+          },
+          "evidence": {
+            "description": "Where the capture or log is saved in your attempt scratch, or the blocker.",
+            "pattern": "\\S",
+            "title": "Evidence",
+            "type": "string"
+          },
+          "observation": {
+            "description": "What you did through the real user path and what you observed.",
+            "pattern": "\\S",
+            "title": "Observation",
+            "type": "string"
+          },
+          "result": {
+            "description": "passed only on observed proof. Missing proof is unverified, never passed.",
+            "enum": [
+              "passed",
+              "failed",
+              "unverified"
+            ],
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "criterion",
+          "result",
+          "observation",
+          "evidence"
+        ],
+        "title": "VerifyCriterion",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "criteria": {
+        "description": "Every acceptance criterion with its observed result.",
+        "items": {
+          "$ref": "#/$defs/VerifyCriterion"
+        },
+        "minItems": 1,
+        "title": "Criteria",
+        "type": "array"
+      },
+      "tested_head": {
+        "description": "The full SHA of the HEAD you drove.",
+        "pattern": "\\S",
+        "title": "Tested Head",
+        "type": "string"
+      }
+    },
+    "required": [
+      "tested_head",
+      "criteria"
+    ],
+    "title": "VerifyOutput",
+    "type": "object"
   }
 }

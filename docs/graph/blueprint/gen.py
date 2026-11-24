@@ -314,8 +314,8 @@ def inventory(target, pins):
         sections[section].add(owner)
         if section != "dispatch":
             planned.add(owner)
-            if not (ROOT / owner).exists():
-                # A drawn stage that isn't built yet also has its runtime prompt and checks planned. Built stages stay strict.
+            if baseline_file(ROOT, target["baseline"], owner) is None:
+                # A stage absent at the baseline also has its runtime prompt and checks planned. Stages built at the baseline stay strict.
                 planned.update([*contract["checks"].values(), contract.get("instructions", {}).get("runtime_prompt", owner)])
         sections[section].update(contract["checks"].values())
         add_skills(section, contract.get("skills", []))

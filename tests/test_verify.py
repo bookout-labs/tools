@@ -121,6 +121,9 @@ class VerifyTest(unittest.TestCase):
         self.assertEqual((update["stop"], update["verify"].stale, update["work"].repair_head), ("head_moved", True, MOVED))
         self.assertIn("stale", run.forge.posted[0])
         self.assertEqual(verify.drive(state(), stage(Forge(heads=[pr(MOVED)])))["work"].repair_head, MOVED)
+        # A checkout that moved off the published head goes back to Implement to check its current head, as Review's does.
+        local = verify.drive(state(), stage(workspace=Workspace([WorktreeState(MOVED, True, "8-items")])))
+        self.assertEqual((local["stop"], "work" in local), ("head_moved", False))
         self.assertEqual(verify.drive(state(), stage(Forge(heads=[ForgeError("down")])))["halt"], "git_failed")
 
     def test_vf4_timeout_is_unreconciled_and_a_retry_adopts_the_marker(self):

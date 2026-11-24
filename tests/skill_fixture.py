@@ -45,6 +45,20 @@ def fixture_pin(root: Path) -> SkillPin:
 
 
 @contextmanager
+def verify_checkout() -> Iterator[Path]:
+    """A target checkout whose HEAD tracks one verify skill, so Verify drives the change."""
+    with TemporaryDirectory(prefix="foreman-target-") as directory:
+        root = Path(directory).resolve()
+        git(root, "init", "--quiet")
+        (root / ".claude/skills/verify-web").mkdir(parents=True)
+        (root / ".claude/skills/verify-web/SKILL.md").write_text("# Verify the web app\n", encoding="utf-8")
+        git(root, "add", "--", ".claude")
+        git(root, "-c", "user.name=Foreman", "-c", "user.email=foreman@example.invalid",
+            "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "Verify skill")
+        yield root
+
+
+@contextmanager
 def skill_fixture(config: Config | None = None) -> Iterator[tuple[Config, Path]]:
     with TemporaryDirectory(prefix="foreman-skills-") as directory:
         scratch = Path(directory)

@@ -4,9 +4,11 @@ import ast
 
 from dataclasses import replace
 from hashlib import sha256
+from itertools import count
 import json
 from pathlib import Path
 from subprocess import CompletedProcess
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import get_type_hints
 import unittest
@@ -17,7 +19,7 @@ from foreman.stages import STAGES, Acceptance
 from foreman.state import DeliveryState, PlanState
 from foreman.stage_output import ResearchOutput
 from foreman.skill_rules import SkillMethod, SkillRule, SkillMissing, export_skills, stage_methods
-from skill_fixture import skill_fixture
+from skill_fixture import skill_fixture, verify_checkout
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.worker import CliWorker
 from test_delivery import EMPTY_SLICE
@@ -25,9 +27,20 @@ from test_delivery import EMPTY_SLICE
 
 def capture():
     captures = {}
-    for kind in ("feature", "bug_fix", "refactoring", "perf_issue"):
-        for route in ("plan", "question", "supplied_slice"):
+    runs = [(kind, route, False) for kind in ("feature", "bug_fix", "refactoring", "perf_issue")
+            for route in ("plan", "question", "supplied_slice")]
+    # Verify calls a worker only when the target checkout tracks a verify skill.
+    for kind, route, skill in [*runs, ("feature", "supplied_slice", True)]:
+        with verify_checkout() as checkout, TemporaryDirectory() as scratch_root:
             records = []
+            # Keep audit hashes independent of the checkout and scratch paths.
+            paths = {str(checkout): "/CHECKOUT", str(Path(scratch_root).resolve()): "/SCRATCH"}
+
+            def stable(text):
+                for path, name in paths.items():
+                    text = text.replace(path, name)
+                return text.encode()
+
             item = {**EMPTY_SLICE, "stateful": True}
             script = ScriptHandler(triage=route,
                                    work_kind=kind, reviews=["changes", "approve"])
@@ -40,12 +53,12 @@ def capture():
 
                     def command(self, call):
                         records.append({"stage": node, "model": model.name,
-                            "instruction": sha256(instruction.encode()).hexdigest(),
-                            "prompt": sha256(call.prompt.encode()).hexdigest(),
-                            "prompt_bytes": len(call.prompt.encode()),
+                            "instruction": sha256(stable(instruction)).hexdigest(),
+                            "prompt": sha256(stable(call.prompt)).hexdigest(),
+                            "prompt_bytes": len(stable(call.prompt)),
                             "schema": sha256(call.schema.encode()).hexdigest(),
                             "edit": call.edit, "checks": list(call.checks),
-                            "roots": [str(root) for root in call.read_roots],
+                            "roots": [stable(str(root)).decode() for root in call.read_roots],
                             "methods": state["dispatch_plan"]["methods"]})
                         return ["fixture"]
 
@@ -53,16 +66,18 @@ def capture():
                         return response
 
                 with patch.dict("foreman.worker.ADAPTERS", {model.family: lambda _: Adapter()}):
-                    return CliWorker(Path.cwd(), lambda *args: CompletedProcess([], 0))(node, model, state, instruction)
+                    return CliWorker(Path.cwd(), lambda *args: CompletedProcess([], 0), scratch_root=Path(scratch_root))(
+                        node, model, state, instruction)
 
             with patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex="stable")), patch(
+                "foreman.worker.uuid4", side_effect=(SimpleNamespace(hex=f"attempt-{n}") for n in count())), patch(
                 "foreman.skill_rules.PACKAGE_SKILLS", Path("/LOCAL")), patch(
                 "foreman.delivery.PACKAGE", Path(__file__).resolve().parents[1] / "src/foreman"):
                 with patch("foreman.delivery.DryRun", side_effect=lambda **kwargs: DryRun(root=Path("/TARGET"), **kwargs)):
-                    # Keep audit hashes independent of the checkout path.
                     result = run_delivery(dispatch, repo="Example/Engine", request="Change items", check="check",
-                    slice=None if route == "question" else item, scratch=Path("/FIXTURE"), skills=lambda *_: Path("/METHODS"))
-            captures[f"{kind}/{route}"] = {"calls": records, "stop": result["stop"],
+                    slice=None if route == "question" else item, scratch=Path("/FIXTURE"), skills=lambda *_: Path("/METHODS"),
+                    checkout=checkout if skill else None)
+            captures[f"{kind}/{route}" + ("/verify_skill" if skill else "")] = {"calls": records, "stop": result["stop"],
                 "attempts": [(a["stage"], a["model"], a["methods"]) for a in result["attempts"]]}
     return captures
 
@@ -233,7 +248,7 @@ class StageDeclarationsTest(unittest.TestCase):
         self.assertEqual(methods, ["interrogate/SKILL.md#L19-L19"])
 
     def test_active_and_non_model_resources_stay_distinct(self):
-        self.assertEqual(MODEL_STAGES, ("triage", "research", "spec", "implement", "review"))
+        self.assertEqual(MODEL_STAGES, ("triage", "research", "spec", "implement", "verify", "review"))
         self.assertEqual(STAGES["spec_check"].kind, "model")
         self.assertEqual(STAGES["spec_check"].model_selector, "spec")
         self.assertEqual(STAGES["spec_check"].prompt, "spec_check.md")

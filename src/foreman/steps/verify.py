@@ -18,12 +18,6 @@ HALTS = [Halt.dirty_worktree, Halt.git_failed, Halt.publish_failed, Halt.publica
 HEAD_MOVED = "head_moved"
 
 
-def moved(state: DeliveryState, head: str) -> DeliveryUpdate:
-    work = state.get("work", WorkState())
-    return {"stop": HEAD_MOVED, "work": WorkState(branch=work.branch, base=work.base, repair_head=head),
-            "checks": state["checks"].for_attempt()}
-
-
 def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     work, verify = state.get("work", WorkState()), state.get("verify", VerifyState())
     head = work.published_head
@@ -31,7 +25,10 @@ def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         if not head or state["checks"].verified_head != head:
             raise WorkspaceError("Verify needs the published checked head.")
         before = run.workspace.inspect()
-        if not before.clean or before.head != head or before.branch != work.branch:
+        if before.head != head:
+            # As in Review, Implement checks the checkout's current head again.
+            return {"stop": HEAD_MOVED, "checks": state["checks"].for_attempt()}
+        if not before.clean or before.branch != work.branch:
             raise WorkspaceError("Verify needs the clean delivery branch at the published head.")
         pr = run.forge.pull_request_for(state["run"].repo, work.branch)
         if pr is None:
@@ -40,7 +37,7 @@ def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     except (WorkspaceError, ForgeError, TargetSkillUnreadable) as exc:
         return stopped(Halt.git_failed, str(exc), "verify")
     if pr.headRefOid != head:
-        return moved(state, pr.headRefOid)
+        return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt()}
     if verify.outcome == "driven" and verify.tested_head == head:
         # A resumed stage keeps the evidence it reached for this head, and posts it.
         return {"stop": ""}
@@ -80,7 +77,8 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return stopped(Halt.publication_unreconciled, f"The evidence may have posted ({exc}). Rerun to adopt it by its marker.", "verify")
     except ForgeError as exc:
         return stopped(Halt.publish_failed, str(exc), "verify")
-    update = moved(state, pr.headRefOid) if stale else DeliveryUpdate(stop="posted")
+    update: DeliveryUpdate = ({"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt()}
+                              if stale else {"stop": "posted"})
     return {**update, "verify": verify.model_copy(update={"outcome": "posted", "stale": stale})}
 
 

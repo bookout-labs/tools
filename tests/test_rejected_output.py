@@ -11,6 +11,7 @@ from foreman.dry_run import ScriptHandler
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.stage_output import parse_output
 from test_delivery import walk
+from skill_fixture import verify_checkout
 
 
 class RejectedStageOutputTest(unittest.TestCase):
@@ -38,7 +39,12 @@ class RejectedStageOutputTest(unittest.TestCase):
                                 return Outcome(kind, {}, usage=usage, detail="" if kind == "ran" else diagnostic)
                             return script(node, model, state, instruction)
 
-                        result = walk(worker, config=config, slice=None) if stage in {"research", "spec"} else walk(worker, config=config)
+                        if stage in {"research", "spec"}:
+                            result = walk(worker, config=config, slice=None)
+                        else:
+                            # Verify calls a worker only for a checkout that tracks a verify skill.
+                            with verify_checkout() as checkout:
+                                result = walk(worker, config=config, checkout=checkout if stage == "verify" else None)
                         expected_model = calls[-1] or "no model"
                         self.assertEqual(result["halt"], "invalid_output")
                         self.assertEqual(result["halt_detail"], f"{stage} output from {expected_model}: {diagnostic}")

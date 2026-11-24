@@ -157,7 +157,8 @@ with SqliteSaver.from_conn_string(path) as saver:
         cases = [
             ("triage", "__start__", {}),
             ("spec", "triage", {}),
-            ("review", "implement", {}),
+            # Verify posted its evidence, so Review is next.
+            ("review", "verify", {"stop": "posted"}),
         ]
         # The shared quota wait is an interrupt inside dispatch; test_review_availability resumes it in fresh processes.
         cases += [(code.value, "merge", {"halt": code.value, "stop": code.value}) for code in Halt]

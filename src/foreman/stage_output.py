@@ -580,13 +580,12 @@ class VerifyCriterionRecord(TypedDict):
 
 
 class VerifyState(BaseModel, frozen=True, extra="forbid"):
-    """What Verify found for one published head: no skill, or the driven criteria and the comment that posts them."""
+    """What Verify found for one published head: no skill, or the driven criteria and whether they posted."""
 
     outcome: Literal["", "no_skill", "driven", "posted"] = ""
     tested_head: str = ""
     criteria: list[VerifyCriterionRecord] = Field(default_factory=list[VerifyCriterionRecord])
     stale: bool = False
-    comment_id: int | None = None
 
 
 class StageUpdate(TypedDict, total=False):
@@ -778,7 +777,8 @@ class VerifyCriterion(RecordContract[VerifyCriterionRecord]):
 
 
 class VerifyOutput(StageOutput):
-    tested_head: str = Field(pattern=r"^[0-9a-f]{40}$", description="The full SHA of the HEAD you drove.")
+    # Acceptance binds it to the exact published head.
+    tested_head: TrimmedText = Field(description="The full SHA of the HEAD you drove.")
     criteria: list[VerifyCriterion] = Field(min_length=1, description="Every acceptance criterion with its observed result.")
 
     @override

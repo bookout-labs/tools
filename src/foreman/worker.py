@@ -114,6 +114,17 @@ def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str
         return subprocess.CompletedProcess(command, returncode, stdout.read(), stderr.read())
 
 
+def worker_scratch(scratch_root: Path | None, checkout: Path) -> Path:
+    """The directory that holds worker scratch: the given root, or the system temp directory, never inside the checkout."""
+    root, checkout = (scratch_root or Path(tempfile.gettempdir())).resolve(), checkout.resolve()
+    return checkout.parent if root.is_relative_to(checkout) else root
+
+
+def verify_attempts(scratch: Path, repo: str, issue: int | None) -> Path:
+    """A run's verifier attempt directories. Each outlives its call so the captures it names stay readable, until the run stops."""
+    return scratch / "foreman-verify" / re.sub(r"[^A-Za-z0-9_.-]", "-", f"{repo}-{issue}")
+
+
 class CliWorker:
     def __init__(self, cwd: Path, run: CommandRunner = run_worker_command, *, scratch_root: Path | None = None):
         self.cwd = cwd
@@ -125,15 +136,11 @@ class CliWorker:
             raise ConfigError(f"{node} has no model configured")
         edit, drive = node == "implement", node == "verify"
         checkout = self.cwd.resolve()
-        temp_root = (self.scratch_root or Path(tempfile.gettempdir())).resolve()
-        if temp_root.is_relative_to(checkout):
-            temp_root = checkout.parent
+        temp_root = worker_scratch(self.scratch_root, checkout)
         kept = None
         if drive:
-            # The verifier's attempt directory outlives the call, so the captures it names stay readable as evidence.
-            # It sits under its run's directory, so the run can remove its own when it stops.
             run = RunState.model_validate(state.get("run") or {})
-            kept = temp_root / "foreman-verify" / re.sub(r"[^A-Za-z0-9_.-]", "-", f"{run.repo}-{run.issue}") / uuid4().hex
+            kept = verify_attempts(temp_root, run.repo, run.issue) / uuid4().hex
         prompt = (
             f"{instruction}\n\nReturn exactly one JSON object that matches the output schema. "
             "Use null for inapplicable nullable fields. Do not arm a merge."

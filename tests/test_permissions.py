@@ -18,7 +18,7 @@ from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec, NodeConfig, load_config
 from foreman.delivery import run_delivery
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
-from foreman.skill_rules import PACKAGE_SKILLS, export_skills, stage_methods
+from foreman.skill_rules import PACKAGE_SKILLS, export_skills, git, stage_methods
 from foreman.stages import STAGES
 from foreman.worker import CliWorker, git_dirs
 from skill_fixture import skill_fixture
@@ -35,11 +35,14 @@ class PermissionsTest(unittest.TestCase):
             root = export_skills(config.pstack, config.matt_skills, scratch)
             # The worker runs in the target checkout, so its own verify skill needs no extra read root.
             checkout = Path(directory)
-            # A repository opts in to each target skill by having it: verify-<app> and formal-<area>.
+            # A repository opts in to each target skill by tracking it: verify-<app> and formal-<area>.
+            git(checkout, "init", "--quiet")
             for skill in ("verify-board", "formal-recovery"):
                 target_skill = checkout / f".claude/skills/{skill}/SKILL.md"
                 target_skill.parent.mkdir(parents=True)
                 target_skill.write_text("Run the board checks.\n")
+            git(checkout, "add", "--", ".claude")
+            git(checkout, "-c", "user.name=Foreman", "-c", "user.email=foreman@example.invalid", "commit", "--quiet", "-m", "Target skills")
             for stage, row in STAGES.items():
                 if not row.skills:
                     continue
@@ -54,8 +57,8 @@ class PermissionsTest(unittest.TestCase):
                         path = instruction.split(' of ')[-1].split(' as the method.')[0] if ' of ' in instruction else instruction.removeprefix('Read ').split(' in full')[0]
                         self.assertTrue(Path(path).is_file())
                         self.assertTrue(any(Path(path).is_relative_to(Path(r)) for r in (*roots, checkout)))
-                    for skill in ("verify-board", "formal-recovery"):
-                        self.assertEqual(f".claude/skills/{skill}/SKILL.md" in methods, stage == "implement")
+                    for skill, owner in (("verify-board", "verify"), ("formal-recovery", "implement")):
+                        self.assertEqual(f".claude/skills/{skill}/SKILL.md" in methods, stage == owner)
 
     @patch("foreman.adapters.claude.sandboxed")
     def test_first_fix_and_quota_fallback_receive_the_bound_grant(self, _confinable):

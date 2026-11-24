@@ -182,7 +182,7 @@ def compile_delivery(
     builder.add_conditional_edges("implement", after_implement,
         {"published": "verify", "no_change": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("verify", lambda state: outcome(state, state.get("stop", "")),
-        {"posted": "review", "no_skill": "review", "head_moved": "implement", "cancelled": END, "halted": END})
+        {"posted": "review", "no_skill": "review", "head_moved": "implement", "halted": END})
     builder.add_conditional_edges("review", lambda state: outcome(state, state.get("stop", "")),
         {"P0": "implement", "P1": "implement", "head_moved": "implement", "none": "merge", "cancelled": END, "halted": END})
     builder.add_conditional_edges("merge", lambda state: outcome(state, state.get("stop", "")),
@@ -206,11 +206,13 @@ def run_delivery(
     max_budget_usd: BudgetUsd | None = None,
     skills: SkillSource = export_skills,
     commands: list[list[str]] | None = None,
+    checkout: Path | None = None,
 ) -> DeliveryResult:
+    """Walk the graph offline. `checkout` is a target checkout whose tracked skills the stages read; without one there are none."""
     dry = DryRun(commands=commands if commands is not None else [])
     state: DeliveryState = {
         "schema_version": SCHEMA_VERSION,
-        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens,
+        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens, workspace=str(checkout or ""),
                         base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo)),
                         max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
         "checks": ChecksState(check=check),

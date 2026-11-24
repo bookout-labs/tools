@@ -65,7 +65,7 @@ OWNERS = (
         frozenset(ReviewState.model_fields), 8, {}),
     OwnerCase("verify", VerifyState(outcome="posted", tested_head="b" * 40, criteria=[{
         "criterion": "The page lists items.", "result": "failed", "observation": "The list was empty.",
-        "evidence": "captures/items.png"}], stale=True, comment_id=14), frozenset(VerifyState.model_fields), 21, {}),
+        "evidence": "captures/items.png"}], stale=True), frozenset(VerifyState.model_fields), 21, {}),
 )
 
 
