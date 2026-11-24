@@ -95,6 +95,13 @@ def extend_attempts(current: list[AttemptRecord], update: list[AttemptRecord]) -
     return current + update
 
 
+class BuilderSession(TypedDict):
+    """The builder's one conversation for the PR (D5): the session its latest accepted answer returned, and that checkout."""
+    model: str
+    session: str
+    fingerprint: str
+
+
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
     dispatch_plan: DispatchPlanRecord
@@ -111,6 +118,7 @@ class DeliveryFields(TypedDict, total=False):
     pr_size: PullRequestSize
     models_used: dict[str, str]
     implement_models: list[str]
+    builder_session: BuilderSession | None
     verify: VerifyState
     watch: WatchRecord | None
     # Issues the run returns to admission as OWNER/NAME#N: open dependents after its merge, or the children it filed.

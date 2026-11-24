@@ -2,6 +2,7 @@
 import tests
 
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from subprocess import CompletedProcess
 import tempfile
@@ -212,6 +213,24 @@ class SmokeTest(unittest.TestCase):
                 first = next((i, a) for i, a in enumerate(state["attempts"], 1) if a["outcome"] == kind)
                 i, a = first
                 self.assert_verdict(state, 78, f"attempt.outcome={kind}", f"{i} {a['stage']} {a['model']}")
+
+    def test_a_repaired_invalid_answer_passes_the_attempt_checks(self):
+        # The invalid answer's attempt keeps outcome ran, so smoke judges the repaired run as it judges a clean one.
+        def run(invalid):
+            handler, calls = ScriptHandler(), []
+
+            def dispatch(node, model, state, instruction):
+                outcome = replace(handler(node, model, state, instruction), session_id="00000000-0000-4000-8000-000000000000")
+                calls.append(node)
+                return replace(outcome, output={}) if node == "triage" and calls.count("triage") <= invalid else outcome
+            with skill_fixture() as (config, scratch):
+                return run_delivery(dispatch, repo="bookout-labs/foreman-smoke", request="Add a field", config=config, scratch=scratch)
+
+        clean, repaired, stopped = run(0), run(1), run(2)
+        self.assertEqual([a["outcome"] for a in repaired["attempts"][:2]], ["ran", "ran"])
+        verdict = lambda state: (smoke_verdict(state).exit_code, smoke_verdict(state).condition)
+        self.assertEqual(verdict(repaired), verdict(clean))
+        self.assertEqual(verdict(stopped), (1, "halt=invalid_output"))
 
     def test_ran_identity_and_fallback(self):
         state = passing()

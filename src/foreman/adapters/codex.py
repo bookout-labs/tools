@@ -166,9 +166,9 @@ class CodexAdapter:
         policy = ["--ignore-user-config", "--ignore-rules", "-c", "approval_policy=never",
                   "-c", "default_permissions=foreman", "-c", "permissions.foreman=" + profile]
         effort = ["-c", f"model_reasoning_effort={self.model.effort}"] if self.model.effort else []
-        # Every call keeps its rollout so a quota stop can be charged what it used. Builders resume their session
-        # after a verified quota fallback; `exec resume` has no --color.
-        session = [call.resume_session] if call.edit and call.resume_session else []
+        # Every call keeps its rollout so a quota stop can be charged what it used. Dispatch names the session a call
+        # resumes; `exec resume` has no --color.
+        session = [call.resume_session] if call.resume_session else []
         return ["codex", "exec", *(["resume"] if session else []), "-m", self.model.model_id, *effort,
                 "--json", "--output-schema", str(schema_path),
                 *([] if session else ["--color", "never"]), *policy, *session, call.prompt]

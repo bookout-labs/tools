@@ -402,6 +402,9 @@ def run_live_delivery(
             # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm.
             merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None)
             retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review}
+            if "builder_session" in saved_values:
+                # The builder keeps its conversation for the PR; its fingerprint decides whether the next call resumes it (D5).
+                retained["builder_session"] = saved_values["builder_session"]
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
             invoke(None, graph.update_state(replay, retained))

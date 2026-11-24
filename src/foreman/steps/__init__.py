@@ -136,3 +136,9 @@ def cancel(state: DeliveryState, run: StageRun, step: str, failure: Halt = Halt.
     if pr is not None and pr.state == "MERGED":
         return {"halt_detail": TOO_LATE}
     return {"stop": "cancelled", "path": [step]}
+
+
+def follow(state: DeliveryState, before: str, after: str) -> DeliveryUpdate:
+    """Foreman moved the checkout without changing the builder's tree, so its saved conversation moves too (D5)."""
+    saved = state.get("builder_session")
+    return {"builder_session": {**saved, "fingerprint": after}} if saved and saved["fingerprint"] == before else {}
