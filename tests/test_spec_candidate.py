@@ -187,7 +187,7 @@ class CandidateTests(unittest.TestCase):
 
 
     def test_without_methods_records_dispatch_author_independently_of_attempts(self):
-        result = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=DryRun(), workspace=DryRun())).invoke(
+        result = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner")).invoke(
             {"review": ReviewState(), "run": RunState(repo="org/repo", issue=0, base_branch="main", base_sha="<sha>", token_cap=DEFAULT_TOKEN_CAP), "checks": ChecksState(check=""), "path": [], "plan": PlanState(issue_kind="parent")})
         self.assertNotIn("skill_attempts", result)
         self.assertEqual(result["plan"].spec_candidate["author"]["model"], result["models_used"]["triage"])

@@ -113,7 +113,7 @@ if legacy == "pending":
 def legacy_order(node, config, used, implement_models=None):
     models = order_for(node, config, used, implement_models)
     return [m for m in models if m.family != author] if node == "review" and legacy == "pending" else models
-run = LiveRun(forge, workspace)
+run = LiveRun(forge, workspace, human_login="fixture-owner")
 with patch("foreman.runner.load_config", return_value=config), patch("foreman.stages.order_for", legacy_order):
     try:
         result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",

@@ -22,7 +22,7 @@ from skill_fixture import checker_reply, fixture_skills
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace
 
 THREAD = "example/engine#8"
-SETTINGS = {"FOREMAN_CHECK": "exit 0"}
+SETTINGS = {"FOREMAN_CHECK": "exit 0", "FOREMAN_HUMAN_LOGIN": "fixture-owner"}
 
 
 class StartTest(unittest.TestCase):
@@ -44,7 +44,7 @@ class StartTest(unittest.TestCase):
         with patch.object(self.forge, "variables", side_effect=lambda repo: dict(variables)), \
                 contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
             code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.root / "runs.sqlite3",
-                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills), worker_runner=worker)
+                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"), worker_runner=worker)
         return code, out.getvalue(), err.getvalue()
 
     def stored(self):
@@ -70,7 +70,7 @@ class StartTest(unittest.TestCase):
         store = self.root / "runs.sqlite3"
         self.assertEqual(saved_workspace(store, THREAD), str(self.root.resolve()))
         self.assertIsNone(saved_workspace(store, "example/engine#9"))
-        live = LiveRun(self.forge, self.workspace, skills=fixture_skills)
+        live = LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner")
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertNotEqual(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"], checkpoint=store, live_run=live), 2)
             with self.assertRaises(SystemExit) as refused:
@@ -88,18 +88,19 @@ class StartTest(unittest.TestCase):
         ])
 
     def test_missing_or_malformed_settings_fail_closed_before_any_run(self):
-        for variables in ({}, {"FOREMAN_CHECK": " "}, {**SETTINGS, "FOREMAN_MAX_TOKENS": "many"},
+        for variables in ({}, {"FOREMAN_CHECK": " "}, {"FOREMAN_CHECK": "exit 0"}, {**SETTINGS, "FOREMAN_HUMAN_LOGIN": " "},
+                          {**SETTINGS, "FOREMAN_MAX_TOKENS": "many"},
                           {**SETTINGS, "FOREMAN_MAX_TOKENS": "0"}, {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "-1"},
                           {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": ""}):
             with self.subTest(variables=variables), patch("foreman.cli.run_live_delivery") as run:
                 code, _, err = self.start(variables)
                 self.assertEqual(code, 1)
-                self.assertRegex(err, "FOREMAN_CHECK|FOREMAN_MAX_TOKENS")
+                self.assertRegex(err, "FOREMAN_CHECK|FOREMAN_HUMAN_LOGIN|FOREMAN_MAX_TOKENS")
                 run.assert_not_called()
         with patch.object(self.forge, "variables", side_effect=VariablesUnreadable("HTTP 403")), \
                 patch("foreman.cli.run_live_delivery") as run, contextlib.redirect_stderr(io.StringIO()) as err:
             code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.root / "runs.sqlite3",
-                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills))
+                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"))
         self.assertEqual((code, "HTTP 403" in err.getvalue()), (1, True))
         run.assert_not_called()
 

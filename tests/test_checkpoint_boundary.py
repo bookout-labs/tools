@@ -47,7 +47,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                          patch("foreman.runner.require_schema_version", wraps=require_schema_version) as refuse:
                         with self.assertRaisesRegex(CheckpointVersionError, "schema_version.*Start a new run") as raised:
                             run_live_delivery(repo="a/b", issue=8, check="", checkpoint=checkpoint,
-                                              dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun()))
+                                              dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun(), human_login="fixture-owner"))
                         self.assertIn(str(checkpoint), str(raised.exception))
                         self.assertIn("a/b#8", str(raised.exception))
                         self.assertIn("XDG_STATE_HOME", str(raised.exception))
@@ -87,7 +87,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
             config = {"configurable": {"thread_id": "owners"}}
             with SqliteSaver.from_conn_string(path) as saver:
                 saver.serde = serde
-                graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun()), checkpointer=saver)
+                graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun(), human_login="fixture-owner"), checkpointer=saver)
                 graph.update_state(config, {**values, "schema_version": SCHEMA_VERSION}, as_node="research")
             with SqliteSaver.from_conn_string(path) as saver:
                 saver.serde = serde
@@ -137,7 +137,7 @@ with SqliteSaver.from_conn_string(path) as saver:
     saver.serde = checkpoint_serializer()
     # The checkout sits at the owners' checked head on their branch.
     graph = compile_delivery(ask, load_config(),
-                             run=LiveRun(DryRun(), DryRun(head="b" * 40, branch="8-change")), checkpointer=saver)
+                             run=LiveRun(DryRun(), DryRun(head="b" * 40, branch="8-change"), human_login="fixture-owner"), checkpointer=saver)
     if phase == "write":
         values = json.loads(state_json)
         for owner in OWNERS:
@@ -244,7 +244,7 @@ with patch("foreman.runner.load_config", return_value=config), patch.object(
     workspace, "run", side_effect=lambda command, **kwargs: 1 if stage == "check" and command == "check" else 0,
 ):
     result = run_live_delivery(repo="Example/Engine", issue=8, check="check", preflight="env",
-        checkpoint=root / "run.sqlite", run=LiveRun(forge, workspace), dispatcher=worker)
+        checkpoint=root / "run.sqlite", run=LiveRun(forge, workspace, human_login="fixture-owner"), dispatcher=worker)
 assert count(result) == (1 if phase == "pause" else config.max_review_rounds), result
 assert result["stop"] == ("quota_exhausted" if phase == "pause" else stop), result
 assert not any(key in result for key in ("review_rounds", "verify_failures", "spec_failures"))

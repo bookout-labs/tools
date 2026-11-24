@@ -20,7 +20,7 @@ from foreman.budget import claude_spend, work_tokens
 from foreman.cli import main
 from foreman.state import SCHEMA_VERSION, DeliveryResult, checkpoint_serializer
 from foreman.credentials import CredentialFailure, credentials, git_auth
-from foreman.delivery import LiveRun
+from foreman.delivery import FIXTURE_HUMAN, LiveRun
 from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, ForgeError, LiveForge
 from foreman.process_group import owned_group, signals_end_foreman
 from foreman.redaction import redact
@@ -167,8 +167,8 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
         check = ("npm run check" if npm else "python -m unittest discover -s tests") + " && " + shlex.join([sys.executable if npm else "python", str(script), str(issue), f"refs/remotes/origin/{base_branch}"])
         print(f"smoke issue {issue}; tokens {tokens}; Claude ${dollars.amount}; deadline {SMOKE_SECONDS}s. "
               "Other providers have no dollar cap.", flush=True)
-        live = LiveRun(forge, LiveWorkspace(root, repo))
-        command = ["run", "delivery", "--repo", repo, "--issue", str(issue), "--request", request,
+        live = LiveRun(forge, LiveWorkspace(root, repo), human_login=FIXTURE_HUMAN)
+        command = ["run", "delivery", "--repo", repo, "--issue", str(issue), "--request", request, "--human-login", FIXTURE_HUMAN,
                    "--check", check, "--preflight", "npm ci" if npm else "",
                    "--max-tokens", str(tokens), "--max-budget-usd", str(dollars.amount)]
         checkpoint = directory / "checkpoint.sqlite3"

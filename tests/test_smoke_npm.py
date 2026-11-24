@@ -109,6 +109,8 @@ class NpmSmokeTest(unittest.TestCase):
                 kwargs['live_run'] = replace(kwargs['live_run'], skills=fixture_skills)
                 kwargs.setdefault('worker_runner', worker)
                 return real_main(command, **kwargs)
+            # Smoke names its own fixture login; nothing comes from the suite's environment.
+            stack.enter_context(patch.dict(os.environ, {name: value for name, value in os.environ.items() if name != "FOREMAN_HUMAN_LOGIN"}, clear=True))
             stack.enter_context(patch('foreman.smoke_command.SMOKE_TARGETS', targets or (smoke.SMOKE_TARGETS[1],)))
             stack.enter_context(patch('foreman.smoke_command.credentials.environment', return_value=dict(os.environ)))
             stack.enter_context(patch('foreman.smoke_command.git_auth', return_value=[]))

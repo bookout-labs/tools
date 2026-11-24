@@ -72,7 +72,7 @@ class DollarBudgetTests(unittest.TestCase):
                     with SqliteSaver.from_conn_string(str(root / "budget.sqlite")) as saver:
                         saver.serde = checkpoint_serializer()
                         invocation = {"configurable": {"thread_id": stage}}
-                        graph = compile_delivery(handler, config, run=LiveRun(forge, workspace),
+                        graph = compile_delivery(handler, config, run=LiveRun(forge, workspace, human_login="fixture-owner"),
                                                  scratch=scratch, checkpointer=saver)
                         graph.invoke({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", issue=8, base_branch="main", base_sha=workspace.current.head, token_cap=100, request="x"), "checks": ChecksState(check="exit 0"), "path": [],
                                         "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE)},

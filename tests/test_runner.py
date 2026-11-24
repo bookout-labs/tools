@@ -31,7 +31,7 @@ from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
-from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
+from foreman.github import human_comments, marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
 from foreman.status import STATUS_MARKER, Status, running, shows, write_status
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot
@@ -845,7 +845,7 @@ class LiveRunnerTest(unittest.TestCase):
             with patch("foreman.runner.compile_delivery", side_effect=compile):
                 return run_live_delivery(repo="Example/Engine", issue=8, check=check,
                     checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, worker),
-                    run=LiveRun(self.github, active, check_log=logs.append))
+                    run=LiveRun(self.github, active, check_log=logs.append, human_login="fixture-owner"))
         with patch.dict(os.environ, {"GH_TOKEN": canary}):
             planned = invoke("spec")
             self.assertEqual(planned["path"][-1:], ["spec_check"])
@@ -1026,7 +1026,7 @@ class LiveRunnerTest(unittest.TestCase):
                 old_bytes = self.checkpoint.read_bytes()
                 command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"]
                 worker = Mock(side_effect=AssertionError("old checkpoint dispatched a worker"))
-                live_run = LiveRun(self.github, FakeWorkspace(self.cwd))
+                live_run = LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner")
                 with (contextlib.chdir(self.cwd),
                       patch.dict(os.environ, XDG_STATE_HOME=str(state_home)),
                       patch("foreman.cli.Path.home", return_value=self.cwd / "unused-home"),
@@ -1171,7 +1171,7 @@ def worker(args, cwd, env):
 pin = SkillPin.model_validate_json(sys.argv[2])
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
     sys.exit(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
-                  checkpoint=Path(sys.argv[1]), worker_runner=worker, live_run=LiveRun(Forge(), workspace)))
+                  checkpoint=Path(sys.argv[1]), worker_runner=worker, live_run=LiveRun(Forge(), workspace, human_login="fixture-owner")))
 """
         bootstrap = f"import sys; sys.path[:0] = {[str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]!r}\n"
         for mode in ["queued", "merged"]:
@@ -1270,7 +1270,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
 
         def start(name):
-            with patch.object(self.github, "variables", return_value={"FOREMAN_CHECK": "exit 0"}), \
+            with patch.object(self.github, "variables", return_value={"FOREMAN_CHECK": "exit 0", "FOREMAN_HUMAN_LOGIN": "fixture-owner"}), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 code = main(["start", "--repo", "Example/Engine", "--issue", name.split("#")[1]], checkpoint=self.checkpoint,
                             live_run=LiveRun(self.github, fake, human_login="fixture-owner"),
@@ -1460,7 +1460,7 @@ if phase == "answer":
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_skills=SkillPin.model_validate_json(pin).model_copy(update={"directory": "skills"}))):
     result = run_live_delivery(
         repo="Example/Engine", issue=8, check="exit 0", checkpoint=Path("review.sqlite3"),
-        run=LiveRun(forge, workspace), dispatcher=CliWorker(workspace.root, worker),
+        run=LiveRun(forge, workspace, human_login="fixture-owner"), dispatcher=CliWorker(workspace.root, worker),
         answer=None if phase == "initial" else answer,
     )
 print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path": result["path"],
@@ -1666,7 +1666,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         ):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
-                worker_runner=worker, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                worker_runner=worker, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
             )
         self.assertEqual(code, 1)
         self.assertIn("done skill_missing", stdout.getvalue())
@@ -1735,7 +1735,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
                 worker_runner=lambda args, cwd, env: quota_with_usage(args),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
             )
         self.assertEqual(code, 75)
         self.assertIn("paused quota_exhausted", stdout.getvalue())
@@ -1771,7 +1771,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
         paused = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-            dispatcher=CliWorker(self.cwd, quota), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            dispatcher=CliWorker(self.cwd, quota), run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
         )
         self.assertEqual(paused["stop"], "quota_exhausted")
         self.assertTrue(all(not path.exists() for path in paths))
@@ -1785,7 +1785,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
         resumed = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-            dispatcher=CliWorker(self.cwd, answer), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            dispatcher=CliWorker(self.cwd, answer), run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
         )
         self.assertEqual(resumed["stop"], "answered")
         self.assertGreater(len(paths), before_resume)
@@ -1806,7 +1806,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
         paused = run_live_delivery(
             repo="Example/Engine", issue=8, check="exit 0", checkpoint=self.checkpoint,
-            dispatcher=exhaust, run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            dispatcher=exhaust, run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
         )
         self.assertEqual(paused["stop"], "quota_exhausted")
         self.assertEqual(run_exit_code(paused), 75)
@@ -1863,7 +1863,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "102", "--check", "exit 0"],
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
                 worker_runner=lambda *_: self.fail("An unadmitted issue must not dispatch."),
             )
         self.assertEqual(code, 1)
@@ -2189,7 +2189,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "sh verify.sh"],
                 worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake, human_login="fixture-owner"),
             )
         self.assertEqual(code, 0)
         self.assertIn("done merged\n", stdout.getvalue())
@@ -2210,7 +2210,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 code = main(
                     ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"],
                     worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
-                    checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
+                    checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake, human_login="fixture-owner"),
                 )
             self.assertEqual(code, 0)
             outputs.append([line for line in stdout.getvalue().splitlines() if line.startswith("start ")])
@@ -2249,7 +2249,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_cli_uses_one_workspace_root_for_the_worker_check_and_checkpoint(self):
         root = self.cwd / "checkout"
         root.mkdir()
-        live_run = LiveRun(self.github, FakeWorkspace(root))
+        live_run = LiveRun(self.github, FakeWorkspace(root), human_login="fixture-owner")
         fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
 
@@ -2268,7 +2268,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         rerun = {"repo": "Example/Engine", "issue": 8, "check": "exit 0", "checkpoint": self.checkpoint, "dispatcher": ScriptHandler()}
         self.assertEqual(run_live_delivery(**rerun, run=live_run)["run"].workspace, str(root.resolve()))
         with self.assertRaisesRegex(ValueError, "Run this issue from"):
-            run_live_delivery(**rerun, run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+            run_live_delivery(**rerun, run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"))
 
     def test_nonzero_check_exit_consumes_the_cap_without_dispatched_verify_or_review(self):
         result = self.walk([{"triage": "supplied_slice"}] + [{"implementation": "built"}] * 3, check="exit 17")
@@ -2300,7 +2300,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
                  "--check", "touch checked", "--preflight", preflight],
                 worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(root)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(root), human_login="fixture-owner"),
             )
         self.assertEqual(code, 75)
         self.assertIn("done env_unavailable", stdout.getvalue())
@@ -2317,7 +2317,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
                  "--check", "exit 0", "--preflight", preflight],
                 worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
             )
         self.assertEqual(code, 75)
         self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, stdout.getvalue())
@@ -2332,11 +2332,35 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
                  "--check", "exit 0", "--answer", "All items"],
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
             )
         self.assertEqual(code, 1)
         self.assertIn("already answered differently", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_a_live_run_needs_a_human_login_and_reads_answers_only_under_it(self):
+        self.walk([{"triage": "needs_human", "human_question": "Which items?"}])
+        command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", "exit 0"]
+        stderr = io.StringIO()
+        with patch.dict(os.environ, {"FOREMAN_HUMAN_LOGIN": " "}), contextlib.chdir(self.cwd), \
+                contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as refused:
+            main(command, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+        self.assertEqual(refused.exception.code, 2)
+        self.assertIn("--human-login or FOREMAN_HUMAN_LOGIN", stderr.getvalue())
+        with self.assertRaises(AssertionError):
+            human_comments(self.github, " ", "Example/Engine", 8)
+        marker = re.search(r"foreman answer [0-9a-f-]{71}", self.github.status["Example/Engine", 8]).group(0)
+        self.github.ruling(f"{marker}\nAll items.", login="Fixture-Owner")
+        self.assertEqual(human_comments(self.github, " fixture-owner ", "Example/Engine", 8)[-1], f"{marker}\nAll items.")
+        # The CLI's login, not the injected run's or the environment's, decides, so a reply under another login answers nothing.
+        def no_worker(*args):
+            raise AssertionError("an unanswered question dispatches no worker")
+        environ = {name: value for name, value in os.environ.items() if name != "FOREMAN_HUMAN_LOGIN"}
+        with patch.dict(os.environ, environ, clear=True), contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
+            code = main([*command, "--human-login", "someone-else"], checkpoint=self.checkpoint, worker_runner=no_worker,
+                        live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"))
+        self.assertEqual(code, 3)
+        self.assertIn("Foreman needs an answer in triage.", self.github.status["Example/Engine", 8])
 
     def test_rerunning_same_command_after_preflight_recovers_without_using_a_round(self):
         preflight = "test -f ready"
@@ -2541,7 +2565,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with self.assertRaisesRegex(RuntimeError, "worker stopped"):
             run_live_delivery(
                 repo="Example/Engine", issue=8, check="exit 0", preflight="test -f ready",
-                checkpoint=self.checkpoint, run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                checkpoint=self.checkpoint, run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
                 dispatcher=interrupted_run,
             )
         ready.unlink()
@@ -2661,7 +2685,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
                 worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake, human_login="fixture-owner"),
             )
         self.assertEqual(code, 75)
         self.assertEqual(arm.call_args.args[:4], ("Example/Target", 8, BRANCH, HEAD))
@@ -2684,7 +2708,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             patch("foreman.skill_rules.git") as git_call,
         ):
             code = main(["run", "delivery", "--repo", "Example/Target", "--request", "List items", "--dry-run"],
-                        worker_runner=worker, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+                        worker_runner=worker, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"))
         self.assertEqual(code, 0)
         self.assertIn(
             "merge skipped (dry run): gh pr merge '<number>' --repo Example/Target --auto --squash --match-head-commit '<sha>'\n"
@@ -2701,7 +2725,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         repo = "Example/Target"
         fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
-        live_run = LiveRun(self.github, FakeWorkspace(self.cwd))
+        live_run = LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner")
 
         def invoke():
             with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
@@ -2735,7 +2759,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8", "--check", "exit 0"],
                 worker_runner=lambda args, cwd, env=None: workspace.reply(args, checker_reply(args) or next(replies)),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace, human_login="fixture-owner"),
             )
         self.assertEqual(code, 75)
         self.assertIn("done merge_held\nFOREMAN_MERGE_HOLD is set.\n", stdout.getvalue())
@@ -2794,7 +2818,7 @@ config = replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_s
 config.nodes["spec"] = replace(config.nodes["spec"], models=(ModelSpec.parse("claude-opus-5-5-high"),))
 with patch("foreman.runner.load_config", return_value=config):
     sys.exit(main(sys.argv[4:], worker_runner=worker, checkpoint=Path(checkpoint),
-                  live_run=LiveRun(FakeGitHub(["Ready"]), FakeWorkspace(Path.cwd()))))
+                  live_run=LiveRun(FakeGitHub(["Ready"]), FakeWorkspace(Path.cwd()), human_login="fixture-owner")))
 '''
         bootstrap = (f"import sys; sys.path[:0] = {[str(Path(__file__).resolve().parents[1]), str(Path(__file__).parent.resolve())]!r}\n")
         for case, cap, mode, code in (("complete", 1000000, "success", 0), ("cap", 45, "success", 1),
@@ -2818,7 +2842,7 @@ with patch("foreman.runner.load_config", return_value=config):
                     detail = process.stdout
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                         saver.serde = checkpoint_serializer()
-                        graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
+                        graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(FakeGitHub(), FakeWorkspace(root), human_login="fixture-owner"),
                                                  checkpointer=saver)
                         stored = snapshot_result(graph.get_state({"configurable": {"thread_id": "a/b#8"}}, subgraphs=True))
                     return process.stdout, stored["attempts"]
@@ -2891,7 +2915,7 @@ case, pin, answer = sys.argv[1:]
 config = replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_skills=SkillPin.model_validate_json(pin).model_copy(update={"directory": "skills"}))
 root = Path.cwd()
 workspace = LiveWorkspace(root)
-live = LiveRun(FakeGitHub(["Ready"]), workspace, skills=fixture_skills)
+live = LiveRun(FakeGitHub(["Ready"]), workspace, skills=fixture_skills, human_login="fixture-owner")
 checkpoint = root / "run.sqlite"
 
 def dispatch(stage, model, state, instruction):
@@ -3029,7 +3053,7 @@ pin = SkillPin.model_validate_json(sys.argv[2])
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
     sys.exit(main(
         sys.argv[3:], worker_runner=run, checkpoint=Path(sys.argv[1]),
-        live_run=LiveRun(forge, workspace),
+        live_run=LiveRun(forge, workspace, human_login="fixture-owner"),
     ))
 """
         detail = ""
@@ -3153,7 +3177,7 @@ forge.hold = "Maintenance" if phase == "held" else ""
 pin = SkillPin.model_validate_json(sys.argv[2])
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
     sys.exit(main(sys.argv[4:], worker_runner=worker, checkpoint=Path(sys.argv[1]),
-                  live_run=LiveRun(forge, workspace)))
+                  live_run=LiveRun(forge, workspace, human_login="fixture-owner")))
 '''
         bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
                      f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
@@ -3232,7 +3256,7 @@ class HaltExitCodeTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--check", check, "--preflight", preflight],
-                checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace, skills=fixture_skills),
+                checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace, skills=fixture_skills, human_login="fixture-owner"),
                 worker_runner=(lambda args, cwd, env: workspace.reply(args, checker_reply(args) or next(outputs))),
             )
         return code, output.getvalue()

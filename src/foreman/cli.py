@@ -190,19 +190,25 @@ class RunSettings:
     preflight: str
     max_tokens: int | None
     max_budget_usd: BudgetUsd | None
+    # Answers, approvals and stop requests count only from this login, so a run without one must not start.
+    human_login: str
 
     @classmethod
     def from_variables(cls, variables: Mapping[str, str]) -> "RunSettings":
         check = variables.get("FOREMAN_CHECK", "")
         if not check.strip():
             raise ValueError("Set the FOREMAN_CHECK repository variable before starting runs from Ready.")
+        human_login = variables.get("FOREMAN_HUMAN_LOGIN", "").strip()
+        if not human_login:
+            raise ValueError("Set the FOREMAN_HUMAN_LOGIN repository variable before starting runs from Ready.")
         try:
             tokens = variables.get("FOREMAN_MAX_TOKENS")
             max_tokens = positive_tokens(tokens) if tokens is not None else DEFAULT_TOKEN_CAP
             max_budget_usd = positive_budget(variables.get("FOREMAN_MAX_BUDGET_USD", DEFAULT_BUDGET_USD))
         except (argparse.ArgumentTypeError, ValueError) as exc:
             raise ValueError("FOREMAN_MAX_TOKENS must be a positive integer and FOREMAN_MAX_BUDGET_USD a positive amount.") from exc
-        return cls(check=check, preflight=variables.get("FOREMAN_PREFLIGHT", ""), max_tokens=max_tokens, max_budget_usd=max_budget_usd)
+        return cls(check=check, preflight=variables.get("FOREMAN_PREFLIGHT", ""), max_tokens=max_tokens, max_budget_usd=max_budget_usd,
+                   human_login=human_login)
 
 
 def main(
@@ -234,6 +240,8 @@ def main(
     run.add_argument("--issue", type=int)
     run.add_argument("--request")
     run.add_argument("--check", default="")
+    run.add_argument("--human-login", default=os.environ.get("FOREMAN_HUMAN_LOGIN", ""),
+                     help="the GitHub login whose issue comments answer, approve or stop the run (default: FOREMAN_HUMAN_LOGIN)")
     run.add_argument("--preflight", default="")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
@@ -315,7 +323,7 @@ def main(
     def live(repo: str, issue: int, settings: RunSettings, workspace: LiveWorkspace, *,
              answer: str | None = None, request: str | None = None) -> int:
         target = live_run or LiveRun(LiveForge(), workspace)
-        target = replace(target, check_log=_write_check_log)
+        target = replace(target, check_log=_write_check_log, human_login=settings.human_login)
         dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
 
         def reported(result: DeliveryResult) -> None:
@@ -408,10 +416,12 @@ def main(
             saved = saved_workspace(store, thread)
             if saved is None and not args.check.strip():
                 run.error("a new live run requires a --check command")
+            if not args.human_login.strip():
+                run.error("a live run requires --human-login or FOREMAN_HUMAN_LOGIN, the login whose comments answer it")
             managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
             workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo)
             return live(args.repo, args.issue, RunSettings(check=args.check, preflight=args.preflight, max_tokens=args.max_tokens,
-                                                           max_budget_usd=args.max_budget_usd), workspace,
+                                                           max_budget_usd=args.max_budget_usd, human_login=args.human_login.strip()), workspace,
                         answer=args.answer, request=args.request)
     except IssueLocked as exc:
         _write_run_log(str(exc), file=sys.stderr)
