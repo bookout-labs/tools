@@ -391,8 +391,8 @@ def run_live_delivery(
             inside = stage is not None
             before = _checkpoint_before_halt(graph, config, saved_values["path"], stage)
             require_schema_version(before.values, checkpoint, thread)
-            limits = require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_tokens,
-                                        max_budget_usd, raise_cap=raise_cap)
+            require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_tokens, max_budget_usd,
+                               raise_cap=raise_cap)
             restored = checkpoint_state(before.values)
             assert restored is not None
             previous_attempts = restored.get("attempts", [])
@@ -423,9 +423,10 @@ def run_live_delivery(
                     stage="merge", question=prompt.question, answer=answer, revision=prompt.revision)]})
             # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm.
             merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None)
-            # The rewound step runs with the caps this invocation accepted.
-            retained: DeliveryUpdate = {**progress, "run": limits, "plan": plan, "work": work, "merge": merge, "checks": checks,
-                                        "review": saved_review}
+            retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review}
+            if raise_cap:
+                # The rewound step keeps the run's admitted identity and runs within the cap this invocation raised.
+                retained["run"] = require_same_limits(saved_values["run"], max_tokens, max_budget_usd, raise_cap=True)
             if "builder_session" in saved_values:
                 # The builder keeps its conversation for the PR; its fingerprint decides whether the next call resumes it (D5).
                 retained["builder_session"] = saved_values["builder_session"]

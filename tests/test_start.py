@@ -149,6 +149,27 @@ class StartTest(unittest.TestCase):
         # A finished run is never started again.
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
 
+    def test_ready_again_resumes_in_the_saved_checkout_and_a_new_issue_in_its_managed_one(self):
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])[0], 75)
+        state_home, seen = self.root / "state", []
+        with patch.dict("os.environ", {"XDG_STATE_HOME": str(state_home)}), patch("foreman.cli.LiveForge", return_value=self.forge), \
+                patch.object(self.forge, "variables", return_value={**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"}), \
+                patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: seen.append(kwargs) or {"stop": "merged"}), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            for issue in ("8", "9"):
+                self.assertEqual(main(["start", "--repo", "Example/Engine", "--issue", issue], checkpoint=self.root / "runs.sqlite3"), 0)
+        self.assertEqual([(kwargs["issue"], kwargs["run"].workspace.root) for kwargs in seen], [
+            (8, self.root.resolve()), (9, (state_home / "foreman").resolve() / "runs" / "example" / "engine" / "9")])
+
+    def test_a_run_on_a_terminal_halt_is_never_started_again(self):
+        code, out, err = self.start(SETTINGS, [{"triage": "unknown route"}, {"triage": "unknown route"}])
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("invalid_output", out + err)
+        calls = self.worker_calls
+        self.forge.ready_again(8)
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
+        self.assertEqual(self.worker_calls, calls)
+
     def test_without_app_credentials_nothing_is_read_or_run(self):
         self.app.return_value = None
         with patch.object(self.forge, "variables") as variables, patch("foreman.cli.run_live_delivery") as run:

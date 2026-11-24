@@ -314,3 +314,24 @@ class BudgetResumeTests(unittest.TestCase):
         self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
         self.assertEqual(resumed["run"].token_cap, 1000)
         self.assertEqual([node for node, _ in self.calls[3:]], ["implement", "review"])
+
+    def test_a_raised_cap_resumes_a_budget_halt_in_triage_with_the_issue_it_admitted(self):
+        costs = {"triage": [3.5, 0.1], "spec_check": [0.1], "implement": [0.1], "review": [0.1]}
+        stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")))
+        self.assertEqual((stopped["stop"], stopped["path"][-1:]), ("budget_exceeded", ["triage"]))
+        self.forge.body += "\n\nEdited after the halt."
+        self.forge.ready_again(8)
+        resumed = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("10")))
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(resumed["run"], stopped["run"].model_copy(update={"max_budget_usd": "10"}))
+        self.assertEqual([node for node, _ in self.calls], ["triage", "triage", "spec_check", "implement", "review"])
+
+    def test_a_raised_cap_is_refused_on_any_other_halt(self):
+        costs = {"triage": [0.1], "spec_check": [0.1], "implement": [0.1], "review": [0.1]}
+        stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")), preflight="exit 1")
+        self.assertEqual(stopped["stop"], "env_unavailable")
+        calls = list(self.calls)
+        for limits in ({"max_budget_usd": BudgetUsd(Decimal("10"))}, {"max_tokens": 30_000_000}):
+            with self.subTest(limits=limits), self.assertRaisesRegex(ValueError, "differs from the stored"):
+                self.deliver(self.handler(costs), preflight="exit 1", **limits)
+        self.assertEqual(self.calls, calls)
