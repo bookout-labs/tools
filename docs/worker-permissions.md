@@ -42,6 +42,14 @@ The native read-only matcher refuses the planned review diff. Review calls there
 grant each standalone command from the bound `ReviewScope`, including pinned diffs,
 tree listings and blob reads. The prompt and exact Bash rules share this command list.
 Other read-only stages have no allow rules.
+
+A review counts only once its full PR diff read, `ReviewScope.required`, has completed (#288).
+The read-only view denies every other command, so a denial shows the boundary held; it doesn't void the review.
+Claude review calls stream their events (`--output-format stream-json --verbose`), and the reader joins each
+top-level Bash tool use to its result by id: the exact diff command must have a result that isn't an error.
+Codex clears the required read only on a completed exit 0. A scope with no required read fails before launch.
+This proves the read ran. It doesn't prove the output was untruncated, or complete when split into several reads.
+Claude Code 2.1.329 lets the diff run piped through `head` under its exact grant with no denial, so such a read never counts.
 Outside implement, a command permission is not a sandbox. The check itself must be trusted.
 Workers never commit, push or touch the Forge. Foreman owns those operations.
 
@@ -109,8 +117,7 @@ and [Superserve credential isolation](https://www.superserve.ai/blog/introducing
 On implement calls, Claude matches denied Bash text against `Call.checks` by literal containment in both directions.
 This covers exact checks, wrappers, and compound segments without shell parsing.
 Unrelated quoted commands and non-Bash denials stay `ran`. Missing, blank, or malformed evidence
-fails closed on successful checked calls. On review calls, a permission denial or
-malformed denial evidence stops the run before it posts a review.
+fails closed on successful checked calls.
 Claude names commands, not allow rules. Obfuscated wrappers without literal check text cannot be
 reliably attributed; `verify` remains authoritative. T1 joins tool IDs, successful results, and a marker.
 Separate captures prove wrapper and compound-segment denials.

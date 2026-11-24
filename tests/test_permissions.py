@@ -22,8 +22,11 @@ from foreman.skill_rules import PACKAGE_SKILLS, export_skills, stage_methods
 from foreman.stages import STAGES
 from foreman.worker import CliWorker, git_dirs
 from skill_fixture import skill_fixture
-from test_adapters import fixture_process
+from test_adapters import codex_events, codex_process, fixture_process
 from test_runner import EMPTY_SLICE
+
+
+DIFF = "git --no-replace-objects diff --no-color a...b --"
 
 
 class PermissionsTest(unittest.TestCase):
@@ -405,8 +408,12 @@ class PermissionsTest(unittest.TestCase):
                         if stage == 'implement':
                             filesystem.update({':workspace_roots': {'.': 'write', '.git': 'read', '.codex': 'read'}, env['TMPDIR']: 'write'})
                         self.assertEqual(policy['filesystem'], filesystem)
-                        return fixture_process(args, 'success', 0)
-                    plan = {'models': [], 'instruction': '', 'methods': [], 'read_roots': [str(r) for r in roots], 'target': None, 'scope': None}
+                        events = codex_events()
+                        events[-2:-2] = [{'type': 'item.completed', 'item': {'type': 'command_execution', 'command': DIFF,
+                                                                             'exit_code': 0, 'status': 'completed'}}]
+                        return codex_process(events)
+                    scope = {'command': DIFF, 'inline': []} if stage == 'review' else None
+                    plan = {'models': [], 'instruction': '', 'methods': [], 'read_roots': [str(r) for r in roots], 'target': None, 'scope': scope}
                     self.assertEqual(CliWorker(root, run)(stage, adapter.model, {'checks': ChecksState(), 'dispatch_plan': plan}, 'probe').kind, 'ran')
                     args = adapter.command(Call('probe', '{}', stage == 'implement', root, read_roots=roots))
                     run(args, root, {'TMPDIR': str(root / 'scratch')})
