@@ -13,10 +13,11 @@ import unittest
 from unittest.mock import patch
 
 from foreman.adapters import Call, Outcome, Usage
+from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.budget import work_tokens
 from foreman.cli import run_exit_code
-from foreman.config import load_config
+from foreman.config import ModelSpec, load_config
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun
 from foreman.dispatch import DispatchRun, InvalidOutput
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
@@ -24,11 +25,12 @@ from foreman.github import LiveForge
 from foreman.runner import issue_lock, run_live_delivery
 from foreman.stage_output import DispatchPlan, TriageOutput, parse_output
 from foreman.worker import CliWorker, assignment, run_worker_command
-from foreman.workspace import LiveWorkspace, WorktreeState
+from foreman.workspace import LiveWorkspace, WorkspaceError, WorktreeState
 from tests.skill_fixture import skill_fixture, verify_checkout
 from test_delivery import EMPTY_SLICE, walk
+from test_adapters import claude_review_stream, codex_events, codex_process, fixture_process
 from test_publication import REPO, PublicationFixture
-from test_runner import FakeGitHub, FakeWorkspace
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace
 
 
 SCRIPT = '''
@@ -465,6 +467,37 @@ class BuilderSessionTests(PublicationFixture):
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
         self.assertEqual((seen[-1][0], seen[-1][1].repair, seen[-1][1].resume_session), (sol.name, None, None))
 
+    def test_a_resumed_builder_whose_repair_hit_quota_wakes_in_a_fresh_session(self):
+        # A Codex builder resumes in place, so its invalid answer leaves the saved session and checkout as they were.
+        # The wake after the repair's quota stop never resumes that session with the original instruction.
+        sol, check = load_config().nodes["implement"].models[0], "grep -qx two items.txt"
+        seen = []
+
+        def edit(model, state, instruction):
+            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            if len(seen) == 1:
+                self.edit()
+                return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[0])
+            if len(seen) == 2:
+                return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[0])
+            return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[4])
+
+        paused = self.walk(model_edit=edit, check=check)
+        self.assertEqual(paused["stop"], "quota_exhausted", paused.get("halt_detail"))
+        self.assertEqual([(name, plan.resume_session, bool(plan.repair)) for name, plan, _ in seen[:3]],
+                         [(sol.name, None, False), (sol.name, SESSIONS[0], False), (sol.name, SESSIONS[0], True)])
+
+        def wake(model, state, instruction):
+            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            (self.checkout / "items.txt").write_text("two\n")
+            return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[5])
+
+        result = self.walk(model_edit=wake, check=check)
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        name, plan, prompt = seen[-1]
+        self.assertEqual((name, plan.repair, plan.resume_session), (sol.name, None, None))
+        self.assertIn("Delivery state:", prompt)
+
     def test_a_failed_check_at_the_saved_fingerprint_resumes_the_builder(self):
         # DP6: an accepted answer then a failed check at a matching fingerprint resumes; a changed fingerprint starts fresh.
         for check, resumed in (("grep -qx two items.txt", SESSIONS[0]),
@@ -515,6 +548,90 @@ class BuilderSessionTests(PublicationFixture):
         self.assertEqual(result["work"].owned, fingerprint())
         (self.checkout / "items.txt").write_text("edited after the halt\n")
         self.assertNotEqual(result["work"].owned, fingerprint())
+
+    def test_a_resumed_halt_after_the_builder_returned_continues_only_on_the_edits_it_returned(self):
+        # Dispatch's check of the returned worktree fails once: a resumable git_failed after the call returned.
+        # The halt owns the fingerprint the call returned and resume never recomputes it, so a later edit is dirty.
+        original = DispatchRun.fingerprint
+        for edited in (True, False):
+            with self.subTest(edited=edited):
+                self.reset_fixture()
+                failed, builds = [], []
+
+                def inspect(run, tree=None):
+                    if run.edits and not failed and sys._getframe(1).f_code.co_name == "reconcile":
+                        failed.append(True)
+                        raise WorkspaceError("The index is locked.")
+                    return original(run, tree)
+
+                def edit(model, state, instruction):
+                    builds.append(model.name)
+                    self.edit()
+                    return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
+
+                with patch.object(DispatchRun, "fingerprint", inspect):
+                    halted = self.walk(model_edit=edit)
+                self.assertEqual(halted["halt"], "git_failed")
+                self.assertIn("The index is locked.", halted["halt_detail"])
+                workspace = LiveWorkspace(self.checkout)
+                owned = DispatchRun(edit, workspace, None, "", True, lambda: {}, lambda *args: None).fingerprint
+                self.assertEqual(halted["work"].owned, owned())
+                if edited:
+                    (self.checkout / "items.txt").write_text("edited after the halt\n")
+                result = self.walk(model_edit=edit)
+                if edited:
+                    self.assertEqual(result["halt"], "dirty_worktree")
+                    self.assertEqual(len(builds), 1)
+                    self.assertEqual((self.checkout / "items.txt").read_text(), "edited after the halt\n")
+                else:
+                    self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+                    self.assertEqual(self.git("show", f"{self.remote_head()}:items.txt"), "one")
+
+
+class RealAdapterResumeTests(unittest.TestCase):
+    """The real Claude and Codex adapters resume a read-only call's session, and a review repair needs no second diff read."""
+
+    DIFF = "git --no-replace-objects diff --no-color a...b --"
+
+    def review(self, model, process, repair):
+        argv = []
+        plan = {"models": [model.name], "instruction": "", "methods": [], "target": None, "resume_session": SESSIONS[0],
+                "scope": {"command": self.DIFF, "inline": []}, "repair": repair}
+        with TemporaryDirectory() as scratch:
+            outcome = CliWorker(Path.cwd(), lambda args, *_: argv.append(args) or process, scratch_root=Path(scratch))(
+                "review", model, {"dispatch_plan": plan}, "")
+        return outcome, argv
+
+    def test_a_review_repair_resumes_its_session_without_reading_the_diff_again(self):
+        error = "findings.0.severity: Input should be 'P0', 'P1' or 'P2'"
+        envelope = json.loads(fixture_process(["claude"], "success", 0).stdout)
+        events = codex_events()
+        events[-2]["item"]["text"] = json.dumps(APPROVE)
+        for model, process in ((ModelSpec.parse("claude-opus-5-5-high"),
+                                subprocess.CompletedProcess(["claude"], 0, claude_review_stream(envelope), "")),
+                               (ModelSpec.parse("gpt-6.1-sol-high"), codex_process(events))):
+            with self.subTest(family=model.family):
+                outcome, argv = self.review(model, process, error)
+                self.assertEqual(outcome.kind, "ran", outcome.detail)
+                if model.family == "claude":
+                    resume = argv[0].index("--resume")
+                    self.assertEqual(argv[0][resume:resume + 3], ["--resume", SESSIONS[0], "--fork-session"])
+                else:
+                    self.assertEqual((argv[0][:3], argv[0][-2:]), (["codex", "exec", "resume"], [SESSIONS[0], error]))
+                # A first review turn that skipped the diff read still fails.
+                outcome, argv = self.review(model, process, None)
+                self.assertEqual(outcome.kind, "failed")
+                self.assertIn("did not complete required read", outcome.detail)
+
+    def test_a_read_only_call_resumes_its_saved_session(self):
+        # Quota-interrupted calls resume for every procedure, so the adapters no longer gate resume on edit.
+        with TemporaryDirectory() as folder:
+            call = Call("finish", "{}", False, Path(folder), resume_session=SESSIONS[0])
+            claude = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high")).command(call)
+            codex = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high")).command(call)
+        resume = claude.index("--resume")
+        self.assertEqual(claude[resume:resume + 3], ["--resume", SESSIONS[0], "--fork-session"])
+        self.assertEqual((codex[:3], codex[-2:]), (["codex", "exec", "resume"], [SESSIONS[0], "finish"]))
 
 
 class OtherProcedureSessionTests(unittest.TestCase):

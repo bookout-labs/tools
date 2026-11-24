@@ -121,7 +121,7 @@ class DispatchRun:
             return {**self.plan, "resume_session": repair["session"], "repair": repair["error"]}
         if reservation["fingerprint"] == state.get("fingerprint") and (session := state.get("sessions", {}).get(model.name)):
             return {**self.plan, "resume_session": session}
-        if self.edits and (saved := state["caller"].get("builder_session")) and (saved["model"], saved["fingerprint"]) == (model.name, reservation["fingerprint"]):
+        if self.edits and "repair" not in state and (saved := state["caller"].get("builder_session")) and (saved["model"], saved["fingerprint"]) == (model.name, reservation["fingerprint"]):
             return {**self.plan, "resume_session": saved["session"]}
         return {**self.plan}
 

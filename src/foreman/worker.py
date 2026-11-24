@@ -189,6 +189,7 @@ class CliWorker:
         plan = state.get("dispatch_plan")
         plan = DispatchPlan.model_validate(plan) if plan else None
         # A repair turn sends only the exact validation error into the answer's own session (item 1).
+        repairing = bool(plan and plan.repair)
         prompt = plan.repair if plan and plan.repair else assignment(node, model, state, instruction, kept)
         # Counts only the prompt, excluding the separate output schema,
         # CLI system prompts, tool definitions/results and hidden model work.
@@ -203,7 +204,8 @@ class CliWorker:
             checks = (check,) if check else ()
         elif node == "review" and plan and plan.scope:
             scope = TypeAdapter(ReviewScope).validate_python(plan.scope)
-            checks, required = scope.commands, scope.required
+            # A repair turn resumes the review that already read the diff, so only the first turn must read it.
+            checks, required = scope.commands, () if repairing else scope.required
         adapter = ADAPTERS[model.family](model)
         launched = False
         with ExitStack() as stack:
@@ -220,7 +222,7 @@ class CliWorker:
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
-            if call.review and not call.required:
+            if call.review and not call.required and not repairing:
                 # A review counts only once it has read the full PR diff, so a scope without that read never launches.
                 return Outcome("failed", detail="Review scope names no full PR diff read", prompt_bytes=prompt_bytes)
             call.scratch.mkdir()
