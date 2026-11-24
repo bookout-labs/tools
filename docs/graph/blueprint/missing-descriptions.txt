@@ -16,6 +16,7 @@ bookout-labs/tools/tests/test_dispatch_recovery.py
 bookout-labs/tools/tests/test_doctor.py
 bookout-labs/tools/tests/test_merge_receipt.py
 bookout-labs/tools/tests/test_mutation.py
+bookout-labs/tools/tests/test_permissions.py
 bookout-labs/tools/tests/test_publication.py
 bookout-labs/tools/tests/test_readiness.py
 bookout-labs/tools/tests/test_review_context.py
