@@ -3,7 +3,7 @@
 import argparse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from importlib.resources import files
 import json
 import os
@@ -21,7 +21,7 @@ from foreman.readiness import MergeState
 from foreman.state import ReviewState, ChecksState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
-from foreman.doctor import QUICK, NotReady, contract, operator_variables, repository
+from foreman.doctor import QUICK, NotReady, contract, operator_variables, positive_budget, positive_tokens, repository
 from foreman.dry_run import ScriptHandler
 from foreman.github import Forge, ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
@@ -164,20 +164,6 @@ def _print_run_rows(
             write(detail)
     else:
         write_done()
-
-
-def positive_tokens(raw: str) -> int:
-    value = int(raw)
-    if value <= 0:
-        raise argparse.ArgumentTypeError("--max-tokens must be positive")
-    return value
-
-
-def positive_budget(raw: str) -> BudgetUsd:
-    try:
-        return BudgetUsd(Decimal(raw))
-    except (InvalidOperation, ValueError) as exc:
-        raise argparse.ArgumentTypeError("--max-budget-usd must be finite and positive") from exc
 
 
 # Joe, 2026-11-23 on #26: "Cap 3". A repository raises it with FOREMAN_MAX_BUDGET_USD.

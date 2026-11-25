@@ -48,6 +48,21 @@ class OperatorVariables:
     max_budget_usd: BudgetUsd | None
 
 
+def positive_tokens(raw: str) -> int:
+    """A token cap: a positive whole number of work tokens. Raises ValueError otherwise."""
+    if (value := int(raw)) <= 0:
+        raise ValueError(f"{raw!r} is not positive")
+    return value
+
+
+def positive_budget(raw: str) -> BudgetUsd:
+    """A dollar cap: a finite positive amount. Raises ValueError otherwise."""
+    try:
+        return BudgetUsd(Decimal(raw))
+    except InvalidOperation:
+        raise ValueError(f"{raw!r} is not a dollar amount") from None
+
+
 def operator_variables(repo: str, variables: Mapping[str, str]) -> OperatorVariables:
     """FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses."""
     def missing(detail: str, fix: str) -> NotReady:
@@ -58,18 +73,14 @@ def operator_variables(repo: str, variables: Mapping[str, str]) -> OperatorVaria
         raise missing(f"the {HUMAN_LOGIN} repository variable is not set",
                       f"set {HUMAN_LOGIN} to the GitHub login whose issue comments answer and stop runs")
     tokens, dollars = variables.get(MAX_TOKENS), variables.get(MAX_BUDGET_USD)
-    max_tokens: int | None = None
-    if tokens is not None:
-        try:
-            max_tokens = int(tokens)
-        except ValueError:
-            pass
-        if max_tokens is None or max_tokens <= 0:
-            raise missing(f"the {MAX_TOKENS} repository variable {tokens!r} is not a positive integer",
-                          f"set {MAX_TOKENS} to a positive whole number of work tokens, or delete it to use the default")
     try:
-        max_budget_usd = BudgetUsd(Decimal(dollars)) if dollars is not None else None
-    except (InvalidOperation, ValueError):
+        max_tokens = positive_tokens(tokens) if tokens is not None else None
+    except ValueError:
+        raise missing(f"the {MAX_TOKENS} repository variable {tokens!r} is not a positive integer",
+                      f"set {MAX_TOKENS} to a positive whole number of work tokens, or delete it to use the default") from None
+    try:
+        max_budget_usd = positive_budget(dollars) if dollars is not None else None
+    except ValueError:
         raise missing(f"the {MAX_BUDGET_USD} repository variable {dollars!r} is not a positive dollar amount",
                       f"set {MAX_BUDGET_USD} to a positive amount such as 3 or 4.50, or delete it to use the default") from None
     return OperatorVariables(human_login, max_tokens, max_budget_usd)
