@@ -25,7 +25,7 @@ from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, halte
 from foreman.readiness import MergeState, MergeWait
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, QuotaPause
-from foreman.doctor import NotReady, quick
+from foreman.doctor import NotReady, repository
 from foreman.skill_rules import SkillMissing
 from foreman.github import ForgeError, human_comments
 from foreman.watch import run_key, watch
@@ -327,14 +327,14 @@ def run_live_delivery(
             try:
                 run.workspace.validate_origin(saved_run.repo)
                 if saved_values.get("halt") in RESUMABLE_HALTS:
-                    # A resume passes doctor's quick check at its pinned base first, as admission does for a new run. A refused
-                    # resume keeps its checkpoint and saved halt, so Ready added again after the fix resumes the halted step.
-                    quick(client, run.workspace, saved_run.repo, saved_run.base_sha)
+                    # A resume passes doctor's GitHub requirements first. Its contract passed at the pinned base, which can't change.
+                    # A refused resume keeps its checkpoint and saved halt, so Ready added again after the fix resumes the halted step.
+                    repository(client, saved_run.repo)
             except WorkspaceError as exc:
                 early_result = read_delivery_state({**saved_values, **halted(Halt.git_failed, str(exc), "admit"),
                                                     "stop": Halt.git_failed})
             except NotReady as exc:
-                early_result = read_delivery_state({**saved_values, **halted(Halt.not_ready, exc.halt_detail(), "admit"),
+                early_result = read_delivery_state({**saved_values, **halted(Halt.not_ready, exc.halt_detail(resumed=True), "admit"),
                                                     "stop": Halt.not_ready})
         pause: object = saved.interrupts[0].value if saved.interrupts else None
         waiting = is_dict(pause) and pause.get("reason") in PAUSES

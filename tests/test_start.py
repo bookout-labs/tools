@@ -11,6 +11,7 @@ from unittest.mock import patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.cli import DEFAULT_BUDGET_USD, RunSettings, main
+from foreman.contract import CONTRACT_PATH
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun
 from foreman.github import VariablesUnreadable
 from foreman.runner import IssueLocked, issue_lock, saved_workspace
@@ -178,6 +179,8 @@ class StartTest(unittest.TestCase):
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])
         self.assertEqual(code, 75, out + err)
         halted = self.stored()
+        # A resume runs only doctor's GitHub requirements: the contract already passed at the pinned base.
+        del self.workspace.base_files[CONTRACT_PATH]
         self.forge.ready_again(8)
         # The operator raises the cap with a typo. Doctor's quick check refuses the resume before any paid call.
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000", "FOREMAN_MAX_BUDGET_USD": "4.5o"})
@@ -185,6 +188,8 @@ class StartTest(unittest.TestCase):
         status = self.forge.status[("Example/Engine", 8)]
         self.assertIn("Not ready: the FOREMAN_MAX_BUDGET_USD repository variable '4.5o' is not a positive dollar amount. "
                       "Fix: set FOREMAN_MAX_BUDGET_USD to a positive amount", status)
+        self.assertIn("The run stays halted at its step. Then add the Ready label again to resume it.", status)
+        self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Stopped"])
         self.assertEqual(self.worker_calls, 1)
         # The checkpoint and its budget halt are untouched, so the next Ready resumes the halted step.
         self.assertEqual(self.stored(), halted)

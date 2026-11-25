@@ -1,7 +1,8 @@
 """Doctor: plain code that proves a target repository is ready for Foreman (target.yaml doctor).
 
-The quick part runs before a run starts or resumes and at admission, before any paid call. It reads GitHub and the
-contract file and starts no container. Each failure names the one missing requirement and its exact fix.
+The quick part runs at every start of a run before any paid call. A new run runs all of it in triage.admit. A resume runs
+only its GitHub requirements, since the contract already passed at the pinned base. It starts no container. Each failure
+names the one missing requirement and its exact fix.
 """
 
 from collections.abc import Mapping
@@ -31,8 +32,10 @@ class NotReady(Exception):
         super().__init__(f"Not ready: {missing}. Fix: {fix}.")
         self.requirement = requirement
 
-    def halt_detail(self) -> str:
-        # A refused start keeps Ready or its saved halt, so only a new Ready label checks the repository again.
+    def halt_detail(self, *, resumed: bool = False) -> str:
+        """The not_ready report. A new run's issue keeps Ready. A refused resume stays halted under its Stopped label."""
+        if resumed:
+            return f"{self} The run stays halted at its step. Then add the {READY_LABEL} label again to resume it."
         return f"{self} Then remove and add the {READY_LABEL} label."
 
 
@@ -108,9 +111,3 @@ def contract(workspace: Workspace, base: str) -> Contract:
         raise NotReady(VERIFY_SKILL, f"the verify skill {parsed.verify_skill} that the contract names is not a tracked regular file at the base commit {base}",
                        f"commit the repository's verify skill at {parsed.verify_skill}, or set verify_skill to the tracked skill's path")
     return parsed
-
-
-def quick(forge: Forge, workspace: Workspace, repo: str, base: str) -> Contract:
-    """Doctor's quick check in its drawn order, with the contract read at the pinned base."""
-    repository(forge, repo)
-    return contract(workspace, base)
