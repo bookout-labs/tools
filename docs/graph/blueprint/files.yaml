@@ -40,13 +40,21 @@ docs/graph/blueprint/prompts/implement.md:
       address the evidenced
 
       findings, failed checks, failed criteria or surviving mutations on the existing
-      PR. For a surviving
+      PR.
 
-      mutation, add a test that notices it, or name it as equivalent with the reason
-      no test can notice
+      On a conflict repair, Foreman has already merged the base branch into the worktree.
+      Resolve the
 
-      it. Summarize the actual edits and checks. Foreman verifies the final tree,
-      commits and publishes.'
+      files it names, which hold Git''s conflict markers, and run the check. Run no
+      Git command that
+
+      writes, such as merge, commit, checkout or reset. For a surviving mutation,
+      add a test that notices
+
+      it, or name it as equivalent with the reason no test can notice it. Summarize
+      the actual edits and
+
+      checks. Foreman verifies the final tree, commits and publishes.'
   repository: bookout-labs/tools
   revision: target
   url: prompts/implement.md
