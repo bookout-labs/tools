@@ -2,12 +2,18 @@ import contextlib
 from decimal import Decimal
 import fcntl
 import io
+import json
+import os
 import subprocess
 import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
@@ -15,6 +21,7 @@ from foreman.cli import main
 from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
 from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, OperatorVariables, operator_variables
+from foreman.credentials import AppCredentials, credentials
 from foreman.github import LiveForge
 from foreman.runner import IssueLocked, issue_lock, saved_workspace
 from foreman.stage_output import spec_digest
@@ -34,7 +41,7 @@ class StartTest(unittest.TestCase):
     def setUp(self):
         confine_host(self)
         self.root = Path(self.enterContext(TemporaryDirectory()))
-        self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.root / "runtime")}))
+        self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.root / "runtime"), "FOREMAN_APP_ID": "1"}))
         self.app = self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
         self.forge = FakeGitHub()
         self.workspace = FakeWorkspace(self.root)
@@ -64,6 +71,29 @@ class StartTest(unittest.TestCase):
             with patch("foreman.github.subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", stderr)):
                 return getattr(LiveForge(), method)(*args, **kwargs)
         return patch.object(self.forge, method, side_effect=read), reads
+
+    def token_answers(self, status):
+        """The App's installation read as LiveForge makes it, with GitHub answering the App's token request with this status."""
+        key = self.root / "app.pem"
+        if not key.exists():
+            key.write_bytes(rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            key.chmod(0o600)
+        reads = []
+
+        def respond(request, timeout):
+            if not request.full_url.endswith("/installation"):
+                raise HTTPError(request.full_url, status, "GitHub's answer", {}, None)
+            response = MagicMock()
+            response.__enter__.return_value.read.return_value = json.dumps({"id": 2}).encode()
+            return response
+
+        def installation(repo):
+            reads.append(repo)
+            with patch.dict(os.environ, {"FOREMAN_APP_KEY_PATH": str(key)}), patch("foreman.credentials.urlopen", side_effect=respond), \
+                    patch.object(credentials, "environment", AppCredentials().environment):
+                return LiveForge().app_installation(repo)
+        return patch.object(self.forge, "app_installation", side_effect=installation), reads
 
     def stored(self):
         with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
@@ -140,13 +170,14 @@ class StartTest(unittest.TestCase):
 
     def test_a_failed_github_read_reports_git_failed_and_a_refusal_of_the_app_not_ready(self):
         """TR13: at a new run's start and at a resume's start, in turn, GitHub answers 502 to the Ready label read, a rate-limit
-        403 to the variables read and a plain 403 to the variables read. Once more at a new run's start, the 502 comes with a
-        status comment write that also fails. No start makes a paid call. The 502 and rate-limit starts report git_failed, the
-        plain 403 starts not_ready. Each reads once, saves no checkpoint for the new run, keeps the resume's checkpoint and
-        halt, and leaves the labels as they were."""
+        403 to the variables read, a plain 403 to the variables read, and 502 and 422 to the App's token request. Once more at a
+        new run's start, the 502 comes with a status comment write that also fails. No start makes a paid call. The 502 and
+        rate-limit starts report git_failed, the plain 403 and the token request's 422 not_ready. Each reads once, saves no
+        checkpoint for the new run, keeps the resume's checkpoint and halt, and leaves the labels as they were."""
         label_502 = ("has_label", "gh: Server Error (HTTP 502)")
         variables_rate_limit = ("variables", "gh: API rate limit exceeded for installation ID 1. (HTTP 403)")
         variables_403 = ("variables", "gh: Resource not accessible by integration (HTTP 403)")
+        token_502, token_422 = ("token", 502), ("token", 422)
         again = "No setting needs to change. Remove and add the Ready label to try again."
         reports = {
             label_502: ("git_failed", 75, 'The read of Example/Engine\'s Ready label, for the requirement "the Ready label exists", '
@@ -154,14 +185,19 @@ class StartTest(unittest.TestCase):
             variables_rate_limit: ("git_failed", 75, "The read of Example/Engine's Actions variables, for the requirement "
                                                      '"FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses. '
                                                      f'An unset cap uses its default", failed because GitHub answered HTTP 403 for its rate limit. {again}'),
-            variables_403: ("not_ready", 1, "Not ready: GitHub answered HTTP 403 to the App's read of Example/Engine's Actions variables. "
-                                            "Fix: give the Foreman GitHub App's installation access to Example/Engine and every repository "
-                                            "permission the App requests. Then remove and add the Ready label."),
+            variables_403: ("not_ready", 1, "Not ready: GitHub answered HTTP 403 to the read of Example/Engine's Actions variables, "
+                                            "refusing the App. Fix: give the Foreman GitHub App's installation access to Example/Engine "
+                                            "and every repository permission the App requests. Then remove and add the Ready label."),
+            token_502: ("git_failed", 75, "The read of the App's token for Example/Engine, for the requirement \"the GitHub App is installed "
+                                          f"on the repository and GitHub lets it make doctor's reads\", failed because GitHub answered HTTP 502. {again}"),
+            token_422: ("not_ready", 1, "Not ready: GitHub answered HTTP 422 to the read of the App's token for Example/Engine, refusing "
+                                        "the App. Fix: give the Foreman GitHub App's installation access to Example/Engine and every "
+                                        "repository permission the App requests. Then remove and add the Ready label."),
         }
 
         def refused(answer, verb):
             labels = self.forge.load_issue("Example/Engine", 8)["labels"]
-            failing, reads = self.github_answers(*answer)
+            failing, reads = self.token_answers(answer[1]) if answer[0] == "token" else self.github_answers(*answer)
             with failing:
                 code, out, err = self.start(None)
             code_name, exit_code, detail = reports[answer]
@@ -180,7 +216,8 @@ class StartTest(unittest.TestCase):
         with failing, unwritten:
             code, out, err = self.start(None)
         self.assertEqual((code, len(reads), self.worker_calls), (75, 1, 0))
-        self.assertIn("status not written: App credential unavailable.", err)
+        self.assertIn("status not written: GitHub answered HTTP 502.", err)
+        self.assertNotIn("configuration", err)
         self.assertIn(f"Foreman did not start this run (git_failed).\n\n{reports[label_502][2]}", err)
 
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])[0], 75)
@@ -333,8 +370,7 @@ class StartTest(unittest.TestCase):
         self.assertEqual(self.worker_calls, calls)
 
     def test_without_app_credentials_nothing_is_read_or_run(self):
-        self.app.return_value = None
-        with patch.object(self.forge, "variables") as variables, patch("foreman.cli.run_live_delivery") as run:
+        with patch.dict("os.environ", {"FOREMAN_APP_ID": ""}), patch.object(self.forge, "variables") as variables, patch("foreman.cli.run_live_delivery") as run:
             code, _, err = self.start()
         self.assertEqual(code, 1)
         self.assertIn("FOREMAN_APP_ID", err)

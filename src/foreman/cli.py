@@ -297,7 +297,7 @@ def main(
                     report=reported,
                     log=lambda message: _write_run_log(message, file=sys.stderr),
                 )
-        except (AnswerError, ForgeError, OSError, ValueError) as exc:
+        except (AnswerError, CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
         # The host starts each returned issue as it starts an accepted delivery, so a replay names them again.
@@ -311,7 +311,8 @@ def main(
         thread = issue_thread(args.repo, args.issue)
         try:
             # Unattended runs act only as the App installed on the repository, never as a personal gh login.
-            if credentials.environment(args.repo) is None:
+            # The App's token request is doctor's first read, so it is reported on the issue like the others.
+            if not credentials.configured:
                 raise CredentialFailure("Configure FOREMAN_APP_ID before starting runs from Ready.")
             # A held lock may be a blocked admission about to delete its checkpoint, so start waits for it.
             with issue_lock(thread, wait=True):

@@ -13,7 +13,7 @@ from urllib.parse import quote
 from pydantic import AwareDatetime, BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, QueueEntry, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
-from foreman.credentials import CredentialFailure, NotInstalled, credentials, failure, COMMAND_TIMEOUT
+from foreman.credentials import CredentialFailure, NotInstalled, Unanswered, credentials, failure, COMMAND_TIMEOUT
 from foreman.redaction import redact
 if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
@@ -45,7 +45,14 @@ class ForgeError(RuntimeError):
 
     def __init__(self, message: str, status: int | None = None, *, rate_limited: bool = False):
         super().__init__(message)
-        self.status, self.rate_limited = status, rate_limited
+        self.status, self.rate_limited = status, rate_limited or status == 429
+
+    @property
+    def answer(self) -> str:
+        """What GitHub answered, in words: its status, its rate limit, or no answer."""
+        if self.status is None:
+            return "answered with its rate limit" if self.rate_limited else "gave no answer"
+        return f"answered HTTP {self.status}" + (" for its rate limit" if self.rate_limited else "")
 
 
 class MergeNotArmed(ForgeError):
@@ -900,13 +907,19 @@ class LiveForge:
         return {variable.name: variable.value for variable in variables.root}
 
     def app_installation(self, repo: str) -> AppInstallation:
-        """GitHub's answer for the App's installation on the repository. Any other credential failure is a ForgeError."""
+        """GitHub's answer for the App's installation on the repository and its token request.
+
+        A failure GitHub answered, or gave no answer to, is a ForgeError. A failure of the host's own key or settings stays a
+        CredentialFailure.
+        """
         try:
             return "installed" if credentials.environment(repo) is not None else "unconfigured"
         except NotInstalled:
             return "not_installed"
         except CredentialFailure as exc:
-            raise ForgeError(str(exc)) from None
+            if exc.status is None and not isinstance(exc, Unanswered):
+                raise
+            raise ForgeError(str(exc), exc.status, rate_limited=exc.rate_limited) from None
 
     def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None:
         return merge_queue_policy(self._read(repo, Rules, ["gh", "api", f"repos/{repo}/rules/branches/{quote(branch, safe='')}"]))
@@ -1058,7 +1071,7 @@ class LiveForge:
             if env is not None:
                 timeout = min(timeout or COMMAND_TIMEOUT, COMMAND_TIMEOUT)
         except CredentialFailure as exc:
-            raise CommandFailed(str(exc)) from None
+            raise CommandFailed(str(exc), exc.status, rate_limited=exc.rate_limited) from None
         try:
             result = subprocess.run(
                 command, env=env, stdin=subprocess.DEVNULL if body is None else None, input=body,

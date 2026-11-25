@@ -17,16 +17,25 @@ from pydantic import BaseModel, SecretStr
 
 
 class CredentialFailure(RuntimeError):
-    """Authentication stopped before any personal-account fallback."""
+    """Authentication stopped before any personal-account fallback, with the HTTP status GitHub answered, if any."""
+
+    def __init__(self, message: str, status: int | None = None, *, rate_limited: bool = False):
+        super().__init__(message)
+        self.status, self.rate_limited = status, rate_limited
 
 
 class NotInstalled(CredentialFailure):
     """GitHub reports no installation of the App on the repository."""
 
 
+class Unanswered(CredentialFailure):
+    """GitHub gave no usable answer to the App's token request. The host's key and settings may be fine."""
+
+
 COMMAND_TIMEOUT = 30
 TOKEN_MARGIN = COMMAND_TIMEOUT + 30
 UNAVAILABLE = "App credential unavailable. Check Studio connectivity and key configuration, then resume."
+UNANSWERED = "App credentials: GitHub gave no answer to the token request. Resume once GitHub answers."
 
 
 def failure(status: int, rate_limited: bool = False) -> str:
@@ -89,7 +98,12 @@ class AppCredentials:
                         raise CredentialFailure("App key must have owner-only permissions. Repair and resume.")
                     now = int(time.time())
                     signed = jwt.encode({"iat": now - 60, "exp": now + 540, "iss": app}, key.read_bytes(), algorithm="RS256")
-                    headers = {"Authorization": f"Bearer {signed}", "Accept": "application/vnd.github+json"}
+                except CredentialFailure:
+                    raise
+                except Exception:
+                    raise CredentialFailure(UNAVAILABLE) from None
+                headers = {"Authorization": f"Bearer {signed}", "Accept": "application/vnd.github+json"}
+                try:
                     # The installation that covers this repository, on an organization or a personal account.
                     try:
                         with urlopen(Request(f"https://api.github.com/repos/{repo}/installation", headers=headers), timeout=15) as response:
@@ -110,9 +124,10 @@ class AppCredentials:
                 except CredentialFailure:
                     raise
                 except HTTPError as exc:
-                    raise CredentialFailure(failure(exc.code, exc.headers.get("X-RateLimit-Remaining") == "0" or bool(exc.headers.get("Retry-After")))) from None
+                    limited = exc.headers.get("X-RateLimit-Remaining") == "0" or bool(exc.headers.get("Retry-After"))
+                    raise CredentialFailure(failure(exc.code, limited), exc.code, rate_limited=limited) from None
                 except Exception:
-                    raise CredentialFailure(UNAVAILABLE) from None
+                    raise Unanswered(UNANSWERED) from None
         return command_environment(token.token.get_secret_value())
 
 

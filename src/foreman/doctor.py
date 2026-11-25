@@ -11,7 +11,7 @@ from decimal import Decimal, InvalidOperation
 from typing import TypeVar
 
 from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contract
-from foreman.github import READY_LABEL, Forge, ForgeError
+from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError
 from foreman.usd import BudgetUsd
 from foreman.workspace import Workspace
 
@@ -44,29 +44,27 @@ class NotReady(Exception):
 
 
 class ReadFailed(Exception):
-    """A requirement's read that GitHub gave no answer, a server error or a rate-limit answer to. No setting is wrong."""
-
-    def __init__(self, requirement: str, failed: str):
-        super().__init__(failed)
-        self.requirement = requirement
+    """A requirement's read that got no answer, a server error, a rate limit or another status that is no refusal. No setting is wrong."""
 
     def halt_detail(self) -> str:
         return f"{self} No setting needs to change. Remove and add the {READY_LABEL} label to try again."
 
 
-def answered(repo: str, requirement: str, read: str, call: Callable[[], T]) -> T:
+REFUSALS = (401, 403, 404)
+# A 422 to the App's token request means the installation does not cover the repository.
+TOKEN_REFUSALS = (*REFUSALS, 422)
+
+
+def answered(repo: str, requirement: str, read: str, call: Callable[[], T], refusals: tuple[int, ...] = REFUSALS) -> T:
     """GitHub's answer to one read, made once. GitHub refusing the App's read is not_ready; any other failure is a failed read."""
     try:
         return call()
     except ForgeError as exc:
-        status, limited = exc.status, exc.rate_limited or exc.status == 429
-        if status in (401, 403, 404) and not limited:
-            fix = ("check FOREMAN_APP_ID and the App's private key at FOREMAN_APP_KEY_PATH on the Foreman host" if status == 401 else
+        if exc.status in refusals and not exc.rate_limited:
+            fix = ("check FOREMAN_APP_ID and the App's private key at FOREMAN_APP_KEY_PATH on the Foreman host" if exc.status == 401 else
                    f"give the Foreman GitHub App's installation access to {repo} and every repository permission the App requests")
-            raise NotReady(APP, f"GitHub answered HTTP {status} to the App's read of {read}", fix) from exc
-        answer = "gave no answer" if status is None else f"answered HTTP {status}" + (" for its rate limit" if limited else "")
-        raise ReadFailed(requirement, f'The read of {read}, for the requirement "{requirement.rstrip(".")}", '
-                                      f"failed because GitHub {answer}.") from exc
+            raise NotReady(APP, f"GitHub answered HTTP {exc.status} to the read of {read}, refusing the App", fix) from exc
+        raise ReadFailed(f'The read of {read}, for the requirement "{requirement.rstrip(".")}", failed because GitHub {exc.answer}.') from exc
 
 
 @dataclass(frozen=True)
@@ -126,7 +124,8 @@ def repository(forge: Forge, repo: str) -> OperatorVariables:
 
     The one read of the operator variables at a start, so the run's login and caps are the values doctor checked.
     """
-    match forge.app_installation(repo):
+    installation: AppInstallation = answered(repo, APP, f"the App's token for {repo}", lambda: forge.app_installation(repo), TOKEN_REFUSALS)
+    match installation:
         case "not_installed":
             raise NotReady(APP, f"the GitHub App is not installed on {repo}",
                            f"install the Foreman GitHub App on {repo}'s account with access to {repo}")

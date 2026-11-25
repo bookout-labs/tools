@@ -464,7 +464,7 @@ def run_live_delivery(
                 write_status(client, repo, issue, report_refusal)
             except ForgeError as exc:
                 # The command's error output and its exit code are then the only report.
-                log(f"status not written: {exc}\n{report_refusal.text}")
+                log(f"status not written: GitHub {exc.answer}.\n{report_refusal.text}")
         elif early_result is None:
             # An early result was never saved, so the issue keeps the status its checkpoint last showed.
             pending = saved.interrupts[0].value if saved.interrupts else None
