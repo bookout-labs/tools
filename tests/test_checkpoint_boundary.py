@@ -223,7 +223,6 @@ from foreman.config import SkillPin, load_config
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.runner import run_live_delivery
-from foreman.stages import STAGES
 from foreman.workspace import WorktreeState
 from owner_contract import COUNTERS
 from test_runner import FakeGitHub, FakeWorkspace, BRANCH, SLICE, slice_body

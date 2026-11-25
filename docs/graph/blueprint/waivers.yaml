@@ -19,9 +19,8 @@ waivers:
     V2-bd4e3c00cdabb593: "items 9, 10, 14 and 15: [halts] verify_cap becomes failed_check_cap"
     # Item 10, the builder cannot weaken the checks.
     V2-5445dbe67dfe8ee0: "item 10: [implement] edge edit -> edit adds checks_weakened, before mutate"
-    # Items 14 and 15, failed criteria and equivalent mutations for the builder.
+    # Item 15, equivalent mutations for the builder.
     V2-7da4ee149c3d358a: "item 15: [procedure/implement] output_fields add equivalent_mutations"
-    V2-7a49e4a050d4e500: "item 14: [procedure/implement] inputs add verify"
     # Item 14, Verify's verdict routes.
     V2-0099663fccf6c107: "item 14: [verify] edge drive -> __end__ drops no_skill"
     V2-4c2870647bf96a40: "item 14: [verify] edge post -> __end__ adds failed and unverified"
