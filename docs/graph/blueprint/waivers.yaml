@@ -19,9 +19,9 @@ waivers:
     V2-bd4e3c00cdabb593: "items 9, 10, 14 and 15: [halts] verify_cap becomes failed_check_cap"
     # Item 10, the builder cannot weaken the checks.
     V2-5445dbe67dfe8ee0: "item 10: [implement] edge edit -> edit adds checks_weakened, before mutate"
-    # Items 14 and 15, failed criteria and equivalent mutations for the builder.
+    # Items 14 and 15, failed criteria and equivalent mutations for the builder, and #363, the answer to its own question.
     V2-7da4ee149c3d358a: "item 15: [procedure/implement] output_fields add equivalent_mutations"
-    V2-7a49e4a050d4e500: "item 14: [procedure/implement] inputs add verify"
+    V2-2339d7fe8f6c42d5: "item 14 and #363: [procedure/implement] inputs add human_answers and verify"
     # Item 14, Verify's verdict routes.
     V2-0099663fccf6c107: "item 14: [verify] edge drive -> __end__ drops no_skill"
     V2-4c2870647bf96a40: "item 14: [verify] edge post -> __end__ adds failed and unverified"
@@ -29,8 +29,8 @@ waivers:
     V2-3890aa0dee79eefc: "item 14: [halts] criterion_unverified"
     V2-f3b9b64a1a2999c6: "item 14: [delivery] edge verify -> implement adds failed"
     V2-ebed68d43e05577d: "item 14: [delivery] edge verify -> review drops no_skill"
-    # Item 3, Workspace's attempt container for review.
-    V2-624e90c97fa14426: "item 3: [review] halts add env_unavailable"
+    # Item 3, Workspace's attempt container for review, and #369, review's check that the checkout is clean.
+    V2-65ca71d648832b60: "item 3 and #369: [review] halts add dirty_worktree and env_unavailable"
     # Item 15, the mutation check.
     V2-b06d9aea35728a9a: "item 15: [implement] node mutate"
     V2-0e7e17ebbffa3e0a: "item 15: [implement] owner implement.py::mutate"
