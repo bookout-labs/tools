@@ -6,10 +6,9 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.dispatch import DISPATCH
 from foreman.github import CommandTimedOut, ForgeError, owned_comment
 from foreman.outcomes import Halt, stopped
-from foreman.skill_rules import TargetSkillUnreadable, target_skills
+from foreman.skill_rules import TargetSkillUnreadable, verify_skill
 from foreman.stage_output import VerifyState, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate
-from foreman.stages import VERIFY_SKILL
 from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkState, WorkspaceError
 
@@ -38,12 +37,12 @@ def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         pr = run.forge.pull_request_for(state["run"].repo, work.branch)
         if pr is None:
             raise ForgeError("The delivery branch has no pull request.")
-        skills = target_skills(state["run"].workspace, VERIFY_SKILL.path)
+        skill = verify_skill(state, run.workspace)
     except (WorkspaceError, ForgeError, TargetSkillUnreadable) as exc:
         return stopped(Halt.git_failed, str(exc), "verify")
     if pr.headRefOid != head:
         return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt()}
-    if not skills:
+    if skill is None:
         return {"stop": "no_skill", "verify": VerifyState(outcome="no_skill", tested_head=head)}
     result = DISPATCH.invoke({"caller": state, "stage": "verify"}, context=run.dispatch("verify", state, ""))
     update = run.apply("verify", state, result)

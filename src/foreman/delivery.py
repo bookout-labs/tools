@@ -13,7 +13,8 @@ from langgraph.runtime import Runtime
 from pydantic import TypeAdapter
 
 from foreman.config import Config, ModelSpec, load_config
-from foreman.dry_run import DryRun, ScriptHandler
+from foreman.contract import parse_contract
+from foreman.dry_run import DRY_CONTRACT, DryRun, ScriptHandler
 from foreman.dispatch import DispatchResult, DispatchRun, Handler
 from foreman.github import Forge
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
@@ -108,7 +109,7 @@ def compile_delivery(
         def prepare_plan() -> DispatchPlanRecord:
             models = STAGES[name].models(name, state, config)
             suffix, target, scope = STAGES[name].prepare(state, run.workspace, run.forge)
-            methods_text, methods, read_roots = stage_methods(name, state, methods_root) if methods_root is not None else ("", [], [])
+            methods_text, methods, read_roots = stage_methods(name, state, methods_root, run.workspace) if methods_root is not None else ("", [], [])
             instruction = prompts[name]
             if methods_text:
                 instruction += f"\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
@@ -211,7 +212,7 @@ def run_delivery(
     *,
     repo: str,
     request: str,
-    check: str = "",
+    contract: bytes = DRY_CONTRACT,
     config: Config | None = None,
     slice: object = None,
     scratch: Path | None = None,
@@ -221,14 +222,15 @@ def run_delivery(
     commands: list[list[str]] | None = None,
     checkout: Path | None = None,
 ) -> DeliveryResult:
-    """Walk the graph offline. `checkout` is a target checkout whose tracked skills the stages read; without one there are none."""
-    dry = DryRun(commands=commands if commands is not None else [])
+    """Walk the graph offline with a contract fixture. `checkout` is a target checkout whose tracked skills the stages read; without one there are none."""
+    dry = DryRun(commands=commands if commands is not None else [], checkout=checkout)
+    terms = parse_contract(contract)
     state: DeliveryState = {
         "schema_version": SCHEMA_VERSION,
         "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens, workspace=str(checkout or ""),
                         base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo)),
                         max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
-        "checks": ChecksState(check=check),
+        "checks": ChecksState(check=terms.check, verify_skill=terms.verify_skill),
         "plan": PlanState(issue_kind="parent" if slice is None else "slice"),
         "models_used": {},
         "path": [],

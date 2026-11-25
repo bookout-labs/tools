@@ -8,7 +8,7 @@ Design docs hold current design; PR evidence stays in the PR.
 
 ## Delivery graph
 
-For this repository, run `foreman run delivery --repo bookout-labs/tools --issue <number> --check "python -m unittest discover -s tests"`.
+Run `foreman run delivery --repo <owner>/<name> --issue <number>` for a target repository that carries a contract file, `.foreman/contract.yaml`.
 
 [The v2 blueprint](docs/graph/blueprint/README.md) defines the target and explains the projection check.
 
@@ -154,15 +154,16 @@ foreman start --repo Example/Engine --issue 7
 - It acts only as the GitHub App installed on that repository and never falls back to a personal `gh` login.
 - It takes the issue's lock first, waiting while another Foreman process holds it. An existing checkpoint for that issue then prints `already started` and exits 0, so a repeated delivery never resumes a running, paused, waiting or finished run. A run that stopped on a resumable halt, `budget_exceeded` included, resumes at its halted step in its saved checkout with the repository's current settings.
 - After a run returns, `foreman start` and `foreman run` print one `start OWNER/NAME#N` line for each issue the run returns to admission: the open dependents after its merge, or the children it filed. The host starts each line like an accepted delivery, and admission decides from the issue's Ready label and its prerequisites. A replay of a finished run prints the same lines, so a crash before the host starts them loses nothing. A prerequisite counts once its closing pull request merged into the default branch.
-- It reads the run settings from the repository's GitHub Actions variables:
-  - `FOREMAN_CHECK` is required.
+- It reads the operator's settings from the repository's GitHub Actions variables:
   - `FOREMAN_HUMAN_LOGIN` is required: the GitHub login whose issue comments answer or stop the run.
-  - `FOREMAN_PREFLIGHT` is optional.
   - `FOREMAN_MAX_TOKENS` defaults to the standard token cap.
   - `FOREMAN_MAX_BUDGET_USD` defaults to $3.
-- A missing check, a malformed value or an unreadable variable list stops with exit 1 before any run. The checkpoint pins the settings when the run starts.
+  - `FOREMAN_MERGE_HOLD` holds merge arming while it is set. Foreman reads it at arm time.
+- `FOREMAN_PREFLIGHT`, an optional command run before the check, stays a variable until the contract's setup commands replace it.
+- A missing login, a malformed value or an unreadable variable list stops with exit 1 before any run. The checkpoint pins the settings when the run starts.
+- The check command and the verify skill come from the repository's contract file, `.foreman/contract.yaml`, at the base commit admission pins. A branch that changes the file never changes its own run's check. The file parses strictly: an unknown or duplicate key, or a malformed field, is named. It requires `check` and `verify_skill`, the path of a tracked verify skill. A missing or invalid contract file, or no tracked skill at `verify_skill`, stops admission as `not_ready` with the missing requirement and its fix on the issue. The issue keeps Ready, so supply the requirement, then remove and add the Ready label.
 - The run works in its own checkout, not the current directory. Each repository has one shared clone at `$XDG_STATE_HOME/foreman/checkouts/<owner>/<name>`. Admission adds the issue's worktree at `$XDG_STATE_HOME/foreman/runs/<owner>/<name>/<issue>`, detached at the pinned base, so an issue that isn't admitted gets no checkout. A finished run removes a clean worktree. A halted run keeps it as evidence.
-- Resume with `foreman run --repo <owner>/<name> --issue <n> --answer ...` from any directory. It uses the issue's checkout and the saved checks, so `--check` is needed only for a new run.
+- Resume with `foreman run --repo <owner>/<name> --issue <n> --answer ...` from any directory. It uses the issue's checkout and the checks its contract supplied at admission.
 
 ### What the issue shows
 
@@ -207,10 +208,10 @@ Check a pointer:
 foreman check-pointer tools.yaml
 ```
 
-Walk the graph without calling a model:
+Walk the graph without calling a model. A dry run reads no repository, so it uses a contract fixture:
 
 ```sh
-foreman run delivery --dry-run --repo DoctorCRE/doctorcre-engine --request "Add a field" --check "npm run check"
+foreman run delivery --dry-run --repo DoctorCRE/doctorcre-engine --request "Add a field"
 ```
 
 Print the graph:
@@ -222,7 +223,7 @@ foreman diagram delivery
 Start a live run from the root of the engine checkout. Use `--request` to add context alongside the issue text from GitHub.
 
 ```sh
-foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm run check" --request "Add a field"
+foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --request "Add a field"
 ```
 
 Foreman pins the repository default branch on admission and creates the slice branch from that commit, checkpoints worker edits, commits them, pushes to the checkout's `origin`, and opens or reuses the branch's pull request. Both origin fetch and push URLs must identify `--repo`. For HTTPS, configure GitHub CLI authentication with `gh auth setup-git` before running. Git calls cannot prompt for credentials. Run the same issue again to resume after a quota stop, temporary Git failure or publication failure. Keep the run's partial edits in place.
@@ -238,7 +239,7 @@ To start that issue fresh, set `XDG_STATE_HOME` to a new directory and rerun the
 command without `--answer`. For example, choose an unused directory for this run:
 
 ```sh
-XDG_STATE_HOME="$HOME/.local/state/foreman-fresh-42" foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --check "npm run check"
+XDG_STATE_HOME="$HOME/.local/state/foreman-fresh-42" foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42
 ```
 
 The new checkpoint is `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`. Keep using that

@@ -17,6 +17,7 @@ from foreman.stage_output import SpecCandidate, StoredSlice
 from foreman.steps import spec as spec_step
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_skills
+from test_delivery import VERIFY_SKILL_PATH
 from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, slice_body
 
 
@@ -62,6 +63,9 @@ class RepositoryBoundSpecTests(unittest.TestCase):
             (folder / "link.py").symlink_to("index.py")
             if folder == self.tool:
                 (folder / "tool.py").touch()
+            else:
+                (folder / VERIFY_SKILL_PATH).parent.mkdir(parents=True)
+                (folder / VERIFY_SKILL_PATH).write_text("# Verify the index\n")
             git(folder, "add", ".")
             git(folder, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                 "-c", "commit.gpgsign=false", "commit", "-qm", "Fixture base")
@@ -87,7 +91,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
 
         if saved_workspace(self.checkpoint, issue_thread(TARGET, 8)) is None:
             self.forge.ready_again(8)  # A fresh run starts from Ready.
-        return run_live_delivery(repo=TARGET, issue=8, check="exit 0", dispatcher=dispatch,
+        return run_live_delivery(repo=TARGET, issue=8, dispatcher=dispatch,
             run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"),
             checkpoint=self.checkpoint, answer=answer)
 

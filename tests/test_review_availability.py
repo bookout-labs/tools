@@ -116,8 +116,7 @@ def legacy_order(node, config, used, implement_models=None):
 run = LiveRun(forge, workspace, human_login="fixture-owner")
 with patch("foreman.runner.load_config", return_value=config), patch("foreman.stages.order_for", legacy_order):
     try:
-        result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0",
-            checkpoint=root / "run.sqlite3", run=run, dispatcher=worker)
+        result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=root / "run.sqlite3", run=run, dispatcher=worker)
     except RuntimeError:
         assert legacy == "pending"
         with SqliteSaver.from_conn_string(str(root / "run.sqlite3")) as saver:
@@ -312,7 +311,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 # The final dispatch's fallback attempts reach the run state with its result.
                 self.assertEqual(result["attempts"][:len(before["attempts"])], before["attempts"])
                 self.assertEqual(len(result["attempts"]) - len(before["attempts"]), len(outcomes) - rounds)
-                self.assertEqual(result["path"][-2:], ["publish", "review"])
+                self.assertEqual(result["path"][-3:], ["publish", "verify", "review"])
                 self.assertEqual(result["path"].count("implement"), rounds + 1)
                 self.assertEqual(result["path"].count("check"), rounds + 1)
                 self.assertEqual(len(result["review"].review_findings), rounds)

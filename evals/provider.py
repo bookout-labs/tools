@@ -17,6 +17,8 @@ from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE  # noqa: E402
 from tests.skill_fixture import skill_fixture  # noqa: E402
 
 
+# A contract fixture for the engine, parsed as Foreman parses a target repository's own file.
+ENGINE_CONTRACT = b"check: npm run check\nverify_skill: .claude/skills/verify-engine/SKILL.md\n"
 FIELD_SLICE: dict[str, object] = {
     "title": "Add a field",
     "acceptance": "The response includes the new field.",
@@ -32,7 +34,7 @@ def _walk(handler: Handler, *, slice: dict[str, object] | None = None) -> Delive
     with skill_fixture() as (config, scratch):
         return run_delivery(
             handler, repo="DoctorCRE/doctorcre-engine", request="Add a field",
-            check="npm run check", slice=slice, config=config, scratch=scratch,
+            contract=ENGINE_CONTRACT, slice=slice, config=config, scratch=scratch,
         )
 
 

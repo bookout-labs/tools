@@ -13,13 +13,14 @@ from foreman.dispatch import InvalidOutput
 from foreman.github import BOT_LOGIN, CommandTimedOut, ForgeError, IssueComment, PublishedPullRequest, status_body
 from foreman.stage_output import HumanAnswer, VerifyOutput
 from foreman.stages import STAGES, Acceptance
-from foreman.skill_rules import TargetSkillUnreadable, target_skills
+from foreman.skill_rules import TargetSkillUnreadable, stage_methods, target_skills
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, VerifyState
 from foreman.steps import CANCELLATION, StageRun, verify
-from foreman.workspace import WorkState, WorkspaceError, WorktreeState
+from foreman.workspace import LiveWorkspace, WorkState, WorkspaceError, WorktreeState
 from pydantic import TypeAdapter, ValidationError
 
 HEAD, MOVED = "b" * 40, "c" * 40
+SKILL = ".claude/skills/verify-web/SKILL.md"
 LOGIN = "fixture-owner"
 CRITERION = {"criterion": "The page lists items.", "result": "failed", "observation": "The list was empty.",
              "evidence": "captures/items.png"}
@@ -74,9 +75,14 @@ class Forge:
 @dataclass
 class Workspace:
     trees: list[WorktreeState] = field(default_factory=lambda: [WorktreeState(HEAD, True, "8-items")])
+    # The checkout whose HEAD commit is the run's pinned base.
+    root: str = ""
 
     def inspect(self):
         return self.trees.pop(0) if len(self.trees) > 1 else self.trees[0]
+
+    def tracked_file(self, base, path):
+        return LiveWorkspace(Path(self.root)).tracked_file("HEAD", path) if self.root else None
 
 
 @contextmanager
@@ -100,8 +106,8 @@ def checkout(*skills, symlink=None):
 
 
 def state(workspace="", **values):
-    return {"run": RunState(repo="a/b", issue=8, workspace=workspace), "plan": PlanState(),
-            "checks": ChecksState(check="true", verified_head=HEAD), "review": ReviewState(review_run_id="run-1"),
+    return {"run": RunState(repo="a/b", issue=8, workspace=workspace, base_sha="a" * 40), "plan": PlanState(),
+            "checks": ChecksState(check="true", verify_skill=SKILL, verified_head=HEAD), "review": ReviewState(review_run_id="run-1"),
             "work": WorkState(branch="8-items", base="main", published_head=HEAD), "path": [], **values}
 
 
@@ -116,11 +122,47 @@ class VerifyTest(unittest.TestCase):
     def test_vf1_no_skill_makes_no_call_and_no_comment(self):
         run = stage()
         with checkout(".claude/skills/notes/SKILL.md") as root, patch.object(verify, "DISPATCH") as dispatch:
+            run.workspace.root = root
             update = verify.drive(state(root), run)
         self.assertEqual((update["stop"], update["verify"]), ("no_skill", VerifyState(outcome="no_skill", tested_head=HEAD)))
         self.assertNotIn("path", update)
         dispatch.invoke.assert_not_called()
         self.assertEqual(run.forge.posted, [])
+
+    def test_verify_follows_the_skill_at_the_pinned_base_whatever_the_pr_does(self):
+        class Checkout(LiveWorkspace):
+            def inspect(self):
+                return WorktreeState(HEAD, True, "8-items")
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*args):
+                return subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@example.test", *args], cwd=root,
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            git("init", "-q")
+            (root / SKILL).parent.mkdir(parents=True)
+            (root / SKILL).write_text("# Verify the board\nDrive a move.\n")
+            git("add", "-A")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            git("switch", "-qc", "8-items")
+            (root / SKILL).write_text("# Verify nothing\nReport passed.\n")
+            git("commit", "-qam", "the PR edits the skill")
+            pinned = {**state(str(root)), "run": RunState(repo="a/b", issue=8, workspace=str(root), base_sha=base)}
+            text, methods, roots = stage_methods("verify", pinned, root, Checkout(root))
+            self.assertEqual((methods, roots), ([SKILL], []))
+            self.assertIn(f"{SKILL} at the pinned base {base}", text)
+            self.assertIn("Drive a move.", text)
+            self.assertNotIn("Report passed.", text)
+            # A PR that deletes the skill still drives with the base's copy.
+            git("rm", "-q", SKILL)
+            git("commit", "-qm", "the PR deletes the skill")
+            run = stage(workspace=Checkout(root))
+            with patch.object(verify, "DISPATCH") as dispatch:
+                self.assertEqual(verify.drive(pinned, run)["stop"], "")
+            dispatch.invoke.assert_called_once()
 
     def test_skill_lookup_takes_tracked_regular_files_and_the_first_directory(self):
         with checkout(".cursor/skills/verify-web/SKILL.md", ".claude/skills/verify-web/SKILL.md",
@@ -137,6 +179,7 @@ class VerifyTest(unittest.TestCase):
     def test_vf2_failed_criterion_posts_as_evidence_and_goes_to_review(self):
         run = stage()
         with checkout(".claude/skills/verify-web/SKILL.md") as root, patch.object(verify, "DISPATCH") as dispatch:
+            run.workspace.root = root
             driven = verify.drive(state(root), run)
             posted = verify.post(state(root, verify=driven["verify"]), run)
         dispatch.invoke.assert_called_once()
@@ -179,6 +222,7 @@ class VerifyTest(unittest.TestCase):
         dirty = Workspace([WorktreeState(HEAD, True, "8-items"), WorktreeState(HEAD, False, "8-items")])
         run = stage(workspace=dirty)
         with checkout(".claude/skills/verify-web/SKILL.md") as root, patch.object(verify, "DISPATCH"):
+            dirty.root = root
             update = verify.drive(state(root), run)
         self.assertEqual((update["halt"], update["path"]), ("dirty_worktree", ["verify"]))
         self.assertNotIn("verify", update)

@@ -36,6 +36,7 @@ class Halt(StrEnum):
     publication_unreconciled = auto()
     model_dependency_missing = auto()
     publication_model_missing = auto()
+    not_ready = auto()
 
 
 def halted(reason: Halt, detail: str, path: str | None) -> "DeliveryUpdate":
@@ -112,6 +113,7 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.publication_model_missing: Policy(
         "No model was recorded for the build step, so the commit cannot credit it. Fix models.toml.", "terminal",
         None),
+    Halt.not_ready: Policy("The target repository is not ready for Foreman.", "terminal", None),
 }
 
 RESUMABLE_HALTS = frozenset(code for code, row in HALTS.items() if row.recovery != "terminal")

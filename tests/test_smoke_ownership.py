@@ -250,6 +250,7 @@ with patch('foreman.smoke_command.LiveForge', return_value=forge), \\
      patch('foreman.smoke_command.credentials.environment', return_value={}), \\
      patch('foreman.smoke_command.subprocess.run'), \\
      patch('foreman.smoke_command.subprocess.check_output', return_value='base'), \\
+     patch('foreman.smoke_command.published_file'), \\
      patch('foreman.smoke_command.run_live_delivery', side_effect=runner):
     sys.exit(run_smoke(path.parent, time.monotonic() + 30))
 '''

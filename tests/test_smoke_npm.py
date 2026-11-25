@@ -14,16 +14,17 @@ import unittest
 from unittest.mock import Mock, patch
 
 from foreman import cli, smoke_command as smoke
-from foreman.delivery import LiveRun
+from foreman.delivery import LiveRun, stage_text
 from foreman.config import load_config
 from foreman.state import CheckpointVersionError
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_skills, checker_reply
-from test_runner import APPROVE, FakeGitHub, worker_reply
+from test_runner import APPROVE, FakeGitHub, confine_host, worker_reply
 
 
 class NpmSmokeTest(unittest.TestCase):
     def exercise(self, mutation='', *, targets=None):
+        confine_host(self)
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
             fake = FakeGitHub()
@@ -50,6 +51,11 @@ class NpmSmokeTest(unittest.TestCase):
                     (checkout / 'package-lock.json').write_text(json.dumps({'name': 'unlike', 'lockfileVersion': 3,
                         'packages': {'': {'name': 'unlike', 'version': '1.0.0'}}}))
                     (checkout / '.nvmrc').write_text(pins['node'] + '\n')
+                    # The target's own contract names its check and verify skill.
+                    (checkout / '.foreman').mkdir()
+                    (checkout / '.foreman/contract.yaml').write_text('check: npm run check\nverify_skill: .claude/skills/verify-text/SKILL.md\n')
+                    (checkout / '.claude/skills/verify-text').mkdir(parents=True)
+                    (checkout / '.claude/skills/verify-text/SKILL.md').write_text('# Verify the text module\n')
                     (checkout / 'src/text.js').write_text('export const normalize = s => s.trim();\n')
                     (checkout / 'tests/text.test.js').write_text("import test from 'node:test';\nimport assert from 'node:assert/strict';\n"
                         "import { normalize } from '../src/text.js'; // unlike\n" +
@@ -83,6 +89,9 @@ class NpmSmokeTest(unittest.TestCase):
                 if reply := checker_reply(args):
                     return worker_reply(args, reply)
                 state = json.loads(args[-1].split('Delivery state:\n')[1])
+                if args[-1].startswith(stage_text('verify')):
+                    return worker_reply(args, {'tested_head': state['work']['published_head'], 'criteria': [{'criterion': 'smoke file', 'result': 'passed',
+                        'observation': 'The scripted drive read the file.', 'evidence': 'captures/smoke.txt'}]})
                 # The worker is scripted; all workspace operations remain real.
                 if args[0] == 'codex':
                     (cwd / f'smoke_{state["run"]["issue"]}.txt').write_text(f'smoke {state["run"]["issue"]}\n')

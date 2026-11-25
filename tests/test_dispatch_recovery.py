@@ -74,7 +74,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     with patch("foreman.dispatch.Attempt.record", side_effect=crash) if mode == "quota-uncommitted" else contextlib.nullcontext():
         with patch("foreman.delivery.stage_update", side_effect=crash) if mode == "success" else contextlib.nullcontext():
             try:
-                result = run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=Path(checkpoint),
+                result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(checkpoint),
                     dispatcher=handler, presentation=RunPresentation(),
                     max_budget_usd=BudgetUsd(Decimal(limit)) if limit else None, run=LiveRun(FakeGitHub(), workspace, human_login="fixture-owner"))
             except ValueError as exc:
@@ -482,7 +482,8 @@ class BuilderSessionTests(PublicationFixture):
                 return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[0])
             return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[4])
 
-        paused = self.walk(model_edit=edit, check=check)
+        self.reset_fixture(check=check)
+        paused = self.walk(model_edit=edit)
         self.assertEqual(paused["stop"], "quota_exhausted", paused.get("halt_detail"))
         self.assertEqual([(name, plan.resume_session, bool(plan.repair)) for name, plan, _ in seen[:3]],
                          [(sol.name, None, False), (sol.name, SESSIONS[0], False), (sol.name, SESSIONS[0], True)])
@@ -492,7 +493,7 @@ class BuilderSessionTests(PublicationFixture):
             (self.checkout / "items.txt").write_text("two\n")
             return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[5])
 
-        result = self.walk(model_edit=wake, check=check)
+        result = self.walk(model_edit=wake)
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
         name, plan, prompt = seen[-1]
         self.assertEqual((name, plan.repair, plan.resume_session), (sol.name, None, None))
@@ -503,9 +504,9 @@ class BuilderSessionTests(PublicationFixture):
         for check, resumed in (("grep -qx two items.txt", SESSIONS[0]),
                                ("grep -qx two items.txt || { echo touched >> items.txt; false; }", None)):
             with self.subTest(resumed=resumed):
-                self.reset_fixture()
+                self.reset_fixture(check=check)
                 edit, seen = self.builder([("one\n", VALID, SESSIONS[0], False), ("two\n", VALID, SESSIONS[1], False)])
-                result = self.walk(model_edit=edit, check=check)
+                result = self.walk(model_edit=edit)
                 self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
                 self.assertEqual([plan.resume_session for _, plan, _ in seen], [None, resumed])
                 self.assertEqual(result["builder_session"]["session"], SESSIONS[1])
@@ -541,7 +542,7 @@ class BuilderSessionTests(PublicationFixture):
                 return Outcome("ran", VALID, usage=spent)
             return script(node, model, state, instruction)
 
-        result = run_live_delivery(repo=REPO, issue=8, check="test -f items.txt", checkpoint=self.checkpoint, max_tokens=1000,
+        result = run_live_delivery(repo=REPO, issue=8, checkpoint=self.checkpoint, max_tokens=1000,
                                    run=LiveRun(LiveForge(), workspace, human_login="fixture-owner"), dispatcher=handler)
         self.assertEqual(result["halt"], "budget_exceeded")
         fingerprint = DispatchRun(handler, workspace, None, "", True, lambda: {}, lambda *args: None).fingerprint
@@ -651,7 +652,7 @@ class OtherProcedureSessionTests(unittest.TestCase):
                 return replace(script(node, model, state, instruction), session_id=SESSIONS[9])
 
             def walk_live():
-                return run_live_delivery(repo="Example/Engine", issue=8, check="exit 0", checkpoint=Path(folder) / "run.sqlite3",
+                return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
                                          dispatcher=handler, run=LiveRun(FakeGitHub(), workspace, human_login="fixture-owner"))
 
             self.assertEqual(walk_live()["stop"], "quota_exhausted")

@@ -7,6 +7,7 @@ import unittest
 
 from foreman.stages import STAGES
 from foreman.config import MATT_SKILLS_PIN, PSTACK_PIN
+from foreman.dry_run import DryRun
 from foreman.skill_rules import PACKAGE_SKILLS, export_skills, stage_methods
 from foreman.state import PlanState
 from skill_fixture import skill_fixture
@@ -25,7 +26,7 @@ class SkillRulesTest(unittest.TestCase):
                             "blast-radius/SKILL.md": root / "blast-radius/SKILL.md"}),
             ):
                 with self.subTest(stage=stage):
-                    instructions, methods, _ = stage_methods(stage, {"plan": PlanState(work_kind="bug_fix")}, root)
+                    instructions, methods, _ = stage_methods(stage, {"plan": PlanState(work_kind="bug_fix")}, root, DryRun())
                     self.assertEqual(methods, list(expected))
                     self.assertEqual(instructions, "\n\n".join(
                         f"Read {path} in full and follow it." for path in expected.values()))

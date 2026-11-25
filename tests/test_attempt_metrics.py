@@ -120,8 +120,7 @@ class AttemptMetricsTests(unittest.TestCase):
     def test_prompt_bytes_do_not_replace_unknown_usage(self):
         with skill_fixture() as (config, scratch):
             result = run_delivery(lambda *_: Outcome("ran", prompt_bytes=2658),
-                                  repo="Example/Engine", request="List items", check="true",
-                                  config=config, scratch=scratch)
+                                  repo="Example/Engine", request="List items", config=config, scratch=scratch)
         self.assertEqual(result["stop"], "budget_exceeded")
         self.assertIn("usage_unknown", result["halt_detail"])
         self.assertEqual(result["attempts"][0]["prompt_bytes"], 2658)
@@ -194,8 +193,7 @@ class AttemptMetricsTests(unittest.TestCase):
             return CompletedProcess(args, 0, json.dumps(envelope), "")
         worker = CliWorker(Path("."), run)
         with skill_fixture(config) as (config, scratch), TemporaryDirectory() as directory:
-            result = run_delivery(worker, repo="Example/Engine", request="List items", check="true",
-                                  config=config, scratch=scratch)
+            result = run_delivery(worker, repo="Example/Engine", request="List items", config=config, scratch=scratch)
             self.assertEqual([attempt["stage"] for attempt in result["attempts"]], ["triage", "spec"])
             self.assertEqual(len(prompts), 2)
             self.assertEqual(result["stop"], "needs_human")

@@ -36,13 +36,12 @@ class LiveWatchTest(unittest.TestCase):
         self.fake = FakeGitHub()
         self.forge = Mock(spec=Forge, wraps=self.fake)
         self.run = LiveRun(self.forge, FakeWorkspace(self.root), skills=fixture_skills, human_login="fixture-owner")
-        self.flags = ['run', 'delivery', '--repo', 'Example/Engine', '--issue', '8', '--check', 'exit 0']
+        self.flags = ['run', 'delivery', '--repo', 'Example/Engine', '--issue', '8']
 
     def invoke(self, **kwargs):
         if saved_workspace(self.checkpoint, 'example/engine#8') is None:
             self.fake.ready_again(8)  # A fresh run starts from Ready.
-        return run_live_delivery(repo='Example/Engine', issue=8, check='exit 0',
-                                 checkpoint=self.checkpoint, run=self.run, **({'dispatcher': lambda *args: Outcome('failed', detail='bad output', usage=SCRIPTED_USAGE)} | kwargs))
+        return run_live_delivery(repo='Example/Engine', issue=8, checkpoint=self.checkpoint, run=self.run, **({'dispatcher': lambda *args: Outcome('failed', detail='bad output', usage=SCRIPTED_USAGE)} | kwargs))
 
     def stored(self):
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
@@ -81,7 +80,7 @@ class LiveWatchTest(unittest.TestCase):
         first = self.invoke()
         stored = self.stored()
         self.assertEqual((stored['run'].issue, stored['run'].workspace, stored['run'].repo, stored['checks'].check, stored['run'].token_cap),
-                         (8, str(self.root.resolve()), 'Example/Engine', 'exit 0', 20_000_000))
+                         (8, str(self.root.resolve()), 'Example/Engine', '', 20_000_000))
         self.assertEqual(stored['pstack_pin'], first['pstack_pin'])
         self.assertIn('File to change: src/foreman/skill_rules.py', self.fake.created[0][1])
         self.assertEqual(self.invoke(), first)

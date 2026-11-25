@@ -5,6 +5,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
+from foreman.doctor import NotReady, quick
 from foreman.github import READY_LABEL, ForgeError, unmet_prerequisites
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import load_stored_slice
@@ -12,7 +13,7 @@ from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkspaceError
 
-HALTS = [Halt.missing_slice, Halt.skill_missing, Halt.invalid_output, Halt.git_failed]
+HALTS = [Halt.missing_slice, Halt.skill_missing, Halt.invalid_output, Halt.git_failed, Halt.not_ready]
 ROUTES = ("question", "plan", "supplied_slice", "cancelled", "halted")
 
 
@@ -47,13 +48,18 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             return {"stop": "blocked", "halt_detail": detail, "path": ["admit"]}
         base = forge.default_branch(repo)
         pinned = workspace.pin_base(base)
+        # The run's check and verify skill come from the contract at its pinned base, whatever its branch later does.
+        contract = quick(workspace, pinned)
+    except NotReady as exc:
+        # A halt before admission keeps Ready, so only a new Ready label checks admission again.
+        return stopped(Halt.not_ready, f"{exc} Then remove and add the {READY_LABEL} label.", "admit")
     except (ForgeError, WorkspaceError) as exc:
         return stopped(Halt.git_failed, str(exc), "admit")
     request = issue["title"] + ("\n\n" + issue["body"] if issue["body"] else "")
     if target.request:
         request += f"\n\nOperator context:\n{target.request}"
     return {"run": target.model_copy(update={"repo": issue["repo"], "request": request, "base_branch": base, "base_sha": pinned}),
-            "plan": plan}
+            "checks": state["checks"].model_copy(update={"check": contract.check, "verify_skill": contract.verify_skill}), "plan": plan}
 
 
 def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -73,6 +79,8 @@ def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
     def outcome(state: DeliveryState) -> str:
+        if state.get("halt") == Halt.not_ready:
+            return Halt.not_ready
         if state.get("halt") or state.get("stop") == "blocked":
             return "halted"
         return "cancelled" if state.get("stop") == "cancelled" else state["plan"].triage
@@ -82,7 +90,7 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
             .add_node("admit", run.bind(admit))
             .add_node("route", run.bind(route))
             .add_edge(START, "admit")
-            .add_conditional_edges("admit", lambda state: ended if (ended := outcome(state)) in ("cancelled", "halted") else "admitted",
-                                   {"admitted": "route", "cancelled": END, "halted": END})
+            .add_conditional_edges("admit", lambda state: ended if (ended := outcome(state)) in ("not_ready", "cancelled", "halted") else "admitted",
+                                   {"admitted": "route", "not_ready": END, "cancelled": END, "halted": END})
             .add_conditional_edges("route", outcome, dict.fromkeys(ROUTES, END))
             .compile().with_config({"metadata": {"contract_id": "triage", "stage_declarations": declarations}}))

@@ -206,8 +206,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     from foreman.runner import run_live_delivery
                     from unittest.mock import patch
                     with patch('foreman.runner.load_config', return_value=settings):
-                        result = run_live_delivery(repo=repo, issue=8, check='exit 0',
-                            checkpoint=Path(directory) / 'checkpoint', run=LiveRun(self.forge, workspace, human_login="fixture-owner"), dispatcher=dispatch)
+                        result = run_live_delivery(repo=repo, issue=8, checkpoint=Path(directory) / 'checkpoint', run=LiveRun(self.forge, workspace, human_login="fixture-owner"), dispatcher=dispatch)
                 if (paused := graph.get_state(config, subgraphs=True)).interrupts:
                     return snapshot_result(paused)
                 return read_delivery_state({"stop": "needs_human", **result})

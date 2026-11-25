@@ -185,8 +185,7 @@ DEFAULT_BUDGET_USD = "3"
 
 @dataclass(frozen=True)
 class RunSettings:
-    """An unattended run's settings, from the target repository's GitHub Actions variables."""
-    check: str
+    """An unattended run's settings, from the target repository's GitHub Actions variables. The check comes from its contract file."""
     preflight: str
     max_tokens: int | None
     max_budget_usd: BudgetUsd | None
@@ -195,9 +194,6 @@ class RunSettings:
 
     @classmethod
     def from_variables(cls, variables: Mapping[str, str]) -> "RunSettings":
-        check = variables.get("FOREMAN_CHECK", "")
-        if not check.strip():
-            raise ValueError("Set the FOREMAN_CHECK repository variable before starting runs from Ready.")
         human_login = variables.get("FOREMAN_HUMAN_LOGIN", "").strip()
         if not human_login:
             raise ValueError("Set the FOREMAN_HUMAN_LOGIN repository variable before starting runs from Ready.")
@@ -207,7 +203,7 @@ class RunSettings:
             max_budget_usd = positive_budget(variables.get("FOREMAN_MAX_BUDGET_USD", DEFAULT_BUDGET_USD))
         except (argparse.ArgumentTypeError, ValueError) as exc:
             raise ValueError("FOREMAN_MAX_TOKENS must be a positive integer and FOREMAN_MAX_BUDGET_USD a positive amount.") from exc
-        return cls(check=check, preflight=variables.get("FOREMAN_PREFLIGHT", ""), max_tokens=max_tokens, max_budget_usd=max_budget_usd,
+        return cls(preflight=variables.get("FOREMAN_PREFLIGHT", ""), max_tokens=max_tokens, max_budget_usd=max_budget_usd,
                    human_login=human_login)
 
 
@@ -239,7 +235,6 @@ def main(
     run.add_argument("--watch-repo", default="bookout-labs/tools")
     run.add_argument("--issue", type=int)
     run.add_argument("--request")
-    run.add_argument("--check", default="")
     run.add_argument("--human-login", default=os.environ.get("FOREMAN_HUMAN_LOGIN", ""),
                      help="the GitHub login whose issue comments answer or stop the run (default: FOREMAN_HUMAN_LOGIN)")
     run.add_argument("--preflight", default="")
@@ -335,7 +330,6 @@ def main(
                 result = run_live_delivery(
                     repo=repo,
                     issue=issue,
-                    check=settings.check,
                     preflight=settings.preflight,
                     checkpoint=store,
                     dispatcher=dispatcher,
@@ -398,7 +392,6 @@ def main(
             ScriptHandler(),
             repo=args.repo,
             request=args.request or f"Issue #{args.issue}",
-            check=args.check,
             max_tokens=args.max_tokens if args.max_tokens is not None else DEFAULT_TOKEN_CAP,
             max_budget_usd=args.max_budget_usd,
             commands=presentation.commands,
@@ -416,15 +409,13 @@ def main(
     thread = issue_thread(args.repo, args.issue)
     try:
         with issue_lock(thread):
-            # A resume uses its saved checks, in the checkout start gave it, even before admission created it.
+            # A resume uses its checkout from start, even before admission created it.
             saved = saved_workspace(store, thread)
-            if saved is None and not args.check.strip():
-                run.error("a new live run requires a --check command")
             if not args.human_login.strip():
                 run.error("a live run requires --human-login or FOREMAN_HUMAN_LOGIN, the login whose comments answer it")
             managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
             workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo)
-            return live(args.repo, args.issue, RunSettings(check=args.check, preflight=args.preflight, max_tokens=args.max_tokens,
+            return live(args.repo, args.issue, RunSettings(preflight=args.preflight, max_tokens=args.max_tokens,
                                                            max_budget_usd=args.max_budget_usd, human_login=args.human_login.strip()), workspace,
                         answer=args.answer, request=args.request)
     except IssueLocked as exc:

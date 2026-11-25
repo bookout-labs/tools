@@ -60,10 +60,6 @@ waivers:
     V2-2744814365f27851: "item 20: [merge] halts add production_unconfirmed"
     V2-fe7b51f959c31436: "item 20: [halts] production_unconfirmed"
     V2-8cfd976895b95870: "item 20: [delivery] edge merge -> __end__ adds reverted"
-    # Item 23, doctor's quick check at admission.
-    V2-d971cbf2938d0f98: "item 23: [triage] edge admit -> __end__ adds not_ready"
-    V2-7e9072f37d78ab48: "item 23: [triage] halts add not_ready"
-    V2-2d1956f7583b3a2f: "item 23: [halts] not_ready"
     # The drawn v3 prompts. Each build that ships its item copies the prompt to src/foreman/stages/.
     V2-ed3e7bd9521ae643: "items 4, 6, 7 and 20: [procedure/spec] prompt"
     V2-6320858f1b37c70b: "items 4, 6, 7, 14 and 20: [procedure/spec_check] prompt"
