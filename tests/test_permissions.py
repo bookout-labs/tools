@@ -81,7 +81,7 @@ class PermissionsTest(unittest.TestCase):
                     calls.append((args, json.loads(Path(args[args.index("--settings") + 1]).read_text())))
                     return fixture_process(args, "success", 0)
 
-                worker = CliWorker(scratch, runner)
+                worker = CliWorker(scratch, runner, scratch_root=Path(self.enterContext(TemporaryDirectory())))
 
                 def handler(node, model, state, instruction):
                     if node != "implement":
@@ -250,14 +250,14 @@ class PermissionsTest(unittest.TestCase):
             def linked_runner(args, cwd, env):
                 linked.append(json.loads(Path(args[args.index("--settings") + 1]).read_text())["sandbox"]["filesystem"]["denyWrite"])
                 return fixture_process(args, "success", 0)
-            CliWorker(Path(directory) / "link", linked_runner)("implement", ModelSpec.parse("claude-opus-5-5-high"),
+            CliWorker(Path(directory) / "link", linked_runner, scratch_root=Path(directory))("implement", ModelSpec.parse("claude-opus-5-5-high"),
                                                               {"checks": ChecksState(check="sh check.sh")}, "implement")
             self.assertEqual(linked[0][:2], [str(Path(directory).absolute() / "link/.git"), str(checkout / ".git")])
             seen = []
             def runner(args, cwd, env):
                 seen.append((json.loads(Path(args[args.index("--settings") + 1]).read_text()), env))
                 return fixture_process(args, "success", 0)
-            CliWorker(checkout, runner)("implement", ModelSpec.parse("claude-opus-5-5-high"), {"checks": ChecksState(check="sh check.sh")}, "implement")
+            CliWorker(checkout, runner, scratch_root=Path(directory))("implement", ModelSpec.parse("claude-opus-5-5-high"), {"checks": ChecksState(check="sh check.sh")}, "implement")
             settings, env = seen[0]
             self.assertEqual(settings["sandbox"]["filesystem"]["denyWrite"],
                              [str(checkout / ".git"), str(clone / ".git/worktrees/checkout"), str(clone / ".git")])
@@ -266,10 +266,10 @@ class PermissionsTest(unittest.TestCase):
             self.assertLessEqual(len(env["CLAUDE_CODE_TMPDIR"]), 24)
             self.assertFalse(Path(env["CLAUDE_CODE_TMPDIR"]).exists())
             # Only an editing Claude call gets one, and a host without /tmp has no confinable Claude.
-            CliWorker(checkout, runner)("triage", ModelSpec.parse("claude-opus-5-5-high"), {"plan": PlanState()}, "triage")
+            CliWorker(checkout, runner, scratch_root=Path(directory))("triage", ModelSpec.parse("claude-opus-5-5-high"), {"plan": PlanState()}, "triage")
             self.assertNotIn("CLAUDE_CODE_TMPDIR", seen[-1][1])
             with patch("foreman.worker.TemporaryDirectory", side_effect=[TemporaryDirectory(), OSError("no /tmp")]):
-                outcome = CliWorker(checkout, runner)("implement", ModelSpec.parse("claude-opus-5-5-high"), {"checks": ChecksState(check="sh check.sh")}, "implement")
+                outcome = CliWorker(checkout, runner, scratch_root=Path(directory))("implement", ModelSpec.parse("claude-opus-5-5-high"), {"checks": ChecksState(check="sh check.sh")}, "implement")
             self.assertEqual((outcome.kind, len(seen)), ("cli_missing", 2))
             # The checkout's own .git decides, never an inherited GIT_DIR, and an unreadable one fails closed.
             with patch.dict(os.environ, {"GIT_DIR": str(clone / ".git")}):
@@ -310,7 +310,7 @@ class PermissionsTest(unittest.TestCase):
             return fixture_process(args, "success", 0)
         plan = {"models": [], "instruction": "review", "methods": [], "read_roots": [],
                 "target": None, "scope": {"command": "  # head history base\n  git diff --no-color abc...def --  \n\n", "inline": []}}
-        CliWorker(Path.cwd(), runner)("review", ModelSpec.parse("claude-opus-5-5-high"),
+        CliWorker(Path.cwd(), runner, scratch_root=Path(self.enterContext(TemporaryDirectory())))("review", ModelSpec.parse("claude-opus-5-5-high"),
                                      {"checks": ChecksState(check="sh check.sh"), "dispatch_plan": plan}, "review")
         args = args_seen[0]
         self.assertEqual(args["permissions"]["allow"],
@@ -324,7 +324,7 @@ class PermissionsTest(unittest.TestCase):
             permissions = json.loads(Path(args[args.index("--settings") + 1]).read_text())["permissions"]
             self.assertEqual(permissions["allow"], [f"Bash({check})", "Edit", "Write"])
             return fixture_process(args, "success", 0)
-        result = CliWorker(Path.cwd(), runner)("implement", ModelSpec.parse("claude-opus-5-5-high"),
+        result = CliWorker(Path.cwd(), runner, scratch_root=Path(self.enterContext(TemporaryDirectory())))("implement", ModelSpec.parse("claude-opus-5-5-high"),
                                               {"checks": ChecksState(check=check)}, "implement")
         self.assertEqual(result.kind, "ran")
 
@@ -392,7 +392,7 @@ class PermissionsTest(unittest.TestCase):
                 with patch('foreman.adapters.grok.platform.system', return_value=system):
                     with self.assertRaises(CapabilityUnavailable):
                         GrokAdapter(ModelSpec.parse('grok-4.7-high')).command(Call('probe', '{}', stage == 'implement', Path.cwd()))
-                    outcome = CliWorker(Path.cwd(), runner)(stage, ModelSpec.parse('grok-4.7-high'), {'checks': ChecksState()}, 'probe')
+                    outcome = CliWorker(Path.cwd(), runner, scratch_root=Path(self.enterContext(TemporaryDirectory())))(stage, ModelSpec.parse('grok-4.7-high'), {'checks': ChecksState()}, 'probe')
                 self.assertEqual(outcome.kind, 'cli_missing')
                 self.assertIn(system, outcome.detail)
                 self.assertIn('editing requires an isolated worker launcher' if stage == 'implement' else 'temp writes', outcome.detail)
@@ -424,7 +424,7 @@ class PermissionsTest(unittest.TestCase):
                         return codex_process(events)
                     scope = {'command': DIFF, 'inline': []} if stage == 'review' else None
                     plan = {'models': [], 'instruction': '', 'methods': [], 'read_roots': [str(r) for r in roots], 'target': None, 'scope': scope}
-                    self.assertEqual(CliWorker(root, run)(stage, adapter.model, {'checks': ChecksState(), 'dispatch_plan': plan}, 'probe').kind, 'ran')
+                    self.assertEqual(CliWorker(root, run, scratch_root=Path(self.enterContext(TemporaryDirectory())))(stage, adapter.model, {'checks': ChecksState(), 'dispatch_plan': plan}, 'probe').kind, 'ran')
                     args = adapter.command(Call('probe', '{}', stage == 'implement', root, read_roots=roots))
                     run(args, root, {'TMPDIR': str(root / 'scratch')})
 

@@ -31,7 +31,9 @@ from skill_fixture import checker_reply
 
 class LiveWatchTest(unittest.TestCase):
     def setUp(self):
-        self.root = Path(self.enterContext(TemporaryDirectory()))
+        # The checkout sits in the test's own directory, so a checkpoint inside it keeps the run's scratch there.
+        self.root = Path(self.enterContext(TemporaryDirectory())) / 'checkout'
+        self.root.mkdir()
         self.checkpoint = self.root / 'runs.sqlite3'
         self.fake = FakeGitHub()
         self.forge = Mock(spec=Forge, wraps=self.fake)
@@ -93,7 +95,8 @@ class LiveWatchTest(unittest.TestCase):
         workspace = FakeWorkspace(self.root)
         workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
         self.run = LiveRun(self.forge, workspace, skills=fixture_skills, human_login="fixture-owner")
-        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}))
+        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
+                               scratch_root=self.checkpoint.parent)
         first = self.invoke(dispatcher=dispatcher)
         self.assertEqual(first['halt'], 'git_failed')
         second = self.invoke(dispatcher=dispatcher)
@@ -231,7 +234,8 @@ class LiveWatchTest(unittest.TestCase):
         workspace = FakeWorkspace(self.root)
         workspace.create_branch = Mock(side_effect=WorkspaceError('#48 ' + secret))
         self.run = LiveRun(LiveForge(), workspace, skills=fixture_skills, human_login="fixture-owner")
-        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'supplied_slice'}))
+        dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'supplied_slice'}),
+                               scratch_root=self.checkpoint.parent)
         real_run = subprocess.run
         fake_gh = lambda args, **kwargs: gh(args, **kwargs) if args[0] == 'gh' else real_run(args, **kwargs)
         with patch('foreman.github.subprocess.run', side_effect=fake_gh), \
@@ -253,7 +257,8 @@ class LiveWatchTest(unittest.TestCase):
             self.checkpoint = self.root / f'{stop}.sqlite3'
             if code == 75:
                 self.run.workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
-                dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'supplied_slice'}))
+                dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'supplied_slice'}),
+                                       scratch_root=self.checkpoint.parent)
                 self.invoke(dispatcher=dispatcher)
             else:
                 self.invoke()

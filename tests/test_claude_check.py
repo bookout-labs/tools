@@ -100,7 +100,7 @@ class ClaudeCheckTest(unittest.TestCase):
                         if mode == 'fallback' and model.family != 'claude':
                             return Outcome('quota', detail='quota', usage=SCRIPTED_USAGE)
                         if mode != 'fix' or count == 2:
-                            return CliWorker(Path('.'), run=lambda *_: subprocess.CompletedProcess(['claude'], 0, json.dumps(denied(CHECK)), ''))(node, model, state, instruction)
+                            return CliWorker(Path('.'), run=lambda *_: subprocess.CompletedProcess(['claude'], 0, json.dumps(denied(CHECK)), ''), scratch_root=Path(self.enterContext(TemporaryDirectory())))(node, model, state, instruction)
                     return script(node, model, state, instruction)
                 result = walk(handler, check=CHECK, config=config)
                 self.assertEqual((result['stop'], count), ('invalid_output', {'first': 1, 'fix': 2, 'fallback': 3}[mode]))
@@ -138,7 +138,7 @@ class ClaudeCheckTest(unittest.TestCase):
                     process = subprocess.run(args, cwd=cwd, env={**live_env, **env}, capture_output=True, text=True, stdin=subprocess.DEVNULL)
                     captured.update(argv=args, envelope=json.loads(process.stdout), returncode=process.returncode)
                     return process
-                result = CliWorker(repo, run=run)('implement', MODEL, {"checks": ChecksState(check=check), "plan": PlanState()}, f'Use Bash separately for each command exactly once, including denials: {json.dumps(commands)}. Then return implementation "done".')
+                result = CliWorker(repo, run=run, scratch_root=Path(self.enterContext(TemporaryDirectory())))('implement', MODEL, {"checks": ChecksState(check=check), "plan": PlanState()}, f'Use Bash separately for each command exactly once, including denials: {json.dumps(commands)}. Then return implementation "done".')
                 self.assertEqual(result.kind, 'ran' if check == CHECK else 'failed', result.detail)
                 transcript = Path.home() / '.claude/projects' / re.sub(r'[^a-zA-Z0-9-]', '-', str(repo)) / f"{captured['envelope']['session_id']}.jsonl"
                 rows = [json.loads(line) for line in transcript.read_text().splitlines()]
