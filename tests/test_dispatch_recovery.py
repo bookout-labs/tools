@@ -662,26 +662,3 @@ class OtherProcedureSessionTests(unittest.TestCase):
         self.assertEqual(seen, [(model.name, None) for model in models] + [(models[0].name, SESSIONS[1])])
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
 
-
-class LoginPromptTests(unittest.TestCase):
-    def test_the_login_a_start_reads_reaches_no_worker_prompt(self):
-        """The login a live start reads from the repository's variables is saved on the run, and no worker's prompt holds it."""
-        prompts = {}
-        with TemporaryDirectory() as folder, skill_fixture() as (config, _), patch("foreman.runner.load_config", return_value=config):
-            script = ScriptHandler()
-            workspace = FakeWorkspace(Path(folder))
-
-            def handler(node, model, state, instruction):
-                prompts.setdefault(node, []).append(assignment(node, model, state, instruction, None))
-                if node == "implement":
-                    workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
-                return script(node, model, state, instruction)
-
-            result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
-                                       dispatcher=handler, run=LiveRun(FakeGitHub(), workspace))
-        self.assertEqual((result["stop"], result["human_login"]), ("merged", "fixture-owner"), result.get("halt_detail"))
-        self.assertLessEqual({"triage", "spec_check", "implement", "verify", "review"}, set(prompts))
-        for node, texts in prompts.items():
-            for text in texts:
-                self.assertNotIn("fixture-owner", text, node)
-                self.assertNotIn("human_login", text, node)

@@ -135,8 +135,9 @@ class AttemptMetricsTests(unittest.TestCase):
         model = ModelSpec.parse("claude-opus-5-5-high")
         state = {"attempts": [{"stage": "triage", "prompt_bytes": 999, "native_usage": {"secret": "not input"}}]}
         first = worker("triage", model, state, "Read café 🐈.")
-        second = worker("triage", model, {"attempts": [{"stage": "triage"}]}, "Read café 🐈.")
-        third = worker("triage", model, {}, "Read café 🐈.")
+        # The attempt records are in no procedure's inputs; an answer is in triage's.
+        second = worker("triage", model, {}, "Read café 🐈.")
+        third = worker("triage", model, {"human_answers": ["Yes."]}, "Read café 🐈.")
         self.assertEqual(first.prompt_bytes, len(prompts[0].encode("utf-8")))
         self.assertGreater(first.prompt_bytes, len(prompts[0]))
         self.assertEqual(first.prompt_bytes, second.prompt_bytes)
@@ -151,7 +152,7 @@ class AttemptMetricsTests(unittest.TestCase):
         def missing(*args):
             raise FileNotFoundError()
         unavailable = CliWorker(Path("."), missing, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", model, {}, "Read café 🐈.")
-        self.assertEqual(unavailable.prompt_bytes, third.prompt_bytes)
+        self.assertEqual(unavailable.prompt_bytes, second.prompt_bytes)
         self.assertIsNone(unavailable.usage)
         self.assertIsNone(unavailable.native_usage)
         blocked = worker("triage", ModelSpec.parse("grok-4.7-high"), {}, "Read.")

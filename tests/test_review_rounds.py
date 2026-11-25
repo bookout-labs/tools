@@ -299,8 +299,7 @@ class ReviewRoundsTest(unittest.TestCase):
                         result = run_worker_command(args, cwd, env)
                     prompt = execute.prompt
                     self.assertEqual(prompt.count(instruction), 1)
-                    projected_plan = json.loads(prompt.split("Delivery state:\n")[1])["dispatch_plan"]
-                    self.assertFalse({"instruction", "scope"} & projected_plan.keys())
+                    self.assertNotIn("dispatch_plan", json.loads(prompt.split("Delivery state:\n")[1]))
                     self.assertLess(sum(len(arg.encode()) + 1 for arg in execute.call_args.args[0]), 32768)
                     return result
                 CliWorker(workspace.root, runner, scratch_root=Path(scratch))(

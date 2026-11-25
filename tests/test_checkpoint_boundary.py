@@ -19,9 +19,10 @@ from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.outcomes import Halt
 from foreman.runner import run_live_delivery
+from foreman.stages import STAGES
 from foreman.state import DeliveryState, PlanState, ReviewState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
 from foreman.config import ModelSpec, load_config
-from foreman.worker import CliWorker
+from foreman.worker import CliWorker, assignment
 from owner_contract import COUNTERS, OWNERS, assert_channels, historical_channels
 from test_runner import worker_reply
 
@@ -94,19 +95,29 @@ class CheckpointBoundaryTests(unittest.TestCase):
                 restored = saver.get(config)["channel_values"]
                 assert_channels(self, restored, values)
 
+            # Each worker's prompt carries every restored channel its procedure names, exactly, and no other.
+            def given(node, prompt):
+                state = json.loads(prompt.split("Delivery state:\n")[1])
+                self.assertEqual(set(state), set(STAGES[node].input_fields) & set(values))
+                for name in state:
+                    expected = values[name].model_dump(mode="json")
+                    if name == "run":
+                        # Dispatch owns the allowance, so the worker never reads it.
+                        expected = {key: value for key, value in expected.items() if key not in ("token_cap", "max_budget_usd")}
+                    self.assertEqual(state[name], expected, name)
+
+            model = ModelSpec.parse("gpt-6.1-sol-high")
+            for node in STAGES:
+                with self.subTest(node=node):
+                    given(node, assignment(node, model, restored, "Read.", None))
+
             def run(args, cwd, env):
-                prompt = json.loads(args[-1].split("Delivery state:\n")[1])
-                for owner in OWNERS:
-                    with self.subTest(owner=owner.name):
-                        expected = owner.value.model_dump(mode="json")
-                        if owner.name == "run":
-                            # Dispatch owns the allowance, so the worker never reads it.
-                            expected = {key: value for key, value in expected.items() if key not in ("token_cap", "max_budget_usd")}
-                        self.assertEqual(prompt[owner.name], expected)
+                given("triage", args[-1])
                 return worker_reply(args, {"triage": "supplied_slice"})
 
-            result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", ModelSpec.parse("gpt-6.1-sol-high"), restored, "Read.")
+            result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", model, restored, "Read.")
             self.assertEqual(result.kind, "ran")
+            self.assertEqual({name for row in STAGES.values() for name in row.input_fields} & set(values), set(values) - {"merge"})
 
     def test_every_pause_survives_a_fresh_process(self):
         script = '''

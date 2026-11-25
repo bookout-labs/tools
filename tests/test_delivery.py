@@ -13,6 +13,10 @@ from foreman.adapters import Outcome, Usage
 from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
 from foreman.cli import run_exit_code
 from foreman.delivery import LiveRun, compile_delivery, run_delivery, stage_text
+from foreman.runner import run_live_delivery
+from foreman.stages import STAGES
+from foreman.worker import assignment
+from foreman.workspace import WorktreeState
 from unittest.mock import patch
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from skill_fixture import FixtureSkills, skill_fixture
@@ -473,6 +477,49 @@ class DeliveryTest(unittest.TestCase):
         result = walk(read_methods)
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "review"])
+
+
+class WorkerInputTests(unittest.TestCase):
+    def test_each_worker_input_holds_only_its_procedures_inputs(self):
+        """DP10: Scripted runs that together call every procedure's worker, each started from repository variables. Each
+        worker's input holds the inputs its procedure names and nothing else from the run. The login, the caps, the ID of the
+        builder's saved session and the record dispatch keeps of each paid call are in none of them. The builder's session
+        is resumed by dispatch, not passed as input."""
+        from test_runner import FakeGitHub, FakeWorkspace
+
+        settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_TOKENS": "987654", "FOREMAN_MAX_BUDGET_USD": "43.21"}
+        session = "0d10d10d-0000-4000-8000-00000000d010"
+        calls = []
+        # A slice issue goes to the builder twice. A Ready issue is split or answered.
+        for labels, script in ((None, ScriptHandler(reviews=["changes", "approve"])),
+                               (["Ready"], ScriptHandler(triage="plan", slices=[EMPTY_SLICE])), (["Ready"], ScriptHandler(triage="question"))):
+            with TemporaryDirectory() as folder, skill_fixture() as (config, _), patch("foreman.runner.load_config", return_value=config):
+                workspace, github = FakeWorkspace(Path(folder)), FakeGitHub(labels)
+                github.settings = settings
+
+                def handler(node, model, state, instruction):
+                    calls.append((node, set(state), assignment(node, model, state, instruction, None)))
+                    if node == "implement":
+                        workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
+                        return replace(script(node, model, state, instruction), session_id=session)
+                    return script(node, model, state, instruction)
+
+                result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
+                                           dispatcher=handler, run=LiveRun(github, workspace))
+            self.assertIn(result["stop"], {"merged", "children_filed", "answered"}, result.get("halt_detail"))
+            self.assertEqual((result["human_login"], result["run"].token_cap, result["run"].max_budget_usd),
+                             ("fixture-owner", 987654, "43.21"))
+        self.assertEqual(set(STAGES), {node for node, _, _ in calls})
+        # The second builder call is sent after the first one's session was saved and attempts were recorded.
+        self.assertLessEqual({"builder_session", "attempts", "dispatch_plan", "human_login"},
+                             [channels for node, channels, _ in calls if node == "implement"][1])
+        for node, channels, prompt in calls:
+            with self.subTest(node=node):
+                given = json.loads(prompt.split("\n\nDelivery state:\n", 1)[1])
+                self.assertEqual(set(given), set(STAGES[node].input_fields) & channels)
+                self.assertFalse({"token_cap", "max_budget_usd"} & set(given["run"]))
+                for secret in ("fixture-owner", "987654", "43.21", session):
+                    self.assertNotIn(secret, prompt)
 
 
 if __name__ == "__main__":
