@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shlex
 import sys
+from tempfile import TemporaryDirectory
 from typing import TextIO, assert_never
 
 from foreman.accept import AcceptError, accept_event
@@ -20,17 +21,17 @@ from foreman.readiness import MergeState
 from foreman.state import ReviewState, ChecksState, DeliveryResult
 from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
+from foreman.doctor import QUICK, NotReady, contract, operator_variables, repository
 from foreman.dry_run import ScriptHandler
-from foreman.github import ForgeError, LiveForge
+from foreman.github import Forge, ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
-from foreman.status import Status, write_status
 from foreman.runner import AnswerError, IssueLocked, RunPresentation, halted_resumably, issue_lock, issue_thread, run_live_delivery, saved_workspace
 from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
-from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
+from foreman.workspace import LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
 
 def _write_run_log(text: str, *, file: TextIO | None = None, end: str = "\n") -> None:
@@ -189,22 +190,20 @@ class RunSettings:
     preflight: str
     max_tokens: int | None
     max_budget_usd: BudgetUsd | None
-    # Answers and stop requests count only from this login, so a run without one must not start.
+    # Answers and stop requests count only from this login.
     human_login: str
 
     @classmethod
-    def from_variables(cls, variables: Mapping[str, str]) -> "RunSettings":
-        human_login = variables.get("FOREMAN_HUMAN_LOGIN", "").strip()
-        if not human_login:
-            raise ValueError("Set the FOREMAN_HUMAN_LOGIN repository variable before starting runs from Ready.")
+    def from_variables(cls, repo: str, variables: Mapping[str, str]) -> "RunSettings":
+        """Variables doctor finds not ready leave no login and no caps: doctor's quick check refuses the run from the same
+        parser before it starts or resumes, so they are never used."""
         try:
-            tokens = variables.get("FOREMAN_MAX_TOKENS")
-            max_tokens = positive_tokens(tokens) if tokens is not None else DEFAULT_TOKEN_CAP
-            max_budget_usd = positive_budget(variables.get("FOREMAN_MAX_BUDGET_USD", DEFAULT_BUDGET_USD))
-        except (argparse.ArgumentTypeError, ValueError) as exc:
-            raise ValueError("FOREMAN_MAX_TOKENS must be a positive integer and FOREMAN_MAX_BUDGET_USD a positive amount.") from exc
-        return cls(preflight=variables.get("FOREMAN_PREFLIGHT", ""), max_tokens=max_tokens, max_budget_usd=max_budget_usd,
-                   human_login=human_login)
+            operator = operator_variables(repo, variables)
+        except NotReady:
+            return cls(preflight=variables.get("FOREMAN_PREFLIGHT", ""), max_tokens=None, max_budget_usd=None, human_login="")
+        return cls(preflight=variables.get("FOREMAN_PREFLIGHT", ""),
+                   max_tokens=operator.max_tokens if operator.max_tokens is not None else DEFAULT_TOKEN_CAP,
+                   max_budget_usd=operator.max_budget_usd or BudgetUsd(Decimal(DEFAULT_BUDGET_USD)), human_login=operator.human_login)
 
 
 def main(
@@ -221,6 +220,9 @@ def main(
     commands.add_parser("smoke", help="run the bounded live scratch-repository smoke")
 
     commands.add_parser("coordinator", help="start an interactive Claude coordinator session")
+
+    doctor = commands.add_parser("doctor", help="check that a target repository is ready for Foreman")
+    doctor.add_argument("--repo", required=True)
 
     draw = commands.add_parser("diagram", help="print the graph")
     draw.add_argument("graph", nargs="?", default=GRAPH_NAME)
@@ -271,6 +273,10 @@ def main(
             detail = exc.strerror or str(exc)
             print(f"cannot start coordinator: failed to run claude: {detail}", file=sys.stderr)
             return 1
+    if args.command == "doctor":
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
+            doctor.error("--repo must be OWNER/NAME")
+        return doctor_command(args.repo, live_run.forge if live_run is not None else LiveForge())
     if args.command == "diagram":
         if args.graph != GRAPH_NAME:
             print(f"unknown graph {args.graph}", file=sys.stderr)
@@ -367,15 +373,7 @@ def main(
                     print(f"already started {thread}")
                     return 0
                 forge = live_run.forge if live_run is not None else LiveForge()
-                try:
-                    settings = RunSettings.from_variables(forge.variables(args.repo))
-                except ValueError as exc:
-                    # The issue says which setting Ready waits for, once. A delivery that outlived Ready writes nothing.
-                    try:
-                        write_status(forge, args.repo, args.issue, Status(None, f"Foreman cannot start this issue. {exc}"))
-                    except ForgeError as error:
-                        _write_run_log(f"status not written: {error}", file=sys.stderr)
-                    raise
+                settings = RunSettings.from_variables(args.repo, forge.variables(args.repo))
                 # Ready added again resumes a halted run in its saved checkout with the repository's current settings.
                 managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
                 workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo)
@@ -421,6 +419,30 @@ def main(
     except IssueLocked as exc:
         _write_run_log(str(exc), file=sys.stderr)
         return 1
+
+
+def doctor_command(repo: str, forge: Forge) -> int:
+    """Print each quick requirement in order: ok, or the one missing requirement and its exact fix. Exit 1 when not ready."""
+    failed: NotReady | None = None
+    try:
+        repository(forge, repo)
+        with TemporaryDirectory(prefix="foreman-doctor-") as scratch:
+            # The contract is read at the default branch's head, fetched into a scratch clone.
+            workspace = LiveWorkspace(Path(scratch) / "checkout", repo, clone=Path(scratch) / "clone")
+            workspace.validate_origin(repo)
+            contract(workspace, workspace.pin_base(forge.default_branch(repo)))
+    except NotReady as exc:
+        failed = exc
+    except (CredentialFailure, ForgeError, WorkspaceError) as exc:
+        _write_run_log(f"cannot check {repo}: {exc}", file=sys.stderr)
+        return 1
+    for requirement in QUICK[:QUICK.index(failed.requirement) if failed else None]:
+        _write_run_log(f"ok {requirement}")
+    if failed is not None:
+        _write_run_log(str(failed))
+        return 1
+    _write_run_log(f"{repo} is ready")
+    return 0
 
 
 def run_exit_code(result: DeliveryResult) -> int:

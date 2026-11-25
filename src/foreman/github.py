@@ -13,7 +13,7 @@ from urllib.parse import quote
 from pydantic import AwareDatetime, BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, QueueEntry, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
-from foreman.credentials import CredentialFailure, credentials, failure, COMMAND_TIMEOUT
+from foreman.credentials import CredentialFailure, NotInstalled, credentials, failure, COMMAND_TIMEOUT
 from foreman.redaction import redact
 if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
@@ -390,6 +390,9 @@ class Forge(Protocol):
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation: ...
     def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt: ...
     def variables(self, repo: str) -> dict[str, str]: ...
+    def app_installed(self, repo: str) -> bool: ...
+    def has_label(self, repo: str, name: str) -> bool: ...
+    def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str, observation: Observation) -> MergeReceipt | None: ...
 
 
@@ -397,6 +400,14 @@ def owned_comment(comments: list[IssueComment], marker: str) -> IssueComment | N
     """The first comment Foreman itself posted with this marker. A comment by anyone else never counts."""
     return next((comment for comment in comments if comment.user is not None
                  and comment.user.login.casefold() == BOT_LOGIN.casefold() and (comment.body or "").endswith(marker)), None)
+
+
+def merge_queue_policy(rules: Rules) -> QueuePolicy | None:
+    """The one merge queue policy GitHub's rules apply to a branch, or None when there is none or more than one."""
+    policies = [rule.parameters for rule in rules.root if rule.type == "merge_queue"]
+    if len(policies) != 1 or policies[0].merge_method is None:
+        return None
+    return QueuePolicy(merge_method=policies[0].merge_method, grouping_strategy=policies[0].grouping_strategy)
 
 
 def pull_request_command(repo: str, head: str, base: str, title: str, body: str) -> list[str]:
@@ -631,15 +642,20 @@ class LiveForge:
             seen.add(cursor)
             page = self._read(repo, SmokeConnection[model], [*command, "-f", f"endCursor={cursor}"])
 
-    def ensure_label(self, repo: str, name: str, color: str) -> None:
-        """Create the label only when it is missing, so an existing label keeps its color."""
-        repo, name = (redact(value) for value in (repo, name))
+    def has_label(self, repo: str, name: str) -> bool:
         try:
             self._run_command(repo, ["gh", "api", f"repos/{repo}/labels/{quote(name, safe='')}"])
-            return
+            return True
         except CommandFailed as exc:
             if exc.status != 404:
                 raise
+            return False
+
+    def ensure_label(self, repo: str, name: str, color: str) -> None:
+        """Create the label only when it is missing, so an existing label keeps its color."""
+        repo, name = (redact(value) for value in (repo, name))
+        if self.has_label(repo, name):
+            return
         try:
             self._run_command(repo, ["gh", "api", f"repos/{repo}/labels", "--method", "POST", "-f", f"name={name}", "-f", f"color={color}"])
         except CommandFailed as exc:
@@ -877,6 +893,20 @@ class LiveForge:
             raise VariablesUnreadable(str(exc)) from exc
         return {variable.name: variable.value for variable in variables.root}
 
+    def app_installed(self, repo: str) -> bool:
+        """Whether the App is installed on the repository. Only GitHub's answer that it is not makes this False."""
+        try:
+            if credentials.environment(repo) is None:
+                raise ForgeError("Configure FOREMAN_APP_ID on the Foreman host, so Foreman can read the App's installation.")
+        except NotInstalled:
+            return False
+        except CredentialFailure as exc:
+            raise ForgeError(str(exc)) from None
+        return True
+
+    def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None:
+        return merge_queue_policy(self._read(repo, Rules, ["gh", "api", f"repos/{repo}/rules/branches/{quote(branch, safe='')}"]))
+
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation:
         target = self._view_pr(repo, branch)
         endpoint = f"repos/{repo}"
@@ -898,10 +928,8 @@ class LiveForge:
         if not pr.merged and (pr.mergeable is None or pr.mergeable_state == "unknown"):
             return observed("pending", "Resume when GitHub has computed mergeability.")
         rules = self._read(repo, Rules, ["gh", "api", f"{endpoint}/rules/branches/{pr.base.ref}"])
-        policies = [rule.parameters for rule in rules.root if rule.type == "merge_queue"]
-        if len(policies) != 1 or policies[0].merge_method is None:
+        if (queue_policy := merge_queue_policy(rules)) is None:
             return observed("policy", "Effective merge queue policy is missing or ambiguous. Restore readable queue policy.")
-        queue_policy = QueuePolicy(merge_method=policies[0].merge_method, grouping_strategy=policies[0].grouping_strategy)
         if pr.merged:
             return observed("ready", "Verified head has merged. Reconcile the handoff receipt.")
         legacy = self._read(repo, BranchPolicy, ["gh", "api", f"{endpoint}/branches/{pr.base.ref}"])

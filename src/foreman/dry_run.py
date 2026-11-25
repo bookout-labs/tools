@@ -13,7 +13,7 @@ from foreman.github import (
     BOT_LOGIN, PullRequest, PublishedPullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
     marked, pull_request_command, render_slice_body, status_body,
 )
-from foreman.readiness import MergeReceipt, Observation, PullSnapshot, Ref
+from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.workspace import (
     WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, LiveWorkspace, branch_command, commit_commands, push_command, CheckLog,
@@ -198,7 +198,17 @@ class DryRun:
         return {"id": 1, "state": "COMMENTED", "commit_id": target.headRefOid}
 
     def variables(self, repo: str) -> dict[str, str]:
-        return {}
+        # The dry run's repository sets its operator variables, so doctor's quick check passes.
+        return {"FOREMAN_HUMAN_LOGIN": "ghost"}
+
+    def app_installed(self, repo: str) -> bool:
+        return True
+
+    def has_label(self, repo: str, name: str) -> bool:
+        return True
+
+    def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None:
+        return QueuePolicy(merge_method="SQUASH")
 
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation:
         return Observation(repo=repo, pr=PullSnapshot(number=1, state="OPEN", draft=False,

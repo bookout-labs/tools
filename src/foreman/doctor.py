@@ -1,31 +1,109 @@
 """Doctor: plain code that proves a target repository is ready for Foreman (target.yaml doctor).
 
-The quick part runs at admission before any paid call. This module holds its two contract requirements.
+The quick part runs before a run starts or resumes and at admission, before any paid call. It reads GitHub and the
+contract file and starts no container. Each failure names the one missing requirement and its exact fix.
 """
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+
 from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contract
+from foreman.github import READY_LABEL, Forge
+from foreman.usd import BudgetUsd
 from foreman.workspace import Workspace
+
+APP, VARIABLES, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK = (
+    "the GitHub App is installed on the repository",
+    "FOREMAN_HUMAN_LOGIN and the budget caps are set",
+    f"the {READY_LABEL} label exists",
+    "a merge queue ruleset protects the base branch",
+    "the contract file parses strictly, so an unknown or duplicate key is named, and validates",
+    "the verify skill exists at the contract's path",
+)
+HUMAN_LOGIN, MAX_TOKENS, MAX_BUDGET_USD = "FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD"
 
 
 class NotReady(Exception):
-    """One missing requirement and its exact fix."""
+    """The quick requirement that failed, what is missing and its exact fix."""
 
-    def __init__(self, requirement: str, fix: str):
-        super().__init__(f"Not ready: {requirement}. Fix: {fix}.")
+    def __init__(self, requirement: str, missing: str, fix: str):
+        super().__init__(f"Not ready: {missing}. Fix: {fix}.")
+        self.requirement = requirement
+
+    def halt_detail(self) -> str:
+        # A refused start keeps Ready or its saved halt, so only a new Ready label checks the repository again.
+        return f"{self} Then remove and add the {READY_LABEL} label."
 
 
-def quick(workspace: Workspace, base: str) -> Contract:
+@dataclass(frozen=True)
+class OperatorVariables:
+    """The repository variables the operator controls. An unset budget cap is None, and its default applies."""
+
+    human_login: str
+    max_tokens: int | None
+    max_budget_usd: BudgetUsd | None
+
+
+def operator_variables(repo: str, variables: Mapping[str, str]) -> OperatorVariables:
+    """FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses."""
+    def missing(detail: str, fix: str) -> NotReady:
+        return NotReady(VARIABLES, detail, f"{fix} in {repo}'s Actions variables")
+
+    human_login = variables.get(HUMAN_LOGIN, "").strip()
+    if not human_login:
+        raise missing(f"the {HUMAN_LOGIN} repository variable is not set",
+                      f"set {HUMAN_LOGIN} to the GitHub login whose issue comments answer and stop runs")
+    tokens, dollars = variables.get(MAX_TOKENS), variables.get(MAX_BUDGET_USD)
+    max_tokens: int | None = None
+    if tokens is not None:
+        try:
+            max_tokens = int(tokens)
+        except ValueError:
+            pass
+        if max_tokens is None or max_tokens <= 0:
+            raise missing(f"the {MAX_TOKENS} repository variable {tokens!r} is not a positive integer",
+                          f"set {MAX_TOKENS} to a positive whole number of work tokens, or delete it to use the default")
+    try:
+        max_budget_usd = BudgetUsd(Decimal(dollars)) if dollars is not None else None
+    except (InvalidOperation, ValueError):
+        raise missing(f"the {MAX_BUDGET_USD} repository variable {dollars!r} is not a positive dollar amount",
+                      f"set {MAX_BUDGET_USD} to a positive amount such as 3 or 4.50, or delete it to use the default") from None
+    return OperatorVariables(human_login, max_tokens, max_budget_usd)
+
+
+def repository(forge: Forge, repo: str) -> None:
+    """The quick requirements GitHub answers: the App install, the operator variables, the Ready label and the merge queue."""
+    if not forge.app_installed(repo):
+        raise NotReady(APP, f"the GitHub App is not installed on {repo}",
+                       f"install the Foreman GitHub App on {repo}'s account with access to {repo}")
+    operator_variables(repo, forge.variables(repo))
+    if not forge.has_label(repo, READY_LABEL):
+        raise NotReady(LABEL, f"{repo} has no {READY_LABEL} label", f"create the {READY_LABEL} label in {repo}")
+    branch = forge.default_branch(repo)
+    if forge.merge_queue(repo, branch) is None:
+        raise NotReady(MERGE_QUEUE, f"no single merge queue rule applies to {repo}'s base branch {branch}",
+                       f"add a ruleset that targets {branch} in {repo} with one merge queue rule and a merge method")
+
+
+def contract(workspace: Workspace, base: str) -> Contract:
     """The contract at the base commit, once the contract file validates and names a tracked verify skill."""
     text = workspace.tracked_file(base, CONTRACT_PATH)
     if text is None:
-        raise NotReady(f"the contract file {CONTRACT_PATH} is not a tracked file at the base commit {base}",
+        raise NotReady(CONTRACT, f"the contract file {CONTRACT_PATH} is not a tracked file at the base commit {base}",
                        f"commit {CONTRACT_PATH} to the default branch with at least its check and verify_skill fields")
     try:
-        contract = parse_contract(text)
+        parsed = parse_contract(text)
     except ContractError as exc:
-        raise NotReady(f"the contract file {CONTRACT_PATH} does not validate: {exc}",
+        raise NotReady(CONTRACT, f"the contract file {CONTRACT_PATH} does not validate: {exc}",
                        f"correct each named key in {CONTRACT_PATH} on the default branch") from exc
-    if not workspace.has_tracked_file(base, contract.verify_skill):
-        raise NotReady(f"the verify skill {contract.verify_skill} that the contract names is not a tracked regular file at the base commit {base}",
-                       f"commit the repository's verify skill at {contract.verify_skill}, or set verify_skill to the tracked skill's path")
-    return contract
+    if not workspace.has_tracked_file(base, parsed.verify_skill):
+        raise NotReady(VERIFY_SKILL, f"the verify skill {parsed.verify_skill} that the contract names is not a tracked regular file at the base commit {base}",
+                       f"commit the repository's verify skill at {parsed.verify_skill}, or set verify_skill to the tracked skill's path")
+    return parsed
+
+
+def quick(forge: Forge, workspace: Workspace, repo: str, base: str) -> Contract:
+    """Doctor's quick check in its drawn order, with the contract read at the pinned base."""
+    repository(forge, repo)
+    return contract(workspace, base)

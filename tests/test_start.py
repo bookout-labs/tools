@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.cli import RunSettings, main
+from foreman.cli import DEFAULT_BUDGET_USD, RunSettings, main
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun
 from foreman.github import VariablesUnreadable
 from foreman.runner import IssueLocked, issue_lock, saved_workspace
@@ -90,6 +90,8 @@ class StartTest(unittest.TestCase):
             ("", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("3"))),
         ])
         self.assertNotIn("check", seen[0])
+        # The drawing's defaults for an unset cap: 3 dollars and 20,000,000 work tokens.
+        self.assertEqual((DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP), ("3", 20_000_000))
 
     def test_run_settings_read_only_the_operator_variables(self):
         reads = []
@@ -99,20 +101,30 @@ class StartTest(unittest.TestCase):
                 reads.append(key)
                 return super().get(key, default)
 
-        RunSettings.from_variables(Recorded({**SETTINGS, "FOREMAN_CHECK": "exit 0", "FOREMAN_MERGE_HOLD": "x"}))
+        RunSettings.from_variables("Example/Engine", Recorded({**SETTINGS, "FOREMAN_CHECK": "exit 0", "FOREMAN_MERGE_HOLD": "x"}))
         # FOREMAN_PREFLIGHT stays until the contract's setup commands replace it. FOREMAN_MERGE_HOLD is read live at arm.
         self.assertEqual(set(reads), {"FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD", "FOREMAN_PREFLIGHT"})
 
-    def test_missing_or_malformed_settings_fail_closed_before_any_run(self):
-        for variables in ({}, {"FOREMAN_CHECK": "exit 0"}, {**SETTINGS, "FOREMAN_HUMAN_LOGIN": " "},
-                          {**SETTINGS, "FOREMAN_MAX_TOKENS": "many"},
-                          {**SETTINGS, "FOREMAN_MAX_TOKENS": "0"}, {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "-1"},
-                          {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": ""}):
-            with self.subTest(variables=variables), patch("foreman.cli.run_live_delivery") as run:
-                code, _, err = self.start(variables)
-                self.assertEqual(code, 1)
-                self.assertRegex(err, "FOREMAN_HUMAN_LOGIN|FOREMAN_MAX_TOKENS")
-                run.assert_not_called()
+    def test_missing_or_malformed_settings_stop_admission_not_ready_before_any_paid_call(self):
+        # Doctor's quick check names each setting at admission, in place of the start-time errors, and Ready stays.
+        cases = [({}, "the FOREMAN_HUMAN_LOGIN repository variable is not set"),
+                 ({"FOREMAN_CHECK": "exit 0"}, "the FOREMAN_HUMAN_LOGIN repository variable is not set"),
+                 ({**SETTINGS, "FOREMAN_HUMAN_LOGIN": " "}, "the FOREMAN_HUMAN_LOGIN repository variable is not set"),
+                 ({**SETTINGS, "FOREMAN_MAX_TOKENS": "many"}, "the FOREMAN_MAX_TOKENS repository variable 'many' is not a positive integer"),
+                 ({**SETTINGS, "FOREMAN_MAX_TOKENS": "0"}, "the FOREMAN_MAX_TOKENS repository variable '0' is not a positive integer"),
+                 ({**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "-1"}, "the FOREMAN_MAX_BUDGET_USD repository variable '-1' is not a positive dollar amount"),
+                 ({**SETTINGS, "FOREMAN_MAX_BUDGET_USD": ""}, "the FOREMAN_MAX_BUDGET_USD repository variable '' is not a positive dollar amount")]
+        for variables, missing in cases:
+            with self.subTest(variables=variables):
+                code, out, err = self.start(variables)
+                self.assertEqual(code, 1, out + err)
+                self.assertIn("done not_ready", out)
+                status = self.forge.status[("Example/Engine", 8)]
+                self.assertIn(f"Foreman halted with not_ready. The target repository is not ready for Foreman.\n\nNot ready: {missing}. Fix: ", status)
+                self.assertIn("in Example/Engine's Actions variables. Then remove and add the Ready label.", status)
+                self.assertEqual((self.worker_calls, self.forge.label_calls), (0, []))
+                self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
+                self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
         with patch.object(self.forge, "variables", side_effect=VariablesUnreadable("HTTP 403")), \
                 patch("foreman.cli.run_live_delivery") as run, contextlib.redirect_stderr(io.StringIO()) as err:
             code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.root / "runs.sqlite3",
@@ -124,16 +136,11 @@ class StartTest(unittest.TestCase):
         for _ in range(2):
             self.assertEqual(self.start({})[0], 1)
         self.assertEqual(len(self.forge.status_writes), 1)
-        self.assertIn("Set the FOREMAN_HUMAN_LOGIN repository variable", self.forge.status[("Example/Engine", 8)])
-        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "-1"})[0], 1)
-        self.assertIn("FOREMAN_MAX_BUDGET_USD a positive amount", self.forge.status[("Example/Engine", 8)])
-        self.assertEqual(self.forge.label_calls, [])
-        self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
 
     def test_a_stale_delivery_without_ready_is_not_commented(self):
         self.forge = FakeGitHub(["slice"])
-        self.assertEqual(self.start({})[0], 1)
-        self.assertEqual((self.forge.status, self.forge.label_calls), ({}, []))
+        self.start({})
+        self.assertEqual((self.forge.status, self.forge.label_calls, self.worker_calls), ({}, [], 0))
 
     def test_a_duplicate_ready_gives_one_checkpoint_and_the_issue_shows_doing(self):
         self.forge.queue_merges = False
@@ -166,6 +173,30 @@ class StartTest(unittest.TestCase):
         self.assertEqual((self.stored()[0].token_cap, self.worker_calls), (900000, 6))
         # A finished run is never started again.
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
+
+    def test_a_resume_refused_by_doctor_keeps_its_halt_and_resumes_once_the_setting_is_fixed(self):
+        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])
+        self.assertEqual(code, 75, out + err)
+        halted = self.stored()
+        self.forge.ready_again(8)
+        # The operator raises the cap with a typo. Doctor's quick check refuses the resume before any paid call.
+        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000", "FOREMAN_MAX_BUDGET_USD": "4.5o"})
+        self.assertEqual(code, 1, out + err)
+        status = self.forge.status[("Example/Engine", 8)]
+        self.assertIn("Not ready: the FOREMAN_MAX_BUDGET_USD repository variable '4.5o' is not a positive dollar amount. "
+                      "Fix: set FOREMAN_MAX_BUDGET_USD to a positive amount", status)
+        self.assertEqual(self.worker_calls, 1)
+        # The checkpoint and its budget halt are untouched, so the next Ready resumes the halted step.
+        self.assertEqual(self.stored(), halted)
+        with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
+            saver.serde = checkpoint_serializer()
+            self.assertEqual(saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]["halt"], "budget_exceeded")
+        self.forge.ready_again(8)
+        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000", "FOREMAN_MAX_BUDGET_USD": "4.50"},
+                                    [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("done merged", out)
+        self.assertEqual(self.stored()[0].max_budget_usd, "4.5")
 
     def test_ready_again_resumes_in_the_saved_checkout_and_a_new_issue_in_its_managed_one(self):
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])[0], 75)

@@ -1,19 +1,22 @@
-"""Doctor's contract requirements and admission reading the contract at the pinned base (target.yaml target_contract, doctor)."""
+"""Doctor's quick requirements, its command, and admission reading the contract at the pinned base (target.yaml target_contract, doctor)."""
 import tests
 
+import contextlib
+import io
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 import unittest.mock
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from foreman.cli import main
 from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
-from foreman.doctor import NotReady, quick
+from foreman.doctor import QUICK, NotReady, contract
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
 from foreman.state import ChecksState, PlanState, ReviewState, RunState
@@ -193,7 +196,7 @@ class AdmissionTest(unittest.TestCase):
         git(self.root, "commit", "-qm", "link")
         for pinned in (base, git(self.root, "rev-parse", "HEAD")):
             with self.subTest(pinned=pinned), self.assertRaisesRegex(NotReady, "is not a tracked regular file"):
-                quick(LiveWorkspace(self.root), pinned)
+                contract(LiveWorkspace(self.root), pinned)
 
     def test_the_tracked_file_reader_returns_content_only_for_a_tracked_regular_file(self):
         base = commit(self.root, {"a.txt": "one\n", "dir/b.txt": "two\n"})
@@ -244,6 +247,74 @@ class NotReadyRunTest(unittest.TestCase):
         admitted = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=ScriptHandler(triage="needs_human"),
                                      run=LiveRun(github, workspace, skills=fixture_skills, human_login="fixture-owner"))
         self.assertEqual((admitted["stop"], admitted["checks"].check), ("needs_human", "npm run check"))
+
+
+def remove(github: FakeGitHub, workspace: FakeWorkspace, requirement: str) -> None:
+    """Take one quick requirement away from a ready repository."""
+    match QUICK.index(requirement):
+        case 0:
+            github.installed = False
+        case 1:
+            github.variables = lambda repo: {}
+        case 2:
+            github.repository_labels = set()
+        case 3:
+            github.queue_rule = False
+        case 4:
+            del workspace.base_files[CONTRACT_PATH]
+        case 5:
+            del workspace.base_files[SKILL]
+
+
+class QuickCheckTest(unittest.TestCase):
+    """TR4: a scratch repository with each quick requirement removed in turn."""
+
+    MISSING = (
+        ("the GitHub App is not installed on Example/Engine", "install the Foreman GitHub App on Example/Engine's account"),
+        ("the FOREMAN_HUMAN_LOGIN repository variable is not set", "set FOREMAN_HUMAN_LOGIN to the GitHub login"),
+        ("Example/Engine has no Ready label", "create the Ready label in Example/Engine"),
+        ("no single merge queue rule applies to Example/Engine's base branch main", "add a ruleset that targets main in Example/Engine"),
+        (f"the contract file {CONTRACT_PATH} is not a tracked file", f"commit {CONTRACT_PATH} to the default branch"),
+        (f"the verify skill {SKILL} that the contract names is not a tracked regular file", f"commit the repository's verify skill at {SKILL}"),
+    )
+
+    def setUp(self):
+        self.root = Path(self.enterContext(TemporaryDirectory())).resolve()
+
+    def test_each_missing_requirement_stops_admission_not_ready_and_no_run_starts(self):
+        for requirement, (missing, fix) in zip(QUICK, self.MISSING, strict=True):
+            with self.subTest(requirement):
+                checkpoint, thread = self.root / f"{QUICK.index(requirement)}.sqlite3", issue_thread("Example/Engine", 8)
+                github, workspace = FakeGitHub(), FakeWorkspace(self.root)
+                remove(github, workspace, requirement)
+                dispatch = MagicMock(side_effect=AssertionError("not_ready makes no paid call"))
+                result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=dispatch,
+                                           run=LiveRun(github, workspace, skills=fixture_skills, human_login="fixture-owner"))
+                self.assertEqual((result["halt"], result["path"]), (Halt.not_ready, ["admit"]))
+                self.assertIn(f"Not ready: {missing}", result["halt_detail"])
+                self.assertIn(f"Fix: {fix}", result["halt_detail"])
+                self.assertIn(f"Not ready: {missing}", github.status[("Example/Engine", 8)])
+                dispatch.assert_not_called()
+                self.assertIsNone(saved_workspace(checkpoint, thread))
+
+    def test_the_command_prints_each_requirement_and_exits_non_zero_on_the_first_missing_one(self):
+        git(self.root, "init", "-q")
+        base = commit(self.root, {CONTRACT_PATH: MINIMAL, SKILL: "# Verify\n"})
+
+        def doctor(github):
+            with patch("foreman.cli.LiveWorkspace", return_value=Pinned(self.root, base)), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                code = main(["doctor", "--repo", "Example/Engine"], live_run=LiveRun(github, FakeWorkspace(self.root), human_login="fixture-owner"))
+            return code, out.getvalue()
+
+        self.assertEqual(doctor(FakeGitHub()), (0, "".join(f"ok {requirement}\n" for requirement in QUICK) + "Example/Engine is ready\n"))
+        github = FakeGitHub()
+        github.queue_rule = False
+        code, out = doctor(github)
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines(), [f"ok {requirement}" for requirement in QUICK[:3]] + [
+            "Not ready: no single merge queue rule applies to Example/Engine's base branch main. "
+            "Fix: add a ruleset that targets main in Example/Engine with one merge queue rule and a merge method."])
 
 
 if __name__ == "__main__":

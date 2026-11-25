@@ -20,6 +20,10 @@ class CredentialFailure(RuntimeError):
     """Authentication stopped before any personal-account fallback."""
 
 
+class NotInstalled(CredentialFailure):
+    """GitHub reports no installation of the App on the repository."""
+
+
 COMMAND_TIMEOUT = 30
 TOKEN_MARGIN = COMMAND_TIMEOUT + 30
 UNAVAILABLE = "App credential unavailable. Check Studio connectivity and key configuration, then resume."
@@ -92,7 +96,7 @@ class AppCredentials:
                             installation = _Installation.model_validate_json(response.read()).id
                     except HTTPError as exc:
                         if exc.code == 404:
-                            raise CredentialFailure(f"The App is not installed on {repo}. Install it on that account, then resume.") from None
+                            raise NotInstalled(f"The App is not installed on {repo}. Install it on that account, then resume.") from None
                         raise
                     request = Request(
                         f"https://api.github.com/app/installations/{installation}/access_tokens",
