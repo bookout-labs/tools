@@ -276,13 +276,13 @@ def main(
 
     def live(repo: str, issue: int, workspace: LiveWorkspace, *, answer: str | None = None, request: str | None = None) -> int:
         target = replace(live_run or LiveRun(LiveForge(), workspace), check_log=_write_check_log)
-        dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
 
         def reported(result: DeliveryResult) -> None:
             _print_run(result, presentation)
             report(result)
 
         try:
+            dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
             with signals_end_foreman():
                 result = run_live_delivery(
                     repo=repo,

@@ -31,10 +31,10 @@ from skill_fixture import checker_reply
 
 class LiveWatchTest(unittest.TestCase):
     def setUp(self):
-        # The checkout sits in the test's own directory, so a checkpoint inside it keeps the run's scratch there.
+        # The checkpoint sits beside the checkout, so the run's scratch stays in the test's own directory.
         self.root = Path(self.enterContext(TemporaryDirectory())) / 'checkout'
         self.root.mkdir()
-        self.checkpoint = self.root / 'runs.sqlite3'
+        self.checkpoint = self.root.parent / 'runs.sqlite3'
         self.fake = FakeGitHub()
         self.forge = Mock(spec=Forge, wraps=self.fake)
         self.run = LiveRun(self.forge, FakeWorkspace(self.root), skills=fixture_skills, human_login="fixture-owner")
@@ -113,7 +113,7 @@ class LiveWatchTest(unittest.TestCase):
 
     def test_cli_watch_target_and_validation(self):
         for target in (None, 'Other/Watch'):
-            self.checkpoint = self.root / f'{target is None}.sqlite3'
+            self.checkpoint = self.root.parent / f'{target is None}.sqlite3'
             self.forge.open_issues.return_value = []
             flags = self.flags + (['--watch-repo', target] if target else [])
             self.fake.ready_again(8)
@@ -177,7 +177,7 @@ class LiveWatchTest(unittest.TestCase):
     def test_skill_failure_preserves_resumable_checkpoints(self):
         for stop in ('git_failed', 'quota_exhausted'):
             with self.subTest(stop=stop):
-                self.checkpoint = self.root / f'{stop}.sqlite3'
+                self.checkpoint = self.root.parent / f'{stop}.sqlite3'
                 workspace = FakeWorkspace(self.root)
                 workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
                 self.run = LiveRun(self.forge, workspace, skills=fixture_skills, human_login="fixture-owner")
@@ -254,7 +254,7 @@ class LiveWatchTest(unittest.TestCase):
     def test_watch_errors_keep_exit_codes_are_redacted_ordered_and_retried(self):
         secret = 'ghp_' + 'a' * 36
         for stop, code in (('invalid_output', 1), ('git_failed', 75), ('needs_human', 3)):
-            self.checkpoint = self.root / f'{stop}.sqlite3'
+            self.checkpoint = self.root.parent / f'{stop}.sqlite3'
             if code == 75:
                 self.run.workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
                 dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'supplied_slice'}),

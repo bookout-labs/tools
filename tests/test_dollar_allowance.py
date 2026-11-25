@@ -105,7 +105,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 with self.subTest(pause=pause, stored=stored), skill_fixture() as (config, _), TemporaryDirectory() as folder:
                     root = Path(folder)
                     checkpoint = root / "allowance.sqlite"
-                    log = root / "workers.log"
+                    checkout = root / "checkout"
+                    checkout.mkdir()
+                    log = checkout / "workers.log"
 
                     def invoke(phase, *flags, expected, env=None, settings):
                         # The fake forge in the subprocess serves these repository variables.
@@ -113,7 +115,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         process = subprocess.run(
                             [sys.executable, "-c", bootstrap + script, str(checkpoint), config.pstack.model_dump_json(),
                              phase, "run", "delivery", "--repo", "a/b", "--issue", "8", *flags],
-                            cwd=root, text=True, capture_output=True, timeout=30, env=env,
+                            cwd=checkout, text=True, capture_output=True, timeout=30, env=env,
                         )
                         self.assertEqual(process.returncode, expected, process.stdout + process.stderr)
                         return process
@@ -127,7 +129,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         """A quota pause keeps its attempts in the nested dispatch checkpoint."""
                         with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                             saver.serde = checkpoint_serializer()
-                            graph = compile_delivery(ScriptHandler(), config, run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
+                            graph = compile_delivery(ScriptHandler(), config, run=LiveRun(FakeGitHub(), FakeWorkspace(checkout)),
                                                      checkpointer=saver)
                             return snapshot_result(graph.get_state(THREAD, subgraphs=True))["attempts"]
 
