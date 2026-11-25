@@ -47,8 +47,11 @@ class CoordinatorTest(unittest.TestCase):
             executable.write_text(
                 f"#!{sys.executable}\n"
                 "import signal, sys\n"
-                "signal.signal(signal.SIGINT, lambda *_: print('interrupted', flush=True))\n"
+                "signal.signal(signal.SIGINT, signal.SIG_DFL)\n"
+                "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})\n"
                 "print('ready', flush=True)\n"
+                "signal.sigwait({signal.SIGINT})\n"
+                "print('interrupted', flush=True)\n"
                 "sys.stdin.readline()\n"
                 "sys.exit(7)\n"
             )
