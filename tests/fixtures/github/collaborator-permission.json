@@ -1,0 +1,22 @@
+{
+  "unknown_login": {
+    "repo": "bookout-labs/foreman-smoke", "login": "foreman-no-such-login-7f3a9c", "exit": 1,
+    "stdout": {"message": "foreman-no-such-login-7f3a9c is not a user", "documentation_url": "https://docs.github.com/rest/collaborators/collaborators#get-repository-permissions-for-a-user", "status": "404"},
+    "stderr": "gh: foreman-no-such-login-7f3a9c is not a user (HTTP 404)"
+  },
+  "outside_account_public_repo": {
+    "repo": "bookout-labs/foreman-smoke", "login": "octocat", "exit": 0,
+    "stdout": {"permission": "read", "user": {"login": "octocat", "id": 583231, "type": "User", "site_admin": false, "permissions": {"admin": false, "maintain": false, "push": false, "triage": false, "pull": true}, "role_name": "read"}, "role_name": "read"},
+    "stderr": ""
+  },
+  "outside_account_private_repo": {
+    "repo": "<private repository>", "login": "octocat", "exit": 0,
+    "stdout": {"permission": "none", "user": {"login": "octocat", "id": 583231, "type": "User", "site_admin": false, "permissions": {"admin": false, "maintain": false, "pull": false, "push": false, "triage": false}, "role_name": ""}, "role_name": ""},
+    "stderr": ""
+  },
+  "owner": {
+    "repo": "bookout-labs/foreman-smoke", "login": "jbookout", "exit": 0,
+    "stdout": {"permission": "admin", "user": {"login": "jbookout", "id": 64207374, "type": "User", "site_admin": false, "permissions": {"admin": true, "maintain": true, "push": true, "triage": true, "pull": true}, "role_name": "admin"}, "role_name": "admin"},
+    "stderr": ""
+  }
+}

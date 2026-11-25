@@ -11,13 +11,14 @@ from decimal import Decimal, InvalidOperation
 from typing import TypeVar
 
 from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contract
-from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError
+from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError, Permission
 from foreman.usd import BudgetUsd
 from foreman.workspace import Workspace
 
-APP, VARIABLES, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK = (
+APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK = (
     "the GitHub App is installed on the repository and GitHub lets it make doctor's reads",
     "FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses. An unset cap uses its default.",
+    "the FOREMAN_HUMAN_LOGIN account can write to the repository",
     f"the {READY_LABEL} label exists",
     "a merge queue ruleset protects the base branch",
     "the contract file parses strictly, so an unknown or duplicate key is named, and validates",
@@ -120,7 +121,8 @@ def operator_variables(repo: str, variables: Mapping[str, str]) -> OperatorVaria
 
 
 def repository(forge: Forge, repo: str) -> OperatorVariables:
-    """The quick requirements GitHub answers: the App install, the operator variables, the Ready label and the merge queue.
+    """The quick requirements GitHub answers: the App install, the operator variables, the login's write access, the Ready label
+    and the merge queue.
 
     The one read of the operator variables at a start, so the run's login and caps are the values doctor checked.
     """
@@ -136,6 +138,17 @@ def repository(forge: Forge, repo: str) -> OperatorVariables:
         case "installed":
             pass
     operator = operator_variables(repo, answered(repo, VARIABLES, f"{repo}'s Actions variables", lambda: forge.variables(repo)))
+    login = operator.human_login
+    permission: Permission | None = answered(repo, WRITE_ACCESS, f"{login}'s permission on {repo}", lambda: forge.permission(repo, login))
+    match permission:
+        case None:
+            raise NotReady(WRITE_ACCESS, f"GitHub does not know the {HUMAN_LOGIN} login {login}",
+                           f"correct the spelling of {HUMAN_LOGIN} in {repo}'s Actions variables, or name another login")
+        case "read" | "none":
+            raise NotReady(WRITE_ACCESS, f"the {HUMAN_LOGIN} account {login} cannot write to {repo}, where GitHub reports its permission as {permission}",
+                           f"give {login} write access to {repo}, or set {HUMAN_LOGIN} in {repo}'s Actions variables to another login that has it")
+        case "admin" | "write":
+            pass
     if not answered(repo, LABEL, f"{repo}'s {READY_LABEL} label", lambda: forge.has_label(repo, READY_LABEL)):
         raise NotReady(LABEL, f"{repo} has no {READY_LABEL} label", f"create the {READY_LABEL} label in {repo}")
     branch = answered(repo, MERGE_QUEUE, f"{repo}'s default branch", lambda: forge.default_branch(repo))

@@ -926,6 +926,14 @@ kind = "captured_run"
 argv = ["gh", "api", "repos/bookout-labs/tools/pulls/97"]
 notes = "API excerpts captured 2026-11-21. Contract source: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request (pull_request GITHUB_SHA identifies the synthetic merge). The JSON records all exact queried URLs. PR base.sha can differ from the current base tip; the synthetic merge parents are validated against branches/{base}.commit.sha. A head-attached check run and its check_suite id identify source-head evidence, not the synthetic tested commit. Capture uses additional gh api GETs for the branch, merge commit and source check runs named in sources in the JSON."
 
+[fixtures."github/collaborator-permission.json"]
+tool = "gh and GitHub REST API"
+version = "GitHub REST API 2022-11-28; captured 2026-11-25"
+kind = "captured_run"
+argv = ["gh", "api", "-i", "repos/<repo>/collaborators/<login>/permission"]
+sources = ["https://docs.github.com/en/rest/collaborators/collaborators?apiVersion=2022-11-28#get-repository-permissions-for-a-user"]
+notes = "Synthetic answers shaped like the live ones, with user objects reduced. unknown_login, outside_account_public_repo and owner were read with the App's installation token on bookout-labs/foreman-smoke. The App is installed on no private repository, so outside_account_private_repo was read with the owner's token on a private repository: 200 with permission none and an empty role_name. gh prints a 404's message and status on stderr; with App credentials Foreman keeps only the status."
+
 [fixtures."github/app-credentials.txt"]
 tool = "GitHub App REST, gh and Git credential helpers"
 version = "Documentation read 2026-11-21 and 2026-11-23"

@@ -3,6 +3,7 @@ import tests
 
 import contextlib
 import io
+import json
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
@@ -17,7 +18,7 @@ from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
 from foreman.credentials import CredentialFailure, NotInstalled, Unanswered
-from foreman.doctor import QUICK, NotReady, ReadFailed, contract, repository
+from foreman.doctor import QUICK, WRITE_ACCESS, NotReady, ReadFailed, contract, repository
 from foreman.github import ForgeError, LiveForge
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
@@ -259,12 +260,14 @@ def remove(github: FakeGitHub, workspace: FakeWorkspace, requirement: str) -> No
         case 1:
             github.variables = lambda repo: {}
         case 2:
-            github.repository_labels = set()
+            github.permissions["fixture-owner"] = "read"
         case 3:
-            github.queue_rule = False
+            github.repository_labels = set()
         case 4:
-            del workspace.base_files[CONTRACT_PATH]
+            github.queue_rule = False
         case 5:
+            del workspace.base_files[CONTRACT_PATH]
+        case 6:
             del workspace.base_files[SKILL]
 
 
@@ -274,6 +277,7 @@ class QuickCheckTest(unittest.TestCase):
     MISSING = (
         ("the GitHub App is not installed on Example/Engine", "install the Foreman GitHub App on Example/Engine's account"),
         ("the FOREMAN_HUMAN_LOGIN repository variable is not set", "set FOREMAN_HUMAN_LOGIN to the GitHub login"),
+        ("the FOREMAN_HUMAN_LOGIN account fixture-owner cannot write to Example/Engine", "give fixture-owner write access to Example/Engine"),
         ("Example/Engine has no Ready label", "create the Ready label in Example/Engine"),
         ("no single merge queue rule applies to Example/Engine's base branch main", "add a ruleset that targets main in Example/Engine"),
         (f"the contract file {CONTRACT_PATH} is not a tracked file", f"commit {CONTRACT_PATH} to the default branch"),
@@ -368,7 +372,7 @@ class QuickCheckTest(unittest.TestCase):
         github.queue_rule = False
         code, out = doctor(github)
         self.assertEqual(code, 1)
-        self.assertEqual(out.splitlines(), [f"ok {requirement}" for requirement in QUICK[:3]] + [
+        self.assertEqual(out.splitlines(), [f"ok {requirement}" for requirement in QUICK[:4]] + [
             "Not ready: no single merge queue rule applies to Example/Engine's base branch main. "
             "Fix: add a ruleset that targets main in Example/Engine with one merge queue rule and a merge method."])
         # A read GitHub answers with a server error names the requirement and GitHub's answer, never a missing setting.
@@ -378,6 +382,73 @@ class QuickCheckTest(unittest.TestCase):
             code = main(["doctor", "--repo", "Example/Engine"], live_run=LiveRun(github, FakeWorkspace(self.root), human_login="fixture-owner"))
         self.assertEqual((code, err.getvalue()), (1, 'cannot check Example/Engine: The read of Example/Engine\'s Ready label, for the '
                                                     'requirement "the Ready label exists", failed because GitHub answered HTTP 502.\n'))
+
+
+PERMISSIONS = json.loads((Path(__file__).parent / "fixtures/github/collaborator-permission.json").read_text())
+
+
+class LoginWriteAccessTest(unittest.TestCase):
+    """TR12: FOREMAN_HUMAN_LOGIN set to a login GitHub does not know, and to an account with only read access, and a permission
+    read that fails. GitHub answers each read as the recorded answers, through LiveForge with App credentials."""
+
+    def start(self, answer: dict, login: str):
+        github = FakeGitHub()
+        github.settings["FOREMAN_HUMAN_LOGIN"] = login
+        reads = []
+
+        def permission(repo, read_login):
+            reads.append(read_login)
+            with patch("foreman.github.credentials.environment", return_value={"GH_TOKEN": "synthetic"}), \
+                    patch("foreman.github.subprocess.run", return_value=subprocess.CompletedProcess(
+                        [], answer["exit"], json.dumps(answer["stdout"]), answer["stderr"])):
+                return LiveForge().permission(repo, read_login)
+        github.permission = permission
+        root = Path(self.enterContext(TemporaryDirectory())).resolve()
+        dispatch = MagicMock(side_effect=AssertionError("a refused start makes no paid call"))
+        result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=root / "runs.sqlite3", dispatcher=dispatch,
+                                   run=LiveRun(github, FakeWorkspace(root), skills=fixture_skills, human_login="fixture-owner"))
+        self.assertEqual((reads, github.label_calls), ([login], []))
+        dispatch.assert_not_called()
+        return result, github.status[("Example/Engine", 8)]
+
+    def test_an_unknown_login_and_a_read_only_account_stop_not_ready_with_their_own_fix(self):
+        cases = {
+            "unknown_login": ("GitHub does not know the FOREMAN_HUMAN_LOGIN login foreman-no-such-login-7f3a9c",
+                              "correct the spelling of FOREMAN_HUMAN_LOGIN in Example/Engine's Actions variables, or name another login"),
+            "outside_account_public_repo": ("the FOREMAN_HUMAN_LOGIN account octocat cannot write to Example/Engine, where GitHub "
+                                            "reports its permission as read", "give octocat write access to Example/Engine, or set "
+                                            "FOREMAN_HUMAN_LOGIN in Example/Engine's Actions variables to another login that has it"),
+            "outside_account_private_repo": ("the FOREMAN_HUMAN_LOGIN account octocat cannot write to Example/Engine, where GitHub "
+                                             "reports its permission as none", "give octocat write access to Example/Engine, or set "
+                                             "FOREMAN_HUMAN_LOGIN in Example/Engine's Actions variables to another login that has it"),
+        }
+        for name, (missing, fix) in cases.items():
+            with self.subTest(name):
+                result, status = self.start(PERMISSIONS[name], PERMISSIONS[name]["login"])
+                self.assertEqual(result["halt"], Halt.not_ready)
+                self.assertEqual(result["halt_detail"], f"Not ready: {missing}. Fix: {fix}. Then remove and add the Ready label.")
+                self.assertIn("Foreman did not start this run (not_ready).", status)
+
+    def test_an_account_that_can_write_passes(self):
+        answer = PERMISSIONS["owner"]
+        with patch("foreman.github.credentials.environment", return_value={"GH_TOKEN": "synthetic"}), \
+                patch("foreman.github.subprocess.run", return_value=subprocess.CompletedProcess([], 0, json.dumps(answer["stdout"]), "")) as gh:
+            self.assertEqual(LiveForge().permission("bookout-labs/foreman-smoke", "jbookout"), "admin")
+        self.assertEqual(gh.call_args.args[0], ["gh", "api", "repos/bookout-labs/foreman-smoke/collaborators/jbookout/permission"])
+        github = FakeGitHub()
+        for permission in ("admin", "write"):
+            github.permissions["fixture-owner"] = permission
+            self.assertEqual(repository(github, "Example/Engine").human_login, "fixture-owner")
+
+    def test_a_failed_permission_read_is_a_failed_read_that_does_not_say_to_change_the_login(self):
+        answer = {"exit": 1, "stdout": "", "stderr": "gh: Server Error (HTTP 502)"}
+        result, status = self.start(answer, "fixture-owner")
+        self.assertEqual(result["halt"], Halt.git_failed)
+        self.assertEqual(result["halt_detail"], f'The read of fixture-owner\'s permission on Example/Engine, for the requirement "{WRITE_ACCESS}", '
+                                                "failed because GitHub answered HTTP 502. No setting needs to change. "
+                                                "Remove and add the Ready label to try again.")
+        self.assertIn("Foreman did not start this run (git_failed).", status)
+        self.assertNotIn("FOREMAN_HUMAN_LOGIN in", status)
 
 
 if __name__ == "__main__":
