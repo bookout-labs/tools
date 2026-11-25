@@ -16,7 +16,7 @@ from foreman.workspace import Workspace
 
 APP, VARIABLES, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK = (
     "the GitHub App is installed on the repository",
-    "FOREMAN_HUMAN_LOGIN and the budget caps are set",
+    "FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses. An unset cap uses its default.",
     f"the {READY_LABEL} label exists",
     "a merge queue ruleset protects the base branch",
     "the contract file parses strictly, so an unknown or duplicate key is named, and validates",
