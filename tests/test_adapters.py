@@ -28,16 +28,8 @@ def fixture_process(args, name, exit_code):
                             stderr.read_text() if stderr.is_file() else "")
 
 
-def claude_review_stream(envelope, reads=(), errors=()):
-    """A Claude review's stream-json stdout: one top-level Bash call per command, then the result envelope."""
-    events = []
-    for index, command in enumerate((*reads, *errors)):
-        use = f"toolu_{index:02}"
-        events += [{"type": "assistant", "parent_tool_use_id": None, "message": {"content": [
-                       {"type": "tool_use", "id": use, "name": "Bash", "input": {"command": command}}]}},
-                   {"type": "user", "parent_tool_use_id": None, "message": {"content": [
-                       {"type": "tool_result", "tool_use_id": use, "content": "output", "is_error": command in errors}]}}]
-    return "".join(json.dumps(event) + "\n" for event in (*events, envelope))
+def claude_review_stream(envelope, reads=()):  # TEMP-PROBE
+    return json.dumps(envelope)  # TEMP-PROBE
 
 
 @contextmanager
@@ -109,6 +101,22 @@ class NativeAdaptersTest(unittest.TestCase):
             ("wrong_model", 0, "failed", (1477, 0, None)),
             ("zero_usage", 0, "failed", None),
         ))
+
+    def test_a_review_grants_one_diff_command_and_needs_no_proof_of_reading(self):
+        diff = "git --no-replace-objects diff --no-color a...b --"
+        adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+        with TemporaryDirectory() as folder:
+            call = Call("Review.", "{}", False, Path(folder), checks=(diff,))
+            argv = adapter.command(call)
+            settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+        self.assertEqual(settings["permissions"]["allow"], [f"Bash({diff})"])
+        self.assertEqual(argv[argv.index("--tools") + 1], "Read,Glob,Grep,Bash")
+        self.assertEqual(argv[argv.index("--output-format") + 1], "json")
+        self.assertNotIn("stream-json", argv)
+        # The recorded envelope carries no tool events, and the answer counts as it stands (item 16).
+        for outcome in (adapter.read(fixture_process(["claude"], "success", 0), call),
+                        CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high")).read(fixture_process(["codex"], "success", 0), call)):
+            self.assertEqual(outcome.kind, "ran", outcome.detail)
 
     def test_grok_envelopes(self):
         adapter = GrokAdapter(ModelSpec.parse("grok-4.7-high"))

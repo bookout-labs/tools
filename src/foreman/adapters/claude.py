@@ -1,5 +1,4 @@
 from collections.abc import Mapping
-from dataclasses import replace
 from math import isclose
 from pathlib import Path
 import json
@@ -11,12 +10,10 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from typing_extensions import override
 
-from foreman._raw import is_dict, is_list
 from foreman.adapters import Call, CapabilityUnavailable, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
 from foreman.usd import CostUsd, usd_text
 
 
-EVENT = TypeAdapter(dict[str, object])
 QUOTA_ERRORS = {"usage_limit_reached", "model_requires_usage_credits"}
 # Claude Code 2.1.329 prints this and exits at startup when failIfUnavailable meets a sandbox that cannot start.
 SANDBOX_UNAVAILABLE = "sandbox required but unavailable"
@@ -97,33 +94,6 @@ class ClaudeEnvelope(NativeEnvelope):
         )
 
 
-def completed_reads(stream: str) -> set[str]:
-    """Top-level foreground Bash commands whose tool result came back without an error, joined by tool-use id.
-
-    A backgrounded command returns before it finishes, so it never counts. This proves a read ran, even across
-    compaction. It doesn't prove the output was untruncated, or complete when the reviewer split it into several reads.
-    """
-    commands: dict[str, str] = {}
-    completed: set[str] = set()
-    # NDJSON lines end only at "\n"; str.splitlines would also split inside a JSON string at U+2028 and its kin.
-    for line in stream.split("\n"):
-        event = EVENT.validate_json(line) if line.strip() else {}
-        message = event.get("message")
-        if event.get("parent_tool_use_id") is not None or not is_dict(message) or not is_list(blocks := message.get("content")):
-            continue
-        for block in filter(is_dict, blocks):
-            match event.get("type"), block:
-                case "assistant", {"type": "tool_use", "name": "Bash", "id": str(use), "input": call} if (
-                    is_dict(call) and isinstance(command := call.get("command"), str) and call.get("run_in_background") is not True
-                ):
-                    commands[use] = command.strip()
-                case "user", {"type": "tool_result", "tool_use_id": str(use)} if use in commands and block.get("is_error") is not True:
-                    completed.add(commands[use])
-                case _:
-                    pass
-    return completed
-
-
 def both(paths: tuple[Path, ...]) -> list[str]:
     """Each path as given and as resolved, so a denial holds whether a tool names the link or its target."""
     return list(dict.fromkeys(str(form) for path in paths for form in (path.absolute(), path.resolve())))
@@ -146,20 +116,7 @@ class ClaudeAdapter(NativeAdapter):
         # A sandbox that cannot start on this host ends the call before any model work, so the next model runs.
         if (call.edit or call.drive) and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
             return Outcome("cli_missing", detail=process.stderr.strip())
-        if not call.review:
-            return super().read(process, call)
-        # A review streams its events, so its tool calls prove which reads ran; the last line is the result envelope.
-        result = process.stdout.rstrip().rpartition("\n")[2]
-        outcome = self.read_envelope(result, process, call)
-        if outcome.kind != "ran":
-            return outcome
-        try:
-            completed = completed_reads(process.stdout)
-        except ValidationError:
-            return replace(outcome, kind="failed", output={}, detail="Claude emitted invalid stream JSON")
-        if missing := [read for read in call.required if read not in completed]:
-            return replace(outcome, kind="failed", output={}, detail=f"Claude reviewer did not complete required read: {missing[0]}")
-        return outcome
+        return super().read(process, call)
 
     def command(self, call: Call) -> list[str]:
         effort = ["--effort", self.model.effort] if self.model.effort else []
@@ -194,5 +151,5 @@ class ClaudeAdapter(NativeAdapter):
                 "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else
                 "Read,Glob,Grep,Bash" if call.checks or call.drive else "Read,Glob,Grep",
                 *scope, "--settings", str(settings_path),
-                *budget, *(["--output-format", "stream-json", "--verbose"] if call.review else ["--output-format", "json"]),
+                *budget, "--output-format", "json",
                 "--json-schema", call.schema, "-p", call.prompt]

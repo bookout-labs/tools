@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 from subprocess import CompletedProcess
 from typing import ClassVar
 
@@ -27,18 +26,6 @@ QUOTA_PREFIXES = (
     "You hit your spend cap set in your workspace.",
     "You hit your spend cap set by the owner of your workspace.",
 )
-
-
-def _shell_command(command: str) -> str:
-    # Codex can render exec commands with the login shell it used to run them.
-    if command.startswith(("/bin/bash ", "/bin/sh ", "/bin/zsh ")):
-        try:
-            shell = shlex.split(command)
-        except ValueError:
-            return command
-        if len(shell) == 3 and shell[1] in {"-c", "-lc"}:
-            return shell[2].strip()
-    return command.strip()
 
 
 def read_usage(report: object) -> Usage | None:
@@ -103,7 +90,6 @@ def rollout_usage(session_id: str) -> Usage | None:
 
 @dataclass
 class CodexTurn:
-    unread: set[str]
     session_id: str | None = None
     message: str | None = None
     completed: bool = False
@@ -121,8 +107,6 @@ class CodexTurn:
                 self.session_id = session_id
             case {"type": "item.completed", "item": {"type": "agent_message", "text": str(text)}}:
                 self.message = text
-            case {"type": "item.completed", "item": item} if is_dict(item) and item.get("type") == "command_execution":
-                self.record_command(item)
             case {"type": "item.completed", "item": {"type": "error", "message": str(message)}}:
                 if message.startswith("model rerouted: "):
                     self.reroute = message
@@ -137,13 +121,6 @@ class CodexTurn:
                 self.usage = read_usage(event.get("usage"))
             case _:
                 pass
-
-    def record_command(self, result: Mapping[object, object]) -> None:
-        # Only a completed read clears a required one. Other commands' failures don't void a review.
-        raw = result.get("command")
-        code = result.get("exit_code")
-        if isinstance(raw, str) and result.get("status") == "completed" and type(code) is int and code == 0:
-            self.unread.discard(_shell_command(raw))
 
 
 @dataclass(frozen=True)
@@ -174,7 +151,7 @@ class CodexAdapter:
                 *([] if session else ["--color", "never"]), *policy, *session, call.prompt]
 
     def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
-        turn = CodexTurn(set(call.required))
+        turn = CodexTurn()
         try:
             for line in process.stdout.split("\n"):
                 if line.strip():
@@ -219,8 +196,6 @@ class CodexAdapter:
                 return "quota", None, error
             detail = error or (f"Codex exited {returncode}" if returncode else "Codex did not complete the turn")
             return "failed", None, detail
-        if turn.unread:
-            return "failed", None, f"Codex reviewer did not complete required read: {min(turn.unread)}"
         if turn.message is None:
             return "failed", None, "Codex did not return a final agent message"
         try:

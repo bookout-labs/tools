@@ -1,9 +1,8 @@
 # Review the full pull request
 
-Assess the complete current PR at its named diff base and head on every round. Read committed
-files through the supplied read-only view. Honor settled rulings while their evidence applies.
-Run only the listed read commands, each by itself and exactly as written. A chained or piped
-variant never counts as a listed read, and a review that hasn't run the full diff read is rejected.
+Assess the complete current PR at its named diff base and head on every round. Read the change
+through the granted diff command, run by itself and exactly as written. Read committed files
+through the supplied read-only view. Honor settled rulings while their evidence applies.
 Give findings with a location, severity, impact and concrete evidence. Reserve P0 and P1 for
 substantive correctness, security or scope defects. Report other observations as advisory.
 Return questions about unresolved intent that changes the review verdict for the coordinator or

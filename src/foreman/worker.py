@@ -189,7 +189,6 @@ class CliWorker:
         plan = state.get("dispatch_plan")
         plan = DispatchPlan.model_validate(plan) if plan else None
         # A repair turn sends only the exact validation error into the answer's own session (item 1).
-        repairing = bool(plan and plan.repair)
         prompt = plan.repair if plan and plan.repair else assignment(node, model, state, instruction, kept)
         # Counts only the prompt, excluding the separate output schema,
         # CLI system prompts, tool definitions/results and hidden model work.
@@ -198,14 +197,11 @@ class CliWorker:
         session = plan.resume_session if plan else None
         budget = plan.budget_usd if plan else None
         checks: tuple[str, ...] = ()
-        required: tuple[str, ...] = ()
         if edit:
             check = ChecksState.model_validate(state["checks"]).check
             checks = (check,) if check else ()
         elif node == "review" and plan and plan.scope:
-            scope = TypeAdapter(ReviewScope).validate_python(plan.scope)
-            # A repair turn resumes the review that already read the diff, so only the first turn must read it.
-            checks, required = scope.commands, () if repairing else scope.required
+            checks = TypeAdapter(ReviewScope).validate_python(plan.scope).commands
         adapter = ADAPTERS[model.family](model)
         launched = False
         with ExitStack() as stack:
@@ -215,16 +211,13 @@ class CliWorker:
                 stack.callback(lambda: launched or shutil.rmtree(kept))
             directory = kept or Path(stack.enter_context(TemporaryDirectory(prefix="foreman-worker-", dir=temp_root)))
             try:
-                call = Call(prompt, schema, edit=edit, checks=checks, review=node == "review", required=required, drive=drive,
+                call = Call(prompt, schema, edit=edit, checks=checks, drive=drive,
                             read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                             temp_dir=directory, budget_usd=BudgetUsd(Decimal(budget)) if budget else None,
                             resume_session=session, git_dirs=git_dirs(self.cwd.absolute()) if edit or drive else ())
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
-            if call.review and not call.required and not repairing:
-                # A review counts only once it has read the full PR diff, so a scope without that read never launches.
-                return Outcome("failed", detail="Review scope names no full PR diff read", prompt_bytes=prompt_bytes)
             call.scratch.mkdir()
             env = {**adapter.env, "TMPDIR": str(call.scratch)}
             if (edit or drive) and isinstance(adapter, ClaudeAdapter):

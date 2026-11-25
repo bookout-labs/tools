@@ -234,7 +234,7 @@ def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forg
         raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
     target = forge.review_target(repo, issue, worktree.branch, head)
     diff = workspace.review_scope(target.baseRefOid, head)
-    instruction = f"\n\nRead the full PR diff and committed files with these commands in the checkout:\n{diff.command}"
+    instruction = f"\n\nRead the full PR diff with this one command in the checkout:\n{diff.command}"
     instruction += "\n\nSettled rulings:\n" + json.dumps(review_state.settled_rulings)
     return instruction, target, diff
 

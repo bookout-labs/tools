@@ -68,9 +68,6 @@ class Call:
     budget_usd: BudgetUsd | None = None
     checks: tuple[str, ...] = ()
     read_roots: tuple[Path, ...] = ()
-    review: bool = False
-    # The reads a review must complete to count. Denials of other commands don't void it.
-    required: tuple[str, ...] = ()
     # The verifier builds and drives the app: sandboxed Bash with no network, no Edit or Write.
     drive: bool = False
     resume_session: str | None = None
