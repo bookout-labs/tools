@@ -23,7 +23,7 @@ from foreman.review_round import history
 from foreman.smoke import smoke_verdict
 from foreman.github import LiveForge
 from foreman.config import ModelSpec
-from foreman.adapters import Call, Outcome
+from foreman.adapters import Outcome
 from foreman.dry_run import CLEAR, SCRIPTED_USAGE
 from skill_fixture import skill_fixture
 from test_adapters import codex_events, codex_process, fixture_process, worker_process
