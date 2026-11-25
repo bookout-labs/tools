@@ -344,7 +344,7 @@ STAGES = {
         SkillRule(skill=SkillMethod(path="tdd/SKILL.md", kind="skill"), when="bug_fix"),
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill"), when="perf_issue"),
         SkillRule(skill=SkillMethod(path="formal-<area>/SKILL.md", kind="target_skill")),
-    ), prepare=implement_preparation, accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review", "verify")),
+    ), prepare=implement_preparation, accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review", "verify", "human_answers")),
     "verify": VerifyStage("verify.md", VerifyOutput, (SkillRule(skill=VERIFY_SKILL),), accept=accept_verify,
                           input_fields=("run", "plan", "work", "checks")),
     "review": ReviewStage("review.md", ReviewOutput, (

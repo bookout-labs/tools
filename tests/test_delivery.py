@@ -481,9 +481,10 @@ class DeliveryTest(unittest.TestCase):
 
 class WorkerInputTests(unittest.TestCase):
     def test_each_worker_input_holds_only_its_procedures_inputs(self):
-        """DP10: a live run started from repository variables calls every procedure's worker. Each worker's input holds the
-        inputs its procedure names and nothing else from the run. The login, the caps, the builder's saved session and the
-        attempt records are in none of them."""
+        """DP10: Scripted runs that together call every procedure's worker, each started from repository variables. Each
+        worker's input holds the inputs its procedure names and nothing else from the run. The login, the caps, the ID of the
+        builder's saved session and the record dispatch keeps of each paid call are in none of them. The builder's session
+        is resumed by dispatch, not passed as input."""
         from test_runner import FakeGitHub, FakeWorkspace
 
         settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_TOKENS": "987654", "FOREMAN_MAX_BUDGET_USD": "43.21"}
