@@ -228,6 +228,18 @@ class VerifyTest(unittest.TestCase):
         self.assertNotIn("verify", update)
         self.assertEqual(run.forge.posted, [])
 
+    def test_drive_inspects_the_checkout_before_dispatch_and_stops_dirty_worktree_on_a_dirty_one(self):
+        """Drive dispatches on a clean checkout and stops with dirty_worktree on a dirty one, before any paid call."""
+        for clean, halt in ((True, None), (False, "dirty_worktree")):
+            with self.subTest(clean=clean):
+                run = stage(workspace=Workspace([WorktreeState(HEAD, clean, "8-items")]))
+                with checkout(SKILL) as root, patch.object(verify, "DISPATCH") as dispatch:
+                    run.workspace.root = root
+                    update = verify.drive(state(root), run)
+                self.assertEqual(update.get("halt"), halt)
+                self.assertEqual(dispatch.invoke.called, clean)
+                self.assertEqual(run.forge.posted, [])
+
     def test_a_resumed_drive_posts_stale_evidence_when_the_head_moved_meanwhile(self):
         driven = state(verify=VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION]))
         run = stage(Forge(heads=[pr(MOVED)]))

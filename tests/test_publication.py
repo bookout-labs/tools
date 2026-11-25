@@ -18,7 +18,7 @@ from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.delivery import LiveRun
 from foreman.redaction import redact
 from foreman.github import BOT_LOGIN, CLOSE_MARKER, LiveForge
-from foreman.runner import run_live_delivery
+from foreman.runner import halted_resumably, issue_thread, run_live_delivery
 from foreman.steps import CANCELLATION
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
 from skill_fixture import fixture_pin
@@ -80,6 +80,7 @@ class PublicationFixture(unittest.TestCase):
         self.create_error = False
         self.queued = False
         self.closed = False
+        self.mergeable = True
         self.pr_comments: list[str] = []
         # The queue merges an armed pull request unless a test holds it.
         self.queue_merges = True
@@ -170,7 +171,7 @@ class PublicationFixture(unittest.TestCase):
                 self.closed = True
                 response = {"state": "closed"}
             case ["api", "repos/Example/Engine/pulls/12"]:
-                response = dict(number=12, state="closed" if self.merged else "open", draft=False, mergeable=True, mergeable_state="clean",
+                response = dict(number=12, state="closed" if self.merged else "open", draft=False, mergeable=self.mergeable, mergeable_state="clean" if self.mergeable else "dirty",
                     merged=self.merged, merge_commit_sha="e" * 40 if self.merged else None, head=dict(sha=self.remote_head(), ref=self.branch),
                     base=dict(sha=self.git("--git-dir", str(self.remote), "rev-parse", self.base), ref=self.base))
             case ["api", url] if "/rules/branches/" in url:
@@ -1290,6 +1291,60 @@ class PublicationTest(PublicationFixture):
         self.assertFalse((self.checkout / "preflight_ran").exists())
         self.assertEqual(result.get("stop"), "dirty_worktree")
         self.assertIn("Unowned edits", result["halt_detail"])
+
+    def test_a_dirty_worktree_halt_resumes_on_ready_once_the_tree_is_restored(self):
+        """Ready added again re-enters the halted step, which inspects the tree again (intake, glossary Halt)."""
+        for restored in (True, False):
+            with self.subTest(restored=restored):
+                self.reset_fixture()
+                (self.checkout / "foreign.txt").touch()
+                halted = self.walk(self.no_worker)
+                self.assertEqual((halted["stop"], halted["path"][-1:]), ("dirty_worktree", ["prepare"]))
+                self.assertTrue(halted_resumably(self.checkpoint, issue_thread(REPO, 8)))
+                if restored:
+                    (self.checkout / "foreign.txt").unlink()
+                resumed = self.walk(self.edit if restored else self.no_worker)
+                self.assertEqual(resumed["attempts"][:len(halted["attempts"])], halted["attempts"])
+                later = [a["stage"] for a in resumed["attempts"][len(halted["attempts"]):]]
+                if restored:
+                    self.assertEqual(resumed["stop"], "merged")
+                    self.assertEqual(later, ["implement", "verify", "review"])
+                else:
+                    self.assertEqual((resumed["stop"], resumed["halt_detail"]), ("dirty_worktree", halted["halt_detail"]))
+                    self.assertEqual(later, [])
+                    self.assertTrue((self.checkout / "foreign.txt").exists())
+
+    def test_ready_after_a_dirty_merge_repair_adopts_the_advanced_owned_pr_as_a_new_attempt(self):
+        """Engine #1296: a hand merge dirtied the checkout during a conflict repair. The operator restored the attempt head
+        and pushed the merge to the PR, then added Ready."""
+        self.mergeable = False
+        questions = iter((None, "Resolve the conflict in items.txt how?"))
+        paused = self.walk(ask=lambda: next(questions))
+        self.assertEqual(paused["stop"], "needs_human")
+        attempt_head = self.remote_head()
+        self.assertEqual(paused["work"].attempt_head, attempt_head)
+        (self.checkout / "merge.txt").write_text("hand merge in progress\n")
+        marker = re.search(r"foreman answer [0-9a-f-]{71}", paused["halt_detail"])
+        assert marker is not None
+        self.comments.append(f"{marker[0]}\nKeep both.")
+        halted = self.walk(self.no_worker, answer="Keep both.")
+        self.assertEqual(halted["stop"], "dirty_worktree")
+        (self.checkout / "merge.txt").unlink()
+        self.git("checkout", "--", ".")
+        self.assertEqual(LiveWorkspace(self.checkout).inspect().head, attempt_head)
+        main = self.advance_origin()
+        merge = self.git("commit-tree", f"{attempt_head}^{{tree}}", "-p", attempt_head, "-p", main, "-m", "Merge main")
+        self.git("push", "origin", f"{merge}:{self.ref}")
+        self.mergeable = True
+        reviewed = len(self.published_heads)
+        resumed = self.walk(lambda: (self.checkout / "items.txt").write_text("both\n"), ask=lambda: None)
+        self.assertEqual(resumed["stop"], "merged")
+        head = resumed["work"].head_sha
+        # The new attempt starts on the advanced PR head, and verify and review run again at the head it publishes.
+        self.assertEqual((resumed["work"].attempt_head, self.git("rev-parse", f"{head}^"), self.remote_head()), (merge, merge, head))
+        self.assertEqual(resumed["checks"].verified_head, head)
+        self.assertEqual(self.published_heads[reviewed:], [head])
+        self.assertIn("publish", resumed["path"])
 
     def test_publication_failures(self):
         cases = (("rejected push", "rejected"), ("missing remote", "origin"), ("wrong push URL", "Transport requires"))
