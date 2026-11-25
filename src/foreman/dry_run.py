@@ -4,6 +4,7 @@ from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
@@ -18,6 +19,10 @@ from foreman.workspace import (
     WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, LiveWorkspace, branch_command, commit_commands, push_command, CheckLog,
     PullRequestSize, ReviewScope,
 )
+
+if TYPE_CHECKING:
+    from foreman.dispatch import Handler
+    from foreman.state import DeliveryState
 
 SCRIPTED_USAGE = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)
 CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
@@ -130,8 +135,18 @@ class DryRun:
             self.commands.append(branch_command(branch, f"refs/remotes/origin/{base}"))
         self.branch = branch
 
+    def builder(self, handler: "Handler") -> "Handler":
+        """The handler with its builder writing to this checkout, so inspect shows the edits as a worktree would.
+
+        A builder answer that asks a question or reports no_change edits nothing. Any other answer leaves edits."""
+        def call(node: str, model: ModelSpec | None, state: "DeliveryState", instruction: str, /) -> Outcome:
+            outcome = handler(node, model, state, instruction)
+            if node == "implement" and outcome.kind == "ran" and not (outcome.output.get("no_change") or outcome.output.get("human_question")):
+                self.clean = False
+            return outcome
+        return call
+
     def reconcile(self, parent: str, branch: str, base_branch: str) -> ImplementationCandidate:
-        self.clean = False
         return {"disposition": "edits", "fingerprint": self.fingerprint(),
                 "size": self.pull_request_size(self.tree(None), base_branch)}
 

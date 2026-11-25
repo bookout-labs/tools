@@ -55,7 +55,7 @@ class TokenCapTests(unittest.TestCase):
                 if expected == "budget_exceeded":
                     self.assertEqual(result["plan"].triage, "")
                     self.assertIn(f"Run used {total} work tokens; cap is 100. Last attempt: triage", result["halt_detail"])
-                    self.assertEqual(run_exit_code(result), 1)
+                    self.assertEqual(run_exit_code(result), 75)
 
     def test_reached_cap_never_calls_handler_and_unknown_never_applies_output(self):
         with skill_fixture() as (config, scratch):
@@ -69,7 +69,7 @@ class TokenCapTests(unittest.TestCase):
             self.assertIn("usage_unknown", result["halt_detail"])
             self.assertEqual(result["plan"].triage, "")
             self.assertIsNone(result["attempts"][0]["usage"])
-            self.assertEqual(run_exit_code(result), 1)
+            self.assertEqual(run_exit_code(result), 75)
             graph = compile_delivery(unknown, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"))
             saved = {"review": ReviewState(), **result, "halt": None, "stop": "", "path": [], "run": RunState(issue=8, token_cap=1, base_sha=DryRun.head), "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
             stopped = graph.invoke(saved)

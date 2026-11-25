@@ -27,7 +27,7 @@ from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
 from foreman.status import Status, write_status
-from foreman.runner import AnswerError, IssueLocked, RunPresentation, issue_lock, issue_thread, run_live_delivery, saved_workspace
+from foreman.runner import AnswerError, IssueLocked, RunPresentation, halted_resumably, issue_lock, issue_thread, run_live_delivery, saved_workspace
 from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, commit_sha, head_mismatch_detail
@@ -361,8 +361,9 @@ def main(
                 raise CredentialFailure("Configure FOREMAN_APP_ID before starting runs from Ready.")
             # A held lock may be a blocked admission about to delete its checkpoint, so start waits for it.
             with issue_lock(thread, wait=True):
-                if saved_workspace(store, thread) is not None:
-                    # A repeated delivery never resumes a paused, waiting or finished run.
+                saved = saved_workspace(store, thread)
+                if saved is not None and not halted_resumably(store, thread):
+                    # A repeated delivery never resumes a running, paused, waiting or finished run.
                     print(f"already started {thread}")
                     return 0
                 forge = live_run.forge if live_run is not None else LiveForge()
@@ -375,7 +376,10 @@ def main(
                     except ForgeError as error:
                         _write_run_log(f"status not written: {error}", file=sys.stderr)
                     raise
-                return live(args.repo, args.issue, settings, LiveWorkspace.managed(state_home, args.repo, args.issue))
+                # Ready added again resumes a halted run in its saved checkout with the repository's current settings.
+                managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
+                workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo)
+                return live(args.repo, args.issue, settings, workspace)
         except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1

@@ -4,19 +4,18 @@ from collections.abc import Callable
 import re
 import textwrap
 
-from langgraph.func import task
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from foreman.check_output import CheckOutput
 from foreman.config import family
-from foreman.dispatch import DISPATCH, DispatchResult
+from foreman.dispatch import DISPATCH
 from foreman.github import ForgeError, PublishedPullRequest
-from foreman.outcomes import Halt, halted, stopped
+from foreman.outcomes import Halt, stopped
 from foreman.redaction import redact
 from foreman.stage_output import ReviewState
 from foreman.state import DeliveryState, DeliveryUpdate
-from foreman.steps import StageInput, StageRun, human_stop
+from foreman.steps import StageInput, StageRun, follow, human_stop
 from foreman.workspace import ImplementationRejected, WorkState, WorkspaceError
 
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.verify_cap,
@@ -74,47 +73,13 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The path names the builder call and the check run, not the halt's step label.
         return {**update, "work": work, "checks": checks, **result, "path": update.get("path", [])}
 
-    @task
-    def route(current: DeliveryState, result: DispatchResult) -> tuple[DeliveryUpdate, str]:
-        """Route the builder's result by its tree and its no_change evidence (rules.routing).
-
-        A task, so a step resumed after an answer replays each earlier decision instead of reading the live checkout."""
-        owned, evidence = result.get("fingerprint", ""), str(result.get("output", {}).get("no_change") or "").strip()
-        try:
-            tree = workspace.inspect()
-            # Reconciliation decides what the builder produced, so it confirms a tree that looks unedited.
-            clean = (tree.clean and (tree.branch, tree.head) == (work.branch, work.attempt_head)
-                     and workspace.reconcile(work.attempt_head, work.branch, work.base) is None)
-            if not clean and not evidence:
-                return {}, owned
-            findings = ", ".join(str(finding.get("id")) for finding in state["review"].findings)
-            first = not findings and not checks.verify_failures and work.attempt_head == state["run"].base_sha
-            if clean and evidence and first:
-                return {"stop": "no_change", "halt_detail": evidence}, owned
-            if clean and evidence:
-                reason = "The builder reported no_change on a repair round" + (f"; unresolved findings: {findings}." if findings else ".")
-            elif clean:
-                reason = "The builder edited nothing and gave no no_change evidence."
-            else:
-                reason = "The builder edited the tree and also reported no_change."
-                workspace.reconcile(work.attempt_head, work.branch, work.base)  # Only edits Foreman could adopt reach the gate.
-                if tree.head != work.attempt_head:
-                    # The answered call edits on the attempt parent, so the worker's commits become edits it owns.
-                    workspace.soft_reset(work.attempt_head)
-                    owned = run.dispatch("implement", current, "").fingerprint()
-        except WorkspaceError as exc:
-            # The builder's result stays owned but unbuilt, so a resumed edit asks the builder again and routes its result.
-            code = Halt.implementation_rejected if isinstance(exc, ImplementationRejected) else Halt.git_failed
-            return {**halted(code, str(exc), None), "work": work.model_copy(update={"owned": owned})}, owned
-        return {"human_question": f"{reason} Builder report: {current.get('implementation', '')}"}, owned
-
     if not work.built or checks.verify == "fail":
         scope: list[object] = [state["run"].issue, work.attempt_head]
-        consulted, owned = run.consult(DISPATCH, "implement", state, lambda _: scope, owned=work.owned,
-                                       route=lambda current, result: route(current, result).result())
+        consulted, owned = run.consult(DISPATCH, "implement", state, lambda _: scope, owned=work.owned)
         update.update(consulted)
         if update.get("stop"):
-            return update
+            # A halt after the builder's call keeps the edits it returned owned, so a resumed prepare accepts only those.
+            return {**update, "work": work.model_copy(update={"owned": owned})}
         if run.dispatch("implement", state, "").fingerprint() != owned:
             return finish(stopped(Halt.dirty_worktree, "The worktree changed after the builder returned. It is preserved.", "implement"))
         work = work.model_copy(update={"built": True, "candidate": None, "owned": owned})
@@ -164,9 +129,10 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The next round edits on the attempt parent, so worker commits become edits.
         try:
             workspace.soft_reset(work.attempt_head)
-            work = work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint()})
+            moved, work = work.owned, work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint()})
         except WorkspaceError as exc:
             return finish(stopped(Halt.git_failed, str(exc), "check"))
+        return finish(follow({**state, **update}, moved, work.owned))
     return finish({})
 
 
@@ -200,9 +166,10 @@ def commit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             return stopped(Halt.dirty_worktree, "HEAD differs from the expected checked commit. It is preserved.", "commit")
         if not observed.clean or workspace.tree(observed.head) != checks.checked_tree:
             return stopped(Halt.dirty_worktree, "The commit differs from the checked tree. It is preserved.", "commit")
+        committed = follow(state, work.owned, run.dispatch("implement", state, "").fingerprint(observed))
     except WorkspaceError as exc:
         return stopped(Halt.git_failed, str(exc), "commit")
-    return {"work": work.model_copy(update={"head_sha": observed.head}),
+    return {**committed, "work": work.model_copy(update={"head_sha": observed.head}),
             "checks": checks.model_copy(update={"verified_head": observed.head}), "path": ["commit"]}
 
 

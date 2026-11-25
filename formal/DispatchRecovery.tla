@@ -7,7 +7,8 @@
 (* and the journal (committed by each journal call).                       *)
 (*                                                                         *)
 (* Promise: a paid worker call is launched at most once per reservation,   *)
-(* and every launched call is charged exactly once in the checkpoint.      *)
+(* and every launched call is charged exactly once in the checkpoint. An   *)
+(* invalid answer gets one repair turn, itself a reserved and charged call. *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -16,24 +17,25 @@ CONSTANTS
     MaxCrashes  \* Bound on process crashes.
 
 \* Reservation identities. reserve() draws a fresh uuid4 on every run, and it runs
-\* at most once per model plus once per crash.
-Ids == 1..(Models + MaxCrashes)
+\* at most once per model, once for the repair turn and once per crash.
+Ids == 1..(Models + 1 + MaxCrashes)
 
 NoId == 0
 
 VARIABLES
     journal,    \* worker_attempt row per id: "none", "reserved" (NULL), "sent" (X''), "finished" (result)
-    result,     \* the WorkerResult kind stored by finish(): "none", "ran", "quota"
+    result,     \* the WorkerResult kind stored by finish(): "none", "ran", "invalid", "quota"
     launched,   \* worker calls made for each id (the paid effect)
     node,       \* checkpoint: next dispatch node, "reserve", "reconcile" or "done"
     reservation,\* checkpoint: state["reservation"] id, or NoId
     index,      \* checkpoint: state["index"], the model being tried
     charges,    \* checkpoint: attempt records per id in state["attempts"]
+    repaired,   \* checkpoint: "repair" in state, the one repair turn granted
     pc,         \* process: the step about to run inside the current node
     local,      \* process: id drawn by this reserve run, or the outcome read by reconcile
     crashes
 
-vars == <<journal, result, launched, node, reservation, index, charges, pc, local, crashes>>
+vars == <<journal, result, launched, node, reservation, index, charges, repaired, pc, local, crashes>>
 
 Init ==
     /\ journal = [i \in Ids |-> "none"]
@@ -43,6 +45,7 @@ Init ==
     /\ reservation = NoId
     /\ index = 0
     /\ charges = [i \in Ids |-> 0]
+    /\ repaired = FALSE
     /\ pc = "reserve.insert"
     /\ local = NoId
     /\ crashes = 0
@@ -55,7 +58,7 @@ ReserveInsert ==
         /\ journal' = [journal EXCEPT ![i] = "reserved"]
         /\ local' = i
     /\ pc' = "reserve.commit"
-    /\ UNCHANGED <<result, launched, node, reservation, index, charges, crashes>>
+    /\ UNCHANGED <<result, launched, node, reservation, index, charges, repaired, crashes>>
 
 (* The reserve node's update is checkpointed with the reservation. *)
 ReserveCommit ==
@@ -64,7 +67,7 @@ ReserveCommit ==
     /\ reservation' = local
     /\ pc' = "reconcile.read"
     /\ local' = NoId
-    /\ UNCHANGED <<journal, result, launched, index, charges, crashes>>
+    /\ UNCHANGED <<journal, result, launched, index, charges, repaired, crashes>>
 
 (* reconcile(): journal.read(). NULL means reserved and never sent, so launch.     *)
 (* X'' means sent with no result: charge it as interrupted, never relaunch.        *)
@@ -81,7 +84,7 @@ ReconcileRead ==
         \/ /\ journal[i] = "finished"
            /\ pc' = "reconcile.charge"
            /\ local' = result[i]
-    /\ UNCHANGED <<journal, result, launched, node, reservation, index, charges, crashes>>
+    /\ UNCHANGED <<journal, result, launched, node, reservation, index, charges, repaired, crashes>>
 
 (* launch(): a moved plan or a changed worktree halts before send, uncharged. *)
 LaunchCheck ==
@@ -91,7 +94,7 @@ LaunchCheck ==
        \/ /\ pc' = "done"
           /\ node' = "done"
           /\ reservation' = NoId
-    /\ UNCHANGED <<journal, result, launched, index, charges, local, crashes>>
+    /\ UNCHANGED <<journal, result, launched, index, charges, repaired, local, crashes>>
 
 (* journal.send(): UPDATE ... SET evidence = X'' WHERE id = ? AND evidence IS NULL. *)
 (* Any other row raises, which ends the process like a crash.                       *)
@@ -100,15 +103,15 @@ LaunchSend ==
     /\ journal[reservation] = "reserved"
     /\ journal' = [journal EXCEPT ![reservation] = "sent"]
     /\ pc' = "launch.call"
-    /\ UNCHANGED <<result, launched, node, reservation, index, charges, local, crashes>>
+    /\ UNCHANGED <<result, launched, node, reservation, index, charges, repaired, local, crashes>>
 
-(* self.handler(...): the paid worker call. It returns or quota-stops. *)
+(* self.handler(...): the paid worker call. It returns a valid or invalid answer, or quota-stops. *)
 LaunchCall ==
     /\ pc = "launch.call"
     /\ launched' = [launched EXCEPT ![reservation] = @ + 1]
-    /\ \E kind \in {"ran", "quota"} : local' = kind
+    /\ \E kind \in {"ran", "invalid", "quota"} : local' = kind
     /\ pc' = "launch.finish"
-    /\ UNCHANGED <<journal, result, node, reservation, index, charges, crashes>>
+    /\ UNCHANGED <<journal, result, node, reservation, index, charges, repaired, crashes>>
 
 (* journal.finish(): the result is stored before reconcile charges it. *)
 LaunchFinish ==
@@ -116,22 +119,31 @@ LaunchFinish ==
     /\ journal' = [journal EXCEPT ![reservation] = "finished"]
     /\ result' = [result EXCEPT ![reservation] = local]
     /\ pc' = "reconcile.charge"
-    /\ UNCHANGED <<launched, node, reservation, index, charges, local, crashes>>
+    /\ UNCHANGED <<launched, node, reservation, index, charges, repaired, local, crashes>>
 
 (* reconcile() returns attempts [record] with reservation None in one checkpointed update. *)
-(* A quota outcome with models left falls back to reserve with index + 1.                *)
+(* A quota outcome with models left falls back to reserve with index + 1. The first      *)
+(* invalid answer sets repair in that same update and returns to reserve on the same     *)
+(* model for the repair turn. A second invalid answer halts with invalid_output.         *)
 ReconcileCharge ==
     /\ pc = "reconcile.charge"
     /\ charges' = [charges EXCEPT ![reservation] = @ + 1]
     /\ reservation' = NoId
     /\ local' = NoId
-    /\ IF local = "quota" /\ index + 1 < Models
-       THEN /\ node' = "reserve"
-            /\ index' = index + 1
-            /\ pc' = "reserve.insert"
-       ELSE /\ node' = "done"
-            /\ pc' = "done"
-            /\ UNCHANGED index
+    /\ CASE local = "quota" /\ index + 1 < Models ->
+             /\ node' = "reserve"
+             /\ index' = index + 1
+             /\ pc' = "reserve.insert"
+             /\ UNCHANGED repaired
+          [] local = "invalid" /\ ~repaired ->
+             /\ node' = "reserve"
+             /\ repaired' = TRUE
+             /\ pc' = "reserve.insert"
+             /\ UNCHANGED index
+          [] OTHER ->
+             /\ node' = "done"
+             /\ pc' = "done"
+             /\ UNCHANGED <<index, repaired>>
     /\ UNCHANGED <<journal, result, launched, crashes>>
 
 (* A crash drops the process. The runner resumes at the checkpointed node. *)
@@ -143,7 +155,7 @@ Crash ==
     /\ pc' = CASE node = "reserve"   -> "reserve.insert"
                [] node = "reconcile" -> "reconcile.read"
                [] OTHER              -> "done"
-    /\ UNCHANGED <<journal, result, launched, node, reservation, index, charges>>
+    /\ UNCHANGED <<journal, result, launched, node, reservation, index, charges, repaired>>
 
 Done ==
     /\ pc = "done"
@@ -164,6 +176,7 @@ TypeOK ==
     /\ launched \in [Ids -> 0..2]
     /\ node \in {"reserve", "reconcile", "done"}
     /\ charges \in [Ids -> 0..2]
+    /\ repaired \in BOOLEAN
 
 (* The paid worker call runs at most once for each reservation. *)
 LaunchedAtMostOnce == \A i \in Ids : launched[i] <= 1

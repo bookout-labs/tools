@@ -68,7 +68,7 @@ each finding. Foreman posts a COMMENT for each report. Only concrete P0 or P1 co
 security or scope defects send the same PR back for repair. Other findings remain advisory.
 Honor applicable settled rulings.
 
-A PR or diff that cannot be read stops the run with `git_failed`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output stops with `invalid_output`. Every stage shares one dispatch: a quota stop or missing CLI moves to the next qualified model, and the run pauses with `paused quota_exhausted` (exit 75) only when none is left. Missing implementation provenance still stops with `no_reviewer`. The independent spec checker prefers a different model family from the accepted draft author. The record includes `halt_detail` for these stops.
+A PR or diff that cannot be read stops the run with `git_failed`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output gets one repair turn in the same session with the exact validation error, and a second invalid answer stops with `invalid_output`. Every stage shares one dispatch: a quota stop or missing CLI moves to the next qualified model, and the run pauses with `paused quota_exhausted` (exit 75) only when none is left. Missing implementation provenance still stops with `no_reviewer`. The independent spec checker prefers a different model family from the accepted draft author. The record includes `halt_detail` for these stops.
 
 Implement runs four steps: prepare, edit, commit and publish. Prepare creates an `<issue>-<slug>` branch from the pinned base before the first edit. Edit reconciles the builder's candidate and runs the check command on that exact tree. A failed check sends the output back to the builder for another round, and a check that changes the tree fails the same way. A passing check binds the tree, and commit publishes only that tree. Foreman reports the changed-line count but does not block on it. An attempt with no file changes stops with `no_change`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
@@ -152,7 +152,7 @@ foreman start --repo Example/Engine --issue 7
 
 `foreman start` begins an accepted issue's run with nobody at the keyboard:
 - It acts only as the GitHub App installed on that repository and never falls back to a personal `gh` login.
-- It takes the issue's lock first, waiting while another Foreman process holds it. An existing checkpoint for that issue then prints `already started` and exits 0, so a repeated delivery never resumes a paused, waiting or finished run.
+- It takes the issue's lock first, waiting while another Foreman process holds it. An existing checkpoint for that issue then prints `already started` and exits 0, so a repeated delivery never resumes a running, paused, waiting or finished run. A run that stopped on a resumable halt, `budget_exceeded` included, resumes at its halted step in its saved checkout with the repository's current settings.
 - After a run returns, `foreman start` and `foreman run` print one `start OWNER/NAME#N` line for each issue the run returns to admission: the open dependents after its merge, or the children it filed. The host starts each line like an accepted delivery, and admission decides from the issue's Ready label and its prerequisites. A replay of a finished run prints the same lines, so a crash before the host starts them loses nothing. A prerequisite counts once its closing pull request merged into the default branch.
 - It reads the operator's settings from the repository's GitHub Actions variables:
   - `FOREMAN_HUMAN_LOGIN` is required: the GitHub login whose issue comments answer or stop the run.
@@ -293,7 +293,10 @@ The report separates raw tokens from work tokens used / work cap, shows all four
 buckets with availability, and reports measured work overshoot when exhausted.
 The attempt already in flight can overshoot the cap. Once the
 cap is reached, no subsequent model runs and that attempt's output is not
-applied. `budget_exceeded` and `usage_unknown` exit 1 and cannot resume.
+applied. `budget_exceeded`, including its `usage_unknown` form, exits 75. Raise
+FOREMAN_MAX_TOKENS or FOREMAN_MAX_BUDGET_USD and add Ready again to resume at the
+interrupted step. Any other cap change is refused, and an unchanged cap stops again
+before any worker call.
 Interrupted calls with no committed usage halt as unknown rather than being
 retried. Checkpoints from before this work-cap schema require a new run.
 

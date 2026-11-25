@@ -6,6 +6,7 @@ from foreman.stages import STAGES
 import contextlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from inspect import signature
 import io
 import json
 import os
@@ -43,7 +44,7 @@ from foreman.readiness import MergeReceipt, Observation, PullSnapshot
 from foreman.runner import AnswerError, RunPresentation, issue_thread, run_live_delivery, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
-from foreman.stage_output import ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
+from foreman.stage_output import HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
 from foreman.worker import CliWorker, run_worker_command, verify_attempts, worker_scratch
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply as spec_check_reply
@@ -1025,7 +1026,8 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(len(released), 1)
         self.assertIn(HEAD, released[0])
         self.assertFalse(captures[8].parent.exists())
-        halted = self.walk([{"triage": "not-a-route"}], issue=9, workspace=Releasing(self.cwd))
+        # The invalid answer and its one repair turn both fail, so the run halts.
+        halted = self.walk([{"triage": "not-a-route"}] * 2, issue=9, workspace=Releasing(self.cwd))
         self.assertIsNotNone(halted.get("halt"))
         self.assertEqual(len(released), 1)
         self.assertTrue(captures[9].is_dir())
@@ -1565,9 +1567,13 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         gate = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, human_login="fixture-owner", dispatch=Mock(),
                         apply=Mock(return_value={"human_question": "Which sort order should the repair keep?"}))
         with patch("foreman.steps.interrupt", return_value="cancel"):
-            update, _ = gate.consult(Mock(**{"invoke.return_value": {}}), "review", state, None)
+            update, _ = gate.consult(Mock(**{"invoke.return_value": {}}), "review", state, lambda current: [current["checks"].verified_head])
         self.assertEqual((update["stop"], update.get("halt_detail"), update["human_question"]), ("cancelled", None, ""))
         self.assertEqual(github.pr_closes, [])
+
+    def test_a_gate_has_no_route_for_an_unmatched_result(self):
+        """CI proves every route value has a route (rules.routing), so consult takes no route and marks no routing defect."""
+        self.assertEqual(list(signature(StageRun.consult).parameters), ["self", "graph", "name", "state", "scope", "owned", "answered"])
 
     def test_admission_and_a_resumed_halt_read_the_stop_first(self):
         """TR6: triage.admit reads the stop before anything else, and a halted run that resumes sees a stop posted meanwhile."""
@@ -1633,6 +1639,73 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual(result["path"][-1], "merge")
         self.assertEqual(self.github.release_labels(), [])
 
+    def test_review_question_is_bound_and_the_marked_reply_resumes_inspect(self):
+        """RV9: the reviewer's question is bound to the verified head and the round's findings, the status comment shows
+        its reply marker, and the human's marked reply on the issue resumes review."""
+        question = "Should the list include archived items?"
+        note = {**FINDING, "severity": "P2"}
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {"findings": [note], "human_question": question}])
+        self.assertEqual(asked["stop"], "needs_human")
+        marker = re.search(r"foreman answer [0-9a-f-]{71}", asked["halt_detail"])[0]
+        self.assertIn(f"Start with {marker}", self.github.status["Example/Engine", 8])
+        self.assertEqual(self.github.reviews, [])
+        self.github.ruling(f"{marker}\nActive items only.")
+        resumed = self.walk([APPROVE])
+        self.assertEqual(resumed["stop"], "merged")
+        self.assertIn("Active items only.", self.prompts[-1])
+        [saved] = resumed["plan"].human_qa
+        self.assertEqual((saved["stage"], saved["answer"]), ("review", "Active items only."))
+        self.assertEqual(HumanPrompt(stage="review", question=question, revision=saved["revision"]).answer_marker, marker)
+        self.assertEqual(resumed["path"].count("implement"), 1)
+        self.assertEqual(len(self.github.reviews), 1)
+
+    def test_a_review_reply_bound_to_other_findings_does_not_resume(self):
+        question = "Should the list include archived items?"
+        first, other = {**FINDING, "severity": "P2"}, {**FINDING, "id": "f2", "severity": "P2", "location": {"side": "head", "path": "items.txt", "line": 1}}
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {"findings": [first], "human_question": question}])
+        answered = self.walk([{"findings": [other], "human_question": question}], answer="Active items only.")
+        # The same question about other findings on the same head is a new question with its own marker.
+        self.assertEqual(answered["stop"], "needs_human")
+        earlier = re.search(r"foreman answer \S+", asked["halt_detail"])[0]
+        self.assertNotEqual(re.search(r"foreman answer \S+", answered["halt_detail"])[0], earlier)
+        self.github.ruling(f"{earlier}\nArchived items too.")
+        calls = list(self.calls)
+        self.assertEqual(self.walk([])["stop"], "needs_human")
+        self.question = ""
+        with self.assertRaisesRegex(AnswerError, "needs a matching answer"):
+            self.walk([], answer="Archived items too.")
+        self.assertEqual(self.calls, calls)
+        self.assertEqual(self.github.reviews, [])
+
+    def test_a_review_reply_bound_to_another_head_does_not_resume(self):
+        question = "Should the list include archived items?"
+        repaired = "c" * 40
+        heads = iter([HEAD, repaired])
+
+        class Repairing(FakeWorkspace):
+            def commit(self, message):
+                super().commit(message)
+                self.current = WorktreeState(next(heads), True, self.current.branch)
+
+        workspace = Repairing(self.cwd)
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {"findings": [FINDING], "human_question": question}],
+                          workspace=workspace)
+        # The answered review repairs its P1, and the reviewer asks the same question about the same finding at the new head.
+        again = self.walk([{"findings": [FINDING], "human_question": None}, {"implementation": "built"},
+                           {"findings": [FINDING], "human_question": question}], answer="Active items only.", workspace=workspace)
+        self.assertEqual(again["stop"], "needs_human")
+        self.assertEqual(again["checks"].verified_head, repaired)
+        earlier = re.search(r"foreman answer \S+", asked["halt_detail"])[0]
+        current = re.search(r"foreman answer \S+", again["halt_detail"])[0]
+        self.assertNotEqual(current, earlier)
+        self.github.ruling(f"{earlier}\nArchived items too.")
+        calls = list(self.calls)
+        self.assertEqual(self.walk([], workspace=workspace)["stop"], "needs_human")
+        self.assertEqual(self.calls, calls)
+        self.github.ruling(f"{current}\ncancel")
+        self.assertEqual(self.walk([], workspace=workspace)["stop"], "cancelled")
+        self.assertFalse(self.github.merge_calls)
+
     def test_review_answer_survives_failed_post_and_fresh_process(self):
         script = r"""
 import json, sys
@@ -1646,7 +1719,7 @@ from foreman.runner import run_live_delivery
 from foreman.worker import CliWorker
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply
 
-phase, pin = sys.argv[1:]
+phase, pin, detail, checkpoint = sys.argv[1:]
 answer = "Active items only."
 question = "Should the list include archived items?"
 forge = FakeGitHub()
@@ -1655,7 +1728,11 @@ replies = iter({
     "initial": [{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "human_question": question}],
     "answer": [APPROVE],
     "resume": [],
+    "cancel": [],
 }[phase])
+if phase in ("answer", "cancel"):
+    # The coordinator relays the human's reply under the marker the question posted.
+    forge.answer(detail, answer if phase == "answer" else "cancel")
 
 def worker(args, cwd, env):
     if phase == "answer":
@@ -1669,33 +1746,38 @@ if phase == "answer":
     forge.post_review = unavailable
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_skills=SkillPin.model_validate_json(pin).model_copy(update={"directory": "skills"}))):
     result = run_live_delivery(
-        repo="Example/Engine", issue=8, checkpoint=Path("review.sqlite3"),
+        repo="Example/Engine", issue=8, checkpoint=Path(checkpoint),
         run=LiveRun(forge, workspace, human_login="fixture-owner"), dispatcher=CliWorker(workspace.root, worker),
-        answer=None if phase == "initial" else answer,
+        answer=answer if phase in ("answer", "resume") else None,
     )
-print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path": result["path"],
+print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path": result["path"], "detail": result.get("halt_detail", ""),
                   "answers": result.get("human_answers"), "rulings": result["review"].settled_rulings}))
 """
         paths = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
         bootstrap = f"import sys; sys.path[:0] = {paths!r}\n"
 
-        def invoke(phase):
-            process = subprocess.run([sys.executable, "-c", bootstrap + script, phase, self.pin.model_dump_json()],
+        def invoke(phase, detail="", checkpoint="review.sqlite3"):
+            process = subprocess.run([sys.executable, "-c", bootstrap + script, phase, self.pin.model_dump_json(), detail, checkpoint],
                                      cwd=self.cwd, text=True, capture_output=True)
             self.assertEqual(process.returncode, 0, process.stderr)
             return json.loads(process.stdout)
 
-        self.assertEqual(invoke("initial")["stop"], "needs_human")
-        interrupted = invoke("answer")
+        asked = invoke("initial")
+        self.assertEqual(asked["stop"], "needs_human")
+        interrupted = invoke("answer", asked["detail"])
         self.assertEqual(interrupted["stop"], "review_not_posted")
         resumed = invoke("resume")
         self.assertEqual(resumed["stop"], "merged")
         self.assertEqual(resumed["answers"], ["Active items only."])
-        self.assertEqual(resumed["qa"], [{"stage": "review", "question": "Should the list include archived items?",
-                                           "answer": "Active items only."}])
+        [saved] = resumed["qa"]
+        self.assertEqual(saved, {"stage": "review", "question": "Should the list include archived items?",
+                                 "answer": "Active items only.", "revision": saved["revision"]})
+        self.assertIn(HumanPrompt(stage="review", question=saved["question"], revision=saved["revision"]).answer_marker, asked["detail"])
         self.assertEqual(resumed["rulings"], interrupted["rulings"])
         self.assertEqual(resumed["path"].count("implement"), 1)
-
+        # The human's reply under the marker can cancel instead.
+        asked = invoke("initial", checkpoint="cancel.sqlite3")
+        self.assertEqual(invoke("cancel", asked["detail"], "cancel.sqlite3")["stop"], "cancelled")
     def test_unavailable_and_policy_outcomes_fail_closed(self):
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
         for index, sequence in enumerate([[ForgeError("HTTP 503")], [ready, ForgeError("HTTP 503")],
@@ -2167,9 +2249,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     self.assertIsNone(result["plan"].spec_candidate)
                     self.assertEqual(self.github.sub_issues("Example/Engine", 8), [])
                     self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
+                    # The invalid draft and its repair turn, which answers with the same mislabel, are both charged.
                     attempts = [a for a in result["attempts"] if a["stage"] == "spec"]
-                    self.assertEqual(len(attempts), 1)
-                    self.assertTrue(attempts[0]["usage"])
+                    self.assertEqual(len(attempts), 2)
+                    self.assertTrue(all(attempt["usage"] for attempt in attempts))
 
     def test_existing_seam_resolves_in_workspace_and_skips_a_dependency(self):
         self.github = FakeGitHub(["Ready"])
@@ -2497,11 +2580,12 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             with self.subTest(triage=triage), TemporaryDirectory(dir=self.cwd) as directory:
                 self.checkpoint = Path(directory) / "run.sqlite3"
                 self.calls.clear()
-                result = self.walk([triage, {"implementation": "built"}, APPROVE])
+                result = self.walk([triage, triage, {"implementation": "built"}, APPROVE])
                 self.assertEqual(result["path"], ["triage"])
                 self.assertEqual(result["stop"], "invalid_output")
                 self.assertTrue(result["halt_detail"].startswith("triage output from claude-opus-5-5-high: slice:"))
-                self.assertEqual(len(self.calls), 1)
+                # The repair turn repeats the missing slice, so the second invalid answer stops the run.
+                self.assertEqual(self.calls, ["claude", "claude"])
                 self.assertEqual(self.github.merge_calls, [])
                 self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
@@ -3066,7 +3150,7 @@ with patch("foreman.runner.load_config", return_value=config):
                   live_run=LiveRun(FakeGitHub(["Ready"]), FakeWorkspace(Path.cwd()), human_login="fixture-owner")))
 '''
         bootstrap = (f"import sys; sys.path[:0] = {[str(Path(__file__).resolve().parents[1]), str(Path(__file__).parent.resolve())]!r}\n")
-        for case, cap, mode, code in (("complete", 1000000, "success", 0), ("cap", 45, "success", 1),
+        for case, cap, mode, code in (("complete", 1000000, "success", 0), ("cap", 45, "success", 75),
                                       ("repaused", 1000000, "pause", 3), ("unknown", 1000000, "unknown", 1)):
             with self.subTest(case=case):
                 root = self.cwd / case

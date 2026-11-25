@@ -51,7 +51,12 @@ def inspect(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         rulings = [ruling.model_dump() for ruling in past.settled] + [{"id": f"design:{len(past.rounds)}", "text": answer}]
         return {"review": current_review.model_copy(update={"settled_rulings": rulings})}
 
-    update, _ = run.consult(DISPATCH, "review", state, None, answered=settle)
+    def bound(current: DeliveryState) -> list[object]:
+        # The question binds the verified head and the findings of the round that asked it (item 18).
+        asked = history({"rounds": current["review"].review_findings}).rounds[-1]
+        return [current["checks"].verified_head, [[finding.id, finding.location] for finding in asked.findings]]
+
+    update, _ = run.consult(DISPATCH, "review", state, bound, answered=settle)
     # The round's own result replaces the route an earlier round left.
     return {"stop": "", **update}
 

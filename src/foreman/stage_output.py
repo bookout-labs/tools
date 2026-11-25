@@ -97,7 +97,7 @@ Record = TypeVar("Record")
 
 class RecordContract(Contract, Generic[Record]):
     optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance", "repository",
-                                                  "resume_session", "attempt_id", "work_charge", "dollar_charge"}
+                                                  "resume_session", "repair", "attempt_id", "work_charge", "dollar_charge"}
     @classmethod
     @abstractmethod
     def record_adapter(cls) -> TypeAdapter[Record]:
@@ -206,6 +206,7 @@ class Reservation(TypedDict):
 class DispatchPlanRecord(TypedDict):
     budget_usd: NotRequired[str | None]
     resume_session: NotRequired[str | None]
+    repair: NotRequired[str | None]
     models: list[str]
     instruction: str
     methods: list[str]
@@ -222,6 +223,8 @@ class DispatchPlan(RecordContract[DispatchPlanRecord]):
 
     budget_usd: str | None = None
     resume_session: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
+    # The exact validation error the repair turn sends as the whole prompt (item 1).
+    repair: str | None = None
     models: list[str]
     instruction: str
     methods: list[str]
@@ -709,7 +712,8 @@ class ImplementOutput(HumanQuestionOutput):
         description="Only on a first attempt with no edits and no human_question: the checks showing the acceptance already "
                     "holds on the pinned base, and their results. Otherwise null.")
     human_question: TrimmedText | None = Field(
-        description="Ask only when an unresolved acceptance choice blocks further editing. Otherwise null.")
+        description="Ask only when an unresolved acceptance choice blocks further editing, or when the code contradicts a "
+                    "fact the plan states. Then cite the plan fact and the code, and build nothing. Otherwise null.")
 
     @model_validator(mode="after")
     def asks_or_reports_no_change(self) -> Self:

@@ -7,7 +7,9 @@ from decimal import Decimal
 import json
 from pathlib import Path
 from subprocess import CompletedProcess
+from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from langgraph.checkpoint.memory import InMemorySaver
 from foreman.adapters import Outcome, Usage
@@ -15,13 +17,15 @@ from foreman.budget import claude_spend
 from foreman.cli import run_exit_code
 from foreman.config import ModelSpec, load_config
 from foreman.delivery import MODEL_STAGES, LiveRun, compile_delivery
-from foreman.dry_run import DryRun, ScriptHandler
-from foreman.runner import snapshot_result
+from foreman.dry_run import CLEAR, DryRun, ScriptHandler
+from foreman.runner import run_live_delivery, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer
+from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker
+from foreman.workspace import WorkState
 from test_dollar_allowance import NEEDS_HUMAN, attempt
-from skill_fixture import verify_checkout
-from test_runner import EMPTY_SLICE, fixture_process, worker_reply
+from skill_fixture import fixture_skills, skill_fixture, verify_checkout
+from test_runner import APPROVE, EMPTY_SLICE, FakeGitHub, FakeWorkspace, fixture_process, worker_reply
 
 
 CLAUDE = ModelSpec.parse("claude-opus-5-5-high")
@@ -42,7 +46,7 @@ def configured(stage="triage", models=(CLAUDE, NEXT_CLAUDE)):
 def walk(handler, *, config=None, prior=0.8, limit="1", token_cap=1_000_000, parent=False, checkout=""):
     saver = InMemorySaver(serde=checkpoint_serializer())
     dry = DryRun(checkout=Path(checkout) if checkout else None)
-    graph = compile_delivery(handler, config or configured(), run=LiveRun(forge=dry, workspace=dry, human_login="fixture-owner"), checkpointer=saver).with_config({"configurable": {"thread_id": "budget"}})
+    graph = compile_delivery(dry.builder(handler), config or configured(), run=LiveRun(forge=dry, workspace=dry, human_login="fixture-owner"), checkpointer=saver).with_config({"configurable": {"thread_id": "budget"}})
     graph.invoke({"review": ReviewState(),
         "run": RunState(issue=dry.issue_placeholder, repo="a/b", base_branch="main", base_sha=dry.head, request="x", token_cap=token_cap, max_budget_usd=limit, workspace=checkout), "checks": ChecksState(check="exit 0", verify_skill=".claude/skills/verify-web/SKILL.md"), "path": [], "plan": PlanState(issue_kind="parent") if parent else PlanState(issue_kind="slice", slice=EMPTY_SLICE),
 
@@ -137,7 +141,7 @@ class DispatchBudgetTests(unittest.TestCase):
                     self.assertEqual(len(calls), count)
                     self.assertEqual(claude_spend(result["attempts"]), Decimal("0.8") + Decimal(str(cost)))
                     if expected == "budget_exceeded":
-                        self.assertEqual(run_exit_code(result), 1)
+                        self.assertEqual(run_exit_code(result), 75)
                         self.assertEqual(result["plan"].triage, "")
                         self.assertEqual(result["halt_detail"], {
                             0.2: "Run Claude spend: $1.0. Dollar allowance: $1.",
@@ -153,7 +157,7 @@ class DispatchBudgetTests(unittest.TestCase):
                     self.fail("a candidate ran without a known positive allowance")
                 result = walk(unexpected, prior=prior, config=configured(models=(GPT, GROK, CLAUDE)))
                 self.assertEqual(result["stop"], expected)
-                self.assertEqual(run_exit_code(result), 1)
+                self.assertEqual(run_exit_code(result), 75)
                 self.assertEqual(result["plan"].triage, "")
                 self.assertEqual(len(result["attempts"]), 1)
 
@@ -179,7 +183,7 @@ class DispatchBudgetTests(unittest.TestCase):
                     if limit and has_usage and kind != "failed":
                         self.assertIn("usage_unknown", result["halt_detail"])
                         self.assertIn("Dollar allowance: $1.", result["halt_detail"])
-                        self.assertEqual(run_exit_code(result), 1)
+                        self.assertEqual(run_exit_code(result), 75)
                         self.assertEqual(result["plan"].triage, "")
 
     def test_zero_cost_and_missing_cli_allow_the_next_candidate(self):
@@ -222,7 +226,7 @@ class DispatchBudgetTests(unittest.TestCase):
                 self.assertEqual(result["stop"], expected)
                 self.assertIn(detail, result["halt_detail"])
                 self.assertEqual(result["plan"].triage, "")
-                self.assertEqual(run_exit_code(result), 1)
+                self.assertEqual(run_exit_code(result), 75)
 
     def test_mixed_providers_spend_only_the_claude_allowance(self):
         script = ScriptHandler()
@@ -243,3 +247,95 @@ class DispatchBudgetTests(unittest.TestCase):
         self.assertEqual([budget for _, _, budget in calls[:3]], ["0.2"] * 3)
         self.assertEqual(calls[-1], ("review", CLAUDE.name, "0.19"))
         self.assertEqual(claude_spend(result["attempts"]), Decimal("0.82"))
+
+
+class BudgetResumeTests(unittest.TestCase):
+    """DP7 and DP8: a run stopped on its budget resumes at the interrupted step once the operator raises the cap."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(TemporaryDirectory())).resolve()
+        config = self.enterContext(skill_fixture())[0]
+        claude = replace(config, nodes={name: replace(node, models=(CLAUDE,)) for name, node in config.nodes.items()})
+        self.enterContext(patch("foreman.runner.load_config", return_value=claude))
+        self.forge, self.workspace = FakeGitHub(), FakeWorkspace(self.root)
+        self.calls = []
+
+    def handler(self, costs, tokens=1):
+        def reply(node, model, state, instruction):
+            self.calls.append((node, state["dispatch_plan"]["budget_usd"]))
+            if node == "implement":
+                (self.root / "partial.txt").write_text("builder edits\n")
+                self.workspace.current = replace(self.workspace.current, clean=False)
+            output = {"triage": {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None},
+                      "spec_check": CLEAR.model_dump(), "implement": {"implementation": "built", "no_change": None, "human_question": None},
+                      "verify": {"tested_head": WorkState.model_validate(state.get("work") or {}).published_head, "criteria": [{
+                          "criterion": "The change works.", "result": "passed", "observation": "The scripted drive used the change.",
+                          "evidence": "captures/scripted.txt"}]},
+                      "review": APPROVE}[node]
+            spent = len([call for call in self.calls if call[0] == node]) - 1
+            return Outcome("ran", output, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=tokens,
+                                                      output_tokens=0, total_cost_usd=costs[node][spent]))
+        return reply
+
+    def deliver(self, handler, **limits):
+        return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=self.root / "runs.sqlite3",
+                                 run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"),
+                                 dispatcher=handler, **limits)
+
+    def test_a_call_near_the_cap_is_charged_once_and_a_raised_cap_resumes_it_on_the_builders_edits(self):
+        costs = {"triage": [0.1], "spec_check": [2.65], "implement": [2.94, 0.5], "verify": [0.1], "review": [0.1]}
+        stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")))
+        # DP8: the last $0.25 admits the builder with that CLI cap, its $2.94 is charged once and no further call starts.
+        self.assertEqual(stopped["stop"], "budget_exceeded")
+        self.assertEqual(self.calls, [("triage", "3"), ("spec_check", "2.9"), ("implement", "0.25")])
+        self.assertEqual(claude_spend(stopped["attempts"]), Decimal("5.69"))
+        self.assertEqual(run_exit_code(stopped), 75)
+        for limits in ({"max_budget_usd": BudgetUsd(Decimal("2"))}, {"max_tokens": 1}):
+            with self.subTest(limits=limits), self.assertRaisesRegex(ValueError, "differs from the stored"):
+                self.deliver(self.handler(costs), **limits)
+        again = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")))
+        self.assertEqual((again["stop"], again["attempts"]), ("budget_exceeded", stopped["attempts"]))
+        self.assertEqual(len(self.calls), 3)
+        self.forge.ready_again(8)
+        # DP7: Ready again after the operator raises the cap resumes the builder's step on the edits it made.
+        resumed = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("10")))
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(self.calls[3:], [("implement", "4.31"), ("verify", "3.81"), ("review", "3.71")])
+        self.assertEqual(resumed["run"].max_budget_usd, "10")
+        self.assertEqual(resumed["attempts"][:len(stopped["attempts"])], stopped["attempts"])
+        self.assertEqual([a["usage"]["cost_usd"] for a in resumed["attempts"] if a["stage"] == "implement"], [2.94, 0.5])
+        self.assertEqual((self.root / "partial.txt").read_text(), "builder edits\n")
+
+    def test_only_a_raised_token_cap_resumes_and_a_newly_added_dollar_cap_is_refused(self):
+        costs = {"triage": [0.0], "spec_check": [0.0], "implement": [0.0, 0.0], "verify": [0.0], "review": [0.0]}
+        stopped = self.deliver(self.handler(costs, tokens=40), max_tokens=100)
+        self.assertEqual(stopped["stop"], "budget_exceeded")
+        self.assertEqual([node for node, _ in self.calls], ["triage", "spec_check", "implement"])
+        for limits in ({"max_budget_usd": BudgetUsd(Decimal("5"))}, {"max_tokens": 99}):
+            with self.subTest(limits=limits), self.assertRaisesRegex(ValueError, "differs from the stored"):
+                self.deliver(self.handler(costs, tokens=40), **limits)
+        resumed = self.deliver(self.handler(costs, tokens=40), max_tokens=1000)
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(resumed["run"].token_cap, 1000)
+        self.assertEqual([node for node, _ in self.calls[3:]], ["implement", "verify", "review"])
+
+    def test_a_raised_cap_resumes_a_budget_halt_in_triage_with_the_issue_it_admitted(self):
+        costs = {"triage": [3.5, 0.1], "spec_check": [0.1], "implement": [0.1], "verify": [0.1], "review": [0.1]}
+        stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")))
+        self.assertEqual((stopped["stop"], stopped["path"][-1:]), ("budget_exceeded", ["triage"]))
+        self.forge.body += "\n\nEdited after the halt."
+        self.forge.ready_again(8)
+        resumed = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("10")))
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(resumed["run"], stopped["run"].model_copy(update={"max_budget_usd": "10"}))
+        self.assertEqual([node for node, _ in self.calls], ["triage", "triage", "spec_check", "implement", "verify", "review"])
+
+    def test_a_raised_cap_is_refused_on_any_other_halt(self):
+        costs = {"triage": [0.1], "spec_check": [0.1], "implement": [0.1], "review": [0.1]}
+        stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")), preflight="exit 1")
+        self.assertEqual(stopped["stop"], "env_unavailable")
+        calls = list(self.calls)
+        for limits in ({"max_budget_usd": BudgetUsd(Decimal("10"))}, {"max_tokens": 30_000_000}):
+            with self.subTest(limits=limits), self.assertRaisesRegex(ValueError, "differs from the stored"):
+                self.deliver(self.handler(costs), preflight="exit 1", **limits)
+        self.assertEqual(self.calls, calls)

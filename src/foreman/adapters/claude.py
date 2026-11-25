@@ -188,7 +188,7 @@ class ClaudeAdapter(NativeAdapter):
         settings_path = call.temp_dir / "claude-settings.json"
         settings_path.write_text(json.dumps(settings))
         scope = [arg for directory in directories for arg in ("--add-dir", directory)]
-        resume = ["--resume", call.resume_session, "--fork-session"] if call.edit and call.resume_session else []
+        resume = ["--resume", call.resume_session, "--fork-session"] if call.resume_session else []
         return ["claude", "--model", self.model.model_id, *effort, *resume, "--restricted",
                 "--strict-mcp-config", "--permission-mode", "dontAsk",
                 "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else

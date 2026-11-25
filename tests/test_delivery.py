@@ -266,6 +266,39 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="question"), config=config, slice=None)
         self.assertEqual(result["stop"], "model_dependency_missing")
 
+    def builder_answers(self, **answer):
+        """The scripted run with the builder's answer changed, and the commands the run would issue."""
+        script, commands = ScriptHandler(), []
+        def handler(node, model, state, instruction):
+            outcome = script(node, model, state, instruction)
+            return replace(outcome, output={**outcome.output, **answer}) if node == "implement" else outcome
+        return walk(handler, commands=commands), script, commands
+
+    def test_typed_no_change_evidence_on_a_first_attempt_ends_no_change(self):
+        # IM8: a clean tree with the builder's evidence that the acceptance already holds publishes nothing.
+        evidence = "npm run check passed on the pinned base, and its board test shows each deal once."
+        result, _, commands = self.builder_answers(no_change=evidence)
+        self.assertEqual((result["stop"], result.get("halt"), result["halt_detail"]), ("no_change", None, evidence))
+        self.assertEqual([attempt["stage"] for attempt in result["attempts"]].count("implement"), 1)
+        self.assertNotIn("check", result["path"])
+        self.assertEqual([command for command in commands if command[1] in {"commit", "push"}], [])
+
+    def test_a_builder_question_on_a_contradicted_plan_fact_opens_the_gate(self):
+        # IM9: the prompt tells the builder to challenge a plan fact, and its question waits with nothing committed.
+        question = "The plan says GET /deals returns external_id, but routes/deals.py:41 returns only id and name. Which is right?"
+        result, script, commands = self.builder_answers(human_question=question)
+        instruction = " ".join(next(call["instruction"] for call in script.calls if call["node"] == "implement").split())
+        for sentence in ("If the code contradicts a fact the plan states, do not build it.",
+                         "Ask a question that cites the plan fact and the code.",
+                         "On a first attempt whose acceptance already holds on the pinned base, edit nothing and set no_change "
+                         "to the checks you ran and what they showed.",
+                         "A clean tree without that evidence is an invalid answer."):
+            self.assertIn(sentence, instruction)
+        self.assertEqual(result["stop"], "needs_human")
+        self.assertIn(question, result["halt_detail"])
+        self.assertEqual([attempt["stage"] for attempt in result["attempts"]].count("implement"), 1)
+        self.assertEqual([command for command in commands if command[1] in {"commit", "push"}], [])
+
     def test_open_spec_stops_for_a_person(self):
         result = walk(ScriptHandler(triage="plan", spec_gate="needs_human"), slice=None)
         self.assertEqual(result["path"], ["triage", "spec"])
