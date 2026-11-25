@@ -14,7 +14,7 @@ from foreman.cli import main
 from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
 from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, OperatorVariables, operator_variables
-from foreman.github import VariablesUnreadable
+from foreman.github import ForgeError, VariablesUnreadable
 from foreman.runner import IssueLocked, issue_lock, saved_workspace
 from foreman.stage_output import spec_digest
 from foreman.state import checkpoint_serializer
@@ -128,9 +128,50 @@ class StartTest(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()) as err:
             code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.root / "runs.sqlite3",
                         live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills))
-        self.assertEqual((code, "HTTP 403" in err.getvalue()), (1, True))
+        self.assertEqual((code, "HTTP 403" in err.getvalue()), (75, True))
+        self.assertIn("Foreman halted with git_failed.", self.forge.status[("Example/Engine", 8)])
+        self.assertIn("HTTP 403. No setting needs to change.", self.forge.status[("Example/Engine", 8)])
         self.assertEqual(self.worker_calls, 0)
         self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
+
+    def test_a_failed_github_read_at_a_start_reports_git_failed_and_saves_nothing(self):
+        """TR13: GitHub fails a read of doctor's GitHub requirements at a new run's start and at a resume's start, and once
+        fails the status comment write as well. Each start makes no paid call and reports git_failed in the issue's status
+        comment, naming the failed read and saying that no setting needs to change. The new run saves no checkpoint and keeps
+        Ready. The resume keeps its checkpoint and its earlier halt. When the comment write fails too, the command exits
+        non-zero with the error on its error output."""
+        unreadable = patch.object(self.forge, "has_label", side_effect=ForgeError("HTTP 502 reading the Ready label"))
+        with unreadable:
+            code, out, err = self.start()
+        self.assertEqual(code, 75, out + err)
+        status = self.forge.status[("Example/Engine", 8)]
+        self.assertIn("Foreman halted with git_failed.", status)
+        self.assertIn("HTTP 502 reading the Ready label. No setting needs to change. Remove and add the Ready label to try again.", status)
+        self.assertNotIn("not_ready", status)
+        self.assertEqual((self.worker_calls, self.forge.load_issue("Example/Engine", 8)["labels"]), (0, ["slice", "Ready"]))
+        self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
+
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])[0], 75)
+        halted = self.stored()
+        self.forge.ready_again(8)
+        with unreadable:
+            code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})
+        self.assertEqual(code, 75, out + err)
+        status = self.forge.status[("Example/Engine", 8)]
+        self.assertIn("No setting needs to change. The run stays halted at its step. Add the Ready label again to try again.", status)
+        self.assertEqual((self.worker_calls, self.stored()), (1, halted))
+        self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Stopped"])
+        with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
+            saver.serde = checkpoint_serializer()
+            self.assertEqual(saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]["halt"], "budget_exceeded")
+
+        self.forge.ready_again(8)
+        with unreadable, patch.object(self.forge, "upsert_comment", side_effect=ForgeError("HTTP 502 writing the comment")):
+            code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})
+        self.assertNotEqual(code, 0)
+        self.assertIn("HTTP 502 reading the Ready label", err)
+        self.assertIn("status not written: HTTP 502 writing the comment", err)
+        self.assertEqual((self.worker_calls, self.stored()), (1, halted))
 
     def test_a_github_requirement_stops_in_the_runner_and_a_contract_requirement_in_admit(self):
         """TR11: a new run's start in a repository missing a GitHub requirement, and one missing a contract requirement. The

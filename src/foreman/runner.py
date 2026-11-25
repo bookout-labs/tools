@@ -26,7 +26,7 @@ from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_
 from foreman.dispatch import Handler, QuotaPause
 from foreman.doctor import NotReady, OperatorVariables, repository
 from foreman.skill_rules import SkillMissing
-from foreman.github import ForgeError, human_comments
+from foreman.github import READY_LABEL, ForgeError, human_comments
 from foreman.watch import run_key, watch
 from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.status import Status, running, status_of, write_status
@@ -130,6 +130,14 @@ def with_caps(run_state: RunState, settings: OperatorVariables) -> RunState:
     return run_state.model_copy(update={"token_cap": settings.max_tokens, "max_budget_usd": usd_text(settings.max_budget_usd)})
 
 
+def read_failed(repo: str, exc: ForgeError, *, resumed: bool) -> str:
+    """The report of a GitHub read that failed at a start. It is never not_ready: no setting is wrong."""
+    again = (f"The run stays halted at its step. Add the {READY_LABEL} label again to try again." if resumed
+             else f"Remove and add the {READY_LABEL} label to try again.")
+    failure = str(exc).rstrip(".")
+    return f"Foreman could not read {repo}'s settings from GitHub at this start: {failure}. No setting needs to change. {again}"
+
+
 class IssueLocked(ValueError):
     """Another Foreman process holds this issue's lock."""
 
@@ -221,13 +229,15 @@ def run_live_delivery(
         # A start is a new run or the resume of a resumable halt. It reads the repository's settings once, before the graph.
         starting = prior is None or (bool(channels.get("stop")) and channels.get("halt") in RESUMABLE_HALTS)
         settings: OperatorVariables | None = None
-        refusal: NotReady | None = None
+        refusal: NotReady | ForgeError | None = None
         login: str = channels.get("human_login", "")
         if starting:
             try:
                 settings = repository(client, repo)
-            except NotReady as exc:
+            except (NotReady, ForgeError) as exc:
                 refusal = exc
+                if isinstance(exc, ForgeError):
+                    log(f"cannot read {repo}'s settings from GitHub: {exc}")
             else:
                 run_state, login = with_caps(run_state, settings), settings.human_login
         run = replace(run, journal=AttemptJournal(connection), human_login=login)
@@ -298,12 +308,14 @@ def run_live_delivery(
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
         if refusal is not None:
-            # The runner's not_ready is not a saved halt. A new run keeps nothing. A resumed run keeps its checkpoint and halt.
+            # A refused start is not a saved halt. A new run keeps nothing. A resumed run keeps its checkpoint and halt.
             kept: dict[str, object] = dict(saved_values) if saved_values is not None else {
                 "schema_version": SCHEMA_VERSION, "run": run_state, "checks": ChecksState(), "plan": PlanState(),
                 "review": ReviewState(), "path": []}
-            early_result = read_delivery_state({**kept, **halted(Halt.not_ready, refusal.halt_detail(resumed=saved_values is not None), "admit"),
-                                                "stop": Halt.not_ready})
+            resumed = saved_values is not None
+            code, detail = ((Halt.not_ready, refusal.halt_detail(resumed=resumed)) if isinstance(refusal, NotReady)
+                            else (Halt.git_failed, read_failed(repo, refusal, resumed=resumed)))
+            early_result = read_delivery_state({**kept, **halted(code, detail, "admit"), "stop": code})
         finished = bool(saved_values and (saved_values.get("stop") in RELEASED_STOPS or (
             saved_values.get("halt") is not None and saved_values.get("halt") not in RESUMABLE_HALTS)))
         if early_result is None and saved_values is not None and saved_values["run"].base_sha and not finished:
@@ -457,9 +469,8 @@ def run_live_delivery(
                         graph.update_state(config, {"watch": record}, as_node="triage")
                         result["watch"] = record
                         log(f"watch {record['action']} #{record['issue']}")
-        # An early result was never saved, so the issue keeps the status its checkpoint last showed. A refused start reports not_ready.
-        refused = early_result is not None and early_result.get("halt") == Halt.not_ready
-        if early_result is None or refused:
+        # An early result was never saved, so the issue keeps the status its checkpoint last showed. A refused start reports why.
+        if early_result is None or refusal is not None:
             pending = saved.interrupts[0].value if saved.interrupts else None
             prompt = parse_output(HumanPrompt, pending) if result["stop"] == "needs_human" and pending is not None else None
             last = prompt.stage if prompt is not None else STEP_STAGES.get(next(iter(result["path"][-1:]), ""))
