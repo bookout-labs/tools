@@ -16,6 +16,7 @@ from foreman.config import Config, ModelSpec, load_config
 from foreman.contract import parse_contract
 from foreman.dry_run import DRY_CONTRACT, DryRun, ScriptHandler
 from foreman.dispatch import DispatchResult, DispatchRun, Handler
+from foreman.doctor import DEFAULT_TOKEN_CAP
 from foreman.github import Forge
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.stage_output import (
@@ -30,7 +31,6 @@ from foreman.worker import AttemptJournal
 from foreman.workspace import WorkspaceError, CheckLog, Workspace
 
 GRAPH_NAME = "delivery"
-DEFAULT_TOKEN_CAP = 20_000_000
 PACKAGE = Path(__file__).parent
 MODEL_STAGES = tuple(name for name, stage in STAGES.items() if stage.kind == "model" and name != "spec_check")
 
@@ -43,7 +43,8 @@ FIXTURE_HUMAN = "ghost"
 class LiveRun:
     forge: Forge
     workspace: Workspace
-    human_login: str
+    # The runner sets the run's saved login: read at a start, saved on the run otherwise.
+    human_login: str = ""
     check_log: CheckLog | None = None
     skills: SkillSource = export_skills
     journal: AttemptJournal | None = None

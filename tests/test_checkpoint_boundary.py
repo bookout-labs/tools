@@ -244,8 +244,9 @@ config = replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_s
 with patch("foreman.runner.load_config", return_value=config), patch.object(
     workspace, "run", side_effect=lambda command, **kwargs: 1 if stage == "check" and command == "check" else 0,
 ):
-    result = run_live_delivery(repo="Example/Engine", issue=8, preflight="env",
-        checkpoint=root / "run.sqlite", run=LiveRun(forge, workspace, human_login="fixture-owner"), dispatcher=worker)
+    forge.settings["FOREMAN_PREFLIGHT"] = "env"
+    result = run_live_delivery(repo="Example/Engine", issue=8,
+        checkpoint=root / "run.sqlite", run=LiveRun(forge, workspace), dispatcher=worker)
 assert count(result) == (1 if phase == "pause" else config.max_review_rounds), result
 assert result["stop"] == ("quota_exhausted" if phase == "pause" else stop), result
 assert not any(key in result for key in ("review_rounds", "verify_failures", "spec_failures"))

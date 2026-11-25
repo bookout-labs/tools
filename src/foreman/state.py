@@ -56,7 +56,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -106,6 +106,9 @@ class BuilderSession(TypedDict):
 
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
+    # FOREMAN_HUMAN_LOGIN as the run's last start read it. Answers and stops count only from this login. No stage's input
+    # holds it, so it never reaches a worker.
+    human_login: str
     dispatch_plan: DispatchPlanRecord
     pstack_pin: dict[str, str]
     matt_skills_pin: dict[str, str]

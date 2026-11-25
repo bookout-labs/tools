@@ -4,7 +4,6 @@ from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from decimal import Decimal
 from pathlib import Path
 import fcntl
 import shutil
@@ -21,18 +20,18 @@ from pydantic import TypeAdapter
 from foreman._raw import is_dict
 from foreman.config import SkillPin, load_config
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
-from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, halted, read_delivery_state
+from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state
 from foreman.readiness import MergeState, MergeWait
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, QuotaPause
-from foreman.doctor import NotReady, repository
+from foreman.doctor import NotReady, OperatorVariables, repository
 from foreman.skill_rules import SkillMissing
 from foreman.github import ForgeError, human_comments
 from foreman.watch import run_key, watch
 from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.status import Status, running, status_of, write_status
 from foreman.steps import implement
-from foreman.usd import BudgetUsd, usd_text
+from foreman.usd import usd_text
 from foreman.workspace import WorkState, WorkspaceError, lock_file
 from foreman.worker import AttemptJournal, verify_attempts, worker_lock, worker_scratch
 
@@ -126,25 +125,9 @@ def _checkpoint_before_halt(
     return before
 
 
-def require_same_limits(stored: RunState, max_tokens: int | None, max_budget_usd: BudgetUsd | None, *, raise_cap: bool) -> RunState:
-    """The run's caps for this invocation. Only a budget_exceeded resume may raise a stored cap (item 19)."""
-    tokens, dollars = stored.token_cap, Decimal(stored.max_budget_usd) if stored.max_budget_usd is not None else None
-    if tokens is not None and max_tokens is not None and max_tokens != tokens and not (raise_cap and max_tokens > tokens):
-        raise ValueError("--max-tokens differs from the stored token cap")
-    if max_budget_usd is not None and max_budget_usd.amount != dollars and not (
-            raise_cap and dollars is not None and max_budget_usd.amount > dollars):
-        raise ValueError("--max-budget-usd differs from the stored dollar allowance")
-    if not raise_cap:
-        return stored
-    return stored.model_copy(update={"token_cap": max_tokens or tokens,
-                                     "max_budget_usd": usd_text(max_budget_usd) if max_budget_usd is not None else stored.max_budget_usd})
-
-
-def require_run_limits(run_state: RunState, checkpoint: Path, max_tokens: int | None, max_budget_usd: BudgetUsd | None, *,
-                       raise_cap: bool) -> RunState:
-    if run_state.token_cap is None:
-        raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run without --answer and with XDG_STATE_HOME set to a new directory.")
-    return require_same_limits(run_state, max_tokens, max_budget_usd, raise_cap=raise_cap)
+def with_caps(run_state: RunState, settings: OperatorVariables) -> RunState:
+    """The run's caps from its start's read. Every later wake and answer uses them unchanged."""
+    return run_state.model_copy(update={"token_cap": settings.max_tokens, "max_budget_usd": usd_text(settings.max_budget_usd)})
 
 
 class IssueLocked(ValueError):
@@ -209,12 +192,9 @@ def run_live_delivery(
     issue: int,
     checkpoint: Path,
     run: LiveRun,
-    preflight: str = "",
     dispatcher: Handler,
     request: str | None = None,
     answer: str | None = None,
-    max_tokens: int | None = None,
-    max_budget_usd: BudgetUsd | None = None,
     presentation: RunPresentation | None = None,
     watch_repo: str = "bookout-labs/tools",
     report: Callable[[DeliveryResult], None] = lambda result: None,
@@ -236,17 +216,22 @@ def run_live_delivery(
         channels = prior["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, checkpoint, thread)
-        run = replace(run, journal=AttemptJournal(connection))
-        delivery_config = load_config()
-        run_state = RunState()
-        # The operator resumes a run stopped on its budget by raising the cap and adding Ready again (item 19).
-        raise_cap = channels.get("halt") == Halt.budget_exceeded
-        if prior is not None:
-            run_state = RunState.model_validate(channels["run"])
-            if not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS:
-                run_state = require_run_limits(run_state, checkpoint, max_tokens, max_budget_usd, raise_cap=raise_cap)
+        run_state = RunState.model_validate(channels["run"]) if prior is not None else RunState(
+            repo=repo, issue=issue, workspace=workspace, request=request or "")
+        # A start is a new run or the resume of a resumable halt. It reads the repository's settings once, before the graph.
+        starting = prior is None or (bool(channels.get("stop")) and channels.get("halt") in RESUMABLE_HALTS)
+        settings: OperatorVariables | None = None
+        refusal: NotReady | None = None
+        login: str = channels.get("human_login", "")
+        if starting:
+            try:
+                settings = repository(client, repo)
+            except NotReady as exc:
+                refusal = exc
             else:
-                require_same_limits(run_state, max_tokens, max_budget_usd, raise_cap=False)
+                run_state, login = with_caps(run_state, settings), settings.human_login
+        run = replace(run, journal=AttemptJournal(connection), human_login=login)
+        delivery_config = load_config()
         saved_pin, saved_matt = channels.get("pstack_pin"), channels.get("matt_skills_pin")
         if prior and not channels.get("stop") and (saved_pin is None or saved_matt is None):
             raise ValueError("Cannot resume a delivery checkpoint without its skill pins.")
@@ -258,17 +243,16 @@ def run_live_delivery(
         try:
             graph = compile_delivery(
                 dispatcher, pinned, run=run, checkpointer=saver,
-                scratch=None if channels.get("stop") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
+                scratch=None if refusal is not None or channels.get("stop") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
             )
         except SkillMissing as exc:
             graph = compile_delivery(dispatcher, pinned, run=run, checkpointer=saver)
             skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
                                           "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
-                                          "run": run_state if prior else RunState(issue=issue, workspace=workspace, repo=repo,
-                                              max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None,
-                                              token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP),
+                                          "run": run_state, "human_login": login,
                                           "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
-                                          "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(preflight=preflight),
+                                          "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(
+                                              preflight=settings.preflight if settings else ""),
                                           "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState()}
             if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
                 early_result = read_delivery_state(skill_halt)
@@ -306,9 +290,6 @@ def run_live_delivery(
                             presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
         saved = graph.get_state(config, subgraphs=True)
-        if saved.values:
-            require_run_limits(RunState.model_validate(saved.values.get("run", RunState())), checkpoint, max_tokens, max_budget_usd,
-                               raise_cap=raise_cap)
         saved_values = checkpoint_state(saved.values)
         saved_review = saved_values["review"] if saved_values is not None else None
         if presentation is not None and saved.values:
@@ -316,6 +297,13 @@ def run_live_delivery(
         saved_workspace = saved_values["run"].workspace if saved_values else None
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
+        if refusal is not None:
+            # The runner's not_ready is not a saved halt. A new run keeps nothing. A resumed run keeps its checkpoint and halt.
+            kept: dict[str, object] = dict(saved_values) if saved_values is not None else {
+                "schema_version": SCHEMA_VERSION, "run": run_state, "checks": ChecksState(), "plan": PlanState(),
+                "review": ReviewState(), "path": []}
+            early_result = read_delivery_state({**kept, **halted(Halt.not_ready, refusal.halt_detail(resumed=saved_values is not None), "admit"),
+                                                "stop": Halt.not_ready})
         finished = bool(saved_values and (saved_values.get("stop") in RELEASED_STOPS or (
             saved_values.get("halt") is not None and saved_values.get("halt") not in RESUMABLE_HALTS)))
         if early_result is None and saved_values is not None and saved_values["run"].base_sha and not finished:
@@ -326,16 +314,9 @@ def run_live_delivery(
                 raise ValueError("The issue does not match the saved repository and number.")
             try:
                 run.workspace.validate_origin(saved_run.repo)
-                if saved_values.get("halt") in RESUMABLE_HALTS:
-                    # A resume passes doctor's GitHub requirements first. Its contract passed at the pinned base, which can't change.
-                    # A refused resume keeps its checkpoint and saved halt, so Ready added again after the fix resumes the halted step.
-                    repository(client, saved_run.repo)
             except WorkspaceError as exc:
                 early_result = read_delivery_state({**saved_values, **halted(Halt.git_failed, str(exc), "admit"),
                                                     "stop": Halt.git_failed})
-            except NotReady as exc:
-                early_result = read_delivery_state({**saved_values, **halted(Halt.not_ready, exc.halt_detail(resumed=True), "admit"),
-                                                    "stop": Halt.not_ready})
         pause: object = saved.interrupts[0].value if saved.interrupts else None
         waiting = is_dict(pause) and pause.get("reason") in PAUSES
         if waiting:
@@ -375,12 +356,12 @@ def run_live_delivery(
             invoke(Command(resume=answer))
         elif saved_values is None:
             # Triage admits the issue: its identity, slice, prerequisites and pinned base.
+            assert settings is not None
             invoke({
                 "schema_version": SCHEMA_VERSION,
-                "run": RunState(repo=repo, issue=issue, workspace=workspace, request=request or "",
-                                token_cap=max_tokens if max_tokens is not None else DEFAULT_TOKEN_CAP,
-                                max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
-                "checks": ChecksState(preflight=preflight),
+                "run": run_state,
+                "human_login": login,
+                "checks": ChecksState(preflight=settings.preflight),
                 "pstack_pin": pin.model_dump(),
                 "matt_skills_pin": matt.model_dump(),
                 "path": [],
@@ -398,8 +379,6 @@ def run_live_delivery(
             inside = stage is not None
             before = _checkpoint_before_halt(graph, config, saved_values["path"], stage)
             require_schema_version(before.values, checkpoint, thread)
-            require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_tokens, max_budget_usd,
-                               raise_cap=raise_cap)
             restored = checkpoint_state(before.values)
             assert restored is not None
             previous_attempts = restored.get("attempts", [])
@@ -431,9 +410,9 @@ def run_live_delivery(
             # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm.
             merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None)
             retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review}
-            if raise_cap:
-                # The rewound step keeps the run's admitted identity and runs within the cap this invocation raised.
-                retained["run"] = require_same_limits(saved_values["run"], max_tokens, max_budget_usd, raise_cap=True)
+            if starting:
+                # The rewound step keeps the run's admitted identity, with the login and caps this start read.
+                retained["run"], retained["human_login"] = run_state, login
             if "builder_session" in saved_values:
                 # The builder keeps its conversation for the PR; its fingerprint decides whether the next call resumes it (D5).
                 retained["builder_session"] = saved_values["builder_session"]

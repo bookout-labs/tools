@@ -5,7 +5,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.doctor import NotReady, contract, repository
+from foreman.doctor import NotReady, contract
 from foreman.github import READY_LABEL, ForgeError, unmet_prerequisites
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import load_stored_slice
@@ -19,14 +19,7 @@ ROUTES = ("question", "plan", "supplied_slice", "cancelled", "halted")
 
 def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     target = state["run"]
-    if not target.base_sha:
-        try:
-            # Doctor's GitHub requirements come first, so the stop is read under the human login they prove is set.
-            repository(run.forge, target.repo)
-        except NotReady as exc:
-            return stopped(Halt.not_ready, exc.halt_detail(), "admit")
-        except ForgeError as exc:
-            return stopped(Halt.git_failed, str(exc), "admit")
+    # The runner already ran doctor's GitHub requirements and read the login this stop read counts from.
     if (stop := human_stop(state, run, "admit")).get("stop"):
         return stop
     if target.base_sha:

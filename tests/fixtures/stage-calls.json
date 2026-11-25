@@ -1,15 +1,15 @@
 {
-  "bug_fix/plan": "085e9cce902c34cf701dbcc7e46637e160b0440b52907ce7169b901c62e2dbc6",
-  "bug_fix/question": "67c1ebf6ec55998c2c6baeefe44897fe580faf41e9ff50da1c8cc18f480b9103",
-  "bug_fix/supplied_slice": "085e9cce902c34cf701dbcc7e46637e160b0440b52907ce7169b901c62e2dbc6",
-  "feature/plan": "e2e9682e38daabf777b359b8f036689684e7907ed89e88514661071501799cd5",
-  "feature/question": "78baf9cc44436124e66d44890cf09eeff49bd5ec901f32a5b6f04e013debc6be",
-  "feature/supplied_slice": "e2e9682e38daabf777b359b8f036689684e7907ed89e88514661071501799cd5",
-  "feature/supplied_slice/verify_skill": "06df3481cad0b91d7955277bcecad772dc900ea0695f1a502871977005aa0e58",
-  "perf_issue/plan": "6537c1310a84c69df743bdaf82d5ac68e5f71fdc63c0080f48b2f072778cd5a3",
-  "perf_issue/question": "3a6087ff153b3afd51f048b987d89209e8b3b9fa35262c580d4b96c7534053fd",
-  "perf_issue/supplied_slice": "6537c1310a84c69df743bdaf82d5ac68e5f71fdc63c0080f48b2f072778cd5a3",
-  "refactoring/plan": "639d8b52835f5b0d39844a7c8cccaba3bab5fd5264a284fbe7bd400a4b38ddba",
-  "refactoring/question": "fbd25471d4d28983dcf4150781892692a25d526afbf79f5a8e50390bae809dc0",
-  "refactoring/supplied_slice": "639d8b52835f5b0d39844a7c8cccaba3bab5fd5264a284fbe7bd400a4b38ddba"
+  "bug_fix/plan": "e3346c37246ceb99b23ef4293d2ed6ad7ac5b1779d2384a82a67964d610f5c8d",
+  "bug_fix/question": "f68bcca81291dc820c1ac84c401f9beddc0e62b29bdd3871abbe69c5102efba3",
+  "bug_fix/supplied_slice": "e3346c37246ceb99b23ef4293d2ed6ad7ac5b1779d2384a82a67964d610f5c8d",
+  "feature/plan": "0f032e9cd40aa4d491165afbde15e5f3e43930ba1adc8dcf15361b16676ad526",
+  "feature/question": "b4d12e929154893ce7dc0e4b40b4b691e521d699e9175eac093ef93f9ca425de",
+  "feature/supplied_slice": "0f032e9cd40aa4d491165afbde15e5f3e43930ba1adc8dcf15361b16676ad526",
+  "feature/supplied_slice/verify_skill": "96bd0d05bc5743719ada4611dc9b729844ed42387e167e23f5e9953371244b7e",
+  "perf_issue/plan": "094bf622d6873307aab3dc6308459f7ea90605f820784abf65407568b9d34657",
+  "perf_issue/question": "17e1fc6717aa4459774e2ff6deafd9eb2836bb94f8f3849e086a423369e958d8",
+  "perf_issue/supplied_slice": "094bf622d6873307aab3dc6308459f7ea90605f820784abf65407568b9d34657",
+  "refactoring/plan": "b7b0af0c256d4cf2e00bec2ebc7efe6818c15e9169b4dc71b07cca8afc2929f3",
+  "refactoring/question": "137fffd76923a0d63c5e816954c84e64a82b0e143ba96625ab222781527bad7e",
+  "refactoring/supplied_slice": "b7b0af0c256d4cf2e00bec2ebc7efe6818c15e9169b4dc71b07cca8afc2929f3"
 }

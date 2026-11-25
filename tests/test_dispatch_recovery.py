@@ -73,10 +73,12 @@ pin = SkillPin.model_validate_json(raw_pin)
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
     with patch("foreman.dispatch.Attempt.record", side_effect=crash) if mode == "quota-uncommitted" else contextlib.nullcontext():
         with patch("foreman.delivery.stage_update", side_effect=crash) if mode == "success" else contextlib.nullcontext():
+            forge = FakeGitHub()
+            if limit:
+                forge.settings["FOREMAN_MAX_BUDGET_USD"] = limit
             try:
                 result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(checkpoint),
-                    dispatcher=handler, presentation=RunPresentation(),
-                    max_budget_usd=BudgetUsd(Decimal(limit)) if limit else None, run=LiveRun(FakeGitHub(), workspace, human_login="fixture-owner"))
+                    dispatcher=handler, presentation=RunPresentation(), run=LiveRun(forge, workspace))
             except ValueError as exc:
                 print(json.dumps({"error": str(exc), "calls": calls}))
                 sys.exit(17)
@@ -196,7 +198,7 @@ class DispatchRecoveryTests(unittest.TestCase):
                         output = json.loads(resumed.stdout)
                         result, calls = output["result"], output["calls"]
                         triage = [a for a in result["attempts"] if a["stage"] == "triage"]
-                        self.assertEqual(result["run"]["max_budget_usd"], limit or None)
+                        self.assertEqual(result["run"]["max_budget_usd"], limit or "3")
                         if mode in {"entry", "quota"}:
                             # The call may have launched: charge the worst case once and never relaunch it.
                             self.assertEqual(calls, [])
@@ -543,8 +545,9 @@ class BuilderSessionTests(PublicationFixture):
                 return Outcome("ran", VALID, usage=spent)
             return script(node, model, state, instruction)
 
-        result = run_live_delivery(repo=REPO, issue=8, checkpoint=self.checkpoint, max_tokens=1000,
-                                   run=LiveRun(LiveForge(), workspace, human_login="fixture-owner"), dispatcher=handler)
+        self.settings["FOREMAN_MAX_TOKENS"] = "1000"
+        result = run_live_delivery(repo=REPO, issue=8, checkpoint=self.checkpoint,
+                                   run=LiveRun(LiveForge(), workspace), dispatcher=handler)
         self.assertEqual(result["halt"], "budget_exceeded")
         fingerprint = DispatchRun(handler, workspace, None, "", True, lambda: {}, lambda *args: None).fingerprint
         self.assertEqual(result["work"].owned, fingerprint())

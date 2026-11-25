@@ -6,6 +6,7 @@ from foreman.stages import STAGES
 import contextlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from inspect import signature
 import io
 import json
@@ -26,7 +27,7 @@ from unidiff.errors import UnidiffParseError
 from test_delivery import VERIFY_SKILL_PATH, contract_text
 from test_dry_run import transcript
 from foreman.readiness import MergeState
-from foreman.adapters import Outcome, Usage
+from foreman.adapters import Outcome
 from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.contract import CONTRACT_PATH
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
@@ -36,7 +37,7 @@ from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
-from foreman.github import human_comments, marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
+from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
 from foreman.status import STATUS_MARKER, Status, running, shows, write_status
 from foreman.steps import CANCELLATION, StageRun, implement, review, verify
 
@@ -204,8 +205,18 @@ def quota_with_usage(args):
     return process
 
 
+def priced_quota(args):
+    """A quota reply whose Claude cost is known. Every run has a dollar cap, and an unknown Claude cost is charged the whole allowance."""
+    process = quota_with_usage(args)
+    if args[0] != "claude":
+        return process
+    envelope = json.loads(process.stdout)
+    envelope["total_cost_usd"] = sum(usage["costUSD"] for usage in envelope["modelUsage"].values())
+    return subprocess.CompletedProcess(args, process.returncode, json.dumps(envelope), process.stderr)
+
+
 def planning_answer_env(detail, answer):
-    env = {**os.environ, "FOREMAN_HUMAN_LOGIN": "fixture-owner"}
+    env = dict(os.environ)
     if match := re.search(r"foreman answer ([0-9a-f-]{71})", detail):
         env["FOREMAN_FIXTURE_RULING"] = f"foreman answer {match[1]}\n{answer}"
     return env
@@ -302,6 +313,8 @@ class FakeGitHub:
         self.reviews = []
         self.base = BASE
         self.hold: str | None = None
+        # The repository's run settings, which each start reads once. A test's subprocess passes its own.
+        self.settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner", **json.loads(os.environ.get("FOREMAN_FIXTURE_SETTINGS", "{}"))}
         self.variable_reads = []
         # The quick requirements GitHub answers for the repository: the App install, its labels and its merge queue rule.
         self.installation, self.repository_labels, self.queue_rule = "installed", {"Ready"}, True
@@ -366,7 +379,7 @@ class FakeGitHub:
 
     def variables(self, repo):
         self.variable_reads.append(repo)
-        return {"FOREMAN_HUMAN_LOGIN": "fixture-owner", **({} if self.hold is None else {"FOREMAN_MERGE_HOLD": self.hold})}
+        return {**self.settings, **({} if self.hold is None else {"FOREMAN_MERGE_HOLD": self.hold})}
 
     def app_installation(self, repo):
         return self.installation
@@ -732,8 +745,9 @@ assert dict(os.environ) == inherited
                         return worker_reply(args, {"triage": "needs_human", "human_question": "Which items?"})
                     if case == "cli_missing":
                         raise FileNotFoundError(args[0])
-                    exit_code = 1 if case in {"quota", "is_error"} else 0
-                    return fixture_process(args, case, exit_code)
+                    if case == "quota":
+                        return priced_quota(args)
+                    return fixture_process(args, case, 1 if case == "is_error" else 0)
 
                 result = self.walk_triage(("claude-opus-5-5-high", "gpt-6.1-sol-high"), run)
                 self.assertEqual(result["stop"], stop)
@@ -853,6 +867,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.cwd.mkdir()
         self.checkpoint = self.cwd / "runs.sqlite3"
         self.calls = []
+        self.argvs = []
         self.prompts = []
         self.github = FakeGitHub()
         self.question = ""
@@ -873,14 +888,16 @@ class LiveRunnerTest(unittest.TestCase):
         def run(args, cwd, env):
             self.assertEqual(cwd, self.cwd)
             self.calls.append(args[0])
+            self.argvs.append(args)
             self.prompts.append(args[-1])
             # A test about Verify's answer lists it; otherwise Verify takes the default and the list keeps the other stages' replies.
             listed = not verify_reply(args) or bool(outputs) and is_verify_answer(outputs[0])
             reply = spec_check_reply(args) or (outputs.pop(0) if listed else verify_reply(args))
             return active.reply(args, reply) if isinstance(active, FakeWorkspace) else worker_reply(args, reply)
 
+        self.github.settings["FOREMAN_PREFLIGHT"] = preflight
         result = run_live_delivery(
-            repo="Example/Engine", issue=issue, preflight=preflight, answer=answer,
+            repo="Example/Engine", issue=issue, answer=answer,
             checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, run, scratch_root=self.checkpoint.parent), presentation=presentation,
             run=LiveRun(self.github, active, skills=skills, human_login="fixture-owner"),
         )
@@ -921,7 +938,7 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertFalse(state["checks"]["verified_head"])
                 if args[0] == "codex":
                     self.assertIn("Network and database connections are unavailable", prompt)
-                    return quota_with_usage(args)
+                    return priced_quota(args)
                 self.assertIn("Claude's Bash runs sandboxed", prompt)
                 with worker_process(worker_reply(args, {"implementation": "retry"})) as popen:
                     run_worker_command(args, cwd, env)
@@ -1372,15 +1389,20 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.cwd / "runtime")}))
         self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
 
+        # The dependent's run reads its own repository's settings at its own start and inherits nothing from this run.
+        self.github.settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_TOKENS": "900000", "FOREMAN_MAX_BUDGET_USD": "7"}
+        results = []
+
         def start(name):
-            with patch.object(self.github, "variables", return_value={"FOREMAN_HUMAN_LOGIN": "fixture-owner"}), \
-                    contextlib.redirect_stdout(io.StringIO()) as out:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
                 code = main(["start", "--repo", "Example/Engine", "--issue", name.split("#")[1]], checkpoint=self.checkpoint,
-                            live_run=LiveRun(self.github, fake, human_login="fixture-owner"),
+                            live_run=LiveRun(self.github, fake), report=results.append,
                             worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)))
             return code, out.getvalue()
         admitted, blocked = start(names[0]), start(names[1])
         self.assertEqual(admitted[0], 0, admitted[1])
+        self.assertEqual((merged["run"].token_cap, merged["run"].max_budget_usd), (20_000_000, "3"))
+        self.assertEqual((results[0]["run"].issue, results[0]["run"].token_cap, results[0]["run"].max_budget_usd), (dependent, 900000, "7"))
         self.assertIn("done merged", admitted[1])
         self.assertEqual(blocked[0], 1)
         self.assertIn(f"done blocked\nOpen blockers: https://github.com/Example/Engine/issues/{other}", blocked[1])
@@ -1389,6 +1411,20 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         # Each run labels only its own issue, and release labels none: the blocked dependent keeps Ready.
         self.assertEqual({number for _, number, _, _ in self.github.label_calls}, {8, dependent})
         self.assertEqual(self.github.load_issue("Example/Engine", waiting)["labels"], ["slice", "Ready"])
+
+    def test_a_merge_wake_reads_no_setting_and_goes_on_to_confirm(self):
+        """ME10: a run waiting on the merge queue, the operator sets a cap that won't parse, and GitHub then reports the
+        merge. The wake reads no login or cap variable, and the run goes on to confirm."""
+        self.github.queue_merges = False
+        queued = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual((queued["stop"], queued["merge"].status), ("merge_pending", "armed"))
+        reads = list(self.github.variable_reads)
+        self.github.settings["FOREMAN_MAX_BUDGET_USD"] = "4.5o"
+        self.github.queue_merges = True
+        merged = self.walk([])
+        self.assertEqual((merged["stop"], merged["merge"].merge_commit_sha), ("merged", MERGE_COMMIT))
+        self.assertEqual(self.github.variable_reads, reads)
+        self.assertEqual(merged["run"].max_budget_usd, "3")
 
     def test_each_merge_wake_reads_github_once(self):
         # A wake restarts the waiting stage, so it never replays the reads of earlier wakes.
@@ -2042,7 +2078,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
-                worker_runner=lambda args, cwd, env: quota_with_usage(args),
+                worker_runner=lambda args, cwd, env: priced_quota(args),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
             )
         self.assertEqual(code, 75)
@@ -2075,7 +2111,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             self.assertTrue(all(not path.exists() for path in paths))
             (scratch / "scratch.txt").write_text("discard on quota")
             paths.append(scratch)
-            return quota_with_usage(args)
+            return priced_quota(args)
 
         paused = run_live_delivery(
             repo="Example/Engine", issue=8, checkpoint=self.checkpoint,
@@ -2109,7 +2145,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             if node == "spec_check":
                 return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
             if node == "triage":
-                return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "human_question": None, "slice": None}, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1))
+                return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "human_question": None, "slice": None}, usage=SCRIPTED_USAGE)
             return Outcome("quota", usage=SCRIPTED_USAGE)
 
         paused = run_live_delivery(
@@ -2175,7 +2211,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 worker_runner=lambda *_: self.fail("An unadmitted issue must not dispatch."),
             )
         self.assertEqual(code, 1)
-        self.assertEqual(transcript(stdout.getvalue()), "admit\ndone blocked\nOpen blockers: https://github.com/Example/Engine/issues/101\n")
+        self.assertEqual(transcript(stdout.getvalue()), "claude spend $0 of $3\nadmit\ndone blocked\nOpen blockers: https://github.com/Example/Engine/issues/101\n")
         self.github.closed.add(101)
         self.assertIn("no merged pull request", self.walk([], issue=102)["halt_detail"])
         self.github.merged.add(101)
@@ -2434,7 +2470,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.github.load_issue("Example/Engine", 8)["labels"], ["slice", "Done"])
 
     def test_a_halt_before_admission_comments_and_keeps_ready_for_the_rerun(self):
-        with patch.object(self.github, "default_branch", side_effect=ForgeError("GitHub is unavailable.")):
+        with patch.object(self.github, "blockers", side_effect=ForgeError("GitHub is unavailable.")):
             halted = self.walk([])
         self.assertEqual(halted["stop"], "git_failed")
         self.assertEqual(self.github.label_calls, [])
@@ -2608,10 +2644,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         root = self.cwd / "checkout"
         root.mkdir()
         preflight = "echo probed > preflight.log; exit 9"
+        self.github.settings["FOREMAN_PREFLIGHT"] = preflight
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
-                 "--preflight", preflight],
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
                 worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(root, check="touch checked"), human_login="fixture-owner"),
             )
@@ -2625,10 +2661,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_cli_preflight_output_streams_through_redacted_log(self):
         preflight = f"echo {SYNTHETIC_QUESTION_TOKEN}; echo warning >&2; exit 9"
         stdout = io.StringIO()
+        self.github.settings["FOREMAN_PREFLIGHT"] = preflight
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(stdout):
             code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8",
-                 "--preflight", preflight],
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
                 worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
             )
@@ -2651,29 +2687,33 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertIn("already answered differently", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
 
-    def test_a_live_run_needs_a_human_login_and_reads_answers_only_under_it(self):
-        self.walk([{"triage": "needs_human", "human_question": "Which items?"}])
-        command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"]
-        stderr = io.StringIO()
-        with patch.dict(os.environ, {"FOREMAN_HUMAN_LOGIN": " "}), contextlib.chdir(self.cwd), \
-                contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as refused:
-            main(command, checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd), ""))
-        self.assertEqual(refused.exception.code, 2)
-        self.assertIn("--human-login or FOREMAN_HUMAN_LOGIN", stderr.getvalue())
-        with self.assertRaises(AssertionError):
-            human_comments(self.github, " ", "Example/Engine", 8)
-        marker = re.search(r"foreman answer [0-9a-f-]{71}", self.github.status["Example/Engine", 8]).group(0)
-        self.github.ruling(f"{marker}\nAll items.", login="Fixture-Owner")
-        self.assertEqual(human_comments(self.github, " fixture-owner ", "Example/Engine", 8)[-1], f"{marker}\nAll items.")
-        # The CLI's login, not the injected run's or the environment's, decides, so a reply under another login answers nothing.
+    def test_a_waiting_run_keeps_the_login_and_caps_its_start_read(self):
+        """TR10: FOREMAN_HUMAN_LOGIN and FOREMAN_MAX_BUDGET_USD change while a run waits for an answer, and the run then
+        continues. The answer and stop reads use the login saved at the start, and dispatch uses the saved caps."""
+        self.github.labels = ["Ready"]
+        self.github.settings["FOREMAN_MAX_BUDGET_USD"] = "2"
+        paused = self.walk([{"triage": "needs_human", "human_question": "Which items?"}])
+        self.assertEqual((paused["stop"], paused["human_login"], paused["run"].max_budget_usd), ("needs_human", "fixture-owner", "2"))
+        reads = len(self.github.variable_reads)
+        self.github.settings.update({"FOREMAN_HUMAN_LOGIN": "someone-else", "FOREMAN_MAX_BUDGET_USD": "50"})
+        self.github.answer(self.question, "All items.", login="someone-else")
+
         def no_worker(*args):
             raise AssertionError("an unanswered question dispatches no worker")
-        environ = {name: value for name, value in os.environ.items() if name != "FOREMAN_HUMAN_LOGIN"}
-        with patch.dict(os.environ, environ, clear=True), contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
-            code = main([*command, "--human-login", "someone-else"], checkpoint=self.checkpoint, worker_runner=no_worker,
-                        live_run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"))
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
+            code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.checkpoint,
+                        worker_runner=no_worker, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)))
         self.assertEqual(code, 3)
         self.assertIn("Foreman needs an answer in triage.", self.github.status["Example/Engine", 8])
+        # A stop under the new login is not the human's, so the answered run goes on.
+        self.github.ruling("foreman stop", login="someone-else")
+        self.argvs.clear()
+        resumed = self.walk([{"triage": "question"}, {"research": "Only open items."}], answer="Only open items")
+        self.assertEqual(resumed["stop"], "answered")
+        self.assertEqual((resumed["human_login"], resumed["run"].max_budget_usd), ("fixture-owner", "2"))
+        claude = next(args for args in self.argvs if args[0] == "claude")
+        self.assertLessEqual(Decimal(claude[claude.index("--max-budget-usd") + 1]), Decimal("2"))
+        self.assertEqual(len(self.github.variable_reads), reads)
 
     def test_rerunning_same_command_after_preflight_recovers_without_using_a_round(self):
         preflight = "test -f ready"
@@ -2769,16 +2809,6 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(result.get("stop"), "children_filed")
         self.assertFalse((self.cwd / "probed").exists())
 
-    def test_dry_run_does_not_run_preflight(self):
-        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
-            code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--dry-run", "--request", "List items",
-                 "--preflight", "touch preflight.log; exit 9"],
-            )
-        self.assertEqual(code, 0)
-        self.assertIn("done merge_pending", stdout.getvalue())
-        self.assertFalse((self.cwd / "preflight.log").exists())
-
     def test_failed_check_with_failed_preflight_preserves_rounds(self):
         (self.cwd / "ready").touch()
         workspace = FakeWorkspace(self.cwd)
@@ -2869,15 +2899,16 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             if node == "spec_check":
                 return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
             if node == "triage":
-                return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None}, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1))
+                return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None}, usage=SCRIPTED_USAGE)
             self.assertEqual(node, "implement")
             raise RuntimeError("worker stopped")
 
         ready = self.cwd / "ready"
         ready.touch()
         with self.assertRaisesRegex(RuntimeError, "worker stopped"):
+            self.github.settings["FOREMAN_PREFLIGHT"] = "test -f ready"
             run_live_delivery(
-                repo="Example/Engine", issue=8, preflight="test -f ready",
+                repo="Example/Engine", issue=8,
                 checkpoint=self.checkpoint, run=LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner"),
                 dispatcher=interrupted_run,
             )
@@ -3065,26 +3096,29 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         git_call.assert_not_called()
 
     def test_main_rerun_arms_once_after_the_repository_hold_is_cleared(self):
-        self.github.hold = "  Maintenance window "
+        """ME11: the operator sets FOREMAN_MERGE_HOLD after the run's start and before arm, then clears it. Arm reads the hold
+        and reports merge_held. The run arms once after the hold is cleared."""
         repo = "Example/Target"
-        fake = FakeWorkspace(self.cwd)
         replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
-        live_run = LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner")
+        live_run = LiveRun(self.github, FakeWorkspace(self.cwd))
+
+        def worker(args, cwd, env=None):
+            reply = checker_reply(args) or next(replies)
+            if reply is APPROVE:
+                self.github.hold = "  Maintenance window "
+            return live_run.workspace.reply(args, reply)
 
         def invoke():
             with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
-                code = main(
-                    ["run", "delivery", "--repo", repo, "--issue", "8"],
-                    worker_runner=lambda args, cwd, env=None: live_run.workspace.reply(args, checker_reply(args) or next(replies)),
-                    checkpoint=self.checkpoint, live_run=live_run,
-                )
+                code = main(["run", "delivery", "--repo", repo, "--issue", "8"], worker_runner=worker,
+                            checkpoint=self.checkpoint, live_run=live_run)
             self.assertEqual(code, 75 if self.github.hold else 0)
             return stdout.getvalue()
 
         held = invoke()
         self.assertIn(f"done merge_held\nFOREMAN_MERGE_HOLD is set: {self.github.hold}\n", held)
         retried = invoke()
-        self.assertIn("this invocation:\npull request lines 1\nmerge not armed\ncheck exit 0\ndone merge_held", transcript(retried))
+        self.assertIn("\npull request lines 1\nmerge not armed\ncheck exit 0\ndone merge_held", transcript(retried))
         self.assertEqual(self.github.merge_calls, [])
         self.github.hold = ""
         armed = invoke()
@@ -3182,7 +3216,8 @@ with patch("foreman.runner.load_config", return_value=config):
                     process = subprocess.run(
                         [sys.executable, "-c", bootstrap + script, str(checkpoint), self.pin.model_dump_json(), mode,
                          "run", "delivery", "--repo", "a/b", "--issue", "8", *flags],
-                        cwd=root, text=True, capture_output=True, env=planning_answer_env(detail, answer),
+                        cwd=root, text=True, capture_output=True, env={**planning_answer_env(detail, answer), "FOREMAN_FIXTURE_SETTINGS": json.dumps(
+                            {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_TOKENS": str(cap), "FOREMAN_MAX_BUDGET_USD": "100"})},
                     )
                     self.assertEqual(process.returncode, expected, process.stderr + process.stdout)
                     detail = process.stdout
@@ -3193,7 +3228,7 @@ with patch("foreman.runner.load_config", return_value=config):
                         stored = snapshot_result(graph.get_state({"configurable": {"thread_id": "a/b#8"}}, subgraphs=True))
                     return process.stdout, stored["attempts"]
 
-                first, initial = invoke("--max-tokens", str(cap), "--max-budget-usd", "100", expected=3)
+                first, initial = invoke(expected=3)
                 self.assertIn(f"work tokens used / work cap: 30 / {cap}; complete; unknown attempts 0", first)
                 resumed, attempts = invoke("--answer", "Open items", expected=code)
                 restored, current = resumed.split("this invocation:\n")
@@ -3286,7 +3321,7 @@ if case == "split" and not checkpoint.exists():
         graph = compile_delivery(dispatch, config, run=live, checkpointer=saver)
         graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {
             "schema_version": SCHEMA_VERSION, "pstack_pin": config.pstack.model_dump(), "matt_skills_pin": config.matt_skills.model_dump(),
-            "run": RunState(repo="a/b", issue=8, workspace=str(root), base_branch="main", base_sha=workspace.inspect().head, token_cap=1000000),
+            "run": RunState(repo="a/b", issue=8, workspace=str(root), base_branch="main", base_sha=workspace.inspect().head, token_cap=1000000), "human_login": "fixture-owner",
             "checks": ChecksState(check="exit 0"), "review": ReviewState(),
             "plan": PlanState(triage="plan", issue_kind="parent", spec="PRE-SPLIT"),
             "pr_size": {"head": workspace.inspect().head, "merge_base": "a" * 40, "lines": 401},
@@ -3476,7 +3511,7 @@ from unittest.mock import patch
 from foreman.cli import main
 from foreman.config import SkillPin, load_config
 from foreman.delivery import LiveRun
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, worker_reply, fixture_process, quota_with_usage
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, worker_reply, fixture_process, priced_quota
 
 phase = sys.argv[3]
 
@@ -3515,7 +3550,7 @@ def worker(args, cwd, env):
         return worker_reply(args, {"triage": "supplied_slice"})
     if stage == "ImplementOutput":
         if phase == "quota":
-            return quota_with_usage(args)
+            return priced_quota(args)
         return workspace.reply(args, {"implementation": "built"})
     if stage == "VerifyOutput":
         return worker_reply(args, {})
@@ -3561,7 +3596,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     restored, current = retried.split("this invocation:\n")
                     self.assertEqual(saved_path(), previous_path)
                     self.assertIn("restored review ", restored)
-                    self.assertEqual(transcript(current), "pull request lines 1\nmerge not armed\ncheck exit 0\ndone merge_held\nFOREMAN_MERGE_HOLD is set: Maintenance\n")
+                    self.assertEqual(transcript(current).split("\n", 1)[1], "pull request lines 1\nmerge not armed\ncheck exit 0\ndone merge_held\nFOREMAN_MERGE_HOLD is set: Maintenance\n")
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
                                      ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "commit", "push", "VerifyOutput", "ReviewOutput",
                                       "post_review"])
@@ -3577,7 +3612,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 restored, current = resumed.split("this invocation:\n")
                 self.assertNotIn("\ntriage ", current)
                 if scenario == "held":
-                    self.assertEqual(transcript(current), "pull request lines 1\nmerged " + MERGE_COMMIT + "\ncheck exit 0\ndone merged\n")
+                    self.assertEqual(transcript(current).split("\n", 1)[1], "pull request lines 1\nmerged " + MERGE_COMMIT + "\ncheck exit 0\ndone merged\n")
                     expected_workers = ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "commit", "push", "VerifyOutput", "ReviewOutput",
                                         "post_review", "merge"]
                 else:
@@ -3603,13 +3638,14 @@ class HaltExitCodeTest(unittest.TestCase):
         root = Path(directory)
         forge = FakeGitHub(labels)
         forge.hold = hold
+        forge.settings["FOREMAN_PREFLIGHT"] = preflight
         if body is not None:
             forge.body = body
         outputs = iter(replies)
         workspace = FakeWorkspace(root, snapshots, check=check)
         with contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(
-                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8", "--preflight", preflight],
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
                 checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace, skills=fixture_skills, human_login="fixture-owner"),
                 worker_runner=(lambda args, cwd, env: workspace.reply(args, checker_reply(args) or next(outputs))),
             )
@@ -3647,7 +3683,7 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_missing_slice_stops_at_admit_before_any_worker(self):
         result = self.live(body="No JSON")
         self.assert_halt(result, "missing_slice", "slice issue needs a fenced JSON object")
-        self.assertEqual(transcript(result[1]), "admit\ndone missing_slice\nslice issue needs a fenced JSON object\n")
+        self.assertEqual(transcript(result[1]), "claude spend $0 of $3\nadmit\ndone missing_slice\nslice issue needs a fenced JSON object\n")
 
     def test_resumable_halts(self):
         replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]

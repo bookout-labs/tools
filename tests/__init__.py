@@ -16,8 +16,6 @@ os.environ["GIT_ALLOW_PROTOCOL"] = "file"
 for _name in ("http_proxy", "https_proxy", "all_proxy"):
     os.environ[_name] = os.environ[_name.upper()] = _proxy_url
 os.environ["no_proxy"] = os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
-# The suite's human: FakeGitHub posts rulings under this login, and `foreman run` defaults to it.
-os.environ["FOREMAN_HUMAN_LOGIN"] = "fixture-owner"
 # Issue locks are per user. Each suite run gets its own runtime directory, shared by the processes it starts, so concurrent runs don't collide.
 _RUNTIME_PREFIX = "foreman-test-runtime-"
 if not os.path.basename(os.environ.get("XDG_RUNTIME_DIR", "")).startswith(_RUNTIME_PREFIX):

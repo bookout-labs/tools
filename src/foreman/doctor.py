@@ -1,8 +1,8 @@
 """Doctor: plain code that proves a target repository is ready for Foreman (target.yaml doctor).
 
-The quick part runs at every start of a run before any paid call. A new run runs all of it in triage.admit. A resume runs
-only its GitHub requirements, since the contract already passed at the pinned base. It starts no container. Each failure
-names the one missing requirement and its exact fix.
+At every start of a run, before any paid call, the runner runs the GitHub requirements before the graph. Only a new run
+then runs the contract requirements, in triage.admit. It starts no container. Each failure names the one missing
+requirement and its exact fix.
 """
 
 from collections.abc import Mapping
@@ -23,6 +23,10 @@ APP, VARIABLES, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK = (
     "the verify skill exists at the contract's path",
 )
 HUMAN_LOGIN, MAX_TOKENS, MAX_BUDGET_USD = "FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD"
+PREFLIGHT = "FOREMAN_PREFLIGHT"
+DEFAULT_TOKEN_CAP = 20_000_000
+# Joe, 2026-11-23 on #26: "Cap 3". A repository raises it with FOREMAN_MAX_BUDGET_USD.
+DEFAULT_BUDGET_USD = BudgetUsd(Decimal("3"))
 
 
 class NotReady(Exception):
@@ -41,11 +45,15 @@ class NotReady(Exception):
 
 @dataclass(frozen=True)
 class OperatorVariables:
-    """The repository variables the operator controls. An unset budget cap is None, and its default applies."""
+    """The run settings one start reads from the repository's variables. An unset budget cap takes its default.
+
+    FOREMAN_PREFLIGHT is read unchecked until S9 deletes it.
+    """
 
     human_login: str
-    max_tokens: int | None
-    max_budget_usd: BudgetUsd | None
+    max_tokens: int
+    max_budget_usd: BudgetUsd
+    preflight: str
 
 
 def positive_tokens(raw: str) -> int:
@@ -83,11 +91,15 @@ def operator_variables(repo: str, variables: Mapping[str, str]) -> OperatorVaria
     except ValueError:
         raise missing(f"the {MAX_BUDGET_USD} repository variable {dollars!r} is not a positive dollar amount",
                       f"set {MAX_BUDGET_USD} to a positive amount such as 3 or 4.50, or delete it to use the default") from None
-    return OperatorVariables(human_login, max_tokens, max_budget_usd)
+    return OperatorVariables(human_login, DEFAULT_TOKEN_CAP if max_tokens is None else max_tokens,
+                             max_budget_usd or DEFAULT_BUDGET_USD, variables.get(PREFLIGHT, ""))
 
 
-def repository(forge: Forge, repo: str) -> None:
-    """The quick requirements GitHub answers: the App install, the operator variables, the Ready label and the merge queue."""
+def repository(forge: Forge, repo: str) -> OperatorVariables:
+    """The quick requirements GitHub answers: the App install, the operator variables, the Ready label and the merge queue.
+
+    The one read of the operator variables at a start, so the run's login and caps are the values doctor checked.
+    """
     match forge.app_installation(repo):
         case "not_installed":
             raise NotReady(APP, f"the GitHub App is not installed on {repo}",
@@ -98,13 +110,14 @@ def repository(forge: Forge, repo: str) -> None:
                            "(default ~/.config/bookout-foreman/app.pem)")
         case "installed":
             pass
-    operator_variables(repo, forge.variables(repo))
+    operator = operator_variables(repo, forge.variables(repo))
     if not forge.has_label(repo, READY_LABEL):
         raise NotReady(LABEL, f"{repo} has no {READY_LABEL} label", f"create the {READY_LABEL} label in {repo}")
     branch = forge.default_branch(repo)
     if forge.merge_queue(repo, branch) is None:
         raise NotReady(MERGE_QUEUE, f"no single merge queue rule applies to {repo}'s base branch {branch}",
                        f"add a ruleset that targets {branch} in {repo} with one merge queue rule and a merge method")
+    return operator
 
 
 def contract(workspace: Workspace, base: str) -> Contract:

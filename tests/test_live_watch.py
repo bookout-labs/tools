@@ -159,7 +159,7 @@ class LiveWatchTest(unittest.TestCase):
         self.fake.merged.add(number)
         def dispatch(stage, *args):
             return (Outcome('ran', {'triage': 'supplied_slice', 'human_question': None, 'work_kind': 'feature', 'slice': None},
-                            usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1)) if stage == 'triage' else Outcome('quota', usage=SCRIPTED_USAGE))
+                            usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)) if stage == 'triage' else Outcome('quota', usage=SCRIPTED_USAGE))
         quota = dispatch
         paused = self.invoke(dispatcher=quota)
         self.assertEqual(paused['stop'], 'quota_exhausted')
@@ -187,7 +187,7 @@ class LiveWatchTest(unittest.TestCase):
                     if stage == 'spec_check':
                         return Outcome('ran', CLEAR.model_dump(), usage=SCRIPTED_USAGE)
                     return Outcome('ran', {'triage': 'supplied_slice', 'human_question': None, 'work_kind': 'feature', 'slice': None},
-                                   usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1))
+                                   usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0))
                 dispatcher = dispatch
                 self.assertEqual(self.invoke(dispatcher=dispatcher)['stop'], stop)
                 before = self.stored()
