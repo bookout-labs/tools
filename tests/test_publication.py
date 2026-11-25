@@ -42,6 +42,8 @@ class PublicationFixture(unittest.TestCase):
 
     def reset_fixture(self, check="test -f items.txt"):
         self.fixture.close()
+        # GitHub is faked below the App's credentials, so the App's installation is too.
+        self.fixture.enter_context(patch.object(LiveForge, "app_installation", return_value="installed"))
         self.fixture.enter_context(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
         self.base = "main"
         self.branch = BRANCH
@@ -142,7 +144,7 @@ class PublicationFixture(unittest.TestCase):
                 self.created.append(self.remote_head())
                 return subprocess.CompletedProcess(command, 0, f"https://github.com/{REPO}/pull/12\n", "")
             case ["variable", "list"]:
-                response = []
+                response = [{"name": "FOREMAN_HUMAN_LOGIN", "value": "fixture-owner"}]
             case ["pr", "view"]:
                 if self.pr_view_error:
                     return subprocess.CompletedProcess(command, 1, "", self.pr_view_error)

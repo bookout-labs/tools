@@ -40,7 +40,7 @@ from foreman.github import human_comments, marked, BOT_LOGIN, CommandTimedOut, F
 from foreman.status import STATUS_MARKER, Status, running, shows, write_status
 from foreman.steps import CANCELLATION, StageRun, implement, review, verify
 
-from foreman.readiness import MergeReceipt, Observation, PullSnapshot
+from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
 from foreman.runner import AnswerError, RunPresentation, issue_thread, run_live_delivery, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
@@ -302,7 +302,9 @@ class FakeGitHub:
         self.reviews = []
         self.base = BASE
         self.hold: str | None = None
-        self.hold_reads = []
+        self.variable_reads = []
+        # The quick requirements GitHub answers for the repository: the App install, its labels and its merge queue rule.
+        self.installation, self.repository_labels, self.queue_rule = "installed", {"Ready"}, True
         self.opened: dict[str, PublishedPullRequest] = {}
         self.branches: dict[str, str] = {}
         self.queue_merges = True
@@ -363,8 +365,17 @@ class FakeGitHub:
         return receipt
 
     def variables(self, repo):
-        self.hold_reads.append(repo)
-        return {} if self.hold is None else {"FOREMAN_MERGE_HOLD": self.hold}
+        self.variable_reads.append(repo)
+        return {"FOREMAN_HUMAN_LOGIN": "fixture-owner", **({} if self.hold is None else {"FOREMAN_MERGE_HOLD": self.hold})}
+
+    def app_installation(self, repo):
+        return self.installation
+
+    def has_label(self, repo, name):
+        return name in self.repository_labels
+
+    def merge_queue(self, repo, branch):
+        return QueuePolicy(merge_method="SQUASH") if self.queue_rule else None
 
     def arm_auto_merge(self, repo, issue, branch, sha, observation):
         self.merge_calls.append((repo, issue, branch, sha))
@@ -2932,7 +2943,9 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_retry_after_failed_hold_read_arms_once(self):
         reason = "HTTP 503: Service Unavailable"
-        with patch.object(self.github, "variables", side_effect=VariablesUnreadable(reason)):
+        # Admission's doctor reads the variables first. The merge hold read that follows fails.
+        ready = self.github.variables("Example/Engine")
+        with patch.object(self.github, "variables", side_effect=[ready, VariablesUnreadable(reason)]):
             held = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(held["stop"], "merge_held")
         self.assertEqual(held["merge"].status, "not_armed")
@@ -3081,7 +3094,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         # Triage, spec check, Implement, Verify and Review each report their fixture usage.
         self.assertIn("restored raw tokens 85413", terminal)
         self.assertTrue(terminal.endswith("this invocation: no nodes executed\n"))
-        self.assertEqual(self.github.hold_reads, [repo, repo, repo])
+        # The new run and both resumes read the variables for doctor's quick check, and each of their arms reads the hold live.
+        self.assertEqual(self.github.variable_reads, [repo] * 6)
         self.assertEqual(self.github.merge_calls, [(repo, 8, BRANCH, HEAD)])
 
     def test_whitespace_merge_hold_reports_done(self):

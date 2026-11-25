@@ -25,6 +25,7 @@ from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, halte
 from foreman.readiness import MergeState, MergeWait
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, QuotaPause
+from foreman.doctor import NotReady, repository
 from foreman.skill_rules import SkillMissing
 from foreman.github import ForgeError, human_comments
 from foreman.watch import run_key, watch
@@ -325,9 +326,16 @@ def run_live_delivery(
                 raise ValueError("The issue does not match the saved repository and number.")
             try:
                 run.workspace.validate_origin(saved_run.repo)
+                if saved_values.get("halt") in RESUMABLE_HALTS:
+                    # A resume passes doctor's GitHub requirements first. Its contract passed at the pinned base, which can't change.
+                    # A refused resume keeps its checkpoint and saved halt, so Ready added again after the fix resumes the halted step.
+                    repository(client, saved_run.repo)
             except WorkspaceError as exc:
                 early_result = read_delivery_state({**saved_values, **halted(Halt.git_failed, str(exc), "admit"),
                                                     "stop": Halt.git_failed})
+            except NotReady as exc:
+                early_result = read_delivery_state({**saved_values, **halted(Halt.not_ready, exc.halt_detail(resumed=True), "admit"),
+                                                    "stop": Halt.not_ready})
         pause: object = saved.interrupts[0].value if saved.interrupts else None
         waiting = is_dict(pause) and pause.get("reason") in PAUSES
         if waiting:
@@ -470,14 +478,15 @@ def run_live_delivery(
                         graph.update_state(config, {"watch": record}, as_node="triage")
                         result["watch"] = record
                         log(f"watch {record['action']} #{record['issue']}")
-        # An early result was never saved, so the issue keeps the status its checkpoint last showed.
-        if early_result is None:
+        # An early result was never saved, so the issue keeps the status its checkpoint last showed. A refused start reports not_ready.
+        refused = early_result is not None and early_result.get("halt") == Halt.not_ready
+        if early_result is None or refused:
             pending = saved.interrupts[0].value if saved.interrupts else None
             prompt = parse_output(HumanPrompt, pending) if result["stop"] == "needs_human" and pending is not None else None
             last = prompt.stage if prompt is not None else STEP_STAGES.get(next(iter(result["path"][-1:]), ""))
             if (status := status_of(result, last, prompt, watch_repo)) is not None:
                 mirror(status)
-        if result.get("stop") in ("blocked", Halt.not_ready):
+        if early_result is None and result.get("stop") in ("blocked", Halt.not_ready):
             # Open prerequisites or a missing requirement leave the issue unadmitted, so a later Ready starts it fresh.
             # The status comment already names a missing requirement and its fix.
             saver.delete_thread(thread)

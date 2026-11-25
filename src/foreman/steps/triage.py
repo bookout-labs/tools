@@ -5,7 +5,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.doctor import NotReady, quick
+from foreman.doctor import NotReady, contract, repository
 from foreman.github import READY_LABEL, ForgeError, unmet_prerequisites
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import load_stored_slice
@@ -18,9 +18,17 @@ ROUTES = ("question", "plan", "supplied_slice", "cancelled", "halted")
 
 
 def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    target = state["run"]
+    if not target.base_sha:
+        try:
+            # Doctor's GitHub requirements come first, so the stop is read under the human login they prove is set.
+            repository(run.forge, target.repo)
+        except NotReady as exc:
+            return stopped(Halt.not_ready, exc.halt_detail(), "admit")
+        except ForgeError as exc:
+            return stopped(Halt.git_failed, str(exc), "admit")
     if (stop := human_stop(state, run, "admit")).get("stop"):
         return stop
-    target = state["run"]
     if target.base_sha:
         # A resumed stage keeps the identity and base it admitted.
         return {}
@@ -49,17 +57,16 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         base = forge.default_branch(repo)
         pinned = workspace.pin_base(base)
         # The run's check and verify skill come from the contract at its pinned base, whatever its branch later does.
-        contract = quick(workspace, pinned)
+        pinned_contract = contract(workspace, pinned)
     except NotReady as exc:
-        # A halt before admission keeps Ready, so only a new Ready label checks admission again.
-        return stopped(Halt.not_ready, f"{exc} Then remove and add the {READY_LABEL} label.", "admit")
+        return stopped(Halt.not_ready, exc.halt_detail(), "admit")
     except (ForgeError, WorkspaceError) as exc:
         return stopped(Halt.git_failed, str(exc), "admit")
     request = issue["title"] + ("\n\n" + issue["body"] if issue["body"] else "")
     if target.request:
         request += f"\n\nOperator context:\n{target.request}"
     return {"run": target.model_copy(update={"repo": issue["repo"], "request": request, "base_branch": base, "base_sha": pinned}),
-            "checks": state["checks"].model_copy(update={"check": contract.check, "verify_skill": contract.verify_skill}), "plan": plan}
+            "checks": state["checks"].model_copy(update={"check": pinned_contract.check, "verify_skill": pinned_contract.verify_skill}), "plan": plan}
 
 
 def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
