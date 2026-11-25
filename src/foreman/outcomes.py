@@ -78,7 +78,7 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.spec_cap: Policy("The slice plan still fails at the attempt cap.", "terminal",
         Watch("Investigate rejected slice plans reaching cap",
               "Slice plans kept failing the spec gate.", "src/foreman/stages/spec.md")),
-    Halt.dirty_worktree: Policy("The workspace does not match the expected clean tree.", "terminal",
+    Halt.dirty_worktree: Policy("The workspace does not match the expected clean tree.", "retry",
         Watch("Handle dirty worktree before verify",
               "Implementation left a dirty worktree before verification.", "src/foreman/stages/implement.md")),
     Halt.missing_slice: Policy("The issue has no loadable slice.", "terminal",

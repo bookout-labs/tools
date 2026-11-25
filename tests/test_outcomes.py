@@ -27,7 +27,7 @@ class HaltPolicyTest(unittest.TestCase):
     def test_merge_halts_retry_and_github_failures_are_routes_not_halts(self):
         self.assertEqual(RESUMABLE_HALTS, {"merge_held", "merge_not_armed", "readiness_unavailable", "env_unavailable", "publish_failed",
                                            "publication_unreconciled", "git_failed", "implementation_rejected", "review_not_posted",
-                                           "budget_exceeded"})
+                                           "budget_exceeded", "dirty_worktree"})
         self.assertFalse({"pr_conflict", "ci_pending", "ci_red", "queue_rejected"} & {code.value for code in Halt})
 
     def test_a_budget_halt_resumes_after_the_cap_is_raised(self):
