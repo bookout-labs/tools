@@ -1225,7 +1225,7 @@ notes = "State channel inventory captured before the move at main 4b5f078e0af08a
 
 [fixtures."stage-calls.json"]
 tool = "Foreman adapter Call capture with scripted responses"
-version = "6fed43ffe25075db0af794fad2003ef32375c0c8"
+version = "e4dd94a64ef8a7c3465c40637af39d8fb9021f3d"
 kind = "captured_run"
 argv = ["python", "-"]
-notes = "Recaptured test_stage_declarations.capture() for issue #314 (S8b) on main fece23306 plus S8b. Schema 24 changes only the schema_version each prompt's state carries; every hashed input is otherwise identical, and none carries the human login. Stable UUIDs and symbolic method roots. Each value is SHA256 of json.dumps(case, sort_keys=True), including brief and final prompt digests, schema, grants, models and method order. No model CLI was invoked."
+notes = "Recaptured test_stage_declarations.capture() for issue #363 slice 1 on main e4dd94a64 plus the slice. Each prompt's state now holds only the inputs its procedure names (STAGES[node].input_fields), without the run's caps; every other hashed input is identical. Stable UUIDs and symbolic method roots. Each value is SHA256 of json.dumps(case, sort_keys=True), including brief and final prompt digests, schema, grants, models and method order. No model CLI was invoked."

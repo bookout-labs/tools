@@ -106,8 +106,7 @@ class BuilderSession(TypedDict):
 
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
-    # FOREMAN_HUMAN_LOGIN as the run's last start read it. Answers and stops count only from this login. A stage's input
-    # holds the whole state, so worker.assignment drops it before a worker reads it.
+    # FOREMAN_HUMAN_LOGIN as the run's last start read it. Answers and stops count only from this login.
     human_login: str
     dispatch_plan: DispatchPlanRecord
     pstack_pin: dict[str, str]
