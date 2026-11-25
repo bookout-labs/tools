@@ -89,7 +89,7 @@ HALTS: Final[Mapping[Halt, Policy]] = {
               "The accepted review could not be posted.", "src/foreman/github.py")),
     Halt.git_failed: Policy("A Git or GitHub operation failed.", "retry",
         Watch("Git operations complete before publication",
-              "A workspace git operation failed.", "src/foreman/workspace.py")),
+              "A Git or GitHub operation failed.", "src/foreman/workspace.py")),
     Halt.skill_missing: Policy("A required instruction file is unavailable at the selected version.", "terminal",
         Watch("Pinned skills are available before dispatch",
               "A required skill was unavailable at the pinned commit.", "src/foreman/skill_rules.py")),

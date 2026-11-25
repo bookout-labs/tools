@@ -349,6 +349,13 @@ class QuickCheckTest(unittest.TestCase):
         self.assertEqual(out.splitlines(), [f"ok {requirement}" for requirement in QUICK[:3]] + [
             "Not ready: no single merge queue rule applies to Example/Engine's base branch main. "
             "Fix: add a ruleset that targets main in Example/Engine with one merge queue rule and a merge method."])
+        # A read GitHub answers with a server error names the requirement and GitHub's answer, never a missing setting.
+        github = FakeGitHub()
+        with patch.object(github, "has_label", side_effect=ForgeError("gh api failed", 502)), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = main(["doctor", "--repo", "Example/Engine"], live_run=LiveRun(github, FakeWorkspace(self.root), human_login="fixture-owner"))
+        self.assertEqual((code, err.getvalue()), (1, 'cannot check Example/Engine: The read of Example/Engine\'s Ready label, for the '
+                                                    'requirement "the Ready label exists", failed because GitHub answered HTTP 502.\n'))
 
 
 if __name__ == "__main__":

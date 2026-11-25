@@ -41,7 +41,11 @@ AppInstallation = Literal["installed", "not_installed", "unconfigured"]
 
 
 class ForgeError(RuntimeError):
-    pass
+    """A failed GitHub operation, with the HTTP status GitHub answered and whether it was a rate-limit answer."""
+
+    def __init__(self, message: str, status: int | None = None, *, rate_limited: bool = False):
+        super().__init__(message)
+        self.status, self.rate_limited = status, rate_limited
 
 
 class MergeNotArmed(ForgeError):
@@ -61,9 +65,7 @@ class VariablesUnreadable(ForgeError):
 
 
 class CommandFailed(ForgeError):
-    def __init__(self, message: str, status: int | None = None):
-        self.status = status
-        super().__init__(message)
+    pass
 
 
 class CommandTimedOut(ForgeError):
@@ -894,7 +896,7 @@ class LiveForge:
         try:
             variables = self._read(repo, ActionsVariables, ["gh", "variable", "list", "--repo", repo, "--json", "name,value"])
         except ForgeError as exc:
-            raise VariablesUnreadable(str(exc)) from exc
+            raise VariablesUnreadable(str(exc), exc.status, rate_limited=exc.rate_limited) from exc
         return {variable.name: variable.value for variable in variables.root}
 
     def app_installation(self, repo: str) -> AppInstallation:
@@ -1069,11 +1071,13 @@ class LiveForge:
         if result.returncode:
             match = re.search(r"HTTP (\d{3})", result.stderr)
             status = int(match[1]) if match else None
+            rate_limited = "rate limit" in result.stderr.lower()
             if env is not None and status:
                 if status == 401:
                     credentials.invalidate()
-                raise CommandFailed(failure(status, "rate limit" in result.stderr.lower()), status=status)
-            raise CommandFailed(redact(result.stderr.strip(), credentials_only=True) or f"{operation} exited with code {result.returncode}.", status=status)
+                raise CommandFailed(failure(status, rate_limited), status, rate_limited=rate_limited)
+            raise CommandFailed(redact(result.stderr.strip(), credentials_only=True) or f"{operation} exited with code {result.returncode}.",
+                                status, rate_limited=rate_limited)
         return result.stdout
 
     def _read(self, repo: str, model: type[Model], command: list[str], *, timeout: float | None = COMMAND_TIMEOUT, body: str | None = None) -> Model:
