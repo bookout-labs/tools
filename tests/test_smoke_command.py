@@ -319,7 +319,7 @@ class SmokeCommandTest(unittest.TestCase):
                 fake = FakeGitHub(labels=[])
                 forge.create_issue.side_effect = fake.create_issue
                 forge.load_issue.side_effect = fake.load_issue
-                for name in ('open_issues', 'comment_issue', 'marked_issues'):
+                for name in ('open_issues', 'comment_issue', 'marked_issues', 'variables', 'app_installation', 'has_label', 'merge_queue'):
                     getattr(forge, name).side_effect = getattr(fake, name)
                 def delivery(**kwargs):
                     from foreman.dry_run import ScriptHandler

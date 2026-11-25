@@ -211,6 +211,10 @@ class LiveWatchTest(unittest.TestCase):
                 result = {'number': 8, 'repository_url': 'https://api.github.com/repos/Example/Engine', 'title': 'Issue', 'body': self.fake.body, 'labels': [{'name': 'slice'}, {'name': 'Ready'}]}
             elif args[1] == 'repo':
                 result = {'defaultBranchRef': {'name': 'main'}}
+            elif args[1] == 'variable':
+                result = [{'name': 'FOREMAN_HUMAN_LOGIN', 'value': 'fixture-owner'}]
+            elif '/rules/branches/' in endpoint:
+                result = [{'type': 'merge_queue', 'parameters': {'merge_method': 'SQUASH'}}]
             elif '--method' in args:
                 if endpoint.endswith('/comments'):
                     self.fake.comment_issue('bookout-labs/tools', 101, fields['body'], marker="")
@@ -230,7 +234,8 @@ class LiveWatchTest(unittest.TestCase):
         dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {'triage': 'supplied_slice'}))
         real_run = subprocess.run
         fake_gh = lambda args, **kwargs: gh(args, **kwargs) if args[0] == 'gh' else real_run(args, **kwargs)
-        with patch('foreman.github.subprocess.run', side_effect=fake_gh):
+        with patch('foreman.github.subprocess.run', side_effect=fake_gh), \
+                patch.object(LiveForge, 'app_installation', return_value='installed'):
             self.invoke(dispatcher=dispatcher)
             self.invoke(dispatcher=dispatcher)
         # The watch repo is another repository, so the halt detail stays on the run's own issue, redacted.

@@ -313,7 +313,7 @@ class FakeGitHub:
         self.hold: str | None = None
         self.variable_reads = []
         # The quick requirements GitHub answers for the repository: the App install, its labels and its merge queue rule.
-        self.installed, self.repository_labels, self.queue_rule = True, {"Ready"}, True
+        self.installation, self.repository_labels, self.queue_rule = "installed", {"Ready"}, True
         self.opened: dict[str, PublishedPullRequest] = {}
         self.branches: dict[str, str] = {}
         self.queue_merges = True
@@ -377,8 +377,8 @@ class FakeGitHub:
         self.variable_reads.append(repo)
         return {"FOREMAN_HUMAN_LOGIN": "fixture-owner", **({} if self.hold is None else {"FOREMAN_MERGE_HOLD": self.hold})}
 
-    def app_installed(self, repo):
-        return self.installed
+    def app_installation(self, repo):
+        return self.installation
 
     def has_label(self, repo, name):
         return name in self.repository_labels

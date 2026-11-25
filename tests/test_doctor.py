@@ -16,7 +16,9 @@ from foreman.cli import main
 from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
-from foreman.doctor import QUICK, NotReady, contract
+from foreman.credentials import CredentialFailure, NotInstalled
+from foreman.doctor import QUICK, NotReady, contract, repository
+from foreman.github import ForgeError, LiveForge
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
 from foreman.state import ChecksState, PlanState, ReviewState, RunState
@@ -253,7 +255,7 @@ def remove(github: FakeGitHub, workspace: FakeWorkspace, requirement: str) -> No
     """Take one quick requirement away from a ready repository."""
     match QUICK.index(requirement):
         case 0:
-            github.installed = False
+            github.installation = "not_installed"
         case 1:
             github.variables = lambda repo: {}
         case 2:
@@ -296,6 +298,38 @@ class QuickCheckTest(unittest.TestCase):
                 self.assertIn(f"Not ready: {missing}", github.status[("Example/Engine", 8)])
                 dispatch.assert_not_called()
                 self.assertIsNone(saved_workspace(checkpoint, thread))
+
+    def test_github_answers_the_app_installation_and_any_other_credential_failure_stays_a_forge_error(self):
+        answers = (({"return_value": None}, "unconfigured"), ({"side_effect": NotInstalled("not installed")}, "not_installed"),
+                   ({"return_value": {"GH_TOKEN": "synthetic"}}, "installed"))
+        for effect, installation in answers:
+            with self.subTest(installation), patch("foreman.github.credentials.environment", **effect):
+                self.assertEqual(LiveForge().app_installation("Example/Engine"), installation)
+        with patch("foreman.github.credentials.environment", side_effect=CredentialFailure("App credentials: rate limit.")), \
+                self.assertRaisesRegex(ForgeError, "rate limit"):
+            LiveForge().app_installation("Example/Engine")
+        github = FakeGitHub()
+        github.installation = "unconfigured"
+        with self.assertRaisesRegex(NotReady, "Fix: set FOREMAN_APP_ID on the Foreman host") as raised:
+            repository(github, "Example/Engine")
+        self.assertEqual(raised.exception.requirement, QUICK[0])
+
+    def test_a_stop_waiting_in_a_repository_that_is_not_ready_gives_not_ready_and_a_new_ready_starts_the_run(self):
+        checkpoint = self.root / "runs.sqlite3"
+        github, workspace = FakeGitHub(), FakeWorkspace(self.root)
+        github.queue_rule = False
+        github.ruling("foreman stop")
+        run = LiveRun(github, workspace, skills=fixture_skills, human_login="fixture-owner")
+        refused = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, run=run,
+                                    dispatcher=MagicMock(side_effect=AssertionError("not_ready makes no paid call")))
+        # Doctor's GitHub requirements come before the stop read, so the repository's state is what the issue shows.
+        self.assertEqual((refused["halt"], refused["stop"]), (Halt.not_ready, Halt.not_ready))
+        self.assertIn("no single merge queue rule applies", github.status[("Example/Engine", 8)])
+        # The fix, then Ready removed and added again: the older stop no longer applies and the run starts.
+        github.queue_rule = True
+        github.ready_events.append(github.now())
+        started = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, run=run, dispatcher=ScriptHandler(triage="needs_human"))
+        self.assertEqual((started.get("halt"), started["stop"]), (None, "needs_human"))
 
     def test_the_command_prints_each_requirement_and_exits_non_zero_on_the_first_missing_one(self):
         git(self.root, "init", "-q")

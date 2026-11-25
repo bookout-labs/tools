@@ -36,6 +36,10 @@ def run_label(name: str) -> str | None:
 Model = TypeVar("Model", bound=BaseModel)
 
 
+# Whether the App is installed on a repository, or this host has no App to act as.
+AppInstallation = Literal["installed", "not_installed", "unconfigured"]
+
+
 class ForgeError(RuntimeError):
     pass
 
@@ -390,7 +394,7 @@ class Forge(Protocol):
     def readiness(self, repo: str, issue: int, branch: str, sha: str) -> Observation: ...
     def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt: ...
     def variables(self, repo: str) -> dict[str, str]: ...
-    def app_installed(self, repo: str) -> bool: ...
+    def app_installation(self, repo: str) -> AppInstallation: ...
     def has_label(self, repo: str, name: str) -> bool: ...
     def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str, observation: Observation) -> MergeReceipt | None: ...
@@ -893,16 +897,14 @@ class LiveForge:
             raise VariablesUnreadable(str(exc)) from exc
         return {variable.name: variable.value for variable in variables.root}
 
-    def app_installed(self, repo: str) -> bool:
-        """Whether the App is installed on the repository. Only GitHub's answer that it is not makes this False."""
+    def app_installation(self, repo: str) -> AppInstallation:
+        """GitHub's answer for the App's installation on the repository. Any other credential failure is a ForgeError."""
         try:
-            if credentials.environment(repo) is None:
-                raise ForgeError("Configure FOREMAN_APP_ID on the Foreman host, so Foreman can read the App's installation.")
+            return "installed" if credentials.environment(repo) is not None else "unconfigured"
         except NotInstalled:
-            return False
+            return "not_installed"
         except CredentialFailure as exc:
             raise ForgeError(str(exc)) from None
-        return True
 
     def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None:
         return merge_queue_policy(self._read(repo, Rules, ["gh", "api", f"repos/{repo}/rules/branches/{quote(branch, safe='')}"]))

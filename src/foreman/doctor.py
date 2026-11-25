@@ -74,9 +74,16 @@ def operator_variables(repo: str, variables: Mapping[str, str]) -> OperatorVaria
 
 def repository(forge: Forge, repo: str) -> None:
     """The quick requirements GitHub answers: the App install, the operator variables, the Ready label and the merge queue."""
-    if not forge.app_installed(repo):
-        raise NotReady(APP, f"the GitHub App is not installed on {repo}",
-                       f"install the Foreman GitHub App on {repo}'s account with access to {repo}")
+    match forge.app_installation(repo):
+        case "not_installed":
+            raise NotReady(APP, f"the GitHub App is not installed on {repo}",
+                           f"install the Foreman GitHub App on {repo}'s account with access to {repo}")
+        case "unconfigured":
+            raise NotReady(APP, f"this Foreman host has no FOREMAN_APP_ID, so it cannot act as the GitHub App on {repo}",
+                           "set FOREMAN_APP_ID on the Foreman host, with the App's private key at FOREMAN_APP_KEY_PATH "
+                           "(default ~/.config/bookout-foreman/app.pem)")
+        case "installed":
+            pass
     operator_variables(repo, forge.variables(repo))
     if not forge.has_label(repo, READY_LABEL):
         raise NotReady(LABEL, f"{repo} has no {READY_LABEL} label", f"create the {READY_LABEL} label in {repo}")
