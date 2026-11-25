@@ -105,7 +105,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                         self.assertEqual(prompt[owner.name], expected)
                 return worker_reply(args, {"triage": "supplied_slice"})
 
-            result = CliWorker(Path(directory), run)("triage", ModelSpec.parse("gpt-6.1-sol-high"), restored, "Read.")
+            result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", ModelSpec.parse("gpt-6.1-sol-high"), restored, "Read.")
             self.assertEqual(result.kind, "ran")
 
     def test_every_pause_survives_a_fresh_process(self):

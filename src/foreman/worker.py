@@ -114,9 +114,9 @@ def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str
         return subprocess.CompletedProcess(command, returncode, stdout.read(), stderr.read())
 
 
-def worker_scratch(scratch_root: Path | None, checkout: Path) -> Path:
-    """The directory that holds worker scratch: the given root, or the system temp directory, never inside the checkout."""
-    root, checkout = (scratch_root or Path(tempfile.gettempdir())).resolve(), checkout.resolve()
+def worker_scratch(scratch_root: Path, checkout: Path) -> Path:
+    """The directory that holds the run's worker scratch: its own root, never inside the checkout."""
+    root, checkout = scratch_root.resolve(), checkout.resolve()
     return checkout.parent if root.is_relative_to(checkout) else root
 
 
@@ -168,7 +168,7 @@ def assignment(node: str, model: ModelSpec, state: Mapping[str, object], instruc
 
 
 class CliWorker:
-    def __init__(self, cwd: Path, run: CommandRunner = run_worker_command, *, scratch_root: Path | None = None):
+    def __init__(self, cwd: Path, run: CommandRunner = run_worker_command, *, scratch_root: Path):
         self.cwd = cwd
         self.run = run
         self.scratch_root = scratch_root

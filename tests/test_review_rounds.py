@@ -246,7 +246,7 @@ class ReviewRoundsTest(unittest.TestCase):
 
                 with self.subTest(round=index + 1):
                     # The answer counts without proof of reading, and denials of other commands don't void it.
-                    outcome = CliWorker(workspace.root, runner)(
+                    outcome = CliWorker(workspace.root, runner, scratch_root=Path(self.enterContext(TemporaryDirectory())))(
                         node, ModelSpec.parse("claude-opus-5-5-high"), state, instruction)
                     self.assertEqual(outcome.kind, "ran", outcome.detail)
 
@@ -494,7 +494,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 events = codex_events()
                 events[-2]["item"]["text"] = json.dumps(APPROVE)
                 events[-2:-2] = commands
-                worker = CliWorker(workspace.root, lambda *_: codex_process(events))
+                worker = CliWorker(workspace.root, lambda *_: codex_process(events), scratch_root=Path(self.enterContext(TemporaryDirectory())))
                 return worker("review", ModelSpec.parse("gpt-6.1-sol-high"), state, instruction)
 
             result = self.run_rounds([review], trees=trees)

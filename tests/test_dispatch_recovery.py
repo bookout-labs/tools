@@ -150,7 +150,8 @@ class CodexQuotaResumeTests(PublicationFixture):
 
         def resume(model, state, instruction):
             # The real worker turns the saved session into the Codex command, then finishes the tree.
-            CliWorker(self.checkout, run=lambda args, cwd, env: commands.append(args) or subprocess.CompletedProcess(args, 0, "", ""))(
+            CliWorker(self.checkout, run=lambda args, cwd, env: commands.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+                      scratch_root=Path(self.fixture.enter_context(TemporaryDirectory())))(
                 "implement", model, state, instruction)
             self.edit()
 

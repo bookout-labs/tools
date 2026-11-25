@@ -131,7 +131,7 @@ class AttemptMetricsTests(unittest.TestCase):
         def run(args, cwd, env):
             prompts.append(args[-1])
             return fixture_process(args, "success", 0)
-        worker = CliWorker(Path("."), run)
+        worker = CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))
         model = ModelSpec.parse("claude-opus-5-5-high")
         state = {"attempts": [{"stage": "triage", "prompt_bytes": 999, "native_usage": {"secret": "not input"}}]}
         first = worker("triage", model, state, "Read café 🐈.")
@@ -144,13 +144,13 @@ class AttemptMetricsTests(unittest.TestCase):
         self.assertIn("prompt_bytes", state["attempts"][0])
         self.assertNotIn("native_usage", prompts[0])
         self.assertNotIn("output schema:", prompts[0])
-        codex = CliWorker(Path("."), lambda args, cwd, env: fixture_process(args, "cached_success", 0))(
+        codex = CliWorker(Path("."), lambda args, cwd, env: fixture_process(args, "cached_success", 0), scratch_root=Path(self.enterContext(TemporaryDirectory())))(
             "triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "Read.")
         self.assertEqual(codex.native_usage["entries"]["turn"]["input_tokens"], 40)
         self.assertIsNotNone(codex.prompt_bytes)
         def missing(*args):
             raise FileNotFoundError()
-        unavailable = CliWorker(Path("."), missing)("triage", model, {}, "Read café 🐈.")
+        unavailable = CliWorker(Path("."), missing, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", model, {}, "Read café 🐈.")
         self.assertEqual(unavailable.prompt_bytes, third.prompt_bytes)
         self.assertIsNone(unavailable.usage)
         self.assertIsNone(unavailable.native_usage)
@@ -168,7 +168,7 @@ class AttemptMetricsTests(unittest.TestCase):
                                    "methods": [], "target": None, "scope": None},
                  "run": {"repo": "Example/Engine", "token_cap": 8000000, "max_budget_usd": "3"},
                  "attempts": [{"stage": "spec", "usage": {"cost_usd": 2.65}, "dollar_charge": "2.65"}]}
-        CliWorker(Path("."), run)("triage", ModelSpec.parse("claude-opus-5-5-high"), state, "Read.")
+        CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", ModelSpec.parse("claude-opus-5-5-high"), state, "Read.")
         prompt = calls[0][-1]
         for allowance in ("budget_usd", "token_cap", "max_budget_usd", "cost_usd", "dollar_charge", "0.35", "2.65"):
             self.assertNotIn(allowance, prompt)
@@ -191,7 +191,7 @@ class AttemptMetricsTests(unittest.TestCase):
                  "questions": [{"question": "Which items?", "why_code_unanswered": "No policy in code.", "checked_paths": []}]}
             )
             return CompletedProcess(args, 0, json.dumps(envelope), "")
-        worker = CliWorker(Path("."), run)
+        worker = CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))
         with skill_fixture(config) as (config, scratch), TemporaryDirectory() as directory:
             result = run_delivery(worker, repo="Example/Engine", request="List items", config=config, scratch=scratch)
             self.assertEqual([attempt["stage"] for attempt in result["attempts"]], ["triage", "spec"])
