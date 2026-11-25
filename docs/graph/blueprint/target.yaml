@@ -166,7 +166,7 @@ rules:
       and a stop ends the run cancelled. At a start, doctor's GitHub requirements come before that read. On a new run they come before admit's read. On a resume they come before the read the resumed stage makes when it is re-entered. The runner's not_ready or git_failed report is the only write that can come first. The App's issue comment webhook wakes a waiting run when the human posts a stop. The read is built once in src/foreman/steps/__init__.py. A first step that calls a worker,
       as research.answer, spec.draft, verify.drive and review.inspect do, makes it before the call.
     checkpoint: Save the question, its exact issue or artifact identity, and the human's answer from the issue comment. Every gate, review's included, posts its reply marker on the issue (item 18). Explicit cancellation for that question emits cancelled.
-  prompts: Load the target prompt as the complete worker instructions. Supply separately the inputs the procedure names, and nothing else from the run. The login and caps saved at the run's last start are in no procedure's inputs. Deploy the prompt by replacing the runtime file.
+  prompts: Load the target prompt as the complete worker instructions. Supply separately the inputs the procedure names, and nothing else from the run. The login and caps saved at the run's last start are in no procedure's inputs. Each procedure's context list describes what those inputs and the checkouts hold for that worker. It names nothing further that the worker is given. Deploy the prompt by replacing the runtime file.
   skills: Load each skill whole at its pinned commit (item 5). No skill is cut to a line range.
   publication_halt: publication_unreconciled
   paths: >-
@@ -484,7 +484,7 @@ stages:
       - {ref: formal-<area>/SKILL.md, repository: target_repository, when: always, kind: target_skill, lines: null, method: "When the target repository has its own formal verification skill, created by pstack create-formal-verification-skill, run its check on any change that touches the verified code. When the change is intended, update the verification with maintain-formal-verification-skill."}
     inputs:
       run: Intake supplies issue, repo and pinned base, required.
-      plan: Spec supplies one cleared slice, its assumptions and matching candidate revision, required.
+      plan: Spec supplies one cleared slice, its assumptions and matching candidate revision, required. It carries the saved answers to the run's questions, which is how the answer to the builder's own question reaches it.
       work: Prepare supplies the attempt container, exclusive checkout, branch and pinned attempt parent before edit.
       checks: The target contract at the pinned base supplies the check command, image, setup and mutation command, required.
       review: Review or merge supplies PR-bound repair evidence, conditional.
