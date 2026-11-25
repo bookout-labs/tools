@@ -228,8 +228,8 @@ class VerifyTest(unittest.TestCase):
         self.assertNotIn("verify", update)
         self.assertEqual(run.forge.posted, [])
 
-    def test_ready_after_a_dirty_drive_drives_a_restored_checkout_and_halts_again_on_a_dirty_one(self):
-        """A dirty_worktree halt resumes at drive, which inspects the checkout again before any paid call."""
+    def test_drive_inspects_the_checkout_before_dispatch_and_stops_dirty_worktree_on_a_dirty_one(self):
+        """Drive dispatches on a clean checkout and stops with dirty_worktree on a dirty one, before any paid call."""
         for clean, halt in ((True, None), (False, "dirty_worktree")):
             with self.subTest(clean=clean):
                 run = stage(workspace=Workspace([WorktreeState(HEAD, clean, "8-items")]))
