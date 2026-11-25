@@ -22,7 +22,7 @@ from foreman.runner import run_live_delivery
 from foreman.stages import STAGES
 from foreman.state import DeliveryState, PlanState, ReviewState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
 from foreman.config import ModelSpec, load_config
-from foreman.worker import CliWorker
+from foreman.worker import CliWorker, assignment
 from owner_contract import COUNTERS, OWNERS, assert_channels, historical_channels
 from test_runner import worker_reply
 
@@ -96,23 +96,27 @@ class CheckpointBoundaryTests(unittest.TestCase):
                 assert_channels(self, restored, values)
 
             # Each worker's prompt carries every restored channel its procedure names, exactly, and no other.
-            def run(args, cwd, env):
-                prompt = json.loads(args[-1].split("Delivery state:\n")[1])
-                self.assertEqual(set(prompt), set(STAGES[node].input_fields) & set(values))
-                for name in prompt:
+            def given(node, prompt):
+                state = json.loads(prompt.split("Delivery state:\n")[1])
+                self.assertEqual(set(state), set(STAGES[node].input_fields) & set(values))
+                for name in state:
                     expected = values[name].model_dump(mode="json")
                     if name == "run":
                         # Dispatch owns the allowance, so the worker never reads it.
                         expected = {key: value for key, value in expected.items() if key not in ("token_cap", "max_budget_usd")}
-                    self.assertEqual(prompt[name], expected, name)
-                return worker_reply(args, {"triage": "supplied_slice"})
+                    self.assertEqual(state[name], expected, name)
 
+            model = ModelSpec.parse("gpt-6.1-sol-high")
             for node in STAGES:
                 with self.subTest(node=node):
-                    worker = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))
-                    # Foreman refuses Codex the verify drive, so the verifier here is Claude.
-                    model = ModelSpec.parse("claude-opus-5-5-high" if node == "verify" else "gpt-6.1-sol-high")
-                    self.assertEqual(worker(node, model, restored, "Read.").kind, "ran")
+                    given(node, assignment(node, model, restored, "Read.", None))
+
+            def run(args, cwd, env):
+                given("triage", args[-1])
+                return worker_reply(args, {"triage": "supplied_slice"})
+
+            result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", model, restored, "Read.")
+            self.assertEqual(result.kind, "ran")
             self.assertEqual({name for row in STAGES.values() for name in row.input_fields} & set(values), set(values) - {"merge"})
 
     def test_every_pause_survives_a_fresh_process(self):
