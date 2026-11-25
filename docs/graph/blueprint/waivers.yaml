@@ -13,10 +13,12 @@ waivers:
     V2-611e028f60565597: "item 9: [implement] edge tests -> tests"
     V2-e0fbde7bf94559f6: "item 9: [implement] edge tests -> edit"
     V2-2e88ef897fe77045: "item 9: [implement] edge tests -> __end__"
-    V2-f3127f6597c186e6: "items 9, 10, 14 and 15: [implement] halts add base_check_failed and rename verify_cap to failed_check_cap"
+    V2-bc1b76a340ceb01a: "items 9, 10, 14 and 15 and #367: [implement] halts add base_check_failed and base_contract_changed and rename verify_cap to failed_check_cap"
     V2-154b6ea2890d2409: "item 9: [halts] base_check_failed"
     V2-fd2e1790c6bd4ea1: "items 9, 10, 14 and 15: [halts] failed_check_cap"
     V2-bd4e3c00cdabb593: "items 9, 10, 14 and 15: [halts] verify_cap becomes failed_check_cap"
+    # #367, the halt when the base head's contract file differs from the pinned base's.
+    V2-c76a6392f9abf7a4: "#367: [halts] base_contract_changed"
     # Item 10, the builder cannot weaken the checks.
     V2-5445dbe67dfe8ee0: "item 10: [implement] edge edit -> edit adds checks_weakened, before mutate"
     # Item 15, equivalent mutations for the builder.
