@@ -123,8 +123,10 @@ class TokenCapTests(unittest.TestCase):
 
     def test_cli_positive_tokens_default_and_done_log(self):
         for raw in ("0", "-1", "abc"):
-            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            with self.subTest(raw=raw), contextlib.redirect_stderr(io.StringIO()) as error, self.assertRaises(SystemExit) as caught:
                 main(["run", "delivery", "--repo", "a/b", "--dry-run", "--request", "x", "--max-tokens", raw])
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn("argument --max-tokens: --max-tokens must be positive", error.getvalue())
         result = run_delivery(ScriptHandler(), repo="a/b", request="x", max_tokens=1)
         self.assertEqual(result["stop"], "budget_exceeded")
         with contextlib.redirect_stdout(io.StringIO()) as output:

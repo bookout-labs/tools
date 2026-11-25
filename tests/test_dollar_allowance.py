@@ -164,9 +164,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_cli_accepts_only_finite_positive_amounts(self):
         for raw in ("0", "-1", "abc", "NaN", "Infinity", "-Infinity"):
-            with self.subTest(raw=raw), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            with self.subTest(raw=raw), contextlib.redirect_stderr(io.StringIO()) as error, self.assertRaises(SystemExit) as caught:
                 main(["run", "delivery", "--repo", "a/b", "--dry-run", "--request", "x", "--max-budget-usd", raw])
             self.assertEqual(caught.exception.code, 2)
+            if raw != "-Infinity":  # argparse takes it for an option, so it never reaches the parser
+                self.assertIn("argument --max-budget-usd: --max-budget-usd must be finite and positive", error.getvalue())
         for raw, stored in (("1", "1"), ("1.50", "1.5"), ("1e-4", "0.0001")):
             with self.subTest(raw=raw), contextlib.redirect_stdout(io.StringIO()) as output:
                 main(["run", "delivery", "--repo", "a/b", "--dry-run", "--request", "x", "--max-budget-usd", raw])

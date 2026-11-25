@@ -12,7 +12,7 @@ import re
 import shlex
 import sys
 from tempfile import TemporaryDirectory
-from typing import TextIO, assert_never
+from typing import TextIO, TypeVar, assert_never
 
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
@@ -170,6 +170,19 @@ def _print_run_rows(
 DEFAULT_BUDGET_USD = "3"
 
 
+T = TypeVar("T")
+
+
+def cap_flag(parse: Callable[[str], T], message: str) -> Callable[[str], T]:
+    """Doctor's cap parser as an argparse type. argparse prints an ArgumentTypeError's message but replaces a ValueError's."""
+    def parsed(raw: str) -> T:
+        try:
+            return parse(raw)
+        except ValueError:
+            raise argparse.ArgumentTypeError(message) from None
+    return parsed
+
+
 @dataclass(frozen=True)
 class RunSettings:
     """An unattended run's settings, from the target repository's GitHub Actions variables. The check comes from its contract file."""
@@ -228,8 +241,8 @@ def main(
     run.add_argument("--preflight", default="")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
-    run.add_argument("--max-tokens", type=positive_tokens, help="cap uncached input + cache creation + output work tokens")
-    run.add_argument("--max-budget-usd", type=positive_budget)
+    run.add_argument("--max-tokens", type=cap_flag(positive_tokens, "--max-tokens must be positive"), help="cap uncached input + cache creation + output work tokens")
+    run.add_argument("--max-budget-usd", type=cap_flag(positive_budget, "--max-budget-usd must be finite and positive"))
 
     start = commands.add_parser("start", help="start an issue's run from Ready with its repository's settings")
     start.add_argument("--repo", required=True)
