@@ -37,7 +37,7 @@ from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
-from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
+from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, Permission, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
 from foreman.status import STATUS_MARKER, Status, running, shows, write_status
 from foreman.steps import CANCELLATION, StageRun, implement, review, verify
 
@@ -318,6 +318,8 @@ class FakeGitHub:
         self.variable_reads = []
         # The quick requirements GitHub answers for the repository: the App install, its labels and its merge queue rule.
         self.installation, self.repository_labels, self.queue_rule = "installed", {"Ready"}, True
+        # Each login's base role on the repository, None for a login GitHub does not know. Any other login can write.
+        self.permissions: dict[str, Permission | None] = {}
         self.opened: dict[str, PublishedPullRequest] = {}
         self.branches: dict[str, str] = {}
         self.queue_merges = True
@@ -383,6 +385,9 @@ class FakeGitHub:
 
     def app_installation(self, repo):
         return self.installation
+
+    def permission(self, repo, login):
+        return self.permissions.get(login, "write")
 
     def has_label(self, repo, name):
         return name in self.repository_labels

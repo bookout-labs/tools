@@ -174,6 +174,8 @@ class PublicationFixture(unittest.TestCase):
                 response = dict(number=12, state="closed" if self.merged else "open", draft=False, mergeable=self.mergeable, mergeable_state="clean" if self.mergeable else "dirty",
                     merged=self.merged, merge_commit_sha="e" * 40 if self.merged else None, head=dict(sha=self.remote_head(), ref=self.branch),
                     base=dict(sha=self.git("--git-dir", str(self.remote), "rev-parse", self.base), ref=self.base))
+            case ["api", url] if url.endswith("/collaborators/fixture-owner/permission"):
+                response = {"permission": "write", "role_name": "write"}
             case ["api", url] if "/rules/branches/" in url:
                 response = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test", integration_id=15368)])),
                             dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))]

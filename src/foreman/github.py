@@ -38,6 +38,8 @@ Model = TypeVar("Model", bound=BaseModel)
 
 # Whether the App is installed on a repository, or this host has no App to act as.
 AppInstallation = Literal["installed", "not_installed", "unconfigured"]
+# GitHub's base role for a login on a repository. It reports maintain as write and triage as read.
+Permission = Literal["admin", "write", "read", "none"]
 
 
 class ForgeError(RuntimeError):
@@ -371,6 +373,10 @@ class Comparison(BaseModel, strict=True):
     status: str
 
 
+class RepositoryPermission(BaseModel, strict=True):
+    permission: Permission
+
+
 class Forge(Protocol):
     def default_branch(self, repo: str) -> str: ...
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
@@ -404,6 +410,7 @@ class Forge(Protocol):
     def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt: ...
     def variables(self, repo: str) -> dict[str, str]: ...
     def app_installation(self, repo: str) -> AppInstallation: ...
+    def permission(self, repo: str, login: str) -> Permission | None: ...
     def has_label(self, repo: str, name: str) -> bool: ...
     def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str, observation: Observation) -> MergeReceipt | None: ...
@@ -920,6 +927,17 @@ class LiveForge:
             if exc.status is None and not isinstance(exc, Unanswered):
                 raise
             raise ForgeError(str(exc), exc.status, rate_limited=exc.rate_limited) from None
+
+    def permission(self, repo: str, login: str) -> Permission | None:
+        """The login's base role on the repository, or None when GitHub answers 404 because it does not know the login."""
+        try:
+            return self._read(repo, RepositoryPermission, [
+                "gh", "api", f"repos/{repo}/collaborators/{quote(login, safe='')}/permission",
+            ]).permission
+        except CommandFailed as exc:
+            if exc.status != 404:
+                raise
+            return None
 
     def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None:
         return merge_queue_policy(self._read(repo, Rules, ["gh", "api", f"repos/{repo}/rules/branches/{quote(branch, safe='')}"]))
