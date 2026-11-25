@@ -1386,7 +1386,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         fake = FakeWorkspace(self.cwd)
         fake.remote = self.github.branches
         replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
-        self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.cwd / "runtime")}))
+        self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.cwd / "runtime"), "FOREMAN_APP_ID": "1"}))
         self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
 
         # The dependent's run reads its own repository's settings at its own start and inherits nothing from this run.

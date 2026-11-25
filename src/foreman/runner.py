@@ -24,12 +24,12 @@ from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_st
 from foreman.readiness import MergeState, MergeWait
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, QuotaPause
-from foreman.doctor import NotReady, OperatorVariables, repository
+from foreman.doctor import NotReady, OperatorVariables, ReadFailed, repository
 from foreman.skill_rules import SkillMissing
 from foreman.github import ForgeError, human_comments
 from foreman.watch import run_key, watch
 from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
-from foreman.status import Status, running, status_of, write_status
+from foreman.status import Status, refused, running, status_of, write_status
 from foreman.steps import implement
 from foreman.usd import usd_text
 from foreman.workspace import WorkState, WorkspaceError, lock_file
@@ -221,12 +221,12 @@ def run_live_delivery(
         # A start is a new run or the resume of a resumable halt. It reads the repository's settings once, before the graph.
         starting = prior is None or (bool(channels.get("stop")) and channels.get("halt") in RESUMABLE_HALTS)
         settings: OperatorVariables | None = None
-        refusal: NotReady | None = None
+        refusal: NotReady | ReadFailed | None = None
         login: str = channels.get("human_login", "")
         if starting:
             try:
                 settings = repository(client, repo)
-            except NotReady as exc:
+            except (NotReady, ReadFailed) as exc:
                 refusal = exc
             else:
                 run_state, login = with_caps(run_state, settings), settings.human_login
@@ -240,6 +240,7 @@ def run_live_delivery(
         matt = SkillPin.model_validate(saved_matt) if saved_matt is not None else delivery_config.matt_skills
         pinned = replace(delivery_config, pstack=pin, matt_skills=matt)
         early_result: DeliveryResult | None = None
+        report_refusal: Status | None = None
         try:
             graph = compile_delivery(
                 dispatcher, pinned, run=run, checkpointer=saver,
@@ -298,12 +299,13 @@ def run_live_delivery(
         if saved_workspace and saved_workspace != workspace:
             raise ValueError(f"Run this issue from {saved_workspace}.")
         if refusal is not None:
-            # The runner's not_ready is not a saved halt. A new run keeps nothing. A resumed run keeps its checkpoint and halt.
+            # The runner's not_ready or git_failed is not a saved halt. A new run keeps nothing. A resumed run keeps its checkpoint and halt.
             kept: dict[str, object] = dict(saved_values) if saved_values is not None else {
                 "schema_version": SCHEMA_VERSION, "run": run_state, "checks": ChecksState(), "plan": PlanState(),
                 "review": ReviewState(), "path": []}
-            early_result = read_delivery_state({**kept, **halted(Halt.not_ready, refusal.halt_detail(resumed=saved_values is not None), "admit"),
-                                                "stop": Halt.not_ready})
+            code, detail = Halt.not_ready if isinstance(refusal, NotReady) else Halt.git_failed, refusal.halt_detail()
+            early_result = read_delivery_state({**kept, **halted(code, detail, "admit"), "stop": code})
+            report_refusal = refused(code, detail, resumed=saved_values is not None)
         finished = bool(saved_values and (saved_values.get("stop") in RELEASED_STOPS or (
             saved_values.get("halt") is not None and saved_values.get("halt") not in RESUMABLE_HALTS)))
         if early_result is None and saved_values is not None and saved_values["run"].base_sha and not finished:
@@ -457,9 +459,14 @@ def run_live_delivery(
                         graph.update_state(config, {"watch": record}, as_node="triage")
                         result["watch"] = record
                         log(f"watch {record['action']} #{record['issue']}")
-        # An early result was never saved, so the issue keeps the status its checkpoint last showed. A refused start reports not_ready.
-        refused = early_result is not None and early_result.get("halt") == Halt.not_ready
-        if early_result is None or refused:
+        if report_refusal is not None:
+            try:
+                write_status(client, repo, issue, report_refusal)
+            except ForgeError as exc:
+                # The command's error output and its exit code are then the only report.
+                log(f"status not written: GitHub {exc.answer}.\n{report_refusal.text}")
+        elif early_result is None:
+            # An early result was never saved, so the issue keeps the status its checkpoint last showed.
             pending = saved.interrupts[0].value if saved.interrupts else None
             prompt = parse_output(HumanPrompt, pending) if result["stop"] == "needs_human" and pending is not None else None
             last = prompt.stage if prompt is not None else STEP_STAGES.get(next(iter(result["path"][-1:]), ""))

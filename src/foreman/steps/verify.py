@@ -33,7 +33,7 @@ def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             # As in Review, Implement checks the checkout's current head again.
             return {"stop": HEAD_MOVED, "checks": state["checks"].for_attempt()}
         if not before.clean or before.branch != work.branch:
-            raise WorkspaceError("Verify needs the clean delivery branch at the published head.")
+            return stopped(Halt.dirty_worktree, "Verify needs the clean delivery branch at the published head.", "verify")
         pr = run.forge.pull_request_for(state["run"].repo, work.branch)
         if pr is None:
             raise ForgeError("The delivery branch has no pull request.")

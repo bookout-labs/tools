@@ -2,11 +2,18 @@ import contextlib
 from decimal import Decimal
 import fcntl
 import io
+import json
+import os
+import subprocess
 import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
@@ -14,7 +21,8 @@ from foreman.cli import main
 from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
 from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, OperatorVariables, operator_variables
-from foreman.github import VariablesUnreadable
+from foreman.credentials import AppCredentials, credentials
+from foreman.github import LiveForge
 from foreman.runner import IssueLocked, issue_lock, saved_workspace
 from foreman.stage_output import spec_digest
 from foreman.state import checkpoint_serializer
@@ -33,24 +41,59 @@ class StartTest(unittest.TestCase):
     def setUp(self):
         confine_host(self)
         self.root = Path(self.enterContext(TemporaryDirectory()))
-        self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.root / "runtime")}))
+        self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.root / "runtime"), "FOREMAN_APP_ID": "1"}))
         self.app = self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
         self.forge = FakeGitHub()
         self.workspace = FakeWorkspace(self.root)
         self.worker_calls = 0
 
     def start(self, variables=SETTINGS, replies=()):
+        """Start issue 8 with the repository's variables, or with the forge's own variables read when they are None."""
         outputs = iter(replies)
 
         def worker(args, cwd, env):
             self.worker_calls += 1
             return self.workspace.reply(args, checker_reply(args) or next(outputs))
 
-        with patch.object(self.forge, "variables", side_effect=lambda repo: dict(variables)), \
-                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+        settings = contextlib.nullcontext() if variables is None else patch.object(
+            self.forge, "variables", side_effect=lambda repo: dict(variables))
+        with settings, contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
             code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.root / "runs.sqlite3",
                         live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"), worker_runner=worker)
         return code, out.getvalue(), err.getvalue()
+
+    def github_answers(self, method, stderr):
+        """The forge's read made as LiveForge makes it with App credentials, with gh exiting on GitHub's answer. It counts each read."""
+        reads = []
+
+        def read(*args, **kwargs):
+            reads.append(args)
+            with patch("foreman.github.subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", stderr)):
+                return getattr(LiveForge(), method)(*args, **kwargs)
+        return patch.object(self.forge, method, side_effect=read), reads
+
+    def token_answers(self, status):
+        """The App's installation read as LiveForge makes it, with GitHub answering the App's token request with this status."""
+        key = self.root / "app.pem"
+        if not key.exists():
+            key.write_bytes(rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            key.chmod(0o600)
+        reads = []
+
+        def respond(request, timeout):
+            if not request.full_url.endswith("/installation"):
+                raise HTTPError(request.full_url, status, "GitHub's answer", {}, None)
+            response = MagicMock()
+            response.__enter__.return_value.read.return_value = json.dumps({"id": 2}).encode()
+            return response
+
+        def installation(repo):
+            reads.append(repo)
+            with patch.dict(os.environ, {"FOREMAN_APP_KEY_PATH": str(key)}), patch("foreman.credentials.urlopen", side_effect=respond), \
+                    patch.object(credentials, "environment", AppCredentials().environment):
+                return LiveForge().app_installation(repo)
+        return patch.object(self.forge, "app_installation", side_effect=installation), reads
 
     def stored(self):
         with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
@@ -119,18 +162,74 @@ class StartTest(unittest.TestCase):
                 self.assertEqual(code, 1, out + err)
                 self.assertIn("done not_ready", out)
                 status = self.forge.status[("Example/Engine", 8)]
-                self.assertIn(f"Foreman halted with not_ready. The target repository is not ready for Foreman.\n\nNot ready: {missing}. Fix: ", status)
+                self.assertIn(f"Foreman did not start this run (not_ready).\n\nNot ready: {missing}. Fix: ", status)
                 self.assertIn("in Example/Engine's Actions variables. Then remove and add the Ready label.", status)
                 self.assertEqual((self.worker_calls, self.forge.label_calls), (0, []))
                 self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
                 self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
-        with patch.object(self.forge, "variables", side_effect=VariablesUnreadable("HTTP 403")), \
-                contextlib.redirect_stderr(io.StringIO()) as err:
-            code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.root / "runs.sqlite3",
-                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills))
-        self.assertEqual((code, "HTTP 403" in err.getvalue()), (1, True))
-        self.assertEqual(self.worker_calls, 0)
-        self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
+
+    def test_a_failed_github_read_reports_git_failed_and_a_refusal_of_the_app_not_ready(self):
+        """TR13: at a new run's start and at a resume's start, in turn, GitHub answers 502 to the Ready label read, a rate-limit
+        403 to the variables read, a plain 403 to the variables read, and 502 and 422 to the App's token request. Once more at a
+        new run's start, the 502 comes with a status comment write that also fails. No start makes a paid call. The 502 and
+        rate-limit starts report git_failed, the plain 403 and the token request's 422 not_ready. Each reads once, saves no
+        checkpoint for the new run, keeps the resume's checkpoint and halt, and leaves the labels as they were."""
+        label_502 = ("has_label", "gh: Server Error (HTTP 502)")
+        variables_rate_limit = ("variables", "gh: API rate limit exceeded for installation ID 1. (HTTP 403)")
+        variables_403 = ("variables", "gh: Resource not accessible by integration (HTTP 403)")
+        token_502, token_422 = ("token", 502), ("token", 422)
+        again = "No setting needs to change. Remove and add the Ready label to try again."
+        reports = {
+            label_502: ("git_failed", 75, 'The read of Example/Engine\'s Ready label, for the requirement "the Ready label exists", '
+                                          f"failed because GitHub answered HTTP 502. {again}"),
+            variables_rate_limit: ("git_failed", 75, "The read of Example/Engine's Actions variables, for the requirement "
+                                                     '"FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses. '
+                                                     f'An unset cap uses its default", failed because GitHub answered HTTP 403 for its rate limit. {again}'),
+            variables_403: ("not_ready", 1, "Not ready: GitHub answered HTTP 403 to the read of Example/Engine's Actions variables, "
+                                            "refusing the App. Fix: give the Foreman GitHub App's installation access to Example/Engine "
+                                            "and every repository permission the App requests. Then remove and add the Ready label."),
+            token_502: ("git_failed", 75, "The read of the App's token for Example/Engine, for the requirement \"the GitHub App is installed "
+                                          f"on the repository and GitHub lets it make doctor's reads\", failed because GitHub answered HTTP 502. {again}"),
+            token_422: ("not_ready", 1, "Not ready: GitHub answered HTTP 422 to the read of the App's token for Example/Engine, refusing "
+                                        "the App. Fix: give the Foreman GitHub App's installation access to Example/Engine and every "
+                                        "repository permission the App requests. Then remove and add the Ready label."),
+        }
+
+        def refused(answer, verb):
+            labels = self.forge.load_issue("Example/Engine", 8)["labels"]
+            failing, reads = self.token_answers(answer[1]) if answer[0] == "token" else self.github_answers(*answer)
+            with failing:
+                code, out, err = self.start(None)
+            code_name, exit_code, detail = reports[answer]
+            self.assertEqual(code, exit_code, out + err)
+            self.assertEqual(self.forge.status[("Example/Engine", 8)].split("\n\n<!--")[0],
+                             f"Foreman did not {verb} this run ({code_name}).\n\n{detail}")
+            self.assertEqual((len(reads), self.forge.load_issue("Example/Engine", 8)["labels"]), (1, labels))
+
+        for answer in reports:
+            with self.subTest(start="new", answer=answer):
+                refused(answer, "start")
+                self.assertEqual((self.worker_calls, self.forge.label_calls), (0, []))
+                self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
+        failing, reads = self.github_answers(*label_502)
+        unwritten, _ = self.github_answers("upsert_comment", "gh: Server Error (HTTP 502)")
+        with failing, unwritten:
+            code, out, err = self.start(None)
+        self.assertEqual((code, len(reads), self.worker_calls), (75, 1, 0))
+        self.assertIn("status not written: GitHub answered HTTP 502.", err)
+        self.assertNotIn("configuration", err)
+        self.assertIn(f"Foreman did not start this run (git_failed).\n\n{reports[label_502][2]}", err)
+
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])[0], 75)
+        halted = self.stored()
+        for answer in reports:
+            with self.subTest(start="resume", answer=answer):
+                self.forge.ready_again(8)
+                refused(answer, "resume")
+                self.assertEqual((self.worker_calls, self.stored()), (1, halted))
+                with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
+                    saver.serde = checkpoint_serializer()
+                    self.assertEqual(saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]["halt"], "budget_exceeded")
 
     def test_a_github_requirement_stops_in_the_runner_and_a_contract_requirement_in_admit(self):
         """TR11: a new run's start in a repository missing a GitHub requirement, and one missing a contract requirement. The
@@ -197,7 +296,7 @@ class StartTest(unittest.TestCase):
 
     def test_a_resume_refused_by_doctor_keeps_its_halt_and_resumes_once_the_setting_is_fixed(self):
         """TR9: a run halted budget_exceeded, the operator sets FOREMAN_MAX_BUDGET_USD to 4.5o and adds Ready, then corrects
-        it and adds Ready again. The first start reports not_ready naming the variable and its fix, makes no paid call and keeps
+        it and removes and adds Ready. The first start reports not_ready naming the variable and its fix, makes no paid call and keeps
         the checkpoint and its budget_exceeded halt. The second resumes at the interrupted step within the corrected cap."""
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])
         self.assertEqual(code, 75, out + err)
@@ -211,8 +310,10 @@ class StartTest(unittest.TestCase):
         status = self.forge.status[("Example/Engine", 8)]
         self.assertIn("Not ready: the FOREMAN_MAX_BUDGET_USD repository variable '4.5o' is not a positive dollar amount. "
                       "Fix: set FOREMAN_MAX_BUDGET_USD to a positive amount", status)
-        self.assertIn("The run stays halted at its step. Then add the Ready label again to resume it.", status)
-        self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Stopped"])
+        self.assertTrue(status.startswith("Foreman did not resume this run (not_ready).\n\nNot ready: "), status)
+        self.assertIn("in Example/Engine's Actions variables. Then remove and add the Ready label.", status)
+        # The refusal is no halt, so the labels stay as the start found them and Ready waits for the fix.
+        self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
         self.assertEqual(self.worker_calls, 1)
         # The checkpoint and its budget halt are untouched, so the next Ready resumes the halted step.
         self.assertEqual(self.stored(), halted)
@@ -269,8 +370,7 @@ class StartTest(unittest.TestCase):
         self.assertEqual(self.worker_calls, calls)
 
     def test_without_app_credentials_nothing_is_read_or_run(self):
-        self.app.return_value = None
-        with patch.object(self.forge, "variables") as variables, patch("foreman.cli.run_live_delivery") as run:
+        with patch.dict("os.environ", {"FOREMAN_APP_ID": ""}), patch.object(self.forge, "variables") as variables, patch("foreman.cli.run_live_delivery") as run:
             code, _, err = self.start()
         self.assertEqual(code, 1)
         self.assertIn("FOREMAN_APP_ID", err)

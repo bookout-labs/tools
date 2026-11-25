@@ -38,6 +38,11 @@ def running(stage: str) -> Status:
     return Status(DOING_LABEL, f"Foreman is running {stage}.")
 
 
+def refused(code: Halt, detail: str, *, resumed: bool) -> Status:
+    """The runner's report of a start it refused before the graph. It is no halt, so the run label stays as it is."""
+    return Status(None, f"Foreman did not {'resume' if resumed else 'start'} this run ({code}).\n\n{detail}")
+
+
 def _pull_request(result: DeliveryResult) -> list[str]:
     """The pull request GitHub last reported, or the one review targeted."""
     pr = (result.get("merge", MergeState()).observation or {}).get("pr")

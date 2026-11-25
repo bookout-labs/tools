@@ -16,8 +16,8 @@ from foreman.cli import main
 from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
-from foreman.credentials import CredentialFailure, NotInstalled
-from foreman.doctor import QUICK, NotReady, contract, repository
+from foreman.credentials import CredentialFailure, NotInstalled, Unanswered
+from foreman.doctor import QUICK, NotReady, ReadFailed, contract, repository
 from foreman.github import ForgeError, LiveForge
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
@@ -299,20 +299,42 @@ class QuickCheckTest(unittest.TestCase):
                 dispatch.assert_not_called()
                 self.assertIsNone(saved_workspace(checkpoint, thread))
 
-    def test_github_answers_the_app_installation_and_any_other_credential_failure_stays_a_forge_error(self):
+    def test_github_answers_the_app_installation_and_a_failure_of_the_hosts_own_key_stays_a_credential_failure(self):
         answers = (({"return_value": None}, "unconfigured"), ({"side_effect": NotInstalled("not installed")}, "not_installed"),
                    ({"return_value": {"GH_TOKEN": "synthetic"}}, "installed"))
         for effect, installation in answers:
             with self.subTest(installation), patch("foreman.github.credentials.environment", **effect):
                 self.assertEqual(LiveForge().app_installation("Example/Engine"), installation)
-        with patch("foreman.github.credentials.environment", side_effect=CredentialFailure("App credentials: rate limit.")), \
-                self.assertRaisesRegex(ForgeError, "rate limit"):
+        # GitHub's answer to the token request keeps its status. No answer at all is a ForgeError without one.
+        with patch("foreman.github.credentials.environment", side_effect=CredentialFailure("App credentials: rate limit.", 403, rate_limited=True)), \
+                self.assertRaises(ForgeError) as answered:
+            LiveForge().app_installation("Example/Engine")
+        self.assertEqual((answered.exception.status, answered.exception.answer), (403, "answered HTTP 403 for its rate limit"))
+        with patch("foreman.github.credentials.environment", side_effect=Unanswered("no answer")), self.assertRaises(ForgeError) as answered:
+            LiveForge().app_installation("Example/Engine")
+        self.assertEqual(answered.exception.answer, "gave no answer")
+        with patch("foreman.github.credentials.environment", side_effect=CredentialFailure("App key must have owner-only permissions.")), \
+                self.assertRaisesRegex(CredentialFailure, "owner-only"):
             LiveForge().app_installation("Example/Engine")
         github = FakeGitHub()
         github.installation = "unconfigured"
         with self.assertRaisesRegex(NotReady, "Fix: set FOREMAN_APP_ID on the Foreman host") as raised:
             repository(github, "Example/Engine")
         self.assertEqual(raised.exception.requirement, QUICK[0])
+
+    def test_a_rate_limit_answer_without_a_status_is_reported_as_the_rate_limit(self):
+        github = FakeGitHub()
+        with patch("foreman.github.credentials.environment", return_value={"GH_TOKEN": "synthetic"}), \
+                patch("foreman.github.subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "GraphQL: API rate limit exceeded for installation ID 1")):
+            failed = ForgeError("unread")
+            try:
+                LiveForge().default_branch("Example/Engine")
+            except ForgeError as exc:
+                failed = exc
+        with patch.object(github, "default_branch", side_effect=failed), self.assertRaises(ReadFailed) as raised:
+            repository(github, "Example/Engine")
+        self.assertEqual(str(raised.exception), "The read of Example/Engine's default branch, for the requirement \"a merge queue ruleset "
+                                                "protects the base branch\", failed because GitHub answered with its rate limit.")
 
     def test_a_stop_waiting_in_a_repository_that_is_not_ready_gives_not_ready_and_a_new_ready_starts_the_run(self):
         checkpoint = self.root / "runs.sqlite3"
@@ -349,6 +371,13 @@ class QuickCheckTest(unittest.TestCase):
         self.assertEqual(out.splitlines(), [f"ok {requirement}" for requirement in QUICK[:3]] + [
             "Not ready: no single merge queue rule applies to Example/Engine's base branch main. "
             "Fix: add a ruleset that targets main in Example/Engine with one merge queue rule and a merge method."])
+        # A read GitHub answers with a server error names the requirement and GitHub's answer, never a missing setting.
+        github = FakeGitHub()
+        with patch.object(github, "has_label", side_effect=ForgeError("gh api failed", 502)), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = main(["doctor", "--repo", "Example/Engine"], live_run=LiveRun(github, FakeWorkspace(self.root), human_login="fixture-owner"))
+        self.assertEqual((code, err.getvalue()), (1, 'cannot check Example/Engine: The read of Example/Engine\'s Ready label, for the '
+                                                    'requirement "the Ready label exists", failed because GitHub answered HTTP 502.\n'))
 
 
 if __name__ == "__main__":
