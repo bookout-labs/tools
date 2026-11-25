@@ -13,7 +13,7 @@ from urllib.parse import quote
 from pydantic import AwareDatetime, BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, QueueEntry, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
-from foreman.credentials import CredentialFailure, NotInstalled, credentials, failure, COMMAND_TIMEOUT
+from foreman.credentials import CredentialFailure, NotInstalled, Unanswered, credentials, failure, COMMAND_TIMEOUT
 from foreman.redaction import redact
 if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
@@ -41,7 +41,18 @@ AppInstallation = Literal["installed", "not_installed", "unconfigured"]
 
 
 class ForgeError(RuntimeError):
-    pass
+    """A failed GitHub operation, with the HTTP status GitHub answered and whether it was a rate-limit answer."""
+
+    def __init__(self, message: str, status: int | None = None, *, rate_limited: bool = False):
+        super().__init__(message)
+        self.status, self.rate_limited = status, rate_limited or status == 429
+
+    @property
+    def answer(self) -> str:
+        """What GitHub answered, in words: its status, its rate limit, or no answer."""
+        if self.status is None:
+            return "answered with its rate limit" if self.rate_limited else "gave no answer"
+        return f"answered HTTP {self.status}" + (" for its rate limit" if self.rate_limited else "")
 
 
 class MergeNotArmed(ForgeError):
@@ -61,9 +72,7 @@ class VariablesUnreadable(ForgeError):
 
 
 class CommandFailed(ForgeError):
-    def __init__(self, message: str, status: int | None = None):
-        self.status = status
-        super().__init__(message)
+    pass
 
 
 class CommandTimedOut(ForgeError):
@@ -894,17 +903,23 @@ class LiveForge:
         try:
             variables = self._read(repo, ActionsVariables, ["gh", "variable", "list", "--repo", repo, "--json", "name,value"])
         except ForgeError as exc:
-            raise VariablesUnreadable(str(exc)) from exc
+            raise VariablesUnreadable(str(exc), exc.status, rate_limited=exc.rate_limited) from exc
         return {variable.name: variable.value for variable in variables.root}
 
     def app_installation(self, repo: str) -> AppInstallation:
-        """GitHub's answer for the App's installation on the repository. Any other credential failure is a ForgeError."""
+        """GitHub's answer for the App's installation on the repository and its token request.
+
+        A failure GitHub answered, or gave no answer to, is a ForgeError. A failure of the host's own key or settings stays a
+        CredentialFailure.
+        """
         try:
             return "installed" if credentials.environment(repo) is not None else "unconfigured"
         except NotInstalled:
             return "not_installed"
         except CredentialFailure as exc:
-            raise ForgeError(str(exc)) from None
+            if exc.status is None and not isinstance(exc, Unanswered):
+                raise
+            raise ForgeError(str(exc), exc.status, rate_limited=exc.rate_limited) from None
 
     def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None:
         return merge_queue_policy(self._read(repo, Rules, ["gh", "api", f"repos/{repo}/rules/branches/{quote(branch, safe='')}"]))
@@ -1056,7 +1071,7 @@ class LiveForge:
             if env is not None:
                 timeout = min(timeout or COMMAND_TIMEOUT, COMMAND_TIMEOUT)
         except CredentialFailure as exc:
-            raise CommandFailed(str(exc)) from None
+            raise CommandFailed(str(exc), exc.status, rate_limited=exc.rate_limited) from None
         try:
             result = subprocess.run(
                 command, env=env, stdin=subprocess.DEVNULL if body is None else None, input=body,
@@ -1069,11 +1084,13 @@ class LiveForge:
         if result.returncode:
             match = re.search(r"HTTP (\d{3})", result.stderr)
             status = int(match[1]) if match else None
+            rate_limited = "rate limit" in result.stderr.lower()
             if env is not None and status:
                 if status == 401:
                     credentials.invalidate()
-                raise CommandFailed(failure(status, "rate limit" in result.stderr.lower()), status=status)
-            raise CommandFailed(redact(result.stderr.strip(), credentials_only=True) or f"{operation} exited with code {result.returncode}.", status=status)
+                raise CommandFailed(failure(status, rate_limited), status, rate_limited=rate_limited)
+            raise CommandFailed(redact(result.stderr.strip(), credentials_only=True) or f"{operation} exited with code {result.returncode}.",
+                                status, rate_limited=rate_limited)
         return result.stdout
 
     def _read(self, repo: str, model: type[Model], command: list[str], *, timeout: float | None = COMMAND_TIMEOUT, body: str | None = None) -> Model:

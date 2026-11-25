@@ -2,20 +2,21 @@
 
 At every start of a run, before any paid call, the runner runs the GitHub requirements before the graph. Only a new run
 then runs the contract requirements, in triage.admit. It starts no container. Each failure names the one missing
-requirement and its exact fix.
+requirement and its exact fix. A read GitHub gives no usable answer to is a failed read, never not_ready.
 """
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from typing import TypeVar
 
 from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contract
-from foreman.github import READY_LABEL, Forge
+from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError
 from foreman.usd import BudgetUsd
 from foreman.workspace import Workspace
 
 APP, VARIABLES, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK = (
-    "the GitHub App is installed on the repository",
+    "the GitHub App is installed on the repository and GitHub lets it make doctor's reads",
     "FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses. An unset cap uses its default.",
     f"the {READY_LABEL} label exists",
     "a merge queue ruleset protects the base branch",
@@ -27,6 +28,7 @@ PREFLIGHT = "FOREMAN_PREFLIGHT"
 DEFAULT_TOKEN_CAP = 20_000_000
 # Joe, 2026-11-23 on #26: "Cap 3". A repository raises it with FOREMAN_MAX_BUDGET_USD.
 DEFAULT_BUDGET_USD = BudgetUsd(Decimal("3"))
+T = TypeVar("T")
 
 
 class NotReady(Exception):
@@ -36,11 +38,33 @@ class NotReady(Exception):
         super().__init__(f"Not ready: {missing}. Fix: {fix}.")
         self.requirement = requirement
 
-    def halt_detail(self, *, resumed: bool = False) -> str:
-        """The not_ready report. A new run's issue keeps Ready. A refused resume stays halted under its Stopped label."""
-        if resumed:
-            return f"{self} The run stays halted at its step. Then add the {READY_LABEL} label again to resume it."
+    def halt_detail(self) -> str:
+        """The not_ready report. The Ready label that asked for the start stays on the issue, for a new run and a resume alike."""
         return f"{self} Then remove and add the {READY_LABEL} label."
+
+
+class ReadFailed(Exception):
+    """A requirement's read that got no answer, a server error, a rate limit or another status that is no refusal. No setting is wrong."""
+
+    def halt_detail(self) -> str:
+        return f"{self} No setting needs to change. Remove and add the {READY_LABEL} label to try again."
+
+
+REFUSALS = (401, 403, 404)
+# A 422 to the App's token request means the installation does not cover the repository.
+TOKEN_REFUSALS = (*REFUSALS, 422)
+
+
+def answered(repo: str, requirement: str, read: str, call: Callable[[], T], refusals: tuple[int, ...] = REFUSALS) -> T:
+    """GitHub's answer to one read, made once. GitHub refusing the App's read is not_ready; any other failure is a failed read."""
+    try:
+        return call()
+    except ForgeError as exc:
+        if exc.status in refusals and not exc.rate_limited:
+            fix = ("check FOREMAN_APP_ID and the App's private key at FOREMAN_APP_KEY_PATH on the Foreman host" if exc.status == 401 else
+                   f"give the Foreman GitHub App's installation access to {repo} and every repository permission the App requests")
+            raise NotReady(APP, f"GitHub answered HTTP {exc.status} to the read of {read}, refusing the App", fix) from exc
+        raise ReadFailed(f'The read of {read}, for the requirement "{requirement.rstrip(".")}", failed because GitHub {exc.answer}.') from exc
 
 
 @dataclass(frozen=True)
@@ -100,7 +124,8 @@ def repository(forge: Forge, repo: str) -> OperatorVariables:
 
     The one read of the operator variables at a start, so the run's login and caps are the values doctor checked.
     """
-    match forge.app_installation(repo):
+    installation: AppInstallation = answered(repo, APP, f"the App's token for {repo}", lambda: forge.app_installation(repo), TOKEN_REFUSALS)
+    match installation:
         case "not_installed":
             raise NotReady(APP, f"the GitHub App is not installed on {repo}",
                            f"install the Foreman GitHub App on {repo}'s account with access to {repo}")
@@ -110,11 +135,11 @@ def repository(forge: Forge, repo: str) -> OperatorVariables:
                            "(default ~/.config/bookout-foreman/app.pem)")
         case "installed":
             pass
-    operator = operator_variables(repo, forge.variables(repo))
-    if not forge.has_label(repo, READY_LABEL):
+    operator = operator_variables(repo, answered(repo, VARIABLES, f"{repo}'s Actions variables", lambda: forge.variables(repo)))
+    if not answered(repo, LABEL, f"{repo}'s {READY_LABEL} label", lambda: forge.has_label(repo, READY_LABEL)):
         raise NotReady(LABEL, f"{repo} has no {READY_LABEL} label", f"create the {READY_LABEL} label in {repo}")
-    branch = forge.default_branch(repo)
-    if forge.merge_queue(repo, branch) is None:
+    branch = answered(repo, MERGE_QUEUE, f"{repo}'s default branch", lambda: forge.default_branch(repo))
+    if answered(repo, MERGE_QUEUE, f"{repo}'s rules for {branch}", lambda: forge.merge_queue(repo, branch)) is None:
         raise NotReady(MERGE_QUEUE, f"no single merge queue rule applies to {repo}'s base branch {branch}",
                        f"add a ruleset that targets {branch} in {repo} with one merge queue rule and a merge method")
     return operator

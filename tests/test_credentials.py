@@ -71,7 +71,7 @@ class CredentialsTest(CredentialFixture):
         self.assertEqual(json.loads(self.http.call_args.args[0].data), {'repositories': ['other']})
 
     def test_fail_closed_and_sanitize_library_failures(self):
-        for error, expected in [(TimeoutError('private material'), 'unavailable'),
+        for error, expected in [(TimeoutError('private material'), 'no answer'),
                                 (HTTPError('', 401, 'secret', {}, None), 'unauthorized'),
                                 (HTTPError('', 403, 'secret', {}, None), 'permission'),
                                 (HTTPError('', 404, 'secret', {}, None), 'not installed on org/repo'),
