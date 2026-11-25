@@ -2,14 +2,6 @@
 # #299 is the redesign brief. Each subject names the brief item whose build closes it.
 waivers:
   299:
-    # Item 19, a resumable budget_exceeded, in shared dispatch.
-    V2-9cb1b829f2ac67b8: "item 19: [triage.route] dispatch retries budget_resume"
-    V2-eec74d774c1f45b3: "item 19: [research.answer] dispatch retries budget_resume"
-    V2-8839a416ee7fe358: "item 19: [spec.draft] dispatch retries budget_resume"
-    V2-17f7eaf883d915b1: "item 19: [spec.check] dispatch retries budget_resume"
-    V2-2034aecc18c90aef: "item 19: [implement.edit] dispatch retries budget_resume"
-    V2-0c5574d2e23430a4: "item 19: [verify.drive] dispatch retries budget_resume"
-    V2-83631c2886d7f014: "item 19: [review.inspect] dispatch retries budget_resume"
     # Item 7, the plan's assumptions list.
     V2-5b3318c64d065300: "item 7: [procedure/spec] output_fields add assumptions"
     # Item 9, acceptance tests before the build.

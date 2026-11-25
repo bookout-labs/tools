@@ -61,7 +61,7 @@ class StartTest(unittest.TestCase):
         self.assertEqual((checks.check, checks.preflight), ("exit 0", "exit 0"))
         self.assertEqual((run.token_cap, run.max_budget_usd), (900000, "3"))
         calls = self.worker_calls
-        # A repeated delivery is a no-op, whatever stop the run reached.
+        # A repeated delivery for a finished run is a no-op.
         self.assertEqual(self.start(variables)[:2], (0, f"already started {THREAD}\n"))
         self.assertEqual(self.worker_calls, calls)
 
@@ -128,6 +128,47 @@ class StartTest(unittest.TestCase):
         self.assertEqual(self.forge.status_writes, writes)
         self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Doing"])
         self.assertEqual(list(self.forge.status), [("Example/Engine", 8)])
+
+    def test_ready_again_resumes_a_budget_halt_with_the_raised_repository_cap(self):
+        replies = [{"triage": "supplied_slice"}, {"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
+        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, replies[:1])
+        self.assertEqual(code, 75, out + err)
+        self.assertEqual((self.stored()[0].token_cap, self.worker_calls), (1, 1))
+        self.forge.ready_again(8)
+        # An unchanged cap stops again before any worker call, and a lowered one is refused.
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"})[0], 75)
+        self.forge.ready_again(8)
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1", "FOREMAN_MAX_BUDGET_USD": "2"})[0], 1)
+        self.assertEqual(self.worker_calls, 1)
+        self.forge.ready_again(8)
+        # The halted triage answer was never applied, so the resumed route asks again, and the plan checker answers too.
+        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"}, replies[1:])
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("done merged", out)
+        self.assertEqual((self.stored()[0].token_cap, self.worker_calls), (900000, 5))
+        # A finished run is never started again.
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
+
+    def test_ready_again_resumes_in_the_saved_checkout_and_a_new_issue_in_its_managed_one(self):
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])[0], 75)
+        state_home, seen = self.root / "state", []
+        with patch.dict("os.environ", {"XDG_STATE_HOME": str(state_home)}), patch("foreman.cli.LiveForge", return_value=self.forge), \
+                patch.object(self.forge, "variables", return_value={**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"}), \
+                patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: seen.append(kwargs) or {"stop": "merged"}), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            for issue in ("8", "9"):
+                self.assertEqual(main(["start", "--repo", "Example/Engine", "--issue", issue], checkpoint=self.root / "runs.sqlite3"), 0)
+        self.assertEqual([(kwargs["issue"], kwargs["run"].workspace.root) for kwargs in seen], [
+            (8, self.root.resolve()), (9, (state_home / "foreman").resolve() / "runs" / "example" / "engine" / "9")])
+
+    def test_a_run_on_a_terminal_halt_is_never_started_again(self):
+        code, out, err = self.start(SETTINGS, [{"triage": "unknown route"}, {"triage": "unknown route"}])
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("invalid_output", out + err)
+        calls = self.worker_calls
+        self.forge.ready_again(8)
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
+        self.assertEqual(self.worker_calls, calls)
 
     def test_without_app_credentials_nothing_is_read_or_run(self):
         self.app.return_value = None

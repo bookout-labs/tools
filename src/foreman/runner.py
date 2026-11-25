@@ -125,15 +125,25 @@ def _checkpoint_before_halt(
     return before
 
 
-def require_same_budget(stored: str | None, max_budget_usd: BudgetUsd | None) -> None:
-    if max_budget_usd is not None and (stored is None or Decimal(stored) != max_budget_usd.amount):
+def require_same_limits(stored: RunState, max_tokens: int | None, max_budget_usd: BudgetUsd | None, *, raise_cap: bool) -> RunState:
+    """The run's caps for this invocation. Only a budget_exceeded resume may raise a stored cap (item 19)."""
+    tokens, dollars = stored.token_cap, Decimal(stored.max_budget_usd) if stored.max_budget_usd is not None else None
+    if tokens is not None and max_tokens is not None and max_tokens != tokens and not (raise_cap and max_tokens > tokens):
+        raise ValueError("--max-tokens differs from the stored token cap")
+    if max_budget_usd is not None and max_budget_usd.amount != dollars and not (
+            raise_cap and dollars is not None and max_budget_usd.amount > dollars):
         raise ValueError("--max-budget-usd differs from the stored dollar allowance")
+    if not raise_cap:
+        return stored
+    return stored.model_copy(update={"token_cap": max_tokens or tokens,
+                                     "max_budget_usd": usd_text(max_budget_usd) if max_budget_usd is not None else stored.max_budget_usd})
 
 
-def require_run_limits(run_state: RunState, checkpoint: Path, max_budget_usd: BudgetUsd | None) -> None:
+def require_run_limits(run_state: RunState, checkpoint: Path, max_tokens: int | None, max_budget_usd: BudgetUsd | None, *,
+                       raise_cap: bool) -> RunState:
     if run_state.token_cap is None:
         raise ValueError(f"Cannot resume {checkpoint} with unknown usage history. Start a new run without --answer and with XDG_STATE_HOME set to a new directory.")
-    require_same_budget(run_state.max_budget_usd, max_budget_usd)
+    return require_same_limits(run_state, max_tokens, max_budget_usd, raise_cap=raise_cap)
 
 
 class IssueLocked(ValueError):
@@ -169,17 +179,27 @@ def issue_lock(thread: str, *, wait: bool = False) -> Generator[None]:
             worker_lock.reset(token)
 
 
-def saved_workspace(checkpoint: Path, thread: str) -> str | None:
-    """The checkout of the issue's saved run, or None when it has none. Blocked admission deletes its checkpoint, so a later Ready starts fresh."""
+def _saved_values(checkpoint: Path, thread: str) -> dict[str, Any] | None:
     if not checkpoint.exists():
         return None
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         saver.serde = checkpoint_serializer()
         saved = saver.get({"configurable": {"thread_id": thread}})
-    if saved is None:
+    return saved["channel_values"] if saved is not None else None
+
+
+def saved_workspace(checkpoint: Path, thread: str) -> str | None:
+    """The checkout of the issue's saved run, or None when it has none. Blocked admission deletes its checkpoint, so a later Ready starts fresh."""
+    if (values := _saved_values(checkpoint, thread)) is None:
         return None
-    run = saved["channel_values"].get("run")
+    run = values.get("run")
     return RunState.model_validate(run).workspace if run is not None else ""
+
+
+def halted_resumably(checkpoint: Path, thread: str) -> bool:
+    """Whether the issue's saved run stopped on a resumable halt, which a Ready label added again resumes (intake)."""
+    values = _saved_values(checkpoint, thread) or {}
+    return bool(values.get("stop")) and values.get("halt") in RESUMABLE_HALTS
 
 
 def run_live_delivery(
@@ -219,14 +239,14 @@ def run_live_delivery(
         run = replace(run, journal=AttemptJournal(connection))
         delivery_config = load_config()
         run_state = RunState()
+        # The operator resumes a run stopped on its budget by raising the cap and adding Ready again (item 19).
+        raise_cap = channels.get("halt") == Halt.budget_exceeded
         if prior is not None:
             run_state = RunState.model_validate(channels["run"])
-            if run_state.token_cap is not None and max_tokens is not None and run_state.token_cap != max_tokens:
-                raise ValueError("--max-tokens differs from the stored token cap")
             if not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS:
-                require_run_limits(run_state, checkpoint, max_budget_usd)
+                run_state = require_run_limits(run_state, checkpoint, max_tokens, max_budget_usd, raise_cap=raise_cap)
             else:
-                require_same_budget(run_state.max_budget_usd, max_budget_usd)
+                require_same_limits(run_state, max_tokens, max_budget_usd, raise_cap=False)
         saved_pin, saved_matt = channels.get("pstack_pin"), channels.get("matt_skills_pin")
         if prior and not channels.get("stop") and (saved_pin is None or saved_matt is None):
             raise ValueError("Cannot resume a delivery checkpoint without its skill pins.")
@@ -287,7 +307,8 @@ def run_live_delivery(
 
         saved = graph.get_state(config, subgraphs=True)
         if saved.values:
-            require_run_limits(RunState.model_validate(saved.values.get("run", RunState())), checkpoint, max_budget_usd)
+            require_run_limits(RunState.model_validate(saved.values.get("run", RunState())), checkpoint, max_tokens, max_budget_usd,
+                               raise_cap=raise_cap)
         saved_values = checkpoint_state(saved.values)
         saved_review = saved_values["review"] if saved_values is not None else None
         if presentation is not None and saved.values:
@@ -370,7 +391,8 @@ def run_live_delivery(
             inside = stage is not None
             before = _checkpoint_before_halt(graph, config, saved_values["path"], stage)
             require_schema_version(before.values, checkpoint, thread)
-            require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_budget_usd)
+            require_run_limits(RunState.model_validate(before.values.get("run", RunState())), checkpoint, max_tokens, max_budget_usd,
+                               raise_cap=raise_cap)
             restored = checkpoint_state(before.values)
             assert restored is not None
             previous_attempts = restored.get("attempts", [])
@@ -402,6 +424,9 @@ def run_live_delivery(
             # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm.
             merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None)
             retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review}
+            if raise_cap:
+                # The rewound step keeps the run's admitted identity and runs within the cap this invocation raised.
+                retained["run"] = require_same_limits(saved_values["run"], max_tokens, max_budget_usd, raise_cap=True)
             if "builder_session" in saved_values:
                 # The builder keeps its conversation for the PR; its fingerprint decides whether the next call resumes it (D5).
                 retained["builder_session"] = saved_values["builder_session"]

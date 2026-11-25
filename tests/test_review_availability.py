@@ -238,7 +238,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
         # D10: unknown usage is charged at the remaining allowance, which stops the run.
         for outcome, halt in (("quota_budget", "budget_exceeded"), ("unknown", "budget_exceeded")):
             with self.subTest(outcome=outcome), TemporaryDirectory(dir=self.root) as directory:
-                result = self.invoke(Path(directory), "gpt", [outcome], 1)
+                result = self.invoke(Path(directory), "gpt", [outcome], 75)
                 self.assertEqual(result["calls"], ["claude-opus-5-5-high"])
                 self.assertEqual(result["result"]["halt"], halt)
                 self.assertEqual(len(result["result"]["review"].review_findings), 0)
@@ -283,14 +283,14 @@ class ReviewerAvailabilityTest(unittest.TestCase):
             root = Path(directory)
             old = self.invoke(root, "claude", ["quota", "cli_missing", "interrupt"], 99, "pending")
             self.assertEqual(old["calls"], ["gpt-6.1-sol-high", "gpt-6.1-terra-high", "grok-4.7-high"])
-            result = self.invoke(root, "claude", ["ran"], 1)
+            result = self.invoke(root, "claude", ["ran"], 75)
             self.assertEqual(result["calls"], [])
             self.assertEqual(result["result"]["halt"], "budget_exceeded")
             self.assertIn("usage_unknown", result["result"]["halt_detail"])
             last = result["result"]["attempts"][-1]
             self.assertEqual((last["model"], last["outcome"]), ("grok-4.7-high", "interrupted"))
             self.assertIn("work_charge", last)
-            again = self.invoke(root, "claude", ["ran"], 1)
+            again = self.invoke(root, "claude", ["ran"], 75)
             self.assertEqual((again["calls"], again["result"]["attempts"]), ([], result["result"]["attempts"]))
 
     def test_rejected_reviews_preserve_accepted_state_and_resume_terminally(self):

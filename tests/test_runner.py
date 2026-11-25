@@ -3107,7 +3107,7 @@ with patch("foreman.runner.load_config", return_value=config):
                   live_run=LiveRun(FakeGitHub(["Ready"]), FakeWorkspace(Path.cwd()), human_login="fixture-owner")))
 '''
         bootstrap = (f"import sys; sys.path[:0] = {[str(Path(__file__).resolve().parents[1]), str(Path(__file__).parent.resolve())]!r}\n")
-        for case, cap, mode, code in (("complete", 1000000, "success", 0), ("cap", 45, "success", 1),
+        for case, cap, mode, code in (("complete", 1000000, "success", 0), ("cap", 45, "success", 75),
                                       ("repaused", 1000000, "pause", 3), ("unknown", 1000000, "unknown", 1)):
             with self.subTest(case=case):
                 root = self.cwd / case

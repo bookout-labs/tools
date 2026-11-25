@@ -26,5 +26,11 @@ class HaltPolicyTest(unittest.TestCase):
 
     def test_merge_halts_retry_and_github_failures_are_routes_not_halts(self):
         self.assertEqual(RESUMABLE_HALTS, {"merge_held", "merge_not_armed", "readiness_unavailable", "env_unavailable", "publish_failed",
-                                           "publication_unreconciled", "git_failed", "implementation_rejected", "review_not_posted"})
+                                           "publication_unreconciled", "git_failed", "implementation_rejected", "review_not_posted",
+                                           "budget_exceeded"})
         self.assertFalse({"pr_conflict", "ci_pending", "ci_red", "queue_rejected"} & {code.value for code in Halt})
+
+    def test_a_budget_halt_resumes_after_the_cap_is_raised(self):
+        # Item 19: the operator raises the cap and adds Ready again, so the halt exits as resumable.
+        self.assertEqual(exit_code(Halt.budget_exceeded), 75)
+        self.assertIn("FOREMAN_MAX_BUDGET_USD", HALTS[Halt.budget_exceeded].reason)

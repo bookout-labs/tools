@@ -200,7 +200,7 @@ class DispatchRecoveryTests(unittest.TestCase):
                             # The call may have launched: charge the worst case once and never relaunch it.
                             self.assertEqual(calls, [])
                             self.assertEqual(result["stop"], "budget_exceeded")
-                            self.assertEqual(run_exit_code(result), 1)
+                            self.assertEqual(run_exit_code(result), 75)
                             self.assertIn("usage_unknown", result["halt_detail"])
                             self.assertEqual([a["outcome"] for a in triage], ["quota", "interrupted"] if mode == "quota" else ["interrupted"])
                             self.assertIn("work_charge", triage[-1])
@@ -220,9 +220,13 @@ class DispatchRecoveryTests(unittest.TestCase):
                                 self.assertEqual(relaunched, [])
                                 self.assertEqual([a["outcome"] for a in triage], ["ran"])
                         self.assertEqual(len({a["attempt_id"] for a in triage}), len(triage))
-                        again = self.invoke(config, checkpoint, "recover", limit)
-                        self.assertEqual(json.loads(again.stdout)["result"], result)
-                        self.assertEqual(json.loads(again.stdout)["calls"], [])
+                        again = json.loads(self.invoke(config, checkpoint, "recover", limit).stdout)
+                        self.assertEqual(again["calls"], [])
+                        if mode in {"entry", "quota"}:
+                            # A budget halt resumes, and with an unchanged cap it stops again before any worker call (item 19).
+                            self.assertEqual((again["result"]["stop"], again["result"]["attempts"]), ("budget_exceeded", result["attempts"]))
+                        else:
+                            self.assertEqual(again["result"], result)
 
     def test_surviving_worker_blocks_a_second_writer(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder:

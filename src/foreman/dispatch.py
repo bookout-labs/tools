@@ -285,6 +285,6 @@ def compile_dispatch() -> CompiledStateGraph[DispatchState, DispatchRun, Dispatc
 
 DECLARATIONS = {"halts": [Halt.budget_exceeded, Halt.invalid_output, Halt.git_failed, Halt.model_dependency_missing, Halt.dirty_worktree],
                 "retries": {"provider_fallback": "eligible configured model order and remaining allowance", "quota_resume": "explicit wake or known provider reset and remaining allowance",
-                            "invalid_answer": "one repair turn in the same session with the exact validation error"}}
+                            "invalid_answer": "one repair turn in the same session with the exact validation error", "budget_resume": "Ready added again after the operator raises the budget cap"}}
 # Calling steps hold this one compiled graph, so introspection finds it nested under each caller.
 DISPATCH = compile_dispatch()
