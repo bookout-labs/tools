@@ -101,7 +101,7 @@ doctor:
     Verify's no_skill route (review.py:72) and the missing label or merge queue found partway through a run. Its full part also runs
     the branch probe that merge_held waits on (item 19).
   quick:
-    when: Run by the command and at every start of a run. A new run runs the GitHub requirements, then the stop read, then the contract requirements at the newly pinned base, all in triage.admit. On a resume the runner (src/foreman/runner.py) runs only the GitHub requirements before it re-enters the graph, so that check has no step or transition, and the halted step then reads the stop as drawn. It reads GitHub and the contract file and starts no container.
+    when: Run by the command and at every start of a run. A new run runs the GitHub requirements, then the stop read and the issue checks, then the contract requirements at the newly pinned base, all in triage.admit. On a resume the runner (src/foreman/runner.py) runs only the GitHub requirements before it re-enters the graph, so that check has no step or transition, and the halted step then reads the stop as drawn. It reads GitHub and the contract file and starts no container.
     requirements:
       github: [the GitHub App is installed on the repository, "FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses. An unset cap uses its default.", the Ready label exists, a merge queue ruleset protects the base branch]
       contract: ["the contract file parses strictly, so an unknown or duplicate key is named, and validates", the verify skill exists at the contract's path]
@@ -272,7 +272,7 @@ stages:
     steps:
       admit:
         actor: Foreman
-        action: Check repository readiness on GitHub, read the issue for a stop, then pin the base, check the contract, and validate the issue and prerequisites
+        action: Check repository readiness on GitHub, read the issue for a stop, validate the issue and prerequisites, then pin the base and check the contract
         result: Doctor's quick check passed, canonical issue identity and pinned base, a stop, or not_ready
         owner: admit
         check: TR1
@@ -300,14 +300,14 @@ stages:
     invariants:
       - GitHub repository identity and run configuration agree.
       - Open dependencies prevent admission and later eligibility is read from GitHub.
-      - Admission runs doctor's quick check, and its full check when the contract file's digest has no green record, before any paid call or build checkout (item 23). A repository that fails either starts no run, and the halt names the one missing requirement and its exact fix. Admit runs doctor's GitHub requirements first, because the stop read needs FOREMAN_HUMAN_LOGIN. It then reads the stop, pins the base, runs doctor's contract requirements, and validates the issue and its prerequisites. Before the stop read Foreman makes no paid call and writes nothing except a not_ready report.
+      - Admission runs doctor's quick check, and its full check when the contract file's digest has no green record, before any paid call or build checkout (item 23). A repository that fails either starts no run, and the halt names the one missing requirement and its exact fix. Admit runs doctor's GitHub requirements first, because the stop read needs FOREMAN_HUMAN_LOGIN. It then reads the stop, validates the issue and its prerequisites, pins the base and runs doctor's contract requirements. Before the stop read Foreman makes no paid call and writes nothing except a not_ready report. A wrong repository or an open dependency stops before the base is pinned, so no build checkout is allocated (TR1).
       - admit accepts a slice of kind revert only when the App filed the issue, its saved marker matches a revert recorded on a Foreman run, and its merge_commit_sha is that run's merge commit. Any other issue carrying kind revert stops invalid_output.
     failure_and_resume:
       halts: [missing_slice, skill_missing, invalid_output, git_failed, not_ready]
       retries: {}
       recovery: A failed readiness requirement stops admission with not_ready. Supply the named requirement, then remove and add Ready. On a resume the checkpoint is kept, not deleted. A new run's not_ready keeps Ready, so remove and add it after the fix. A resumed run's not_ready leaves the run halted under its Stopped label, so add Ready again after the fix. The not_ready report names which. A halt before admission keeps Ready, so only a new label event checks admission again. Missing child payload stops admission. A pstack pin that can't be fetched or exported stops admission with skill_missing, an issue whose identity differs from the assignment or a revert slice that fails the revert check with invalid_output, and a GitHub or checkout failure with git_failed. An open dependency leaves the issue unadmitted. Worker dispatch failures use shared dispatch. The human's answer resumes route.
     implementation: {module: src/foreman/steps/triage.py, entry: compile_stage, max_lines: 110, allowed_imports: [state, stage_output, github, dispatch, doctor], shared: [Forge, dispatch], never_does: [create child issues, edit source]}
-    checks: {TR1: tests/test_runner.py, TR2: tests/test_delivery.py, TR3: tests/test_accept.py, TR4: tests/test_doctor.py, TR5: tests/test_doctor.py, TR6: tests/test_runner.py, TR7: tests/test_doctor.py, TR8: tests/test_accept.py, TR9: tests/test_doctor.py}
+    checks: {TR1: tests/test_runner.py, TR2: tests/test_delivery.py, TR3: tests/test_accept.py, TR4: tests/test_doctor.py, TR5: tests/test_doctor.py, TR6: tests/test_runner.py, TR7: tests/test_doctor.py, TR8: tests/test_accept.py, TR9: tests/test_start.py}
     scenarios:
       TR1: {given: The requested issue names another repository or a dependency is still open, expect: Stop before a paid call or build checkout allocation.}
       TR2: {given: A parent-labelled question and a separately supplied single slice, expect: Route the question to research and the supplied slice to spec.validate.}
