@@ -19,11 +19,12 @@ from foreman.config import load_config
 from foreman.state import CheckpointVersionError
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_skills, checker_reply
-from test_runner import APPROVE, FakeGitHub, worker_reply
+from test_runner import APPROVE, FakeGitHub, confine_host, worker_reply
 
 
 class NpmSmokeTest(unittest.TestCase):
     def exercise(self, mutation='', *, targets=None):
+        confine_host(self)
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
             fake = FakeGitHub()

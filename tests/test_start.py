@@ -20,7 +20,7 @@ from foreman.usd import BudgetUsd
 from foreman.workspace import lock_file
 from skill_fixture import fixture_skills
 from test_delivery import VERIFY_SKILL_PATH
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply, confine_host
 
 THREAD = "example/engine#8"
 SETTINGS = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
@@ -28,6 +28,7 @@ SETTINGS = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
 
 class StartTest(unittest.TestCase):
     def setUp(self):
+        confine_host(self)
         self.root = Path(self.enterContext(TemporaryDirectory()))
         self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.root / "runtime")}))
         self.app = self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))

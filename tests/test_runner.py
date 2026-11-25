@@ -57,6 +57,20 @@ HEAD = "a" * 40
 SYNTHETIC_QUESTION_TOKEN = "ghp_" + "a" * 36
 
 BASE = "b" * 40
+# Verify's drive and a Claude build confine Bash with the host's OS sandbox. These tests fake that host check, which
+# test_claude_check and test_permissions cover, so they run alike on macOS and on a Linux host without bwrap or socat.
+CONFINABLE_HOST = "FOREMAN_TEST_CONFINABLE_HOST"
+
+
+def confine_host(case: unittest.TestCase) -> None:
+    case.enterContext(patch("foreman.adapters.claude.sandboxed"))
+    # A script the test starts imports this module, which fakes the same host check there.
+    case.enterContext(patch.dict("os.environ", {CONFINABLE_HOST: "1"}))
+
+
+if os.environ.get(CONFINABLE_HOST):
+    patch("foreman.adapters.claude.sandboxed").start()
+
 MERGE_COMMIT = "e" * 40
 
 BRANCH = "8-list-items-once"
@@ -831,6 +845,7 @@ class LiveRunnerTest(unittest.TestCase):
         cls.pin = fixture_pin(root / "fixture")
 
     def setUp(self):
+        confine_host(self)
         directory = self.enterContext(TemporaryDirectory())
         self.cwd = Path(directory)
         self.checkpoint = self.cwd / "runs.sqlite3"
@@ -870,8 +885,7 @@ class LiveRunnerTest(unittest.TestCase):
             self.question = result.get("halt_detail", "")
         return result
 
-    @patch("foreman.adapters.claude.sandboxed")
-    def test_verify_feedback_reopens_and_fails_over_without_resetting_cap(self, _confinable):
+    def test_verify_feedback_reopens_and_fails_over_without_resetting_cap(self):
         canary = "syntheticlowentropy"
         token = "ghp_" + "A" * 36
         sensitive = [canary, token, "bearercanary", "YmFzaWNjYW5hcnk=", "KEYBODY"]
@@ -2884,8 +2898,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertIsNone(result["work"].published_head)
                 self.assertEqual(self.github.merge_calls, [])
 
-    @patch("foreman.adapters.claude.sandboxed")
-    def test_a_moved_base_reviews_the_head_again_with_its_verify_evidence(self, _confinable):
+    def test_a_moved_base_reviews_the_head_again_with_its_verify_evidence(self):
         # Merge returns a known checked head to Review. Verify doesn't drive it again, and Review keeps its evidence.
         evidence = {"tested_head": HEAD, "criteria": [{"criterion": "The page lists items.", "result": "passed",
                                                        "observation": "The list showed items.", "evidence": "captures/items.png"}]}
@@ -3456,8 +3469,6 @@ from dataclasses import replace
 from pathlib import Path
 import sys
 from unittest.mock import patch
-# A confinable host, as every Claude implement run needs; the host check has its own test.
-patch("foreman.adapters.claude.sandboxed").start()
 from foreman.cli import main
 from foreman.config import SkillPin, load_config
 from foreman.delivery import LiveRun
@@ -3583,6 +3594,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
 class HaltExitCodeTest(unittest.TestCase):
     def live(self, replies=(), *, snapshots=(), body=None, check="exit 0", preflight="", hold=None, labels=None):
+        confine_host(self)
         directory = self.enterContext(TemporaryDirectory())
         root = Path(directory)
         forge = FakeGitHub(labels)
