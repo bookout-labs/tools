@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import CheckpointTuple
+from langgraph.checkpoint.serde.types import INTERRUPT
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
@@ -183,7 +184,7 @@ def paused_run(checkpoint: Path, thread: str) -> Paused | None:
 
     A stage's pause is saved as the run's pending interrupt, so this reads it without compiling the graph."""
     saved = _saved(checkpoint, thread)
-    pending = [value for _, channel, value in (saved.pending_writes or []) if channel == "__interrupt__"] if saved else []
+    pending = [value for _, channel, value in (saved.pending_writes or []) if channel == INTERRUPT] if saved else []
     if saved is None or not pending:
         return None
     pause: object = pending[0][0].value

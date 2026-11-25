@@ -196,6 +196,13 @@ class AnswerWakeTest(unittest.TestCase):
         self.assertEqual(self.github.variable_reads, reads)
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "ignored")
 
+    def test_a_wake_never_starts_a_run(self):
+        """A wake for an issue with no checkpoint starts nothing. Only Ready starts a run."""
+        reads, writes = list(self.github.variable_reads), list(self.github.status_writes)
+        self.assertEqual(self.command(["wake", "--repo", "Example/Engine", "--issue", "8"])[:2], (0, "not waiting example/engine#8\n"))
+        self.assertEqual((self.github.variable_reads, self.github.status_writes, self.calls), (reads, writes, []))
+        self.assertFalse(self.checkpoint.exists())
+
     def test_a_wake_never_resumes_a_halted_run(self):
         """A wake that finds the run halted, as when an earlier wake continued it, resumes nothing. Only Ready resumes it."""
         self.github.hold = "Holding merges."
