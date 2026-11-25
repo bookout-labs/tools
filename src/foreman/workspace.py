@@ -107,7 +107,6 @@ class WorktreeState:
 class ReviewDiff:
     command: str
     patch: str
-    merge_base: str | None = None
 
 
 ReviewLine = Annotated[tuple[str, int], BeforeValidator(TypeAdapter(tuple[object, ...]).validate_python)]
@@ -601,7 +600,7 @@ class LiveWorkspace:
         if not FULL_SHA.fullmatch(merge_base):
             raise WorktreeInspectionFailed("Git did not report a full merge-base SHA.")
         command = f"# base = PR merge-base {merge_base}\n# head = current verified head {head}\n# Full PR diff: old = merge-base (base); new = head\n{command}"
-        return ReviewDiff(command, os.fsdecode(self._git(*args)), merge_base)
+        return ReviewDiff(command, os.fsdecode(self._git(*args)))
 
     def review_scope(self, base: str, head: str) -> ReviewScope:
         pr = self.review_diff(base, head)
