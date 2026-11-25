@@ -486,11 +486,12 @@ stages:
       - {ref: formal-<area>/SKILL.md, repository: target_repository, when: always, kind: target_skill, lines: null, method: "When the target repository has its own formal verification skill, created by pstack create-formal-verification-skill, run its check on any change that touches the verified code. When the change is intended, update the verification with maintain-formal-verification-skill."}
     inputs:
       run: Intake supplies issue, repo and pinned base, required.
-      plan: Spec supplies one cleared slice, its assumptions and matching candidate revision, required. It carries the saved answers to the run's questions, which is how the answer to the builder's own question reaches it.
-      work: Prepare supplies the attempt container, exclusive checkout, branch and pinned attempt parent before edit.
-      checks: The target contract at the pinned base supplies the check command, image, setup and mutation command, required.
+      plan: Spec supplies one cleared slice, its assumptions and matching candidate revision, required.
+      work: Prepare supplies the attempt container, exclusive checkout, branch and pinned attempt parent before edit. On a repair it also carries the open PR and its head.
+      checks: The target contract at the pinned base supplies the check command, image, setup and mutation command, required. It also carries the accepted tests, the evidence against rejected tests and the surviving mutations, once each exists.
       review: Review or merge supplies PR-bound repair evidence, conditional.
       verify: Verify supplies failed criteria and their evidence, conditional.
+      human_answers: On resume at edit, Foreman supplies the saved answer to implement's gate that the agent posted on the issue under the human's identity, conditional.
     outputs:
       schema: foreman.stage_output.ImplementOutput
       fields: [implementation, no_change, human_question, equivalent_mutations]
@@ -655,7 +656,7 @@ stages:
       run: Intake supplies origin issue identity and issue text, required.
       plan: Spec supplies bound acceptance, the file list and the assumptions, required.
       work: GitHub provides repository, PR identity, full diff base and head, required.
-      checks: Implement supplies exact checked head, required.
+      checks: Implement supplies exact checked head, required, and the equivalent mutations the builder named.
       verify: Verify supplies each criterion's result and evidence for the head. A known checked head that Merge returns for fresh review keeps the evidence already posted for it, required.
       review: Prior settled rulings and findings are context when present.
     outputs:
@@ -863,7 +864,7 @@ dispatch:
     DP7: {given: A run stopped with budget_exceeded and the operator raises the cap and adds Ready again, expect: The run resumes at the interrupted step without a duplicate charge.}
     DP8: {given: "$0.25 of allowance remains and the next response costs $2.94", expect: "Dispatch admits the call with a $0.25 CLI cap, charges the actual $2.94 once, and stops with budget_exceeded before any further call."}
     DP9: {given: "A worker whose scratch root is its checkout, one whose scratch root is a directory inside its checkout, one built with no scratch root, and one whose scratch root is beside its checkout", expect: "The first two are refused before any process starts, and the message names the scratch root and the checkout. The third cannot be built. The fourth runs with TMPDIR inside its scratch root and leaves the checkout unchanged."}
-    DP10: {given: "A live run started from repository variables that calls every procedure's worker", expect: "Each worker's input holds the inputs its procedure names and nothing else from the run. The login, the caps, the builder's saved session and the attempt records are in none of them."}
+    DP10: {given: "Scripted runs that together call every procedure's worker, each started from repository variables", expect: "Each worker's input holds the inputs its procedure names and nothing else from the run. The login, the caps, the ID of the builder's saved session and the record dispatch keeps of each paid call are in none of them. The builder's session is resumed by dispatch, not passed as input."}
 
 # Structural declarations match the actual projection format. A worker procedure can
 # share a policy selector while keeping an independently registered worker identity.
@@ -895,7 +896,7 @@ procedures:
       context: [Slice acceptance criteria and their proofs, assumptions, pinned base tree, related repository checkouts, rejected test evidence]
     skills: []
     output: {schema: foreman.stage_output.AcceptanceTestsOutput, fields: [tests]}
-  implement: {step: implement.edit, role: builder, model_policy: nodes.implement, inputs: [run, plan, work, checks, review, verify]}
+  implement: {step: implement.edit, role: builder, model_policy: nodes.implement, inputs: [run, plan, work, checks, review, verify, human_answers]}
   verify: {step: verify.drive, role: verifier, model_policy: nodes.verify, model_dependency: implement, inputs: [run, plan, work, checks]}
   review: {step: review.inspect, role: reviewer, model_policy: nodes.review, model_dependency: implement, inputs: [run, plan, work, checks, verify, review]}
 
