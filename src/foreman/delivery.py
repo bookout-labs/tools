@@ -16,7 +16,7 @@ from foreman.config import Config, ModelSpec, load_config
 from foreman.contract import parse_contract
 from foreman.dry_run import DRY_CONTRACT, DryRun, ScriptHandler
 from foreman.dispatch import DispatchResult, DispatchRun, Handler
-from foreman.doctor import DEFAULT_TOKEN_CAP
+from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP
 from foreman.github import Forge
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.stage_output import (
@@ -218,7 +218,7 @@ def run_delivery(
     slice: object = None,
     scratch: Path | None = None,
     max_tokens: int = DEFAULT_TOKEN_CAP,
-    max_budget_usd: BudgetUsd | None = None,
+    max_budget_usd: BudgetUsd | None = DEFAULT_BUDGET_USD,
     skills: SkillSource = export_skills,
     commands: list[list[str]] | None = None,
     checkout: Path | None = None,

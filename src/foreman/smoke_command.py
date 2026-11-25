@@ -34,7 +34,8 @@ from foreman.workspace import LiveWorkspace
 
 SMOKE_REPO = "bookout-labs/foreman-smoke"
 SMOKE_TARGETS = (SMOKE_REPO, "bookout-labs/foreman-smoke-npm")
-# The most both runs may spend together. Each target's own caps are its repository variables, and they add up to these.
+# The most both runs may spend together. Each target's repository variables cap one run at 1,000,000 tokens and $1.25,
+# the measured two-round worst case plus a margin, so the two caps add up to more than these totals.
 SMOKE_TOKEN_CAP = 1_500_000  # Two review rounds measured 709,054 and 827,368 tokens.
 SMOKE_CLAUDE_USD = BudgetUsd(Decimal("2"))  # Two review rounds measured $0.93 and $0.63 Claude.
 SMOKE_SECONDS = 900  # Two review rounds took 260 s and 241 s; allow CI observation too.

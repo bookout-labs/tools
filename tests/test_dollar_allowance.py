@@ -163,13 +163,13 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 read = operator_variables("a/b", {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_BUDGET_USD": raw})
                 self.assertEqual(usd_text(read.max_budget_usd), stored)
 
-    def test_run_delivery_stores_canonical_text_or_null(self):
+    def test_run_delivery_stores_canonical_text_and_defaults_to_the_drawn_cap(self):
         bounded = run_delivery(ScriptHandler(), repo="a/b", request="x", max_budget_usd=usd("1.50"))
         self.assertEqual(bounded["run"].max_budget_usd, "1.5")
-        unbounded = run_delivery(ScriptHandler(), repo="a/b", request="x")
-        self.assertIn("run", unbounded)
-        self.assertIsNone(unbounded["run"].max_budget_usd)
-        self.assertNotIn("claude spend", printed(unbounded))
+        # A dry run gets the cap a live run gets with no variable set.
+        default = run_delivery(ScriptHandler(), repo="a/b", request="x")
+        self.assertEqual(default["run"].max_budget_usd, "3")
+        self.assertIn("claude spend $0.0 of $3", printed(default))
 
     def test_printed_spend_counts_only_claude_costs(self):
         base = {"review": ReviewState(), "run": RunState(repo="a/b", max_budget_usd="1"), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}

@@ -343,7 +343,7 @@ class SmokeCommandTest(unittest.TestCase):
         with self.provision() as (root, forge, process, runner, credentials, errors):
             fake = FakeGitHub(labels=[])
             # The smoke repository's own variables hold the human login and its share of the smoke's caps.
-            fake.settings = {'FOREMAN_HUMAN_LOGIN': 'ghost', 'FOREMAN_MAX_TOKENS': '750000', 'FOREMAN_MAX_BUDGET_USD': '1'}
+            fake.settings = {'FOREMAN_HUMAN_LOGIN': 'ghost', 'FOREMAN_MAX_TOKENS': '1000000', 'FOREMAN_MAX_BUDGET_USD': '1.25'}
             transport = Mock(wraps=fake)
             transport.smoke_identity = Mock(return_value=(True, True, True))
             transport.smoke_issues = Mock(return_value=[])
@@ -395,5 +395,5 @@ class SmokeCommandTest(unittest.TestCase):
                 SMOKE_REPO, 12, results[1]['checks'].verified_head,
                 results[1]['review'].review_receipt['id'])
             for result in results:
-                self.assertEqual((result['human_login'], result['run'].token_cap, result['run'].max_budget_usd), ('ghost', 750000, '1'))
+                self.assertEqual((result['human_login'], result['run'].token_cap, result['run'].max_budget_usd), ('ghost', 1000000, '1.25'))
             self.assertEqual([call['node'] for call in handler.calls], ['triage', 'spec_check', 'implement', 'verify', 'review'])
