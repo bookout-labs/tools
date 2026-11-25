@@ -216,6 +216,8 @@ class LiveWatchTest(unittest.TestCase):
                 result = {'defaultBranchRef': {'name': 'main'}}
             elif args[1] == 'variable':
                 result = [{'name': 'FOREMAN_HUMAN_LOGIN', 'value': 'fixture-owner'}]
+            elif endpoint.endswith('/collaborators/fixture-owner/permission'):
+                result = {'permission': 'write', 'role_name': 'write'}
             elif '/rules/branches/' in endpoint:
                 result = [{'type': 'merge_queue', 'parameters': {'merge_method': 'SQUASH'}}]
             elif '--method' in args:
