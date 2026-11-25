@@ -28,10 +28,6 @@ def fixture_process(args, name, exit_code):
                             stderr.read_text() if stderr.is_file() else "")
 
 
-def claude_review_stream(envelope, reads=()):  # TEMP-PROBE
-    return json.dumps(envelope)  # TEMP-PROBE
-
-
 @contextmanager
 def worker_process(completed=None):
     """Stand in for the worker's process group. Yields the Popen mock; its `prompt` is what the worker read on stdin."""
