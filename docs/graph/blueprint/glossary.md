@@ -12,7 +12,7 @@
 | Attempt container | The container built from the contract file's image and setup commands. Workspace owns the run's container and rebuilds it when the run has none. The worker CLIs run on the Foreman host, where their model credentials stay. Every shell command the builder, the acceptance test writer, the verifier and the reviewer run goes into it, so they can start the app and its related services. A call whose shell cannot be routed into it fails closed and runs no command on the host. It reaches the network only while Foreman runs the setup commands, unless the contract's network is run because the app uses remote test services. After setup it has loopback only. |
 | Blueprint | The versioned design the human approves for future Foreman runs. |
 | Run | One execution for a GitHub issue under a pinned blueprint and runtime release. |
-| Start | Foreman beginning a new run or resuming a halted one. A new run begins on a Ready label event, when merge.release starts a dependent, when a prerequisite that no Foreman run owns closes, or when merge.revert files a revert issue. A resume begins only on a Ready label event. |
+| Start | Foreman beginning a new run or resuming a halted one. A new run begins on a Ready label event, when merge.release starts a dependent, when a prerequisite that no Foreman run owns closes, or when merge.revert files a revert issue. Resuming a halted run begins only on a Ready label event. An answer or a wake that continues an open run is not a start, even where a step says it resumes. |
 | Stage | One of seven LangGraph subgraphs. A stage owns a result and its permitted routes. |
 | Step | A checkpointed node inside a stage or shared dispatch. |
 | Worker | An assigned role that uses a CLI and configured model policy to perform a procedure. |
@@ -31,7 +31,7 @@
 | Stop | An issue comment under the human's identity whose first line is `foreman stop`, created after Ready was last added to the issue. Each stage's first step reads the issue for one before any paid call or write and ends the run cancelled. At a start, doctor's GitHub requirements come first. |
 | Gate | A saved pause for the human's answer to a specific unresolved choice. The coordinator or personal agent posts the answer or cancellation as an issue comment under the human's identity. |
 | Settled ruling | A saved human answer that later checks of the same issue get as context and cite by ID. |
-| Halt | A named stop with evidence. The run keeps its checkpoint, and adding Ready resumes it at the halted step. A new run's not_ready is the exception: no run starts and nothing is kept. A provider or GitHub wait is not a halt and keeps the run open. |
+| Halt | A named stop with evidence. The run keeps its checkpoint, and adding Ready resumes it at the halted step. not_ready is the exception. At admission it starts no run and keeps nothing. From the runner it is not a halt: a new run keeps nothing, and a resumed run keeps its earlier halt. A provider or GitHub wait is not a halt and keeps the run open. |
 | not_ready | The stop when doctor's check fails at a start. It names the missing requirement and its fix. A new run does not start, and a resumed run keeps its place. Foreman reports it in the issue's status comment. |
 | Checkpoint | LangGraph's saved continuation and input records for this run. |
 | Paid call | One worker CLI call that spends model tokens. Dispatch reserves and charges each one. |
