@@ -19,7 +19,7 @@ from foreman.budget import claude_spend, work_tokens
 from foreman.cli import main
 from foreman.state import SCHEMA_VERSION, DeliveryResult, checkpoint_serializer
 from foreman.credentials import CredentialFailure, credentials, git_auth
-from foreman.delivery import FIXTURE_HUMAN, LiveRun
+from foreman.delivery import LiveRun
 from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, STOPPED_LABEL, ForgeError, LiveForge
 from foreman.process_group import owned_group, signals_end_foreman
 from foreman.redaction import redact
@@ -34,6 +34,8 @@ from foreman.workspace import LiveWorkspace
 
 SMOKE_REPO = "bookout-labs/foreman-smoke"
 SMOKE_TARGETS = (SMOKE_REPO, "bookout-labs/foreman-smoke-npm")
+# The most both runs may spend together. Each target's repository variables cap one run at 1,000,000 tokens and $1.25,
+# the measured two-round worst case plus a margin, so the two caps add up to more than these totals.
 SMOKE_TOKEN_CAP = 1_500_000  # Two review rounds measured 709,054 and 827,368 tokens.
 SMOKE_CLAUDE_USD = BudgetUsd(Decimal("2"))  # Two review rounds measured $0.93 and $0.63 Claude.
 SMOKE_SECONDS = 900  # Two review rounds took 260 s and 241 s; allow CI observation too.
@@ -61,7 +63,7 @@ def run_smoke(directory: Path, deadline: float) -> int:
         target.mkdir(exist_ok=True)
         try:
             with smoke_lock(repo):
-                code, used, spent = _run_smoke(target, deadline, repo, tokens, BudgetUsd(dollars))
+                code, used, spent = _run_smoke(target, deadline, repo)
         except (ForgeError, OSError) as exc:
             print(redact(str(exc)), file=sys.stderr, flush=True)
             print(f"smoke {repo} exit 78 lock attempt prerequisite", flush=True)
@@ -110,8 +112,8 @@ def npm_contract(root: Path) -> None:
     assert list((root / "src").glob("*.js")), "production library missing"
 
 
-def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars: BudgetUsd) -> tuple[int, int | None, Decimal | None]:
-    """Provision first, then exercise the normal live runner and its watcher."""
+def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | None, Decimal | None]:
+    """Provision first, then exercise the normal live runner and its watcher. The run reads its login and caps from the repository's variables."""
     verdict = SmokeVerdict(78, "bootstrap", "prerequisite")
     used: int | None = 0
     spent: Decimal | None = Decimal(0)
@@ -156,12 +158,9 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
             subprocess.run(["python", "-c", "import sys; assert sys.version_info[:2] == (3, 12)"], capture_output=True, check=True)
         issue = create_smoke_issue(forge, repo)
         request = f"Add smoke_{issue}.txt containing exactly 'smoke {issue}\\n'. Change no other files."
-        print(f"smoke issue {issue}; tokens {tokens}; Claude ${dollars.amount}; deadline {SMOKE_SECONDS}s. "
-              "Other providers have no dollar cap.", flush=True)
-        live = LiveRun(forge, LiveWorkspace(root, repo), human_login=FIXTURE_HUMAN)
-        command = ["run", "delivery", "--repo", repo, "--issue", str(issue), "--request", request, "--human-login", FIXTURE_HUMAN,
-                   "--preflight", "npm ci" if npm else "",
-                   "--max-tokens", str(tokens), "--max-budget-usd", str(dollars.amount)]
+        print(f"smoke issue {issue}; deadline {SMOKE_SECONDS}s. Other providers have no dollar cap.", flush=True)
+        live = LiveRun(forge, LiveWorkspace(root, repo))
+        command = ["run", "delivery", "--repo", repo, "--issue", str(issue), "--request", request]
         checkpoint = directory / "checkpoint.sqlite3"
         if npm:
             verdict = SmokeVerdict(1, "checkpoint.refusal_guidance", "old exact issue")
@@ -195,7 +194,6 @@ def _run_smoke(directory: Path, deadline: float, repo: str, tokens: int, dollars
                 result = run_live_delivery(repo=repo, issue=issue, request=request,
                                            checkpoint=directory / "checkpoint.sqlite3", dispatcher=CliWorker(root, scratch_root=directory),
                                            run=live,
-                                           max_tokens=tokens, max_budget_usd=dollars,
                                            log=lambda message: print(redact(message), flush=True))
             # Arm waits for the checks. Once armed, the queued pull request is the smoke's end point.
             if result["stop"] != "merge_pending" or result.get("merge", MergeState()).status == "armed":

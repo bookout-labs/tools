@@ -283,7 +283,7 @@ class QuickCheckTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(TemporaryDirectory())).resolve()
 
-    def test_each_missing_requirement_stops_admission_not_ready_and_no_run_starts(self):
+    def test_each_missing_requirement_is_named_with_its_fix_and_no_run_starts(self):
         for requirement, (missing, fix) in zip(QUICK, self.MISSING, strict=True):
             with self.subTest(requirement):
                 checkpoint, thread = self.root / f"{QUICK.index(requirement)}.sqlite3", issue_thread("Example/Engine", 8)

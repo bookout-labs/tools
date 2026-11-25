@@ -188,8 +188,8 @@ class NpmSmokeTest(unittest.TestCase):
                 self.assertEqual([c.args[2] for c in run.call_args_list], list(smoke.SMOKE_TARGETS))
                 args = run.call_args.args
                 self.assertEqual(args[1], deadline)
-                self.assertEqual(args[3], smoke.SMOKE_TOKEN_CAP - 100)
-                self.assertEqual(args[4].amount, Decimal('1.75'))
+                if expected != 1:
+                    self.assertIn('smoke aggregate work tokens 300; Claude $0.75', output.getvalue())
                 self.assertNotEqual(run.call_args_list[0].args[0], args[0])
                 self.assertIn(smoke.SMOKE_TARGETS[1], output.getvalue())
                 self.assertEqual(lock.call_count, 2)
@@ -207,7 +207,6 @@ class NpmSmokeTest(unittest.TestCase):
              redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()):
             self.assertEqual(smoke.run_smoke(Path(directory), time.monotonic() + 30), 78)
             self.assertEqual([c.args[2] for c in run.call_args_list], [smoke.SMOKE_TARGETS[1]])
-            self.assertEqual(run.call_args.args[3], smoke.SMOKE_TOKEN_CAP)
             self.assertIn(f'smoke {smoke.SMOKE_TARGETS[0]} exit 78 lock attempt prerequisite', output.getvalue())
 
     def test_missing_npm_is_unavailable_before_dispatch(self):

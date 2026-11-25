@@ -59,7 +59,7 @@ class DryRunTests(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             _print_run_rows(walk(ScriptHandler(triage="needs_human")), dry_run=True)
-        self.assertRegex(transcript(output.getvalue()), "^triage claude-opus-5-5-high\ndone needs_human\nWhich scope should this change cover\\?\n\n"
+        self.assertRegex(transcript(output.getvalue()), "^claude spend \\$0\\.0 of \\$3\ntriage claude-opus-5-5-high\ndone needs_human\nWhich scope should this change cover\\?\n\n"
                          "Reply on the issue under the configured GitHub identity. Start with foreman answer [0-9a-f-]{71} and")
 
     def test_transcript_records_commands_without_running_them(self):
@@ -67,7 +67,8 @@ class DryRunTests(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             _print_run_rows(walk(ScriptHandler(), commands=commands), commands=commands, dry_run=True)
-        self.assertEqual(transcript(output.getvalue()), """dry run: git switch -c '<issue>-board-saves-a-move' 'refs/remotes/origin/<default-branch>'
+        self.assertEqual(transcript(output.getvalue()), """claude spend $0.0 of $3
+dry run: git switch -c '<issue>-board-saves-a-move' 'refs/remotes/origin/<default-branch>'
 dry run: git add --all
 dry run: git commit -m '<issue>: Board saves a move
 

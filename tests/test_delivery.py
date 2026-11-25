@@ -128,7 +128,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(
             lambda *_: Outcome("ran", {
                 "triage": "supplied_slice", "work_kind": "feature", "human_question": None, "slice": {**SLICES[0], "depends_on": ["Other"]},
-            }, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1)),
+            }, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)),
             slice=None,
         )
         self.assertEqual(result["path"], ["triage"])

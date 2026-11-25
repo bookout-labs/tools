@@ -10,15 +10,17 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.cli import DEFAULT_BUDGET_USD, RunSettings, main
+from foreman.cli import main
 from foreman.contract import CONTRACT_PATH
-from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun
+from foreman.delivery import LiveRun
+from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, OperatorVariables, operator_variables
 from foreman.github import VariablesUnreadable
 from foreman.runner import IssueLocked, issue_lock, saved_workspace
 from foreman.stage_output import spec_digest
 from foreman.state import checkpoint_serializer
 from foreman.usd import BudgetUsd
 from foreman.workspace import lock_file
+from foreman.budget import claude_spend, work_tokens
 from skill_fixture import fixture_skills
 from test_delivery import VERIFY_SKILL_PATH
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply, confine_host
@@ -82,17 +84,13 @@ class StartTest(unittest.TestCase):
         self.assertEqual(refused.exception.code, 2)
 
     def test_settings_default_and_parse(self):
-        seen = []
-        with patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: seen.append(kwargs) or {"stop": "merged"}):
-            self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "4.50"})[0], 0)
-            self.assertEqual(self.start()[0], 0)
-        self.assertEqual([(s["preflight"], s["max_tokens"], s["max_budget_usd"]) for s in seen], [
-            ("", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("4.50"))),
-            ("", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("3"))),
-        ])
-        self.assertNotIn("check", seen[0])
+        self.assertEqual(operator_variables("Example/Engine", {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "4.50"}),
+                         OperatorVariables("fixture-owner", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("4.50")), ""))
+        self.assertEqual(operator_variables("Example/Engine", SETTINGS), OperatorVariables("fixture-owner", DEFAULT_TOKEN_CAP, DEFAULT_BUDGET_USD, ""))
         # The drawing's defaults for an unset cap: 3 dollars and 20,000,000 work tokens.
-        self.assertEqual((DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP), ("3", 20_000_000))
+        self.assertEqual((DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP), (BudgetUsd(Decimal("3")), 20_000_000))
+        self.assertEqual(self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])[0], 0)
+        self.assertEqual((self.stored()[0].token_cap, self.stored()[0].max_budget_usd), (DEFAULT_TOKEN_CAP, "3"))
 
     def test_run_settings_read_only_the_operator_variables(self):
         reads = []
@@ -102,7 +100,7 @@ class StartTest(unittest.TestCase):
                 reads.append(key)
                 return super().get(key, default)
 
-        RunSettings.from_variables("Example/Engine", Recorded({**SETTINGS, "FOREMAN_CHECK": "exit 0", "FOREMAN_MERGE_HOLD": "x"}))
+        operator_variables("Example/Engine", Recorded({**SETTINGS, "FOREMAN_CHECK": "exit 0", "FOREMAN_MERGE_HOLD": "x"}))
         # FOREMAN_PREFLIGHT stays until the contract's setup commands replace it. FOREMAN_MERGE_HOLD is read live at arm.
         self.assertEqual(set(reads), {"FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD", "FOREMAN_PREFLIGHT"})
 
@@ -127,11 +125,33 @@ class StartTest(unittest.TestCase):
                 self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
                 self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
         with patch.object(self.forge, "variables", side_effect=VariablesUnreadable("HTTP 403")), \
-                patch("foreman.cli.run_live_delivery") as run, contextlib.redirect_stderr(io.StringIO()) as err:
+                contextlib.redirect_stderr(io.StringIO()) as err:
             code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.root / "runs.sqlite3",
-                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"))
+                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills))
         self.assertEqual((code, "HTTP 403" in err.getvalue()), (1, True))
-        run.assert_not_called()
+        self.assertEqual(self.worker_calls, 0)
+        self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
+
+    def test_a_github_requirement_stops_in_the_runner_and_a_contract_requirement_in_admit(self):
+        """TR11: a new run's start in a repository missing a GitHub requirement, and one missing a contract requirement. The
+        first stops in the runner before the graph and the second in triage.admit. Each reports not_ready on the issue,
+        keeps Ready and starts no run or paid call."""
+        del self.workspace.base_files[CONTRACT_PATH]
+        self.forge.repository_labels = set()
+        pinned = patch.object(self.workspace, "pin_base", wraps=self.workspace.pin_base)
+        with pinned as pin:
+            self.assertEqual(self.start()[0], 1)
+        # The runner's GitHub check comes first, so the graph never pinned a base or read the contract.
+        pin.assert_not_called()
+        self.assertIn("Not ready: Example/Engine has no Ready label.", self.forge.status[("Example/Engine", 8)])
+        self.forge.repository_labels = {"Ready"}
+        with pinned as pin:
+            self.assertEqual(self.start()[0], 1)
+        pin.assert_called_once()
+        self.assertIn(f"Not ready: the contract file {CONTRACT_PATH} is not a tracked file", self.forge.status[("Example/Engine", 8)])
+        self.assertEqual((self.worker_calls, self.forge.label_calls), (0, []))
+        self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
+        self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
 
     def test_a_missing_setting_is_commented_once_while_ready_waits(self):
         for _ in range(2):
@@ -160,11 +180,11 @@ class StartTest(unittest.TestCase):
         self.assertEqual(code, 75, out + err)
         self.assertEqual((self.stored()[0].token_cap, self.worker_calls), (1, 1))
         self.forge.ready_again(8)
-        # An unchanged cap stops again before any worker call, and a lowered one is refused.
+        # An unchanged cap stops again before any worker call. A lowered dollar cap becomes the run's cap.
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"})[0], 75)
         self.forge.ready_again(8)
-        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1", "FOREMAN_MAX_BUDGET_USD": "2"})[0], 1)
-        self.assertEqual(self.worker_calls, 1)
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1", "FOREMAN_MAX_BUDGET_USD": "2"})[0], 75)
+        self.assertEqual((self.stored()[0].max_budget_usd, self.worker_calls), ("2", 1))
         self.forge.ready_again(8)
         # The halted triage answer was never applied, so the resumed route asks again, and the plan checker answers too.
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"}, replies[1:])
@@ -176,6 +196,9 @@ class StartTest(unittest.TestCase):
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
 
     def test_a_resume_refused_by_doctor_keeps_its_halt_and_resumes_once_the_setting_is_fixed(self):
+        """TR9: a run halted budget_exceeded, the operator sets FOREMAN_MAX_BUDGET_USD to 4.5o and adds Ready, then corrects
+        it and adds Ready again. The first start reports not_ready naming the variable and its fix, makes no paid call and keeps
+        the checkpoint and its budget_exceeded halt. The second resumes at the interrupted step within the corrected cap."""
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])
         self.assertEqual(code, 75, out + err)
         halted = self.stored()
@@ -202,6 +225,27 @@ class StartTest(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         self.assertIn("done merged", out)
         self.assertEqual(self.stored()[0].max_budget_usd, "4.5")
+
+    def test_a_cap_below_what_the_run_spent_stops_at_the_first_reservation(self):
+        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])
+        self.assertEqual(code, 75, out + err)
+        with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
+            saver.serde = checkpoint_serializer()
+            attempts = saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]["attempts"]
+        spent_tokens, spent_dollars = work_tokens(attempts), claude_spend(attempts)
+        assert spent_tokens is not None and spent_dollars is not None
+        self.assertGreater(spent_dollars, Decimal("0.001"))
+        for variables in ({"FOREMAN_MAX_TOKENS": str(spent_tokens - 1)},
+                          {"FOREMAN_MAX_TOKENS": "900000", "FOREMAN_MAX_BUDGET_USD": "0.001"}):
+            with self.subTest(variables=variables):
+                self.forge.ready_again(8)
+                code, out, err = self.start({**SETTINGS, **variables})
+                self.assertEqual(code, 75, out + err)
+                self.assertIn("done budget_exceeded", out)
+                self.assertEqual(self.worker_calls, 1)
+                run = self.stored()[0]
+                self.assertEqual((str(run.token_cap), run.max_budget_usd),
+                                 (variables["FOREMAN_MAX_TOKENS"], variables.get("FOREMAN_MAX_BUDGET_USD", "3")))
 
     def test_ready_again_resumes_in_the_saved_checkout_and_a_new_issue_in_its_managed_one(self):
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])[0], 75)

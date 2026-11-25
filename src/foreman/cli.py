@@ -1,9 +1,8 @@
 """Command line for the foreman tool."""
 
 import argparse
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
-from decimal import Decimal
+from collections.abc import Callable
+from dataclasses import replace
 from importlib.resources import files
 import json
 import os
@@ -12,16 +11,16 @@ import re
 import shlex
 import sys
 from tempfile import TemporaryDirectory
-from typing import TextIO, TypeVar, assert_never
+from typing import TextIO, assert_never
 
 from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
 from foreman.state import ReviewState, ChecksState, DeliveryResult
-from foreman.delivery import DEFAULT_TOKEN_CAP, GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
+from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
-from foreman.doctor import QUICK, NotReady, contract, operator_variables, positive_budget, positive_tokens, repository
+from foreman.doctor import QUICK, NotReady, contract, repository
 from foreman.dry_run import ScriptHandler
 from foreman.github import Forge, ForgeError, LiveForge
 from foreman.pointer import PointerError, load_pointer
@@ -29,7 +28,6 @@ from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
 from foreman.runner import AnswerError, IssueLocked, RunPresentation, halted_resumably, issue_lock, issue_thread, run_live_delivery, saved_workspace
-from foreman.usd import BudgetUsd
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
@@ -166,45 +164,6 @@ def _print_run_rows(
         write_done()
 
 
-# Joe, 2026-11-23 on #26: "Cap 3". A repository raises it with FOREMAN_MAX_BUDGET_USD.
-DEFAULT_BUDGET_USD = "3"
-
-
-T = TypeVar("T")
-
-
-def cap_flag(parse: Callable[[str], T], message: str) -> Callable[[str], T]:
-    """Doctor's cap parser as an argparse type. argparse prints an ArgumentTypeError's message but replaces a ValueError's."""
-    def parsed(raw: str) -> T:
-        try:
-            return parse(raw)
-        except ValueError:
-            raise argparse.ArgumentTypeError(message) from None
-    return parsed
-
-
-@dataclass(frozen=True)
-class RunSettings:
-    """An unattended run's settings, from the target repository's GitHub Actions variables. The check comes from its contract file."""
-    preflight: str
-    max_tokens: int | None
-    max_budget_usd: BudgetUsd | None
-    # Answers and stop requests count only from this login.
-    human_login: str
-
-    @classmethod
-    def from_variables(cls, repo: str, variables: Mapping[str, str]) -> "RunSettings":
-        """Variables doctor finds not ready leave no login and no caps: doctor's quick check refuses the run from the same
-        parser before it starts or resumes, so they are never used."""
-        try:
-            operator = operator_variables(repo, variables)
-        except NotReady:
-            return cls(preflight=variables.get("FOREMAN_PREFLIGHT", ""), max_tokens=None, max_budget_usd=None, human_login="")
-        return cls(preflight=variables.get("FOREMAN_PREFLIGHT", ""),
-                   max_tokens=operator.max_tokens if operator.max_tokens is not None else DEFAULT_TOKEN_CAP,
-                   max_budget_usd=operator.max_budget_usd or BudgetUsd(Decimal(DEFAULT_BUDGET_USD)), human_login=operator.human_login)
-
-
 def main(
     argv: list[str] | None = None,
     *,
@@ -236,13 +195,8 @@ def main(
     run.add_argument("--watch-repo", default="bookout-labs/tools")
     run.add_argument("--issue", type=int)
     run.add_argument("--request")
-    run.add_argument("--human-login", default=os.environ.get("FOREMAN_HUMAN_LOGIN", ""),
-                     help="the GitHub login whose issue comments answer or stop the run (default: FOREMAN_HUMAN_LOGIN)")
-    run.add_argument("--preflight", default="")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--answer")
-    run.add_argument("--max-tokens", type=cap_flag(positive_tokens, "--max-tokens must be positive"), help="cap uncached input + cache creation + output work tokens")
-    run.add_argument("--max-budget-usd", type=cap_flag(positive_budget, "--max-budget-usd must be finite and positive"))
 
     start = commands.add_parser("start", help="start an issue's run from Ready with its repository's settings")
     start.add_argument("--repo", required=True)
@@ -320,10 +274,8 @@ def main(
     state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
     store = checkpoint or state_home / "foreman" / "checkpoints.sqlite3"
 
-    def live(repo: str, issue: int, settings: RunSettings, workspace: LiveWorkspace, *,
-             answer: str | None = None, request: str | None = None) -> int:
-        target = live_run or LiveRun(LiveForge(), workspace, settings.human_login)
-        target = replace(target, check_log=_write_check_log, human_login=settings.human_login)
+    def live(repo: str, issue: int, workspace: LiveWorkspace, *, answer: str | None = None, request: str | None = None) -> int:
+        target = replace(live_run or LiveRun(LiveForge(), workspace), check_log=_write_check_log)
         dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
 
         def reported(result: DeliveryResult) -> None:
@@ -335,18 +287,15 @@ def main(
                 result = run_live_delivery(
                     repo=repo,
                     issue=issue,
-                    preflight=settings.preflight,
                     checkpoint=store,
                     dispatcher=dispatcher,
                     request=request,
                     run=target,
                     answer=answer,
                     presentation=presentation,
-                    max_tokens=settings.max_tokens,
                     watch_repo=args.watch_repo,
                     report=reported,
                     log=lambda message: _write_run_log(message, file=sys.stderr),
-                    max_budget_usd=settings.max_budget_usd,
                 )
         except (AnswerError, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
@@ -371,12 +320,10 @@ def main(
                     # A repeated delivery never resumes a running, paused, waiting or finished run.
                     print(f"already started {thread}")
                     return 0
-                forge = live_run.forge if live_run is not None else LiveForge()
-                settings = RunSettings.from_variables(args.repo, forge.variables(args.repo))
-                # Ready added again resumes a halted run in its saved checkout with the repository's current settings.
+                # Ready added again resumes a halted run in its saved checkout. The runner reads the repository's settings.
                 managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
                 workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo)
-                return live(args.repo, args.issue, settings, workspace)
+                return live(args.repo, args.issue, workspace)
         except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
@@ -389,8 +336,6 @@ def main(
             ScriptHandler(),
             repo=args.repo,
             request=args.request or f"Issue #{args.issue}",
-            max_tokens=args.max_tokens if args.max_tokens is not None else DEFAULT_TOKEN_CAP,
-            max_budget_usd=args.max_budget_usd,
             commands=presentation.commands,
         )
         print("pstack pin not checked (dry run)")
@@ -408,13 +353,9 @@ def main(
         with issue_lock(thread):
             # A resume uses its checkout from start, even before admission created it.
             saved = saved_workspace(store, thread)
-            if not args.human_login.strip():
-                run.error("a live run requires --human-login or FOREMAN_HUMAN_LOGIN, the login whose comments answer it")
             managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
             workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo)
-            return live(args.repo, args.issue, RunSettings(preflight=args.preflight, max_tokens=args.max_tokens,
-                                                           max_budget_usd=args.max_budget_usd, human_login=args.human_login.strip()), workspace,
-                        answer=args.answer, request=args.request)
+            return live(args.repo, args.issue, workspace, answer=args.answer, request=args.request)
     except IssueLocked as exc:
         _write_run_log(str(exc), file=sys.stderr)
         return 1

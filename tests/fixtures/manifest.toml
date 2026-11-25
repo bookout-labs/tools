@@ -1221,11 +1221,11 @@ kind = "captured_run"
 tool = "Python typing.get_type_hints"
 version = "3.14.7"
 argv = ["python", "-c", "import json; from typing import get_type_hints; from foreman.delivery import DeliveryState; print(json.dumps(sorted(get_type_hints(DeliveryState))))"]
-notes = "State channel inventory captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73, plus the verify channel M8b (#251) adds at schema 21."
+notes = "State channel inventory captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73, plus the verify channel M8b (#251) adds at schema 21 and the human_login channel S8b (#314) adds at schema 24."
 
 [fixtures."stage-calls.json"]
 tool = "Foreman adapter Call capture with scripted responses"
-version = "418dceb4027312758728c63c5810e24170185ece"
+version = "6fed43ffe25075db0af794fad2003ef32375c0c8"
 kind = "captured_run"
 argv = ["python", "-"]
-notes = "Recaptured test_stage_declarations.capture() for issue #288 from main 418dceb40, whose dry review scope now names a full diff read, so only review calls changed. Stable UUIDs and symbolic method roots. Each value is SHA256 of json.dumps(case, sort_keys=True), including brief and final prompt digests, schema, grants, models and method order. No model CLI was invoked."
+notes = "Recaptured test_stage_declarations.capture() for issue #314 (S8b) on main fece23306 plus S8b. Schema 24 changes only the schema_version each prompt's state carries; every hashed input is otherwise identical, and none carries the human login. Stable UUIDs and symbolic method roots. Each value is SHA256 of json.dumps(case, sort_keys=True), including brief and final prompt digests, schema, grants, models and method order. No model CLI was invoked."

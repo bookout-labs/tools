@@ -3,6 +3,7 @@ import contextlib
 from decimal import Decimal
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -15,12 +16,13 @@ from langgraph.types import Overwrite
 
 from foreman.adapters import Outcome, Usage
 from foreman.budget import CostUnknown, Exhausted, Remaining, dollar_admission
-from foreman.cli import _print_run, main
+from foreman.cli import _print_run
 from foreman.delivery import LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from foreman.runner import run_live_delivery, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
-from foreman.usd import BudgetUsd
+from foreman.usd import BudgetUsd, usd_text
+from foreman.doctor import NotReady, operator_variables
 from foreman.workspace import WorkspaceError
 from tests.skill_fixture import skill_fixture
 from test_runner import FakeGitHub, FakeWorkspace, planning_answer_env
@@ -67,6 +69,7 @@ class DollarAllowanceTests(unittest.TestCase):
 from dataclasses import replace
 from pathlib import Path
 import json
+import os
 import subprocess
 import sys
 from unittest.mock import patch
@@ -104,7 +107,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     checkpoint = root / "allowance.sqlite"
                     log = root / "workers.log"
 
-                    def invoke(phase, *flags, expected, env=None):
+                    def invoke(phase, *flags, expected, env=None, settings):
+                        # The fake forge in the subprocess serves these repository variables.
+                        env = {**(env or os.environ), "FOREMAN_FIXTURE_SETTINGS": json.dumps(settings)}
                         process = subprocess.run(
                             [sys.executable, "-c", bootstrap + script, str(checkpoint), config.pstack.model_dump_json(),
                              phase, "run", "delivery", "--repo", "a/b", "--issue", "8", *flags],
@@ -122,65 +127,49 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         """A quota pause keeps its attempts in the nested dispatch checkpoint."""
                         with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                             saver.serde = checkpoint_serializer()
-                            graph = compile_delivery(ScriptHandler(), config, run=LiveRun(FakeGitHub(), FakeWorkspace(root), human_login="fixture-owner"),
+                            graph = compile_delivery(ScriptHandler(), config, run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
                                                      checkpointer=saver)
                             return snapshot_result(graph.get_state(THREAD, subgraphs=True))["attempts"]
 
-                    initial_flags = ("--max-budget-usd", "1.50") if stored else ()
-                    first = invoke(pause, *initial_flags, expected=3 if pause == "needs_human" else 75)
+                    settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner", **({"FOREMAN_MAX_BUDGET_USD": "1.50"} if stored else {})}
+                    allowance = stored or "3"
+                    first = invoke(pause, expected=3 if pause == "needs_human" else 75, settings=settings)
                     self.assertIn("paused " + pause, first.stdout)
-                    self.assertEqual(saved()["run"].max_budget_usd, stored)
+                    self.assertEqual(saved()["run"].max_budget_usd, allowance)
                     before = log.read_text()
-                    snapshot, attempts = saved(), saved_attempts()
+                    attempts = saved_attempts()
                     answer = ("--answer", "Only open items.") if pause == "needs_human" else ()
                     relayed = planning_answer_env(first.stdout, "Only open items.") if answer else None
-                    rejected = invoke("quota", *answer, "--max-budget-usd", "2", expected=1, env=relayed)
-                    self.assertIn("--max-budget-usd differs from the stored dollar allowance", rejected.stderr)
-                    self.assertEqual(log.read_text(), before)
-                    self.assertEqual(saved(), snapshot)
-                    for flags in ((), ("--max-budget-usd", "1.500")) if stored else ((),):
-                        resumed = invoke("quota", *answer, *flags, expected=75, env=relayed)
-                        answer = ()
-                        self.assertIn("restored ", resumed.stdout)
-                        self.assertIn("paused quota_exhausted", resumed.stdout)
-                        self.assertGreater(len(log.read_text()), len(before))
-                        new_calls = [json.loads(line) for line in log.read_text()[len(before):].splitlines()]
-                        if stored:
-                            claude = next(args for args in new_calls if args[0] == "claude")
-                            prior_costs = [Decimal(repr(a["usage"]["cost_usd"])) for a in attempts
-                                           if a["model"].startswith("claude-")]
-                            expected = Decimal(stored) - sum(prior_costs)
-                            self.assertEqual(claude.count("--max-budget-usd"), 1)
-                            self.assertEqual(Decimal(claude[claude.index("--max-budget-usd") + 1]), expected)
-                        self.assertTrue(all("--max-budget-usd" not in args for args in new_calls if args[0] != "claude"))
-                        before = log.read_text()
-                        snapshot, attempts = saved(), saved_attempts()
-                        self.assertEqual(saved()["run"].max_budget_usd, stored)
-                        if stored:
-                            self.assertIn("claude spend", resumed.stdout)
-                            self.assertIn("of $1.5", resumed.stdout)
-                        else:
-                            self.assertNotIn("claude spend", resumed.stdout)
+                    # The operator changes the cap while the run waits. The invocation that continues it reads no variable.
+                    resumed = invoke("quota", *answer, expected=75, env=relayed, settings={**settings, "FOREMAN_MAX_BUDGET_USD": "2"})
+                    self.assertIn("restored ", resumed.stdout)
+                    self.assertIn("paused quota_exhausted", resumed.stdout)
+                    new_calls = [json.loads(line) for line in log.read_text()[len(before):].splitlines()]
+                    claude = next(args for args in new_calls if args[0] == "claude")
+                    prior_costs = [Decimal(repr(a["usage"]["cost_usd"])) for a in attempts if a["model"].startswith("claude-")]
+                    self.assertEqual(claude.count("--max-budget-usd"), 1)
+                    self.assertEqual(Decimal(claude[claude.index("--max-budget-usd") + 1]), Decimal(allowance) - sum(prior_costs))
+                    self.assertTrue(all("--max-budget-usd" not in args for args in new_calls if args[0] != "claude"))
+                    self.assertEqual(saved()["run"].max_budget_usd, allowance)
+                    self.assertIn("claude spend", resumed.stdout)
+                    self.assertIn(f"of ${allowance}", resumed.stdout)
 
-    def test_cli_accepts_only_finite_positive_amounts(self):
+    def test_the_repository_cap_accepts_only_finite_positive_amounts(self):
         for raw in ("0", "-1", "abc", "NaN", "Infinity", "-Infinity"):
-            with self.subTest(raw=raw), contextlib.redirect_stderr(io.StringIO()) as error, self.assertRaises(SystemExit) as caught:
-                main(["run", "delivery", "--repo", "a/b", "--dry-run", "--request", "x", "--max-budget-usd", raw])
-            self.assertEqual(caught.exception.code, 2)
-            if raw != "-Infinity":  # argparse takes it for an option, so it never reaches the parser
-                self.assertIn("argument --max-budget-usd: --max-budget-usd must be finite and positive", error.getvalue())
+            with self.subTest(raw=raw), self.assertRaisesRegex(NotReady, "FOREMAN_MAX_BUDGET_USD"):
+                operator_variables("a/b", {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_BUDGET_USD": raw})
         for raw, stored in (("1", "1"), ("1.50", "1.5"), ("1e-4", "0.0001")):
-            with self.subTest(raw=raw), contextlib.redirect_stdout(io.StringIO()) as output:
-                main(["run", "delivery", "--repo", "a/b", "--dry-run", "--request", "x", "--max-budget-usd", raw])
-            self.assertIn(f"claude spend $0.0 of ${stored}", output.getvalue())
+            with self.subTest(raw=raw):
+                read = operator_variables("a/b", {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_BUDGET_USD": raw})
+                self.assertEqual(usd_text(read.max_budget_usd), stored)
 
-    def test_run_delivery_stores_canonical_text_or_null(self):
+    def test_run_delivery_stores_canonical_text_and_defaults_to_the_drawn_cap(self):
         bounded = run_delivery(ScriptHandler(), repo="a/b", request="x", max_budget_usd=usd("1.50"))
         self.assertEqual(bounded["run"].max_budget_usd, "1.5")
-        unbounded = run_delivery(ScriptHandler(), repo="a/b", request="x")
-        self.assertIn("run", unbounded)
-        self.assertIsNone(unbounded["run"].max_budget_usd)
-        self.assertNotIn("claude spend", printed(unbounded))
+        # A dry run gets the cap a live run gets with no variable set.
+        default = run_delivery(ScriptHandler(), repo="a/b", request="x")
+        self.assertEqual(default["run"].max_budget_usd, "3")
+        self.assertIn("claude spend $0.0 of $3", printed(default))
 
     def test_printed_spend_counts_only_claude_costs(self):
         base = {"review": ReviewState(), "run": RunState(repo="a/b", max_budget_usd="1"), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}
@@ -193,7 +182,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertIn("claude spend unknown of $1", printed({**base, "attempts": [*counted, missing]}))
         self.assertNotIn("claude spend", printed({"review": ReviewState(), **base, "run": RunState(max_budget_usd=None), "attempts": counted}))
 
-    def test_resume_keeps_the_stored_allowance_and_rejects_a_different_one(self):
+    def test_a_continuing_invocation_keeps_the_stored_allowance(self):
         for pause in ("needs_human", "quota_exhausted"):
             for stored in ("1.5", None):
                 with self.subTest(pause=pause, stored=stored), skill_fixture() as (config, _), TemporaryDirectory() as folder, \
@@ -207,25 +196,22 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.0))
 
                     forge = FakeGitHub()
+                    if stored:
+                        forge.settings["FOREMAN_MAX_BUDGET_USD"] = "1.50"
                     kwargs = dict(repo="a/b", issue=8, checkpoint=Path(folder) / "allowance.sqlite",
-                                  run=LiveRun(forge, FakeWorkspace(Path(folder)), human_login="fixture-owner"), dispatcher=handler)
-                    state = run_live_delivery(**kwargs, max_budget_usd=usd("1.50") if stored else None)
+                                  run=LiveRun(forge, FakeWorkspace(Path(folder))), dispatcher=handler)
+                    state = run_live_delivery(**kwargs)
                     if pause == "needs_human":
                         forge.answer(state["halt_detail"], "Only open items.")
                     self.assertEqual(state["stop"], pause)
-                    self.assertIn("run", state)
-                    self.assertEqual(state["run"].max_budget_usd, stored)
-                    for different in (("2",) if stored else ("1.5",)):
-                        before = len(calls)
-                        with self.assertRaisesRegex(ValueError, "--max-budget-usd"):
-                            run_live_delivery(**kwargs, max_budget_usd=usd(different))
-                        self.assertEqual(len(calls), before)
-                    for same in (("1.50", None) if stored else (None,)):
+                    self.assertEqual(state["run"].max_budget_usd, stored or "3")
+                    for changed in ("2", "1.5"):
+                        forge.settings["FOREMAN_MAX_BUDGET_USD"] = changed
                         before = len(calls)
                         answer = "Only open items." if state["stop"] == "needs_human" else None
-                        state = run_live_delivery(**kwargs, answer=answer, max_budget_usd=usd(same) if same else None)
+                        state = run_live_delivery(**kwargs, answer=answer)
                         self.assertGreater(len(calls), before)
-                        self.assertEqual(state["run"].max_budget_usd, stored)
+                        self.assertEqual(state["run"].max_budget_usd, stored or "3")
 
     def test_resumable_checkpoints_without_a_stored_allowance_need_a_new_run(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
@@ -307,8 +293,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=cost))
 
                 checkpoint = root / "replay.sqlite"
-                kwargs = dict(repo="a/b", issue=8, checkpoint=checkpoint, run=LiveRun(FakeGitHub(), workspace, human_login="fixture-owner"),
-                              dispatcher=handler, max_budget_usd=usd("1"))
+                forge = FakeGitHub()
+                forge.settings["FOREMAN_MAX_BUDGET_USD"] = "1"
+                kwargs = dict(repo="a/b", issue=8, checkpoint=checkpoint, run=LiveRun(forge, workspace), dispatcher=handler)
                 halted = run_live_delivery(**kwargs)
                 self.assertEqual(halted["stop"], "git_failed")
                 implement = [a for a in halted["attempts"] if a["stage"] == "implement"]

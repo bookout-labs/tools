@@ -277,10 +277,14 @@ class BudgetResumeTests(unittest.TestCase):
                                                       output_tokens=0, total_cost_usd=costs[node][spent]))
         return reply
 
-    def deliver(self, handler, **limits):
+    def deliver(self, handler, *, max_budget_usd=None, max_tokens=None, preflight=None):
+        """One invocation with the repository's variables set as given. Only a start reads them."""
+        self.forge.settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
+        for name, value in (("FOREMAN_MAX_BUDGET_USD", max_budget_usd), ("FOREMAN_MAX_TOKENS", max_tokens), ("FOREMAN_PREFLIGHT", preflight)):
+            if value is not None:
+                self.forge.settings[name] = str(value.amount if isinstance(value, BudgetUsd) else value)
         return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=self.root / "runs.sqlite3",
-                                 run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"),
-                                 dispatcher=handler, **limits)
+                                 run=LiveRun(self.forge, self.workspace, skills=fixture_skills), dispatcher=handler)
 
     def test_a_call_near_the_cap_is_charged_once_and_a_raised_cap_resumes_it_on_the_builders_edits(self):
         costs = {"triage": [0.1], "spec_check": [2.65], "implement": [2.94, 0.5], "verify": [0.1], "review": [0.1]}
@@ -290,9 +294,12 @@ class BudgetResumeTests(unittest.TestCase):
         self.assertEqual(self.calls, [("triage", "3"), ("spec_check", "2.9"), ("implement", "0.25")])
         self.assertEqual(claude_spend(stopped["attempts"]), Decimal("5.69"))
         self.assertEqual(run_exit_code(stopped), 75)
-        for limits in ({"max_budget_usd": BudgetUsd(Decimal("2"))}, {"max_tokens": 1}):
-            with self.subTest(limits=limits), self.assertRaisesRegex(ValueError, "differs from the stored"):
-                self.deliver(self.handler(costs), **limits)
+        # A cap below what the run spent stops it at the first reservation, before any paid call.
+        for limits in ({"max_budget_usd": "2"}, {"max_budget_usd": "3", "max_tokens": 1}):
+            with self.subTest(limits=limits):
+                lowered = self.deliver(self.handler(costs), **limits)
+                self.assertEqual((lowered["stop"], lowered["attempts"]), ("budget_exceeded", stopped["attempts"]))
+                self.assertEqual(len(self.calls), 3)
         again = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")))
         self.assertEqual((again["stop"], again["attempts"]), ("budget_exceeded", stopped["attempts"]))
         self.assertEqual(len(self.calls), 3)
@@ -306,14 +313,13 @@ class BudgetResumeTests(unittest.TestCase):
         self.assertEqual([a["usage"]["cost_usd"] for a in resumed["attempts"] if a["stage"] == "implement"], [2.94, 0.5])
         self.assertEqual((self.root / "partial.txt").read_text(), "builder edits\n")
 
-    def test_only_a_raised_token_cap_resumes_and_a_newly_added_dollar_cap_is_refused(self):
+    def test_a_raised_token_cap_resumes_and_a_lower_one_stops_before_any_call(self):
         costs = {"triage": [0.0], "spec_check": [0.0], "implement": [0.0, 0.0], "verify": [0.0], "review": [0.0]}
         stopped = self.deliver(self.handler(costs, tokens=40), max_tokens=100)
         self.assertEqual(stopped["stop"], "budget_exceeded")
         self.assertEqual([node for node, _ in self.calls], ["triage", "spec_check", "implement"])
-        for limits in ({"max_budget_usd": BudgetUsd(Decimal("5"))}, {"max_tokens": 99}):
-            with self.subTest(limits=limits), self.assertRaisesRegex(ValueError, "differs from the stored"):
-                self.deliver(self.handler(costs, tokens=40), **limits)
+        lowered = self.deliver(self.handler(costs, tokens=40), max_tokens=99)
+        self.assertEqual((lowered["stop"], lowered["run"].token_cap, len(self.calls)), ("budget_exceeded", 99, 3))
         resumed = self.deliver(self.handler(costs, tokens=40), max_tokens=1000)
         self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
         self.assertEqual(resumed["run"].token_cap, 1000)
@@ -330,12 +336,12 @@ class BudgetResumeTests(unittest.TestCase):
         self.assertEqual(resumed["run"], stopped["run"].model_copy(update={"max_budget_usd": "10"}))
         self.assertEqual([node for node, _ in self.calls], ["triage", "triage", "spec_check", "implement", "verify", "review"])
 
-    def test_a_raised_cap_is_refused_on_any_other_halt(self):
+    def test_a_resume_from_any_halt_takes_the_caps_it_read_and_keeps_its_preflight(self):
         costs = {"triage": [0.1], "spec_check": [0.1], "implement": [0.1], "review": [0.1]}
         stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")), preflight="exit 1")
         self.assertEqual(stopped["stop"], "env_unavailable")
         calls = list(self.calls)
-        for limits in ({"max_budget_usd": BudgetUsd(Decimal("10"))}, {"max_tokens": 30_000_000}):
-            with self.subTest(limits=limits), self.assertRaisesRegex(ValueError, "differs from the stored"):
-                self.deliver(self.handler(costs), preflight="exit 1", **limits)
+        resumed = self.deliver(self.handler(costs), max_budget_usd="10", max_tokens=30_000_000, preflight="exit 0")
+        self.assertEqual((resumed["stop"], resumed["run"].max_budget_usd, resumed["run"].token_cap), ("env_unavailable", "10", 30_000_000))
+        self.assertEqual(resumed["checks"].preflight, "exit 1")
         self.assertEqual(self.calls, calls)

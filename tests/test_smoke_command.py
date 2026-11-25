@@ -17,9 +17,8 @@ from unittest.mock import patch, Mock
 
 from foreman.cli import main
 from foreman.github import BOT_LOGIN, ForgeError, IssueComment, LiveForge
-from foreman.delivery import FIXTURE_HUMAN
 from foreman.readiness import MergeState
-from foreman.smoke_command import SMOKE_REPO, SMOKE_TOKEN_CAP, SMOKE_CLAUDE_USD, published_file, run_smoke, smoke_command
+from foreman.smoke_command import SMOKE_REPO, SMOKE_TOKEN_CAP, published_file, run_smoke, smoke_command
 from foreman.status import STATUS_MARKER
 from tests.test_smoke import passing
 
@@ -68,11 +67,8 @@ class SmokeCommandTest(unittest.TestCase):
             kwargs = runner.call_args.kwargs
             self.assertEqual((kwargs['repo'], kwargs['issue']), (SMOKE_REPO, 17))
             self.assertIn('smoke_17.txt', kwargs['request'])
-            self.assertEqual(kwargs['max_tokens'], SMOKE_TOKEN_CAP)
-            self.assertEqual(kwargs['max_budget_usd'], SMOKE_CLAUDE_USD)
             self.assertEqual(kwargs['run'].workspace.root, root / 'checkout')
             self.assertIs(kwargs['run'].forge, forge)
-            self.assertEqual(kwargs['run'].human_login, FIXTURE_HUMAN)
             self.assertFalse(os.environ['PATH'].startswith(str(root / 'python/bin')))
             self.assertEqual(process.call_args_list[0].kwargs['env'], credentials.return_value)
             forge.create_issue.assert_called_once()
@@ -137,8 +133,6 @@ class SmokeCommandTest(unittest.TestCase):
             self.assertEqual(runner.call_count, 2)
             for call in runner.call_args_list:
                 self.assertEqual(call.kwargs['checkpoint'], root / 'checkpoint.sqlite3')
-                self.assertEqual(call.kwargs['max_tokens'], 1_500_000)
-                self.assertEqual(call.kwargs['max_budget_usd'], SMOKE_CLAUDE_USD)
             runner.side_effect = None
             runner.return_value = waiting
             self.assertEqual(run_smoke(root, time.monotonic() - 1), 1)
@@ -317,6 +311,7 @@ class SmokeCommandTest(unittest.TestCase):
                                            ('failed', 1, 1, False)):
             with self.subTest(kind=kind, cap=cap), self.provision() as (root, forge, process, runner, credentials, errors):
                 fake = FakeGitHub(labels=[])
+                fake.settings = {'FOREMAN_HUMAN_LOGIN': 'ghost', 'FOREMAN_MAX_TOKENS': str(cap)}
                 forge.create_issue.side_effect = fake.create_issue
                 forge.load_issue.side_effect = fake.load_issue
                 for name in ('open_issues', 'comment_issue', 'marked_issues', 'variables', 'app_installation', 'has_label', 'merge_queue'):
@@ -325,7 +320,7 @@ class SmokeCommandTest(unittest.TestCase):
                     from foreman.dry_run import ScriptHandler
                     kwargs['dispatcher'] = ScriptHandler() if cap == 1 else lambda *args: Outcome(kind, detail='bad output')
                     with patch('subprocess.run', real_run), patch('subprocess.check_output', real_output):
-                        kwargs['run'] = LiveRun(forge, FakeWorkspace(root / 'checkout'), skills=fixture_skills, human_login=kwargs['run'].human_login)
+                        kwargs['run'] = LiveRun(forge, FakeWorkspace(root / 'checkout'), skills=fixture_skills)
                         result = run_live_delivery(**kwargs)
                     self.assertEqual(result.get('watch') is not None, filed)
                     self.assertEqual(result['run'].token_cap, cap)
@@ -347,6 +342,8 @@ class SmokeCommandTest(unittest.TestCase):
         real_run, real_output = subprocess.run, subprocess.check_output
         with self.provision() as (root, forge, process, runner, credentials, errors):
             fake = FakeGitHub(labels=[])
+            # The smoke repository's own variables hold the human login and its share of the smoke's caps.
+            fake.settings = {'FOREMAN_HUMAN_LOGIN': 'ghost', 'FOREMAN_MAX_TOKENS': '1000000', 'FOREMAN_MAX_BUDGET_USD': '1.25'}
             transport = Mock(wraps=fake)
             transport.smoke_identity = Mock(return_value=(True, True, True))
             transport.smoke_issues = Mock(return_value=[])
@@ -375,7 +372,7 @@ class SmokeCommandTest(unittest.TestCase):
                 return observation.model_copy(update={'outcome': 'pending'}) if observations == 1 else observation
             transport.readiness.side_effect = readiness
             def delivery(**kwargs):
-                kwargs['run'] = LiveRun(transport, workspace, skills=fixture_skills, human_login=kwargs['run'].human_login)
+                kwargs['run'] = LiveRun(transport, workspace, skills=fixture_skills)
                 kwargs['dispatcher'] = dispatch
                 with patch('subprocess.run', real_run), patch('subprocess.check_output', real_output):
                     result = run_live_delivery(**kwargs)
@@ -398,6 +395,5 @@ class SmokeCommandTest(unittest.TestCase):
                 SMOKE_REPO, 12, results[1]['checks'].verified_head,
                 results[1]['review'].review_receipt['id'])
             for result in results:
-                self.assertEqual(result['run'].token_cap, SMOKE_TOKEN_CAP)
-                self.assertEqual(result['run'].max_budget_usd, '2')
+                self.assertEqual((result['human_login'], result['run'].token_cap, result['run'].max_budget_usd), ('ghost', 1000000, '1.25'))
             self.assertEqual([call['node'] for call in handler.calls], ['triage', 'spec_check', 'implement', 'verify', 'review'])
