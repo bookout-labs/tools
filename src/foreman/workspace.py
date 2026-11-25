@@ -107,7 +107,6 @@ class WorktreeState:
 class ReviewDiff:
     command: str
     patch: str
-    merge_base: str | None = None
 
 
 ReviewLine = Annotated[tuple[str, int], BeforeValidator(TypeAdapter(tuple[object, ...]).validate_python)]
@@ -129,11 +128,6 @@ class ReviewScope:
     def commands(self) -> tuple[str, ...]:
         return tuple(line.strip() for line in self.command.splitlines()
                      if line.strip() and not line.lstrip().startswith("#"))
-
-    @property
-    def required(self) -> tuple[str, ...]:
-        """The full PR diff read, which `review_scope` grants first. A review counts only once it has completed."""
-        return self.commands[:1]
 
     def record(self) -> ReviewScopeRecord:
         return {"command": self.command, "inline": sorted(self.inline)}
@@ -606,7 +600,7 @@ class LiveWorkspace:
         if not FULL_SHA.fullmatch(merge_base):
             raise WorktreeInspectionFailed("Git did not report a full merge-base SHA.")
         command = f"# base = PR merge-base {merge_base}\n# head = current verified head {head}\n# Full PR diff: old = merge-base (base); new = head\n{command}"
-        return ReviewDiff(command, os.fsdecode(self._git(*args)), merge_base)
+        return ReviewDiff(command, os.fsdecode(self._git(*args)))
 
     def review_scope(self, base: str, head: str) -> ReviewScope:
         pr = self.review_diff(base, head)
@@ -614,24 +608,7 @@ class LiveWorkspace:
             inline = added_lines(pr.patch)
         except UnidiffParseError:
             inline = frozenset[tuple[str, int]]()
-        commands = [pr.command]
-        merge_base = pr.merge_base
-        assert merge_base is not None
-        blobs: dict[str, list[str]] = {}
-        for side, sha in (("base", merge_base), ("head", head)):
-            args = ("--no-replace-objects", "ls-tree", "-rz", "--full-tree", sha, "--")
-            commands.append(f"# {side} tree {sha}\n{shlex.join(('git', *args))}")
-            for entry in self._git(*args).split(b"\0"):
-                if not entry:
-                    continue
-                metadata, path = entry.split(b"\t", 1)
-                _, kind, oid = metadata.split()
-                if kind == b"blob":
-                    blobs.setdefault(oid.decode("ascii"), []).append(f"{side} path {ascii(os.fsdecode(path))}")
-        for oid, labels in blobs.items():
-            # Object IDs avoid shell and permission-pattern syntax in repository paths.
-            commands.append(f"# {'; '.join(labels)}\ngit --no-replace-objects cat-file blob {oid}")
-        return ReviewScope("\n\n".join(commands), inline)
+        return ReviewScope(pr.command, inline)
 
     def _ignored_at(self, commit: str, paths: set[bytes]) -> set[bytes]:
         names = self._inspection_git(commit, "ls-tree", "-rz", "--name-only", commit).split(b"\0")

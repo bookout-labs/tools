@@ -40,18 +40,12 @@ Claude's own short temp directory, which the call removes. Codex and Grok calls 
 before launch, because no capture yet shows either confining one.
 
 The native read-only matcher refuses the planned review diff. Review calls therefore
-grant each standalone command from the bound `ReviewScope`, including pinned diffs,
-tree listings and blob reads. The prompt and exact Bash rules share this command list.
-Other read-only stages have no allow rules.
+grant the one full PR diff command from the bound `ReviewScope`, exactly as written (item 16).
+The prompt names the same command. Other read-only stages have no allow rules.
 
-A review counts only once its full PR diff read, `ReviewScope.required`, has completed (#288).
+Foreman keeps no per-file read list and parses no proof of reading. A review's answer counts from
+its result envelope alone, and Claude review calls use `--output-format json` like every other call.
 The read-only view denies every other command, so a denial shows the boundary held; it doesn't void the review.
-Claude review calls stream their events (`--output-format stream-json --verbose`), and the reader joins each
-top-level foreground Bash tool use to its result by id: the exact diff command must have a result that isn't an error.
-A backgrounded command returns before it finishes, so it never counts.
-Codex clears the required read only on a completed exit 0. A scope with no required read fails before launch.
-This proves the read ran. It doesn't prove the output was untruncated, or complete when split into several reads.
-Claude Code 2.1.329 lets the diff run piped through `head` under its exact grant with no denial, so such a read never counts.
 Outside implement, a command permission is not a sandbox. The check itself must be trusted.
 Workers never commit, push or touch the Forge. Foreman owns those operations.
 

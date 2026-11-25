@@ -1223,19 +1223,6 @@ version = "3.14.7"
 argv = ["python", "-c", "import json; from typing import get_type_hints; from foreman.delivery import DeliveryState; print(json.dumps(sorted(get_type_hints(DeliveryState))))"]
 notes = "State channel inventory captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73, plus the verify channel M8b (#251) adds at schema 21."
 
-[fixtures."claude/review-denial.json"]
-kind = "captured_run"
-tool = "claude"
-version = "2.1.329"
-argv = ["claude", "--model", "claude-opus-5-5", "--effort", "low", "--restricted", "--strict-mcp-config", "--permission-mode", "dontAsk", "--max-budget-usd", "0.40", "--output-format", "stream-json", "--verbose"]
-notes = "Two fresh native calls, $0.1396765 total. First denied the granted diff chained with show | od and ls-tree. Second succeeded with standalone exact scope grants. Tool-call IDs join successful tree/blob results for base deletion, unchanged dependency, verified head, previous-only content, and a path containing spaces, quotes and permission metacharacters. Scope and envelopes are embedded; argv lists common flags with per-call settings, schema and prompt omitted."
-[fixtures."claude/review-stream.json"]
-kind = "captured_run"
-tool = "claude"
-version = "2.1.329"
-argv = ["uv", "run", "python", "tests/capture-claude-review.py"]
-notes = "Two fresh native review calls through ClaudeAdapter.command, opus low effort, each capped at $0.40, $0.0601 total. read ran the exact full diff grant, then app #1376's node -e package.json command, which was denied; the reader accepts it. piped ran the diff only through | head -5, which Claude Code allowed with no denial; the reader rejects it because the full diff read never completed. Stdout is the raw stream minus the system init event; paths and UUIDs are scrubbed."
-
 [fixtures."stage-calls.json"]
 tool = "Foreman adapter Call capture with scripted responses"
 version = "418dceb4027312758728c63c5810e24170185ece"

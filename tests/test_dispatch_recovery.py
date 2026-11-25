@@ -28,7 +28,7 @@ from foreman.worker import CliWorker, assignment, run_worker_command
 from foreman.workspace import LiveWorkspace, WorkspaceError, WorktreeState
 from tests.skill_fixture import skill_fixture, verify_checkout
 from test_delivery import EMPTY_SLICE, walk
-from test_adapters import claude_review_stream, codex_events, codex_process, fixture_process
+from test_adapters import codex_events, codex_process, fixture_process
 from test_publication import REPO, PublicationFixture
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace
 
@@ -603,13 +603,13 @@ class RealAdapterResumeTests(unittest.TestCase):
                 "review", model, {"dispatch_plan": plan}, "")
         return outcome, argv
 
-    def test_a_review_repair_resumes_its_session_without_reading_the_diff_again(self):
+    def test_a_review_repair_resumes_its_session(self):
         error = "findings.0.severity: Input should be 'P0', 'P1' or 'P2'"
         envelope = json.loads(fixture_process(["claude"], "success", 0).stdout)
         events = codex_events()
         events[-2]["item"]["text"] = json.dumps(APPROVE)
         for model, process in ((ModelSpec.parse("claude-opus-5-5-high"),
-                                subprocess.CompletedProcess(["claude"], 0, claude_review_stream(envelope), "")),
+                                subprocess.CompletedProcess(["claude"], 0, json.dumps(envelope), "")),
                                (ModelSpec.parse("gpt-6.1-sol-high"), codex_process(events))):
             with self.subTest(family=model.family):
                 outcome, argv = self.review(model, process, error)
@@ -619,10 +619,6 @@ class RealAdapterResumeTests(unittest.TestCase):
                     self.assertEqual(argv[0][resume:resume + 3], ["--resume", SESSIONS[0], "--fork-session"])
                 else:
                     self.assertEqual((argv[0][:3], argv[0][-2:]), (["codex", "exec", "resume"], [SESSIONS[0], error]))
-                # A first review turn that skipped the diff read still fails.
-                outcome, argv = self.review(model, process, None)
-                self.assertEqual(outcome.kind, "failed")
-                self.assertIn("did not complete required read", outcome.detail)
 
     def test_a_read_only_call_resumes_its_saved_session(self):
         # Quota-interrupted calls resume for every procedure, so the adapters no longer gate resume on edit.

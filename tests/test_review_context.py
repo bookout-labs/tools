@@ -247,6 +247,28 @@ class WorkspaceReviewContextTest(unittest.TestCase):
         self.assertEqual(context.head.files, frozenset({".gitmodules", "sub", "text.txt"}))
         self.assertEqual(context.head.lines, {".gitmodules": 4, "text.txt": 1})
 
+    def test_review_scope_grants_one_diff_command_whatever_the_tree_size(self):
+        # RV10 (diff part, item 16): one diff command and no per-file read list, so a large PR's prompt doesn't grow with its tree.
+        self.write("items.txt", b"old\n")
+        base = self.commit()
+        self.write("items.txt", b"new\n")
+        small = self.commit()
+        self.git("switch", "-c", "large", base)
+        for index in range(1000):
+            self.write(f"unchanged/{index}.txt", f"{index}\n".encode())
+        large_base = self.commit()
+        self.write("items.txt", b"new\n")
+        large = self.commit()
+        self.git("push", "origin", "main", "large")
+        scopes = [self.workspace.review_scope(base, small), self.workspace.review_scope(large_base, large)]
+        for scope, (old, new) in zip(scopes, ((base, small), (large_base, large))):
+            diff, = scope.commands
+            self.assertRegex(diff, rf"^git --no-replace-objects diff .* {old}\.\.\.{new} --$")
+            self.assertNotIn("cat-file", scope.command)
+            self.assertNotIn("ls-tree", scope.command)
+            self.assertEqual(scope.inline, frozenset({("items.txt", 1)}))
+        self.assertEqual(len(scopes[0].command), len(scopes[1].command))
+
     def test_dry_run_context_matches_the_review_diff(self):
         for path, content in {"README.md": b"unchanged\n", "items.txt": b"first\nold\nlast\n",
                               "deleted.txt": b"obsolete\n"}.items():
