@@ -925,7 +925,7 @@ class LiveRunnerTest(unittest.TestCase):
             state = json.loads(prompt.split("Delivery state:\n")[1])
             if checker_reply(args):
                 return worker_reply(args, {})
-            if state["checks"]["verify_failures"]:
+            if state.get("checks", {}).get("verify_failures"):
                 if crash:
                     raise RuntimeError("synthetic pending dispatch crash")
                 self.assertIn("untrusted diagnostic data", prompt)
@@ -1910,7 +1910,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         built = {"implementation": "Built."}
         advisory = {**FINDING, "id": "advice", "severity": "P2"}
         self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [advisory, FINDING]}, built, APPROVE])
-        state = json.loads(self.prompts[-2].split("Delivery state:\n")[1])
+        # Implement, Verify and Review follow the first review.
+        state = json.loads(self.prompts[-3].split("Delivery state:\n")[1])
         self.assertEqual(ReviewState.model_validate(state["review"]).findings, [FINDING])
 
     def test_review_posts_only_changed_lines_inline(self):
