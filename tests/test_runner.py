@@ -1358,7 +1358,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
 
         def start(name):
-            with patch.object(self.github, "variables", return_value={"FOREMAN_CHECK": "exit 0", "FOREMAN_HUMAN_LOGIN": "fixture-owner"}), \
+            with patch.object(self.github, "variables", return_value={"FOREMAN_HUMAN_LOGIN": "fixture-owner"}), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 code = main(["start", "--repo", "Example/Engine", "--issue", name.split("#")[1]], checkpoint=self.checkpoint,
                             live_run=LiveRun(self.github, fake, human_login="fixture-owner"),
