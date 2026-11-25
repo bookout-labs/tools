@@ -228,6 +228,8 @@ def run_delivery(
     terms = parse_contract(contract)
     state: DeliveryState = {
         "schema_version": SCHEMA_VERSION,
+        # A live run's start saves the login it read, so the dry run carries it too.
+        "human_login": FIXTURE_HUMAN,
         "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens, workspace=str(checkout or ""),
                         base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo)),
                         max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
