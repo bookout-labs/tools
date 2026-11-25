@@ -415,11 +415,11 @@ class LoginWriteAccessTest(unittest.TestCase):
         cases = {
             "unknown_login": ("GitHub does not know the FOREMAN_HUMAN_LOGIN login foreman-no-such-login-7f3a9c",
                               "correct the spelling of FOREMAN_HUMAN_LOGIN in Example/Engine's Actions variables, or name another login"),
-            "outside_account_public_repo": ("the FOREMAN_HUMAN_LOGIN account octocat cannot write to Example/Engine, where GitHub "
-                                            "reports its permission as read", "give octocat write access to Example/Engine, or set "
+            "outside_account_public_repo": ("the FOREMAN_HUMAN_LOGIN account fixture-outsider cannot write to Example/Engine, where GitHub "
+                                            "reports its permission as read", "give fixture-outsider write access to Example/Engine, or set "
                                             "FOREMAN_HUMAN_LOGIN in Example/Engine's Actions variables to another login that has it"),
-            "outside_account_private_repo": ("the FOREMAN_HUMAN_LOGIN account octocat cannot write to Example/Engine, where GitHub "
-                                             "reports its permission as none", "give octocat write access to Example/Engine, or set "
+            "outside_account_private_repo": ("the FOREMAN_HUMAN_LOGIN account fixture-outsider cannot write to Example/Engine, where GitHub "
+                                             "reports its permission as none", "give fixture-outsider write access to Example/Engine, or set "
                                              "FOREMAN_HUMAN_LOGIN in Example/Engine's Actions variables to another login that has it"),
         }
         for name, (missing, fix) in cases.items():
@@ -433,8 +433,8 @@ class LoginWriteAccessTest(unittest.TestCase):
         answer = PERMISSIONS["owner"]
         with patch("foreman.github.credentials.environment", return_value={"GH_TOKEN": "synthetic"}), \
                 patch("foreman.github.subprocess.run", return_value=subprocess.CompletedProcess([], 0, json.dumps(answer["stdout"]), "")) as gh:
-            self.assertEqual(LiveForge().permission("bookout-labs/foreman-smoke", "jbookout"), "admin")
-        self.assertEqual(gh.call_args.args[0], ["gh", "api", "repos/bookout-labs/foreman-smoke/collaborators/jbookout/permission"])
+            self.assertEqual(LiveForge().permission("bookout-labs/foreman-smoke", "fixture-owner"), "admin")
+        self.assertEqual(gh.call_args.args[0], ["gh", "api", "repos/bookout-labs/foreman-smoke/collaborators/fixture-owner/permission"])
         github = FakeGitHub()
         for permission in ("admin", "write"):
             github.permissions["fixture-owner"] = permission

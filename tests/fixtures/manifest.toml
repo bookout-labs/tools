@@ -932,7 +932,7 @@ version = "GitHub REST API 2022-11-28; captured 2026-11-25"
 kind = "captured_run"
 argv = ["gh", "api", "-i", "repos/<repo>/collaborators/<login>/permission"]
 sources = ["https://docs.github.com/en/rest/collaborators/collaborators?apiVersion=2022-11-28#get-repository-permissions-for-a-user"]
-notes = "Synthetic answers shaped like the live ones, with user objects reduced. unknown_login, outside_account_public_repo and owner were read with the App's installation token on bookout-labs/foreman-smoke. The App is installed on no private repository, so outside_account_private_repo was read with the owner's token on a private repository: 200 with permission none and an empty role_name. gh prints a 404's message and status on stderr; with App credentials Foreman keeps only the status."
+notes = "Synthetic answers shaped like the live ones, with user objects reduced and synthetic logins and ids in place of the recorded ones. unknown_login, outside_account_public_repo and owner were read with the App's installation token on bookout-labs/foreman-smoke. The App is installed on no private repository, so outside_account_private_repo was read with the owner's token on a private repository: 200 with permission none and an empty role_name. gh prints a 404's message and status on stderr; with App credentials Foreman keeps only the status."
 
 [fixtures."github/app-credentials.txt"]
 tool = "GitHub App REST, gh and Git credential helpers"
