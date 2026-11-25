@@ -139,8 +139,10 @@ def assignment(node: str, model: ModelSpec, state: Mapping[str, object], instruc
     if plan_state := projected.get("dispatch_plan"):
         for key in ("instruction", "scope", "resume_session", "repair", "budget_usd"):
             plan_state.pop(key, None)
-    # The builder's saved session is Foreman's to resume, never the worker's to read.
+    # The builder's saved session is Foreman's to resume, never the worker's to read. The login is Foreman's to count answers
+    # and stops from, never the worker's to read either.
     projected.pop("builder_session", None)
+    projected.pop("human_login", None)
     if run_state := projected.get("run"):
         for key in ("token_cap", "max_budget_usd"):
             run_state.pop(key, None)

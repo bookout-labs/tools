@@ -9,12 +9,12 @@ from unittest.mock import patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.adapters import Outcome, Usage
-from foreman.cli import _print_run, main, run_exit_code
+from foreman.cli import _print_run, run_exit_code
 from foreman.delivery import DEFAULT_TOKEN_CAP, LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import run_live_delivery, snapshot_result
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION, CheckpointVersionError
-from foreman.skill_rules import SkillMissing
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, CheckpointVersionError
+from foreman.doctor import NotReady, operator_variables
 from tests.skill_fixture import skill_fixture
 from test_runner import FakeGitHub, FakeWorkspace
 
@@ -76,57 +76,28 @@ class TokenCapTests(unittest.TestCase):
             self.assertEqual(stopped["stop"], "budget_exceeded")
             self.assertEqual(calls, ["triage"])
 
-    def test_stored_cap_resume_quota_history_and_legacy_rejection(self):
+    def test_stored_cap_and_quota_history_survive_a_wake(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
             checkpoint = Path(folder) / "resume.sqlite"
             calls = []
             def quota(node, model, state, instruction):
                 calls.append(node)
-                return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0))
-            kwargs = dict(repo="a/b", issue=8, checkpoint=checkpoint,
-                          run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner"))
-            first = run_live_delivery(**kwargs, max_tokens=100, dispatcher=quota)
+                return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.0))
+            forge = FakeGitHub()
+            forge.settings["FOREMAN_MAX_TOKENS"] = "100"
+            kwargs = dict(repo="a/b", issue=8, checkpoint=checkpoint, run=LiveRun(forge, FakeWorkspace(Path(folder))))
+            first = run_live_delivery(**kwargs, dispatcher=quota)
             self.assertEqual(first["stop"], "quota_exhausted")
-            with self.assertRaisesRegex(ValueError, "stored token cap"):
-                run_live_delivery(**kwargs, max_tokens=101, dispatcher=quota)
+            # A quota wake is not a start, so a changed variable does not reach the run.
+            forge.settings["FOREMAN_MAX_TOKENS"] = "101"
             second = run_live_delivery(**kwargs, dispatcher=quota)
             self.assertEqual(second["run"].token_cap, 100)
             self.assertEqual(second["attempts"][:len(first["attempts"])], first["attempts"])
             self.assertEqual(len(second["attempts"]), 2 * len(first["attempts"]))
-            for snapshot in (first, {**second, "stop": "needs_human", "halt": None},
-                             *({**second, "stop": halt, "halt": halt} for halt in
-                               ("env_unavailable", "git_failed", "publish_failed"))):
-                legacy = checkpoint.with_name(str(snapshot["stop"]) + ".sqlite")
-                with SqliteSaver.from_conn_string(str(legacy)) as saver:
-                    saver.serde = checkpoint_serializer()
-                    graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
-                    graph.update_state({"configurable": {"thread_id": "a/b#8"}}, {"review": ReviewState(), **snapshot, "run": snapshot["run"].model_copy(update={"token_cap": None})})
-                with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
-                    run_live_delivery(**{**kwargs, "checkpoint": legacy}, dispatcher=quota)
-
-    def test_legacy_unfinished_checkpoint_with_missing_skill(self):
-        with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
-            def quota(*args):
-                return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0))
-            kwargs = dict(repo="a/b", issue=8, run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner"))
-            first = run_live_delivery(**kwargs, checkpoint=Path(folder) / "a.sqlite", dispatcher=quota)
-            legacy = Path(folder) / "legacy.sqlite"
-            with SqliteSaver.from_conn_string(str(legacy)) as saver:
-                saver.serde = checkpoint_serializer()
-                graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
-                graph.update_state({"configurable": {"thread_id": "a/b#8"}},
-                                   {"review": ReviewState(), **first, "run": first["run"].model_copy(update={"token_cap": None})})
-            with patch("foreman.delivery.export_skills", side_effect=SkillMissing(config.pstack)) as export:
-                with self.assertRaisesRegex(ValueError, "unknown usage history.*new run"):
-                    run_live_delivery(**kwargs, checkpoint=legacy, dispatcher=quota)
-                export.assert_not_called()
-
-    def test_cli_positive_tokens_default_and_done_log(self):
+    def test_positive_tokens_default_and_done_log(self):
         for raw in ("0", "-1", "abc"):
-            with self.subTest(raw=raw), contextlib.redirect_stderr(io.StringIO()) as error, self.assertRaises(SystemExit) as caught:
-                main(["run", "delivery", "--repo", "a/b", "--dry-run", "--request", "x", "--max-tokens", raw])
-            self.assertEqual(caught.exception.code, 2)
-            self.assertIn("argument --max-tokens: --max-tokens must be positive", error.getvalue())
+            with self.subTest(raw=raw), self.assertRaisesRegex(NotReady, "FOREMAN_MAX_TOKENS"):
+                operator_variables("a/b", {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_TOKENS": raw})
         result = run_delivery(ScriptHandler(), repo="a/b", request="x", max_tokens=1)
         self.assertEqual(result["stop"], "budget_exceeded")
         with contextlib.redirect_stdout(io.StringIO()) as output:
@@ -134,22 +105,6 @@ class TokenCapTests(unittest.TestCase):
         self.assertIn("work tokens used / work cap: 2 / 1", output.getvalue())
         self.assertIn("overshoot", output.getvalue())
         self.assertEqual(run_delivery(ScriptHandler(), repo="a/b", request="x")["run"].token_cap, DEFAULT_TOKEN_CAP)
-
-    def test_resume_checks_the_historical_snapshot_it_will_invoke(self):
-        with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
-            checkpoint = Path(folder) / "historical.sqlite"
-            invocation = {"configurable": {"thread_id": "a/b#8"}}
-            live = LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner")
-            with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
-                saver.serde = checkpoint_serializer()
-                graph = compile_delivery(ScriptHandler(), config, run=live, checkpointer=saver)
-                graph.update_state(invocation, {"review": ReviewState(review="changes"), "stop": "P1", "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "checks": ChecksState(preflight="exit 1"), "path": ["triage"],
-                    "plan": PlanState(triage="supplied_slice"), "pstack_pin": config.pstack.model_dump(), "matt_skills_pin": config.matt_skills.model_dump()}, as_node="review")
-                graph.update_state(invocation, {"review": ReviewState(), "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
-                                                "path": ["implement"]}, as_node="research")
-            with self.assertRaisesRegex(ValueError, "unknown usage history"):
-                run_live_delivery(repo="a/b", issue=8, checkpoint=checkpoint, run=live,
-                                  dispatcher=ScriptHandler())
 
     def test_finished_legacy_checkpoint_is_refused(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):

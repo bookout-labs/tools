@@ -72,6 +72,8 @@ class PublicationFixture(unittest.TestCase):
         self.published_heads = []
         self.comments = []
         self.labels = ["slice", "Ready"]
+        # The repository's run settings, which each start reads once.
+        self.settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
         self.status: str | None = None  # Foreman's status comment on the issue.
         self.pr_body = "Closes #8"
         self.pr_view_error = ""
@@ -144,7 +146,7 @@ class PublicationFixture(unittest.TestCase):
                 self.created.append(self.remote_head())
                 return subprocess.CompletedProcess(command, 0, f"https://github.com/{REPO}/pull/12\n", "")
             case ["variable", "list"]:
-                response = [{"name": "FOREMAN_HUMAN_LOGIN", "value": "fixture-owner"}]
+                response = [{"name": name, "value": value} for name, value in self.settings.items()]
             case ["pr", "view"]:
                 if self.pr_view_error:
                     return subprocess.CompletedProcess(command, 1, "", self.pr_view_error)
@@ -218,8 +220,9 @@ class PublicationFixture(unittest.TestCase):
                 result.output["no_change"] = no_change()
             return result
 
+        self.settings["FOREMAN_PREFLIGHT"] = preflight
         return run_live_delivery(
-            repo=REPO, issue=8, preflight=preflight, checkpoint=self.checkpoint,
+            repo=REPO, issue=8, checkpoint=self.checkpoint,
             answer=answer,
             run=LiveRun(LiveForge(), workspace, check_log=check_log, human_login="fixture-owner"), dispatcher=handler,
         )

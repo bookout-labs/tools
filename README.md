@@ -74,7 +74,7 @@ Implement runs four steps: prepare, edit, commit and publish. Prepare creates an
 
 Commit and publish stop with `dirty_worktree` if the checkout differs from the checked tree or HEAD differs from the expected commit. Publish observes the remote branch and pull request before every push or create, so a crash never repeats a completed write. A remote head that moved on the owned pull request starts a new attempt without the earlier check or review authority. Unrecognized remote work stops with `publish_failed`, and a write that GitHub cannot yet confirm stops with `publication_unreconciled`. Dry runs skip preflight and use a scripted verdict.
 
-Use `--preflight <command>` to check environment readiness in the engine checkout. Each new or resumed invocation checks readiness once, after checkout validation and before its first implement dispatch. Review answers resume through prepare, so environment retries retain the answer and implementer history. Routes that never reach implement skip the probe. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
+Set the `FOREMAN_PREFLIGHT` repository variable to a command that checks environment readiness in the engine checkout. A new run saves the value its start read, and a resume keeps it. Each new or resumed invocation checks readiness once, after checkout validation and before its first implement dispatch. Review answers resume through prepare, so environment retries retain the answer and implementer history. Routes that never reach implement skip the probe. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
 
 Restore the environment and rerun the same command to resume from the saved checkpoint.
 
@@ -230,7 +230,7 @@ Foreman pins the repository default branch on admission and creates the slice br
 
 The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Only one run per repository and issue can write at a time for a user, whatever its state directory: the run holds a lock in `$XDG_RUNTIME_DIR/foreman-locks`, or `~/.cache/foreman-locks` by default, and its worker keeps it until the worker's process group ends. Stopping Foreman with TERM or Ctrl-C ends the worker's process group too. Run the same issue again from the same checkout to see its saved state. For review and PR size questions, add `--answer "…"` to continue.
 
-Foreman counts answers and stops only from one GitHub login, so a run without one does not start. `foreman start` reads it from the `FOREMAN_HUMAN_LOGIN` repository variable. `foreman run`, including a resume of a run `foreman start` began, takes `--human-login` or the `FOREMAN_HUMAN_LOGIN` environment variable. The paused prompt shows the exact `foreman answer <question digest>` marker. Post it on the issue with the answer on the next line, then rerun the command. A plan clears automatically after validation and the independent check, with no approval step. To stop a run, post a comment whose first line is `foreman stop`, with any reason on the lines below it. The next stage ends the run cancelled before any paid call or write, and closes the run's open pull request with a comment. The close leaves the branch in place. A stop cannot undo a merge.
+Foreman counts answers and stops only from one GitHub login, so a run without one does not start. Each start of a run, new or resumed, reads it once from the `FOREMAN_HUMAN_LOGIN` repository variable, with the budget caps, and saves it on the run. Every later answer and wake uses the saved login until the run's next start. The paused prompt shows the exact `foreman answer <question digest>` marker. Post it on the issue with the answer on the next line, then rerun the command. A plan clears automatically after validation and the independent check, with no approval step. To stop a run, post a comment whose first line is `foreman stop`, with any reason on the lines below it. The next stage ends the run cancelled before any paid call or write, and closes the run's open pull request with a comment. The close leaves the branch in place. A stop cannot undo a merge.
 
 After an upgrade, Foreman refuses checkpoints from older releases, including checkpoints
 without a schema version. The refusal names the stored and expected versions and the
@@ -266,12 +266,10 @@ uv run python -m unittest discover -s tests
 
 ### Run limits
 
-`foreman run delivery --max-budget-usd X` stores an optional Claude dollar
+The `FOREMAN_MAX_BUDGET_USD` repository variable sets the run's Claude dollar
 allowance. The amount must be finite and positive (for example, `1.50` or
-`1e-4`); it is saved as canonical decimal text. Omitting the flag on a new run
-stores an unbounded allowance. On resume, omit the flag to keep the saved value,
-or supply an equal amount. A different amount, including adding a bound to an
-unbounded run, is an error.
+`1e-4`); it is saved as canonical decimal text. Unset, it is 3 dollars. Each
+start of a run reads it once and saves it. Answers and wakes keep the saved value.
 
 Bounded runs print `claude spend $S of $L`. This total includes Claude attempts
 across resumes, including failed and quota attempts, but excludes missing CLIs
@@ -284,8 +282,8 @@ Reaching the allowance halts `budget_exceeded` before output or fallback.
 Unknown Claude costs halt bounded runs as `usage_unknown`. Missing CLIs fall through.
 Both halts exit 1. Dry runs record zero dollar cost.
 
-`foreman run delivery --max-tokens N` stores a positive token cap, defaulting to
-20,000,000. Resume keeps the stored cap and rejects a differing flag.
+The `FOREMAN_MAX_TOKENS` repository variable sets a positive token cap, defaulting to
+20,000,000. Each start reads it once and saves it, like the dollar allowance.
 The cap measures work tokens, the canonical uncached input + cache creation +
 output across all models and attempted calls. Cache reads are excluded. Admission
 is checked between calls; no active CLI proves a native token bound within a call.
@@ -295,8 +293,8 @@ The attempt already in flight can overshoot the cap. Once the
 cap is reached, no subsequent model runs and that attempt's output is not
 applied. `budget_exceeded`, including its `usage_unknown` form, exits 75. Raise
 FOREMAN_MAX_TOKENS or FOREMAN_MAX_BUDGET_USD and add Ready again to resume at the
-interrupted step. Any other cap change is refused, and an unchanged cap stops again
-before any worker call.
+interrupted step. A resume always takes the caps its start read, so a cap at or below
+what the run has spent stops it again before any worker call.
 Interrupted calls with no committed usage halt as unknown rather than being
 retried. Checkpoints from before this work-cap schema require a new run.
 
