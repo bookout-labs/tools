@@ -221,7 +221,7 @@ def page(directory, target, files, sections):
 <p>{text(target["overview"]["framing"])} <a href="{text(target["overview"]["source"])}">Notion’s book ↗</a></p></header>
 {diagram("target", "Foreman workflow")}
 <p class="legend"><span>▰ Stage</span><span>▱ Step</span><span>◉ Worker call</span><span>◇ Question gate</span><span>○ Result</span></p>
-<p class="legend">{text(gate_rule)} If a valid result has no matching route, Foreman opens the stage's question gate and records a routing defect on the run.</p>
+<p class="legend">{text(gate_rule)}</p>
 <div class="stage-grid">{"".join(f'<a href="#{key}"><strong>{text(stage["title"])}</strong><span>{text(stage["purpose"])}</span></a>' for key, stage in stages.items())}</div>
 <p class="baseline">{text(target["status"].capitalize())} blueprint · Baseline <a href="https://github.com/{text(target["repositories"]["foreman_repository"])}/commit/{text(target["baseline"])}"><code>{text(target["baseline"][:8])}</code></a></p>
 </section>

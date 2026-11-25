@@ -74,10 +74,8 @@ All names below are methods in `tests/test_publication.py`.
 | Reconcile git timeout or lock, halt and retry reconciliation | `test_reconcile_git_errors_remain_git_failed` |
 | Extra commit after reconciliation, halt before commit | `test_reconciled_candidate_mutation_is_rejected_before_publication` |
 | Worker shows that no change is justified, stop without pushing | `test_no_change_with_evidence_on_a_first_attempt_stops_without_pushing` |
-| Worker result matches no route, open the implement gate | `test_a_builder_result_that_matches_no_route_opens_the_implement_gate` |
-| A second gate resumes, replay the first routing decision from its checkpoint | `test_a_second_gate_resumes_by_replaying_the_first_routing_decision` |
-| Git fails while routing, halt with the builder's edits owned, rerun asks the builder again | `test_a_git_failure_while_routing_resumes_by_asking_the_builder_again` |
-| Worker reports no change after a failed check, open the gate, answer resumes the repair | `test_no_change_after_a_failed_check_opens_the_gate_and_the_answer_resumes_the_repair` |
+| Worker answer that edit's check rejects (a clean tree without no_change evidence, or no_change with edits), one repair turn in its session, no gate | `test_an_invalid_no_change_answer_gets_one_repair_turn_and_no_gate` |
+| Second invalid answer, including no_change on a repair, stop with invalid_output, nothing more pushed | `test_a_second_invalid_no_change_answer_stops_with_invalid_output` |
 | Checkout curated back to the attempt parent after a rejection, halt, rerun asks the builder again | `test_a_checkout_curated_to_the_attempt_parent_asks_the_builder_again` |
 | Repository check fails, repair in edit, publish the receipt's tree | `test_failed_repository_check_is_repaired_and_its_receipt_tree_is_published` |
 | Check failures or a tree-changing check reach the cap, publish nothing | `test_check_cap_and_tree_changing_checks_never_publish` |

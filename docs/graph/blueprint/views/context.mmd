@@ -23,6 +23,7 @@ flowchart TD
     n6 -->|"Authorized team context"| n7
     n7 -->|"Conversation context"| n4
     n2 -->|"Builds the contract image and runs setup"| n8
+    n9 -->|"Shell commands only, routed into the container, never on the host"| n8
     n2 -->|"Assigns a bounded procedure"| n9
     n9 -->|"Reads or edits within assignment"| n10
     n9 -->|"Read only at pinned commits"| n11
