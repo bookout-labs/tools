@@ -4,6 +4,7 @@ import tests
 from contextlib import ExitStack, nullcontext, redirect_stdout, redirect_stderr
 from dataclasses import replace
 import io
+from itertools import chain, repeat
 import json
 import os
 from pathlib import Path
@@ -31,7 +32,8 @@ class NpmSmokeTest(unittest.TestCase):
             # A queued merge stays armed until GitHub merges it, which a release smoke doesn't wait for.
             fake.queue_merges = mutation != 'queued'
             forge = Mock(wraps=fake)
-            forge.create_issue = Mock(return_value=17)
+            # Each target files its own issue, since the fake keeps labels by issue number.
+            forge.create_issue = Mock(side_effect=chain([16] if targets else [], repeat(17)))
             forge.smoke_identity = Mock(return_value=(True, True, True))
             forge.smoke_issues = Mock(return_value=[])
             forge.smoke_pull_requests = Mock(return_value=[])
@@ -175,6 +177,15 @@ class NpmSmokeTest(unittest.TestCase):
                 code, output, _, _ = self.exercise(mutation)
                 self.assertEqual(code, 1, output)
                 self.assertIn('target.contract' if mutation != 'broken suite' else 'check exit 1', output)
+
+    def test_each_target_prints_its_own_attempts(self):
+        # A release tag on exit 78 reads every target's attempts in the log (standing order T1).
+        code, output, _, _ = self.exercise(targets=smoke.SMOKE_TARGETS)
+        self.assertEqual(code, 0, output)
+        for repo in smoke.SMOKE_TARGETS:
+            with self.subTest(repo=repo):
+                run = output.split(f'smoke {repo} base ')[1].split(f'smoke {repo} exit ')[0]
+                self.assertRegex(run, r'\nattempt 1 triage .*\nattempt 2 spec_check ')
 
     def test_every_target_runs_unless_one_fails_and_the_worst_exit_wins(self):
         # Joe, 2026-11-23: an unavailable target (78) doesn't skip the next one; only a failure (1) stops early.

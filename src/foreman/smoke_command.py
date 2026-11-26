@@ -24,12 +24,10 @@ from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, STOPPED_LABEL, Fo
 from foreman.process_group import owned_group, signals_end_foreman
 from foreman.redaction import redact
 from foreman.readiness import MergeReceipt, MergeState
-from foreman.runner import run_live_delivery
 from foreman.status import shows
 from foreman.smoke import SmokeVerdict, smoke_verdict
 from foreman.smoke_ownership import cleanup_smoke, create_smoke_issue, smoke_lock
 from foreman.usd import BudgetUsd
-from foreman.worker import CliWorker
 from foreman.workspace import LiveWorkspace
 
 SMOKE_REPO = "bookout-labs/foreman-smoke"
@@ -183,18 +181,12 @@ def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | 
         verdict = SmokeVerdict(1, "live_run", "checkpoint")
         used, spent = None, None
         while True:
-            if npm:
-                # The CLI reports the run as the runner reads it, including state a paused stage holds.
-                reported: list[DeliveryResult] = []
-                main(command, live_run=live, report=reported.append)
-                if not reported:
-                    raise ValueError("CLI produced no delivery result")
-                result = reported[-1]
-            else:
-                result = run_live_delivery(repo=repo, issue=issue, request=request,
-                                           checkpoint=directory / "checkpoint.sqlite3", dispatcher=CliWorker(root, scratch_root=directory),
-                                           run=live,
-                                           log=lambda message: print(redact(message), flush=True))
+            # The CLI prints the run with its attempts and reports it as the runner reads it, including state a paused stage holds.
+            reported: list[DeliveryResult] = []
+            main(command, checkpoint=checkpoint, live_run=live, report=reported.append)
+            if not reported:
+                raise ValueError("CLI produced no delivery result")
+            result = reported[-1]
             # Arm waits for the checks. Once armed, the queued pull request is the smoke's end point.
             if result["stop"] != "merge_pending" or result.get("merge", MergeState()).status == "armed":
                 break
