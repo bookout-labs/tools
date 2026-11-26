@@ -2978,11 +2978,11 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.calls, [])
 
     def test_dirty_or_invalid_worktree_after_commit_is_never_published(self):
-        for snapshot in (WorktreeState(HEAD, False, BRANCH), WorktreeInspectionFailed("Invalid HEAD")):
+        for snapshot, halt in ((WorktreeState(HEAD, False, BRANCH), "dirty_worktree"), (WorktreeInspectionFailed("Invalid HEAD"), "publish_failed")):
             with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(snapshot,))
-                self.assertEqual(result["stop"], "publish_failed")
+                self.assertEqual(result["stop"], halt)
                 self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish"])
                 self.assertEqual(result["checks"].check_exit_code, 0)
                 self.assertIsNone(result["work"].published_head)
@@ -3769,7 +3769,7 @@ class StopWakeTest(WakeTest):
         self.checkpoint, self.github = self.cwd.parent / "halted.sqlite3", FakeGitHub()
         woken.clear()
         halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(WorktreeState(HEAD, False, BRANCH),))
-        self.assertEqual((halted["stop"], woken), ("publish_failed", ["wake Example/Engine#8"]))
+        self.assertEqual((halted["stop"], woken), ("dirty_worktree", ["wake Example/Engine#8"]))
         calls = len(self.calls)
         code, _, stopped = self.wake()
         self.assertEqual((stopped["stop"], stopped.get("halt"), len(self.calls), self.github.pr_closes), ("cancelled", None, calls, []))
@@ -3843,7 +3843,7 @@ class HaltExitCodeTest(unittest.TestCase):
         self.assert_halt(self.live(
             [{"triage": "supplied_slice"}, {"implementation": "built"}],
             snapshots=(WorktreeState(HEAD, False, BRANCH),),
-        ), "publish_failed", "Restore the clean delivery branch at its checked commit before publishing.", 75)
+        ), "dirty_worktree", f"The checkout differs from the checked commit {HEAD} on {BRANCH}. It is preserved.", 75)
 
     def test_worktree_inspection_failure_after_commit(self):
         self.assert_halt(self.live(

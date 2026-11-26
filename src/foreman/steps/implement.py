@@ -1,6 +1,7 @@
 """Implement: publish exactly the tree that passed the target repository's checks."""
 
 from collections.abc import Callable
+from dataclasses import replace
 import re
 import textwrap
 
@@ -125,6 +126,8 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         if checks.verify == "pass" and checks.checked_tree == tree:
             return finish({})
         update["path"] = [*update.get("path", []), "check"]
+        # A check command owns nothing in the checkout, so the attempt keeps the branch and head the check ran on.
+        checked = workspace.inspect()
         output = CheckOutput(run.check_log)
         exit_code = workspace.run(checks.check, log=output)
         detail = ""
@@ -133,7 +136,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         elif exit_code and checks.preflight and (preflight := workspace.run(checks.preflight, log=run.check_log)):
             detail = f"Preflight {checks.preflight!r} exited with {preflight}"
         stable = workspace.tree(None) == tree
-        work = work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint()})
+        work = work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint(checked)})
     except ImplementationRejected as exc:
         return finish(stopped(Halt.implementation_rejected, str(exc), "implement"))
     except WorkspaceError as exc:
@@ -154,7 +157,8 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The next round edits on the attempt parent, so worker commits become edits.
         try:
             workspace.soft_reset(work.attempt_head)
-            moved, work = work.owned, work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint()})
+            parent = replace(checked, head=work.attempt_head)
+            moved, work = work.owned, work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint(parent)})
         except WorkspaceError as exc:
             return finish(stopped(Halt.git_failed, str(exc), "check"))
         return finish(follow({**state, **update}, moved, work.owned))
@@ -217,7 +221,9 @@ def publish(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         local = workspace.inspect()
     except WorkspaceError as exc:
         return stopped(Halt.publish_failed, str(exc), "publish")
-    if not local.clean or local.branch != branch or local.head != head or checks.verified_head != head:
+    if not local.clean or local.branch != branch or local.head != head:
+        return stopped(Halt.dirty_worktree, f"The checkout differs from the checked commit {head} on {branch}. It is preserved.", "publish")
+    if checks.verified_head != head:
         return stopped(Halt.publish_failed, "Restore the clean delivery branch at its checked commit before publishing.", "publish")
     try:
         # A write from an interrupted attempt may have landed, so an unreadable observation stays unresolved.
