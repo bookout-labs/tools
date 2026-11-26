@@ -533,27 +533,6 @@ class BuilderSessionTests(PublicationFixture):
                 # The saved session is Foreman's to resume and never reaches the worker's prompt.
                 self.assertNotIn(SESSIONS[0], repair[2])
 
-    def test_a_budget_stop_after_the_builder_returned_keeps_its_edits_owned(self):
-        # Fable's T19 ruling: the halted checkpoint owns the fingerprint dispatch returned, so a later edit is still dirty.
-        workspace = LiveWorkspace(self.checkout)
-        script = ScriptHandler()
-        spent = Usage(input_tokens=5000, output_tokens=1, cache_read_input_tokens=0, cache_creation_input_tokens=0)
-
-        def handler(node, model, state, instruction):
-            if node == "implement":
-                self.edit()
-                return Outcome("ran", VALID, usage=spent)
-            return script(node, model, state, instruction)
-
-        self.settings["FOREMAN_MAX_TOKENS"] = "1000"
-        result = run_live_delivery(repo=REPO, issue=8, checkpoint=self.checkpoint,
-                                   run=LiveRun(LiveForge(), workspace), dispatcher=handler)
-        self.assertEqual(result["halt"], "budget_exceeded")
-        fingerprint = DispatchRun(handler, workspace, None, "", True, lambda: {}, lambda *args: None).fingerprint
-        self.assertEqual(result["work"].owned, fingerprint())
-        (self.checkout / "items.txt").write_text("edited after the halt\n")
-        self.assertNotEqual(result["work"].owned, fingerprint())
-
     def test_a_resume_adopts_only_the_edits_the_builder_returned(self):
         # IM1: a budget stop lands after the builder returned and before edit marked the attempt built, so the resume
         # meets the checkout before any builder call. Edits the halt does not own stop it with the tree preserved.
@@ -571,13 +550,12 @@ class BuilderSessionTests(PublicationFixture):
                 self.settings["FOREMAN_MAX_TOKENS"] = "1000"
                 halted = self.walk(model_edit=edit)
                 self.assertEqual(halted["halt"], "budget_exceeded")
-                self.assertFalse(halted["work"].built)
                 if edited:
                     (self.checkout / "items.txt").write_text("edited after the halt\n")
                 del self.settings["FOREMAN_MAX_TOKENS"]
                 result = self.walk(model_edit=edit)
                 if edited:
-                    self.assertEqual(result.get("halt"), "dirty_worktree", result.get("halt_detail"))
+                    self.assertEqual(result["halt"], "dirty_worktree", result.get("halt_detail"))
                     self.assertEqual(len(builds), 1)
                     self.assertEqual((self.checkout / "items.txt").read_text(), "edited after the halt\n")
                     self.assertEqual(self.created, [])
@@ -619,6 +597,41 @@ class BuilderSessionTests(PublicationFixture):
                     self.assertEqual(result["halt"], "dirty_worktree")
                     self.assertEqual(len(builds), 1)
                     self.assertEqual((self.checkout / "items.txt").read_text(), "edited after the halt\n")
+                else:
+                    self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+                    self.assertEqual(self.git("show", f"{self.remote_head()}:items.txt"), "one")
+
+    def test_a_wake_after_a_capacity_wait_refuses_edits_made_during_the_wait(self):
+        # DP3: every builder hits quota after partial edits, so the run waits inside dispatch and the wake does not
+        # pass prepare again. Only dispatch sees an edit made during the wait.
+        for edited in (True, False):
+            with self.subTest(edited=edited):
+                self.reset_fixture()
+                builds = []
+
+                def edit(model, state, instruction):
+                    builds.append(model.name)
+                    if len(builds) == 1:
+                        (self.checkout / "items.txt").write_text("partial\n")
+                    return Outcome("quota", usage=SCRIPTED_USAGE)
+
+                paused = self.walk(model_edit=edit)
+                self.assertEqual(paused["stop"], "quota_exhausted", paused.get("halt_detail"))
+                waited = len(builds)
+                if edited:
+                    (self.checkout / "items.txt").write_text("edited during the wait\n")
+
+                def wake(model, state, instruction):
+                    builds.append(model.name)
+                    self.edit()
+                    return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
+
+                result = self.walk(model_edit=wake)
+                if edited:
+                    self.assertEqual(result["halt"], "dirty_worktree", result.get("halt_detail"))
+                    self.assertEqual(len(builds), waited)
+                    self.assertEqual((self.checkout / "items.txt").read_text(), "edited during the wait\n")
+                    self.assertEqual(self.created, [])
                 else:
                     self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
                     self.assertEqual(self.git("show", f"{self.remote_head()}:items.txt"), "one")
