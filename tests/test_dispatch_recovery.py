@@ -554,6 +554,37 @@ class BuilderSessionTests(PublicationFixture):
         (self.checkout / "items.txt").write_text("edited after the halt\n")
         self.assertNotEqual(result["work"].owned, fingerprint())
 
+    def test_a_resume_adopts_only_the_edits_the_builder_returned(self):
+        # IM1: a budget stop lands after the builder returned and before edit marked the attempt built, so the resume
+        # meets the checkout before any builder call. Edits the halt does not own stop it with the tree preserved.
+        spent = Usage(input_tokens=5000, output_tokens=1, cache_read_input_tokens=0, cache_creation_input_tokens=0)
+        for edited in (True, False):
+            with self.subTest(edited=edited):
+                self.reset_fixture()
+                builds = []
+
+                def edit(model, state, instruction):
+                    builds.append(model.name)
+                    self.edit()
+                    return Outcome("ran", VALID, usage=spent)
+
+                self.settings["FOREMAN_MAX_TOKENS"] = "1000"
+                halted = self.walk(model_edit=edit)
+                self.assertEqual(halted["halt"], "budget_exceeded")
+                self.assertFalse(halted["work"].built)
+                if edited:
+                    (self.checkout / "items.txt").write_text("edited after the halt\n")
+                del self.settings["FOREMAN_MAX_TOKENS"]
+                result = self.walk(model_edit=edit)
+                if edited:
+                    self.assertEqual(result.get("halt"), "dirty_worktree", result.get("halt_detail"))
+                    self.assertEqual(len(builds), 1)
+                    self.assertEqual((self.checkout / "items.txt").read_text(), "edited after the halt\n")
+                    self.assertEqual(self.created, [])
+                else:
+                    self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+                    self.assertEqual(self.git("show", f"{self.remote_head()}:items.txt"), "one")
+
     def test_a_resumed_halt_after_the_builder_returned_continues_only_on_the_edits_it_returned(self):
         # Dispatch's check of the returned worktree fails once: a resumable git_failed after the call returned.
         # The halt owns the fingerprint the call returned and resume never recomputes it, so a later edit is dirty.
