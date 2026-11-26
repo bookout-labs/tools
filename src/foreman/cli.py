@@ -27,7 +27,7 @@ from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
-from foreman.runner import AnswerError, IssueLocked, RunPresentation, halted_resumably, issue_lock, issue_thread, run_live_delivery, saved_workspace
+from foreman.runner import AnswerError, IssueLocked, RunPresentation, halted_resumably, issue_lock, issue_thread, paused_run, run_live_delivery, saved_workspace
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
@@ -203,11 +203,18 @@ def main(
     start.add_argument("--issue", type=int, required=True)
     start.add_argument("--watch-repo", default="bookout-labs/tools")
 
-    accept = commands.add_parser("accept", help="decide whether a GitHub delivery starts a run")
+    wake = commands.add_parser("wake", help="continue an issue's run that waits at a gate or on a provider or GitHub")
+    wake.add_argument("--repo", required=True)
+    wake.add_argument("--issue", type=int, required=True)
+    wake.add_argument("--watch-repo", default="bookout-labs/tools")
+
+    accept = commands.add_parser("accept", help="decide whether a GitHub delivery starts or wakes a run")
     accept.add_argument("--event", required=True, help="the delivery's X-GitHub-Event header")
     accept.add_argument("path", help="the delivery's JSON body")
 
     args = parser.parse_args(argv)
+    state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+    store = checkpoint or state_home / "foreman" / "checkpoints.sqlite3"
     if args.command == "smoke":
         from foreman.smoke_command import smoke_command
         return smoke_command()
@@ -256,14 +263,12 @@ def main(
         return 0
     if args.command == "accept":
         try:
-            decision = accept_event(args.event, json.loads(Path(args.path).read_text()))
+            decision = accept_event(args.event, json.loads(Path(args.path).read_text()),
+                                    lambda repo, issue: paused_run(store, issue_thread(repo, issue)))
         except (OSError, json.JSONDecodeError, AcceptError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        if decision["start"] is False:
-            print("ignored")
-            return 0
-        print(f"start {decision['repo']}#{decision['issue']}")
+        print("ignored" if decision is None else f"{decision.action} {decision.repo}#{decision.issue}")
         return 0
     if args.command == "run" and args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
@@ -271,18 +276,16 @@ def main(
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.watch_repo):
         parser.error("--watch-repo must be OWNER/NAME")
     presentation = RunPresentation()
-    state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
-    store = checkpoint or state_home / "foreman" / "checkpoints.sqlite3"
 
     def live(repo: str, issue: int, workspace: LiveWorkspace, *, answer: str | None = None, request: str | None = None) -> int:
         target = replace(live_run or LiveRun(LiveForge(), workspace), check_log=_write_check_log)
-        dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
 
         def reported(result: DeliveryResult) -> None:
             _print_run(result, presentation)
             report(result)
 
         try:
+            dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
             with signals_end_foreman():
                 result = run_live_delivery(
                     repo=repo,
@@ -305,19 +308,23 @@ def main(
             print(f"start {released}")
         return run_exit_code(result)
 
-    if args.command == "start":
+    if args.command in ("start", "wake"):
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo) or args.issue < 1:
-            start.error("start requires --repo OWNER/NAME and a positive --issue")
+            parser.error(f"{args.command} requires --repo OWNER/NAME and a positive --issue")
         thread = issue_thread(args.repo, args.issue)
         try:
             # Unattended runs act only as the App installed on the repository, never as a personal gh login.
             # The App's token request is doctor's first read, so it is reported on the issue like the others.
             if not credentials.configured:
-                raise CredentialFailure("Configure FOREMAN_APP_ID before starting runs from Ready.")
-            # A held lock may be a blocked admission about to delete its checkpoint, so start waits for it.
+                raise CredentialFailure(f"Configure FOREMAN_APP_ID before foreman {args.command}.")
+            # A held lock may be a blocked admission about to delete its checkpoint, or a run a wake continues, so both wait for it.
             with issue_lock(thread, wait=True):
                 saved = saved_workspace(store, thread)
-                if saved is not None and not halted_resumably(store, thread):
+                if args.command == "wake" and paused_run(store, thread) is None:
+                    # A wake only continues a run that waits. It never starts or resumes one (glossary Start).
+                    print(f"not waiting {thread}")
+                    return 0
+                if args.command == "start" and saved is not None and not halted_resumably(store, thread):
                     # A repeated delivery never resumes a running, paused, waiting or finished run.
                     print(f"already started {thread}")
                     return 0

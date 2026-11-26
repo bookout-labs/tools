@@ -163,13 +163,13 @@ def project():
                 procedure["policy_orders"] = expected_orders
         procedures[name] = procedure
 
-    # Probe every pair of GitHub event and action literals with a synthetic delivery that adds Ready to an issue.
+    # Probe every pair of GitHub event and action literals with a synthetic delivery that adds Ready to an issue with no run.
     intake_source = ast.parse(Path(accept.__file__).read_text())
     literals = sorted({node.value for node in ast.walk(intake_source)
                        if isinstance(node, ast.Constant) and isinstance(node.value, str)})
-    delivery = {"label": {"name": "Ready"}, "issue": {"number": 1}, "repository": {"full_name": "example/synthetic"}}
+    delivery = {"label": {"name": "Ready"}, "issue": {"number": 1}, "repository": {"full_name": "example/synthetic"}, "comment": {}}
     started = [(name, action) for name in literals for action in literals
-               if accept.accept_event(name, {**delivery, "action": action})["start"]]
+               if (decision := accept.accept_event(name, {**delivery, "action": action}, lambda repo, issue: None)) and decision.action == "start"]
     return {
         "schema_version": 1,
         # The drawing names GitHub's issues/labeled delivery as Warp's issue_labeled trigger.

@@ -40,7 +40,10 @@ SETTINGS = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
 class StartTest(unittest.TestCase):
     def setUp(self):
         confine_host(self)
-        self.root = Path(self.enterContext(TemporaryDirectory()))
+        # The checkpoint sits beside the checkout, as Foreman's state directory must.
+        base = Path(self.enterContext(TemporaryDirectory()))
+        self.root, self.store = base / "checkout", base / "runs.sqlite3"
+        self.root.mkdir()
         self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.root / "runtime"), "FOREMAN_APP_ID": "1"}))
         self.app = self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
         self.forge = FakeGitHub()
@@ -58,7 +61,7 @@ class StartTest(unittest.TestCase):
         settings = contextlib.nullcontext() if variables is None else patch.object(
             self.forge, "variables", side_effect=lambda repo: dict(variables))
         with settings, contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
-            code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.root / "runs.sqlite3",
+            code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.store,
                         live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"), worker_runner=worker)
         return code, out.getvalue(), err.getvalue()
 
@@ -96,7 +99,7 @@ class StartTest(unittest.TestCase):
         return patch.object(self.forge, "app_installation", side_effect=installation), reads
 
     def stored(self):
-        with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
+        with SqliteSaver.from_conn_string(str(self.store)) as saver:
             saver.serde = checkpoint_serializer()
             values = saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]
         return values["run"], values["checks"]
@@ -116,14 +119,13 @@ class StartTest(unittest.TestCase):
 
     def test_a_started_run_resumes_and_run_takes_no_check_option(self):
         self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
-        store = self.root / "runs.sqlite3"
-        self.assertEqual(saved_workspace(store, THREAD), str(self.root.resolve()))
-        self.assertIsNone(saved_workspace(store, "example/engine#9"))
+        self.assertEqual(saved_workspace(self.store, THREAD), str(self.root.resolve()))
+        self.assertIsNone(saved_workspace(self.store, "example/engine#9"))
         live = LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner")
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.assertNotEqual(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"], checkpoint=store, live_run=live), 2)
+            self.assertNotEqual(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.store, live_run=live), 2)
             with self.assertRaises(SystemExit) as refused:
-                main(["run", "delivery", "--repo", "Example/Engine", "--issue", "9", "--check", "exit 0"], checkpoint=store, live_run=live)
+                main(["run", "delivery", "--repo", "Example/Engine", "--issue", "9", "--check", "exit 0"], checkpoint=self.store, live_run=live)
         self.assertEqual(refused.exception.code, 2)
 
     def test_settings_default_and_parse(self):
@@ -166,7 +168,7 @@ class StartTest(unittest.TestCase):
                 self.assertIn("in Example/Engine's Actions variables. Then remove and add the Ready label.", status)
                 self.assertEqual((self.worker_calls, self.forge.label_calls), (0, []))
                 self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
-                self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
+                self.assertIsNone(saved_workspace(self.store, THREAD))
 
     def test_a_failed_github_read_reports_git_failed_and_a_refusal_of_the_app_not_ready(self):
         """TR13: at a new run's start and at a resume's start, in turn, GitHub answers 502 to the Ready label read, a rate-limit
@@ -210,7 +212,7 @@ class StartTest(unittest.TestCase):
             with self.subTest(start="new", answer=answer):
                 refused(answer, "start")
                 self.assertEqual((self.worker_calls, self.forge.label_calls), (0, []))
-                self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
+                self.assertIsNone(saved_workspace(self.store, THREAD))
         failing, reads = self.github_answers(*label_502)
         unwritten, _ = self.github_answers("upsert_comment", "gh: Server Error (HTTP 502)")
         with failing, unwritten:
@@ -227,7 +229,7 @@ class StartTest(unittest.TestCase):
                 self.forge.ready_again(8)
                 refused(answer, "resume")
                 self.assertEqual((self.worker_calls, self.stored()), (1, halted))
-                with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
+                with SqliteSaver.from_conn_string(str(self.store)) as saver:
                     saver.serde = checkpoint_serializer()
                     self.assertEqual(saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]["halt"], "budget_exceeded")
 
@@ -250,7 +252,7 @@ class StartTest(unittest.TestCase):
         self.assertIn(f"Not ready: the contract file {CONTRACT_PATH} is not a tracked file", self.forge.status[("Example/Engine", 8)])
         self.assertEqual((self.worker_calls, self.forge.label_calls), (0, []))
         self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
-        self.assertIsNone(saved_workspace(self.root / "runs.sqlite3", THREAD))
+        self.assertIsNone(saved_workspace(self.store, THREAD))
 
     def test_a_missing_setting_is_commented_once_while_ready_waits(self):
         for _ in range(2):
@@ -317,7 +319,7 @@ class StartTest(unittest.TestCase):
         self.assertEqual(self.worker_calls, 1)
         # The checkpoint and its budget halt are untouched, so the next Ready resumes the halted step.
         self.assertEqual(self.stored(), halted)
-        with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
+        with SqliteSaver.from_conn_string(str(self.store)) as saver:
             saver.serde = checkpoint_serializer()
             self.assertEqual(saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]["halt"], "budget_exceeded")
         self.forge.ready_again(8)
@@ -330,7 +332,7 @@ class StartTest(unittest.TestCase):
     def test_a_cap_below_what_the_run_spent_stops_at_the_first_reservation(self):
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])
         self.assertEqual(code, 75, out + err)
-        with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
+        with SqliteSaver.from_conn_string(str(self.store)) as saver:
             saver.serde = checkpoint_serializer()
             attempts = saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]["attempts"]
         spent_tokens, spent_dollars = work_tokens(attempts), claude_spend(attempts)
@@ -356,7 +358,7 @@ class StartTest(unittest.TestCase):
                 patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: seen.append(kwargs) or {"stop": "merged"}), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             for issue in ("8", "9"):
-                self.assertEqual(main(["start", "--repo", "Example/Engine", "--issue", issue], checkpoint=self.root / "runs.sqlite3"), 0)
+                self.assertEqual(main(["start", "--repo", "Example/Engine", "--issue", issue], checkpoint=self.store), 0)
         self.assertEqual([(kwargs["issue"], kwargs["run"].workspace.root) for kwargs in seen], [
             (8, self.root.resolve()), (9, (state_home / "foreman").resolve() / "runs" / "example" / "engine" / "9")])
 
@@ -399,7 +401,7 @@ class StartTest(unittest.TestCase):
             unlock.join()
         self.assertEqual(code, 0, out + err)
         self.assertIn("done merged", out)
-        self.assertEqual(saved_workspace(self.root / "runs.sqlite3", THREAD), str(self.root.resolve()))
+        self.assertEqual(saved_workspace(self.store, THREAD), str(self.root.resolve()))
 
     def test_the_holder_reenters_its_own_lock(self):
         with issue_lock(THREAD), issue_lock(THREAD):
