@@ -20,12 +20,12 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman._raw import is_dict
-from foreman.accept import OpenRun
+from foreman.accept import MergeRun, OpenRun
 from foreman.config import SkillPin, load_config
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
-from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state
+from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
 from foreman.readiness import MergeState, MergeWait
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, pull_request_number, require_schema_version
 from foreman.dispatch import Handler, QuotaPause
 from foreman.doctor import REFUSALS, NotReady, OperatorVariables, ReadFailed, repository
 from foreman.skill_rules import SkillMissing
@@ -188,6 +188,46 @@ def open_run(checkpoint: Path, thread: str) -> OpenRun | None:
     pause: object = pending[0][0].value if pending else None
     start: StartSettings = values["start"]
     return OpenRun(start.human_login, None if pause is None or is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
+
+
+def runs_in_merge(checkpoint: Path, repo: str) -> list[MergeRun]:
+    """The repository's saved runs that are in merge, whatever their step, read without their locks (merge's invariants).
+
+    The library's next names the stage a saved run has under way or is paused in. A halted run is in the stage its halt came
+    from, the next of the latest earlier checkpoint that has one, which is where Ready resumes it. A run that ended with a
+    result other than a halt is in no stage. The checkpointer lists no threads, so its table names the saved runs."""
+    if not checkpoint.exists():
+        return []
+    prefix, found = f"{repo.lower()}#", list[MergeRun]()
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+        saver.serde = checkpoint_serializer()
+        threads = [thread for (thread,) in saver.conn.execute("SELECT DISTINCT thread_id FROM checkpoints WHERE checkpoint_ns = ''")
+                   if thread.startswith(prefix)]
+        if not threads:
+            return []
+        graph = shape(saver)
+        for thread in threads:
+            config: RunnableConfig = {"configurable": {"thread_id": thread}}
+            saved = graph.get_state(config)
+            require_schema_version(saved.values, checkpoint, thread)
+            stages = saved.next if saved.next or saved.values.get("halt") is None else next(
+                (earlier.next for earlier in graph.get_state_history(config) if earlier.next), ())
+            if stages == ("merge",) and (state := checkpoint_state(saved.values)) is not None and state["run"].issue is not None:
+                found.append(MergeRun(state["run"].issue, pull_request_number(state)))
+    return found
+
+
+@dataclass(frozen=True)
+class CheckpointRuns:
+    """The runs saved in one checkpoint store, as accept reads them."""
+
+    checkpoint: Path
+
+    def open(self, repo: str, issue: int) -> OpenRun | None:
+        return open_run(self.checkpoint, issue_thread(repo, issue))
+
+    def in_merge(self, repo: str) -> list[MergeRun]:
+        return runs_in_merge(self.checkpoint, repo)
 
 
 def ended_cancelled(checkpoint: Path, thread: str) -> bool:

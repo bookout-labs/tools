@@ -15,6 +15,7 @@ from foreman.adapters import Outcome
 from foreman.config import load_config
 from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
+from foreman.doctor import EVENTS
 from foreman.dry_run import ScriptHandler
 from foreman.github import BOT_LOGIN, LiveForge
 from foreman.redaction import redact
@@ -65,6 +66,7 @@ class PublicationFixture(unittest.TestCase):
         self.fixture.close()
         # GitHub is faked below the App's credentials, so the App's installation is too.
         self.fixture.enter_context(patch.object(LiveForge, "app_installation", return_value="installed"))
+        self.fixture.enter_context(patch.object(LiveForge, "app_events", return_value=frozenset(EVENTS)))
         self.fixture.enter_context(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
         self.base = "main"
         self.branch = BRANCH

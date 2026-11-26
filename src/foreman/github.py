@@ -410,6 +410,7 @@ class Forge(Protocol):
     def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt: ...
     def variables(self, repo: str) -> dict[str, str]: ...
     def app_installation(self, repo: str) -> AppInstallation: ...
+    def app_events(self, repo: str) -> frozenset[str]: ...
     def permission(self, repo: str, login: str) -> Permission | None: ...
     def has_label(self, repo: str, name: str) -> bool: ...
     def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None: ...
@@ -928,6 +929,16 @@ class LiveForge:
                 raise
             raise ForgeError(str(exc), exc.status, rate_limited=exc.rate_limited) from None
 
+    def app_events(self, repo: str) -> frozenset[str]:
+        """The events the App's installation on the repository is subscribed to, read from GitHub now. A failure is a
+        ForgeError, except one of the host's own key or settings."""
+        try:
+            return credentials.events(repo) or frozenset()
+        except CredentialFailure as exc:
+            if exc.status is None and not isinstance(exc, Unanswered):
+                raise
+            raise ForgeError(str(exc), exc.status, rate_limited=exc.rate_limited) from None
+
     def permission(self, repo: str, login: str) -> Permission | None:
         """The login's base role on the repository, or None when GitHub answers 404 because it does not know the login."""
         try:
@@ -961,7 +972,7 @@ class LiveForge:
         if not pr.merged and pr.mergeable is False:
             return observed("conflict", "Foreman merges the base head into the owned branch, then verification and review run again.")
         if not pr.merged and (pr.mergeable is None or pr.mergeable_state == "unknown"):
-            return observed("pending", "Resume when GitHub has computed mergeability.")
+            return observed("uncomputed", "GitHub has not computed mergeability. Add Ready again to read the PR again.")
         rules = self._read(repo, Rules, ["gh", "api", f"{endpoint}/rules/branches/{pr.base.ref}"])
         if (queue_policy := merge_queue_policy(rules)) is None:
             return observed("policy", "Effective merge queue policy is missing or ambiguous. Restore readable queue policy.")

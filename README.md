@@ -140,7 +140,7 @@ After reporting a halted live run, Foreman watches eligible failures by filing a
 
 ## What enters the graph
 
-`foreman accept` reads one GitHub delivery and prints `ignored`, the issue to start or the issue to wake. It exits 1 on an unreadable or malformed delivery. It does not call a model.
+`foreman accept` reads one GitHub delivery and prints `ignored`, the issue to start or each issue to wake, comma-separated. It exits 1 on an unreadable or malformed delivery. It does not call a model.
 
 `foreman receive --port N` listens on `127.0.0.1` (`--host` changes it) for the App's webhook POSTs. It reads the webhook secret from the owner-only file `FOREMAN_WEBHOOK_SECRET_PATH` names (default `~/.config/bookout-foreman/webhook-secret`) and never prints it. A delivery whose `X-Hub-Signature-256` does not sign its body gets 401 before `accept` reads it, and a body that is not a delivery gets 400. Every other delivery goes to `accept` unchanged and gets 202 with `accept`'s line, which the receiver also prints after the `X-GitHub-Delivery` id. An ignored delivery starts nothing and prints that one line. A body larger than GitHub's 25 MB payload cap gets 413 before the receiver reads it, and a connection that has not sent its body within 10 seconds gets 408, so a stalled connection delays no other delivery. A start or wake runs `foreman start` or `foreman wake` in its own process, which shares the receiver's output; the receiver prints `<line> exited <code>` when that process exits non-zero. Deliveries are decided one at a time. Runs of different issues go on at the same time, and the issue's lock serializes runs of one issue. `foreman accept` stays for tests and for deciding a saved delivery by hand.
 
@@ -159,6 +159,15 @@ foreman accept --event issue_comment delivery.json
 # wake Example/Engine#7
 foreman wake --repo Example/Engine --issue 7
 ```
+
+A run in merge, whatever its step, also wakes on GitHub's merge events. A `pull_request` or `pull_request_review` delivery, whatever its action, wakes the run whose saved pull request has the delivery's `pull_request.number`, which is not the issue's number. A `check_suite` delivery with action `completed`, or any `status` delivery, wakes every run in merge in `repository.full_name`, because GitHub may record a required check on the pull request's test merge commit, which no run saves. Whether a run is in merge is read from its checkpoint without its lock: the stage the saved run has under way or is paused in, or for a halted run the stage its halt came from. A run in any other stage, or one that ended with a result other than a halt, is not woken. Each wake decides once it holds the run's lock: a run that waits in arm or observe reads GitHub again and decides from that read, and any other wake changes nothing.
+
+```sh
+foreman accept --event check_suite delivery.json
+# wake Example/Engine#7, wake Example/Engine#9
+```
+
+GitHub sends no event when it has computed whether a pull request can be merged, so merge's step reads it again for up to a minute and then halts `readiness_unavailable`, which Ready added again reads again. A required check that is still pending waits for its delivery.
 
 `foreman wake` acts only as the App and takes the issue's lock as `foreman start` does, so a stop posted while the run is running is handled when the run stops running. A wake for an issue with no run, or whose run ended with a result other than a halt, prints `not waiting`, exits 0 and reads and writes nothing, so it never starts or resumes a run. Every other wake reads the issue for a stop before anything resumes; in merge it reads the pull request first. A stop that counts ends a waiting, gate-paused or halted run cancelled and closes its open pull request, except that a stop after the pull request merged is too late: the run records it, stays as it was and its status comment says so. When one of those reads, or the close of the pull request, fails, nothing changes and the status comment shows a `git_failed` report above the run's state, saying what to do next. Otherwise the wake continues a run that waits, with the answer it reads from the issue, and resumes nothing else: a halted run, or one whose process died in the middle of a step, stays as it was. It runs no doctor, reads no login or cap variable, and exits as `foreman run` does. Ready added to a paused run still prints `already started`.
 

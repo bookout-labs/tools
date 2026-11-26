@@ -1,5 +1,7 @@
 """Studio-owned, repository-scoped GitHub App credentials."""
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
@@ -47,6 +49,7 @@ def failure(status: int, rate_limited: bool = False) -> str:
 
 class _Installation(BaseModel):
     id: int
+    events: frozenset[str] = frozenset()
 
 
 class _Token(BaseModel):
@@ -78,42 +81,17 @@ class AppCredentials:
             self._entries.clear()
 
     def environment(self, repo: str) -> dict[str, str] | None:
-        app = os.environ.get("FOREMAN_APP_ID", "")
-        if not self.configured:
+        if (app := self._app(repo)) is None:
             return None
-        if not app.isdecimal():
-            raise CredentialFailure("Configure FOREMAN_APP_ID, then resume.")
-        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
-            raise CredentialFailure("App credentials require an authorized OWNER/NAME repository.")
-        key_path = os.environ.get("FOREMAN_APP_KEY_PATH", "~/.config/bookout-foreman/app.pem")
-        cache_key = (app, key_path, repo.lower())
         with self._lock:
-            entry = self._entries.setdefault(cache_key, _Entry())
+            entry = self._entries.setdefault((*app, repo.lower()), _Entry())
         with entry.lock:
             token = entry.token
             if token is None or token.expires_at.timestamp() <= time.time() + TOKEN_MARGIN:
-                try:
-                    key = Path(key_path).expanduser()
-                    if key.stat().st_mode & 0o077:
-                        raise CredentialFailure("App key must have owner-only permissions. Repair and resume.")
-                    now = int(time.time())
-                    signed = jwt.encode({"iat": now - 60, "exp": now + 540, "iss": app}, key.read_bytes(), algorithm="RS256")
-                except CredentialFailure:
-                    raise
-                except Exception:
-                    raise CredentialFailure(UNAVAILABLE) from None
-                headers = {"Authorization": f"Bearer {signed}", "Accept": "application/vnd.github+json"}
-                try:
-                    # The installation that covers this repository, on an organization or a personal account.
-                    try:
-                        with urlopen(Request(f"https://api.github.com/repos/{repo}/installation", headers=headers), timeout=15) as response:
-                            installation = _Installation.model_validate_json(response.read()).id
-                    except HTTPError as exc:
-                        if exc.code == 404:
-                            raise NotInstalled(f"The App is not installed on {repo}. Install it on that account, then resume.") from None
-                        raise
+                headers = _signed(*app)
+                with _answered():
                     request = Request(
-                        f"https://api.github.com/app/installations/{installation}/access_tokens",
+                        f"https://api.github.com/app/installations/{_installation(repo, headers).id}/access_tokens",
                         data=json.dumps({"repositories": [repo.split('/')[1]]}).encode(), headers=headers,
                     )
                     with urlopen(request, timeout=15) as response:
@@ -121,14 +99,66 @@ class AppCredentials:
                     if token.expires_at.timestamp() <= time.time() + TOKEN_MARGIN:
                         raise CredentialFailure("App returned an expired credential. Restore App access and resume.")
                     entry.token = token
-                except CredentialFailure:
-                    raise
-                except HTTPError as exc:
-                    limited = exc.headers.get("X-RateLimit-Remaining") == "0" or bool(exc.headers.get("Retry-After"))
-                    raise CredentialFailure(failure(exc.code, limited), exc.code, rate_limited=limited) from None
-                except Exception:
-                    raise Unanswered(UNANSWERED) from None
         return command_environment(token.token.get_secret_value())
+
+    def events(self, repo: str) -> frozenset[str] | None:
+        """The events the App's installation on the repository is subscribed to, as GitHub reports them now, or None on a host
+        that has no App."""
+        if (app := self._app(repo)) is None:
+            return None
+        headers = _signed(*app)
+        with _answered():
+            return _installation(repo, headers).events
+
+    def _app(self, repo: str) -> tuple[str, str] | None:
+        """The App's id and key path, or None on a host that has no App."""
+        if not self.configured:
+            return None
+        if not (app := os.environ.get("FOREMAN_APP_ID", "")).isdecimal():
+            raise CredentialFailure("Configure FOREMAN_APP_ID, then resume.")
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+            raise CredentialFailure("App credentials require an authorized OWNER/NAME repository.")
+        return app, os.environ.get("FOREMAN_APP_KEY_PATH", "~/.config/bookout-foreman/app.pem")
+
+
+def _signed(app: str, key_path: str) -> dict[str, str]:
+    """GitHub's headers for a request made as the App itself, signed with its private key."""
+    try:
+        key = Path(key_path).expanduser()
+        if key.stat().st_mode & 0o077:
+            raise CredentialFailure("App key must have owner-only permissions. Repair and resume.")
+        now = int(time.time())
+        signed = jwt.encode({"iat": now - 60, "exp": now + 540, "iss": app}, key.read_bytes(), algorithm="RS256")
+    except CredentialFailure:
+        raise
+    except Exception:
+        raise CredentialFailure(UNAVAILABLE) from None
+    return {"Authorization": f"Bearer {signed}", "Accept": "application/vnd.github+json"}
+
+
+def _installation(repo: str, headers: dict[str, str]) -> _Installation:
+    """The installation that covers this repository, on an organization or a personal account."""
+    try:
+        with urlopen(Request(f"https://api.github.com/repos/{repo}/installation", headers=headers), timeout=15) as response:
+            return _Installation.model_validate_json(response.read())
+    except HTTPError as exc:
+        if exc.code == 404:
+            raise NotInstalled(f"The App is not installed on {repo}. Install it on that account, then resume.") from None
+        raise
+
+
+@contextmanager
+def _answered() -> Generator[None]:
+    """GitHub's refusal keeps its status, and no answer at all is Unanswered."""
+    try:
+        yield
+    except CredentialFailure:
+        raise
+    except HTTPError as exc:
+        limited = exc.headers.get("X-RateLimit-Remaining") == "0" or bool(exc.headers.get("Retry-After"))
+        raise CredentialFailure(failure(exc.code, limited), exc.code, rate_limited=limited) from None
+    except Exception:
+        raise Unanswered(UNANSWERED) from None
 
 
 credentials = AppCredentials()

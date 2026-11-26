@@ -52,6 +52,9 @@ class ReadFailed(Exception):
         return f"{self} No setting needs to change. Remove and add the {READY_LABEL} label to try again."
 
 
+# The events that start and wake a run, each with the App permission GitHub delivers it under (merge's invariants).
+EVENTS = {"issues": "Issues: read", "issue_comment": "Issues: read", "pull_request": "Pull requests: read",
+          "pull_request_review": "Pull requests: read", "check_suite": "Checks: read", "status": "Commit statuses: read"}
 REFUSALS = (401, 403, 404)
 # A 422 to the App's token request means the installation does not cover the repository.
 TOKEN_REFUSALS = (*REFUSALS, 422)
@@ -137,6 +140,11 @@ def repository(forge: Forge, repo: str) -> OperatorVariables:
                            "(default ~/.config/bookout-foreman/app.pem)")
         case "installed":
             pass
+    events = answered(repo, APP, f"the App's installation on {repo}", lambda: forge.app_events(repo), TOKEN_REFUSALS)
+    if missing := [event for event in EVENTS if event not in events]:
+        raise NotReady(APP, f"the GitHub App's installation on {repo} is not subscribed to {', '.join(missing)}",
+                       "in the Foreman GitHub App's settings, subscribe to " + ", ".join(f"{event} (permission {EVENTS[event]})" for event in missing)
+                       + f", then accept the App's new permissions on {repo}'s installation if GitHub asks")
     operator = operator_variables(repo, answered(repo, VARIABLES, f"{repo}'s Actions variables", lambda: forge.variables(repo)))
     login = operator.start.human_login
     permission: Permission | None = answered(repo, WRITE_ACCESS, f"{login}'s permission on {repo}", lambda: forge.permission(repo, login))

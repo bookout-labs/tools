@@ -169,3 +169,9 @@ class DeliveryResult(DeliveryFields):
     start: NotRequired[StartSettings]
     path: Annotated[list[str], operator.add]
     stop: str
+
+
+def pull_request_number(state: DeliveryState) -> int | None:
+    """The number of the pull request the run's review dispatched on, which is not the issue's number."""
+    target = (state.get("dispatch_plan") or {}).get("target")
+    return target["number"] if target else None

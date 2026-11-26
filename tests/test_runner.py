@@ -3,6 +3,7 @@
 import tests
 from foreman.stages import STAGES
 
+from collections.abc import Callable
 import contextlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -30,6 +31,7 @@ from foreman.readiness import MergeState
 from foreman.adapters import Outcome
 from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.contract import CONTRACT_PATH
+from foreman.doctor import EVENTS
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
 from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery, stage_text
@@ -42,7 +44,8 @@ from foreman.status import STATUS_MARKER, Status, running, shows, write_status
 from foreman.steps import CANCELLATION, StageRun, implement, review, verify
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
-from foreman.runner import AnswerError, RunPresentation, issue_thread, released_issues, run_live_delivery, saved_workspace, snapshot_result
+from foreman.accept import MergeRun
+from foreman.runner import AnswerError, RunPresentation, issue_thread, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
@@ -333,6 +336,7 @@ class FakeGitHub:
         self.variable_reads = []
         # The quick requirements GitHub answers for the repository: the App install, its labels and its merge queue rule.
         self.installation, self.repository_labels, self.queue_rule = "installed", {"Ready"}, True
+        self.events = frozenset(EVENTS)
         # Each login's base role on the repository, None for a login GitHub does not know. Any other login can write.
         self.permissions: dict[str, Permission | None] = {}
         self.opened: dict[str, PublishedPullRequest] = {}
@@ -400,6 +404,9 @@ class FakeGitHub:
 
     def app_installation(self, repo):
         return self.installation
+
+    def app_events(self, repo):
+        return self.events
 
     def permission(self, repo, login):
         return self.permissions.get(login, "write")
@@ -3723,8 +3730,8 @@ class WakeTest(unittest.TestCase):
         self.assertEqual(code, 0)
         return out.strip()
 
-    def wake(self):
-        return self.command(["wake", "--repo", "Example/Engine", "--issue", "8"])
+    def wake(self, issue=8):
+        return self.command(["wake", "--repo", "Example/Engine", "--issue", str(issue)])
 
     def capped(self):
         """Walk a run whose check passes once, so its PR opens, and then fails until the attempt cap halts the run."""
@@ -3813,6 +3820,221 @@ class StopWakeTest(WakeTest):
         code, _, stopped = self.wake()
         self.assertEqual((stopped["stop"], self.github.pr_closes, len(self.calls)), ("cancelled", [("Example/Engine", 12, CANCELLATION)], calls))
         self.assertNotIn("git_failed", self.github.status["Example/Engine", 8])
+
+
+class NumberedGitHub(FakeGitHub):
+    """GitHub with one pull request for each issue's run, numbered apart from the issue, each with its own checks and queue."""
+
+    def __init__(self):
+        super().__init__()
+        self.outcomes: dict[int, str] = {}
+        self.landed: set[int] = set()
+        self.moved: dict[int, str] = {}
+        self.reading: dict[int, Callable[[], None]] = {}
+
+    @staticmethod
+    def number(issue):
+        return 1000 + issue
+
+    def open_pull_request(self, repo, head, base, title, body):
+        super().open_pull_request(repo, head, base, title, body)
+        self.opened[head] = self.opened[head].model_copy(update={"number": self.number(int(head.split("-")[0]))})
+
+    def review_target(self, repo, issue, branch, sha):
+        return super().review_target(repo, issue, branch, sha).model_copy(update={"number": self.number(issue)})
+
+    def arm_auto_merge(self, repo, issue, branch, sha, observation):
+        return super().arm_auto_merge(repo, issue, branch, sha, observation).model_copy(update={"pr": self.number(issue)})
+
+    def readiness(self, repo, issue, branch, sha):
+        merged = issue in self.landed and any(call[1] == issue for call in self.merge_calls)
+        head = self.moved.get(issue, sha)
+        pr = PullSnapshot(number=self.number(issue), state="closed" if merged else "open", draft=False, merged=merged,
+                          head={"sha": head, "ref": branch}, base={"sha": self.base, "ref": "main"}, mergeable=True,
+                          merge_commit_sha=MERGE_COMMIT if merged else None, mergeable_state="clean")
+        outcome = "head_changed" if head != sha else "ready" if merged else self.outcomes.get(issue, "ready")
+        if callback := self.reading.pop(issue, None):
+            callback()
+        return Observation(repo=repo, pr=pr, checks=[], outcome=outcome, recovery="Synthetic.", queue_policy={"merge_method": "SQUASH"})
+
+
+def check_delivery(event="check_suite", repo="Example/Engine", sha="cd" * 20):
+    """A check_suite completed or status delivery, which names a commit and no pull request Foreman can match."""
+    payload = {"check_suite": {"head_sha": sha, "pull_requests": []}, "action": "completed"} if event == "check_suite" else {"sha": sha, "state": "success"}
+    return {**payload, "repository": {"full_name": repo}}
+
+
+def pull_delivery(number, action="synchronize", repo="Example/Engine"):
+    return {"action": action, "pull_request": {"number": number}, "repository": {"full_name": repo}}
+
+
+class MergeStageTest(WakeTest):
+    """Accept reads whether a saved run is in merge without its lock, through the checkpoint library: the stage its saved
+    record has under way or paused in, or for a halted run the stage the halt came from. A run that ended is in no stage."""
+
+    REPLIES = [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
+
+    def in_merge_during_read(self, replies):
+        """Walk the run and return what accept reads while merge's step reads GitHub, with the run's lock held."""
+        observe, seen = self.github.readiness, []
+
+        def read(*args):
+            seen.append(runs_in_merge(self.checkpoint, "Example/Engine"))
+            return observe(*args)
+        with patch.object(self.github, "readiness", side_effect=read):
+            result = self.walk(replies)
+        return result, seen[0]
+
+    def test_a_run_reads_as_in_merge_whatever_its_step_and_however_it_came_there(self):
+        """Arm running on first entry from review; observe running after a wake while the old pause is still saved; arm running
+        after Ready resumed a halt in merge; a run halted in merge; a run paused at merge's gate. Each reads as in merge, and
+        the same runs read as in no stage once they ended merged."""
+        merging = [MergeRun(8, 12)]
+
+        def fresh(name):
+            self.checkpoint, self.github = self.cwd.parent / f"{name}.sqlite3", FakeGitHub()
+        result, running = self.in_merge_during_read(self.REPLIES)
+        self.assertEqual((result["stop"], running), ("merged", merging))
+        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), [])
+
+        fresh("observe")
+        self.github.queue_merges = False
+        self.assertEqual(self.walk(self.REPLIES)["stop"], "merge_pending")
+        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), merging)
+        self.github.queue_merges = True
+        result, running = self.in_merge_during_read([])
+        self.assertEqual((result["stop"], running), ("merged", merging))
+
+        fresh("halted")
+        self.github.hold = "Release freeze."
+        self.assertEqual(self.walk(self.REPLIES)["stop"], "merge_held")
+        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), merging)
+        self.github.hold = None
+        self.github.ready_again(8)
+        result, running = self.in_merge_during_read([])
+        self.assertEqual((result["stop"], running), ("merged", merging))
+
+        fresh("gate")
+        observe, foreign = self.github.readiness, "c" * 40
+        self.github.foreign_heads.add(foreign)
+
+        def moved(*args):
+            reading = observe(*args)
+            head = reading.pr.head.model_copy(update={"sha": foreign})
+            return reading.model_copy(update={"outcome": "head_changed", "pr": reading.pr.model_copy(update={"head": head})})
+        with patch.object(self.github, "readiness", side_effect=moved):
+            self.assertEqual(self.walk(self.REPLIES)["stop"], "needs_human")
+        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), merging)
+        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Other"), [])
+
+    def test_a_run_in_another_stage_or_halted_in_another_stage_is_not_in_merge(self):
+        """Review runs, and a run halts in implement: neither is in merge, and neither has a process left waiting on it."""
+        reply, seen = FakeWorkspace.reply, []
+        review = {**APPROVE}
+
+        def during(workspace, args, output):
+            if output is review:
+                seen.append(runs_in_merge(self.checkpoint, "Example/Engine"))
+            return reply(workspace, args, output)
+        with patch.object(FakeWorkspace, "reply", during):
+            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, review])
+        self.assertEqual(seen, [[]])
+        self.checkpoint, self.github = self.cwd.parent / "halted.sqlite3", FakeGitHub()
+        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(WorktreeState(HEAD, False, BRANCH),))
+        self.assertEqual((halted["stop"], runs_in_merge(self.checkpoint, "Example/Engine")), ("dirty_worktree", []))
+
+
+class MergeWakeTest(WakeTest):
+    """ME14: GitHub's pull request and check deliveries wake the runs in merge of one repository. Accept matches a pull
+    request by the number saved on the run and a finished check by repository alone, and each wake decides under its run's
+    lock from the saved run."""
+
+    def woken(self, event, payload):
+        line = self.deliver(event, payload)
+        return set() if line == "ignored" else {int(answer.rpartition("#")[2]) for answer in line.split(", ")}
+
+    def merge_run(self, issue, **kwargs):
+        return self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, kwargs.pop("review", APPROVE)], issue=issue, **kwargs)
+
+    def test_each_delivery_wakes_the_runs_in_merge_it_names_and_each_wake_decides_from_github(self):
+        github = self.github = NumberedGitHub()
+        two, three, four, five, six, seven = (github.create_issue("Example/Engine", title, slice_body({**EMPTY_SLICE, "title": title}),
+                                                                  ["slice", "Ready"], marker="")
+                                              for title in ("Two", "Three", "Four", "Five", "Six", "Seven"))
+        github.outcomes[1] = github.outcomes[8] = "pending"
+        self.assertEqual(self.merge_run(8)["stop"], "merge_pending")
+        self.assertEqual((self.merge_run(two)["stop"], [call[1] for call in github.merge_calls]), ("merge_pending", [two]))
+        github.hold = "Release freeze."
+        self.assertEqual(self.merge_run(three)["stop"], "merge_held")
+        github.hold = None
+        github.moved[four], heard = "c" * 40, {}
+        github.foreign_heads.add("c" * 40)
+        self.assertEqual(self.merge_run(four)["stop"], "needs_human")
+        waiting = {8, two, three, four}
+
+        github.outcomes[five] = "pending"
+
+        def delivered(name):
+            def deliver():
+                heard[name] = self.woken("check_suite", check_delivery())
+                github.outcomes[five] = "ready"  # The check passed after arm's read and before its pause.
+            return deliver
+        github.reading[five] = delivered("five")
+        self.assertEqual(self.merge_run(five)["stop"], "merge_pending")
+        reply, review = FakeWorkspace.reply, {**APPROVE}
+
+        def during(workspace, args, output):
+            if output is review:
+                heard["six"] = self.woken("check_suite", check_delivery(sha=HEAD))
+            return reply(workspace, args, output)
+        with patch.object(FakeWorkspace, "reply", during):
+            self.assertEqual(self.merge_run(six, review=review)["stop"], "merge_pending")
+        github.landed.add(seven)
+        github.reading[seven] = delivered("seven")
+        self.assertEqual(self.merge_run(seven)["stop"], "merged")
+        self.assertEqual(heard, {"five": waiting | {five}, "six": waiting | {five}, "seven": waiting | {five, six, seven}})
+
+        reads, statuses = len(github.variable_reads), list(github.status_writes)
+        self.enterContext(patch("foreman.runner.repository", side_effect=AssertionError("A wake runs no doctor.")))
+        records = github.issue_comment_records
+        with patch.object(github, "issue_comment_records", side_effect=AssertionError("The ended run reads nothing.")):
+            self.assertEqual(self.wake(seven)[:2], (0, f"not waiting example/engine#{seven}\n"))
+        github.issue_comment_records = records
+        code, _, armed = self.wake(five)
+        self.assertEqual((code, armed["stop"], [call[1] for call in github.merge_calls].count(five)), (75, "merge_pending", 1))
+
+        def wake_all(woken):
+            return {issue: self.wake(issue)[2] for issue in sorted(woken)}
+        github.outcomes[8] = "ready"
+        armed_before, merge_calls, statuses = list(github.merge_calls), [], list(github.status_writes)
+        for event, payload in (("check_suite", check_delivery(sha=HEAD)), ("check_suite", check_delivery(sha=HEAD)),
+                               ("status", check_delivery("status", sha=MERGE_COMMIT)), ("check_suite", check_delivery(sha="9" * 40))):
+            woken = self.woken(event, payload)
+            self.assertEqual(woken, {8, two, three, four, five, six})
+            results = wake_all(woken)
+            merge_calls.append([call[1] for call in github.merge_calls[len(armed_before):]])
+            self.assertEqual((results[three]["stop"], results[four]["stop"]), ("merge_held", "needs_human"))
+        self.assertEqual(merge_calls, [[8]] * 4)  # Run one arms once, on the first wake after its check passed.
+        writes = [write for write in github.status_writes[len(statuses):] if write[1] != 8]
+        self.assertEqual((writes, github.pr_closes), ([], []))
+
+        github.landed.add(two)
+        self.assertEqual(self.woken("pull_request", pull_delivery(github.number(two), "closed")), {two})
+        self.assertEqual(wake_all({two})[two]["stop"], "merged")
+        statuses = list(github.status_writes)
+        for issue in (three, four):
+            self.assertEqual(self.woken("pull_request", pull_delivery(github.number(issue))), {issue})
+            # The wake reads the pull request and then the issue, finds no stop and no answer, and resumes nothing.
+            with (patch.object(github, "pull_request_for", wraps=github.pull_request_for) as pull,
+                  patch.object(github, "issue_comment_records", wraps=records) as comments):
+                self.assertEqual(wake_all({issue})[issue]["stop"], {three: "merge_held", four: "needs_human"}[issue])
+            self.assertEqual((pull.call_count > 0, comments.call_count > 0), (True, True))
+        self.assertEqual(github.status_writes, statuses)
+        self.assertEqual(self.woken("pull_request", pull_delivery(github.number(8), repo="Example/Other")), set())
+        self.assertEqual(self.woken("pull_request", pull_delivery(8)), set())
+        self.assertEqual(self.woken("pull_request_review", pull_delivery(github.number(8), "submitted")), {8})
+        # A wake reads FOREMAN_MERGE_HOLD only where arm arms, for runs five and one, and no wake reads the login or a cap variable.
+        self.assertEqual(len(github.variable_reads), reads + 2)
 
 
 class HaltExitCodeTest(unittest.TestCase):

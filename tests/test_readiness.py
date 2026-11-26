@@ -35,6 +35,24 @@ def published(state):
                                 autoMergeRequest=None, body="Closes #8")
 
 
+class Clock:
+    """GitHub's minute, passed by each sleep between the merge step's reads."""
+
+    def __init__(self):
+        self.now, self.sleeps = 0.0, []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def check_suite(repo="Example/Engine"):
+    return {"action": "completed", "check_suite": {"head_sha": "cd" * 20, "pull_requests": []}, "repository": {"full_name": repo}}
+
+
 def stage_run(forge):
     return StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, dispatch=None, apply=None)
 
@@ -42,7 +60,7 @@ def stage_run(forge):
 class ReadinessTest(unittest.TestCase):
     def test_every_outcome_has_one_typed_arm_route(self):
         """ME1: stale or failing evidence never arms, and each GitHub outcome is a drawn arm route, a wait or a named halt."""
-        expected = {"ready": "armed", "pending": "wait", "red": "repair", "conflict": "repair", "queue_rejected": "repair",
+        expected = {"ready": "armed", "pending": "wait", "uncomputed": "readiness_unavailable", "red": "repair", "conflict": "repair", "queue_rejected": "repair",
                     "policy": "readiness_unavailable", "head_changed": "head_unverified", "closed": "closed_or_merged",
                     "retargeted": "merge_not_armed"}
         self.assertEqual(set(expected), set(get_args(Outcome)))
@@ -54,7 +72,7 @@ class ReadinessTest(unittest.TestCase):
                 forge = Mock(**{"variables.return_value": {}, "readiness.return_value": observed, "arm_auto_merge.return_value": None,
                                 "issue_comment_records.return_value": [], "pull_request_for.return_value": published("OPEN")})
                 run = stage_run(forge)
-                with patch("foreman.steps.merge.interrupt", side_effect=LookupError("wait")):
+                with patch("foreman.steps.merge.interrupt", side_effect=LookupError("wait")), patch("foreman.steps.merge.time", Clock()):
                     try:
                         update = merge.arm(state, run)
                     except LookupError:
@@ -62,6 +80,37 @@ class ReadinessTest(unittest.TestCase):
                 self.assertEqual(update.get("halt") or update["stop"], route)
                 if route != "armed":
                     forge.arm_auto_merge.assert_not_called()
+
+    def test_mergeability_github_has_not_computed_is_read_again_inside_the_step(self):
+        """ME12: GitHub first reports mergeability as not yet computed, then that the PR cannot be merged: the step reads again
+        without pausing and routes repair with evidence that names a conflict with the base. Not computed for more than a
+        minute stops readiness_unavailable. A required check that stays pending pauses arm at once."""
+        def observed(outcome):
+            return Observation(repo=REPO, pr=PullSnapshot.model_validate({**READINESS, "mergeable": None if outcome == "uncomputed" else False}),
+                               checks=[], outcome=outcome, recovery="Synthetic.", queue_policy={"merge_method": "SQUASH"})
+
+        def arm(*outcomes):
+            forge = Mock(**{"variables.return_value": {}, "readiness.side_effect": [observed(outcome) for outcome in outcomes],
+                            "issue_comment_records.return_value": [], "pull_request_for.return_value": published("OPEN")})
+            clock = Clock()
+            with patch("foreman.steps.merge.interrupt", side_effect=LookupError("paused")), patch("foreman.steps.merge.time", clock):
+                try:
+                    update = merge.arm(REVIEWED, stage_run(forge))
+                except LookupError:
+                    update = {"stop": "paused"}
+            forge.arm_auto_merge.assert_not_called()
+            return update, forge.readiness.call_count, clock
+        repaired, reads, clock = arm("uncomputed", "conflict")
+        self.assertEqual((repaired["stop"], reads, clock.sleeps), ("repair", 2, [merge.REREAD_SECONDS]))
+        self.assertIsNotNone(repaired["work"].base_merge)
+        self.assertIn(": conflict;", repaired["checks"].failure_output)
+        rereads = merge.MERGEABILITY_SECONDS // merge.REREAD_SECONDS
+        halted, reads, clock = arm(*["uncomputed"] * (rereads + 1))
+        self.assertEqual((halted["stop"], halted["halt"], reads, clock.now), ("readiness_unavailable", "readiness_unavailable", rereads + 1,
+                                                                              merge.MERGEABILITY_SECONDS))
+        self.assertIn(": uncomputed;", halted["halt_detail"])
+        paused, reads, clock = arm("pending")
+        self.assertEqual((paused["stop"], reads, clock.sleeps), ("paused", 1, []))
 
     def test_a_stop_cannot_undo_a_merge(self):
         """ME9: arm reads the PR before the stop. A merged PR records the stop as too late and the run ends merged. An open,
@@ -214,7 +263,7 @@ class ReadinessTest(unittest.TestCase):
 
     def test_conflict_unknown_policy_and_race(self):
         self.assertEqual(self.observe(pr={**READINESS, "mergeable": False}).outcome, "conflict")
-        self.assertEqual(self.observe(pr={**READINESS, "mergeable": None}).outcome, "pending")
+        self.assertEqual(self.observe(pr={**READINESS, "mergeable": None}).outcome, "uncomputed")
         self.assertEqual(self.observe(rules=[]).outcome, "policy")
         self.assertEqual(self.observe(runs=[self.run_check()], after={**READINESS, "draft": True}).outcome, "pending")
         with patch.object(LiveForge, "_view_pr", side_effect=ForgeError("HTTP 503")):
@@ -255,6 +304,30 @@ class ReadinessTest(unittest.TestCase):
 
     def test_merged_head_can_reconcile_without_premerge_checks(self):
         self.assertEqual(self.observe(pr={**READINESS, "state": "closed", "merged": True, "mergeable": False}).outcome, "ready")
+
+
+class MergeWaitTest(WakeTest):
+    """ME12 on the runner: mergeability not computed for more than a minute halts, and Ready added again reads the PR again. A
+    required check that stays pending pauses arm without halting, and its check_suite delivery wakes the run, which arms."""
+
+    def test_a_pending_check_waits_for_its_delivery_and_uncomputed_mergeability_halts(self):
+        replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, test_runner.APPROVE]
+        observe, outcome = self.github.readiness, ["uncomputed"]
+        read = lambda *args: observe(*args).model_copy(update={"outcome": outcome[0]})
+        self.enterContext(patch.object(self.github, "readiness", side_effect=read))
+        with patch("foreman.steps.merge.time", Clock()):
+            halted = self.walk(replies)
+        self.assertEqual((halted["stop"], self.github.merge_calls), ("readiness_unavailable", []))
+        outcome[0] = "pending"
+        self.github.ready_again(8)
+        clock = Clock()
+        with patch("foreman.steps.merge.time", clock):
+            waiting = self.walk([])
+        self.assertEqual((waiting["stop"], waiting.get("halt"), clock.sleeps, self.github.merge_calls), ("merge_pending", None, [], []))
+        self.assertEqual(self.deliver("check_suite", check_suite()), "wake Example/Engine#8")
+        outcome[0] = "ready"
+        code, _, armed = self.wake()
+        self.assertEqual((code, armed["merge"].status, len(self.github.merge_calls)), (0, "merged", 1))
 
 
 class MergeStopWakeTest(WakeTest):

@@ -260,7 +260,11 @@ def run_delivery(
     return snapshot_result(graph.get_state({"configurable": {"thread_id": thread_id}}, subgraphs=True))
 
 
-def diagram() -> str:
+def shape(checkpointer: BaseCheckpointSaver[str] | None = None) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
+    """The delivery graph with no forge or worker behind it, to draw it or read the stage of a saved run. It calls nothing."""
     dry = DryRun()
-    graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry))
-    return graph.get_graph().draw_mermaid()
+    return compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry), checkpointer=checkpointer)
+
+
+def diagram() -> str:
+    return shape().get_graph().draw_mermaid()

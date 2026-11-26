@@ -13,7 +13,7 @@ import sys
 import threading
 from typing_extensions import override
 
-from foreman.accept import AcceptError, Accepted, OpenRun, accept_event
+from foreman.accept import AcceptError, Accepted, SavedRuns, accept_event
 from foreman.state import CheckpointVersionError
 
 SECRET_PATH = "~/.config/bookout-foreman/webhook-secret"
@@ -41,8 +41,7 @@ def webhook_secret() -> bytes:
     return secret
 
 
-def receive(event: str | None, signature: str | None, body: bytes, secret: bytes,
-            saved: Callable[[str, int], OpenRun | None]) -> Accepted | None:
+def receive(event: str | None, signature: str | None, body: bytes, secret: bytes, runs: SavedRuns) -> list[Accepted]:
     """Refuse a delivery whose X-Hub-Signature-256 is missing or does not sign its body, before accept reads any of it."""
     expected = "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
     if signature is None or not hmac.compare_digest(expected.encode(), signature.encode()):
@@ -54,9 +53,14 @@ def receive(event: str | None, signature: str | None, body: bytes, secret: bytes
     except ValueError:
         raise Refused(400, "body is not JSON") from None
     try:
-        return accept_event(event, payload, saved)
+        return accept_event(event, payload, runs)
     except AcceptError as exc:
         raise Refused(400, str(exc)) from None
+
+
+def answered(answers: list[Accepted]) -> str:
+    """The line that reports accept's answers: ignored, or each start or wake."""
+    return ", ".join(f"{answer.action} {answer.repo}#{answer.issue}" for answer in answers) or "ignored"
 
 
 def run_answer(answer: Accepted, command: Command, released: Released) -> None:
@@ -80,11 +84,10 @@ def run_foreman(args: list[str]) -> int:
     return subprocess.run([sys.executable, "-m", "foreman", *args], check=False).returncode
 
 
-def listener(address: tuple[str, int], secret: bytes, saved: Callable[[str, int], OpenRun | None], command: Command,
-             released: Released) -> ThreadingHTTPServer:
+def listener(address: tuple[str, int], secret: bytes, runs: SavedRuns, command: Command, released: Released) -> ThreadingHTTPServer:
     """Read each delivery on its own connection, so a stalled one delays no other, and decide them one at a time. Each answer
-    runs in its own thread once GitHub has its reply, so a long run delays no later delivery. The issue's lock serializes
-    the runs of one issue."""
+    runs in its own thread once GitHub has its reply, so a long run delays no later delivery, and a wake for a running run
+    waits for its lock there. The issue's lock serializes the runs of one issue."""
     deciding = threading.Lock()
 
     class Delivery(BaseHTTPRequestHandler):
@@ -103,16 +106,15 @@ def listener(address: tuple[str, int], secret: bytes, saved: Callable[[str, int]
                 return self.reply(408, delivery, "refused body not sent")
             try:
                 with deciding:
-                    answer = receive(self.headers.get("X-GitHub-Event"), self.headers.get("X-Hub-Signature-256"), body,
-                                     secret, saved)
+                    answers = receive(self.headers.get("X-GitHub-Event"), self.headers.get("X-Hub-Signature-256"), body,
+                                      secret, runs)
             except Refused as exc:
                 return self.reply(exc.status, delivery, f"refused {exc}")
             except CheckpointVersionError as exc:
                 return self.reply(500, delivery, str(exc))
-            if answer is None:
-                return self.reply(202, delivery, "ignored")
-            self.reply(202, delivery, f"{answer.action} {answer.repo}#{answer.issue}")
-            start(answer, command, released)
+            self.reply(202, delivery, answered(answers))
+            for answer in answers:
+                start(answer, command, released)
 
         def reply(self, status: int, delivery: str, line: str) -> None:
             print(f"{delivery} {line}", flush=True)

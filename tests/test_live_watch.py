@@ -17,6 +17,7 @@ from foreman.adapters import Outcome, Usage
 from foreman.cli import main
 from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
+from foreman.doctor import EVENTS
 from foreman.github import Forge, ForgeError, LiveForge
 from foreman.runner import run_live_delivery, saved_workspace
 from foreman.skill_rules import SkillMissing
@@ -241,7 +242,8 @@ class LiveWatchTest(unittest.TestCase):
         real_run = subprocess.run
         fake_gh = lambda args, **kwargs: gh(args, **kwargs) if args[0] == 'gh' else real_run(args, **kwargs)
         with patch('foreman.github.subprocess.run', side_effect=fake_gh), \
-                patch.object(LiveForge, 'app_installation', return_value='installed'):
+                patch.object(LiveForge, 'app_installation', return_value='installed'), \
+                patch.object(LiveForge, 'app_events', return_value=frozenset(EVENTS)):
             self.invoke(dispatcher=dispatcher)
             self.invoke(dispatcher=dispatcher)
         # The watch repo is another repository, so the halt detail stays on the run's own issue, redacted.

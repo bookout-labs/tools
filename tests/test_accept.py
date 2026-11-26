@@ -1,5 +1,6 @@
 import tests
 
+from dataclasses import dataclass, field
 import hashlib
 import hmac
 import io
@@ -17,7 +18,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.accept import AcceptError, Accepted, OpenRun, accept_event
+from foreman.accept import AcceptError, Accepted, MergeRun, OpenRun, accept_event
 from foreman.cli import main
 from foreman.receiver import MAX_BODY, listener
 from foreman.stage_output import HumanPrompt
@@ -35,37 +36,50 @@ def delivery(label="Ready", action="labeled", **issue):
             "repository": {"full_name": "Example/Engine"}, "sender": {"login": "octocat"}}
 
 
-def NO_RUN(repo, issue):
-    return None
+@dataclass
+class Saved:
+    """Saved runs as accept reads them: each issue's open run, and each repository's runs in merge."""
+
+    runs: dict[tuple[str, int], OpenRun] = field(default_factory=dict[tuple[str, int], OpenRun])
+    merging: dict[str, list[MergeRun]] = field(default_factory=dict[str, list[MergeRun]])
+
+    def open(self, repo, issue):
+        return self.runs.get((repo, issue))
+
+    def in_merge(self, repo):
+        return self.merging.get(repo, [])
+
+
+NO_RUN = Saved()
 
 
 class AcceptTest(unittest.TestCase):
     def test_adding_ready_to_an_issue_starts_its_run(self):
-        self.assertEqual(accept_event("issues", delivery(), NO_RUN), Accepted("start", "Example/Engine", 7))
+        self.assertEqual(accept_event("issues", delivery(), NO_RUN), [Accepted("start", "Example/Engine", 7)])
 
     def test_the_added_label_decides_not_the_issue_labels(self):
         # An unrelated label added to an issue that already carries Ready does not start it again.
         payload = delivery(label="bug")
         payload["issue"]["labels"].append({"name": "Ready"})
-        self.assertIsNone(accept_event("issues", payload, NO_RUN))
+        self.assertEqual(accept_event("issues", payload, NO_RUN), [])
 
     def test_other_events_actions_and_pull_requests_are_ignored(self):
-        self.assertIsNone(accept_event("issue_comment", delivery(), NO_RUN))
-        self.assertIsNone(accept_event("issues", delivery(action="unlabeled"), NO_RUN))
-        self.assertIsNone(accept_event("issues", delivery(pull_request={"url": "https://example.test/pull/7"}), NO_RUN))
+        self.assertEqual(accept_event("issue_comment", delivery(), NO_RUN), [])
+        self.assertEqual(accept_event("issues", delivery(action="unlabeled"), NO_RUN), [])
+        self.assertEqual(accept_event("issues", delivery(pull_request={"url": "https://example.test/pull/7"}), NO_RUN), [])
 
     def test_foreman_own_label_writes_never_start_a_run(self):
         # Spec labels each child Ready as the App, and the child starts once, from its start line.
         for login in ("bookout-labs-foreman[bot]", "Bookout-Labs-Foreman[bot]"):
             with self.subTest(login=login):
-                self.assertIsNone(accept_event("issues", {**delivery(), "sender": {"login": login}}, NO_RUN))
+                self.assertEqual(accept_event("issues", {**delivery(), "sender": {"login": login}}, NO_RUN), [])
         # A delivery without a sender, like the blueprint's synthetic one, is decided by its label.
         payload = delivery()
         del payload["sender"]
-        self.assertEqual(accept_event("issues", payload, NO_RUN), Accepted("start", "Example/Engine", 7))
+        self.assertEqual(accept_event("issues", payload, NO_RUN), [Accepted("start", "Example/Engine", 7)])
 
     def test_the_retired_factory_label_is_ignored(self):
-        self.assertIsNone(accept_event("issues", delivery(label="factory"), NO_RUN))
+        self.assertEqual(accept_event("issues", delivery(label="factory"), NO_RUN), [])
 
     def test_a_malformed_delivery_is_rejected(self):
         for payload in ([], {"action": "labeled", "label": {"name": "Ready"}}):
@@ -76,6 +90,32 @@ class AcceptTest(unittest.TestCase):
             payload["repository"]["full_name"], payload["issue"]["number"] = repository, number
             with self.subTest(repository=repository, number=number), self.assertRaises(AcceptError):
                 accept_event("issues", payload, NO_RUN)
+
+    def test_a_merge_delivery_wakes_runs_in_merge_by_pull_request_number_or_by_repository(self):
+        """A pull_request or pull_request_review delivery wakes the run in merge whose saved pull request it names, whatever its
+        action, and never by the issue's number or in another repository. A finished check wakes every run in merge in its
+        repository, because no run saves the commit GitHub may record it on."""
+        saved = Saved(merging={"Example/Engine": [MergeRun(8, 12), MergeRun(9, 13)], "Other/Engine": [MergeRun(8, 12)]})
+        wake = lambda *issues: [Accepted("wake", "Example/Engine", issue) for issue in issues]
+
+        def pull(event, number, action="closed", repo="Example/Engine"):
+            return accept_event(event, {"action": action, "pull_request": {"number": number}, "repository": {"full_name": repo}}, saved)
+        self.assertEqual(pull("pull_request", 12), wake(8))
+        self.assertEqual(pull("pull_request", 13, action="dequeued"), wake(9))
+        self.assertEqual(pull("pull_request_review", 12, action="submitted"), wake(8))
+        self.assertEqual(pull("pull_request", 8), [])
+        self.assertEqual(pull("pull_request", 12, repo="Third/Engine"), [])
+        check = {"check_suite": {"head_sha": "cd" * 20, "pull_requests": []}, "repository": {"full_name": "Example/Engine"}}
+        self.assertEqual(accept_event("check_suite", {"action": "completed", **check}, saved), wake(8, 9))
+        self.assertEqual(accept_event("check_suite", {"action": "requested", **check}, saved), [])
+        self.assertEqual(accept_event("status", {"sha": "ef" * 20, "state": "success", "repository": {"full_name": "Example/Engine"}}, saved),
+                         wake(8, 9))
+        self.assertEqual(accept_event("status", {"sha": "ef" * 20, "repository": {"full_name": "Third/Engine"}}, saved), [])
+        for event, payload in (("pull_request", {"action": "closed", "repository": {"full_name": "Example/Engine"}}),
+                               ("pull_request", {"action": "closed", "pull_request": {"number": 0}, "repository": {"full_name": "Example/Engine"}}),
+                               ("status", {"sha": "ef" * 20})):
+            with self.subTest(payload=payload), self.assertRaises(AcceptError):
+                accept_event(event, payload, saved)
 
     def test_the_command_reads_the_event_header_and_json_body(self):
         with TemporaryDirectory() as directory:
@@ -115,10 +155,10 @@ class ReplyMarkerTest(unittest.TestCase):
                 (other, comment(stop), "stop"), (other, comment(stop, action="edited"), None),
                 (other, comment("foreman stop", login="someone-else"), None), (other, comment(answer), None)):
             with self.subTest(run=run, payload=payload):
-                decision = accept_event("issue_comment", payload, lambda repo, issue: run)
-                self.assertEqual(decision, Accepted("wake", "Example/Engine", 8) if wakes else None)
+                decision = accept_event("issue_comment", payload, Saved({("Example/Engine", 8): run} if run else {}))
+                self.assertEqual(decision, [Accepted("wake", "Example/Engine", 8)] if wakes else [])
         with self.assertRaises(AcceptError):
-            accept_event("issue_comment", {"action": "created", "issue": {"number": 8}}, lambda repo, issue: gate)
+            accept_event("issue_comment", {"action": "created", "issue": {"number": 8}}, Saved({("Example/Engine", 8): gate}))
 
 
 class AnswerWakeTest(WakeTest):
@@ -304,8 +344,7 @@ class ReceiverTest(unittest.TestCase):
         self.commands, self.exits, self.released = [], {}, {}
         # Entered first so it is restored last, after closing the server has joined every handler.
         self.stdout = self.enterContext(redirect_stdout(io.StringIO()))
-        runs = {("Example/Engine", 8): OpenRun("fixture-owner", self.prompt)}
-        server = listener(("127.0.0.1", 0), SECRET, lambda repo, issue: runs.get((repo, issue)), self.command,
+        server = listener(("127.0.0.1", 0), SECRET, Saved({("Example/Engine", 8): OpenRun("fixture-owner", self.prompt)}), self.command,
                           lambda repo, issue: self.released.get((repo, issue), []))
         self.enterContext(server)
         serving = threading.Thread(target=server.serve_forever)
@@ -340,7 +379,7 @@ class ReceiverTest(unittest.TestCase):
 
     def test_only_a_signed_delivery_reaches_accept_and_only_its_answer_runs(self):
         """TR19: four deliveries with a valid signature: a comment on a pull request, a comment under another login on an issue
-        whose run is paused, a check_suite completed for a commit no run owns, and a Ready label event. A fifth delivery has a
+        whose run is paused, a check_suite completed in a repository where no run is in merge, and a Ready label event. A fifth delivery has a
         bad signature. The receiver hands the first four to accept unchanged. The first three are ignored: no model is called,
         no session starts and nothing is written to GitHub. The fourth starts a run. The fifth is refused before accept."""
         answer = f"{self.prompt.answer_marker}\nKeep it."
