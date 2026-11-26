@@ -278,7 +278,7 @@ stages:
       route:
         actor: Triage worker
         action: Classify the admitted issue
-        result: Typed route and supplied slice when present
+        result: Typed route, with the one slice when the route is supplied_slice
         owner: route
         check: TR2
     transitions:
@@ -310,7 +310,7 @@ stages:
     checks: {TR1: tests/test_runner.py, TR2: tests/test_delivery.py, TR3: tests/test_accept.py, TR4: tests/test_doctor.py, TR5: tests/test_doctor.py, TR6: tests/test_runner.py, TR7: tests/test_doctor.py, TR8: tests/test_accept.py, TR9: tests/test_start.py, TR10: tests/test_runner.py, TR11: tests/test_start.py, TR12: tests/test_doctor.py, TR13: tests/test_start.py, TR14: tests/test_accept.py, TR15: tests/test_accept.py, TR16: tests/test_runner.py, TR17: tests/test_status.py, TR19: tests/test_accept.py}
     scenarios:
       TR1: {given: The requested issue names another repository or a dependency is still open, expect: Stop before a paid call or build checkout allocation.}
-      TR2: {given: A parent-labelled question and a separately supplied single slice, expect: Route the question to research and the supplied slice to spec.validate.}
+      TR2: {given: "A parent-labelled question, an issue that carries its one slice, and a bounded change whose behavior and acceptance are decided", expect: "Route the question to research. Route the other two supplied_slice to spec.validate, the last with the one slice the triage worker wrote, and call spec.draft for neither."}
       TR3: {given: A verified Ready label event arrives twice and the App adds the Doing label, expect: One admitted checkpoint and one run with the issue showing its state.}
       TR17: {given: "A run that goes from triage through one failed check to a published pull request and then waits on worker capacity. A reader with only GitHub reads the issue after each worker call. One rewrite of the comment fails, and a foreman stop comment is on the issue when the run enters implement", expect: "After each call the status comment names the stage and step with the drawing's names, lists every worker call so far with its model, skills, outcome, tokens and dollars, and shows the spend against both caps. The failed rewrite changes nothing in the run, and the next rewrite shows the whole report. Implement's entry ends the run cancelled, and no rewrite of the comment comes between that entry and its stop read."}
       TR4: {given: "A scratch repository with each quick requirement removed in turn: App install, each of the App's six event subscriptions, FOREMAN_HUMAN_LOGIN unset or blank, or a cap that won't parse, the login's write access, Ready label, merge queue ruleset, contract file, verify skill", expect: "Doctor names the missing requirement and its exact fix each time."}
