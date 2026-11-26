@@ -52,8 +52,8 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The run's check and verify skill come from the contract at its pinned base, whatever its branch later does.
         pinned_contract = contract(workspace, pinned)
         # Each related repository is pinned once, here, so a resumed run reads the same commits.
-        related = [workspace.check_out_related(item.repository, forge.default_branch(item.repository))
-                   for item in pinned_contract.related_repositories]
+        related = [workspace.check_out_related(entry.repository, forge.default_branch(entry.repository))
+                   for entry in pinned_contract.related_repositories]
     except NotReady as exc:
         return stopped(Halt.not_ready, exc.halt_detail(), "admit")
     except (ForgeError, WorkspaceError) as exc:

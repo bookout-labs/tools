@@ -84,9 +84,7 @@ class ManagedCheckoutTest(unittest.TestCase):
         # A finished run's readback still validates its origin, through the shared clone.
         self.workspace.validate_origin(REPO)
 
-    def test_a_related_repository_is_checked_out_read_only_at_its_default_branch_head(self):
-        """The run's checkout of a related repository is a detached worktree of that repository's shared clone, beside the
-        issue's own worktree, at the head the default branch had when the run was admitted."""
+    def related_origin(self) -> tuple[Path, Path, str]:
         home = Path(self.temp.name)
         origin, seed = home / "api.git", home / "api-seed"
         git(home, "init", "--quiet", "--bare", str(origin))
@@ -95,9 +93,14 @@ class ManagedCheckoutTest(unittest.TestCase):
         git(seed, "add", "routes.py")
         git(seed, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "-m", "api")
         git(seed, "push", "--quiet", str(origin), "main")
-        pinned = git(seed, "rev-parse", "HEAD")
         self.enterContext(patch.dict(os.environ, {"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_1": f"url.{origin}.insteadOf",
                                                   "GIT_CONFIG_VALUE_1": "https://github.com/Acme/Api"}))
+        return origin, seed, git(seed, "rev-parse", "HEAD")
+
+    def test_a_related_repository_is_checked_out_read_only_at_its_default_branch_head(self):
+        """The run's checkout of a related repository is a detached worktree of that repository's shared clone, beside the
+        issue's own worktree, at the head the default branch had when the run was admitted."""
+        origin, seed, pinned = self.related_origin()
         self.admit()
         related = self.workspace.check_out_related("Acme/Api", "main")
         state = Path(self.temp.name, "state").resolve()
@@ -112,6 +115,20 @@ class ManagedCheckoutTest(unittest.TestCase):
         git(seed, "push", "--quiet", str(origin), "main")
         self.assertEqual((git(checkout, "rev-parse", "HEAD"), (checkout / "routes.py").read_text()), (pinned, "ROUTES = ['deals']\n"))
         self.assertEqual(self.workspace.inspect().head, self.base)
+
+    def test_a_run_from_a_source_checkout_keeps_its_related_checkouts_in_the_directories_it_names(self):
+        """A run in a person's own checkout writes nothing beside it. Its related clone and checkout live where the run says."""
+        _, _, pinned = self.related_origin()
+        home = Path(self.temp.name).resolve()
+        source = home / "work" / "widgets"
+        git(home, "clone", "--quiet", f"https://github.com/{REPO}", str(source))
+        state = home / "state"
+        workspace = LiveWorkspace(source, REPO, clones=state / "checkouts", related=state / "runs" / "7.related")
+        related = workspace.check_out_related("Acme/Api", "main")
+        self.assertEqual((related.commit, related.checkout), (pinned, str(state / "runs/7.related/acme/api")))
+        self.assertEqual(git(Path(related.checkout), "rev-parse", "--path-format=absolute", "--git-common-dir"),
+                         str(state / "checkouts/acme/api/.git"))
+        self.assertEqual(sorted(path.name for path in source.parent.iterdir()), ["widgets"])
 
     def test_issue_lock_files_keep_their_names(self):
         self.assertEqual(lock_file("acme/widgets#7").name, spec_digest(["acme/widgets#7"]))

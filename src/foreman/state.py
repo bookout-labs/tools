@@ -118,7 +118,7 @@ class DeliveryFields(TypedDict, total=False):
     dispatch_plan: DispatchPlanRecord
     pstack_pin: dict[str, str]
     matt_skills_pin: dict[str, str]
-    # The related repositories admission pinned, which only the procedures that name them read.
+    # The related repositories admission pinned. Every worker reads their checkouts; only the instructions' pins differ by procedure.
     related: list[RelatedCheckout]
     skill_reason: SkillFailureReason
     attempts: Annotated[list[AttemptRecord], extend_attempts]

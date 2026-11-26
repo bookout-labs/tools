@@ -242,10 +242,14 @@ SHARED_WRITES = frozenset({"fetch", "push", "worktree", "init", "config"})
 
 
 class LiveWorkspace:
-    def __init__(self, root: Path, repo: str = "", *, clone: Path | None = None):
+    def __init__(self, root: Path, repo: str = "", *, clone: Path | None = None,
+                 clones: Path | None = None, related: Path | None = None):
         self.root = root
         self.repo = repo
         self.clone = clone
+        # A workspace that runs delivery names the shared clones and the run's own directory of related checkouts.
+        self.clones = clones
+        self.related = related
         self._urls: list[str] = []
         self._identity: dict[str, str] | None = None
         self._lock: TextIO | None = None
@@ -255,7 +259,9 @@ class LiveWorkspace:
         """The issue's own worktree of one shared clone per repository. Admission creates the worktree at the pinned base."""
         owner, name = repo.lower().split("/")
         home = (state_home / "foreman").resolve()
-        return cls(home / "runs" / owner / name / str(issue), repo, clone=home / "checkouts" / owner / name)
+        runs = home / "runs" / owner / name
+        return cls(runs / str(issue), repo, clone=home / "checkouts" / owner / name,
+                   clones=home / "checkouts", related=runs / f"{issue}.related")
 
     @property
     def _home(self) -> Path:
@@ -346,12 +352,10 @@ class LiveWorkspace:
         return pinned
 
     def check_out_related(self, repo: str, branch: str) -> RelatedCheckout:
-        """Pin a related repository at its branch head in a worktree of that repository's shared clone, beside this checkout."""
+        """Pin a related repository at its branch head in a worktree of that repository's shared clone, in the run's related directory."""
+        assert self.clones is not None and self.related is not None
         owner, name = repo.lower().split("/")
-        checkouts = self.root.parent / f"{self.root.name}.related"
-        # A managed run shares the state directory's clone of the repository. GitHub names never start with a dot.
-        clones = self.clone.parent.parent if self.clone is not None else checkouts / ".clones"
-        related = LiveWorkspace(checkouts / owner / name, repo, clone=clones / owner / name)
+        related = LiveWorkspace(self.related / owner / name, repo, clone=self.clones / owner / name)
         related.validate_origin(repo)
         return RelatedCheckout(repository=repo, commit=related.pin_base(branch), checkout=str(related.root))
 
