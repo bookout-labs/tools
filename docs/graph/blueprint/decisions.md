@@ -33,7 +33,7 @@ Agreed by the owner 2026-11-22. Remove the 400-line gate and its override. Repor
 
 ## D5. Which conversation continues?
 
-Agreed by the owner 2026-11-22. Revised by the 2026-11-24 brief (#299, item 2). The builder keeps one conversation for the life of the PR. Dispatch saves its session on every accepted answer, not only on quota. A failed check, a failed criterion, a review finding or a merge repair resumes it when the checkout fingerprint matches the saved one. Otherwise the builder starts fresh. Each review pass and each Verify drive uses a fresh session. Warp continues a worker's conversation during revisions. [Warp workers](https://docs.warp.dev/factories/factory-agents/)
+Agreed by the owner 2026-11-22. Revised by the 2026-11-24 brief (#299, item 2). The builder keeps one conversation for the life of the PR. Dispatch saves its session on every accepted answer, not only on quota. A failed check, a failed criterion, a review finding, a merge repair or the call that Ready makes again after a halt resumes it when the checkout fingerprint matches the saved one and the chosen model is the one that holds the conversation. Otherwise the builder starts fresh. Each review pass and each Verify drive uses a fresh session. Warp continues a worker's conversation during revisions. [Warp workers](https://docs.warp.dev/factories/factory-agents/)
 
 ## D6. How does a run start and show its state?
 
