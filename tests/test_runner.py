@@ -2978,7 +2978,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.calls, [])
 
     def test_dirty_or_invalid_worktree_after_commit_is_never_published(self):
-        for snapshot, halt in ((WorktreeState(HEAD, False, BRANCH), "dirty_worktree"), (WorktreeInspectionFailed("Invalid HEAD"), "publish_failed")):
+        for snapshot, halt in ((WorktreeState(HEAD, False, BRANCH), "dirty_worktree"), (WorktreeInspectionFailed("Invalid HEAD"), "git_failed")):
             with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(snapshot,))
@@ -2986,7 +2986,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish"])
                 self.assertEqual(result["checks"].check_exit_code, 0)
                 self.assertIsNone(result["work"].published_head)
-                self.assertEqual(self.github.merge_calls, [])
+                self.assertEqual((self.github.branches, self.github.opened, self.github.merge_calls), ({}, {}, []))
 
     def test_a_moved_base_reviews_the_head_again_with_its_verify_evidence(self):
         # Merge returns a known checked head to Review. Verify doesn't drive it again, and Review keeps its evidence.
@@ -3849,7 +3849,7 @@ class HaltExitCodeTest(unittest.TestCase):
         self.assert_halt(self.live(
             [{"triage": "supplied_slice"}, {"implementation": "built"}],
             snapshots=(WorktreeInspectionFailed("Invalid HEAD"),),
-        ), "publish_failed", "Invalid HEAD", 75)
+        ), "git_failed", "Invalid HEAD", 75)
 
     def test_verify_cap(self):
         self.assert_halt(self.live(

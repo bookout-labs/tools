@@ -1218,6 +1218,23 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
         self.assertEqual(self.created, [self.remote_head()])
 
+    def test_a_checkout_publish_cannot_inspect_halts_git_failed_and_resumes_once_repaired(self):
+        """Foreman's own read of the checkout failed and nothing was written, so publish names it git_failed and Ready resumes it."""
+        original = implement.publish
+
+        def break_head_then_publish(state, run):
+            self.git("symbolic-ref", "HEAD", "refs/heads/missing")
+            return original(state, run)
+        with patch.object(implement, "publish", break_head_then_publish):
+            halted = self.walk(self.edit)
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("git_failed", "publish"), halted.get("halt_detail"))
+        self.assertEqual(self.git("ls-remote", str(self.remote), self.ref), "")
+        self.assertEqual((self.published_heads, self.created), ([], []))
+        self.git("symbolic-ref", "HEAD", self.ref)
+        resumed = self.walk(self.no_worker)
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(self.created, [self.remote_head()])
+
     def test_publication_failures(self):
         cases = (("rejected push", "rejected"), ("missing remote", "origin"), ("wrong push URL", "Transport requires"))
         for case, detail in cases:

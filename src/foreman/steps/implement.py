@@ -221,7 +221,7 @@ def publish(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     try:
         local = workspace.inspect()
     except WorkspaceError as exc:
-        return stopped(Halt.publish_failed, str(exc), "publish")
+        return stopped(Halt.git_failed, str(exc), "publish")
     if not local.clean or local.branch != branch or local.head != head:
         return stopped(Halt.dirty_worktree, f"The checkout differs from the checked commit {head} on {branch}. It is preserved.", "publish")
     if checks.verified_head != head:
