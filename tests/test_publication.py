@@ -14,7 +14,7 @@ from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.redaction import redact
 from foreman.github import CLOSE_MARKER, LiveForge
 from foreman.runner import halted_resumably, issue_thread
-from foreman.steps import CANCELLATION
+from foreman.steps import CANCELLATION, implement
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
 from publication_fixture import EMPTY_SLICE, PublicationFixture, REPO, VERIFY_SKILL_PATH, run_subprocess
 from test_delivery import BaseMergeFixture
@@ -1098,6 +1098,27 @@ class PublicationTest(PublicationFixture):
                     self.assertEqual((resumed["stop"], resumed["halt_detail"]), ("dirty_worktree", halted["halt_detail"]))
                     self.assertEqual(later, [])
                     self.assertTrue((self.checkout / "foreign.txt").exists())
+
+    def test_IM3_a_branch_move_found_at_commit_halts_dirty_worktree_and_resumes_once_restored(self):
+        """Implement preserves the tree on a branch mismatch (target.yaml implement invariants), and Ready resumes it."""
+        original = implement.commit
+
+        def move_then_commit(state, run):
+            self.git("switch", "-q", "-c", "moved")
+            return original(state, run)
+        with patch.object(implement, "commit", move_then_commit):
+            halted = self.walk(self.edit)
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("dirty_worktree", "commit"), halted.get("halt_detail"))
+        self.assertIn("It is preserved.", halted["halt_detail"])
+        self.assertEqual(self.git("branch", "--show-current"), "moved")
+        self.assertEqual(self.git("rev-parse", "HEAD"), halted["work"].attempt_head)
+        self.assertEqual((self.checkout / "items.txt").read_text(), "one\n")
+        self.assertEqual((self.published_heads, self.created), ([], []))
+        self.assertTrue(halted_resumably(self.checkpoint, issue_thread(REPO, 8)))
+        self.git("switch", "-q", self.branch)
+        resumed = self.walk(self.no_worker)
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(self.created, [self.remote_head()])
 
     def test_publication_failures(self):
         cases = (("rejected push", "rejected"), ("missing remote", "origin"), ("wrong push URL", "Transport requires"))

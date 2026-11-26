@@ -177,7 +177,7 @@ def commit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     try:
         observed = workspace.inspect()
         if observed.branch != work.branch:
-            return stopped(Halt.git_failed, "Restore the delivery branch before committing.", "commit")
+            return stopped(Halt.dirty_worktree, f"The checkout left the delivery branch {work.branch}. It is preserved.", "commit")
         candidate = work.candidate
         assert candidate is not None
         if candidate["disposition"] == "adopted" and observed.head == candidate["head"] and observed.clean:
