@@ -54,7 +54,7 @@ class DispatchResult(TypedDict, total=False):
     plan: DispatchPlanRecord
     fingerprint: str
     session: str  # The native session of an accepted builder answer, which the builder keeps for the PR (D5).
-    sessions: dict[str, str]  # The builder conversations on the current tree, by model, which a worker_unavailable halt keeps (D5).
+    sessions: dict[str, str]  # The builder conversations its quota-stopped calls left on the current tree, by model, which a halt keeps (D5).
 
 
 class DispatchState(DispatchInput, DispatchResult):
@@ -200,12 +200,9 @@ def reserve(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, ob
                             model, caps.max_tokens - work, budget, fingerprint])
     if run.journal is not None:
         run.journal.reserve(identity)
-    # The builder's saved conversation on this tree is one the halt keeps, unless a call of this dispatch replaces or ends it.
-    seeded = {saved["model"]: saved["session"]} if run.edits and "sessions" not in state and (
-        saved := caller.get("builder_session")) and saved["fingerprint"] == fingerprint else {}
     return {"reservation": Reservation(id=identity, model=model, work_allowance=caps.max_tokens - work,
                                        dollar_allowance=budget, fingerprint=fingerprint),
-            "index": index, "plan": plan, **({"sessions": seeded} if seeded else {})}
+            "index": index, "plan": plan}
 
 
 def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, object]:
@@ -213,8 +210,7 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
     if (reservation := state.get("reservation")) is None:
         # Every qualified model answered quota or has no CLI. Ready makes the call again; Foreman never waits for capacity.
         tried = "; ".join(a.get("detail") or "" for a in state.get("attempts", []) if a["outcome"] in {"quota", "cli_missing"})
-        kept = {"sessions": state.get("sessions", {})} if run.edits else {}
-        return {"halt": Halt.worker_unavailable, "detail": f"No qualified worker available for {stage}. {tried}".strip(), **kept}
+        return {"halt": Halt.worker_unavailable, "detail": f"No qualified worker available for {stage}. {tried}".strip()}
     model, plan = ModelSpec.parse(reservation["model"]), state.get("plan")
     assert plan is not None
     evidence = run.journal.read(reservation["id"]) if run.journal is not None else True
@@ -226,7 +222,10 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
     record = run.charge(state, reservation, model, outcome)
     # A returned call keeps the fingerprint of what the worker left, so even a halt hands the caller its edits.
     returned = {"fingerprint": evidence.fingerprint} if isinstance(evidence, WorkerResult) and evidence.fingerprint is not None else {}
-    update: dict[str, object] = {"attempts": [record], "reservation": None, **returned}
+    # Held sessions saw the reserved tree. A call that changed it ends them all, whatever it answered (D5).
+    moved = returned.get("fingerprint", reservation["fingerprint"]) != reservation["fingerprint"]
+    held = {} if moved else state.get("sessions", {})
+    update: dict[str, object] = {"attempts": [record], "reservation": None, **returned, **({"sessions": held} if moved else {})}
     if outcome and outcome.kind == "failed":  # Invalid output stays stopped, charged like any attempt.
         return {**update, "halt": Halt.invalid_output, "detail": f"{stage} output from {model.name}: {outcome.detail}"}
     attempts = state["caller"].get("attempts", []) + state.get("attempts", []) + [record]
@@ -243,7 +242,7 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
         if evidence.fingerprint != run.fingerprint():
             return {**update, "halt": Halt.dirty_worktree, "detail": "The worktree differs from the saved result."}
         if outcome.kind in {"quota", "cli_missing"}:
-            sessions = dict(state.get("sessions", {})) if evidence.fingerprint == reservation["fingerprint"] else {}
+            sessions = dict(held)
             if repair := run.repairing(state, model):
                 # A stopped repair call is never resumed: the next call starts fresh from the original instruction.
                 return {**update, "index": state.get("index", 0) + 1, "sessions": sessions, "repair": {**repair, "session": ""}}
@@ -254,7 +253,7 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
     except InvalidOutput as exc:
         if "repair" in state or not outcome.session_id:
             return {**update, "halt": Halt.invalid_output, "detail": f"{stage} output from {model.name}: {exc}"}
-        sessions = {name: session for name, session in state.get("sessions", {}).items() if name != model.name}
+        sessions = {name: session for name, session in held.items() if name != model.name}
         return {**update, "sessions": sessions, "repair": Repair(model=model.name, session=outcome.session_id, error=str(exc))}
     except WorkspaceError as exc:
         return {**update, "halt": Halt.git_failed, "detail": str(exc)}

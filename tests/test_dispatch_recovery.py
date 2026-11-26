@@ -12,6 +12,9 @@ import time
 import unittest
 from unittest.mock import patch
 
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import interrupt
+
 from foreman.adapters import Call, Outcome, Usage
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
@@ -23,6 +26,7 @@ from foreman.dispatch import DispatchRun, InvalidOutput
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from foreman.github import LiveForge
 from foreman.runner import issue_lock, run_live_delivery
+from foreman.state import SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer
 from foreman.stage_output import DispatchPlan, TriageOutput, parse_output
 from foreman.worker import CliWorker, assignment, run_worker_command
 from foreman.workspace import LiveWorkspace, WorkspaceError, WorktreeState
@@ -172,8 +176,7 @@ class CodexQuotaResumeTests(PublicationFixture):
             self.assertEqual([entry[1:] for entry in fallbacks], [({sol.name: session}, saved, saved)] * len(fallbacks))
             resumed = self.walk(model_edit=resume)
         self.assertEqual(resumed["stop"], "merged")
-        # A new dispatch has no returned call yet; it holds the builder's saved session on that tree.
-        self.assertEqual(launches[len(fallbacks) + 1], (sol.name, {sol.name: session}, None, saved))
+        self.assertEqual(launches[len(fallbacks) + 1][::3], (sol.name, saved))
         self.assertEqual(commands[0][:3], ["codex", "exec", "resume"])
         self.assertEqual(commands[0][-2], session)
 
@@ -661,6 +664,40 @@ class BuilderSessionTests(PublicationFixture):
                     self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
                     self.assertEqual(self.git("show", f"{self.remote_head()}:items.txt"), "one")
 
+    def test_a_quota_session_is_never_resumed_on_a_tree_a_later_call_changed(self):
+        # D5 and DP3: Sol stops on quota holding S1, then Terra edits the tree and the run halts. Whether Terra's invalid
+        # answer gets a repair that stops on quota (worker_unavailable) or Terra exhausts its budget, Sol's first call
+        # after Ready starts fresh on Terra's edits.
+        sol = load_config().nodes["implement"].models[0]
+        for ending, stop in (("repair_quota", "worker_unavailable"), ("budget_exhausted", "budget_exceeded")):
+            with self.subTest(ending=ending):
+                self.reset_fixture()
+                seen = []
+
+                def edit(model, state, instruction):
+                    seen.append((model.name, self.plan(state).resume_session))
+                    if len(seen) == 1:
+                        return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[1])
+                    if len(seen) > 2:
+                        return Outcome("quota", usage=SCRIPTED_USAGE)
+                    (self.checkout / "items.txt").write_text("written by the second model\n")
+                    if ending == "budget_exhausted":
+                        return Outcome("budget_exhausted", usage=SCRIPTED_USAGE, session_id=SESSIONS[2], detail="cap")
+                    return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[2])
+
+                halted = self.walk(model_edit=edit)
+                self.assertEqual(halted["halt"], stop, halted.get("halt_detail"))
+                calls = len(seen)
+
+                def ready(model, state, instruction):
+                    seen.append((model.name, self.plan(state).resume_session))
+                    self.edit()
+                    return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
+
+                result = self.walk(model_edit=ready)
+                self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+                self.assertEqual(seen[calls], (sol.name, None))
+
 
 class RealAdapterResumeTests(unittest.TestCase):
     """The real Claude and Codex adapters resume a read-only call's session, and a review repair needs no second diff read."""
@@ -781,3 +818,37 @@ class WorkerUnavailableTests(unittest.TestCase):
         self.assertEqual([(a["model"], a["outcome"]) for a in built], [(models[0], "ran")])
         ids = [a["attempt_id"] for a in result["attempts"]]
         self.assertEqual(len(ids), len(set(ids)))
+
+
+class QuotaPauseUpgradeTests(unittest.TestCase):
+    def test_a_run_an_older_release_paused_for_capacity_is_refused_on_ready(self):
+        """Schema 25 paused a run quota_exhausted inside dispatch. This release has no such pause, so Ready on that
+        checkpoint refuses it, naming the stored and expected versions and the issue thread, and leaves it unchanged."""
+        with TemporaryDirectory() as folder, skill_fixture() as (config, _), patch("foreman.runner.load_config", return_value=config):
+            script, github, workspace = ScriptHandler(), FakeGitHub(), FakeWorkspace(Path(folder))
+            checkpoint = Path(folder) / "run.sqlite3"
+
+            def handler(node, model, state, instruction):
+                if node == "implement":
+                    interrupt({"reason": "quota_exhausted", "stage": "implement", "attempts": [],
+                               "detail": "No qualified worker available for implement."})
+                return script(node, model, state, instruction)
+
+            def start():
+                return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=handler,
+                                         run=LiveRun(github, workspace))
+
+            with self.assertRaises(InvalidOutput):  # The pause is saved, and this release cannot read it.
+                start()
+            with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+                saver.serde = checkpoint_serializer()
+                saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8", "checkpoint_ns": ""}})
+                saved.checkpoint["channel_values"]["schema_version"] = 25
+                saver.put(saved.config, saved.checkpoint, saved.metadata, {})
+            github.ready_again(8)
+            before = checkpoint.read_bytes()
+            with self.assertRaises(CheckpointVersionError) as raised:
+                start()
+            self.assertEqual(checkpoint.read_bytes(), before)
+        for text in (f"schema_version 25; expected {SCHEMA_VERSION}", "older release", str(checkpoint), "example/engine#8"):
+            self.assertIn(text, str(raised.exception))
