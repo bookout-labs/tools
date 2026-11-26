@@ -53,7 +53,10 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         assert plan.slice is not None
         title = redact(str(plan.slice["title"]))
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
-        branch = work.branch or f"{target.issue or '<issue>'}-{slug}"
+        # The run's id is minted at its first worker call and a new run starts without one, so no earlier run used this branch.
+        run_id = state["review"].review_run_id
+        assert run_id
+        branch = work.branch or f"{target.issue or '<issue>'}-{slug}-{run_id[:8]}"
         workspace.create_branch(branch, target.base_branch, pinned=target.base_sha)
         if work.repair_head:
             workspace.refresh(branch, work.repair_head)

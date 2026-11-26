@@ -11,6 +11,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from contextlib import redirect_stderr, redirect_stdout
@@ -164,6 +165,20 @@ class AnswerWakeTest(WakeTest):
         self.assertEqual(self.deliver("issue_comment", comment(self.github.rulings[-1].body, action="edited")), "ignored")
         self.assertEqual((self.github.variable_reads, self.github.status_writes, len(self.calls)), (reads, writes, calls))
 
+    def test_a_resumed_run_keeps_its_branch(self):
+        """A run paused at implement's gate keeps its branch when its answer resumes it, and through the review's repair round,
+        which prepares a new attempt on it."""
+        paused = self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": "Keep the sort order?"}])
+        self.assertEqual((paused["stop"], paused["work"].branch), ("needs_human", BRANCH))
+        self.github.answer(self.question, "Keep it.")
+        self.assertEqual(self.deliver("issue_comment", comment(self.github.rulings[-1].body)), "wake Example/Engine#8")
+        with patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex="e" * 32)):
+            _, _, woken = self.command(["wake", "--repo", "Example/Engine", "--issue", "8"],
+                                       [{"implementation": "built"}, {**APPROVE, "findings": [FINDING]}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(woken["path"].count("prepare"), 2)
+        self.assertEqual((woken["stop"], woken["work"].branch, list(self.github.opened)), ("merged", BRANCH, [BRANCH]))
+        self.assertEqual(self.github.merge_calls[-1][2], BRANCH)
+
     def test_an_answer_to_an_older_schema_checkpoint_is_refused_with_the_schema_error(self):
         """A run paused by an older release has no saved login to match, so accept reports the checkpoint's schema and wakes nothing."""
         self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": "Keep the sort order?"}])["stop"],
@@ -220,7 +235,8 @@ class AnswerWakeTest(WakeTest):
     def test_a_stop_wakes_a_gate_paused_or_halted_run_and_ends_it_cancelled(self):
         """TR15: a run paused at implement's gate with its PR open, and one halted at its verify cap with its PR open. Each stop
         comment wakes its run, which ends cancelled and closes its PR with no worker call. The halted run resumes no step, and
-        Ready added after it admits a new run at triage. The run waiting on worker capacity is left out: #379 deletes that wait."""
+        Ready added after it admits a new run at triage, which builds on a branch of its own and publishes a new PR, and the
+        cancelled run's closed PR and branch are unchanged. The run waiting on worker capacity is left out: #379 deletes that wait."""
         built = {"implementation": "built"}
         asked = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]},
                            {**built, "human_question": "Keep the sort order?"}])
@@ -240,13 +256,20 @@ class AnswerWakeTest(WakeTest):
                 self.assertEqual(stopped["path"][-1], halted["path"][-1] if stage == "verify" else "implement")
                 self.assertTrue(shows(self.github, "Example/Engine", 8, "Done"))
         self.assertEqual(len(self.calls), calls)
+        cancelled = (self.github.opened[BRANCH], self.github.branches[BRANCH])
         self.github.ready_again(8)
         ready = {"action": "labeled", "label": {"name": "Ready"}, "issue": {"number": 8}, "repository": {"full_name": "Example/Engine"}}
         self.assertEqual(self.deliver("issues", ready), "start Example/Engine#8")
-        _, _, again = self.command(["start", "--repo", "Example/Engine", "--issue", "8"], [{"triage": "supplied_slice"}, built])
+        with patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex="f" * 32)):
+            _, _, again = self.command(["start", "--repo", "Example/Engine", "--issue", "8"], [{"triage": "supplied_slice"}, built, APPROVE])
         # The earlier stops are older than the new Ready, so the new run is admitted and goes on past its stage entries.
-        self.assertEqual((again["path"][0], bool(again["run"].base_sha), "prepare" in again["path"]), ("triage", True, True))
-        self.assertNotEqual(again["stop"], "cancelled")
+        self.assertEqual((again["path"][0], bool(again["run"].base_sha), "publish" in again["path"]), ("triage", True, True))
+        self.assertNotIn(again["stop"], ("cancelled", "publish_failed", "git_failed"))
+        branch = again["work"].branch
+        self.assertEqual(branch, "8-list-items-once-ffffffff")
+        self.assertEqual((self.github.opened[branch].state, self.github.branches[branch]), ("OPEN", again["work"].head_sha))
+        self.assertEqual((self.github.opened[BRANCH], self.github.branches[BRANCH]), cancelled)
+        self.assertEqual(cancelled[0].state, "CLOSED")
 
 
     def test_a_stop_that_ends_the_run_ends_the_wake(self):
