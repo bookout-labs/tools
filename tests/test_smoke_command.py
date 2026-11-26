@@ -36,6 +36,12 @@ class SmokeCommandTest(unittest.TestCase):
 
     @contextmanager
     def provision(self):
+        runner = Mock(return_value=passing())
+        def delivery(**kwargs):
+            # The runner reports each run it returns.
+            result = runner(**kwargs)
+            kwargs['report'](result)
+            return result
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with (patch('foreman.smoke_command.SMOKE_TARGETS', (SMOKE_REPO,)),
@@ -43,7 +49,7 @@ class SmokeCommandTest(unittest.TestCase):
                   patch('foreman.smoke_command.LiveForge') as forge,
                   patch('foreman.smoke_command.subprocess.run') as process,
                   patch('foreman.smoke_command.subprocess.check_output', side_effect=self.git_output),
-                  patch('foreman.smoke_command.run_live_delivery', return_value=passing()) as runner,
+                  patch('foreman.cli.run_live_delivery', side_effect=delivery),
                   patch('foreman.smoke_command.smoke_lock'),
                   patch.dict(os.environ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors):
                 forge.return_value.smoke_issues.return_value = []
@@ -325,8 +331,7 @@ class SmokeCommandTest(unittest.TestCase):
                     self.assertEqual(result.get('watch') is not None, filed)
                     self.assertEqual(result['run'].token_cap, cap)
                     return result
-                runner.side_effect = delivery
-                with patch('foreman.smoke_command.SMOKE_TOKEN_CAP', cap):
+                with patch('foreman.cli.run_live_delivery', side_effect=delivery), patch('foreman.smoke_command.SMOKE_TOKEN_CAP', cap):
                     self.assertEqual(run_smoke(root, time.monotonic() + 30), expected)
                 self.assertEqual(len(fake.created), 2 if filed else 1)
                 if filed:
@@ -378,10 +383,9 @@ class SmokeCommandTest(unittest.TestCase):
                     result = run_live_delivery(**kwargs)
                 results.append(result)
                 return result
-            runner.side_effect = delivery
             # The fake workspace publishes no real commit, so the file check is the other tests' subject.
-            with patch('foreman.smoke_command.LiveForge', return_value=transport), patch('foreman.smoke_command.time.sleep'), \
-                    patch('foreman.smoke_command.published_file'):
+            with patch('foreman.cli.run_live_delivery', side_effect=delivery), patch('foreman.smoke_command.LiveForge', return_value=transport), \
+                    patch('foreman.smoke_command.time.sleep'), patch('foreman.smoke_command.published_file'):
                 self.assertEqual(run_smoke(root, time.monotonic() + 30), 0, results)
             self.assertEqual(len(results), 2)
             self.assertEqual((results[0]['stop'], results[0].get('merge', MergeState()).status), ('merge_pending', None))
