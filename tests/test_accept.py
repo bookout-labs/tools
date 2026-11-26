@@ -159,7 +159,7 @@ class AnswerWakeTest(unittest.TestCase):
         self.assertEqual(woken["plan"].human_qa[-1]["stage"], "implement")
         self.assertEqual(woken["path"][len(paused["path"]):][:2], ["implement", "check"])
         # A start would stop not_ready on the cap that won't parse. Only merge.arm reads a variable, its merge hold.
-        self.assertEqual((woken["human_login"], woken["run"].max_budget_usd), ("fixture-owner", "3"))
+        self.assertEqual((woken["start"].human_login, woken["start"].max_budget_usd), ("fixture-owner", "3"))
         self.assertEqual(self.github.variable_reads, [*reads, "Example/Engine"])
         merged = len(self.github.merge_calls)
         self.assertEqual(self.deliver("issue_comment", comment(answer)), "ignored")

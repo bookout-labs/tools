@@ -183,8 +183,9 @@ def paused_run(checkpoint: Path, thread: str) -> Paused | None:
     if saved is None or not pending:
         return None
     pause: object = pending[0][0].value
-    login: str = saved.checkpoint["channel_values"].get("human_login", "")
-    return Paused(login, None if is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
+    # A checkpoint from an older schema has no start, so its login answers nothing.
+    start: StartSettings | None = saved.checkpoint["channel_values"].get("start")
+    return Paused(start.human_login if start is not None else "", None if is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
 
 
 def saved_workspace(checkpoint: Path, thread: str) -> str | None:
