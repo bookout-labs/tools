@@ -10,6 +10,9 @@ plan states, do not build it. Ask a question that cites the plan fact and the co
 attempt whose acceptance already holds on the pinned base, edit nothing and set no_change to the
 checks you ran and what they showed. With any edit, a repair or a human_question, leave no_change
 null. A clean tree without that evidence is an invalid answer. On a repair, address the evidenced
-findings, failed checks, failed criteria or surviving mutations on the existing PR. For a surviving
-mutation, add a test that notices it, or name it as equivalent with the reason no test can notice
-it. Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.
+findings, failed checks, failed criteria or surviving mutations on the existing PR.
+On a conflict repair, Foreman has already merged the base branch into the worktree. Resolve the
+files it names, which hold Git's conflict markers, and run the check. Run no Git command that
+writes, such as merge, commit, checkout or reset. For a surviving mutation, add a test that notices
+it, or name it as equivalent with the reason no test can notice it. Summarize the actual edits and
+checks. Foreman verifies the final tree, commits and publishes.
