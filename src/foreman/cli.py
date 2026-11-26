@@ -13,7 +13,7 @@ import sys
 from tempfile import TemporaryDirectory
 from typing import TextIO, assert_never
 
-from foreman.accept import AcceptError, accept_event
+from foreman.accept import AcceptError, Paused, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
@@ -28,7 +28,7 @@ from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
-from foreman.runner import AnswerError, IssueLocked, RunPresentation, halted_resumably, issue_lock, issue_thread, paused_run, run_live_delivery, saved_workspace
+from foreman.runner import AnswerError, IssueLocked, RunPresentation, halted_resumably, issue_lock, issue_thread, paused_run, released_issues, run_live_delivery, saved_workspace
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
@@ -267,10 +267,12 @@ def main(
         if "check" in pointer:
             print(f"check {pointer['check']}")
         return 0
+    def paused(repo: str, issue: int) -> Paused | None:
+        return paused_run(store, issue_thread(repo, issue))
+
     if args.command == "accept":
         try:
-            decision = accept_event(args.event, json.loads(Path(args.path).read_text()),
-                                    lambda repo, issue: paused_run(store, issue_thread(repo, issue)))
+            decision = accept_event(args.event, json.loads(Path(args.path).read_text()), paused)
         except (OSError, json.JSONDecodeError, AcceptError, CheckpointVersionError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -278,8 +280,8 @@ def main(
         return 0
     if args.command == "receive":
         try:
-            server = listener((args.host, args.port), webhook_secret(),
-                              lambda repo, issue: paused_run(store, issue_thread(repo, issue)), run_foreman)
+            server = listener((args.host, args.port), webhook_secret(), paused, run_foreman,
+                              lambda repo, issue: released_issues(store, issue_thread(repo, issue)))
         except (OSError, ValueError) as exc:
             print(f"cannot receive deliveries: {exc}", file=sys.stderr)
             return 1
@@ -322,7 +324,7 @@ def main(
         except (AnswerError, CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
-        # The receiver starts each returned issue as it starts an accepted delivery, so a replay names them again.
+        # The receiver reads the same list from the checkpoint, never from this output.
         for released in result.get("released", []):
             print(f"start {released}")
         return run_exit_code(result)

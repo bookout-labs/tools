@@ -42,7 +42,7 @@ from foreman.status import STATUS_MARKER, Status, running, shows, write_status
 from foreman.steps import CANCELLATION, StageRun, implement, review, verify
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
-from foreman.runner import AnswerError, RunPresentation, issue_thread, run_live_delivery, saved_workspace, snapshot_result
+from foreman.runner import AnswerError, RunPresentation, issue_thread, released_issues, run_live_delivery, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
@@ -2567,8 +2567,9 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 )
             self.assertEqual(code, 0)
             outputs.append([line for line in stdout.getvalue().splitlines() if line.startswith("start ")])
-        # The replay of the finished run prints the same lines, so a host that crashed partway starts the rest.
+        # The replay of the finished run prints the same lines, and the receiver reads them from the checkpoint.
         self.assertEqual(outputs, [["start Example/Engine#101", "start Example/Engine#102"]] * 2)
+        self.assertEqual(released_issues(self.checkpoint, issue_thread("Example/Engine", 8)), ["Example/Engine#101", "Example/Engine#102"])
         self.assertEqual(len(self.github.merge_calls), 1)
 
     def test_check_streams_in_write_order_before_the_command_exits(self):

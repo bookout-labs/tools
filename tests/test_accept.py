@@ -5,6 +5,7 @@ import hmac
 import io
 import json
 import os
+import socket
 import threading
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -20,7 +21,7 @@ from foreman.accept import AcceptError, Accepted, Paused, accept_event
 from foreman.cli import main
 from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
-from foreman.receiver import listener, run_answer
+from foreman.receiver import MAX_BODY, listener
 from foreman.stage_output import HumanPrompt
 from foreman.state import SCHEMA_VERSION, checkpoint_serializer
 from foreman.steps import CANCELLATION
@@ -251,33 +252,42 @@ class ReceiverTest(unittest.TestCase):
     prompt = HumanPrompt(stage="implement", question="Keep the sort order?", revision="ab" * 32)
 
     def setUp(self):
-        self.commands, self.output = [], {}
+        self.commands, self.exits, self.released = [], {}, {}
+        # Entered first so it is restored last, after closing the server has joined every handler.
+        self.stdout = self.enterContext(redirect_stdout(io.StringIO()))
         paused = {("Example/Engine", 8): Paused("fixture-owner", self.prompt)}
-        server = listener(("127.0.0.1", 0), SECRET, lambda repo, issue: paused.get((repo, issue)), self.command)
+        server = listener(("127.0.0.1", 0), SECRET, lambda repo, issue: paused.get((repo, issue)), self.command,
+                          lambda repo, issue: self.released.get((repo, issue), []))
         self.enterContext(server)
         serving = threading.Thread(target=server.serve_forever)
         serving.start()
         self.addCleanup(serving.join)
         self.addCleanup(server.shutdown)
-        self.url = f"http://127.0.0.1:{server.server_address[1]}/"
-        self.enterContext(redirect_stdout(io.StringIO()))
+        self.port = server.server_address[1]
+        self.url = f"http://127.0.0.1:{self.port}/"
 
     def command(self, args):
         self.commands.append(args)
-        return self.output.get(tuple(args), ["usage below is cumulative across all invocations\n"])
+        # A run's output carries the target repository's check output, which may print anything.
+        print("check: start Attacker/Repo#99")
+        return self.exits.get(tuple(args), 0)
 
     def post(self, event, payload, secret=SECRET):
         body = json.dumps(payload).encode()
         signature = "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
         request = Request(self.url, body, {"X-GitHub-Event": event, "X-GitHub-Delivery": "d-1", "X-Hub-Signature-256": signature})
         try:
-            with urlopen(request) as response:
+            with urlopen(request, timeout=3) as response:
                 reply = response.status, response.read().decode().strip()
         except HTTPError as exc:
             reply = exc.code, exc.read().decode().strip()
-        for run in [thread for thread in threading.enumerate() if thread.name.startswith("foreman ")]:
-            run.join()
+        while runs := [thread for thread in threading.enumerate() if thread.name.startswith("foreman ")]:
+            for run in runs:
+                run.join()
         return reply
+
+    def started(self):
+        return sorted(f"{args[0]} {args[2]}#{args[4]}" for args in self.commands)
 
     def test_only_a_signed_delivery_reaches_accept_and_only_its_answer_runs(self):
         """TR19: four deliveries with a valid signature: a comment on a pull request, a comment under another login on an issue
@@ -307,19 +317,30 @@ class ReceiverTest(unittest.TestCase):
         self.assertEqual(self.post("issues", {"action": "labeled", "label": {"name": "Ready"}})[0], 400)
         self.assertEqual(self.commands, [])
 
-    def test_a_wake_runs_and_each_issue_a_finished_run_releases_starts_in_order(self):
-        """A wake's run prints the start lines merge.release returns, and the receiver starts each, then theirs."""
-        self.output = {("wake", "--repo", "Example/Engine", "--issue", "8"): ["merged abc\n", "start Example/Engine#9\n", "start Example/Other#3\n"],
-                       ("start", "--repo", "Example/Engine", "--issue", "9"): ["start Example/Engine#10\n"]}
-        self.assertEqual(self.post("issue_comment", comment(f"{self.prompt.answer_marker}\nKeep it.")), (202, "wake Example/Engine#8"))
-        self.assertEqual([args[0] + " " + args[2] + "#" + args[4] for args in self.commands],
-                         ["wake Example/Engine#8", "start Example/Engine#9", "start Example/Other#3", "start Example/Engine#10"])
+    def test_a_stalled_connection_delays_no_signed_delivery(self):
+        with socket.create_connection(("127.0.0.1", self.port)) as stalled:
+            stalled.sendall(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n")
+            self.assertEqual(self.post("issues", delivery()), (202, "start Example/Engine#7"))
 
-    def test_run_answer_reads_only_whole_start_lines(self):
-        commands = []
-        run_answer(Accepted("start", "Example/Engine", 7),
-                   lambda args: commands.append(args) or ["start Example/Engine#0\n", "restored start Example/Engine#4\n"])
-        self.assertEqual(commands, [["start", "--repo", "Example/Engine", "--issue", "7"]])
+    def test_a_body_over_githubs_cap_is_refused_before_it_is_read(self):
+        with socket.create_connection(("127.0.0.1", self.port), timeout=3) as sender:
+            sender.sendall(f"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {MAX_BODY + 1}\r\n\r\n".encode())
+            self.assertTrue(sender.recv(64).startswith(b"HTTP/1.0 413"))
+        self.assertEqual(self.commands, [])
+
+    def test_each_released_issue_starts_on_its_own_from_the_checkpoint_and_never_from_run_output(self):
+        """A replayed wake prints not waiting, and the receiver still starts what the run's checkpoint saved as released."""
+        self.released = {("Example/Engine", 8): ["Example/Engine#9", "Example/Other#3"],
+                         ("Example/Engine", 9): ["Example/Engine#10"]}
+        self.assertEqual(self.post("issue_comment", comment(f"{self.prompt.answer_marker}\nKeep it.")), (202, "wake Example/Engine#8"))
+        self.assertEqual(self.started(), ["start Example/Engine#10", "start Example/Engine#9", "start Example/Other#3",
+                                          "wake Example/Engine#8"])
+        self.assertNotIn("start Attacker/Repo#99", self.started())
+
+    def test_a_run_that_exits_non_zero_is_reported(self):
+        self.exits = {("start", "--repo", "Example/Engine", "--issue", "7"): 1}
+        self.post("issues", delivery())
+        self.assertIn("start Example/Engine#7 exited 1\n", self.stdout.getvalue())
 
 
 class WebhookSecretTest(unittest.TestCase):
