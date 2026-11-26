@@ -12,8 +12,12 @@ from foreman.steps import is_stop
 REPOSITORY = re.compile(r"[\w.-]+/[\w.-]+")
 
 
-class Paused(NamedTuple):
-    """An issue's open run that waits: on the human's answer to its question, or on a provider or GitHub when question is None."""
+# The comment that caused a wake, or event for a wake that no comment caused: a provider reset or GitHub's merge event.
+Wake = Literal["stop", "answer", "event"]
+
+
+class OpenRun(NamedTuple):
+    """An issue's run that has not ended, or ended with a halt: running, waiting, halted, or paused at a gate on question."""
 
     login: str
     question: HumanPrompt | None
@@ -23,18 +27,20 @@ class Accepted(NamedTuple):
     action: Literal["start", "wake"]
     repo: str
     issue: int
+    comment: Literal["stop", "answer"] | None = None
 
 
 class AcceptError(ValueError):
     pass
 
 
-def accept_event(name: str, payload: object, paused: Callable[[str, int], Paused | None]) -> Accepted | None:
+def accept_event(name: str, payload: object, saved: Callable[[str, int], OpenRun | None]) -> Accepted | None:
     """Start on an `issues` delivery whose added label is Ready on a real issue. Admission re-reads the issue live.
 
-    Wake on an `issue_comment` delivery that GitHub created under the paused run's saved login whose first line is its open
-    question's reply marker, or is a stop when the run waits on a provider or GitHub (rules.gates.continuation). An edit
-    wakes nothing, and neither does a delivery that comes once the question is closed. The wake reads the answer from the issue.
+    Wake on an `issue_comment` delivery that GitHub created under the open run's saved login whose first line is a stop, or is
+    the reply marker of the question the run is paused on (rules.gates.continuation). A stop wakes the run whatever it is
+    doing, and a running run's wake waits for its lock. An edit wakes nothing, and neither does a delivery for a run that ended
+    with a result other than a halt, or an answer once the question is closed. The wake reads the issue itself.
 
     Foreman's own label writes never start a run, like Warp's default of skipping bot-authored events
     (https://docs.warp.dev/factories/automation-triggers/). A child Spec labels Ready starts once, from its `start` line.
@@ -50,11 +56,13 @@ def accept_event(name: str, payload: object, paused: Callable[[str, int], Paused
         repo, number = _identity(repository, issue)
         author, body = comment.get("user"), comment.get("body")
         login = author.get("login") if is_dict(author) else None
-        run = paused(repo, number)
+        run = saved(repo, number)
         if run is None or not isinstance(login, str) or not isinstance(body, str) or login.casefold() != run.login.casefold():
             return None
-        wakes = is_stop(body) if run.question is None else run.question.answer_in(body) is not None
-        return Accepted("wake", repo, number) if wakes else None
+        if is_stop(body):
+            return Accepted("wake", repo, number, "stop")
+        answers = run.question is not None and run.question.answer_in(body) is not None
+        return Accepted("wake", repo, number, "answer") if answers else None
     if name != "issues" or payload.get("action") != "labeled":
         return None
     label, issue, repository, sender = payload.get("label"), payload.get("issue"), payload.get("repository"), payload.get("sender")

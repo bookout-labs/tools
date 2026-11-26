@@ -8,7 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, DispatchState
-from foreman.github import Forge, ForgeError, human_comment_records
+from foreman.github import Forge, ForgeError, IssueComment, PublishedPullRequest, human_comment_records
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import AttemptRecord, DispatchStage, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
 from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState, StartSettings
@@ -109,33 +109,47 @@ def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = H
     issue = target.issue
 
     def requested() -> bool:
-        stops = [comment for comment in human_comment_records(run.forge, state["start"].human_login, target.repo, issue) if is_stop(comment.body or "")]
-        if not stops:
-            return False
-        ready = run.forge.ready_labeled_at(target.repo, issue)
-        return any(ready is None or (comment.created_at is not None and comment.created_at > ready) for comment in stops)
+        return stop_counts(run.forge, human_comment_records(run.forge, state["start"].human_login, target.repo, issue), target.repo, issue)
 
     return cancel(state, run, step, failure, requested, merging=merging)
 
 
+def stop_counts(forge: Forge, comments: list[IssueComment], repo: str, issue: int) -> bool:
+    """Whether the human's comments hold a stop created after the issue's latest Ready label event. Raises ForgeError."""
+    stops = [comment for comment in comments if is_stop(comment.body or "")]
+    if not stops:
+        return False
+    ready = forge.ready_labeled_at(repo, issue)
+    return any(ready is None or (comment.created_at is not None and comment.created_at > ready) for comment in stops)
+
+
 def cancel(state: DeliveryState, run: StageRun, step: str, failure: Halt = Halt.git_failed,
            requested: Callable[[], bool] = lambda: True, *, merging: bool = False) -> DeliveryUpdate:
-    """End the run cancelled when requested, closing the run's open PR with the cancellation. The close leaves the branch,
-    and a PR that is no longer open is left alone. Returns {} when nothing was requested.
+    """End the run cancelled when requested, as close does. Returns {} when nothing was requested.
 
-    A stop cannot undo a merge, so the run's PR is read first (DQ1). Merge alone reports a PR GitHub merged before the close
-    landed: the update records the stop as too late and carries no stop, so merge goes on to observe the merge. Merge's
-    report adds its own path entry."""
+    A stop cannot undo a merge, so in merge the run's PR is read before the stop (DQ1)."""
     repo, branch = state["run"].repo, state.get("work", WorkState()).branch
     try:
-        pr = run.forge.pull_request_for(repo, branch) if branch else None
+        pr = run.forge.pull_request_for(repo, branch) if merging and branch else None
         if not requested():
             return {}
-        if pr is not None and pr.state == "OPEN":
-            run.forge.close_pull_request(repo, pr.number, CANCELLATION)
-            pr = run.forge.pull_request_for(repo, branch)
+        return close(state, run.forge, step, pr, merging=merging)
     except ForgeError as exc:
         return stopped(failure, f"GitHub could not settle the cancellation ({exc}).", step)
+
+
+def close(state: DeliveryState, forge: Forge, step: str, pr: PublishedPullRequest | None, *, merging: bool) -> DeliveryUpdate:
+    """End the run cancelled, closing its open PR with the cancellation. The close leaves the branch, and a PR that is no
+    longer open is left alone. Outside merge the PR is read here. Raises ForgeError.
+
+    Merge alone reports a PR GitHub merged before the close landed, or that merge read merged: the update records the stop as
+    too late and carries no stop, so merge goes on to observe the merge. Merge's report adds its own path entry."""
+    repo, branch = state["run"].repo, state.get("work", WorkState()).branch
+    if not merging and branch:
+        pr = forge.pull_request_for(repo, branch)
+    if pr is not None and pr.state == "OPEN":
+        forge.close_pull_request(repo, pr.number, CANCELLATION)
+        pr = forge.pull_request_for(repo, branch)
     if not merging:
         return {"stop": "cancelled", "path": [step]}
     return {"halt_detail": TOO_LATE} if pr is not None and pr.state == "MERGED" else {"stop": "cancelled"}

@@ -6,20 +6,16 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.accept import AcceptError, Accepted, Paused, accept_event
+from foreman.accept import AcceptError, Accepted, OpenRun, accept_event
 from foreman.cli import main
-from foreman.contract import CONTRACT_PATH
-from foreman.delivery import LiveRun
 from foreman.stage_output import HumanPrompt
 from foreman.state import SCHEMA_VERSION, checkpoint_serializer
+from foreman.status import shows
 from foreman.steps import CANCELLATION
-from test_delivery import contract_text
-import test_runner
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply
+from test_runner import APPROVE, BRANCH, FINDING, FakeGitHub, WakeTest, comment
 
 
 def delivery(label="Ready", action="labeled", **issue):
@@ -83,11 +79,6 @@ class AcceptTest(unittest.TestCase):
             self.assertEqual(main(["accept", "--event", "issues", str(path)]), 1)
 
 
-def comment(body, *, login="fixture-owner", action="created", **issue):
-    return {"action": action, "issue": {"number": 8, **issue}, "repository": {"full_name": "Example/Engine"},
-            "comment": {"user": {"login": login}, "body": body}, "sender": {"login": login}}
-
-
 class ReplyMarkerTest(unittest.TestCase):
     prompt = HumanPrompt(stage="implement", question="Keep the sort order?", revision="ab" * 32)
 
@@ -100,50 +91,28 @@ class ReplyMarkerTest(unittest.TestCase):
                 self.assertEqual(self.prompt.answer_in(body), answer)
         self.assertIsNone(self.prompt.model_copy(update={"revision": None}).answer_in(f"{marker}\nKeep it."))
 
-    def test_a_comment_wakes_only_the_paused_run_it_answers(self):
-        gate, waiting = Paused("Fixture-Owner", self.prompt), Paused("fixture-owner", None)
-        answer = f"{self.prompt.answer_marker}\nKeep it."
+    def test_a_comment_wakes_only_the_paused_run_it_answers_and_a_stop_wakes_any_open_run(self):
+        """An answer wakes only the run paused on its question. A stop wakes a run that is running, waiting, halted or paused
+        at a gate. A run that ended with a result other than a halt is no open run, so nothing wakes it."""
+        gate, other = OpenRun("Fixture-Owner", self.prompt), OpenRun("fixture-owner", None)
+        answer, stop = f"{self.prompt.answer_marker}\nKeep it.", "foreman stop\nNo longer needed."
         for run, payload, wakes in (
-                (gate, comment(answer), True), (gate, comment(answer, action="edited"), False),
-                (gate, comment(answer, login="someone-else"), False), (gate, comment("Keep it."), False),
-                (gate, comment(f"{self.prompt.answer_marker}\n"), False), (gate, comment(answer, pull_request={}), False),
-                (None, comment(answer), False), (waiting, comment("foreman stop\nNo longer needed."), True),
-                (waiting, comment("foreman stop", login="someone-else"), False), (waiting, comment(answer), False)):
+                (gate, comment(answer), "answer"), (gate, comment(answer, action="edited"), None),
+                (gate, comment(answer, login="someone-else"), None), (gate, comment("Keep it."), None),
+                (gate, comment(f"{self.prompt.answer_marker}\n"), None), (gate, comment(answer, pull_request={}), None),
+                (gate, comment(stop), "stop"), (None, comment(answer), None), (None, comment(stop), None),
+                (other, comment(stop), "stop"), (other, comment(stop, action="edited"), None),
+                (other, comment("foreman stop", login="someone-else"), None), (other, comment(answer), None)):
             with self.subTest(run=run, payload=payload):
                 decision = accept_event("issue_comment", payload, lambda repo, issue: run)
-                self.assertEqual(decision, Accepted("wake", "Example/Engine", 8) if wakes else None)
+                self.assertEqual(decision, Accepted("wake", "Example/Engine", 8, wakes) if wakes else None)
         with self.assertRaises(AcceptError):
             accept_event("issue_comment", {"action": "created", "issue": {"number": 8}}, lambda repo, issue: gate)
 
 
-class AnswerWakeTest(unittest.TestCase):
-    """The App's issue comment webhook wakes a run paused at a gate on its reply marker, and a waiting run on a stop
+class AnswerWakeTest(WakeTest):
+    """The App's issue comment webhook wakes a run paused at a gate on its reply marker, and any open run on a stop
     (rules.gates.continuation). The wake is no start, so it runs no doctor and keeps the login and caps the start saved."""
-
-    # The runner tests' fixtures, borrowed without inheriting their tests.
-    setUpClass = classmethod(test_runner.LiveRunnerTest.setUpClass.__func__)
-    walk = test_runner.LiveRunnerTest.walk
-
-    def setUp(self):
-        test_runner.LiveRunnerTest.setUp(self)
-        self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.cwd / "runtime"), "FOREMAN_APP_ID": "1"}))
-        self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
-
-    def command(self, argv, replies=()):
-        workspace = FakeWorkspace(self.cwd)
-        workspace.remote, workspace.base_files[CONTRACT_PATH] = self.github.branches, contract_text("exit 0")
-        outputs, results = iter(replies), []
-        with redirect_stdout(io.StringIO()) as out:
-            code = main(argv, checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace), report=results.append,
-                        worker_runner=lambda args, cwd, env: workspace.reply(args, checker_reply(args) or next(outputs)))
-        return code, out.getvalue(), results[-1] if results else None
-
-    def deliver(self, event, payload):
-        path = self.cwd / "delivery.json"
-        path.write_text(json.dumps(payload))
-        code, out, _ = self.command(["accept", "--event", event, str(path)])
-        self.assertEqual(code, 0)
-        return out.strip()
 
     def test_an_answer_continues_the_paused_run_once_and_nothing_else_wakes_it(self):
         """TR14: a run paused at implement's gate. The saved login's comment whose first line is the reply marker is delivered
@@ -156,8 +125,8 @@ class AnswerWakeTest(unittest.TestCase):
         self.github.settings.update({"FOREMAN_HUMAN_LOGIN": "someone-else", "FOREMAN_MAX_BUDGET_USD": "4.5o"})
         self.github.answer(self.question, "Keep it.")
         answer = self.github.rulings[-1].body
-        self.assertEqual(self.deliver("issue_comment", comment(answer)), "wake Example/Engine#8")
-        code, _, woken = self.command(["wake", "--repo", "Example/Engine", "--issue", "8"], [{"implementation": "built"}, APPROVE])
+        self.assertEqual(self.deliver("issue_comment", comment(answer)), "wake Example/Engine#8 answer")
+        code, _, woken = self.command(["wake", "--repo", "Example/Engine", "--issue", "8", "--comment", "answer"], [{"implementation": "built"}, APPROVE])
         self.assertEqual((code, woken["stop"], woken["human_answers"]), (0, "merged", ["Keep it."]))
         self.assertEqual(woken["plan"].human_qa[-1]["stage"], "implement")
         self.assertEqual(woken["path"][len(paused["path"]):][:2], ["implement", "check"])
@@ -213,8 +182,8 @@ class AnswerWakeTest(unittest.TestCase):
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop", login="someone-else")), "ignored")
         self.assertEqual(self.deliver("issue_comment", comment("Please stop soon.")), "ignored")
         self.github.ruling("foreman stop")
-        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
-        code, _, stopped = self.command(["wake", "--repo", "Example/Engine", "--issue", "8"])
+        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8 stop")
+        code, _, stopped = self.wake("stop")
         self.assertEqual((stopped["stop"], self.github.pr_closes), ("cancelled", [("Example/Engine", 12, CANCELLATION)]))
         self.assertEqual(self.github.variable_reads, reads)
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "ignored")
@@ -227,12 +196,46 @@ class AnswerWakeTest(unittest.TestCase):
         self.assertFalse(self.checkpoint.exists())
 
     def test_a_wake_never_resumes_a_halted_run(self):
-        """A wake that finds the run halted, as when an earlier wake continued it, resumes nothing. Only Ready resumes it."""
+        """A wake that finds the run halted, as when an earlier wake continued it, reads the issue for a stop and resumes
+        nothing when it finds none. Only Ready resumes it."""
         self.github.hold = "Holding merges."
         self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_held")
-        reads, writes = list(self.github.variable_reads), list(self.github.status_writes)
-        self.assertEqual(self.command(["wake", "--repo", "Example/Engine", "--issue", "8"])[:2], (0, "not waiting example/engine#8\n"))
-        self.assertEqual((self.github.variable_reads, self.github.status_writes), (reads, writes))
+        reads, writes, calls, arms = list(self.github.variable_reads), list(self.github.status_writes), len(self.calls), len(self.github.merge_calls)
+        code, _, held = self.wake()
+        self.assertEqual((code, held["stop"]), (75, "merge_held"))
+        self.assertEqual((self.github.variable_reads, self.github.status_writes, len(self.calls), len(self.github.merge_calls)),
+                         (reads, writes, calls, arms))
+
+    def test_a_stop_wakes_a_gate_paused_or_halted_run_and_ends_it_cancelled(self):
+        """TR15: a run paused at implement's gate with its PR open, and one halted at its verify cap with its PR open. Each stop
+        comment wakes its run, which ends cancelled and closes its PR with no worker call. The halted run resumes no step, and
+        Ready added after it admits a new run at triage. The run waiting on worker capacity is left out: #379 deletes that wait."""
+        built = {"implementation": "built"}
+        asked = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]},
+                           {**built, "human_question": "Keep the sort order?"}])
+        self.assertEqual((asked["stop"], self.github.opened[BRANCH].state), ("needs_human", "OPEN"))
+        self.checkpoint, gate = self.cwd.parent / "halted.sqlite3", self.github
+        self.github = FakeGitHub()
+        halted = self.capped()
+        calls = len(self.calls)
+        for checkpoint, github, stage in ((self.cwd.parent / "runs.sqlite3", gate, "implement"), (self.checkpoint, self.github, "verify")):
+            with self.subTest(stage):
+                self.checkpoint, self.github = checkpoint, github
+                self.github.ruling("foreman stop")
+                self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8 stop")
+                _, _, stopped = self.wake("stop")
+                self.assertEqual((stopped["stop"], stopped.get("halt"), self.github.pr_closes),
+                                 ("cancelled", None, [("Example/Engine", 12, CANCELLATION)]))
+                self.assertEqual(stopped["path"][-1], halted["path"][-1] if stage == "verify" else "implement")
+                self.assertTrue(shows(self.github, "Example/Engine", 8, "Done"))
+        self.assertEqual(len(self.calls), calls)
+        self.github.ready_again(8)
+        ready = {"action": "labeled", "label": {"name": "Ready"}, "issue": {"number": 8}, "repository": {"full_name": "Example/Engine"}}
+        self.assertEqual(self.deliver("issues", ready), "start Example/Engine#8")
+        _, _, again = self.command(["start", "--repo", "Example/Engine", "--issue", "8"], [{"triage": "supplied_slice"}, built])
+        # The earlier stops are older than the new Ready, so the new run is admitted and goes on past its stage entries.
+        self.assertEqual((again["path"][0], bool(again["run"].base_sha), "prepare" in again["path"]), ("triage", True, True))
+        self.assertNotEqual(again["stop"], "cancelled")
 
 
 if __name__ == "__main__":

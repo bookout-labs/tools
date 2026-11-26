@@ -13,7 +13,7 @@ import sys
 from tempfile import TemporaryDirectory
 from typing import TextIO, assert_never
 
-from foreman.accept import AcceptError, accept_event
+from foreman.accept import AcceptError, Wake, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
@@ -22,12 +22,12 @@ from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tok
 from foreman.diagrams import write_diagrams
 from foreman.doctor import QUICK, NotReady, ReadFailed, contract, repository
 from foreman.dry_run import ScriptHandler
-from foreman.github import Forge, ForgeError, LiveForge
+from foreman.github import READY_LABEL, Forge, ForgeError, LiveForge, run_label
 from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
-from foreman.runner import AnswerError, IssueLocked, RunPresentation, halted_resumably, issue_lock, issue_thread, paused_run, run_live_delivery, saved_workspace
+from foreman.runner import AnswerError, IssueLocked, RunPresentation, forget_run, halted_resumably, issue_lock, issue_thread, open_run, run_live_delivery, saved_workspace
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
@@ -204,9 +204,10 @@ def main(
     start.add_argument("--issue", type=int, required=True)
     start.add_argument("--watch-repo", default="bookout-labs/tools")
 
-    wake = commands.add_parser("wake", help="continue an issue's run that waits at a gate or on a provider or GitHub")
+    wake = commands.add_parser("wake", help="wake an issue's open run: it reads the issue for a stop, then continues a run that waits")
     wake.add_argument("--repo", required=True)
     wake.add_argument("--issue", type=int, required=True)
+    wake.add_argument("--comment", choices=("stop", "answer"), help="the comment that caused the wake, as accept prints it")
     wake.add_argument("--watch-repo", default="bookout-labs/tools")
 
     accept = commands.add_parser("accept", help="decide whether a GitHub delivery starts or wakes a run")
@@ -265,11 +266,11 @@ def main(
     if args.command == "accept":
         try:
             decision = accept_event(args.event, json.loads(Path(args.path).read_text()),
-                                    lambda repo, issue: paused_run(store, issue_thread(repo, issue)))
+                                    lambda repo, issue: open_run(store, issue_thread(repo, issue)))
         except (OSError, json.JSONDecodeError, AcceptError, CheckpointVersionError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        print("ignored" if decision is None else f"{decision.action} {decision.repo}#{decision.issue}")
+        print("ignored" if decision is None else " ".join(part for part in (decision.action, f"{decision.repo}#{decision.issue}", decision.comment) if part))
         return 0
     if args.command == "run" and args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
@@ -278,7 +279,8 @@ def main(
         parser.error("--watch-repo must be OWNER/NAME")
     presentation = RunPresentation()
 
-    def live(repo: str, issue: int, workspace: LiveWorkspace, *, answer: str | None = None, request: str | None = None) -> int:
+    def live(repo: str, issue: int, workspace: LiveWorkspace, *, answer: str | None = None, request: str | None = None,
+             wake: Wake | None = None) -> int:
         target = replace(live_run or LiveRun(LiveForge(), workspace), check_log=_write_check_log)
 
         def reported(result: DeliveryResult) -> None:
@@ -298,6 +300,7 @@ def main(
                     answer=answer,
                     presentation=presentation,
                     watch_repo=args.watch_repo,
+                    wake=wake,
                     report=reported,
                     log=lambda message: _write_run_log(message, file=sys.stderr),
                 )
@@ -320,19 +323,25 @@ def main(
                 raise CredentialFailure(f"Configure FOREMAN_APP_ID before foreman {args.command}.")
             # A held lock may be a blocked admission about to delete its checkpoint, or a run a wake continues, so both wait for it.
             with issue_lock(thread, wait=True):
-                saved = saved_workspace(store, thread)
-                if args.command == "wake" and paused_run(store, thread) is None:
-                    # A wake only continues a run that waits. It never starts or resumes one (glossary Start).
+                if args.command == "wake" and open_run(store, thread) is None:
+                    # A wake never starts or resumes a run (glossary Start), and one that finds the run ended with a result
+                    # other than a halt reads nothing and writes nothing.
                     print(f"not waiting {thread}")
                     return 0
-                if args.command == "start" and saved is not None and not halted_resumably(store, thread):
-                    # A repeated delivery never resumes a running, paused, waiting or finished run.
-                    print(f"already started {thread}")
-                    return 0
+                if args.command == "start" and saved_workspace(store, thread) is not None and not halted_resumably(store, thread):
+                    # A repeated delivery never resumes a running, paused or waiting run, or a halt that Ready cannot resume.
+                    # Ready added again after the run ended admits a new run. The ended run's labels replaced Ready, so a
+                    # stale delivery finds the issue without it.
+                    target = live_run.forge if live_run is not None else LiveForge()
+                    if open_run(store, thread) is not None or READY_LABEL not in map(run_label, target.load_issue(args.repo, args.issue)["labels"]):
+                        print(f"already started {thread}")
+                        return 0
+                    forget_run(store, thread)
+                saved = saved_workspace(store, thread)
                 # Ready added again resumes a halted run in its saved checkout. The runner reads the repository's settings.
                 managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
                 workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo)
-                return live(args.repo, args.issue, workspace)
+                return live(args.repo, args.issue, workspace, wake=(args.comment or "event") if args.command == "wake" else None)
         except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
