@@ -128,25 +128,28 @@ def cancel(state: DeliveryState, run: StageRun, step: str, failure: Halt = Halt.
     """End the run cancelled when requested, as close does. Returns {} when nothing was requested.
 
     A stop cannot undo a merge, so in merge the run's PR is read before the stop (DQ1)."""
-    repo, branch = state["run"].repo, state.get("work", WorkState()).branch
     try:
-        pr = run.forge.pull_request_for(repo, branch) if merging and branch else None
+        pr = run_pull_request(state, run.forge) if merging else None
         if not requested():
             return {}
-        return close(state, run.forge, step, pr, merging=merging)
+        return close(state, run.forge, step, pr if merging else run_pull_request(state, run.forge), merging=merging)
     except ForgeError as exc:
         return stopped(failure, f"GitHub could not settle the cancellation ({exc}).", step)
 
 
+def run_pull_request(state: DeliveryState, forge: Forge) -> PublishedPullRequest | None:
+    """The run's PR as GitHub reports it, or None before the run has a branch. Raises ForgeError."""
+    branch = state.get("work", WorkState()).branch
+    return forge.pull_request_for(state["run"].repo, branch) if branch else None
+
+
 def close(state: DeliveryState, forge: Forge, step: str, pr: PublishedPullRequest | None, *, merging: bool) -> DeliveryUpdate:
-    """End the run cancelled, closing its open PR with the cancellation. The close leaves the branch, and a PR that is no
-    longer open is left alone. Outside merge the PR is read here. Raises ForgeError.
+    """End the run cancelled, closing its open PR, as last read, with the cancellation. The close leaves the branch, and a
+    PR that is no longer open is left alone. Raises ForgeError.
 
     Merge alone reports a PR GitHub merged before the close landed, or that merge read merged: the update records the stop as
     too late and carries no stop, so merge goes on to observe the merge. Merge's report adds its own path entry."""
     repo, branch = state["run"].repo, state.get("work", WorkState()).branch
-    if not merging and branch:
-        pr = forge.pull_request_for(repo, branch)
     if pr is not None and pr.state == "OPEN":
         forge.close_pull_request(repo, pr.number, CANCELLATION)
         pr = forge.pull_request_for(repo, branch)

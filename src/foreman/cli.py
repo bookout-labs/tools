@@ -27,7 +27,7 @@ from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
-from foreman.runner import AnswerError, IssueLocked, RunPresentation, forget_run, halted_resumably, issue_lock, issue_thread, open_run, run_live_delivery, saved_workspace
+from foreman.runner import AnswerError, IssueLocked, RunPresentation, ended_cancelled, forget_run, halted_resumably, issue_lock, issue_thread, open_run, run_live_delivery, saved_workspace
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
@@ -328,11 +328,11 @@ def main(
                     print(f"not waiting {thread}")
                     return 0
                 if args.command == "start" and saved_workspace(store, thread) is not None and not halted_resumably(store, thread):
-                    # A repeated delivery never resumes a running, paused or waiting run, or a halt that Ready cannot resume.
-                    # Ready added again after the run ended admits a new run. The ended run's labels replaced Ready, so a
+                    # A repeated delivery never resumes a run, except one on a resumable halt. Ready added again after a run
+                    # ended cancelled admits a new run (intake.policy). The cancelled run's Done label replaced Ready, so a
                     # stale delivery finds the issue without it.
                     target = live_run.forge if live_run is not None else LiveForge()
-                    if open_run(store, thread) is not None or READY_LABEL not in map(run_label, target.load_issue(args.repo, args.issue)["labels"]):
+                    if not ended_cancelled(store, thread) or READY_LABEL not in map(run_label, target.load_issue(args.repo, args.issue)["labels"]):
                         print(f"already started {thread}")
                         return 0
                     forget_run(store, thread)

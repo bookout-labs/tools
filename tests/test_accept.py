@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stderr, redirect_stdout
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -15,7 +16,8 @@ from foreman.stage_output import HumanPrompt
 from foreman.state import SCHEMA_VERSION, checkpoint_serializer
 from foreman.status import shows
 from foreman.steps import CANCELLATION
-from test_runner import APPROVE, BRANCH, FINDING, FakeGitHub, WakeTest, comment
+from foreman.workspace import WorkspaceError
+from test_runner import APPROVE, BRANCH, FINDING, FakeGitHub, FakeWorkspace, WakeTest, comment
 
 
 def delivery(label="Ready", action="labeled", **issue):
@@ -236,6 +238,49 @@ class AnswerWakeTest(WakeTest):
         # The earlier stops are older than the new Ready, so the new run is admitted and goes on past its stage entries.
         self.assertEqual((again["path"][0], bool(again["run"].base_sha), "prepare" in again["path"]), ("triage", True, True))
         self.assertNotEqual(again["stop"], "cancelled")
+
+
+    def test_a_stop_that_ends_the_run_ends_the_wake(self):
+        """A stop that ends a gate-paused run cancelled ends the wake there. The resumed run's identity is not checked again,
+        so a checkout whose origin no longer matches cannot replace the cancelled result."""
+        built = {"implementation": "built"}
+        self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep the sort order?"}])
+        self.github.ruling("foreman stop")
+        with patch.object(FakeWorkspace, "validate_origin", side_effect=WorkspaceError("The checkout's origin moved.")):
+            _, _, stopped = self.wake()
+        self.assertEqual((stopped["stop"], self.github.pr_closes), ("cancelled", [("Example/Engine", 12, CANCELLATION)]))
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Done"))
+        self.assertEqual(self.wake()[:2], (0, "not waiting example/engine#8\n"))
+
+    def test_a_wake_resumes_no_run_whose_process_died_and_a_stop_ends_it(self):
+        """A run whose process died during the builder's call is not waiting, paused or halted. A wake that finds no stop
+        resumes nothing and writes nothing, and the stop's wake ends the run cancelled with no worker call."""
+        reply = FakeWorkspace.reply
+
+        def killed(workspace, args, output):
+            if "implementation" in output:
+                raise RuntimeError("Foreman's process was killed.")
+            return reply(workspace, args, output)
+        with patch.object(FakeWorkspace, "reply", killed), self.assertRaisesRegex(RuntimeError, "killed"):
+            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}])
+        calls, writes = len(self.calls), list(self.github.status_writes)
+        _, _, unchanged = self.wake()
+        self.assertEqual((unchanged["stop"], len(self.calls), self.github.status_writes), ("", calls, writes))
+        self.github.ruling("foreman stop")
+        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
+        _, _, stopped = self.wake()
+        self.assertEqual((stopped["stop"], len(self.calls)), ("cancelled", calls))
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Done"))
+
+    def test_ready_after_a_run_ended_otherwise_than_cancelled_starts_nothing(self):
+        """Only a run that ended cancelled is replaced when Ready is added again (intake.policy). Ready added to an answered
+        question prints already started and calls no worker."""
+        self.github = FakeGitHub(["Ready"])
+        self.assertEqual(self.walk([{"triage": "question"}, {"research": "Yes, it sorts."}])["stop"], "answered")
+        calls = len(self.calls)
+        self.github.ready_again(8)
+        self.assertEqual(self.command(["start", "--repo", "Example/Engine", "--issue", "8"])[:2], (0, "already started example/engine#8\n"))
+        self.assertEqual(len(self.calls), calls)
 
 
 if __name__ == "__main__":

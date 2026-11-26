@@ -285,11 +285,13 @@ class MergeStopWakeTest(WakeTest):
             return reading.model_copy(update={"outcome": "head_changed", "pr": reading.pr.model_copy(update={"head": head})})
         return read
 
-    def status_detail(self):
-        """The halt detail saved on the run."""
+    def status_detail(self, stage=""):
+        """The halt detail saved on the run, or on the stage whose namespace starts with stage."""
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
-            return saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}}).checkpoint["channel_values"]["halt_detail"]
+            saved = next(saved for saved in saver.list({"configurable": {"thread_id": "example/engine#8"}})
+                         if saved.config["configurable"]["checkpoint_ns"].startswith(stage))
+            return saved.checkpoint["channel_values"].get("halt_detail", "")
 
     def stop(self):
         self.github.ruling("foreman stop")
@@ -298,24 +300,27 @@ class MergeStopWakeTest(WakeTest):
 
     def test_a_stop_after_the_merge_is_too_late(self):
         """A run halted merged_unreviewed, and one paused at the head_unverified gate whose PR has since merged, read the PR,
-        record the stop as too late and stay as they were. Each status comment says the stop came after the merge."""
+        record the stop as too late and stay as they were. Each status comment says the stop came after the merge. A second
+        delivery of the stop records and says it no more than once."""
         unreviewed = self.github.readiness("Example/Engine", 8, test_runner.BRANCH, HEAD)
         unreviewed.pr.state, unreviewed.pr.merged, unreviewed.pr.head.sha = "closed", True, "c" * 40
         readings = iter([self.github.readiness("Example/Engine", 8, test_runner.BRANCH, HEAD)])
         self.assertEqual(self.merge_run(lambda *args: next(readings, unreviewed))["stop"], "merged_unreviewed")
         self.pr("MERGED")
+        self.stop()
         ended = self.stop()
         self.assertEqual((ended["stop"], ended["halt"], self.github.pr_closes), ("merged_unreviewed", "merged_unreviewed", []))
+        self.assertEqual((self.status_detail().count(TOO_LATE), self.github.status["Example/Engine", 8].count(TOO_LATE)), (1, 1))
         self.assertTrue(self.status_detail().endswith(TOO_LATE))
-        self.assertIn(TOO_LATE, self.github.status["Example/Engine", 8])
         self.assertTrue(shows(self.github, "Example/Engine", 8, "Stopped"))
 
         self.checkpoint, self.github = self.cwd.parent / "gate.sqlite3", test_runner.FakeGitHub()
         self.assertEqual(self.merge_run(self.moved())["stop"], "needs_human")
         self.pr("MERGED")
+        self.stop()
         paused = self.stop()
         self.assertEqual((paused["stop"], self.github.pr_closes), ("needs_human", []))
-        self.assertIn(TOO_LATE, self.github.status["Example/Engine", 8])
+        self.assertEqual((self.status_detail("merge"), self.github.status["Example/Engine", 8].count(TOO_LATE)), (TOO_LATE, 1))
         self.assertTrue(shows(self.github, "Example/Engine", 8, "Needs answer"))
 
     def test_a_stop_before_the_merge_ends_the_run_cancelled(self):

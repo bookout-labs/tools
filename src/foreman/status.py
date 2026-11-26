@@ -44,13 +44,13 @@ def refused(code: Halt, detail: str, *, resumed: bool) -> Status:
     return Status(None, f"Foreman did not {'resume' if resumed else 'start'} this run ({code}).\n\n{detail}")
 
 
-def not_continued(read: str, answer: str, refused_app: bool, held: Literal["halted", "gate", "waiting"], current: Status) -> Status:
-    """The runner's report of a wake whose read failed, above the run's state, which nothing changed. What it says next
-    follows from the run's saved state, so a wake carries nothing from its delivery (rules.gates.continuation)."""
+def not_continued(failed: str, answer: str, refused_app: bool, held: Literal["halted", "gate", "waiting"], current: Status) -> Status:
+    """The runner's report of a wake whose read, or close of the PR, failed, above the run's state, which nothing changed.
+    What it says next follows from the run's saved state, so a wake carries nothing from its delivery (rules.gates.continuation)."""
     fix = "Fix the Foreman GitHub App's access to this repository." if refused_app else "No setting needs to change."
     again = {"halted": "Post the stop again.", "gate": "Post the stop or the answer again.",
              "waiting": "The run still waits as it did, a stop posted before this report must be posted again, and a stop ends it."}[held]
-    report = f"Foreman did not continue this run (git_failed).\n\nThe read of {read} failed because GitHub {answer}. {fix} {again}"
+    report = f"Foreman did not continue this run (git_failed).\n\n{failed} failed because GitHub {answer}. {fix} {again}"
     return Status(current.label, f"{report}\n\n{current.text}", current.facts)
 
 

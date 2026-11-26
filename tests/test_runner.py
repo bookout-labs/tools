@@ -3697,9 +3697,10 @@ class WakeTest(unittest.TestCase):
 
 
 class StopWakeTest(WakeTest):
-    """TR16: a stop posted while a worker call runs is never dropped. Its wake waits for the run's lock and is handled when
-    the run stops running. The cases where the call ends in a wait for worker capacity, and a stop lost while a run waits on
-    worker capacity, are left out: #379 deletes that wait."""
+    """TR16: a stop posted while a worker call runs is never dropped. accept answers its delivery with a wake while the run
+    runs, and the wake, made once the run stops running, handles it. The wake's wait for the run's lock is issue_lock's own.
+    The cases where the call ends in a wait for worker capacity, and a stop lost while a run waits on worker capacity, are
+    left out: #379 deletes that wait."""
 
     def test_a_stop_posted_during_a_call_ends_the_run_once_it_stops_running(self):
         """The call ends in a question at implement's gate, and in a halt. Each stop's wake ends the run cancelled with no
@@ -3733,8 +3734,9 @@ class StopWakeTest(WakeTest):
         self.assertEqual(self.github.status_writes, writes)
 
     def test_a_failed_stop_read_changes_nothing_and_the_stop_posted_again_ends_the_run(self):
-        """GitHub does not answer the runner's stop read on a halted run. The status comment keeps the halt and gains the
-        git_failed report above it, and the stop posted again ends the run cancelled."""
+        """GitHub does not answer the runner's stop read on a halted run, and then its close of the PR. Each time the status
+        comment keeps the halt and gains the git_failed report above it, naming what failed, and the stop posted again ends
+        the run cancelled."""
         self.capped()
         shown, calls = self.github.status["Example/Engine", 8], len(self.calls)
         self.github.ruling("foreman stop")
@@ -3749,6 +3751,10 @@ class StopWakeTest(WakeTest):
         self.assertIn(shown.removesuffix(STATUS_MARKER).strip(), report)
         self.github.issue_comment_records = records
         self.assertTrue(shows(self.github, "Example/Engine", 8, "Stopped"))
+        with patch.object(self.github, "close_pull_request", side_effect=ForgeError("gh api timed out.")):
+            self.assertEqual(self.wake()[2]["stop"], "verify_cap")
+        self.assertTrue(self.github.status["Example/Engine", 8].startswith(
+            "Foreman did not continue this run (git_failed).\n\nThe close of the pull request failed because GitHub gave no answer."))
         self.github.ruling("foreman stop")
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
         code, _, stopped = self.wake()
