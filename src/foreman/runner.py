@@ -36,7 +36,7 @@ from foreman.status import Status, refused, running, status_of, write_status
 from foreman.steps import implement
 from foreman.usd import usd_text
 from foreman.workspace import WorkState, WorkspaceError, lock_file
-from foreman.worker import AttemptJournal, verify_attempts, worker_lock, worker_scratch
+from foreman.worker import AttemptJournal, verify_attempts, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
@@ -453,7 +453,7 @@ def run_live_delivery(
             except WorkspaceError as exc:
                 log(f"checkout kept: {exc}")
             # The CLI worker keeps its scratch beside the checkpoint, so the run removes its verifier captures with its checkout.
-            attempts = verify_attempts(worker_scratch(checkpoint.parent, run.workspace.root), result["run"].repo, result["run"].issue)
+            attempts = verify_attempts(checkpoint.parent, result["run"].repo, result["run"].issue)
             try:
                 if attempts.exists():
                     shutil.rmtree(attempts)

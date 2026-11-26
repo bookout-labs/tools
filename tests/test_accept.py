@@ -167,7 +167,7 @@ class AnswerWakeTest(unittest.TestCase):
         self.assertEqual(self.command(["wake", "--repo", "Example/Engine", "--issue", "8"])[:2], (0, "not waiting example/engine#8\n"))
         self.assertEqual(len(self.github.merge_calls), merged)
 
-        self.checkpoint, self.github = self.cwd / "second.sqlite3", FakeGitHub()
+        self.checkpoint, self.github = self.cwd.parent / "second.sqlite3", FakeGitHub()
         self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": question}])["stop"], "needs_human")
         reads, writes, calls = list(self.github.variable_reads), list(self.github.status_writes), len(self.calls)
         ready = {"action": "labeled", "label": {"name": "Ready"}, "issue": {"number": 8}, "repository": {"full_name": "Example/Engine"}}

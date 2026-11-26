@@ -24,7 +24,7 @@ class StageRecoveryTest(unittest.TestCase):
     walk = test_runner.LiveRunnerTest.walk
 
     def crash(self, replies, operation, *, after_write):
-        self.checkpoint = self.cwd / f"{operation}-{after_write}.sqlite3"
+        self.checkpoint = self.cwd.parent / f"{operation}-{after_write}.sqlite3"
         self.github.fail_next(operation, after_write=after_write, error=Crash(operation))
         with self.assertRaises(Crash):
             self.walk(replies)

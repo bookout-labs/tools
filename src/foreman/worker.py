@@ -114,12 +114,6 @@ def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str
         return subprocess.CompletedProcess(command, returncode, stdout.read(), stderr.read())
 
 
-def worker_scratch(scratch_root: Path, checkout: Path) -> Path:
-    """The directory that holds the run's worker scratch: its own root, never inside the checkout."""
-    root, checkout = scratch_root.resolve(), checkout.resolve()
-    return checkout.parent if root.is_relative_to(checkout) else root
-
-
 def verify_attempts(scratch: Path, repo: str, issue: int | None) -> Path:
     """A run's verifier attempt directories. Each outlives its call so the captures it names stay readable, until the run stops."""
     return scratch / "foreman-verify" / re.sub(r"[^A-Za-z0-9_.-]", "-", f"{repo}-{issue}")
@@ -161,20 +155,21 @@ def assignment(node: str, model: ModelSpec, state: Mapping[str, object], instruc
 
 class CliWorker:
     def __init__(self, cwd: Path, run: CommandRunner = run_worker_command, *, scratch_root: Path):
+        root, checkout = scratch_root.resolve(), cwd.resolve()
+        if root.is_relative_to(checkout):
+            raise ValueError(f"Foreman's scratch root {root} is the checkout {checkout} or inside it. Move Foreman's state directory out of the checkout.")
         self.cwd = cwd
         self.run = run
-        self.scratch_root = scratch_root
+        self.scratch_root = root
 
     def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
         if model is None:
             raise ConfigError(f"{node} has no model configured")
         edit, drive = node == "implement", node == "verify"
-        checkout = self.cwd.resolve()
-        temp_root = worker_scratch(self.scratch_root, checkout)
         kept = None
         if drive:
             run = RunState.model_validate(state.get("run") or {})
-            kept = verify_attempts(temp_root, run.repo, run.issue) / uuid4().hex
+            kept = verify_attempts(self.scratch_root, run.repo, run.issue) / uuid4().hex
         contract = STAGES[node].output
         assert contract is not None
         schema = json.dumps(contract.model_json_schema())
@@ -201,7 +196,7 @@ class CliWorker:
                 kept.mkdir(parents=True)
                 # Kept only once the CLI launches; every earlier exit removes it.
                 stack.callback(lambda: launched or shutil.rmtree(kept))
-            directory = kept or Path(stack.enter_context(TemporaryDirectory(prefix="foreman-worker-", dir=temp_root)))
+            directory = kept or Path(stack.enter_context(TemporaryDirectory(prefix="foreman-worker-", dir=self.scratch_root)))
             try:
                 call = Call(prompt, schema, edit=edit, checks=checks, drive=drive,
                             read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
