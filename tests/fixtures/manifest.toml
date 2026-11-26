@@ -1229,7 +1229,7 @@ kind = "captured_run"
 tool = "Python typing.get_type_hints"
 version = "3.14.7"
 argv = ["python", "-c", "import json; from typing import get_type_hints; from foreman.delivery import DeliveryState; print(json.dumps(sorted(get_type_hints(DeliveryState))))"]
-notes = "State channel inventory captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73, plus the verify channel M8b (#251) adds at schema 21 and the human_login channel S8b (#314) adds at schema 24."
+notes = "State channel inventory captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73, plus the verify channel M8b (#251) adds at schema 21, and the start channel #363 slice 2 adds at schema 25 in place of the human_login channel S8b (#314) added at schema 24."
 
 [fixtures."stage-calls.json"]
 tool = "Foreman adapter Call capture with scripted responses"

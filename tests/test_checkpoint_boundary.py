@@ -76,9 +76,9 @@ class CheckpointBoundaryTests(unittest.TestCase):
         with self.assertNoLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
             for owner in OWNERS:
                 with self.subTest(owner=owner.name):
-                    defaults = type(owner.value)()
-                    for field in type(owner.value).model_fields:
-                        self.assertNotEqual(getattr(owner.value, field), getattr(defaults, field), field)
+                    for field, info in type(owner.value).model_fields.items():
+                        if not info.is_required():
+                            self.assertNotEqual(getattr(owner.value, field), info.get_default(call_default_factory=True), field)
                     self.assertEqual(serde.loads_typed(serde.dumps_typed(owner.value)), owner.value)
             self.assertIs(serde.loads_typed(serde.dumps_typed(Halt.budget_exceeded)), Halt.budget_exceeded)
         with self.assertLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
@@ -100,11 +100,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                 state = json.loads(prompt.split("Delivery state:\n")[1])
                 self.assertEqual(set(state), set(STAGES[node].input_fields) & set(values))
                 for name in state:
-                    expected = values[name].model_dump(mode="json")
-                    if name == "run":
-                        # Dispatch owns the allowance, so the worker never reads it.
-                        expected = {key: value for key, value in expected.items() if key not in ("token_cap", "max_budget_usd")}
-                    self.assertEqual(state[name], expected, name)
+                    self.assertEqual(state[name], values[name].model_dump(mode="json"), name)
 
             model = ModelSpec.parse("gpt-6.1-sol-high")
             for node in STAGES:
@@ -117,7 +113,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
 
             result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", model, restored, "Read.")
             self.assertEqual(result.kind, "ran")
-            self.assertEqual({name for row in STAGES.values() for name in row.input_fields} & set(values), set(values) - {"merge"})
+            self.assertEqual({name for row in STAGES.values() for name in row.input_fields} & set(values), set(values) - {"merge", "start"})
 
     def test_every_pause_survives_a_fresh_process(self):
         script = '''

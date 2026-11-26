@@ -82,13 +82,12 @@ def token_summary(attempts: Sequence[AttemptRecord]) -> TokenSummary:
                         sum("work_charge" in a or work_tokens([a]) is None for a in charged), buckets, len(charged))
 
 
-def dollar_detail(limit: str | None, attempts: Sequence[AttemptRecord]) -> str:
+def dollar_detail(limit: str, attempts: Sequence[AttemptRecord]) -> str:
     spend = claude_spend(attempts)
-    detail = f"Run Claude spend: ${spend}." if spend is not None else "Run Claude spend: unknown."
-    return detail + (f" Dollar allowance: ${limit}." if limit is not None else "")
+    return (f"Run Claude spend: ${spend}." if spend is not None else "Run Claude spend: unknown.") + f" Dollar allowance: ${limit}."
 
 
-def budget_stop(cap: int, limit: str | None, attempts: Sequence[AttemptRecord]) -> str | None:
+def budget_stop(cap: int, limit: str, attempts: Sequence[AttemptRecord]) -> str | None:
     """Why no allowance remains for another paid attempt, or None while one does."""
     last = attempts[-1] if attempts else None
     note = (last.get("detail") or "") if last else ""
@@ -100,7 +99,7 @@ def budget_stop(cap: int, limit: str | None, attempts: Sequence[AttemptRecord]) 
                  if "work_charge" in last else f"used {work_tokens([last])} work tokens. Measured work overshoot: {work - cap}")
         return (f"Run used {work} work tokens; cap is {cap}. Last attempt: {last['stage']} {last['model']} {spent}. "
                 f"An in-flight attempt can overshoot the cap.{charged}")
-    match dollar_admission(BudgetUsd(Decimal(limit)), attempts) if limit is not None else None:
+    match dollar_admission(BudgetUsd(Decimal(limit)), attempts):
         case CostUnknown():
             return ("usage_unknown: A Claude attempt ran without a dollar cost. The allowance cannot be enforced. "
                     + dollar_detail(limit, attempts))

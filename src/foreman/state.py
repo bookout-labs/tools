@@ -26,13 +26,22 @@ class RunState(BaseModel, frozen=True, extra="forbid"):
     workspace: str = ""
     base_branch: str = ""
     base_sha: str = ""
-    token_cap: int | None = None
-    max_budget_usd: str | None = None
 
     def target(self) -> SpecTarget:
         """The admitted repository, issue and pinned base that every candidate binds."""
         assert self.issue is not None
         return {"repo": self.repo.lower(), "issue": self.issue, "base": self.base_sha}
+
+
+class StartSettings(BaseModel, frozen=True, extra="forbid"):
+    """The human login and budget caps the run's last start read from the repository's variables.
+
+    Answers and stops count only from this login, and dispatch's allowance is these caps minus what the run has spent.
+    """
+
+    human_login: str
+    max_tokens: int
+    max_budget_usd: str
 
 
 class ChecksState(BaseModel, frozen=True, extra="forbid"):
@@ -56,11 +65,11 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState, ChecksState, PlanState, ReviewState, VerifyState])
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState, StartSettings, ChecksState, PlanState, ReviewState, VerifyState])
 
 
 class CheckpointVersionError(ValueError):
@@ -106,8 +115,6 @@ class BuilderSession(TypedDict):
 
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
-    # FOREMAN_HUMAN_LOGIN as the run's last start read it. Answers and stops count only from this login.
-    human_login: str
     dispatch_plan: DispatchPlanRecord
     pstack_pin: dict[str, str]
     matt_skills_pin: dict[str, str]
@@ -136,6 +143,7 @@ class DeliveryUpdate(DeliveryFields, total=False):
     plan: PlanState
     checks: ChecksState
     run: RunState
+    start: StartSettings
     stop: str
     path: Annotated[list[str], operator.add]
 
@@ -145,6 +153,7 @@ class DeliveryState(DeliveryFields):
     plan: PlanState
     checks: ChecksState
     run: RunState
+    start: StartSettings
     stop: NotRequired[str]
     path: Annotated[list[str], operator.add]
 
@@ -154,5 +163,7 @@ class DeliveryResult(DeliveryFields):
     plan: PlanState
     checks: ChecksState
     run: RunState
+    # A refused new run keeps nothing, so its result has no start.
+    start: NotRequired[StartSettings]
     path: Annotated[list[str], operator.add]
     stop: str

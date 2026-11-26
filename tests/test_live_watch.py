@@ -81,7 +81,7 @@ class LiveWatchTest(unittest.TestCase):
         self.run = LiveRun(self.forge, self.run.workspace, skills=missing, human_login="fixture-owner")
         first = self.invoke()
         stored = self.stored()
-        self.assertEqual((stored['run'].issue, stored['run'].workspace, stored['run'].repo, stored['checks'].check, stored['run'].token_cap),
+        self.assertEqual((stored['run'].issue, stored['run'].workspace, stored['run'].repo, stored['checks'].check, stored["start"].max_tokens),
                          (8, str(self.root.resolve()), 'Example/Engine', '', 20_000_000))
         self.assertEqual(stored['pstack_pin'], first['pstack_pin'])
         self.assertIn('File to change: src/foreman/skill_rules.py', self.fake.created[0][1])

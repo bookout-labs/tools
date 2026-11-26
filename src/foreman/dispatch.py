@@ -168,8 +168,8 @@ class DispatchRun:
             return record
         if work_tokens([record]) is None:
             record["work_charge"] = max(usage.input_tokens + usage.output_tokens if usage else 0, reservation["work_allowance"])
-        if model.family == "claude" and (dollars := reservation["dollar_allowance"]) and (usage is None or usage.total_cost_usd is None):
-            record["dollar_charge"] = dollars
+        if model.family == "claude" and (usage is None or usage.total_cost_usd is None):
+            record["dollar_charge"] = reservation["dollar_allowance"]
         if "work_charge" in record or "dollar_charge" in record:
             record["detail"] = f"usage_unknown: {state['stage']} {model.name} did not report usage; charged the remaining allowance."
         return record
@@ -177,9 +177,8 @@ class DispatchRun:
 
 def reserve(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, object]:
     run, caller, stage = runtime.context, state["caller"], state["stage"]
-    attempts, limits = caller.get("attempts", []) + state.get("attempts", []), caller["run"]
-    assert (cap := limits.token_cap) is not None
-    if detail := budget_stop(cap, limits.max_budget_usd, attempts):
+    attempts, limits, caps = caller.get("attempts", []) + state.get("attempts", []), caller["run"], caller["start"]
+    if detail := budget_stop(caps.max_tokens, caps.max_budget_usd, attempts):
         return {"halt": Halt.budget_exceeded, "detail": detail}
     index = state.get("index", 0)
     try:
@@ -202,21 +201,22 @@ def reserve(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, ob
     except (ForgeError, WorkspaceError) as exc:
         return {"halt": Halt.git_failed, "detail": str(exc)}
     assert (work := work_tokens(attempts)) is not None
-    dollars = dollar_admission(BudgetUsd(Decimal(limits.max_budget_usd)), attempts) if limits.max_budget_usd else None
-    budget = usd_text(BudgetUsd(dollars.usd)) if isinstance(dollars, Remaining) else None
+    dollars = dollar_admission(BudgetUsd(Decimal(caps.max_budget_usd)), attempts)
+    assert isinstance(dollars, Remaining)  # budget_stop stopped every other admission.
+    budget = usd_text(BudgetUsd(dollars.usd))
     model = plan["models"][index]
     identity = spec_digest([uuid4().hex, limits.repo.lower(), limits.issue, stage, limits.base_sha,
                             caller["plan"].spec_candidate, plan["target"], str(run.workspace.root.resolve()),
-                            model, cap - work, budget, fingerprint])
+                            model, caps.max_tokens - work, budget, fingerprint])
     if run.journal is not None:
         run.journal.reserve(identity)
-    return {"reservation": Reservation(id=identity, model=model, work_allowance=cap - work,
+    return {"reservation": Reservation(id=identity, model=model, work_allowance=caps.max_tokens - work,
                                        dollar_allowance=budget, fingerprint=fingerprint),
             "index": index, "plan": plan}
 
 
 def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, object]:
-    stage, run, limits = state["stage"], runtime.context, state["caller"]["run"]
+    stage, run, caps = state["stage"], runtime.context, state["caller"]["start"]
     if (reservation := state.get("reservation")) is None:
         tried = "; ".join(a.get("detail") or "" for a in state.get("attempts", []) if a["outcome"] in {"quota", "cli_missing"})
         interrupt(QuotaPause(stage=stage, attempts=[*state["caller"].get("attempts", []), *state.get("attempts", [])], detail=f"No qualified worker available for {stage}. {tried}".strip()).model_dump())
@@ -237,11 +237,10 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
         return {**update, "halt": Halt.invalid_output, "detail": f"{stage} output from {model.name}: {outcome.detail}"}
     attempts = state["caller"].get("attempts", []) + state.get("attempts", []) + [record]
     if outcome and outcome.kind == "budget_exhausted":
-        parts = (f"{stage} {model.name} exhausted its dollar budget.", dollar_detail(limits.max_budget_usd, attempts),
+        parts = (f"{stage} {model.name} exhausted its dollar budget.", dollar_detail(caps.max_budget_usd, attempts),
                  record.get("detail"), outcome.detail)
         return {**update, "halt": Halt.budget_exceeded, "detail": " ".join(part for part in parts if part)}
-    assert limits.token_cap is not None
-    if (detail := budget_stop(limits.token_cap, limits.max_budget_usd, attempts)) or outcome is None:
+    if (detail := budget_stop(caps.max_tokens, caps.max_budget_usd, attempts)) or outcome is None:
         return {**update, "halt": Halt.budget_exceeded, "detail": detail or record.get("detail") or ""}
     assert isinstance(evidence, WorkerResult)
     try:

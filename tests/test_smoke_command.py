@@ -323,7 +323,7 @@ class SmokeCommandTest(unittest.TestCase):
                         kwargs['run'] = LiveRun(forge, FakeWorkspace(root / 'checkout'), skills=fixture_skills)
                         result = run_live_delivery(**kwargs)
                     self.assertEqual(result.get('watch') is not None, filed)
-                    self.assertEqual(result['run'].token_cap, cap)
+                    self.assertEqual(result["start"].max_tokens, cap)
                     return result
                 runner.side_effect = delivery
                 with patch('foreman.smoke_command.SMOKE_TOKEN_CAP', cap):
@@ -395,5 +395,5 @@ class SmokeCommandTest(unittest.TestCase):
                 SMOKE_REPO, 12, results[1]['checks'].verified_head,
                 results[1]['review'].review_receipt['id'])
             for result in results:
-                self.assertEqual((result['human_login'], result['run'].token_cap, result['run'].max_budget_usd), ('ghost', 1000000, '1.25'))
+                self.assertEqual((result["start"].human_login, result["start"].max_tokens, result["start"].max_budget_usd), ('ghost', 1000000, '1.25'))
             self.assertEqual([call['node'] for call in handler.calls], ['triage', 'spec_check', 'implement', 'verify', 'review'])

@@ -198,7 +198,7 @@ class DispatchRecoveryTests(unittest.TestCase):
                         output = json.loads(resumed.stdout)
                         result, calls = output["result"], output["calls"]
                         triage = [a for a in result["attempts"] if a["stage"] == "triage"]
-                        self.assertEqual(result["run"]["max_budget_usd"], limit or "3")
+                        self.assertEqual(result["start"]["max_budget_usd"], limit or "3")
                         if mode in {"entry", "quota"}:
                             # The call may have launched: charge the worst case once and never relaunch it.
                             self.assertEqual(calls, [])

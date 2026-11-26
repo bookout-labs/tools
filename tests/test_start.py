@@ -99,16 +99,16 @@ class StartTest(unittest.TestCase):
         with SqliteSaver.from_conn_string(str(self.root / "runs.sqlite3")) as saver:
             saver.serde = checkpoint_serializer()
             values = saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]
-        return values["run"], values["checks"]
+        return values["start"], values["checks"]
 
     def test_starts_once_with_the_repository_settings_pinned(self):
         # The check comes from the contract file at the pinned base. A leftover FOREMAN_CHECK variable is never read.
         variables = {**SETTINGS, "FOREMAN_CHECK": "exit 9", "FOREMAN_PREFLIGHT": "exit 0", "FOREMAN_MAX_TOKENS": "900000"}
         code, out, err = self.start(variables, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.assertNotEqual(code, 1, out + err)
-        run, checks = self.stored()
+        start, checks = self.stored()
         self.assertEqual((checks.check, checks.verify_skill, checks.preflight), ("exit 0", VERIFY_SKILL_PATH, "exit 0"))
-        self.assertEqual((run.token_cap, run.max_budget_usd), (900000, "3"))
+        self.assertEqual((start.max_tokens, start.max_budget_usd), (900000, "3"))
         calls = self.worker_calls
         # A repeated delivery for a finished run is a no-op.
         self.assertEqual(self.start(variables)[:2], (0, f"already started {THREAD}\n"))
@@ -133,7 +133,7 @@ class StartTest(unittest.TestCase):
         # The drawing's defaults for an unset cap: 3 dollars and 20,000,000 work tokens.
         self.assertEqual((DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP), (BudgetUsd(Decimal("3")), 20_000_000))
         self.assertEqual(self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])[0], 0)
-        self.assertEqual((self.stored()[0].token_cap, self.stored()[0].max_budget_usd), (DEFAULT_TOKEN_CAP, "3"))
+        self.assertEqual((self.stored()[0].max_tokens, self.stored()[0].max_budget_usd), (DEFAULT_TOKEN_CAP, "3"))
 
     def test_run_settings_read_only_the_operator_variables(self):
         reads = []
@@ -277,7 +277,7 @@ class StartTest(unittest.TestCase):
         replies = [{"triage": "supplied_slice"}, {"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, replies[:1])
         self.assertEqual(code, 75, out + err)
-        self.assertEqual((self.stored()[0].token_cap, self.worker_calls), (1, 1))
+        self.assertEqual((self.stored()[0].max_tokens, self.worker_calls), (1, 1))
         self.forge.ready_again(8)
         # An unchanged cap stops again before any worker call. A lowered dollar cap becomes the run's cap.
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"})[0], 75)
@@ -290,7 +290,7 @@ class StartTest(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         self.assertIn("done merged", out)
         # Both triage calls, spec check, Implement, Verify and Review.
-        self.assertEqual((self.stored()[0].token_cap, self.worker_calls), (900000, 6))
+        self.assertEqual((self.stored()[0].max_tokens, self.worker_calls), (900000, 6))
         # A finished run is never started again.
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
 
@@ -344,8 +344,8 @@ class StartTest(unittest.TestCase):
                 self.assertEqual(code, 75, out + err)
                 self.assertIn("done budget_exceeded", out)
                 self.assertEqual(self.worker_calls, 1)
-                run = self.stored()[0]
-                self.assertEqual((str(run.token_cap), run.max_budget_usd),
+                start = self.stored()[0]
+                self.assertEqual((str(start.max_tokens), start.max_budget_usd),
                                  (variables["FOREMAN_MAX_TOKENS"], variables.get("FOREMAN_MAX_BUDGET_USD", "3")))
 
     def test_ready_again_resumes_in_the_saved_checkout_and_a_new_issue_in_its_managed_one(self):

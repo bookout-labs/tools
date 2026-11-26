@@ -11,7 +11,7 @@ from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, Dispatc
 from foreman.github import Forge, ForgeError, human_comment_records
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import AttemptRecord, DispatchStage, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
-from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState
+from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState, StartSettings
 from foreman.workspace import CheckLog, WorkState, Workspace
 
 DispatchGraph = CompiledStateGraph[DispatchState, DispatchRun, DispatchInput, DispatchResult]
@@ -27,6 +27,7 @@ class StageInput(DeliveryFields, total=False):
     plan: PlanState
     checks: ChecksState
     run: RunState
+    start: StartSettings
     stop: str
 
 

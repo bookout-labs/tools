@@ -24,7 +24,7 @@ from foreman.stage_output import (
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
 from foreman.steps import StageRun, implement, merge, research, review, spec, triage, verify
-from foreman.state import BuilderSession, ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
+from foreman.state import BuilderSession, ReviewState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.outcomes import Halt, halted
 from foreman.usd import BudgetUsd, usd_text
 from foreman.worker import AttemptJournal
@@ -218,7 +218,7 @@ def run_delivery(
     slice: object = None,
     scratch: Path | None = None,
     max_tokens: int = DEFAULT_TOKEN_CAP,
-    max_budget_usd: BudgetUsd | None = DEFAULT_BUDGET_USD,
+    max_budget_usd: BudgetUsd = DEFAULT_BUDGET_USD,
     skills: SkillSource = export_skills,
     commands: list[list[str]] | None = None,
     checkout: Path | None = None,
@@ -228,11 +228,10 @@ def run_delivery(
     terms = parse_contract(contract)
     state: DeliveryState = {
         "schema_version": SCHEMA_VERSION,
-        # A live run's start saves the login it read, so the dry run carries it too.
-        "human_login": FIXTURE_HUMAN,
-        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens, workspace=str(checkout or ""),
-                        base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo)),
-                        max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
+        # A live run's start saves the login and caps it read, so the dry run carries them too.
+        "start": StartSettings(human_login=FIXTURE_HUMAN, max_tokens=max_tokens, max_budget_usd=usd_text(max_budget_usd)),
+        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, workspace=str(checkout or ""),
+                        base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo))),
         "checks": ChecksState(check=terms.check, verify_skill=terms.verify_skill),
         "plan": PlanState(issue_kind="parent" if slice is None else "slice"),
         "models_used": {},

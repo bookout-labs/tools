@@ -16,7 +16,7 @@ from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import checkpoint_state
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryState, checkpoint_serializer, extend_attempts
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryState, checkpoint_serializer, extend_attempts
 
 
 FIXTURES = Path(__file__).with_name("fixtures") / "state"
@@ -55,7 +55,8 @@ class StateTests(unittest.TestCase):
             original["plan"] = PlanState(triage="needs_human",
                 human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}])
             original["checks"] = ChecksState(check="true")
-            original["run"] = RunState(repo="a/b", token_cap=100)
+            original["run"] = RunState(repo="a/b")
+            original["start"] = StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3")
             with SqliteSaver.from_conn_string(str(path)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(ScriptHandler(), load_config(),

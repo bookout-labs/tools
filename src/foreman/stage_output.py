@@ -198,7 +198,7 @@ class Reservation(TypedDict):
     id: str
     model: str
     work_allowance: int
-    dollar_allowance: str | None
+    dollar_allowance: str
     fingerprint: str
 
 
