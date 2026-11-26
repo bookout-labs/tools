@@ -62,7 +62,7 @@ Agreed by the owner 2026-11-22: (a). Revised by the 2026-11-24 brief (#299, item
 
 ## D10. What happens after an interruption?
 
-Agreed by the owner 2026-11-22: (a) with (ii). Resume at the interrupted step and reconcile before repeating a model call or remote write. If a model call's usage is ambiguous, charge the worst case to the budget, log usage unknown, and continue within the remaining allowance. Foreman reconciles calls and writes at the saved step because its local CLIs and GitHub effects can outlive the process. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)
+Agreed by the owner 2026-11-22: (a) with (ii). Resume at the interrupted step and reconcile before repeating a model call or remote write. If a model call's usage is ambiguous, charge the worst case to the budget, log usage unknown, and continue within the remaining allowance. Ruled by Fable on 2026-11-25 (#382): what begins that resume is Ready added again. A run whose process died is found when Foreman next takes its lock, and Ready resumes it at the interrupted step. Foreman runs no watchdog. Foreman reconciles calls and writes at the saved step because its local CLIs and GitHub effects can outlive the process. Warp's platform retries a transient error itself. Foreman is a command with no supervisor, so a person asks again. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)
 
 ## D11. Where does end-to-end verification run?
 
