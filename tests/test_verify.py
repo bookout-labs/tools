@@ -2,6 +2,7 @@ import tests
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import partial
 import os
 from pathlib import Path
 import subprocess
@@ -116,6 +117,7 @@ def stage(forge=None, workspace=None, applied=None):
     run = MagicMock(forge=forge or Forge(), workspace=workspace or Workspace())
     run.apply.return_value = applied if applied is not None else {
         "path": ["verify"], "verify": VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION])}
+    run.call = partial(StageRun.call, run)  # The stage's own dispatch, so a test sees the DISPATCH it patches.
     return run
 
 

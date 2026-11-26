@@ -122,6 +122,8 @@ class DeliveryFields(TypedDict, total=False):
     related: list[RelatedCheckout]
     skill_reason: SkillFailureReason
     attempts: Annotated[list[AttemptRecord], extend_attempts]
+    # The drawn steps the run has started, as stage.step in order. The run report names them and the last one.
+    steps: list[str]
     research: str
     work: WorkState
     implementation: str

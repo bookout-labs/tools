@@ -21,19 +21,21 @@ from pydantic import TypeAdapter
 
 from foreman._raw import is_dict
 from foreman.accept import MergeRun, OpenRun
-from foreman.config import SkillPin, load_config
+from foreman.config import ModelSpec, SkillPin, load_config
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
 from foreman.readiness import MergeState, MergeWait
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, pull_request_number, require_schema_version
+from foreman.adapters import Outcome
 from foreman.dispatch import Handler, QuotaPause
 from foreman.doctor import REFUSALS, NotReady, OperatorVariables, ReadFailed, repository
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError, human_comment_records, human_comments
+from foreman.report import Running, run_report
 from foreman.watch import run_key, watch
 from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.status import Status, not_continued, refused, running, status_of, write_status
-from foreman.steps import TOO_LATE, close, implement, run_pull_request, stop_counts
+from foreman.steps import TOO_LATE, close, implement, resumed, run_pull_request, stop_counts
 from foreman.workspace import WorkState, WorkspaceError, lock_file
 from foreman.worker import AttemptJournal, verify_attempts, worker_lock
 
@@ -59,11 +61,14 @@ class RunPresentation:
 
 
 def paused_values(snapshot: StateSnapshot) -> dict[str, Any]:
-    """The run's values, including what a stage paused at its gate has reached."""
+    """The run's values, including what a stage paused at its gate has reached: its steps end with the paused one, which the
+    pause discarded unless a restart resumed it."""
     values: dict[str, Any] = snapshot.values
     for task in snapshot.tasks:
         if task.interrupts and isinstance(nested := task.state, StateSnapshot):
-            values = {**values, **nested.values, "path": [*values["path"], *nested.values.get("path", [])]}
+            steps, paused = nested.values.get("steps", []), [f"{task.name}.{step}" for step in nested.next]
+            values = {**values, **nested.values, "path": [*values["path"], *nested.values.get("path", [])],
+                      "steps": [*steps, *(step for step in paused if not resumed(step, steps))]}
     return values
 
 
@@ -89,6 +94,20 @@ def snapshot_result(snapshot: StateSnapshot) -> DeliveryResult:
                                     "path": [*values["path"], *prompt.path],
                                     "attempts": [*values.get("attempts", []), *prompt.attempts]})
     return read_delivery_state({**values, "stop": values.get("stop", "")})
+
+
+def call_under_way(snapshot: StateSnapshot) -> tuple[DeliveryState, Running] | None:
+    """The run's state and its call under way, read from the checkpoint: the dispatch that saved a reservation and has
+    not recorded its result. Its caller holds the run's state and attempts as the dispatch began."""
+    for task in snapshot.tasks:
+        if isinstance(task.state, StateSnapshot) and (found := call_under_way(task.state)) is not None:
+            return found
+    values: dict[str, Any] = snapshot.values
+    if (reservation := values.get("reservation")) is None:
+        return None
+    caller: DeliveryState = values["caller"]
+    state: DeliveryState = {**caller, "attempts": [*caller.get("attempts", []), *values.get("attempts", [])]}
+    return state, Running(values["stage"], reservation["model"], values["plan"]["methods"])
 
 
 def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
@@ -286,11 +305,12 @@ def halted_resumably(checkpoint: Path, thread: str) -> bool:
 
 
 def _shown(result: DeliveryResult, saved: StateSnapshot, watch_repo: str) -> Status | None:
-    """The status the issue shows for the run's result, with the question it is paused on."""
+    """The status the issue shows for the run's result, with the question it is paused on and, once admitted, its report."""
     pending = saved.interrupts[0].value if saved.interrupts else None
     prompt = parse_output(HumanPrompt, pending) if result["stop"] == "needs_human" and pending is not None else None
     last = prompt.stage if prompt is not None else STEP_STAGES.get(next(iter(result["path"][-1:]), ""))
-    return status_of(result, last, prompt, watch_repo)
+    status = status_of(result, last, prompt, watch_repo)
+    return replace(status, report=run_report(result)) if status is not None and result["run"].base_sha else status
 
 
 class Wake(NamedTuple):
@@ -354,7 +374,7 @@ def _wake(graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, Deliv
         paused = next(task.state for task in saved.tasks if task.interrupts and isinstance(task.state, StateSnapshot))
         graph.update_state(paused.config, {"halt_detail": TOO_LATE})
     shown = _shown(current, saved, watch_repo)
-    return Wake(current, shown and Status(shown.label, f"{shown.text}\n\n{TOO_LATE}", shown.facts))
+    return Wake(current, shown and replace(shown, text=f"{shown.text}\n\n{TOO_LATE}"))
 
 
 def run_live_delivery(
@@ -404,7 +424,25 @@ def run_live_delivery(
                 refusal = exc
             else:
                 start = settings.start
-        run = replace(run, journal=AttemptJournal(connection))
+        def mirror(status: Status) -> None:
+            """The issue shows the checkpoint's state. A GitHub failure here never changes the run."""
+            try:
+                write_status(client, repo, issue, status)
+            except ForgeError as exc:
+                log(f"status not written: {exc}")
+
+        def rewrite(state: DeliveryState, call: Running | None) -> None:
+            """Rewrite the admitted run's report at a moment inside the run, from the state its checkpoint holds then."""
+            if state["run"].base_sha:
+                mirror(running(state.get("steps", [""])[-1].partition(".")[0], run_report(state, call)))
+
+        def reporting(node: str, model: ModelSpec | None, state: DeliveryState, instruction: str, /) -> Outcome:
+            """A worker call starts once dispatch has saved its reservation, so the report shows it running."""
+            if (found := call_under_way(graph.get_state(config, subgraphs=True))) is not None:
+                rewrite(*found)
+            return dispatcher(node, model, state, instruction)
+
+        run = replace(run, journal=AttemptJournal(connection), rewrite=rewrite)
         delivery_config = load_config()
         saved_pin, saved_matt = channels.get("pstack_pin"), channels.get("matt_skills_pin")
         if prior and not channels.get("stop") and (saved_pin is None or saved_matt is None):
@@ -418,14 +456,14 @@ def run_live_delivery(
         early_status: Status | None = None
         try:
             graph = compile_delivery(
-                dispatcher, pinned, run=run, checkpointer=saver,
+                reporting, pinned, run=run, checkpointer=saver,
                 scratch=None if refusal is not None or channels.get("stop") and (wake or channels.get("halt") not in RESUMABLE_HALTS)
                 else Path(scratch),
             )
         except SkillMissing as exc:
             # Skills export only for a start the runner accepted or a saved run, so the run has its start.
             assert start is not None
-            graph = compile_delivery(dispatcher, pinned, run=run, checkpointer=saver)
+            graph = compile_delivery(reporting, pinned, run=run, checkpointer=saver)
             skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
                                           "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
                                           "run": run_state, "start": start,
@@ -437,34 +475,13 @@ def run_live_delivery(
                 early_result = read_delivery_state(skill_halt)
             else:
                 graph.update_state(config, skill_halt, as_node="triage")
-        def mirror(status: Status) -> None:
-            """The issue shows the checkpoint's state. A GitHub failure here never changes the run."""
-            try:
-                write_status(client, repo, issue, status)
-            except ForgeError as exc:
-                log(f"status not written: {exc}")
-
-        mirrored: list[str | None] = [None]
-
         def invoke(graph_input: DeliveryState | Command[str] | None, invocation_config: RunnableConfig = config) -> None:
             for part in graph.stream(
                 graph_input, invocation_config, context=run,
-                durability="sync", stream_mode=["updates", "tasks"], subgraphs=True, version="v2",
+                durability="sync", stream_mode=["updates"], subgraphs=True, version="v2",
             ):
-                namespace, data = part["ns"], part["data"]
-                if part["type"] == "tasks":
-                    if "input" not in data:
-                        continue
-                    # A task's start carries its input. The first task of each stage on an admitted run shows Doing,
-                    # including the admitted triage task that routes, whose base only its subgraph holds.
-                    stage = namespace[0].split(":")[0] if namespace else data["name"]
-                    task_input: object = data["input"]
-                    target = task_input.get("run") if is_dict(task_input) else None
-                    if isinstance(target, RunState) and target.base_sha and stage != mirrored[0]:
-                        mirrored[0] = stage
-                        mirror(running(stage))
-                elif presentation is not None and not namespace:
-                    for node, raw in data.items():
+                if presentation is not None and not part["ns"]:
+                    for node, raw in part["data"].items():
                         if not node.startswith("__") and raw is not None:
                             presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
@@ -505,9 +522,7 @@ def run_live_delivery(
             except WorkspaceError as exc:
                 early_result = read_delivery_state({**saved_values, **halted(Halt.git_failed, str(exc), "admit"),
                                                     "stop": Halt.git_failed})
-        if waiting:
-            # A wake that resumes the paused stage keeps its waiting status, so the comment does not flap.
-            mirrored[0] = STEP_STAGES.get(snapshot_result(saved)["path"][-1])
+                resumes = False  # Like any early result, the origin's refusal resumes nothing.
         prompt: HumanPrompt | None = None
         if saved.interrupts and not waiting and saved_values is not None and resumes:
             prompt = parse_output(HumanPrompt, saved.interrupts[0].value)
@@ -592,7 +607,9 @@ def run_live_delivery(
                     stage="merge", question=prompt.question, answer=answer, revision=prompt.revision)]})
             # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm.
             merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None)
-            retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review}
+            # The restarted stage keeps every step the run saved, its own included (rules.reporting).
+            retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review,
+                                        "steps": saved_values.get("steps", [])}
             if starting:
                 # The rewound step keeps the run's admitted identity, with the login and caps this start read.
                 assert start is not None
