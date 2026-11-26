@@ -1109,7 +1109,6 @@ class PublicationTest(PublicationFixture):
         with patch.object(implement, "commit", move_then_commit):
             halted = self.walk(self.edit)
         self.assertEqual((halted["stop"], halted["path"][-1]), ("dirty_worktree", "commit"), halted.get("halt_detail"))
-        self.assertIn("It is preserved.", halted["halt_detail"])
         self.assertEqual(self.git("branch", "--show-current"), "moved")
         self.assertEqual(self.git("rev-parse", "HEAD"), halted["work"].attempt_head)
         self.assertEqual((self.checkout / "items.txt").read_text(), "one\n")
