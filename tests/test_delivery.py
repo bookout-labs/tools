@@ -66,7 +66,7 @@ def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, comm
 class DeliveryTest(unittest.TestCase):
     def test_each_run_result_is_a_distinct_typed_exit(self):
         # DN1: every way a run ends is its own typed exit. A merge wait is an interrupt, never an exit.
-        graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun(), human_login="fixture-owner"))
+        graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun()))
         exits = {key for branch in graph.builder.branches.values() for route in branch.values()
                  for key, target in (route.ends or {}).items() if target == "__end__"}
         self.assertEqual(exits, {"answered", "children_filed", "cancelled", "no_change", "closed", "merged", "halted"})
@@ -507,17 +507,16 @@ class WorkerInputTests(unittest.TestCase):
                 result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
                                            dispatcher=handler, run=LiveRun(github, workspace))
             self.assertIn(result["stop"], {"merged", "children_filed", "answered"}, result.get("halt_detail"))
-            self.assertEqual((result["human_login"], result["run"].token_cap, result["run"].max_budget_usd),
+            self.assertEqual((result["start"].human_login, result["start"].max_tokens, result["start"].max_budget_usd),
                              ("fixture-owner", 987654, "43.21"))
         self.assertEqual(set(STAGES), {node for node, _, _ in calls})
         # The second builder call is sent after the first one's session was saved and attempts were recorded.
-        self.assertLessEqual({"builder_session", "attempts", "dispatch_plan", "human_login"},
+        self.assertLessEqual({"builder_session", "attempts", "dispatch_plan", "start"},
                              [channels for node, channels, _ in calls if node == "implement"][1])
         for node, channels, prompt in calls:
             with self.subTest(node=node):
                 given = json.loads(prompt.split("\n\nDelivery state:\n", 1)[1])
                 self.assertEqual(set(given), set(STAGES[node].input_fields) & channels)
-                self.assertFalse({"token_cap", "max_budget_usd"} & set(given["run"]))
                 for secret in ("fixture-owner", "987654", "43.21", session):
                     self.assertNotIn(secret, prompt)
 

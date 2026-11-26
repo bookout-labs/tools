@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from foreman.readiness import Observation, Outcome, PullSnapshot
 from foreman.github import CLOSE_MARKER, CommandFailed, ForgeError, IssueComment, LiveForge, PublishedPullRequest, PullRequest
-from foreman.state import ChecksState, PlanState, ReviewState, RunState, WorkState
+from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, WorkState
 from foreman.steps import CANCELLATION, TOO_LATE, StageRun, merge
 from test_github import PR, HEAD, BASE, BRANCH, REPO
 
@@ -18,7 +18,7 @@ RULES = [dict(type="required_status_checks", parameters=dict(required_status_che
 
 QUEUE_RULE = dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))
 RULES.append(QUEUE_RULE)
-REVIEWED = {"run": RunState(repo=REPO, issue=8), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": [],
+REVIEWED = {"run": RunState(repo=REPO, issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": [],
             "work": WorkState(branch=BRANCH, base="main"), "dispatch_plan": {"target": {"number": 12}},
             "review": ReviewState(review_findings=[{"reviewed_head": HEAD, "base": BASE, "findings": [], "provenance": None}],
                                   review_receipt={"id": 1, "state": "COMMENTED", "commit_id": HEAD})}
@@ -30,7 +30,7 @@ def published(state):
 
 
 def stage_run(forge):
-    return StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, human_login="fixture-owner", dispatch=None, apply=None)
+    return StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, dispatch=None, apply=None)
 
 
 class ReadinessTest(unittest.TestCase):

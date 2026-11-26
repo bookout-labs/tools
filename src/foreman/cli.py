@@ -17,7 +17,7 @@ from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
-from foreman.state import ReviewState, ChecksState, DeliveryResult
+from foreman.state import CheckpointVersionError, ReviewState, ChecksState, DeliveryResult
 from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.doctor import QUICK, NotReady, ReadFailed, contract, repository
@@ -45,8 +45,9 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
         _print_run_rows(result, dry_run=dry_run, commands=presentation.commands if presentation else None)
         return
     checks = result["checks"]
-    run_state = result["run"]
-    current: DeliveryResult = {"review": ReviewState(), "plan": result["plan"], "run": run_state, "checks": ChecksState(check=checks.check), "path": [], "stop": result["stop"]}
+    current: DeliveryResult = {"review": ReviewState(), "plan": result["plan"], "run": result["run"], "checks": ChecksState(check=checks.check), "path": [], "stop": result["stop"]}
+    if "start" in result:
+        current["start"] = result["start"]
     for update in presentation.updates:
         current.update(update)
     # The result repeats the restored path, except the stage a quota pause names while its call waits.
@@ -77,10 +78,12 @@ def _print_run_rows(
         print("\n".join(prefix + line for line in text.split("\n")))
 
     def write_tokens() -> None:
+        if start is None:
+            return
         attempts = result.get("attempts", [])
         summary = token_summary(attempts)
         write_literal(f"raw tokens {run_tokens(attempts)} (known subtotal)")
-        write_literal(f"work tokens used / work cap: {summary.known} / {run_state.token_cap}; "
+        write_literal(f"work tokens used / work cap: {summary.known} / {start.max_tokens}; "
                       f"{'complete' if summary.unknown == 0 else 'partial'}; unknown attempts {summary.unknown}")
         for index, attempt in enumerate(attempts, 1):
             usage = attempt["usage"]
@@ -93,11 +96,11 @@ def _print_run_rows(
             write_literal(f"{bucket} tokens {total}; available {available}/{summary.charged}")
 
     checks = result["checks"]
-    run_state = result["run"]
-    if (limit := run_state.max_budget_usd) is not None:
+    # A refused new run never read its caps, so it reports no spend against them.
+    if (start := result.get("start")) is not None:
         spent = claude_spend(result.get("attempts", []))
         amount = "unknown" if spent is None else f"${spent:f}"
-        write_literal(f"claude spend {amount} of ${limit}")
+        write_literal(f"claude spend {amount} of ${start.max_budget_usd}")
     for command in commands or []:
         write(f"dry run: {shlex.join(command)}")
     models = result.get("models_used", {})
@@ -108,8 +111,7 @@ def _print_run_rows(
     def write_done() -> None:
         if checks.check_exit_code is not None:
             write_literal(f"check exit {checks.check_exit_code}")
-        if run_state.token_cap is not None:
-            write_tokens()
+        write_tokens()
         write(f"done {result['stop']}")
         if result.get("stop") == Halt.skill_missing:
             pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
@@ -154,8 +156,7 @@ def _print_run_rows(
     if not stop:
         return
     if stop in {"needs_human", *PAUSES}:
-        if run_state.token_cap is not None:
-            write_tokens()
+        write_tokens()
         label = "done" if stop in {"needs_human", "merge_pending"} and dry_run else "paused"
         write_literal(f"{label} {stop}")
         if detail := result.get("halt_detail"):
@@ -265,7 +266,7 @@ def main(
         try:
             decision = accept_event(args.event, json.loads(Path(args.path).read_text()),
                                     lambda repo, issue: paused_run(store, issue_thread(repo, issue)))
-        except (OSError, json.JSONDecodeError, AcceptError) as exc:
+        except (OSError, json.JSONDecodeError, AcceptError, CheckpointVersionError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
         print("ignored" if decision is None else f"{decision.action} {decision.repo}#{decision.issue}")

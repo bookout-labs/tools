@@ -1,6 +1,6 @@
 import tests
 
-from foreman.state import RunState, SCHEMA_VERSION
+from foreman.state import RunState, StartSettings, SCHEMA_VERSION
 
 import unittest
 
@@ -22,7 +22,7 @@ class HaltPolicyTest(unittest.TestCase):
     def test_checkpoint_refuses_unknown_and_retired_codes(self):
         for code in ("no_reviewer", "no_reviewr"):
             with self.subTest(code=code), self.assertRaisesRegex(ValueError, code):
-                checkpoint_state(dict(schema_version=SCHEMA_VERSION, halt=code, run=RunState(token_cap=100, repo="Example/Engine"), check="true", path=[]))
+                checkpoint_state(dict(schema_version=SCHEMA_VERSION, halt=code, run=RunState(repo="Example/Engine"), start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), check="true", path=[]))
 
     def test_merge_halts_retry_and_github_failures_are_routes_not_halts(self):
         self.assertEqual(RESUMABLE_HALTS, {"merge_held", "merge_not_armed", "readiness_unavailable", "env_unavailable", "publish_failed",

@@ -20,8 +20,8 @@ from foreman.cli import _print_run
 from foreman.delivery import LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from foreman.runner import run_live_delivery, snapshot_result
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, checkpoint_serializer, SCHEMA_VERSION
-from foreman.usd import BudgetUsd, usd_text
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, SCHEMA_VERSION
+from foreman.usd import BudgetUsd
 from foreman.doctor import NotReady, operator_variables
 from foreman.workspace import WorkspaceError
 from tests.skill_fixture import skill_fixture
@@ -96,7 +96,7 @@ def worker(args, cwd, env):
 pin = SkillPin.model_validate_json(raw_pin)
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
     sys.exit(main(sys.argv[4:], worker_runner=worker, checkpoint=Path(checkpoint),
-                  live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd()), human_login="fixture-owner")))
+                  live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd()))))
 '''
         bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
                      f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
@@ -137,7 +137,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     allowance = stored or "3"
                     first = invoke(pause, expected=3 if pause == "needs_human" else 75, settings=settings)
                     self.assertIn("paused " + pause, first.stdout)
-                    self.assertEqual(saved()["run"].max_budget_usd, allowance)
+                    self.assertEqual(saved()["start"].max_budget_usd, allowance)
                     before = log.read_text()
                     attempts = saved_attempts()
                     answer = ("--answer", "Only open items.") if pause == "needs_human" else ()
@@ -152,7 +152,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertEqual(claude.count("--max-budget-usd"), 1)
                     self.assertEqual(Decimal(claude[claude.index("--max-budget-usd") + 1]), Decimal(allowance) - sum(prior_costs))
                     self.assertTrue(all("--max-budget-usd" not in args for args in new_calls if args[0] != "claude"))
-                    self.assertEqual(saved()["run"].max_budget_usd, allowance)
+                    self.assertEqual(saved()["start"].max_budget_usd, allowance)
                     self.assertIn("claude spend", resumed.stdout)
                     self.assertIn(f"of ${allowance}", resumed.stdout)
 
@@ -163,18 +163,18 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         for raw, stored in (("1", "1"), ("1.50", "1.5"), ("1e-4", "0.0001")):
             with self.subTest(raw=raw):
                 read = operator_variables("a/b", {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_BUDGET_USD": raw})
-                self.assertEqual(usd_text(read.max_budget_usd), stored)
+                self.assertEqual(read.start.max_budget_usd, stored)
 
     def test_run_delivery_stores_canonical_text_and_defaults_to_the_drawn_cap(self):
         bounded = run_delivery(ScriptHandler(), repo="a/b", request="x", max_budget_usd=usd("1.50"))
-        self.assertEqual(bounded["run"].max_budget_usd, "1.5")
+        self.assertEqual(bounded["start"].max_budget_usd, "1.5")
         # A dry run gets the cap a live run gets with no variable set.
         default = run_delivery(ScriptHandler(), repo="a/b", request="x")
-        self.assertEqual(default["run"].max_budget_usd, "3")
+        self.assertEqual(default["start"].max_budget_usd, "3")
         self.assertIn("claude spend $0.0 of $3", printed(default))
 
     def test_printed_spend_counts_only_claude_costs(self):
-        base = {"review": ReviewState(), "run": RunState(repo="a/b", max_budget_usd="1"), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}
+        base = {"review": ReviewState(), "run": RunState(repo="a/b"), "start": StartSettings(human_login="fixture-owner", max_tokens=20_000_000, max_budget_usd="1"), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}
         counted = [attempt("claude-opus-5-5-high", 0.1), attempt("claude-opus-5-5-high", 0.2),
                    attempt("claude-opus-5-5-high", usage=False, outcome="cli_missing"),
                    attempt("gpt-6.1-sol-high", 5.0), attempt("grok-4.7-high", 5.0)]
@@ -182,7 +182,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         for missing in (attempt("claude-opus-5-5-high", None), attempt("claude-opus-5-5-high", usage=False, outcome="quota")):
             with self.subTest(missing=missing):
                 self.assertIn("claude spend unknown of $1", printed({**base, "attempts": [*counted, missing]}))
-        self.assertNotIn("claude spend", printed({"review": ReviewState(), **base, "run": RunState(max_budget_usd=None), "attempts": counted}))
+        # A refused new run read no caps, so it reports no spend against them.
+        refused = {key: value for key, value in base.items() if key != "start"}
+        self.assertNotIn("claude spend", printed({**refused, "stop": "not_ready", "attempts": []}))
 
     def test_a_continuing_invocation_keeps_the_stored_allowance(self):
         for pause in ("needs_human", "quota_exhausted"):
@@ -206,14 +208,14 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     if pause == "needs_human":
                         forge.answer(state["halt_detail"], "Only open items.")
                     self.assertEqual(state["stop"], pause)
-                    self.assertEqual(state["run"].max_budget_usd, stored or "3")
+                    self.assertEqual(state["start"].max_budget_usd, stored or "3")
                     for changed in ("2", "1.5"):
                         forge.settings["FOREMAN_MAX_BUDGET_USD"] = changed
                         before = len(calls)
                         answer = "Only open items." if state["stop"] == "needs_human" else None
                         state = run_live_delivery(**kwargs, answer=answer)
                         self.assertGreater(len(calls), before)
-                        self.assertEqual(state["run"].max_budget_usd, stored or "3")
+                        self.assertEqual(state["start"].max_budget_usd, stored or "3")
 
     def test_resumable_checkpoints_without_a_stored_allowance_need_a_new_run(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
@@ -224,7 +226,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 return Outcome("quota", usage=SCRIPTED_USAGE)
 
             root = Path(folder)
-            kwargs = dict(repo="a/b", issue=8, run=LiveRun(FakeGitHub(), FakeWorkspace(root), human_login="fixture-owner"),
+            kwargs = dict(repo="a/b", issue=8, run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
                           dispatcher=quota)
             first = run_live_delivery(**kwargs, checkpoint=root / "modern.sqlite")
             self.assertEqual(first["stop"], "quota_exhausted")
@@ -236,7 +238,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     legacy = root / f"{snapshot['stop']}.sqlite"
                     with SqliteSaver.from_conn_string(str(legacy)) as saver:
                         saver.serde = checkpoint_serializer()
-                        graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                        graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {**snapshot, "schema_version": 3})
                     with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
                         run_live_delivery(**kwargs, checkpoint=legacy)
@@ -246,9 +248,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with SqliteSaver.from_conn_string(str(historical)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
-                graph.update_state(THREAD, {"review": ReviewState(review="changes"), "stop": "P1", "schema_version": 5, "run": RunState(repo="a/b", request="x", token_cap=100), "checks": ChecksState(preflight="exit 1"), "path": ["triage"],
+                graph.update_state(THREAD, {"review": ReviewState(review="changes"), "stop": "P1", "schema_version": 5, "run": RunState(repo="a/b", request="x"), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "checks": ChecksState(preflight="exit 1"), "path": ["triage"],
                     "pstack_pin": config.pstack.model_dump(), "matt_skills_pin": config.matt_skills.model_dump()}, as_node="review")
-                graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x", token_cap=100, max_budget_usd=None), "halt": "env_unavailable", "stop": "env_unavailable",
+                graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "halt": "env_unavailable", "stop": "env_unavailable",
                                             "path": ["implement"], "plan": PlanState()}, as_node="research")
             with patch("foreman.runner.compile_delivery", wraps=compile_delivery) as compile_graph:
                 with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
@@ -259,11 +261,11 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             finished = root / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(finished)) as saver:
                 saver.serde = checkpoint_serializer()
-                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
-                graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", token_cap=100, max_budget_usd=None), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}, as_node="research")
+                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
+                graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b"), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}, as_node="research")
             output = printed(run_live_delivery(**kwargs, checkpoint=finished))
             self.assertIn("done answered", output)
-            self.assertNotIn("claude spend", output)
+            self.assertIn("claude spend $0 of $3", output)
 
     def test_halt_replay_keeps_attempts_recorded_by_the_halted_call(self):
         class GitFailsOnce(FakeWorkspace):
@@ -307,7 +309,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 if case == "non_prefix":
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                         saver.serde = checkpoint_serializer()
-                        graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                        graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {"attempts": Overwrite(implement)}, as_node="research")
                     with self.assertRaisesRegex(ValueError, "non-prefix attempt history"):
                         run_live_delivery(**kwargs)

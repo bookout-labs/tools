@@ -24,7 +24,7 @@ from foreman.stage_output import (
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
 from foreman.steps import StageRun, implement, merge, research, review, spec, triage, verify
-from foreman.state import BuilderSession, ReviewState, ChecksState, RunState, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
+from foreman.state import BuilderSession, ReviewState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
 from foreman.outcomes import Halt, halted
 from foreman.usd import BudgetUsd, usd_text
 from foreman.worker import AttemptJournal
@@ -43,8 +43,6 @@ FIXTURE_HUMAN = "ghost"
 class LiveRun:
     forge: Forge
     workspace: Workspace
-    # The runner sets the run's saved login: read at a start, saved on the run otherwise.
-    human_login: str = ""
     check_log: CheckLog | None = None
     skills: SkillSource = export_skills
     journal: AttemptJournal | None = None
@@ -162,7 +160,7 @@ def compile_delivery(
 
     stage = StageRun(
         workspace=run.workspace, forge=run.forge, check_log=run.check_log, max_rounds=config.max_review_rounds,
-        human_login=run.human_login, dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result))
+        dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result))
 
     def outcome(state: DeliveryState, success: str) -> str:
         """The typed result a stage carries to the top router."""
@@ -218,7 +216,7 @@ def run_delivery(
     slice: object = None,
     scratch: Path | None = None,
     max_tokens: int = DEFAULT_TOKEN_CAP,
-    max_budget_usd: BudgetUsd | None = DEFAULT_BUDGET_USD,
+    max_budget_usd: BudgetUsd = DEFAULT_BUDGET_USD,
     skills: SkillSource = export_skills,
     commands: list[list[str]] | None = None,
     checkout: Path | None = None,
@@ -228,11 +226,10 @@ def run_delivery(
     terms = parse_contract(contract)
     state: DeliveryState = {
         "schema_version": SCHEMA_VERSION,
-        # A live run's start saves the login it read, so the dry run carries it too.
-        "human_login": FIXTURE_HUMAN,
-        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, token_cap=max_tokens, workspace=str(checkout or ""),
-                        base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo)),
-                        max_budget_usd=usd_text(max_budget_usd) if max_budget_usd is not None else None),
+        # A live run's start saves the login and caps it read, so the dry run carries them too.
+        "start": StartSettings(human_login=FIXTURE_HUMAN, max_tokens=max_tokens, max_budget_usd=usd_text(max_budget_usd)),
+        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, workspace=str(checkout or ""),
+                        base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo))),
         "checks": ChecksState(check=terms.check, verify_skill=terms.verify_skill),
         "plan": PlanState(issue_kind="parent" if slice is None else "slice"),
         "models_used": {},
@@ -248,7 +245,7 @@ def run_delivery(
     try:
         saver = InMemorySaver(serde=checkpoint_serializer())
         dispatcher = dry.builder(dispatcher)
-        graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills, human_login=FIXTURE_HUMAN),
+        graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills),
                                  scratch=scratch, checkpointer=saver)
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
@@ -262,5 +259,5 @@ def run_delivery(
 
 def diagram() -> str:
     dry = DryRun()
-    graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry, human_login=FIXTURE_HUMAN))
+    graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry))
     return graph.get_graph().draw_mermaid()

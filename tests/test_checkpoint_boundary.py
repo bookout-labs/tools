@@ -48,7 +48,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                          patch("foreman.runner.require_schema_version", wraps=require_schema_version) as refuse:
                         with self.assertRaisesRegex(CheckpointVersionError, "schema_version.*Start a new run") as raised:
                             run_live_delivery(repo="a/b", issue=8, checkpoint=checkpoint,
-                                              dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun(), human_login="fixture-owner"))
+                                              dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun()))
                         self.assertIn(str(checkpoint), str(raised.exception))
                         self.assertIn("a/b#8", str(raised.exception))
                         self.assertIn("XDG_STATE_HOME", str(raised.exception))
@@ -76,9 +76,9 @@ class CheckpointBoundaryTests(unittest.TestCase):
         with self.assertNoLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
             for owner in OWNERS:
                 with self.subTest(owner=owner.name):
-                    defaults = type(owner.value)()
-                    for field in type(owner.value).model_fields:
-                        self.assertNotEqual(getattr(owner.value, field), getattr(defaults, field), field)
+                    for field, info in type(owner.value).model_fields.items():
+                        if not info.is_required():
+                            self.assertNotEqual(getattr(owner.value, field), info.get_default(call_default_factory=True), field)
                     self.assertEqual(serde.loads_typed(serde.dumps_typed(owner.value)), owner.value)
             self.assertIs(serde.loads_typed(serde.dumps_typed(Halt.budget_exceeded)), Halt.budget_exceeded)
         with self.assertLogs("langgraph.checkpoint.serde.jsonplus", level="WARNING"):
@@ -88,7 +88,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
             config = {"configurable": {"thread_id": "owners"}}
             with SqliteSaver.from_conn_string(path) as saver:
                 saver.serde = serde
-                graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun()), checkpointer=saver)
                 graph.update_state(config, {**values, "schema_version": SCHEMA_VERSION}, as_node="research")
             with SqliteSaver.from_conn_string(path) as saver:
                 saver.serde = serde
@@ -100,11 +100,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                 state = json.loads(prompt.split("Delivery state:\n")[1])
                 self.assertEqual(set(state), set(STAGES[node].input_fields) & set(values))
                 for name in state:
-                    expected = values[name].model_dump(mode="json")
-                    if name == "run":
-                        # Dispatch owns the allowance, so the worker never reads it.
-                        expected = {key: value for key, value in expected.items() if key not in ("token_cap", "max_budget_usd")}
-                    self.assertEqual(state[name], expected, name)
+                    self.assertEqual(state[name], values[name].model_dump(mode="json"), name)
 
             model = ModelSpec.parse("gpt-6.1-sol-high")
             for node in STAGES:
@@ -117,7 +113,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
 
             result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", model, restored, "Read.")
             self.assertEqual(result.kind, "ran")
-            self.assertEqual({name for row in STAGES.values() for name in row.input_fields} & set(values), set(values) - {"merge"})
+            self.assertEqual({name for row in STAGES.values() for name in row.input_fields} & set(values), set(values) - {"merge", "start"})
 
     def test_every_pause_survives_a_fresh_process(self):
         script = '''
@@ -148,7 +144,7 @@ with SqliteSaver.from_conn_string(path) as saver:
     saver.serde = checkpoint_serializer()
     # The checkout sits at the owners' checked head on their branch.
     graph = compile_delivery(ask, load_config(),
-                             run=LiveRun(DryRun(), DryRun(head="b" * 40, branch="8-change"), human_login="fixture-owner"), checkpointer=saver)
+                             run=LiveRun(DryRun(), DryRun(head="b" * 40, branch="8-change")), checkpointer=saver)
     if phase == "write":
         values = json.loads(state_json)
         for owner in OWNERS:

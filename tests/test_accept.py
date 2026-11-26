@@ -5,14 +5,17 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
+
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.accept import AcceptError, Accepted, Paused, accept_event
 from foreman.cli import main
 from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
 from foreman.stage_output import HumanPrompt
+from foreman.state import SCHEMA_VERSION, checkpoint_serializer
 from foreman.steps import CANCELLATION
 from test_delivery import contract_text
 import test_runner
@@ -159,7 +162,7 @@ class AnswerWakeTest(unittest.TestCase):
         self.assertEqual(woken["plan"].human_qa[-1]["stage"], "implement")
         self.assertEqual(woken["path"][len(paused["path"]):][:2], ["implement", "check"])
         # A start would stop not_ready on the cap that won't parse. Only merge.arm reads a variable, its merge hold.
-        self.assertEqual((woken["human_login"], woken["run"].max_budget_usd), ("fixture-owner", "3"))
+        self.assertEqual((woken["start"].human_login, woken["start"].max_budget_usd), ("fixture-owner", "3"))
         self.assertEqual(self.github.variable_reads, [*reads, "Example/Engine"])
         merged = len(self.github.merge_calls)
         self.assertEqual(self.deliver("issue_comment", comment(answer)), "ignored")
@@ -180,6 +183,26 @@ class AnswerWakeTest(unittest.TestCase):
         self.github.answer(self.question, "Keep it.")
         self.assertEqual(self.deliver("issue_comment", comment(self.github.rulings[-1].body, action="edited")), "ignored")
         self.assertEqual((self.github.variable_reads, self.github.status_writes, len(self.calls)), (reads, writes, calls))
+
+    def test_an_answer_to_an_older_schema_checkpoint_is_refused_with_the_schema_error(self):
+        """A run paused by an older release has no saved login to match, so accept reports the checkpoint's schema and wakes nothing."""
+        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": "Keep the sort order?"}])["stop"],
+                         "needs_human")
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
+            channels = saved.checkpoint["channel_values"]
+            channels["schema_version"] = SCHEMA_VERSION - 1
+            del channels["start"]
+            saver.put(saved.config, saved.checkpoint, saved.metadata, {})
+        self.github.answer(self.question, "Keep it.")
+        path = self.cwd / "delivery.json"
+        path.write_text(json.dumps(comment(self.github.rulings[-1].body)))
+        with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+            code = main(["accept", "--event", "issue_comment", str(path)], checkpoint=self.checkpoint)
+        self.assertEqual((code, out.getvalue()), (1, ""))
+        for text in (str(self.checkpoint), "example/engine#8", f"schema_version {SCHEMA_VERSION - 1}; expected {SCHEMA_VERSION}", "older release"):
+            self.assertIn(text, err.getvalue())
 
     def test_a_stop_wakes_a_waiting_run_which_ends_cancelled_at_the_next_stage_entry(self):
         """A stop under the saved login wakes a run waiting on the merge queue, and merge's stop read ends it cancelled.

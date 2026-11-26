@@ -11,7 +11,7 @@ from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, Dispatc
 from foreman.github import Forge, ForgeError, human_comment_records
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import AttemptRecord, DispatchStage, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
-from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState
+from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState, StartSettings
 from foreman.workspace import CheckLog, WorkState, Workspace
 
 DispatchGraph = CompiledStateGraph[DispatchState, DispatchRun, DispatchInput, DispatchResult]
@@ -27,6 +27,7 @@ class StageInput(DeliveryFields, total=False):
     plan: PlanState
     checks: ChecksState
     run: RunState
+    start: StartSettings
     stop: str
 
 
@@ -38,7 +39,6 @@ class StageRun:
     forge: Forge
     check_log: CheckLog | None
     max_rounds: int
-    human_login: str
     dispatch: Callable[[DispatchStage, DeliveryState, str], DispatchRun]
     apply: Callable[[DispatchStage, DeliveryState, DispatchResult], DeliveryUpdate]
 
@@ -109,7 +109,7 @@ def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = H
     issue = target.issue
 
     def requested() -> bool:
-        stops = [comment for comment in human_comment_records(run.forge, run.human_login, target.repo, issue) if is_stop(comment.body or "")]
+        stops = [comment for comment in human_comment_records(run.forge, state["start"].human_login, target.repo, issue) if is_stop(comment.body or "")]
         if not stops:
             return False
         ready = run.forge.ready_labeled_at(target.repo, issue)

@@ -12,7 +12,8 @@ from typing import TypeVar
 
 from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contract
 from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError, Permission
-from foreman.usd import BudgetUsd
+from foreman.state import StartSettings
+from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import Workspace
 
 APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK = (
@@ -75,9 +76,7 @@ class OperatorVariables:
     FOREMAN_PREFLIGHT is read unchecked until S9 deletes it.
     """
 
-    human_login: str
-    max_tokens: int
-    max_budget_usd: BudgetUsd
+    start: StartSettings
     preflight: str
 
 
@@ -116,8 +115,9 @@ def operator_variables(repo: str, variables: Mapping[str, str]) -> OperatorVaria
     except ValueError:
         raise missing(f"the {MAX_BUDGET_USD} repository variable {dollars!r} is not a positive dollar amount",
                       f"set {MAX_BUDGET_USD} to a positive amount such as 3 or 4.50, or delete it to use the default") from None
-    return OperatorVariables(human_login, DEFAULT_TOKEN_CAP if max_tokens is None else max_tokens,
-                             max_budget_usd or DEFAULT_BUDGET_USD, variables.get(PREFLIGHT, ""))
+    start = StartSettings(human_login=human_login, max_tokens=DEFAULT_TOKEN_CAP if max_tokens is None else max_tokens,
+                          max_budget_usd=usd_text(max_budget_usd or DEFAULT_BUDGET_USD))
+    return OperatorVariables(start, variables.get(PREFLIGHT, ""))
 
 
 def repository(forge: Forge, repo: str) -> OperatorVariables:
@@ -138,7 +138,7 @@ def repository(forge: Forge, repo: str) -> OperatorVariables:
         case "installed":
             pass
     operator = operator_variables(repo, answered(repo, VARIABLES, f"{repo}'s Actions variables", lambda: forge.variables(repo)))
-    login = operator.human_login
+    login = operator.start.human_login
     permission: Permission | None = answered(repo, WRITE_ACCESS, f"{login}'s permission on {repo}", lambda: forge.permission(repo, login))
     match permission:
         case None:

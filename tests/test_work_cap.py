@@ -24,8 +24,7 @@ class WorkCapTests(unittest.TestCase):
             calls.append(args[1].name)
             return outcome
         with skill_fixture(configured(models=(GPT, CLAUDE))) as (config, scratch):
-            result = run_delivery(handler, repo="a/b", request="x", max_tokens=cap,
-                                  max_budget_usd=None, config=config, scratch=scratch)
+            result = run_delivery(handler, repo="a/b", request="x", max_tokens=cap, config=config, scratch=scratch)
         return result, calls
 
     def test_engine_replay_and_fresh_threshold(self):

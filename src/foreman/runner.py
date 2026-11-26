@@ -25,7 +25,7 @@ from foreman.config import SkillPin, load_config
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state
 from foreman.readiness import MergeState, MergeWait
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, QuotaPause
 from foreman.doctor import NotReady, OperatorVariables, ReadFailed, repository
 from foreman.skill_rules import SkillMissing
@@ -34,7 +34,6 @@ from foreman.watch import run_key, watch
 from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.status import Status, refused, running, status_of, write_status
 from foreman.steps import implement
-from foreman.usd import usd_text
 from foreman.workspace import WorkState, WorkspaceError, lock_file
 from foreman.worker import AttemptJournal, verify_attempts, worker_lock
 
@@ -128,11 +127,6 @@ def _checkpoint_before_halt(
     return before
 
 
-def with_caps(run_state: RunState, settings: OperatorVariables) -> RunState:
-    """The run's caps from its start's read. Every later wake and answer uses them unchanged."""
-    return run_state.model_copy(update={"token_cap": settings.max_tokens, "max_budget_usd": usd_text(settings.max_budget_usd)})
-
-
 class IssueLocked(ValueError):
     """Another Foreman process holds this issue's lock."""
 
@@ -187,9 +181,11 @@ def paused_run(checkpoint: Path, thread: str) -> Paused | None:
     pending = [value for _, channel, value in (saved.pending_writes or []) if channel == INTERRUPT] if saved else []
     if saved is None or not pending:
         return None
+    values = saved.checkpoint["channel_values"]
+    require_schema_version(values, checkpoint, thread)
     pause: object = pending[0][0].value
-    login: str = saved.checkpoint["channel_values"].get("human_login", "")
-    return Paused(login, None if is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
+    start: StartSettings = values["start"]
+    return Paused(start.human_login, None if is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
 
 
 def saved_workspace(checkpoint: Path, thread: str) -> str | None:
@@ -242,15 +238,16 @@ def run_live_delivery(
         starting = prior is None or (bool(channels.get("stop")) and channels.get("halt") in RESUMABLE_HALTS)
         settings: OperatorVariables | None = None
         refusal: NotReady | ReadFailed | None = None
-        login: str = channels.get("human_login", "")
+        # Every later wake and answer uses the login and caps of the run's last start unchanged.
+        start: StartSettings | None = channels.get("start")
         if starting:
             try:
                 settings = repository(client, repo)
             except (NotReady, ReadFailed) as exc:
                 refusal = exc
             else:
-                run_state, login = with_caps(run_state, settings), settings.human_login
-        run = replace(run, journal=AttemptJournal(connection), human_login=login)
+                start = settings.start
+        run = replace(run, journal=AttemptJournal(connection))
         delivery_config = load_config()
         saved_pin, saved_matt = channels.get("pstack_pin"), channels.get("matt_skills_pin")
         if prior and not channels.get("stop") and (saved_pin is None or saved_matt is None):
@@ -267,10 +264,12 @@ def run_live_delivery(
                 scratch=None if refusal is not None or channels.get("stop") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
             )
         except SkillMissing as exc:
+            # Skills export only for a start the runner accepted or a saved run, so the run has its start.
+            assert start is not None
             graph = compile_delivery(dispatcher, pinned, run=run, checkpointer=saver)
             skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
                                           "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
-                                          "run": run_state, "human_login": login,
+                                          "run": run_state, "start": start,
                                           "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
                                           "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(
                                               preflight=settings.preflight if settings else ""),
@@ -352,7 +351,7 @@ def run_live_delivery(
                 paused = checkpoint_state(paused_values(saved))
                 assert paused is not None and paused["run"].issue is not None
                 used = {qa["answer"] for qa in paused["plan"].human_qa if qa.get("revision") == prompt.revision}
-                replies = [reply for comment in human_comments(client, run.human_login, paused["run"].repo, paused["run"].issue)
+                replies = [reply for comment in human_comments(client, paused["start"].human_login, paused["run"].repo, paused["run"].issue)
                            if (reply := prompt.answer_in(comment)) and reply not in used]
                 if answer is not None and answer not in replies:
                     raise AnswerError("This question needs a matching answer posted under the configured GitHub identity.")
@@ -376,11 +375,11 @@ def run_live_delivery(
             invoke(Command(resume=answer))
         elif saved_values is None:
             # Triage admits the issue: its identity, slice, prerequisites and pinned base.
-            assert settings is not None
+            assert settings is not None and start is not None
             invoke({
                 "schema_version": SCHEMA_VERSION,
                 "run": run_state,
-                "human_login": login,
+                "start": start,
                 "checks": ChecksState(preflight=settings.preflight),
                 "pstack_pin": pin.model_dump(),
                 "matt_skills_pin": matt.model_dump(),
@@ -432,7 +431,8 @@ def run_live_delivery(
             retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review}
             if starting:
                 # The rewound step keeps the run's admitted identity, with the login and caps this start read.
-                retained["run"], retained["human_login"] = run_state, login
+                assert start is not None
+                retained["run"], retained["start"] = run_state, start
             if "builder_session" in saved_values:
                 # The builder keeps its conversation for the PR; its fingerprint decides whether the next call resumes it (D5).
                 retained["builder_session"] = saved_values["builder_session"]

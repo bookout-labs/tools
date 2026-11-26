@@ -1,7 +1,7 @@
 """Stage records and ownership contracts."""
 import tests
 from foreman.stages import STAGES
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, SCHEMA_VERSION, WorkState
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, WorkState
 from test_runner import FINDING
 from skill_fixture import AUTHOR
 from foreman.config import load_config
@@ -108,7 +108,7 @@ class StageRecordTests(unittest.TestCase):
 
     def test_current_checkpoint_restores_slice_defaults(self):
         from foreman.runner import checkpoint_state
-        state = checkpoint_state({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(token_cap=20_000_000, repo="example/repo"), "checks": ChecksState(check="true"), "path": [], "plan": PlanState(slice={"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []})})
+        state = checkpoint_state({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="example/repo"), "start": StartSettings(human_login="fixture-owner", max_tokens=20_000_000, max_budget_usd="3"), "checks": ChecksState(check="true"), "path": [], "plan": PlanState(slice={"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []})})
         self.assertFalse(state["plan"].slice["stateful"])
         self.assertEqual(state["plan"].slice["builds"], [])
         self.assertEqual(state["plan"].slice["uses"], [])

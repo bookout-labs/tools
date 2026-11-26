@@ -14,7 +14,7 @@ from foreman.github import BOT_LOGIN, CommandTimedOut, ForgeError, IssueComment,
 from foreman.stage_output import HumanAnswer, VerifyOutput
 from foreman.stages import STAGES, Acceptance
 from foreman.skill_rules import TargetSkillUnreadable, stage_methods, target_skills
-from foreman.state import ChecksState, PlanState, ReviewState, RunState, VerifyState
+from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, VerifyState
 from foreman.steps import CANCELLATION, StageRun, verify
 from foreman.workspace import LiveWorkspace, WorkState, WorkspaceError, WorktreeState
 from pydantic import TypeAdapter, ValidationError
@@ -106,13 +106,14 @@ def checkout(*skills, symlink=None):
 
 
 def state(workspace="", **values):
-    return {"run": RunState(repo="a/b", issue=8, workspace=workspace, base_sha="a" * 40), "plan": PlanState(),
+    return {"run": RunState(repo="a/b", issue=8, workspace=workspace, base_sha="a" * 40),
+            "start": StartSettings(human_login=LOGIN, max_tokens=100, max_budget_usd="3"), "plan": PlanState(),
             "checks": ChecksState(check="true", verify_skill=SKILL, verified_head=HEAD), "review": ReviewState(review_run_id="run-1"),
             "work": WorkState(branch="8-items", base="main", published_head=HEAD), "path": [], **values}
 
 
 def stage(forge=None, workspace=None, applied=None):
-    run = MagicMock(forge=forge or Forge(), workspace=workspace or Workspace(), human_login=LOGIN)
+    run = MagicMock(forge=forge or Forge(), workspace=workspace or Workspace())
     run.apply.return_value = applied if applied is not None else {
         "path": ["verify"], "verify": VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION])}
     return run
@@ -266,7 +267,7 @@ class VerifyTest(unittest.TestCase):
     def test_a_stop_posted_while_verify_was_halted_ends_the_resumed_stage_cancelled(self):
         """The stop read runs before drive's resume short-circuit, so a resumed driven stage posts nothing and calls no worker."""
         forge, apply = Forge(human=["foreman stop\nNot needed now."]), MagicMock()
-        run = StageRun(workspace=Workspace(), forge=forge, check_log=None, max_rounds=3, human_login=LOGIN, dispatch=MagicMock(), apply=apply)
+        run = StageRun(workspace=Workspace(), forge=forge, check_log=None, max_rounds=3, dispatch=MagicMock(), apply=apply)
         with checkout(".claude/skills/verify-web/SKILL.md") as root, patch.object(verify, "DISPATCH") as dispatch:
             ended = verify.compile_stage(run).invoke(state(root, verify=VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION])))
         self.assertEqual((ended["stop"], ended.get("halt"), ended["path"]), ("cancelled", None, ["verify"]))

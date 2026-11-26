@@ -167,11 +167,12 @@ class AttemptMetricsTests(unittest.TestCase):
             return fixture_process(args, "success", 0)
         state = {"dispatch_plan": {"budget_usd": "0.35", "models": ["claude-opus-5-5-high"], "instruction": "Triage.",
                                    "methods": [], "target": None, "scope": None},
-                 "run": {"repo": "Example/Engine", "token_cap": 8000000, "max_budget_usd": "3"},
+                 "run": {"repo": "Example/Engine"},
+                 "start": {"human_login": "fixture-owner", "max_tokens": 8000000, "max_budget_usd": "3"},
                  "attempts": [{"stage": "spec", "usage": {"cost_usd": 2.65}, "dollar_charge": "2.65"}]}
         CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", ModelSpec.parse("claude-opus-5-5-high"), state, "Read.")
         prompt = calls[0][-1]
-        for allowance in ("budget_usd", "token_cap", "max_budget_usd", "cost_usd", "dollar_charge", "0.35", "2.65"):
+        for allowance in ("budget_usd", "max_tokens", "max_budget_usd", "fixture-owner", "cost_usd", "dollar_charge", "0.35", "2.65"):
             self.assertNotIn(allowance, prompt)
         self.assertIn("Example/Engine", prompt)
         self.assertEqual(calls[0][calls[0].index("--max-budget-usd") + 1], "0.35")
@@ -212,7 +213,7 @@ class AttemptMetricsTests(unittest.TestCase):
             self.assertEqual(claude_spend([attempt]), claude_spend([bare]))
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint.sqlite")) as saver:
                 saver.serde = checkpoint_serializer()
-                graph = compile_delivery(worker, config, run=LiveRun(DryRun(), DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                graph = compile_delivery(worker, config, run=LiveRun(DryRun(), DryRun()), checkpointer=saver)
                 thread = {"configurable": {"thread_id": "metrics"}}
                 graph.update_state(thread, result, as_node="research")
                 self.assertEqual(graph.get_state(thread).values["attempts"], result["attempts"])
