@@ -1119,38 +1119,58 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
         self.assertEqual(self.created, [self.remote_head()])
 
-    def moving_check(self, exit_code=None):
-        """The check command switches the checkout to another branch the first time it runs, and may fail."""
+    def moving_check(self, move, exit_code=None):
+        """The check command moves the checkout the first time it runs, and may fail. A "switch" puts it on another
+        branch; a "commit" commits the candidate on the delivery branch."""
         real, ran = LiveWorkspace.run, []
 
         def run(workspace, command, **kwargs):
             code = real(workspace, command, **kwargs)
             if command == "test -f items.txt" and not ran:
                 ran.append(command)
-                self.git("switch", "-q", "-c", "moved")
+                if move == "switch":
+                    self.git("switch", "-q", "-c", "moved")
+                else:
+                    self.git("add", "--all")
+                    self.git("commit", "-q", "--allow-empty", "-m", "Check commit")
                 return code if exit_code is None else exit_code
             return code
         return patch.object(LiveWorkspace, "run", run)
 
-    def test_IM3_a_check_that_moves_the_branch_and_passes_halts_commit_and_resumes_once_restored(self):
-        """A check command owns nothing in the checkout, so commit refuses its move and Ready resumes once it is undone."""
-        with self.moving_check():
-            halted = self.walk(self.edit)
-        self.assertEqual((halted["stop"], halted["path"][-1]), ("dirty_worktree", "commit"), halted.get("halt_detail"))
-        checkout = LiveWorkspace(self.checkout).inspect()
-        self.assertEqual((checkout.branch, checkout.head, checkout.clean), ("moved", halted["work"].attempt_head, False))
-        self.assertEqual((self.checkout / "items.txt").read_text(), "one\n")
-        self.assertEqual((self.published_heads, self.created), ([], []))
-        self.git("switch", "-q", self.branch)
-        resumed = self.walk(self.no_worker)
-        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
-        self.assertEqual(self.created, [self.remote_head()])
+    def restore(self, move, attempt_head):
+        """Undo the check's move: back to the delivery branch, or the committed candidate back to edits on the attempt parent."""
+        if move == "switch":
+            self.git("switch", "-q", self.branch)
+        else:
+            self.git("reset", "-q", attempt_head)
 
-    def test_IM3_a_failing_check_that_moves_the_branch_halts_before_the_next_builder_call(self):
+    def test_IM3_a_check_that_moves_the_checkout_and_passes_halts_commit_and_resumes_once_restored(self):
+        """A check command owns nothing in the checkout, so commit refuses its move and Ready resumes once it is undone."""
+        for move in ("switch", "commit"):
+            with self.subTest(move=move):
+                self.reset_fixture()
+                with self.moving_check(move):
+                    halted = self.walk(self.edit)
+                self.assertEqual((halted["stop"], halted["path"][-1]), ("dirty_worktree", "commit"), halted.get("halt_detail"))
+                attempt_head = halted["work"].attempt_head
+                checkout = LiveWorkspace(self.checkout).inspect()
+                if move == "switch":
+                    self.assertEqual((checkout.branch, checkout.head, checkout.clean), ("moved", attempt_head, False))
+                else:
+                    self.assertEqual((checkout.branch, checkout.clean), (self.branch, True))
+                    self.assertEqual(self.git("rev-parse", "HEAD^"), attempt_head)
+                self.assertEqual((self.checkout / "items.txt").read_text(), "one\n")
+                self.assertEqual((self.published_heads, self.created), ([], []))
+                self.restore(move, attempt_head)
+                resumed = self.walk(self.no_worker)
+                self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+                self.assertEqual(self.created, [self.remote_head()])
+
+    def test_IM3_a_failing_check_that_moves_the_checkout_halts_before_the_next_builder_call(self):
         """Dispatch refuses the check's move before the builder edits again, and Ready resumes once it is undone.
         A candidate of worker commits is moved back to the attempt parent, so restoring it means that parent too."""
-        for committed in (False, True):
-            with self.subTest(committed=committed):
+        for move, committed in (("switch", False), ("switch", True), ("commit", False)):
+            with self.subTest(move=move, committed=committed):
                 self.reset_fixture()
                 calls = []
 
@@ -1159,15 +1179,21 @@ class PublicationTest(PublicationFixture):
                     self.edit()
                     if committed:
                         self.worker_commit()
-                with self.moving_check(exit_code=1):
+                with self.moving_check(move, exit_code=1):
                     halted = self.walk(edit)
-                self.assertEqual(halted["stop"], "dirty_worktree", halted.get("halt_detail"))
+                self.assertEqual((halted["stop"], halted["path"][-1]), ("dirty_worktree", "implement"), halted.get("halt_detail"))
                 self.assertEqual(calls, [self.branch])
+                attempt_head = halted["work"].attempt_head
                 checkout = LiveWorkspace(self.checkout).inspect()
-                self.assertEqual((checkout.branch, checkout.head, checkout.clean), ("moved", halted["work"].attempt_head, False))
+                if move == "switch":
+                    self.assertEqual((checkout.branch, checkout.head, checkout.clean), ("moved", attempt_head, False))
+                else:
+                    self.assertEqual(checkout.branch, self.branch)
+                    self.assertNotEqual(checkout.head, attempt_head)
                 self.assertEqual((self.published_heads, self.created), ([], []))
-                self.git("switch", "-q", self.branch)
-                self.git("reset", "-q", "--soft", halted["work"].attempt_head)
+                self.restore(move, attempt_head)
+                if move == "switch":
+                    self.git("reset", "-q", "--soft", attempt_head)
                 resumed = self.walk(edit)
                 self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
                 self.assertEqual(calls, [self.branch, self.branch])

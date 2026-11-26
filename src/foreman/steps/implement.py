@@ -128,6 +128,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         update["path"] = [*update.get("path", []), "check"]
         # A check command owns nothing in the checkout, so the attempt keeps the branch and head the check ran on.
         checked = workspace.inspect()
+        before = run.dispatch("implement", state, "").fingerprint(checked)
         output = CheckOutput(run.check_log)
         exit_code = workspace.run(checks.check, log=output)
         detail = ""
@@ -136,7 +137,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         elif exit_code and checks.preflight and (preflight := workspace.run(checks.preflight, log=run.check_log)):
             detail = f"Preflight {checks.preflight!r} exited with {preflight}"
         stable = workspace.tree(None) == tree
-        work = work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint(checked)})
+        work = work.model_copy(update={"owned": before if stable else run.dispatch("implement", state, "").fingerprint(checked)})
     except ImplementationRejected as exc:
         return finish(stopped(Halt.implementation_rejected, str(exc), "implement"))
     except WorkspaceError as exc:
