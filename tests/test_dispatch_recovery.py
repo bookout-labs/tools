@@ -569,27 +569,21 @@ class BuilderSessionTests(PublicationFixture):
         for moved in ("branch", "head"):
             with self.subTest(moved=moved):
                 self.reset_fixture()
-                builds = []
-
-                def edit(model, state, instruction):
-                    builds.append(model.name)
-                    self.edit()
-                    return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
-
+                edit, seen = self.builder([("one\n", VALID, None, False)])
                 self.create_error = True
                 halted = self.walk(model_edit=edit)
                 self.assertEqual(halted["halt"], "publish_failed", halted.get("halt_detail"))
                 self.create_error = False
-                tree = self.git("rev-parse", "HEAD^{tree}")
                 if moved == "branch":
                     self.git("switch", "-c", "elsewhere")
                 else:
-                    self.git("reset", "--soft", self.git("commit-tree", tree, "-m", "Elsewhere"))
+                    self.git("reset", "--soft", self.git("commit-tree", "HEAD^{tree}", "-m", "Elsewhere"))
+                before = LiveWorkspace(self.checkout).inspect()
                 result = self.walk(model_edit=edit)
                 self.assertEqual(result["halt"], "dirty_worktree", result.get("halt_detail"))
                 self.assertEqual(result["path"][result["path"].index("prepare"):], ["prepare"])
-                self.assertEqual(len(builds), 1)
-                self.assertEqual(self.git("rev-parse", "HEAD^{tree}"), tree)
+                self.assertEqual(len(seen), 1)
+                self.assertEqual(LiveWorkspace(self.checkout).inspect(), before)
                 self.assertEqual(self.created, [])
 
     def test_a_resumed_halt_after_the_builder_returned_continues_only_on_the_edits_it_returned(self):
