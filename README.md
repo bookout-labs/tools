@@ -130,9 +130,9 @@ install the pointer's ref, and a global `foreman` may belong to a different revi
 A missing, unreadable, or empty packaged role stops startup with an error before
 Claude launches.
 
-The Ready label is the delivery trigger contract. A host integration must still
-route GitHub label and issue comment deliveries through `foreman accept` and act on its line;
-`foreman coordinator` does not install a webhook or start a polling loop.
+The Ready label is the delivery trigger contract. `foreman receive` is the receiver: plain code that takes the App's
+webhook deliveries, so no model session receives, carries or reads one. `foreman coordinator` does not install a
+webhook or start a polling loop.
 
 After reporting a halted live run, Foreman watches eligible failures by filing a proposed fix or commenting on the existing open proposal for that cause. It records the watch in SQLite and uses a run marker to avoid duplicate writes after a crash; a new halt can add fresh evidence. `--watch-repo OWNER/NAME` selects the proposal repository (default `bookout-labs/tools`). Skipped halts and watch failures are logged without changing the run's exit code; failures retry on the next invocation. Dry runs never contact Forge.
 
@@ -141,6 +141,8 @@ After reporting a halted live run, Foreman watches eligible failures by filing a
 ## What enters the graph
 
 `foreman accept` reads one GitHub delivery and prints `ignored`, the issue to start or the issue to wake. It exits 1 on an unreadable or malformed delivery. It does not call a model.
+
+`foreman receive --port N` listens on `127.0.0.1` (`--host` changes it) for the App's webhook POSTs. It reads the webhook secret from the owner-only file `FOREMAN_WEBHOOK_SECRET_PATH` names (default `~/.config/bookout-foreman/webhook-secret`) and never prints it. A delivery whose `X-Hub-Signature-256` does not sign its body gets 401 before `accept` reads it, and a body that is not a delivery gets 400. Every other delivery goes to `accept` unchanged and gets 202 with `accept`'s line, which the receiver also prints after the `X-GitHub-Delivery` id. An ignored delivery starts nothing and prints that one line. A body larger than GitHub's 25 MB payload cap gets 413 before the receiver reads it, and a connection that has not sent its body within 10 seconds gets 408, so a stalled connection delays no other delivery. A start or wake runs `foreman start` or `foreman wake` in its own process, which shares the receiver's output; the receiver prints `<line> exited <code>` when that process exits non-zero. Deliveries are decided one at a time. Runs of different issues go on at the same time, and the issue's lock serializes runs of one issue. `foreman accept` stays for tests and for deciding a saved delivery by hand.
 
 A delivery starts a run when its `X-GitHub-Event` is `issues`, its action is `labeled`, the label it adds is `Ready`, and the issue is not a pull request. Any other label added to an issue that already carries Ready is ignored. Admission then re-reads the issue from GitHub and admits it only while it still carries Ready, so a delivery that outlived its label leaves the issue unadmitted.
 
@@ -163,7 +165,7 @@ foreman wake --repo Example/Engine --issue 7
 `foreman start` begins an accepted issue's run with nobody at the keyboard:
 - It acts only as the GitHub App installed on that repository and never falls back to a personal `gh` login.
 - It takes the issue's lock first, waiting while another Foreman process holds it. An existing checkpoint for that issue then prints `already started` and exits 0, so a repeated delivery never resumes a running, paused, waiting or finished run. A run that stopped on a resumable halt, `budget_exceeded` included, resumes at its halted step in its saved checkout with the repository's current settings.
-- After a run returns, `foreman start` and `foreman run` print one `start OWNER/NAME#N` line for each issue the run returns to admission: the open dependents after its merge, or the children it filed. The host starts each line like an accepted delivery, and admission decides from the issue's Ready label and its prerequisites. A replay of a finished run prints the same lines, so a crash before the host starts them loses nothing. A prerequisite counts once its closing pull request merged into the default branch.
+- After a run returns, `foreman start` and `foreman run` print one `start OWNER/NAME#N` line for each issue the run returns to admission: the open dependents after its merge, or the children it filed. After the run's process exits, the receiver reads the same issues from the run's checkpoint, never from its output, and starts each like an accepted delivery, each in its own process. Admission decides from the issue's Ready label and its prerequisites. A replayed delivery for a finished run reads the same saved issues, so a crash before the receiver starts them loses nothing. A prerequisite counts once its closing pull request merged into the default branch.
 - It reads the operator's settings from the repository's GitHub Actions variables:
   - `FOREMAN_HUMAN_LOGIN` is required: the GitHub login whose issue comments answer or stop the run.
   - `FOREMAN_MAX_TOKENS` defaults to the standard token cap.
