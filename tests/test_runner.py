@@ -129,7 +129,7 @@ class FakeWorkspace(LiveWorkspace):
     def fingerprint(self):
         return "synthetic-edits"
 
-    def reconcile(self, parent, branch, base_branch):
+    def reconcile(self, parent, branch, base_branch, *, base=None):
         return None if self.current.clean else {"disposition": "edits", "fingerprint": self.fingerprint(),
             "size": self.pull_request_size(self.tree(None), base_branch)}
 
@@ -141,6 +141,16 @@ class FakeWorkspace(LiveWorkspace):
 
     def pin_base(self, base):
         return self.current.head
+
+    def base_head(self, base):
+        return "c" * 40
+
+    def run_at(self, commit, command, *, log=None):
+        return 0
+
+    def merge(self, head):
+        # Git leaves the slice's file conflicted, so the builder resolves it.
+        return ["items.txt"]
 
     def has_tracked_file(self, base, path):
         return self.tracked_file(base, path) is not None

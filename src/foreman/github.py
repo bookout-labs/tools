@@ -959,7 +959,7 @@ class LiveForge:
         if pr.draft:
             return observed("pending", "Mark the PR ready, then resume.")
         if not pr.merged and pr.mergeable is False:
-            return observed("conflict", "Request a merge-base repair round, then renew verification and review.")
+            return observed("conflict", "Foreman merges the base head into the owned branch, then verification and review run again.")
         if not pr.merged and (pr.mergeable is None or pr.mergeable_state == "unknown"):
             return observed("pending", "Resume when GitHub has computed mergeability.")
         rules = self._read(repo, Rules, ["gh", "api", f"{endpoint}/rules/branches/{pr.base.ref}"])

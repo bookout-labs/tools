@@ -1,6 +1,6 @@
 """Local checkout operations used by delivery runs."""
 
-from collections.abc import Callable, Collection, Generator
+from collections.abc import Callable, Collection, Generator, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import fcntl
@@ -75,6 +75,15 @@ class AdoptedImplementation(TypedDict):
 ImplementationCandidate = ImplementationEdits | AdoptedImplementation
 
 
+class BaseMerge(BaseModel, frozen=True, extra="forbid"):
+    """Merge confirmed a conflict with the base, so prepare merges the base head into the owned branch (merge B).
+
+    Empty until the merge starts. Then it names the base head, which is the candidate's base, and the files Git could not merge."""
+
+    head: str = ""
+    unmerged: list[str] = []
+
+
 class WorkState(BaseModel, frozen=True, extra="forbid"):
     branch: str = ""
     base: str = ""
@@ -86,10 +95,11 @@ class WorkState(BaseModel, frozen=True, extra="forbid"):
     head_sha: str | None = None
     published_head: str | None = None
     repair_head: str | None = None
+    base_merge: BaseMerge | None = None
 
-    def moved_to(self, head: str | None) -> "WorkState":
-        """The handoff to Implement when the PR head moved: it fetches the moved head and rebuilds on it."""
-        return WorkState(branch=self.branch, base=self.base, repair_head=head)
+    def moved_to(self, head: str | None, *, conflict: bool = False) -> "WorkState":
+        """The handoff to Implement for a repair: it fetches a moved PR head and rebuilds on it, or merges the base on a conflict."""
+        return WorkState(branch=self.branch, base=self.base, repair_head=head, base_merge=BaseMerge() if conflict else None)
 
 
 class RelatedCheckout(BaseModel, frozen=True, extra="forbid"):
@@ -192,6 +202,7 @@ class Workspace(Protocol):
     root: Path
 
     def run(self, command: str, *, log: CheckLog | None = None) -> int: ...
+    def run_at(self, commit: str, command: str, *, log: CheckLog | None = None) -> int: ...
     def inspect(self) -> WorktreeState: ...
     def review_context(self, base: str, head: str) -> ReviewContext: ...
     def validate_origin(self, repo: str) -> None: ...
@@ -199,9 +210,11 @@ class Workspace(Protocol):
     def check_out_related(self, repo: str, branch: str) -> RelatedCheckout: ...
     def create_branch(self, branch: str, base: str, *, pinned: str = "") -> None: ...
     def refresh(self, branch: str, head: str) -> None: ...
+    def base_head(self, base: str) -> str: ...
+    def merge(self, head: str) -> list[str]: ...
     def commit(self, message: str) -> None: ...
-    def committed(self, parent: str, message: str) -> bool: ...
-    def reconcile(self, parent: str, branch: str, base_branch: str) -> ImplementationCandidate | None: ...
+    def committed(self, parents: Sequence[str], message: str) -> bool: ...
+    def reconcile(self, parent: str, branch: str, base_branch: str, *, base: str | None = None) -> ImplementationCandidate | None: ...
     def tree(self, head: str | None) -> str: ...
     def soft_reset(self, parent: str) -> None: ...
     def uncommit(self, parent: str) -> None: ...
@@ -293,6 +306,17 @@ class LiveWorkspace:
                     log(line)
             return process.wait()
 
+    def run_at(self, commit: str, command: str, *, log: CheckLog | None = None) -> int:
+        """Run the command in a separate detached checkout of the commit, kept in the Git directory where no worker writes."""
+        common = Path(os.fsdecode(self._git("rev-parse", "--path-format=absolute", "--git-common-dir")).removesuffix("\n"))
+        with TemporaryDirectory(prefix="foreman-base-", dir=common) as directory:
+            checkout = Path(directory) / "checkout"
+            self._git("worktree", "add", "--quiet", "--detach", str(checkout), commit)
+            try:
+                return LiveWorkspace(checkout).run(command, log=log)
+            finally:
+                self._git("worktree", "remove", "--force", str(checkout))
+
     def inspect(self) -> WorktreeState:
         head = os.fsdecode(self._git("rev-parse", "HEAD")).strip()
         if commit_sha(head) is None:
@@ -331,14 +355,15 @@ class LiveWorkspace:
                 self._git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*", cwd=self.clone)
         self._urls = self._validate_remote(repo)
 
-    def pin_base(self, base: str) -> str:
+    def base_head(self, base: str) -> str:
+        """Fetch the base branch and return its head."""
         base_ref = f"refs/remotes/origin/{base}"
+        self._git("fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin", f"+refs/heads/{base}:{base_ref}", cwd=self._home)
+        return os.fsdecode(self._git("rev-parse", "--verify", f"{base_ref}^{{commit}}", cwd=self._home)).strip()
+
+    def pin_base(self, base: str) -> str:
         with self._shared():
-            self._git(
-                "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
-                f"+refs/heads/{base}:{base_ref}", cwd=self._home,
-            )
-            pinned = os.fsdecode(self._git("rev-parse", "--verify", f"{base_ref}^{{commit}}", cwd=self._home)).strip()
+            pinned = self.base_head(base)
             if self.clone is not None:
                 # Only admission pins a base, so this allocates the issue's checkout exactly once.
                 listed = self._git("worktree", "list", "--porcelain", "-z", cwd=self.clone).split(b"\0")
@@ -398,6 +423,16 @@ class LiveWorkspace:
             raise WorkspaceError("PR head changed during fetch. Resume with a fresh observation.")
         self._git("merge", "--ff-only", fetched)
 
+    def merge(self, head: str) -> list[str]:
+        """Start merging head into the branch without committing, and name the files Git could not merge.
+
+        Foreman's commit completes the merge, so the builder never writes Git's own files."""
+        self._git("merge", "--no-commit", "--no-ff", "--no-edit", "--quiet", head, allowed_returncodes=(0, 1))
+        merging = os.fsdecode(self._git("rev-parse", "--verify", "--quiet", "MERGE_HEAD", allowed_returncodes=(0, 1))).strip()
+        if merging != head:
+            raise WorktreeInspectionFailed(f"Git could not start merging the base head {head}. Checkout preserved.")
+        return sorted(os.fsdecode(name) for name in self._git("diff", "--name-only", "--diff-filter=U", "-z").split(b"\0") if name)
+
     def fingerprint(self) -> str:
         digest = hashlib.sha256(self._git("diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv"))
         for name in self._git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0"):
@@ -421,14 +456,14 @@ class LiveWorkspace:
                 raise WorktreeInspectionFailed(str(exc)) from None
         return self._identity
 
-    def committed(self, parent: str, message: str) -> bool:
+    def committed(self, parents: Sequence[str], message: str) -> bool:
         if credentials.configured:
             identity = self._bot_identity()
             actual = os.fsdecode(self._git("show", "-s", "--format=%an%n%ae%n%cn%n%ce", "HEAD")).splitlines()
             if actual != [identity[f"GIT_{role}_{field}"] for role in ("AUTHOR", "COMMITTER") for field in ("NAME", "EMAIL")]:
                 return False
         return (os.fsdecode(self._git("show", "-s", "--format=%P%n%B", "HEAD")).strip()
-                == f"{parent}\n{redact(message)}".strip())
+                == f"{' '.join(parents)}\n{redact(message)}".strip())
 
     def tree(self, head: str | None) -> str:
         """Resolve a revision, or snapshot the next commit tree through a private index."""
@@ -448,13 +483,8 @@ class LiveWorkspace:
         return os.fsdecode(self._git("--no-replace-objects", "rev-parse", f"{head}^{{tree}}")).strip()
 
     def _base_merge_base(self, base_branch: str, head: str) -> str:
-        base_ref = f"refs/remotes/origin/{base_branch}"
-        self._git(
-            "fetch", "--no-tags", "--no-recurse-submodules", "--refmap=", "origin",
-            f"+refs/heads/{base_branch}:{base_ref}",
-        )
         ancestor = os.fsdecode(self._git(
-            "--no-replace-objects", "merge-base", base_ref, head, allowed_returncodes=(0, 1),
+            "--no-replace-objects", "merge-base", self.base_head(base_branch), head, allowed_returncodes=(0, 1),
         )).strip()
         if not ancestor:
             raise WorktreeInspectionFailed(
@@ -464,13 +494,17 @@ class LiveWorkspace:
             )
         return ancestor
 
-    def reconcile(self, parent: str, branch: str, base_branch: str) -> ImplementationCandidate | None:
+    def reconcile(self, parent: str, branch: str, base_branch: str, *, base: str | None = None) -> ImplementationCandidate | None:
+        """The candidate the builder left on parent, compared with the candidate's base.
+
+        After a base merge the candidate's base is the merged base head, and the history is Foreman's, so no worker commit is
+        adopted: commit stops if the head moved under it."""
         observed = self.inspect()
         recovery = (f" Checkout preserved. Restore branch {branch} at {parent}, keep the intended edits, then rerun. "
                     "If history is shallow, fetch the needed history with git fetch --unshallow origin before resuming.")
         if observed.branch != branch:
             raise ImplementationRejected(f"HEAD {observed.head} is not attached to delivery branch {branch}." + recovery)
-        merge_base = self._base_merge_base(base_branch, parent)
+        merge_base = base or self._base_merge_base(base_branch, parent)
         paths = set(self._inspection_git(
             merge_base, "diff", "--name-only", "--no-renames", "--diff-filter=d", "-z", parent, "--",
         ).split(b"\0"))
@@ -487,8 +521,8 @@ class LiveWorkspace:
         if rejected := self._ignored_at(merge_base, paths):
             names = ", ".join(repr(os.fsdecode(path)) for path in sorted(rejected))
             raise ImplementationRejected(f"Disposable paths rejected: {names}. Remove them, keep intended edits, then rerun. Checkout preserved.")
-        if observed.head == parent:
-            return None if observed.clean else {"disposition": "edits", "fingerprint": self.fingerprint(),
+        if observed.head == parent or base:
+            return None if observed.clean and observed.head == parent else {"disposition": "edits", "fingerprint": self.fingerprint(),
                 "size": self.pull_request_size(None, base_branch, merge_base=merge_base)}
         if not observed.clean:
             raise ImplementationRejected(f"Moved HEAD {observed.head} has uncommitted edits." + recovery)

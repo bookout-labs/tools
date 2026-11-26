@@ -37,6 +37,8 @@ class Halt(StrEnum):
     model_dependency_missing = auto()
     publication_model_missing = auto()
     not_ready = auto()
+    base_check_failed = auto()
+    base_protected_changed = auto()
 
 
 def halted(reason: Halt, detail: str, path: str | None) -> "DeliveryUpdate":
@@ -114,6 +116,15 @@ HALTS: Final[Mapping[Halt, Policy]] = {
         "No model was recorded for the build step, so the commit cannot credit it. Fix models.toml.", "terminal",
         None),
     Halt.not_ready: Policy("The target repository is not ready for Foreman.", "terminal", None),
+    Halt.base_check_failed: Policy(
+        "The repository's check fails at the base, so the candidate has nothing passing to be compared with. Fix the base branch.",
+        "retry", None),
+    Halt.base_protected_changed: Policy(
+        "The base head changed the contract file, and a run keeps the contract it was admitted with. Adding Ready checks the base "
+        "again without calling a worker, and halts again while the base still differs, so this run cannot take the base's change. "
+        "To start over, post a foreman stop comment, which ends this run cancelled and closes its pull request. Once the issue "
+        "shows the Done label, add Ready, which admits a new run with the base's current contract and its own budget. If the Done "
+        "label does not come, post the stop again.", "retry", None),
 }
 
 RESUMABLE_HALTS = frozenset(code for code, row in HALTS.items() if row.recovery != "terminal")

@@ -16,6 +16,7 @@ from foreman.config import load_config
 from foreman.contract import CONTRACT_PATH
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.delivery import LiveRun
+from foreman.dispatch import DispatchRun
 from foreman.redaction import redact
 from foreman.github import BOT_LOGIN, CLOSE_MARKER, LiveForge
 from foreman.runner import halted_resumably, issue_thread, run_live_delivery
@@ -80,7 +81,11 @@ class PublicationFixture(unittest.TestCase):
         self.create_error = False
         self.queued = False
         self.closed = False
+        # GitHub reports a conflict while this is False and the PR head does not contain the base head.
         self.mergeable = True
+        # When GitHub created each human comment, by body, and when Ready was last added to the issue.
+        self.comment_times: dict[str, str] = {}
+        self.ready_at: str | None = None
         self.pr_comments: list[str] = []
         # The queue merges an armed pull request unless a test holds it.
         self.queue_merges = True
@@ -110,12 +115,15 @@ class PublicationFixture(unittest.TestCase):
                 response = [[]]
             case ["api", "repos/bookout-labs/tools/issues"]:
                 response = {"number": 101}
+            case ["api", "repos/Example/Engine/issues/8/events?per_page=100"]:
+                response = [[{"event": "labeled", "label": {"name": "Ready"}, "created_at": self.ready_at}] if self.ready_at else []]
             case ["api", "repos/Example/Engine/issues/8/dependencies/blocking"]:
                 response = [[]]
             case ["api", "repos/Example/Engine/issues/8/dependencies/blocked_by"]:
                 response = [[]]
             case ["api", "repos/Example/Engine/issues/8/comments?per_page=100"]:
-                response = [[*({"user": {"login": "fixture-owner"}, "body": body} for body in self.comments),
+                response = [[*({"user": {"login": "fixture-owner"}, "body": body,
+                                **({"created_at": self.comment_times[body]} if body in self.comment_times else {})} for body in self.comments),
                              *([{"id": 1, "user": {"login": BOT_LOGIN}, "body": self.status}] if self.status else [])]]
             case ["api", "repos/Example/Engine/issues/12/comments?per_page=100"]:
                 response = [[{"id": 2, "user": {"login": BOT_LOGIN}, "body": body} for body in self.pr_comments]]
@@ -171,7 +179,8 @@ class PublicationFixture(unittest.TestCase):
                 self.closed = True
                 response = {"state": "closed"}
             case ["api", "repos/Example/Engine/pulls/12"]:
-                response = dict(number=12, state="closed" if self.merged else "open", draft=False, mergeable=self.mergeable, mergeable_state="clean" if self.mergeable else "dirty",
+                mergeable = self.mergeable or run_subprocess(["git", "--git-dir", str(self.remote), "merge-base", "--is-ancestor", self.base, self.ref]).returncode == 0
+                response = dict(number=12, state="closed" if self.merged else "open", draft=False, mergeable=mergeable, mergeable_state="clean" if mergeable else "dirty",
                     merged=self.merged, merge_commit_sha="e" * 40 if self.merged else None, head=dict(sha=self.remote_head(), ref=self.branch),
                     base=dict(sha=self.git("--git-dir", str(self.remote), "rev-parse", self.base), ref=self.base))
             case ["api", url] if url.endswith("/collaborators/fixture-owner/permission"):
@@ -898,8 +907,8 @@ class PublicationTest(PublicationFixture):
 
     def test_reconciled_candidate_mutation_is_rejected_before_publication(self):
         original = LiveWorkspace.reconcile
-        def mutate(workspace, *args):
-            candidate = original(workspace, *args)
+        def mutate(workspace, *args, **kwargs):
+            candidate = original(workspace, *args, **kwargs)
             (self.checkout / "extra.txt").write_text("later")
             self.worker_commit()
             return candidate
@@ -1316,38 +1325,6 @@ class PublicationTest(PublicationFixture):
                     self.assertEqual(later, [])
                     self.assertTrue((self.checkout / "foreign.txt").exists())
 
-    def test_ready_after_a_dirty_merge_repair_adopts_the_advanced_owned_pr_as_a_new_attempt(self):
-        """Engine #1296: a hand merge dirtied the checkout during a conflict repair. The operator restored the attempt head
-        and pushed the merge to the PR, then added Ready."""
-        self.mergeable = False
-        questions = iter((None, "Resolve the conflict in items.txt how?"))
-        paused = self.walk(ask=lambda: next(questions))
-        self.assertEqual(paused["stop"], "needs_human")
-        attempt_head = self.remote_head()
-        self.assertEqual(paused["work"].attempt_head, attempt_head)
-        (self.checkout / "merge.txt").write_text("hand merge in progress\n")
-        marker = re.search(r"foreman answer [0-9a-f-]{71}", paused["halt_detail"])
-        assert marker is not None
-        self.comments.append(f"{marker[0]}\nKeep both.")
-        halted = self.walk(self.no_worker, answer="Keep both.")
-        self.assertEqual(halted["stop"], "dirty_worktree")
-        (self.checkout / "merge.txt").unlink()
-        self.git("checkout", "--", ".")
-        self.assertEqual(LiveWorkspace(self.checkout).inspect().head, attempt_head)
-        main = self.advance_origin()
-        merge = self.git("commit-tree", f"{attempt_head}^{{tree}}", "-p", attempt_head, "-p", main, "-m", "Merge main")
-        self.git("push", "origin", f"{merge}:{self.ref}")
-        self.mergeable = True
-        reviewed = len(self.published_heads)
-        resumed = self.walk(lambda: (self.checkout / "items.txt").write_text("both\n"), ask=lambda: None)
-        self.assertEqual(resumed["stop"], "merged")
-        head = resumed["work"].head_sha
-        # The new attempt starts on the advanced PR head, and verify and review run again at the head it publishes.
-        self.assertEqual((resumed["work"].attempt_head, self.git("rev-parse", f"{head}^"), self.remote_head()), (merge, merge, head))
-        self.assertEqual(resumed["checks"].verified_head, head)
-        self.assertEqual(self.published_heads[reviewed:], [head])
-        self.assertIn("publish", resumed["path"])
-
     def test_publication_failures(self):
         cases = (("rejected push", "rejected"), ("missing remote", "origin"), ("wrong push URL", "Transport requires"))
         for case, detail in cases:
@@ -1518,3 +1495,151 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(recovered.get("stop"), "budget_exceeded")
         self.assertIn("usage_unknown", recovered["halt_detail"])
         self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
+
+
+class BaseMergeTest(PublicationFixture):
+    """Merge B: on a confirmed conflict Foreman merges the base head into the owned branch, and the builder resolves only the
+    files Git could not merge (implement invariants). GitHub reports the conflict until the PR head contains the base head."""
+
+    def reset_fixture(self, check="! grep -qs '^<<<<<<<' items.txt notes.txt"):
+        super().reset_fixture(check)
+        # The pinned base holds the two files the slice changes and a test the base later deletes.
+        (self.checkout / "tests").mkdir()
+        for name, text in (("items.txt", "base\n"), ("notes.txt", "base\n"), ("tests/old_test.txt", "old\n")):
+            (self.checkout / name).write_text(text)
+        self.git("add", "--all")
+        self.git("commit", "-m", "Base files")
+        self.git("push", "origin", self.base)
+        self.mergeable = False
+
+    def advance_base(self, files, *, deleted=()):
+        """Main moves while the PR is open, in a separate clone, so the run's checkout is untouched."""
+        other = self.checkout.parent / "other"
+        if not other.exists():
+            run_subprocess(["git", "clone", "-q", str(self.remote), str(other)], check=True)
+        for args in (("fetch", "-q", "origin"), ("checkout", "-q", "-B", self.base, f"origin/{self.base}")):
+            run_subprocess(["git", *args], cwd=other, check=True)
+        for name, text in files.items():
+            (other / name).write_text(text)
+        for name in deleted:
+            (other / name).unlink()
+        for args in (("add", "--all"), ("-c", "user.name=Base", "-c", "user.email=base@example.com", "-c", "commit.gpgsign=false",
+                                        "commit", "-qm", "Base moves"), ("push", "-q", "origin", self.base)):
+            run_subprocess(["git", *args], cwd=other, check=True)
+        return self.git("--git-dir", str(self.remote), "rev-parse", self.base)
+
+    def builder(self, files, resolve, *, deleted=()):
+        """The first call builds the slice while main moves. A later call is the conflict repair."""
+        seen = {}
+
+        def edit(model, state, instruction):
+            if "base" not in seen:
+                for name in ("items.txt", "notes.txt"):
+                    (self.checkout / name).write_text("one\n")
+                seen["base"] = self.advance_base(files, deleted=deleted)
+                return None
+            seen["merge"] = state["work"].base_merge
+            seen["merging"] = self.git("rev-parse", "MERGE_HEAD")
+            seen["instruction"] = instruction
+            return resolve()
+        return edit, seen
+
+    def resolve(self):
+        for name in ("items.txt", "notes.txt"):
+            (self.checkout / name).write_text("both\n")
+
+    def merge_parents(self):
+        return self.git("--git-dir", str(self.remote), "rev-list", "--parents", "-n", "1", self.ref).split()[1:]
+
+    def later_stages(self, result):
+        stages = [attempt["stage"] for attempt in result["attempts"]]
+        return stages[stages.index("review") + 1:]
+
+    def test_IM15_a_confirmed_conflict_is_merged_by_foreman_and_resolved_by_the_builder(self):
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve, deleted=("tests/old_test.txt",))
+        result = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        first, merged = self.published_heads[0], self.remote_head()
+        # Prepare named the two files Git could not merge, and the builder answered with the merge still in progress.
+        self.assertEqual((seen["merge"].head, seen["merge"].unmerged, seen["merging"]),
+                         (seen["base"], ["items.txt", "notes.txt"], seen["base"]))
+        self.assertIn("Run no Git command that writes", seen["instruction"])
+        # Commit made a merge commit with the base head as its second parent, and publish pushed it without force.
+        self.assertEqual(self.merge_parents(), [first, seen["base"]])
+        self.assertEqual(self.git("--git-dir", str(self.remote), "show", f"{self.ref}:items.txt"), "both")
+        self.assertNotIn("tests/old_test.txt", self.git("--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", self.ref))
+        # Verify and review ran again at the new head, and no question gate opened.
+        self.assertEqual(self.published_heads, [first, merged])
+        self.assertEqual(self.later_stages(result), ["implement", "verify", "review"])
+        self.assertEqual(result["checks"].verified_head, merged)
+
+    def test_IM15_when_git_merges_every_file_no_builder_is_called(self):
+        """The base moves a file the slice did not change. Foreman checks the merged tree and commits it."""
+        edit, seen = self.builder({"other.txt": "main\n"}, lambda: self.fail("Git merged every file, so no builder is called"))
+        result = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        self.assertEqual(self.merge_parents(), [self.published_heads[0], seen["base"]])
+        self.assertEqual(self.later_stages(result), ["verify", "review"])
+
+    def test_a_base_merge_is_owned_by_the_attempt_across_an_interrupt_before_the_builder_answers(self):
+        """Build note (#1296): the merge starts inside prepare before the attempt's fingerprint is saved, so a run interrupted
+        between prepare's merge and the builder's answer resumes without reading the merge as someone else's edits."""
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve)
+        original = DispatchRun.launch
+
+        def interrupted(run, state, reservation, model):
+            if (work := state["caller"].get("work")) is not None and work.base_merge is not None:
+                raise SystemExit("interrupted before the builder's call")
+            return original(run, state, reservation, model)
+        with patch.object(DispatchRun, "launch", interrupted), self.assertRaises(SystemExit):
+            self.walk(model_edit=edit, reviews=["approve", "approve"])
+        # The merge is in progress in the checkout, with nothing committed.
+        self.assertEqual((self.git("rev-parse", "MERGE_HEAD"), self.git("rev-parse", "HEAD")), (seen["base"], self.published_heads[0]))
+        resumed = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(self.merge_parents(), [self.published_heads[0], seen["base"]])
+        self.assertEqual(seen["merge"].unmerged, ["items.txt", "notes.txt"])
+
+    def test_IM16_a_base_that_changed_the_contract_file_merges_nothing(self):
+        """The run keeps its admitted contract. Ready checks the base again without a worker. A stop older than the latest
+        Ready no longer counts. A stop after it ends the run cancelled and closes the PR, leaving the branch. Waking a halted
+        run on the stop comment is B2's, so here the stop is read when the run resumes."""
+        contract = (self.checkout / CONTRACT_PATH).read_text() + "# The base's new contract\n"
+        edit, _ = self.builder({CONTRACT_PATH: contract, "items.txt": "main\n"},
+                               lambda: self.fail("No worker runs when the base changed the contract file"))
+        halted = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("base_protected_changed", "prepare"))
+        self.assertIn(CONTRACT_PATH, halted["halt_detail"])
+        published = self.remote_head()
+        self.assertEqual([attempt["stage"] for attempt in halted["attempts"]].count("implement"), 1)
+        # The checkout is unchanged: clean, at the published head, with no merge started.
+        self.assertEqual((self.git("status", "--porcelain"), self.git("rev-parse", "HEAD")), ("", published))
+        self.assertNotEqual(run_subprocess(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=self.checkout).returncode, 0)
+        assert self.status is not None
+        for words in ("Adding Ready checks the base again without calling a worker", "post a foreman stop comment", "Done label"):
+            self.assertIn(words, self.status)
+        # Ready halts the same way with no paid call.
+        again = self.walk(self.no_worker)
+        self.assertEqual((again["stop"], again["attempts"]), ("base_protected_changed", halted["attempts"]))
+        # A stop posted before Ready was added again no longer counts, so the run halts again with its PR open.
+        stale, stop = "foreman stop", "foreman stop\nStart over with the base's contract."
+        self.comments.append(stale)
+        self.comment_times[stale], self.ready_at = "2026-11-25T10:00:00Z", "2026-11-25T10:00:05Z"
+        kept = self.walk(self.no_worker)
+        self.assertEqual((kept["stop"], kept["attempts"], self.closed), ("base_protected_changed", halted["attempts"], False))
+        # A stop after the latest Ready ends the run cancelled and closes its PR, leaving the branch.
+        self.comments.append(stop)
+        self.comment_times[stop] = "2026-11-25T10:01:00Z"
+        cancelled = self.walk(self.no_worker)
+        self.assertEqual((cancelled["stop"], self.closed, self.remote_head()), ("cancelled", True, published))
+        self.assertEqual(cancelled["attempts"], halted["attempts"])
+
+    def test_IM18_a_builder_commit_on_a_conflict_repair_stops_commit_and_publishes_nothing(self):
+        def commit_itself():
+            self.resolve()
+            self.git("commit", "-qam", "The builder's own merge commit")
+        edit, _ = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, commit_itself)
+        result = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual((result["stop"], result["path"][-1]), ("dirty_worktree", "commit"), result.get("halt_detail"))
+        self.assertEqual(self.remote_head(), self.published_heads[0])
+        self.assertEqual(self.git("log", "-1", "--format=%s"), "The builder's own merge commit")

@@ -113,9 +113,9 @@ class NpmSmokeTest(unittest.TestCase):
                 return fake.pull_request_for(repo, branch)
             forge.pull_request_for = Mock(side_effect=pull_request_for)
             original_reconcile = LiveWorkspace.reconcile
-            def reconcile(workspace, parent, branch, base):
+            def reconcile(workspace, parent, branch, base_branch, **kwargs):
                 reconciled.append(parent)
-                return original_reconcile(workspace, parent, branch, base)
+                return original_reconcile(workspace, parent, branch, base_branch, **kwargs)
             def boundary(command, **kwargs):
                 kwargs['live_run'] = replace(kwargs['live_run'], skills=fixture_skills)
                 kwargs.setdefault('worker_runner', worker)

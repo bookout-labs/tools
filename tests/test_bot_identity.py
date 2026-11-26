@@ -37,7 +37,7 @@ class BotIdentityTest(unittest.TestCase):
                 LiveForge, '_run_command', return_value='{"id":359513816}',
             ) as api:
                 workspace.commit(message)
-                self.assertTrue(workspace.committed(base, message))
+                self.assertTrue(workspace.committed((base,), message))
                 api.assert_called_once_with('org/repo', [
                     'gh', 'api', 'users/bookout-labs-foreman%5Bbot%5D',
                 ], timeout=30, body=None)
@@ -50,7 +50,7 @@ class BotIdentityTest(unittest.TestCase):
             self.assertEqual(git('config', 'user.name'), 'Personal')
             with patch.dict(os.environ, FOREMAN_APP_ID='1'):
                 git('commit', '--amend', '--no-edit', '--reset-author')
-                self.assertFalse(workspace.committed(base, message))
+                self.assertFalse(workspace.committed((base,), message))
 
     def test_resolution_failure_stops_before_commit(self):
         for value in (0, -1, 'not an id'):

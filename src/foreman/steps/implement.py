@@ -9,6 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from foreman.check_output import CheckOutput
 from foreman.config import family
+from foreman.contract import CONTRACT_PATH
 from foreman.dispatch import DISPATCH
 from foreman.github import ForgeError, PublishedPullRequest
 from foreman.outcomes import Halt, stopped
@@ -16,10 +17,11 @@ from foreman.redaction import redact
 from foreman.stage_output import ReviewState
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, follow, human_stop
-from foreman.workspace import ImplementationRejected, WorkState, WorkspaceError
+from foreman.workspace import BaseMerge, ImplementationRejected, WorkState, WorkspaceError
 
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.verify_cap,
-         Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled]
+         Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled, Halt.base_check_failed,
+         Halt.base_protected_changed]
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 STEPS = ("prepare", "implement", "check", "commit", "publish")
@@ -57,10 +59,32 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         ready = workspace.inspect()
         if not work.branch and not work.repair_head and ready.head != target.base_sha:
             return stopped(Halt.git_failed, "The new build branch must start at the pinned base.", "prepare")
+        attempt = WorkState(branch=branch, base=target.base_branch, attempt_head=ready.head)
+        if work.base_merge is None or work.base_merge.head:
+            return {"work": attempt, "checks": checks.for_attempt(), "path": ["prepare"]}
+        # Merge confirmed a conflict with the base, so Foreman merges the base head into the owned branch without committing.
+        # A run keeps the contract it was admitted with, and the check runs at the base head before the merge starts, so
+        # either stop leaves nothing half-merged.
+        head = workspace.base_head(target.base_branch)
+        if workspace.tracked_file(target.base_sha, CONTRACT_PATH) != workspace.tracked_file(head, CONTRACT_PATH):
+            return stopped(Halt.base_protected_changed, f"The base head {head} changed {CONTRACT_PATH} from the pinned base "
+                           f"{target.base_sha}. Nothing was merged.", "prepare")
+        output = CheckOutput(run.check_log)
+        if exit_code := workspace.run_at(head, checks.check, log=output):
+            return stopped(Halt.base_check_failed, f"Check {checks.check!r} exited with {exit_code} at the base head {head}. "
+                           f"Nothing was merged.\n\n{output.text}", "prepare")
+        unmerged = workspace.merge(head)
+        # The fingerprint is taken after the merge starts, so a resume owns the merge instead of reading it as someone else's edits.
+        attempt = attempt.model_copy(update={"base_merge": BaseMerge(head=head, unmerged=unmerged), "built": not unmerged,
+                                             "owned": run.dispatch("implement", state, "").fingerprint()})
     except (WorkspaceError, ForgeError) as exc:
         return stopped(Halt.git_failed, str(exc), "prepare")
-    return {"work": WorkState(branch=branch, base=target.base_branch, attempt_head=ready.head),
-            "checks": checks.for_attempt(), "path": ["prepare"]}
+    if unmerged:
+        # The builder resolves the named files, with GitHub's conflict as its repair evidence.
+        return {"work": attempt, "checks": checks.for_attempt(), "path": ["prepare"]}
+    # Git merged every file, so no builder is called. Edit checks the merged tree, and a failing check is a failed check.
+    passed = checks.for_attempt().model_copy(update={"verify": "", "failure_output": "", "check_exit_code": None})
+    return {"work": attempt, "checks": passed, "path": ["prepare"]}
 
 
 def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -87,7 +111,8 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     try:
         candidate = work.candidate
         if candidate is None:
-            candidate = workspace.reconcile(work.attempt_head, work.branch, work.base)
+            candidate = workspace.reconcile(work.attempt_head, work.branch, work.base,
+                                            base=work.base_merge.head if work.base_merge else None)
             if candidate is None:
                 # The builder returned edits that are gone, so a resumed edit asks the builder again.
                 work = work.model_copy(update={"built": False})
@@ -147,6 +172,8 @@ def commit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return stopped(Halt.publication_model_missing, "Publication needs the implement model.", "commit")
     message = f"{textwrap.shorten(subject, width=72, placeholder='')}\n\nCo-Authored-By: {redact(model)} <{COAUTHOR_EMAILS[family(model)]}>"
     workspace = run.workspace
+    # After a base merge, Foreman's commit completes it with the merged base head as the second parent.
+    parents = (work.attempt_head, work.base_merge.head) if work.base_merge else (work.attempt_head,)
     try:
         observed = workspace.inspect()
         if observed.branch != work.branch:
@@ -162,7 +189,7 @@ def commit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                 return stopped(Halt.dirty_worktree, "The edits differ from the checked tree. They are preserved.", "commit")
             workspace.commit(message)
             observed = workspace.inspect()
-        elif not (observed.clean and workspace.committed(work.attempt_head, message)):
+        elif not (observed.clean and workspace.committed(parents, message)):
             return stopped(Halt.dirty_worktree, "HEAD differs from the expected checked commit. It is preserved.", "commit")
         if not observed.clean or workspace.tree(observed.head) != checks.checked_tree:
             return stopped(Halt.dirty_worktree, "The commit differs from the checked tree. It is preserved.", "commit")
