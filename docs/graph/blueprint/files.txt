@@ -81,4 +81,5 @@ bookout-labs/tools/tests/test_smoke.py  —  Recorded checkpoint fixtures for th
 bookout-labs/tools/tests/test_spec_candidate.py
 bookout-labs/tools/tests/test_spec_check.py
 bookout-labs/tools/tests/test_start.py
+bookout-labs/tools/tests/test_status.py
 bookout-labs/tools/tests/test_verify.py
