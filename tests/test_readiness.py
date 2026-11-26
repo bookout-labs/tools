@@ -1,15 +1,21 @@
 import tests
 
+from contextlib import nullcontext
 import json
 import unittest
 from typing import get_args
 from unittest.mock import Mock, patch
 
+from langgraph.checkpoint.sqlite import SqliteSaver
+
 from foreman.readiness import Observation, Outcome, PullSnapshot
-from foreman.github import CLOSE_MARKER, CommandFailed, ForgeError, IssueComment, LiveForge, PublishedPullRequest, PullRequest
-from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, WorkState
+from foreman.github import CLOSE_MARKER, CommandFailed, ForgeError, IssueComment, LiveForge, MergeNotArmed, PublishedPullRequest, PullRequest
+from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, WorkState, checkpoint_serializer
+from foreman.status import STATUS_MARKER, shows
 from foreman.steps import CANCELLATION, TOO_LATE, StageRun, merge
 from test_github import PR, HEAD, BASE, BRANCH, REPO
+import test_runner
+from test_runner import WakeTest
 
 MERGE = "c" * 40
 READINESS = dict(number=12, state="open", draft=False, head=dict(sha=HEAD, ref=BRANCH),
@@ -249,3 +255,117 @@ class ReadinessTest(unittest.TestCase):
 
     def test_merged_head_can_reconcile_without_premerge_checks(self):
         self.assertEqual(self.observe(pr={**READINESS, "state": "closed", "merged": True, "mergeable": False}).outcome, "ready")
+
+
+class MergeStopWakeTest(WakeTest):
+    """ME13: a stop that wakes a run halted in merge or paused at merge's gate reads the PR first, as arm does. A stop after
+    the merge is too late and changes nothing else. production_unconfirmed is not built yet (item 20), so its run is left out."""
+
+    def merge_run(self, readiness=None, arm=None):
+        """Walk a reviewed run into merge, with GitHub's readiness and arm answers replaced where given."""
+        replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, test_runner.APPROVE]
+        with (patch.object(self.github, "readiness", side_effect=readiness) if readiness else nullcontext(),
+              patch.object(self.github, "arm_auto_merge", side_effect=arm) if arm else nullcontext()):
+            return self.walk(replies)
+
+    def pr(self, state):
+        opened = self.github.opened[test_runner.BRANCH]
+        self.github.opened[test_runner.BRANCH] = opened.model_copy(update={"state": state})
+
+    def moved(self, merged=False):
+        """GitHub's readiness with the PR at a head that does not descend from the checked head, or merged at the reviewed head."""
+        observe, foreign = self.github.readiness, "c" * 40
+        self.github.foreign_heads.add(foreign)
+
+        def read(*args):
+            reading = observe(*args)
+            if merged:
+                return reading.model_copy(update={"pr": reading.pr.model_copy(update={"state": "closed", "merged": True})})
+            head = reading.pr.head.model_copy(update={"sha": foreign})
+            return reading.model_copy(update={"outcome": "head_changed", "pr": reading.pr.model_copy(update={"head": head})})
+        return read
+
+    def status_detail(self, stage=""):
+        """The halt detail saved on the run, or on the stage whose namespace starts with stage."""
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            saved = next(saved for saved in saver.list({"configurable": {"thread_id": "example/engine#8"}})
+                         if saved.config["configurable"]["checkpoint_ns"].startswith(stage))
+            return saved.checkpoint["channel_values"].get("halt_detail", "")
+
+    def stop(self):
+        self.github.ruling("foreman stop")
+        self.assertEqual(self.deliver("issue_comment", test_runner.comment("foreman stop")), "wake Example/Engine#8")
+        return self.wake()[2]
+
+    def test_a_stop_after_the_merge_is_too_late(self):
+        """A run halted merged_unreviewed, and one paused at the head_unverified gate whose PR has since merged, read the PR,
+        record the stop as too late and stay as they were. Each status comment says the stop came after the merge. A second
+        delivery of the stop records and says it no more than once."""
+        unreviewed = self.github.readiness("Example/Engine", 8, test_runner.BRANCH, HEAD)
+        unreviewed.pr.state, unreviewed.pr.merged, unreviewed.pr.head.sha = "closed", True, "c" * 40
+        readings = iter([self.github.readiness("Example/Engine", 8, test_runner.BRANCH, HEAD)])
+        self.assertEqual(self.merge_run(lambda *args: next(readings, unreviewed))["stop"], "merged_unreviewed")
+        self.pr("MERGED")
+        self.stop()
+        ended = self.stop()
+        self.assertEqual((ended["stop"], ended["halt"], self.github.pr_closes), ("merged_unreviewed", "merged_unreviewed", []))
+        self.assertEqual((self.status_detail().count(TOO_LATE), self.github.status["Example/Engine", 8].count(TOO_LATE)), (1, 1))
+        self.assertTrue(self.status_detail().endswith(TOO_LATE))
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Stopped"))
+
+        self.checkpoint, self.github = self.cwd.parent / "gate.sqlite3", test_runner.FakeGitHub()
+        self.assertEqual(self.merge_run(self.moved())["stop"], "needs_human")
+        self.pr("MERGED")
+        self.stop()
+        paused = self.stop()
+        self.assertEqual((paused["stop"], self.github.pr_closes), ("needs_human", []))
+        self.assertEqual((self.status_detail("merge"), self.github.status["Example/Engine", 8].count(TOO_LATE)), (TOO_LATE, 1))
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Needs answer"))
+
+    def test_a_stop_before_the_merge_ends_the_run_cancelled(self):
+        """A run halted merge_held whose PR is open leaves the queue, closes and ends cancelled. One halted merge_not_armed
+        whose PR a person closed without merging ends cancelled and closes nothing."""
+        self.github.hold = "Holding merges."
+        self.assertEqual(self.merge_run()["stop"], "merge_held")
+        self.assertEqual((self.stop()["stop"], self.github.pr_closes), ("cancelled", [("Example/Engine", 12, CANCELLATION)]))
+
+        self.checkpoint, self.github = self.cwd.parent / "closed.sqlite3", test_runner.FakeGitHub()
+        self.assertEqual(self.merge_run(arm=MergeNotArmed("Auto-merge is off."))["stop"], "merge_not_armed")
+        self.pr("CLOSED")
+        self.assertEqual((self.stop()["stop"], self.github.pr_closes), ("cancelled", []))
+
+    def test_a_cancel_answered_after_the_merge_lets_observe_go_on(self):
+        """A cancel answered at the head_unverified gate after its PR merged closes the question. Observe resumes, reads the
+        PR and the run ends merged, not cancelled."""
+        self.assertEqual(self.merge_run(self.moved())["stop"], "needs_human")
+        self.pr("MERGED")
+        self.github.answer(self.question, "cancel")
+        self.assertEqual(self.deliver("issue_comment", test_runner.comment(self.github.rulings[-1].body)), "wake Example/Engine#8")
+        with patch.object(self.github, "readiness", side_effect=self.moved(merged=True)):
+            ended = self.wake()[2]
+        self.assertEqual((ended["stop"], ended.get("halt_detail"), self.github.pr_closes),
+                         ("merged", TOO_LATE, []))
+
+    def test_a_refused_pull_request_read_changes_nothing(self):
+        """GitHub answers a plain 403 to the runner's read of the PR on a run halted merge_held, and on one paused at the
+        head_unverified gate. Nothing changes, and each status comment keeps the run's state under a git_failed report that
+        says to fix the App's access and what to post again, worded by the run's saved state."""
+        self.github.hold = "Holding merges."
+        held = self.merge_run()
+        self.checkpoint, gate = self.cwd.parent / "gate.sqlite3", self.github
+        self.github = test_runner.FakeGitHub()
+        paused = self.merge_run(self.moved())
+        for checkpoint, github, run, again in ((self.cwd.parent / "runs.sqlite3", gate, held, "Post the stop again."),
+                                               (self.checkpoint, self.github, paused, "Post the stop or the answer again.")):
+            with self.subTest(run["stop"]):
+                self.checkpoint, self.github = checkpoint, github
+                shown = self.github.status["Example/Engine", 8]
+                with patch.object(self.github, "pull_request_for", side_effect=ForgeError("HTTP 403: Resource not accessible by integration", 403)):
+                    unchanged = self.stop()
+                self.assertEqual((unchanged["stop"], self.github.pr_closes), (run["stop"], []))
+                report = self.github.status["Example/Engine", 8]
+                self.assertTrue(report.startswith("Foreman did not continue this run (git_failed).\n\nThe read of the pull request failed "
+                                                  "because GitHub answered HTTP 403. Fix the Foreman GitHub App's access to this repository. "
+                                                  f"{again}\n\n"), report)
+                self.assertIn(shown.removesuffix(STATUS_MARKER).strip(), report)

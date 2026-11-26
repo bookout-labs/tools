@@ -3694,6 +3694,132 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.assertEqual((root / "effects.log").read_text().splitlines(), expected_workers)
                 self.assertEqual((root / "check.log").read_text(), "checked\n")
 
+def comment(body, *, login="fixture-owner", action="created", **issue):
+    """An issue_comment delivery for issue 8, as GitHub sends it."""
+    return {"action": action, "issue": {"number": 8, **issue}, "repository": {"full_name": "Example/Engine"},
+            "comment": {"user": {"login": login}, "body": body}, "sender": {"login": login}}
+
+
+class WakeTest(unittest.TestCase):
+    """Runs that GitHub deliveries start and wake through foreman accept, start and wake, with the runner tests' fixtures."""
+
+    # The runner tests' fixtures, borrowed without inheriting their tests.
+    setUpClass = classmethod(LiveRunnerTest.setUpClass.__func__)
+    walk = LiveRunnerTest.walk
+
+    def setUp(self):
+        LiveRunnerTest.setUp(self)
+        self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.cwd / "runtime"), "FOREMAN_APP_ID": "1"}))
+        self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
+
+    def command(self, argv, replies=()):
+        workspace = FakeWorkspace(self.cwd)
+        workspace.remote, workspace.base_files[CONTRACT_PATH] = self.github.branches, contract_text("exit 0")
+        outputs, results = iter(replies), []
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = main(argv, checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace), report=results.append,
+                        worker_runner=lambda args, cwd, env: workspace.reply(args, checker_reply(args) or next(outputs)))
+        return code, out.getvalue(), results[-1] if results else None
+
+    def deliver(self, event, payload):
+        path = self.cwd.parent / "delivery.json"
+        path.write_text(json.dumps(payload))
+        code, out, _ = self.command(["accept", "--event", event, str(path)])
+        self.assertEqual(code, 0)
+        return out.strip()
+
+    def wake(self):
+        return self.command(["wake", "--repo", "Example/Engine", "--issue", "8"])
+
+    def capped(self):
+        """Walk a run whose check passes once, so its PR opens, and then fails until the attempt cap halts the run."""
+        counter = self.cwd.parent / "checks"
+        check = (f"{sys.executable} -c \"import pathlib, sys; p = pathlib.Path('{counter}'); n = len(p.read_text()) if p.exists() else 0; "
+                 "p.write_text('x' * (n + 1)); sys.exit(7 if n else 0)\"")
+        built = {"implementation": "built"}
+        halted = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, built, built, built], check=check)
+        self.assertEqual((halted["stop"], self.github.opened[BRANCH].state), ("verify_cap", "OPEN"))
+        return halted
+
+    def stop_during_call(self, kind):
+        """Post the human's stop while the worker call that returns kind runs, and deliver it then, while the run is running."""
+        reply, woken = FakeWorkspace.reply, []
+
+        def during(workspace, args, output):
+            if kind in output and not woken:
+                self.github.ruling("foreman stop")
+                woken.append(self.deliver("issue_comment", comment("foreman stop")))
+            return reply(workspace, args, output)
+        self.enterContext(patch.object(FakeWorkspace, "reply", during))
+        return woken
+
+
+class StopWakeTest(WakeTest):
+    """TR16: a stop posted while a worker call runs is never dropped. accept answers its delivery with a wake while the run
+    runs, and the wake, made once the run stops running, handles it. The wake's wait for the run's lock is issue_lock's own.
+    The cases where the call ends in a wait for worker capacity, and a stop lost while a run waits on worker capacity, are
+    left out: #379 deletes that wait."""
+
+    def test_a_stop_posted_during_a_call_ends_the_run_once_it_stops_running(self):
+        """The call ends in a question at implement's gate, and in a halt. Each stop's wake ends the run cancelled with no
+        further worker call."""
+        woken = self.stop_during_call("implementation")
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": "Keep the sort order?"}])
+        self.assertEqual((asked["stop"], woken), ("needs_human", ["wake Example/Engine#8"]))
+        calls = len(self.calls)
+        code, _, stopped = self.wake()
+        self.assertEqual((code, stopped["stop"], len(self.calls)), (1, "cancelled", calls))
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Done"))
+
+        self.checkpoint, self.github = self.cwd.parent / "halted.sqlite3", FakeGitHub()
+        woken.clear()
+        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(WorktreeState(HEAD, False, BRANCH),))
+        self.assertEqual((halted["stop"], woken), ("publish_failed", ["wake Example/Engine#8"]))
+        calls = len(self.calls)
+        code, _, stopped = self.wake()
+        self.assertEqual((stopped["stop"], stopped.get("halt"), len(self.calls), self.github.pr_closes), ("cancelled", None, calls, []))
+        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "ignored")
+
+    def test_a_stop_posted_during_research_finds_the_run_answered(self):
+        """The run posts its answer and ends answered, so the stop's wake reads nothing and writes nothing."""
+        self.github = FakeGitHub(["Ready"])
+        woken = self.stop_during_call("research")
+        answered = self.walk([{"triage": "question"}, {"research": "Yes, it sorts."}])
+        self.assertEqual((answered["stop"], woken), ("answered", ["wake Example/Engine#8"]))
+        writes = list(self.github.status_writes)
+        self.github.issue_comment_records = Mock(side_effect=AssertionError("The ended run reads nothing."))
+        self.assertEqual(self.wake()[:2], (0, "not waiting example/engine#8\n"))
+        self.assertEqual(self.github.status_writes, writes)
+
+    def test_a_failed_stop_read_changes_nothing_and_the_stop_posted_again_ends_the_run(self):
+        """GitHub does not answer the runner's stop read on a halted run, and then its close of the PR. Each time the status
+        comment keeps the halt and gains the git_failed report above it, naming what failed, and the stop posted again ends
+        the run cancelled."""
+        self.capped()
+        shown, calls = self.github.status["Example/Engine", 8], len(self.calls)
+        self.github.ruling("foreman stop")
+        records = self.github.issue_comment_records
+        self.github.issue_comment_records = Mock(side_effect=ForgeError("gh api timed out."))
+        code, _, unchanged = self.wake()
+        self.assertNotEqual(code, 0)
+        self.assertEqual((unchanged["stop"], self.github.pr_closes, len(self.calls)), ("verify_cap", [], calls))
+        report = self.github.status["Example/Engine", 8]
+        self.assertTrue(report.startswith("Foreman did not continue this run (git_failed).\n\nThe read of the issue failed because "
+                                          "GitHub gave no answer. No setting needs to change. Post the stop again.\n\n"), report)
+        self.assertIn(shown.removesuffix(STATUS_MARKER).strip(), report)
+        self.github.issue_comment_records = records
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Stopped"))
+        with patch.object(self.github, "close_pull_request", side_effect=ForgeError("gh api timed out.")):
+            self.assertEqual(self.wake()[2]["stop"], "verify_cap")
+        self.assertTrue(self.github.status["Example/Engine", 8].startswith(
+            "Foreman did not continue this run (git_failed).\n\nThe close of the pull request failed because GitHub gave no answer."))
+        self.github.ruling("foreman stop")
+        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
+        code, _, stopped = self.wake()
+        self.assertEqual((stopped["stop"], self.github.pr_closes, len(self.calls)), ("cancelled", [("Example/Engine", 12, CANCELLATION)], calls))
+        self.assertNotIn("git_failed", self.github.status["Example/Engine", 8])
+
+
 class HaltExitCodeTest(unittest.TestCase):
     def live(self, replies=(), *, snapshots=(), body=None, check="exit 0", preflight="", hold=None, labels=None):
         confine_host(self)

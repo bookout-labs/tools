@@ -13,7 +13,7 @@ import sys
 import threading
 from typing_extensions import override
 
-from foreman.accept import AcceptError, Accepted, Paused, accept_event
+from foreman.accept import AcceptError, Accepted, OpenRun, accept_event
 from foreman.state import CheckpointVersionError
 
 SECRET_PATH = "~/.config/bookout-foreman/webhook-secret"
@@ -42,7 +42,7 @@ def webhook_secret() -> bytes:
 
 
 def receive(event: str | None, signature: str | None, body: bytes, secret: bytes,
-            paused: Callable[[str, int], Paused | None]) -> Accepted | None:
+            saved: Callable[[str, int], OpenRun | None]) -> Accepted | None:
     """Refuse a delivery whose X-Hub-Signature-256 is missing or does not sign its body, before accept reads any of it."""
     expected = "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
     if signature is None or not hmac.compare_digest(expected.encode(), signature.encode()):
@@ -54,7 +54,7 @@ def receive(event: str | None, signature: str | None, body: bytes, secret: bytes
     except ValueError:
         raise Refused(400, "body is not JSON") from None
     try:
-        return accept_event(event, payload, paused)
+        return accept_event(event, payload, saved)
     except AcceptError as exc:
         raise Refused(400, str(exc)) from None
 
@@ -80,7 +80,7 @@ def run_foreman(args: list[str]) -> int:
     return subprocess.run([sys.executable, "-m", "foreman", *args], check=False).returncode
 
 
-def listener(address: tuple[str, int], secret: bytes, paused: Callable[[str, int], Paused | None], command: Command,
+def listener(address: tuple[str, int], secret: bytes, saved: Callable[[str, int], OpenRun | None], command: Command,
              released: Released) -> ThreadingHTTPServer:
     """Read each delivery on its own connection, so a stalled one delays no other, and decide them one at a time. Each answer
     runs in its own thread once GitHub has its reply, so a long run delays no later delivery. The issue's lock serializes
@@ -104,7 +104,7 @@ def listener(address: tuple[str, int], secret: bytes, paused: Callable[[str, int
             try:
                 with deciding:
                     answer = receive(self.headers.get("X-GitHub-Event"), self.headers.get("X-Hub-Signature-256"), body,
-                                     secret, paused)
+                                     secret, saved)
             except Refused as exc:
                 return self.reply(exc.status, delivery, f"refused {exc}")
             except CheckpointVersionError as exc:

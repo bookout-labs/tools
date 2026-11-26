@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 import fcntl
 import shutil
-from typing import Any
+from typing import Any, NamedTuple
 import sqlite3
 from tempfile import TemporaryDirectory
 
@@ -20,20 +20,20 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman._raw import is_dict
-from foreman.accept import Paused
+from foreman.accept import OpenRun
 from foreman.config import SkillPin, load_config
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state
 from foreman.readiness import MergeState, MergeWait
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
 from foreman.dispatch import Handler, QuotaPause
-from foreman.doctor import NotReady, OperatorVariables, ReadFailed, repository
+from foreman.doctor import REFUSALS, NotReady, OperatorVariables, ReadFailed, repository
 from foreman.skill_rules import SkillMissing
-from foreman.github import ForgeError, human_comments
+from foreman.github import Forge, ForgeError, human_comment_records, human_comments
 from foreman.watch import run_key, watch
 from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
-from foreman.status import Status, refused, running, status_of, write_status
-from foreman.steps import implement
+from foreman.status import Status, not_continued, refused, running, status_of, write_status
+from foreman.steps import TOO_LATE, close, implement, run_pull_request, stop_counts
 from foreman.workspace import WorkState, WorkspaceError, lock_file
 from foreman.worker import AttemptJournal, verify_attempts, worker_lock
 
@@ -173,19 +173,32 @@ def _saved_values(checkpoint: Path, thread: str) -> dict[str, Any] | None:
     return saved.checkpoint["channel_values"] if saved is not None else None
 
 
-def paused_run(checkpoint: Path, thread: str) -> Paused | None:
-    """The issue's open run when it waits at a gate or on a provider or GitHub, which is the only run a wake continues.
+def open_run(checkpoint: Path, thread: str) -> OpenRun | None:
+    """The issue's run unless it has none or it ended with a result other than a halt. Only such a run takes a wake.
 
     A stage's pause is saved as the run's pending interrupt, so this reads it without compiling the graph."""
     saved = _saved(checkpoint, thread)
-    pending = [value for _, channel, value in (saved.pending_writes or []) if channel == INTERRUPT] if saved else []
-    if saved is None or not pending:
+    if saved is None:
         return None
     values = saved.checkpoint["channel_values"]
     require_schema_version(values, checkpoint, thread)
-    pause: object = pending[0][0].value
+    pending = [value for _, channel, value in (saved.pending_writes or []) if channel == INTERRUPT]
+    if not pending and values.get("stop") in RELEASED_STOPS:
+        return None
+    pause: object = pending[0][0].value if pending else None
     start: StartSettings = values["start"]
-    return Paused(start.human_login, None if is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
+    return OpenRun(start.human_login, None if pause is None or is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
+
+
+def ended_cancelled(checkpoint: Path, thread: str) -> bool:
+    """Whether the issue's saved run ended cancelled, the one ended run that Ready added again replaces (intake.policy)."""
+    return (_saved_values(checkpoint, thread) or {}).get("stop") == "cancelled"
+
+
+def forget_run(checkpoint: Path, thread: str) -> None:
+    """Delete the issue's saved run, so that Ready added after it ended cancelled admits a new run."""
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+        saver.delete_thread(thread)
 
 
 def saved_workspace(checkpoint: Path, thread: str) -> str | None:
@@ -207,6 +220,78 @@ def halted_resumably(checkpoint: Path, thread: str) -> bool:
     return bool(values.get("stop")) and values.get("halt") in RESUMABLE_HALTS
 
 
+def _shown(result: DeliveryResult, saved: StateSnapshot, watch_repo: str) -> Status | None:
+    """The status the issue shows for the run's result, with the question it is paused on."""
+    pending = saved.interrupts[0].value if saved.interrupts else None
+    prompt = parse_output(HumanPrompt, pending) if result["stop"] == "needs_human" and pending is not None else None
+    last = prompt.stage if prompt is not None else STEP_STAGES.get(next(iter(result["path"][-1:]), ""))
+    return status_of(result, last, prompt, watch_repo)
+
+
+class Wake(NamedTuple):
+    """What a wake found: the run's unchanged result and the status to write when nothing resumes, whether a stop ended the
+    run cancelled, and the human's comments its stop read fetched, which also hold a gate's answer."""
+
+    result: DeliveryResult | None
+    status: Status | None = None
+    stopped: bool = False
+    comments: list[str] | None = None
+
+
+def _wake(graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult], config: RunnableConfig,
+          saved: StateSnapshot, client: Forge, repo: str, issue: int, watch_repo: str) -> Wake:
+    """Handle a wake on the issue's saved run before anything resumes (rules.gates.continuation, merge's invariants)."""
+    current = snapshot_result(saved)
+    if current["stop"] in RELEASED_STOPS:
+        # A wake that finds the run ended with a result other than a halt reads nothing and writes nothing.
+        return Wake(current)
+    pause: object = saved.interrupts[0].value if saved.interrupts else None
+    if is_dict(pause) and pause.get("reason") == "merge_pending":
+        return Wake(None)  # The wait resumes merge, whose arm reads the PR and then the stop.
+    # A run with no pause and no halt is one whose process died mid-step. Like a halt, only a stop wakes it.
+    held = "waiting" if is_dict(pause) and pause.get("reason") in PAUSES else "gate" if saved.interrupts else "halted"
+    values = checkpoint_state(paused_values(saved))
+    assert values is not None
+    step = next(iter(current["path"][-1:]), "admit")
+    stage = STEP_STAGES[step]
+    merging, failed = stage == "merge", "The read of the pull request"
+    try:
+        # In merge the PR is read before the stop, as arm reads it.
+        pr = run_pull_request(values, client) if merging else None
+        failed = "The read of the issue"
+        records = human_comment_records(client, values["start"].human_login, repo, issue)
+        comments = [(comment.body or "").strip() for comment in records]
+        if not stop_counts(client, records, repo, issue):
+            # A waiting or gate-paused run resumes, and the gate reads its answer from these comments.
+            return Wake(current if held == "halted" else None, comments=comments)
+        if not merging:
+            failed = "The read of the pull request"
+            pr = run_pull_request(values, client)
+        failed = "The close of the pull request"
+        settled = close(values, client, step, pr, merging=merging)
+    except ForgeError as exc:
+        # Nothing resumes and the run stays as it was. The report goes above its state until the next rewrite.
+        shown = _shown(current, saved, watch_repo) or running(stage)
+        return Wake(current, not_continued(failed, exc.answer, exc.status in REFUSALS and not exc.rate_limited, held, shown))
+    if settled.get("stop"):
+        graph.update_state(config, {"stop": "cancelled", "halt": None, "halt_detail": "", "path": [step]}, as_node=stage)
+        return Wake(None, stopped=True)
+    # The PR merged first, so the stop is too late: it is recorded on the run, once, and the run stays as it was.
+    detail = values.get("halt_detail", "")
+    if held == "halted":
+        recorded = detail if detail.endswith(TOO_LATE) else f"{detail}\n\n{TOO_LATE}"
+        if recorded != detail:
+            graph.update_state(config, {"halt_detail": recorded}, as_node=stage)
+        current = read_delivery_state({**current, "halt_detail": recorded})
+        return Wake(current, _shown(current, saved, watch_repo))
+    if detail != TOO_LATE:
+        # Merge's own state records it, as merge does, so the question stays open.
+        paused = next(task.state for task in saved.tasks if task.interrupts and isinstance(task.state, StateSnapshot))
+        graph.update_state(paused.config, {"halt_detail": TOO_LATE})
+    shown = _shown(current, saved, watch_repo)
+    return Wake(current, shown and Status(shown.label, f"{shown.text}\n\n{TOO_LATE}", shown.facts))
+
+
 def run_live_delivery(
     *,
     repo: str,
@@ -218,6 +303,7 @@ def run_live_delivery(
     answer: str | None = None,
     presentation: RunPresentation | None = None,
     watch_repo: str = "bookout-labs/tools",
+    wake: bool = False,
     report: Callable[[DeliveryResult], None] = lambda result: None,
     log: Callable[[str], None] = lambda message: None,
 ) -> DeliveryResult:
@@ -240,7 +326,8 @@ def run_live_delivery(
         run_state = RunState.model_validate(channels["run"]) if prior is not None else RunState(
             repo=repo, issue=issue, workspace=workspace, request=request or "")
         # A start is a new run or the resume of a resumable halt. It reads the repository's settings once, before the graph.
-        starting = prior is None or (bool(channels.get("stop")) and channels.get("halt") in RESUMABLE_HALTS)
+        # A wake is never a start.
+        starting = not wake and (prior is None or (bool(channels.get("stop")) and channels.get("halt") in RESUMABLE_HALTS))
         settings: OperatorVariables | None = None
         refusal: NotReady | ReadFailed | None = None
         # Every later wake and answer uses the login and caps of the run's last start unchanged.
@@ -262,11 +349,13 @@ def run_live_delivery(
         matt = SkillPin.model_validate(saved_matt) if saved_matt is not None else delivery_config.matt_skills
         pinned = replace(delivery_config, pstack=pin, matt_skills=matt)
         early_result: DeliveryResult | None = None
-        report_refusal: Status | None = None
+        # The status an early result writes: the runner's refusal of a start, or what a wake's stop read found.
+        early_status: Status | None = None
         try:
             graph = compile_delivery(
                 dispatcher, pinned, run=run, checkpointer=saver,
-                scratch=None if refusal is not None or channels.get("stop") and channels.get("halt") not in RESUMABLE_HALTS else Path(scratch),
+                scratch=None if refusal is not None or channels.get("stop") and (wake or channels.get("halt") not in RESUMABLE_HALTS)
+                else Path(scratch),
             )
         except SkillMissing as exc:
             # Skills export only for a start the runner accepted or a saved run, so the run has its start.
@@ -329,10 +418,18 @@ def run_live_delivery(
                 "review": ReviewState(), "path": []}
             code, detail = Halt.not_ready if isinstance(refusal, NotReady) else Halt.git_failed, refusal.halt_detail()
             early_result = read_delivery_state({**kept, **halted(code, detail, "admit"), "stop": code})
-            report_refusal = refused(code, detail, resumed=saved_values is not None)
+            early_status = refused(code, detail, resumed=saved_values is not None)
+        pause: object = saved.interrupts[0].value if saved.interrupts else None
+        waiting = is_dict(pause) and pause.get("reason") in PAUSES
+        merge_wait = is_dict(pause) and pause.get("reason") == "merge_pending"
+        woken = _wake(graph, config, saved, client, repo, issue, watch_repo) if wake and saved_values is not None and early_result is None else Wake(None)
+        if woken.result is not None:
+            early_result, early_status = woken.result, woken.status
+        # A wake whose stop ended the run resumes nothing, as an early result does, and its cancelled run releases its checkout.
+        resumes = early_result is None and not woken.stopped
         finished = bool(saved_values and (saved_values.get("stop") in RELEASED_STOPS or (
             saved_values.get("halt") is not None and saved_values.get("halt") not in RESUMABLE_HALTS)))
-        if early_result is None and saved_values is not None and saved_values["run"].base_sha and not finished:
+        if resumes and saved_values is not None and saved_values["run"].base_sha and not finished:
             # A resumed run keeps the identity triage admitted, in a checkout of the same repository.
             saved_run = saved_values["run"]
             loaded = client.load_issue(repo, issue)
@@ -343,25 +440,22 @@ def run_live_delivery(
             except WorkspaceError as exc:
                 early_result = read_delivery_state({**saved_values, **halted(Halt.git_failed, str(exc), "admit"),
                                                     "stop": Halt.git_failed})
-        pause: object = saved.interrupts[0].value if saved.interrupts else None
-        waiting = is_dict(pause) and pause.get("reason") in PAUSES
         if waiting:
             # A wake that resumes the paused stage keeps its waiting status, so the comment does not flap.
             mirrored[0] = STEP_STAGES.get(snapshot_result(saved)["path"][-1])
-        merge_wait = is_dict(pause) and pause.get("reason") == "merge_pending"
         prompt: HumanPrompt | None = None
-        if saved.interrupts and not waiting and saved_values is not None and early_result is None:
+        if saved.interrupts and not waiting and saved_values is not None and resumes:
             prompt = parse_output(HumanPrompt, saved.interrupts[0].value)
             if prompt.revision is not None:
                 paused = checkpoint_state(paused_values(saved))
                 assert paused is not None and paused["run"].issue is not None
                 used = {qa["answer"] for qa in paused["plan"].human_qa if qa.get("revision") == prompt.revision}
-                replies = [reply for comment in human_comments(client, paused["start"].human_login, paused["run"].repo, paused["run"].issue)
-                           if (reply := prompt.answer_in(comment)) and reply not in used]
+                read = woken.comments if woken.comments is not None else human_comments(client, paused["start"].human_login, paused["run"].repo, paused["run"].issue)
+                replies = [reply for comment in read if (reply := prompt.answer_in(comment)) and reply not in used]
                 if answer is not None and answer not in replies:
                     raise AnswerError("This question needs a matching answer posted under the configured GitHub identity.")
                 answer = answer or next((reply for reply in reversed(replies) if reply), None)
-        if answer is not None and early_result is None:
+        if answer is not None and resumes:
             if waiting:
                 raise AnswerError("This issue has no pending question.")
             if not answer.strip():
@@ -374,7 +468,7 @@ def run_live_delivery(
                     raise AnswerError("This question was already answered differently. Resume with the recorded answer.")
         # A merge gate's answer is saved before the stage reads GitHub again, so it never depends on a replay.
         merge_gate = answer is not None and prompt is not None and prompt.stage == "merge"
-        if early_result is not None:
+        if not resumes:
             pass
         elif answer is not None and saved.interrupts and saved_values is not None and not merge_gate:
             invoke(Command(resume=answer))
@@ -482,18 +576,15 @@ def run_live_delivery(
                         graph.update_state(config, {"watch": record}, as_node="triage")
                         result["watch"] = record
                         log(f"watch {record['action']} #{record['issue']}")
-        if report_refusal is not None:
+        if early_status is not None:
             try:
-                write_status(client, repo, issue, report_refusal)
+                write_status(client, repo, issue, early_status)
             except ForgeError as exc:
                 # The command's error output and its exit code are then the only report.
-                log(f"status not written: GitHub {exc.answer}.\n{report_refusal.text}")
+                log(f"status not written: GitHub {exc.answer}.\n{early_status.text}")
         elif early_result is None:
             # An early result was never saved, so the issue keeps the status its checkpoint last showed.
-            pending = saved.interrupts[0].value if saved.interrupts else None
-            prompt = parse_output(HumanPrompt, pending) if result["stop"] == "needs_human" and pending is not None else None
-            last = prompt.stage if prompt is not None else STEP_STAGES.get(next(iter(result["path"][-1:]), ""))
-            if (status := status_of(result, last, prompt, watch_repo)) is not None:
+            if (status := _shown(result, saved, watch_repo)) is not None:
                 mirror(status)
         if early_result is None and result.get("stop") in ("blocked", Halt.not_ready):
             # Open prerequisites or a missing requirement leave the issue unadmitted, so a later Ready starts it fresh.

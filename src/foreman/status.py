@@ -5,6 +5,7 @@ Foreman has no dashboard, so the issue holds the run's state. The checkpoint dec
 """
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from foreman._raw import is_dict
 from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, READY_LABEL, RUN_LABELS, STOPPED_LABEL, Forge, run_label
@@ -41,6 +42,16 @@ def running(stage: str) -> Status:
 def refused(code: Halt, detail: str, *, resumed: bool) -> Status:
     """The runner's report of a start it refused before the graph. It is no halt, so the run label stays as it is."""
     return Status(None, f"Foreman did not {'resume' if resumed else 'start'} this run ({code}).\n\n{detail}")
+
+
+def not_continued(failed: str, answer: str, refused_app: bool, held: Literal["halted", "gate", "waiting"], current: Status) -> Status:
+    """The runner's report of a wake whose read, or close of the PR, failed, above the run's state, which nothing changed.
+    What it says next follows from the run's saved state, so a wake carries nothing from its delivery (rules.gates.continuation)."""
+    fix = "Fix the Foreman GitHub App's access to this repository." if refused_app else "No setting needs to change."
+    again = {"halted": "Post the stop again.", "gate": "Post the stop or the answer again.",
+             "waiting": "The run still waits as it did, a stop posted before this report must be posted again, and a stop ends it."}[held]
+    report = f"Foreman did not continue this run (git_failed).\n\n{failed} failed because GitHub {answer}. {fix} {again}"
+    return Status(current.label, f"{report}\n\n{current.text}", current.facts)
 
 
 def _pull_request(result: DeliveryResult) -> list[str]:
