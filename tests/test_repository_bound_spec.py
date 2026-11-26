@@ -92,7 +92,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         if saved_workspace(self.checkpoint, issue_thread(TARGET, 8)) is None:
             self.forge.ready_again(8)  # A fresh run starts from Ready.
         return run_live_delivery(repo=TARGET, issue=8, dispatcher=dispatch,
-            run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"),
+            run=LiveRun(self.forge, self.workspace, skills=fixture_skills),
             checkpoint=self.checkpoint, answer=answer)
 
     def test_admission_rejects_foreign_issue_and_open_parent_blocker_before_workers(self):

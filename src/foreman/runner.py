@@ -34,7 +34,6 @@ from foreman.watch import run_key, watch
 from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.status import Status, refused, running, status_of, write_status
 from foreman.steps import implement
-from foreman.usd import usd_text
 from foreman.workspace import WorkState, WorkspaceError, lock_file
 from foreman.worker import AttemptJournal, verify_attempts, worker_lock
 
@@ -182,10 +181,11 @@ def paused_run(checkpoint: Path, thread: str) -> Paused | None:
     pending = [value for _, channel, value in (saved.pending_writes or []) if channel == INTERRUPT] if saved else []
     if saved is None or not pending:
         return None
+    values = saved.checkpoint["channel_values"]
+    require_schema_version(values, checkpoint, thread)
     pause: object = pending[0][0].value
-    # A checkpoint from an older schema has no start, so its login answers nothing.
-    start: StartSettings | None = saved.checkpoint["channel_values"].get("start")
-    return Paused(start.human_login if start is not None else "", None if is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
+    start: StartSettings = values["start"]
+    return Paused(start.human_login, None if is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
 
 
 def saved_workspace(checkpoint: Path, thread: str) -> str | None:
@@ -246,9 +246,8 @@ def run_live_delivery(
             except (NotReady, ReadFailed) as exc:
                 refusal = exc
             else:
-                start = StartSettings(human_login=settings.human_login, max_tokens=settings.max_tokens,
-                                      max_budget_usd=usd_text(settings.max_budget_usd))
-        run = replace(run, journal=AttemptJournal(connection), human_login=start.human_login if start is not None else "")
+                start = settings.start
+        run = replace(run, journal=AttemptJournal(connection))
         delivery_config = load_config()
         saved_pin, saved_matt = channels.get("pstack_pin"), channels.get("matt_skills_pin")
         if prior and not channels.get("stop") and (saved_pin is None or saved_matt is None):
@@ -352,7 +351,7 @@ def run_live_delivery(
                 paused = checkpoint_state(paused_values(saved))
                 assert paused is not None and paused["run"].issue is not None
                 used = {qa["answer"] for qa in paused["plan"].human_qa if qa.get("revision") == prompt.revision}
-                replies = [reply for comment in human_comments(client, run.human_login, paused["run"].repo, paused["run"].issue)
+                replies = [reply for comment in human_comments(client, paused["start"].human_login, paused["run"].repo, paused["run"].issue)
                            if (reply := prompt.answer_in(comment)) and reply not in used]
                 if answer is not None and answer not in replies:
                     raise AnswerError("This question needs a matching answer posted under the configured GitHub identity.")

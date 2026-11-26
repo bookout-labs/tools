@@ -21,7 +21,7 @@ from foreman.delivery import LiveRun, compile_delivery, run_delivery, run_tokens
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from foreman.runner import run_live_delivery, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, SCHEMA_VERSION
-from foreman.usd import BudgetUsd, usd_text
+from foreman.usd import BudgetUsd
 from foreman.doctor import NotReady, operator_variables
 from foreman.workspace import WorkspaceError
 from tests.skill_fixture import skill_fixture
@@ -96,7 +96,7 @@ def worker(args, cwd, env):
 pin = SkillPin.model_validate_json(raw_pin)
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
     sys.exit(main(sys.argv[4:], worker_runner=worker, checkpoint=Path(checkpoint),
-                  live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd()), human_login="fixture-owner")))
+                  live_run=LiveRun(FakeGitHub(), FakeWorkspace(Path.cwd()))))
 '''
         bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
                      f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
@@ -163,7 +163,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         for raw, stored in (("1", "1"), ("1.50", "1.5"), ("1e-4", "0.0001")):
             with self.subTest(raw=raw):
                 read = operator_variables("a/b", {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_BUDGET_USD": raw})
-                self.assertEqual(usd_text(read.max_budget_usd), stored)
+                self.assertEqual(read.start.max_budget_usd, stored)
 
     def test_run_delivery_stores_canonical_text_and_defaults_to_the_drawn_cap(self):
         bounded = run_delivery(ScriptHandler(), repo="a/b", request="x", max_budget_usd=usd("1.50"))
@@ -226,7 +226,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 return Outcome("quota", usage=SCRIPTED_USAGE)
 
             root = Path(folder)
-            kwargs = dict(repo="a/b", issue=8, run=LiveRun(FakeGitHub(), FakeWorkspace(root), human_login="fixture-owner"),
+            kwargs = dict(repo="a/b", issue=8, run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
                           dispatcher=quota)
             first = run_live_delivery(**kwargs, checkpoint=root / "modern.sqlite")
             self.assertEqual(first["stop"], "quota_exhausted")
@@ -238,7 +238,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     legacy = root / f"{snapshot['stop']}.sqlite"
                     with SqliteSaver.from_conn_string(str(legacy)) as saver:
                         saver.serde = checkpoint_serializer()
-                        graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                        graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {**snapshot, "schema_version": 3})
                     with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
                         run_live_delivery(**kwargs, checkpoint=legacy)
@@ -261,7 +261,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             finished = root / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(finished)) as saver:
                 saver.serde = checkpoint_serializer()
-                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b"), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}, as_node="research")
             output = printed(run_live_delivery(**kwargs, checkpoint=finished))
             self.assertIn("done answered", output)
@@ -309,7 +309,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 if case == "non_prefix":
                     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                         saver.serde = checkpoint_serializer()
-                        graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                        graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {"attempts": Overwrite(implement)}, as_node="research")
                     with self.assertRaisesRegex(ValueError, "non-prefix attempt history"):
                         run_live_delivery(**kwargs)

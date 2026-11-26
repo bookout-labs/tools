@@ -7,7 +7,7 @@ from foreman.dispatch import InvalidOutput
 from foreman.github import IssueComment
 from foreman.spec_check import AcceptedSpecCheck, SpecHistory, SpecRound, accept
 from foreman.stage_output import PlanState, SpecAuthor, SpecCandidate, SpecCheckOutput, parse_output
-from foreman.state import RunState
+from foreman.state import RunState, StartSettings
 from foreman.steps import StageRun, spec
 from test_spec_candidate import SLICE
 
@@ -35,13 +35,13 @@ class SpecCheckTests(unittest.TestCase):
         target = {"repo": "a/b", "issue": 8, "base": "a" * 40}
         checked = candidate(target=target)
         plan = checked.update(PlanState(triage="supplied_slice"), single=True)
-        state = {"run": RunState(repo="a/b", issue=8, base_sha="a" * 40), "path": [],
+        state = {"run": RunState(repo="a/b", issue=8, base_sha="a" * 40), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "path": [],
                  "plan": plan.model_copy(update={"spec_history": {"rounds": accept(SpecHistory(), output(), checked).history.rounds}})}
         for comments, stop in (([], None), (["foreman stop"], "cancelled")):
             with self.subTest(stop=stop):
                 forge = Mock(**{"ready_labeled_at.return_value": None, "issue_comment_records.return_value": [
                     IssueComment.model_validate({"user": {"login": "fixture-owner"}, "body": body}) for body in comments]})
-                run = StageRun(workspace=Mock(), forge=forge, check_log=None, max_rounds=3, human_login="fixture-owner",
+                run = StageRun(workspace=Mock(), forge=forge, check_log=None, max_rounds=3,
                                dispatch=Mock(side_effect=AssertionError("no worker call")), apply=Mock())
                 ended = spec.compile_stage(run).invoke(state)
                 self.assertEqual((ended.get("stop"), ended.get("halt"), ended.get("path")), (stop, None, ["spec"] if stop else []))

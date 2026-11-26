@@ -25,7 +25,7 @@ from foreman.credentials import AppCredentials, credentials
 from foreman.github import LiveForge
 from foreman.runner import IssueLocked, issue_lock, saved_workspace
 from foreman.stage_output import spec_digest
-from foreman.state import checkpoint_serializer
+from foreman.state import StartSettings, checkpoint_serializer
 from foreman.usd import BudgetUsd
 from foreman.workspace import lock_file
 from foreman.budget import claude_spend, work_tokens
@@ -62,7 +62,7 @@ class StartTest(unittest.TestCase):
             self.forge, "variables", side_effect=lambda repo: dict(variables))
         with settings, contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
             code = main(["start", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.store,
-                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner"), worker_runner=worker)
+                        live_run=LiveRun(self.forge, self.workspace, skills=fixture_skills), worker_runner=worker)
         return code, out.getvalue(), err.getvalue()
 
     def github_answers(self, method, stderr):
@@ -121,7 +121,7 @@ class StartTest(unittest.TestCase):
         self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(saved_workspace(self.store, THREAD), str(self.root.resolve()))
         self.assertIsNone(saved_workspace(self.store, "example/engine#9"))
-        live = LiveRun(self.forge, self.workspace, skills=fixture_skills, human_login="fixture-owner")
+        live = LiveRun(self.forge, self.workspace, skills=fixture_skills)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertNotEqual(main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"], checkpoint=self.store, live_run=live), 2)
             with self.assertRaises(SystemExit) as refused:
@@ -130,8 +130,9 @@ class StartTest(unittest.TestCase):
 
     def test_settings_default_and_parse(self):
         self.assertEqual(operator_variables("Example/Engine", {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "4.50"}),
-                         OperatorVariables("fixture-owner", DEFAULT_TOKEN_CAP, BudgetUsd(Decimal("4.50")), ""))
-        self.assertEqual(operator_variables("Example/Engine", SETTINGS), OperatorVariables("fixture-owner", DEFAULT_TOKEN_CAP, DEFAULT_BUDGET_USD, ""))
+                         OperatorVariables(StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="4.5"), ""))
+        self.assertEqual(operator_variables("Example/Engine", SETTINGS),
+                         OperatorVariables(StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="3"), ""))
         # The drawing's defaults for an unset cap: 3 dollars and 20,000,000 work tokens.
         self.assertEqual((DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP), (BudgetUsd(Decimal("3")), 20_000_000))
         self.assertEqual(self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])[0], 0)

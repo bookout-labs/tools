@@ -39,7 +39,6 @@ class StageRun:
     forge: Forge
     check_log: CheckLog | None
     max_rounds: int
-    human_login: str
     dispatch: Callable[[DispatchStage, DeliveryState, str], DispatchRun]
     apply: Callable[[DispatchStage, DeliveryState, DispatchResult], DeliveryUpdate]
 
@@ -110,7 +109,7 @@ def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = H
     issue = target.issue
 
     def requested() -> bool:
-        stops = [comment for comment in human_comment_records(run.forge, run.human_login, target.repo, issue) if is_stop(comment.body or "")]
+        stops = [comment for comment in human_comment_records(run.forge, state["start"].human_login, target.repo, issue) if is_stop(comment.body or "")]
         if not stops:
             return False
         ready = run.forge.ready_labeled_at(target.repo, issue)

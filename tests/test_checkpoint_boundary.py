@@ -48,7 +48,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                          patch("foreman.runner.require_schema_version", wraps=require_schema_version) as refuse:
                         with self.assertRaisesRegex(CheckpointVersionError, "schema_version.*Start a new run") as raised:
                             run_live_delivery(repo="a/b", issue=8, checkpoint=checkpoint,
-                                              dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun(), human_login="fixture-owner"))
+                                              dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun()))
                         self.assertIn(str(checkpoint), str(raised.exception))
                         self.assertIn("a/b#8", str(raised.exception))
                         self.assertIn("XDG_STATE_HOME", str(raised.exception))
@@ -88,7 +88,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
             config = {"configurable": {"thread_id": "owners"}}
             with SqliteSaver.from_conn_string(path) as saver:
                 saver.serde = serde
-                graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun()), checkpointer=saver)
                 graph.update_state(config, {**values, "schema_version": SCHEMA_VERSION}, as_node="research")
             with SqliteSaver.from_conn_string(path) as saver:
                 saver.serde = serde
@@ -144,7 +144,7 @@ with SqliteSaver.from_conn_string(path) as saver:
     saver.serde = checkpoint_serializer()
     # The checkout sits at the owners' checked head on their branch.
     graph = compile_delivery(ask, load_config(),
-                             run=LiveRun(DryRun(), DryRun(head="b" * 40, branch="8-change"), human_login="fixture-owner"), checkpointer=saver)
+                             run=LiveRun(DryRun(), DryRun(head="b" * 40, branch="8-change")), checkpointer=saver)
     if phase == "write":
         values = json.loads(state_json)
         for owner in OWNERS:

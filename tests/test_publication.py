@@ -227,7 +227,7 @@ class PublicationFixture(unittest.TestCase):
         return run_live_delivery(
             repo=REPO, issue=8, checkpoint=self.checkpoint,
             answer=answer,
-            run=LiveRun(LiveForge(), workspace, check_log=check_log, human_login="fixture-owner"), dispatcher=handler,
+            run=LiveRun(LiveForge(), workspace, check_log=check_log), dispatcher=handler,
         )
 
     def advance_origin(self, *, parent=None):

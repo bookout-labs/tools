@@ -66,7 +66,7 @@ def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, comm
 class DeliveryTest(unittest.TestCase):
     def test_each_run_result_is_a_distinct_typed_exit(self):
         # DN1: every way a run ends is its own typed exit. A merge wait is an interrupt, never an exit.
-        graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun(), human_login="fixture-owner"))
+        graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun()))
         exits = {key for branch in graph.builder.branches.values() for route in branch.values()
                  for key, target in (route.ends or {}).items() if target == "__end__"}
         self.assertEqual(exits, {"answered", "children_filed", "cancelled", "no_change", "closed", "merged", "halted"})

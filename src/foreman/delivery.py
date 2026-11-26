@@ -43,8 +43,6 @@ FIXTURE_HUMAN = "ghost"
 class LiveRun:
     forge: Forge
     workspace: Workspace
-    # The runner sets the run's saved login: read at a start, saved on the run otherwise.
-    human_login: str = ""
     check_log: CheckLog | None = None
     skills: SkillSource = export_skills
     journal: AttemptJournal | None = None
@@ -162,7 +160,7 @@ def compile_delivery(
 
     stage = StageRun(
         workspace=run.workspace, forge=run.forge, check_log=run.check_log, max_rounds=config.max_review_rounds,
-        human_login=run.human_login, dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result))
+        dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result))
 
     def outcome(state: DeliveryState, success: str) -> str:
         """The typed result a stage carries to the top router."""
@@ -247,7 +245,7 @@ def run_delivery(
     try:
         saver = InMemorySaver(serde=checkpoint_serializer())
         dispatcher = dry.builder(dispatcher)
-        graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills, human_login=FIXTURE_HUMAN),
+        graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills),
                                  scratch=scratch, checkpointer=saver)
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
@@ -261,5 +259,5 @@ def run_delivery(
 
 def diagram() -> str:
     dry = DryRun()
-    graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry, human_login=FIXTURE_HUMAN))
+    graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry))
     return graph.get_graph().draw_mermaid()

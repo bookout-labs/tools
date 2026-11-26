@@ -37,14 +37,14 @@ class TokenCapTests(unittest.TestCase):
                 dispatch = handler
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
                     saver.serde = checkpoint_serializer()
-                    graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                    graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                     graph.update_state(invocation, {"review": ReviewState(), "run": RunState(repo="a/b", issue=8, request="x", base_sha=DryRun.head), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "checks": ChecksState(check=""), "path": [],
                         "plan": PlanState(issue_kind="parent"), "attempts": [{"stage": "spec",
                         "model": "prior", "commit": "a", "methods": [], "outcome": "ran",
                         "usage": {"input": prior, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}, as_node="__start__")
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
                     saver.serde = checkpoint_serializer()
-                    graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                    graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                     graph.invoke(None, invocation, durability="sync")
                     result = snapshot_result(graph.get_state(invocation, subgraphs=True))
                 total = prior + sum(tokens for _, tokens in replies)
@@ -70,7 +70,7 @@ class TokenCapTests(unittest.TestCase):
             self.assertEqual(result["plan"].triage, "")
             self.assertIsNone(result["attempts"][0]["usage"])
             self.assertEqual(run_exit_code(result), 75)
-            graph = compile_delivery(unknown, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"))
+            graph = compile_delivery(unknown, config, run=LiveRun(forge=DryRun(), workspace=DryRun()))
             saved = {"review": ReviewState(), **result, "halt": None, "stop": "", "path": [], "run": RunState(issue=8, base_sha=DryRun.head), "start": StartSettings(human_login="fixture-owner", max_tokens=1, max_budget_usd="3"), "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
             stopped = graph.invoke(saved)
             self.assertEqual(stopped["stop"], "budget_exceeded")
@@ -111,9 +111,9 @@ class TokenCapTests(unittest.TestCase):
             checkpoint = Path(folder) / "finished.sqlite"
             with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                 saver.serde = checkpoint_serializer()
-                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun(), human_login="fixture-owner"), checkpointer=saver)
+                graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
                                    {"review": ReviewState(), "run": RunState(repo="a/b"), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}, as_node="research")
             with self.assertRaisesRegex(CheckpointVersionError, "Start a new run"):
                 run_live_delivery(repo="a/b", issue=8, checkpoint=checkpoint, dispatcher=ScriptHandler(),
-                                  run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder)), human_login="fixture-owner"))
+                                  run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))

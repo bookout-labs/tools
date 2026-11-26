@@ -15,7 +15,7 @@ from langgraph.pregel import Pregel
 
 from foreman import accept
 from foreman.config import family, load_config
-from foreman.delivery import FIXTURE_HUMAN, LiveRun, compile_delivery
+from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun
 from foreman.outcomes import HALTS, Halt
 from foreman.stages import STAGES
@@ -117,7 +117,7 @@ def project():
     def forbidden_dispatch(*_):
         raise AssertionError("The projector must never invoke a worker")
 
-    compiled = compile_delivery(forbidden_dispatch, config, run=LiveRun(forge=dry, workspace=dry, human_login=FIXTURE_HUMAN))
+    compiled = compile_delivery(forbidden_dispatch, config, run=LiveRun(forge=dry, workspace=dry))
     procedures = {}
     for name, stage in STAGES.items():
         selector = getattr(stage, "model_selector", name)

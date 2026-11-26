@@ -17,7 +17,7 @@ from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
-from foreman.state import ReviewState, ChecksState, DeliveryResult
+from foreman.state import CheckpointVersionError, ReviewState, ChecksState, DeliveryResult
 from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.doctor import QUICK, NotReady, ReadFailed, contract, repository
@@ -266,7 +266,7 @@ def main(
         try:
             decision = accept_event(args.event, json.loads(Path(args.path).read_text()),
                                     lambda repo, issue: paused_run(store, issue_thread(repo, issue)))
-        except (OSError, json.JSONDecodeError, AcceptError) as exc:
+        except (OSError, json.JSONDecodeError, AcceptError, CheckpointVersionError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
         print("ignored" if decision is None else f"{decision.action} {decision.repo}#{decision.issue}")

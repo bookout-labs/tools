@@ -22,7 +22,7 @@ from foreman.doctor import QUICK, WRITE_ACCESS, NotReady, ReadFailed, contract, 
 from foreman.github import ForgeError, LiveForge
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
-from foreman.state import ChecksState, PlanState, ReviewState, RunState
+from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings
 from foreman.steps import triage
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_skills
@@ -80,8 +80,8 @@ class Pinned(LiveWorkspace):
 
 def admit(workspace):
     github = FakeGitHub(labels=["Ready"])
-    run = MagicMock(forge=github, workspace=workspace, human_login="fixture-owner")
-    state = {"run": RunState(repo="Example/Engine", issue=8), "plan": PlanState(), "checks": ChecksState(preflight="npm ci"),
+    run = MagicMock(forge=github, workspace=workspace)
+    state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "plan": PlanState(), "checks": ChecksState(preflight="npm ci"),
              "review": ReviewState(), "path": []}
     return triage.admit(state, run)
 
@@ -232,7 +232,7 @@ class NotReadyRunTest(unittest.TestCase):
         dispatch = MagicMock(side_effect=AssertionError("not_ready makes no paid call"))
         with unittest.mock.patch.object(SqliteSaver, "delete_thread", recorded_delete):
             result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=dispatch,
-                                       run=LiveRun(github, workspace, skills=fixture_skills, human_login="fixture-owner"))
+                                       run=LiveRun(github, workspace, skills=fixture_skills))
         self.assertEqual((result["halt"], result["path"]), (Halt.not_ready, ["admit"]))
         (kind, text), deleted = events
         self.assertEqual(kind, "status")
@@ -248,7 +248,7 @@ class NotReadyRunTest(unittest.TestCase):
         # Once the requirement is supplied, the next Ready starts a fresh admission.
         workspace.base_files.update({CONTRACT_PATH: MINIMAL.encode(), SKILL: b"# Verify\n"})
         admitted = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=ScriptHandler(triage="needs_human"),
-                                     run=LiveRun(github, workspace, skills=fixture_skills, human_login="fixture-owner"))
+                                     run=LiveRun(github, workspace, skills=fixture_skills))
         self.assertEqual((admitted["stop"], admitted["checks"].check), ("needs_human", "npm run check"))
 
 
@@ -295,7 +295,7 @@ class QuickCheckTest(unittest.TestCase):
                 remove(github, workspace, requirement)
                 dispatch = MagicMock(side_effect=AssertionError("not_ready makes no paid call"))
                 result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=dispatch,
-                                           run=LiveRun(github, workspace, skills=fixture_skills, human_login="fixture-owner"))
+                                           run=LiveRun(github, workspace, skills=fixture_skills))
                 self.assertEqual((result["halt"], result["path"]), (Halt.not_ready, ["admit"]))
                 self.assertIn(f"Not ready: {missing}", result["halt_detail"])
                 self.assertIn(f"Fix: {fix}", result["halt_detail"])
@@ -345,7 +345,7 @@ class QuickCheckTest(unittest.TestCase):
         github, workspace = FakeGitHub(), FakeWorkspace(self.root)
         github.queue_rule = False
         github.ruling("foreman stop")
-        run = LiveRun(github, workspace, skills=fixture_skills, human_login="fixture-owner")
+        run = LiveRun(github, workspace, skills=fixture_skills)
         refused = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, run=run,
                                     dispatcher=MagicMock(side_effect=AssertionError("not_ready makes no paid call")))
         # Doctor's GitHub requirements come before the stop read, so the repository's state is what the issue shows.
@@ -364,7 +364,7 @@ class QuickCheckTest(unittest.TestCase):
         def doctor(github):
             with patch("foreman.cli.LiveWorkspace", return_value=Pinned(self.root, base)), \
                     contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
-                code = main(["doctor", "--repo", "Example/Engine"], live_run=LiveRun(github, FakeWorkspace(self.root), human_login="fixture-owner"))
+                code = main(["doctor", "--repo", "Example/Engine"], live_run=LiveRun(github, FakeWorkspace(self.root)))
             return code, out.getvalue()
 
         self.assertEqual(doctor(FakeGitHub()), (0, "".join(f"ok {requirement}\n" for requirement in QUICK) + "Example/Engine is ready\n"))
@@ -379,7 +379,7 @@ class QuickCheckTest(unittest.TestCase):
         github = FakeGitHub()
         with patch.object(github, "has_label", side_effect=ForgeError("gh api failed", 502)), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
-            code = main(["doctor", "--repo", "Example/Engine"], live_run=LiveRun(github, FakeWorkspace(self.root), human_login="fixture-owner"))
+            code = main(["doctor", "--repo", "Example/Engine"], live_run=LiveRun(github, FakeWorkspace(self.root)))
         self.assertEqual((code, err.getvalue()), (1, 'cannot check Example/Engine: The read of Example/Engine\'s Ready label, for the '
                                                     'requirement "the Ready label exists", failed because GitHub answered HTTP 502.\n'))
 
@@ -406,7 +406,7 @@ class LoginWriteAccessTest(unittest.TestCase):
         root = Path(self.enterContext(TemporaryDirectory())).resolve()
         dispatch = MagicMock(side_effect=AssertionError("a refused start makes no paid call"))
         result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=root / "runs.sqlite3", dispatcher=dispatch,
-                                   run=LiveRun(github, FakeWorkspace(root), skills=fixture_skills, human_login="fixture-owner"))
+                                   run=LiveRun(github, FakeWorkspace(root), skills=fixture_skills))
         self.assertEqual((reads, github.label_calls), ([login], []))
         dispatch.assert_not_called()
         return result, github.status[("Example/Engine", 8)]
@@ -438,7 +438,7 @@ class LoginWriteAccessTest(unittest.TestCase):
         github = FakeGitHub()
         for permission in ("admin", "write"):
             github.permissions["fixture-owner"] = permission
-            self.assertEqual(repository(github, "Example/Engine").human_login, "fixture-owner")
+            self.assertEqual(repository(github, "Example/Engine").start.human_login, "fixture-owner")
 
     def test_a_failed_permission_read_is_a_failed_read_that_does_not_say_to_change_the_login(self):
         answer = {"exit": 1, "stdout": "", "stderr": "gh: Server Error (HTTP 502)"}

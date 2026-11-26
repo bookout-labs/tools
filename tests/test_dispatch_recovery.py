@@ -653,7 +653,7 @@ class OtherProcedureSessionTests(unittest.TestCase):
 
             def walk_live():
                 return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
-                                         dispatcher=handler, run=LiveRun(FakeGitHub(), workspace, human_login="fixture-owner"))
+                                         dispatcher=handler, run=LiveRun(FakeGitHub(), workspace))
 
             self.assertEqual(walk_live()["stop"], "quota_exhausted")
             wakes.append(True)

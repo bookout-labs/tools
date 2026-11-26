@@ -182,7 +182,7 @@ class ReviewRoundsTest(unittest.TestCase):
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint")) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(dispatch, settings, scratch=scratch,
-                                         run=LiveRun(self.forge, workspace, human_login="fixture-owner"), checkpointer=saver)
+                                         run=LiveRun(self.forge, workspace), checkpointer=saver)
                 config = {"configurable": {"thread_id": "example/repo#8"}}
                 state = {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo=repo, issue=8, base_branch="main", base_sha=workspace.current.head), "start": StartSettings(human_login="fixture-owner", max_tokens=20_000_000, max_budget_usd="3"), "plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE),
                          "checks": ChecksState(check="exit 0"), "pstack_pin": settings.pstack.model_dump(), "matt_skills_pin": settings.matt_skills.model_dump(), **(initial or {})}
@@ -195,7 +195,7 @@ class ReviewRoundsTest(unittest.TestCase):
                         self.assertEqual(self.forge.reviews, [])
                     (scratch / "resume").mkdir()
                     graph = compile_delivery(dispatch, settings, scratch=scratch / "resume",
-                                             run=LiveRun(self.forge, workspace, human_login="fixture-owner"), checkpointer=saver)
+                                             run=LiveRun(self.forge, workspace), checkpointer=saver)
                     result = graph.invoke(None, config)
                 else:
                     result = graph.invoke(state, config)
@@ -205,7 +205,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     from foreman.runner import run_live_delivery
                     from unittest.mock import patch
                     with patch('foreman.runner.load_config', return_value=settings):
-                        result = run_live_delivery(repo=repo, issue=8, checkpoint=Path(directory) / 'checkpoint', run=LiveRun(self.forge, workspace, human_login="fixture-owner"), dispatcher=dispatch)
+                        result = run_live_delivery(repo=repo, issue=8, checkpoint=Path(directory) / 'checkpoint', run=LiveRun(self.forge, workspace), dispatcher=dispatch)
                 if (paused := graph.get_state(config, subgraphs=True)).interrupts:
                     return snapshot_result(paused)
                 return read_delivery_state({"stop": "needs_human", **result})
