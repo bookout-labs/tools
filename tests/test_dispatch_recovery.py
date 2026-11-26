@@ -563,6 +563,29 @@ class BuilderSessionTests(PublicationFixture):
                     self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
                     self.assertEqual(self.git("show", f"{self.remote_head()}:items.txt"), "one")
 
+    def test_a_resume_that_calls_no_builder_is_refused_at_prepare_for_a_checkout_moved_off_the_attempt(self):
+        # IM1: publish fails after the check passed, so the resume calls no builder. The same tree on another branch,
+        # or at a head that does not descend from the attempt's, is refused at prepare before any later step runs.
+        for moved in ("branch", "head"):
+            with self.subTest(moved=moved):
+                self.reset_fixture()
+                edit, seen = self.builder([("one\n", VALID, None, False)])
+                self.create_error = True
+                halted = self.walk(model_edit=edit)
+                self.assertEqual(halted["halt"], "publish_failed", halted.get("halt_detail"))
+                self.create_error = False
+                if moved == "branch":
+                    self.git("switch", "-c", "elsewhere")
+                else:
+                    self.git("reset", "--soft", self.git("commit-tree", "HEAD^{tree}", "-m", "Elsewhere"))
+                before = LiveWorkspace(self.checkout).inspect()
+                result = self.walk(model_edit=edit)
+                self.assertEqual(result["halt"], "dirty_worktree", result.get("halt_detail"))
+                self.assertEqual(result["path"][result["path"].index("prepare"):], ["prepare"])
+                self.assertEqual(len(seen), 1)
+                self.assertEqual(LiveWorkspace(self.checkout).inspect(), before)
+                self.assertEqual(self.created, [])
+
     def test_a_resumed_halt_after_the_builder_returned_continues_only_on_the_edits_it_returned(self):
         # Dispatch's check of the returned worktree fails once: a resumable git_failed after the call returned.
         # The halt owns the fingerprint the call returned and resume never recomputes it, so a later edit is dirty.
