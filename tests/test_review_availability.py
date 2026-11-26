@@ -165,8 +165,7 @@ class ReviewerAvailabilityTest(unittest.TestCase):
             with self.subTest(author=author, outcomes=outcomes), TemporaryDirectory(dir=self.root) as directory:
                 root = Path(directory)
                 first = self.invoke(root, author, outcomes, 75)
-                self.assertEqual(first["result"]["stop"], "quota_exhausted")
-                self.assertNotIn("halt", first["result"])
+                self.assertEqual((first["result"]["halt"], first["result"]["stop"]), ("worker_unavailable", "worker_unavailable"))
                 self.assertEqual([a["outcome"] for a in first["result"]["attempts"] if a["stage"] == "review"], outcomes)
                 expected = ["gpt-6.1-sol-high", "claude-opus-5-5-high"] if author == "claude" else ["claude-opus-5-5-high", "gpt-6.1-sol-high"]
                 self.assertEqual(first["calls"], expected)

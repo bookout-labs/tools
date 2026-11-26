@@ -48,12 +48,11 @@ def refused(code: Halt, detail: str, *, resumed: bool) -> Status:
     return Status(None, f"Foreman did not {'resume' if resumed else 'start'} this run ({code}).\n\n{detail}")
 
 
-def not_continued(failed: str, answer: str, refused_app: bool, held: Literal["halted", "gate", "waiting"], current: Status) -> Status:
+def not_continued(failed: str, answer: str, refused_app: bool, held: Literal["halted", "gate"], current: Status) -> Status:
     """The runner's report of a wake whose read, or close of the PR, failed, above the run's state, which nothing changed.
     What it says next follows from the run's saved state, so a wake carries nothing from its delivery (rules.gates.continuation)."""
     fix = "Fix the Foreman GitHub App's access to this repository." if refused_app else "No setting needs to change."
-    again = {"halted": "Post the stop again.", "gate": "Post the stop or the answer again.",
-             "waiting": "The run still waits as it did, a stop posted before this report must be posted again, and a stop ends it."}[held]
+    again = {"halted": "Post the stop again.", "gate": "Post the stop or the answer again."}[held]
     report = f"Foreman did not continue this run (git_failed).\n\n{failed} failed because GitHub {answer}. {fix} {again}"
     return Status(current.label, f"{report}\n\n{current.text}", current.facts, current.report)
 
@@ -84,8 +83,8 @@ def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | N
         question, facts = (prompt.question, [prompt.reply] if prompt.revision else []) if prompt else (detail, [])
         return Status(NEEDS_ANSWER_LABEL, f"Foreman needs an answer in {stage}.\n\n{question}", facts)
     if stop in PAUSES:
-        reason = "worker capacity" if stop == "quota_exhausted" else "GitHub to merge the pull request"
-        return Status(DOING_LABEL, f"Foreman is running {stage} and waits for {reason}.\n\n{detail}", _pull_request(result))
+        return Status(DOING_LABEL, f"Foreman is running {stage} and waits for GitHub to merge the pull request.\n\n{detail}",
+                      _pull_request(result))
     text = OUTCOMES[stop]
     facts: list[str] = []
     if stop in ("merged", "closed"):
