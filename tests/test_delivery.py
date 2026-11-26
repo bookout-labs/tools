@@ -139,6 +139,12 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="plan", slices=SLICES), slice=None)
         self.assertEqual(result["path"], ["triage", "spec", "spec_check"])
         self.assertEqual(result["stop"], "children_filed")
+        handler = ScriptHandler(triage="supplied_slice", slice=EMPTY_SLICE)
+        result = walk(handler, slice=None)
+        self.assertEqual((result["plan"].issue_kind, result["plan"].triage), ("parent", "supplied_slice"))
+        self.assertEqual(result["plan"].slice["acceptance"], EMPTY_SLICE["acceptance"])
+        self.assertEqual(result["path"][:2], ["triage", "spec_check"])
+        self.assertNotIn("spec", [call["node"] for call in handler.calls])
 
     def test_single_slice_rejects_a_missing_dependency(self):
         handler = ScriptHandler(slice=SLICES[1], slices=[EMPTY_SLICE])
