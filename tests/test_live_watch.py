@@ -17,7 +17,6 @@ from foreman.adapters import Outcome, Usage
 from foreman.cli import main
 from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
-from foreman.doctor import EVENTS
 from foreman.github import Forge, ForgeError, LiveForge
 from foreman.runner import run_live_delivery, saved_workspace
 from foreman.skill_rules import SkillMissing
@@ -25,6 +24,7 @@ from foreman.workspace import WorkspaceError
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.worker import CliWorker
 from skill_fixture import fixture_skills
+from publication_fixture import SUBSCRIBED
 from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, slice_body, worker_reply
 from foreman.dry_run import CLEAR
 from skill_fixture import checker_reply
@@ -243,7 +243,7 @@ class LiveWatchTest(unittest.TestCase):
         fake_gh = lambda args, **kwargs: gh(args, **kwargs) if args[0] == 'gh' else real_run(args, **kwargs)
         with patch('foreman.github.subprocess.run', side_effect=fake_gh), \
                 patch.object(LiveForge, 'app_installation', return_value='installed'), \
-                patch.object(LiveForge, 'app_events', return_value=frozenset(EVENTS)):
+                patch.object(LiveForge, 'app_subscription', return_value=SUBSCRIBED):
             self.invoke(dispatcher=dispatcher)
             self.invoke(dispatcher=dispatcher)
         # The watch repo is another repository, so the halt detail stays on the run's own issue, redacted.

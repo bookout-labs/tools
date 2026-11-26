@@ -320,7 +320,7 @@ class SmokeCommandTest(unittest.TestCase):
                 fake.settings = {'FOREMAN_HUMAN_LOGIN': 'ghost', 'FOREMAN_MAX_TOKENS': str(cap)}
                 forge.create_issue.side_effect = fake.create_issue
                 forge.load_issue.side_effect = fake.load_issue
-                for name in ('open_issues', 'comment_issue', 'marked_issues', 'variables', 'app_installation', 'app_events', 'has_label', 'merge_queue'):
+                for name in ('open_issues', 'comment_issue', 'marked_issues', 'variables', 'app_installation', 'app_subscription', 'has_label', 'merge_queue'):
                     getattr(forge, name).side_effect = getattr(fake, name)
                 def delivery(**kwargs):
                     from foreman.dry_run import ScriptHandler

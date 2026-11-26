@@ -25,13 +25,12 @@ from unittest.mock import Mock, patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 from unidiff.errors import UnidiffParseError
 
-from publication_fixture import BRANCH, EMPTY_SLICE, SLICE, VERIFY_SKILL_PATH, contract_text, slice_body
+from publication_fixture import BRANCH, EMPTY_SLICE, SLICE, SUBSCRIBED, VERIFY_SKILL_PATH, contract_text, slice_body
 from test_dry_run import transcript
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome
 from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.contract import CONTRACT_PATH
-from foreman.doctor import EVENTS
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
 from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery, stage_text
@@ -41,7 +40,7 @@ from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
 from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, Permission, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
 from foreman.status import STATUS_MARKER, Status, running, shows, write_status
-from foreman.steps import CANCELLATION, StageRun, implement, review, verify
+from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, verify
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
 from foreman.accept import MergeRun
@@ -336,7 +335,7 @@ class FakeGitHub:
         self.variable_reads = []
         # The quick requirements GitHub answers for the repository: the App install, its labels and its merge queue rule.
         self.installation, self.repository_labels, self.queue_rule = "installed", {"Ready"}, True
-        self.events = frozenset(EVENTS)
+        self.subscription = SUBSCRIBED
         # Each login's base role on the repository, None for a login GitHub does not know. Any other login can write.
         self.permissions: dict[str, Permission | None] = {}
         self.opened: dict[str, PublishedPullRequest] = {}
@@ -405,8 +404,8 @@ class FakeGitHub:
     def app_installation(self, repo):
         return self.installation
 
-    def app_events(self, repo):
-        return self.events
+    def app_subscription(self, repo):
+        return self.subscription
 
     def permission(self, repo, login):
         return self.permissions.get(login, "write")
@@ -3926,6 +3925,23 @@ class MergeStageTest(WakeTest):
             self.assertEqual(self.walk(self.REPLIES)["stop"], "needs_human")
         self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), merging)
         self.assertEqual(runs_in_merge(self.checkpoint, "Example/Other"), [])
+
+    def test_a_halted_run_reads_as_in_merge_under_the_runners_later_records(self):
+        """A run halted merged_unreviewed in merge, with the watch record the runner writes after the halt and then the too-late
+        record a stop's wake writes on top, still reads as in merge."""
+        unreviewed = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        unreviewed.pr.state, unreviewed.pr.merged, unreviewed.pr.head.sha = "closed", True, "c" * 40
+        readings = iter([self.github.readiness("Example/Engine", 8, BRANCH, HEAD)])
+        with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, unreviewed)):
+            halted = self.walk(self.REPLIES)
+        self.assertEqual((halted["stop"], halted["watch"]["action"]), ("merged_unreviewed", "filed"))
+        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), [MergeRun(8, 12)])
+        self.github.opened[BRANCH] = self.github.opened[BRANCH].model_copy(update={"state": "MERGED"})
+        self.github.ruling("foreman stop")
+        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
+        ended = self.wake()[2]
+        self.assertEqual((ended["halt"], ended["halt_detail"].endswith(TOO_LATE)), ("merged_unreviewed", True))
+        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), [MergeRun(8, 12)])
 
     def test_a_run_in_another_stage_or_halted_in_another_stage_is_not_in_merge(self):
         """Review runs, and a run halts in implement: neither is in merge, and neither has a process left waiting on it."""

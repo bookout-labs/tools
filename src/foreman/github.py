@@ -13,7 +13,7 @@ from urllib.parse import quote
 from pydantic import AwareDatetime, BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, QueueEntry, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
-from foreman.credentials import CredentialFailure, NotInstalled, Unanswered, credentials, failure, COMMAND_TIMEOUT
+from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered, credentials, failure, COMMAND_TIMEOUT
 from foreman.redaction import redact
 if TYPE_CHECKING:
     from foreman.stage_output import StoredSlice
@@ -410,7 +410,7 @@ class Forge(Protocol):
     def reconcile_merge(self, receipt: MergeReceipt) -> MergeReceipt: ...
     def variables(self, repo: str) -> dict[str, str]: ...
     def app_installation(self, repo: str) -> AppInstallation: ...
-    def app_events(self, repo: str) -> frozenset[str]: ...
+    def app_subscription(self, repo: str) -> Subscription: ...
     def permission(self, repo: str, login: str) -> Permission | None: ...
     def has_label(self, repo: str, name: str) -> bool: ...
     def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None: ...
@@ -929,11 +929,11 @@ class LiveForge:
                 raise
             raise ForgeError(str(exc), exc.status, rate_limited=exc.rate_limited) from None
 
-    def app_events(self, repo: str) -> frozenset[str]:
-        """The events the App's installation on the repository is subscribed to, read from GitHub now. A failure is a
+    def app_subscription(self, repo: str) -> Subscription:
+        """The App's installation on the repository, its events and permissions, read from GitHub now. A failure is a
         ForgeError, except one of the host's own key or settings."""
         try:
-            return credentials.events(repo) or frozenset()
+            return credentials.subscription(repo) or Subscription()
         except CredentialFailure as exc:
             if exc.status is None and not isinstance(exc, Unanswered):
                 raise

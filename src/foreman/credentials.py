@@ -47,9 +47,16 @@ def failure(status: int, rate_limited: bool = False) -> str:
     return UNAVAILABLE if kind is None else f"App credentials: {kind}. Restore App access, then resume the same run."
 
 
-class _Installation(BaseModel):
-    id: int
+class Subscription(BaseModel):
+    """The events the App's installation on a repository is subscribed to and the level of each permission it grants, as
+    GitHub reports them."""
+
     events: frozenset[str] = frozenset()
+    permissions: dict[str, str] = {}
+
+
+class _Installation(Subscription):
+    id: int
 
 
 class _Token(BaseModel):
@@ -101,14 +108,14 @@ class AppCredentials:
                     entry.token = token
         return command_environment(token.token.get_secret_value())
 
-    def events(self, repo: str) -> frozenset[str] | None:
-        """The events the App's installation on the repository is subscribed to, as GitHub reports them now, or None on a host
-        that has no App."""
+    def subscription(self, repo: str) -> Subscription | None:
+        """The App's installation on the repository as GitHub reports it now, or None on a host that has no App."""
         if (app := self._app(repo)) is None:
             return None
         headers = _signed(*app)
         with _answered():
-            return _installation(repo, headers).events
+            installation = _installation(repo, headers)
+        return Subscription(events=installation.events, permissions=installation.permissions)
 
     def _app(self, repo: str) -> tuple[str, str] | None:
         """The App's id and key path, or None on a host that has no App."""

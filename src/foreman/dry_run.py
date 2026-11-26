@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
+from foreman.credentials import Subscription
 from foreman.doctor import EVENTS
 from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import (
@@ -208,8 +209,8 @@ class DryRun:
     def app_installation(self, repo: str) -> AppInstallation:
         return "installed"
 
-    def app_events(self, repo: str) -> frozenset[str]:
-        return frozenset(EVENTS)
+    def app_subscription(self, repo: str) -> Subscription:
+        return Subscription(events=frozenset(EVENTS), permissions={grant.key: "read" for grant in EVENTS.values()})
 
     def permission(self, repo: str, login: str) -> Permission | None:
         return "write"

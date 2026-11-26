@@ -20,7 +20,7 @@ from foreman.cli import main
 from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
-from foreman.credentials import CredentialFailure, NotInstalled, Unanswered
+from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered
 from foreman.doctor import EVENTS, QUICK, WRITE_ACCESS, NotReady, ReadFailed, contract, repository
 from foreman.github import ForgeError, LiveForge
 from foreman.outcomes import Halt
@@ -29,6 +29,7 @@ from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSe
 from foreman.steps import triage
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_skills
+from publication_fixture import SUBSCRIBED
 from test_runner import FakeGitHub, FakeWorkspace
 
 SKILL = ".claude/skills/verify-web/SKILL.md"
@@ -312,7 +313,7 @@ class QuickCheckTest(unittest.TestCase):
         for event, permission in EVENTS.items():
             with self.subTest(event):
                 github, workspace = FakeGitHub(), FakeWorkspace(self.root)
-                github.events = frozenset(EVENTS) - {event}
+                github.subscription = SUBSCRIBED.model_copy(update={"events": frozenset(EVENTS) - {event}})
                 checkpoint = self.root / f"{event}.sqlite3"
                 dispatch = MagicMock(side_effect=AssertionError("not_ready makes no paid call"))
                 result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=dispatch,
@@ -323,12 +324,37 @@ class QuickCheckTest(unittest.TestCase):
                 self.assertEqual((github.variable_reads, github.label_calls), ([], []))
                 dispatch.assert_not_called()
         github = FakeGitHub()
-        github.events = frozenset({"issues"})
+        github.subscription = SUBSCRIBED.model_copy(update={"events": frozenset({"issues"})})
         with self.assertRaises(NotReady) as raised:
             repository(github, "Example/Engine")
         self.assertIn("not subscribed to issue_comment, pull_request, pull_request_review, check_suite, status", str(raised.exception))
 
-    def test_the_app_events_are_read_from_its_installation_on_the_repository(self):
+    def test_each_event_whose_permission_the_app_holds_below_read_is_named_with_that_permission_and_no_run_starts(self):
+        """The App subscribed to every event, with the permission each is delivered under absent or none in turn. Doctor names
+        the events that permission carries and the permission at read, and the start writes nothing but the status. Write
+        passes, as Foreman's own writes need it."""
+        for grant in {grant.key: grant for grant in EVENTS.values()}.values():
+            events = [event for event, needed in EVENTS.items() if needed == grant]
+            for level in (None, "none"):
+                with self.subTest(grant.key, level=level):
+                    github, workspace = FakeGitHub(), FakeWorkspace(self.root)
+                    permissions = {key: value for key, value in SUBSCRIBED.permissions.items() if key != grant.key}
+                    github.subscription = SUBSCRIBED.model_copy(update={"permissions": permissions | ({grant.key: level} if level else {})})
+                    checkpoint = self.root / f"{grant.key}-{level}.sqlite3"
+                    dispatch = MagicMock(side_effect=AssertionError("not_ready makes no paid call"))
+                    result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=dispatch,
+                                               run=LiveRun(github, workspace, skills=fixture_skills))
+                    self.assertEqual(result["halt"], Halt.not_ready)
+                    self.assertIn(f"Not ready: the GitHub App's installation on Example/Engine cannot read {', '.join(events)}. "
+                                  "Fix: in the Foreman GitHub App's settings, grant "
+                                  + ", ".join(f"{grant.name}: read for {event}" for event in events), result["halt_detail"])
+                    self.assertEqual((github.variable_reads, github.label_calls), ([], []))
+                    dispatch.assert_not_called()
+        github = FakeGitHub()
+        github.subscription = SUBSCRIBED.model_copy(update={"permissions": {key: "write" for key in SUBSCRIBED.permissions}})
+        self.assertEqual(repository(github, "Example/Engine").start.human_login, "fixture-owner")
+
+    def test_the_app_events_and_permissions_are_read_from_its_installation_on_the_repository(self):
         key = self.root / "app.pem"
         key.write_bytes(rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
             serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
@@ -338,17 +364,19 @@ class QuickCheckTest(unittest.TestCase):
         def respond(request, timeout):
             urls.append(request.full_url)
             response = MagicMock()
-            response.__enter__.return_value.read.return_value = json.dumps({"id": 2, "events": ["issues", "status"]}).encode()
+            response.__enter__.return_value.read.return_value = json.dumps(
+                {"id": 2, "events": ["issues", "status"], "permissions": {"issues": "write", "statuses": "read"}}).encode()
             return response
         with patch.dict(os.environ, {"FOREMAN_APP_ID": "1", "FOREMAN_APP_KEY_PATH": str(key)}), \
                 patch("foreman.credentials.urlopen", side_effect=respond):
-            self.assertEqual(LiveForge().app_events("Example/Engine"), frozenset({"issues", "status"}))
+            self.assertEqual(LiveForge().app_subscription("Example/Engine"),
+                             Subscription(events=frozenset({"issues", "status"}), permissions={"issues": "write", "statuses": "read"}))
         self.assertEqual(urls, ["https://api.github.com/repos/Example/Engine/installation"])
-        with patch("foreman.github.credentials.events", side_effect=Unanswered("no answer")), self.assertRaises(ForgeError):
-            LiveForge().app_events("Example/Engine")
-        with patch("foreman.github.credentials.events", side_effect=CredentialFailure("App credentials: permission denied.", 403)), \
+        with patch("foreman.github.credentials.subscription", side_effect=Unanswered("no answer")), self.assertRaises(ForgeError):
+            LiveForge().app_subscription("Example/Engine")
+        with patch("foreman.github.credentials.subscription", side_effect=CredentialFailure("App credentials: permission denied.", 403)), \
                 self.assertRaises(ForgeError) as refused:
-            LiveForge().app_events("Example/Engine")
+            LiveForge().app_subscription("Example/Engine")
         self.assertEqual(refused.exception.status, 403)
 
     def test_github_answers_the_app_installation_and_a_failure_of_the_hosts_own_key_stays_a_credential_failure(self):

@@ -53,8 +53,9 @@ class Reviewed:
         assert issue is not None
         deadline = time.monotonic() + MERGEABILITY_SECONDS
         try:
-            while (observation := self.run.forge.readiness(repo, issue, branch, head)).outcome == "uncomputed" and time.monotonic() < deadline:
-                time.sleep(REREAD_SECONDS)
+            while (observation := self.run.forge.readiness(repo, issue, branch, head)).outcome == "uncomputed" and (
+                    left := deadline - time.monotonic()) > 0:
+                time.sleep(min(REREAD_SECONDS, left))
         except ForgeError:
             return None, merge
         return observation, merge.model_copy(update={"observation": observation.model_dump(mode="json")})

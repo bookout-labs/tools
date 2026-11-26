@@ -112,6 +112,24 @@ class ReadinessTest(unittest.TestCase):
         paused, reads, clock = arm("pending")
         self.assertEqual((paused["stop"], reads, clock.sleeps), ("paused", 1, []))
 
+    def test_no_read_of_uncomputed_mergeability_starts_after_the_minute(self):
+        """Each read takes GitHub 2 seconds, so the minute ends in the middle of a sleep. That sleep ends at the minute, the
+        last read starts there, and the step halts readiness_unavailable."""
+        clock, starts = Clock(), []
+        uncomputed = Observation(repo=REPO, pr=PullSnapshot.model_validate({**READINESS, "mergeable": None}), checks=[],
+                                 outcome="uncomputed", recovery="Synthetic.", queue_policy={"merge_method": "SQUASH"})
+
+        def read(*args):
+            starts.append(clock.now)
+            clock.now += 2
+            return uncomputed
+        forge = Mock(**{"variables.return_value": {}, "readiness.side_effect": read, "issue_comment_records.return_value": [],
+                        "pull_request_for.return_value": published("OPEN")})
+        with patch("foreman.steps.merge.time", clock):
+            halted = merge.arm(REVIEWED, stage_run(forge))
+        self.assertEqual(halted["halt"], "readiness_unavailable")
+        self.assertEqual((starts[-1], clock.sleeps[:-1], clock.sleeps[-1]), (merge.MERGEABILITY_SECONDS, [merge.REREAD_SECONDS] * 8, 2))
+
     def test_a_stop_cannot_undo_a_merge(self):
         """ME9: arm reads the PR before the stop. A merged PR records the stop as too late and the run ends merged. An open,
         queued PR leaves the queue, closes with the cancellation and ends cancelled, unless GitHub merged it before the close."""
