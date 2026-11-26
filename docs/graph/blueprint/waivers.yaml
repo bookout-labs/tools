@@ -62,9 +62,8 @@ waivers:
     V2-fe7b51f959c31436: "item 20: [halts] production_unconfirmed"
     V2-8cfd976895b95870: "item 20: [delivery] edge merge -> __end__ adds reverted"
     # The drawn v3 prompts. Each build that ships its item copies the prompt to src/foreman/stages/.
-    V2-ed3e7bd9521ae643: "items 4, 6, 7 and 20: [procedure/spec] prompt"
-    V2-6320858f1b37c70b: "items 4, 6, 7, 14 and 20: [procedure/spec_check] prompt"
+    V2-97c596d3144b5a34: "items 6, 7 and 20: [procedure/spec] prompt"
+    V2-8b0ca856d52eecac: "items 6, 7, 14 and 20: [procedure/spec_check] prompt"
     V2-58057f7476a638f8: "items 3, 10, 11, 12, 15, 20 and #367: [procedure/implement] prompt"
     V2-f74f15cbe6ff424e: "items 3 and 13: [procedure/verify] prompt"
     V2-4738b924e3a915f7: "items 13, 15, 16 and 17: [procedure/review] prompt"
-    V2-20daa2aff18faf86: "item 4: [procedure/research] prompt"

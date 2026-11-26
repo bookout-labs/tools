@@ -303,6 +303,39 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual([attempt["stage"] for attempt in result["attempts"]].count("implement"), 1)
         self.assertEqual([command for command in commands if command[1] in {"commit", "push"}], [])
 
+    def related_walk(self, script, *, slice=EMPTY_SLICE):
+        """A walk whose contract names the engine as a related repository, so admission pins its checkout."""
+        contract = contract_text("npm run check") + b"related_repositories: [{repository: DoctorCRE/doctorcre-engine, start: 'true'}]\n"
+        with skill_fixture() as (config, scratch):
+            return run_delivery(script, repo="DoctorCRE/doctorcre-app", request="Show the deal's external ID", contract=contract,
+                                slice=slice, config=config, scratch=scratch)
+
+    def test_the_builder_asks_when_the_related_checkout_contradicts_the_plan(self):
+        # IM9, related half: the builder reads the engine at its pin and cites the engine file that contradicts the plan.
+        question = ("The plan says GET /deals returns external_id, but DoctorCRE/doctorcre-engine routes/deals.py:41 at the pinned "
+                    "commit returns only id and name. Which is right?")
+        script = ScriptHandler()
+        def handler(node, model, state, instruction):
+            outcome = script(node, model, state, instruction)
+            return replace(outcome, output={**outcome.output, "human_question": question}) if node == "implement" else outcome
+        result = self.related_walk(handler)
+        instruction = next(call["instruction"] for call in script.calls if call["node"] == "implement")
+        self.assertIn("Related repository checkouts, read-only at the commits pinned at admission.", instruction)
+        self.assertIn("DoctorCRE/doctorcre-engine at <sha>: <checkout of DoctorCRE/doctorcre-engine>", instruction)
+        self.assertEqual(result["stop"], "needs_human")
+        self.assertIn(question, result["halt_detail"])
+        self.assertNotIn("publish", result["path"])
+
+    def test_research_answers_from_the_related_checkout(self):
+        answer = "The engine's routes/deals.py at the pinned commit returns id and name, so the board cannot show external_id."
+        script = ScriptHandler(triage="question", research=answer)
+        result = self.related_walk(script, slice=None)
+        instruction = " ".join(next(call["instruction"] for call in script.calls if call["node"] == "research").split())
+        self.assertIn("Answer the originating question from the issue, the pinned target checkout, the related repository "
+                      "checkouts and cited sources.", instruction)
+        self.assertIn("DoctorCRE/doctorcre-engine at <sha>: <checkout of DoctorCRE/doctorcre-engine>", instruction)
+        self.assertEqual((result["stop"], result["research"]), ("answered", answer))
+
     def test_open_spec_stops_for_a_person(self):
         result = walk(ScriptHandler(triage="plan", spec_gate="needs_human"), slice=None)
         self.assertEqual(result["path"], ["triage", "spec"])

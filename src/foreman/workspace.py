@@ -92,6 +92,14 @@ class WorkState(BaseModel, frozen=True, extra="forbid"):
         return WorkState(branch=self.branch, base=self.base, repair_head=head)
 
 
+class RelatedCheckout(BaseModel, frozen=True, extra="forbid"):
+    """A related repository the contract names, pinned at admission to its default-branch head and checked out read-only."""
+
+    repository: str
+    commit: str
+    checkout: str
+
+
 class WorktreeInspectionFailed(WorkspaceError):
     pass
 
@@ -188,6 +196,7 @@ class Workspace(Protocol):
     def review_context(self, base: str, head: str) -> ReviewContext: ...
     def validate_origin(self, repo: str) -> None: ...
     def pin_base(self, base: str) -> str: ...
+    def check_out_related(self, repo: str, branch: str) -> RelatedCheckout: ...
     def create_branch(self, branch: str, base: str, *, pinned: str = "") -> None: ...
     def refresh(self, branch: str, head: str) -> None: ...
     def commit(self, message: str) -> None: ...
@@ -335,6 +344,16 @@ class LiveWorkspace:
                     self._git("worktree", "prune", cwd=self.clone)
                     self._git("worktree", "add", "--quiet", "--detach", str(self.root), pinned, cwd=self.clone)
         return pinned
+
+    def check_out_related(self, repo: str, branch: str) -> RelatedCheckout:
+        """Pin a related repository at its branch head in a worktree of that repository's shared clone, beside this checkout."""
+        owner, name = repo.lower().split("/")
+        checkouts = self.root.parent / f"{self.root.name}.related"
+        # A managed run shares the state directory's clone of the repository. GitHub names never start with a dot.
+        clones = self.clone.parent.parent if self.clone is not None else checkouts / ".clones"
+        related = LiveWorkspace(checkouts / owner / name, repo, clone=clones / owner / name)
+        related.validate_origin(repo)
+        return RelatedCheckout(repository=repo, commit=related.pin_base(branch), checkout=str(related.root))
 
     def release(self, heads: Collection[str]) -> bool:
         """Remove a finished run's managed worktree when it is clean at a head the run recorded."""

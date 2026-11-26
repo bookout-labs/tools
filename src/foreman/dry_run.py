@@ -17,7 +17,7 @@ from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePoli
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.workspace import (
     WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, LiveWorkspace, branch_command, commit_commands, push_command, CheckLog,
-    PullRequestSize, ReviewScope,
+    PullRequestSize, RelatedCheckout, ReviewScope,
 )
 
 if TYPE_CHECKING:
@@ -126,6 +126,9 @@ class DryRun:
 
     def pin_base(self, base: str) -> str:
         return self.head
+
+    def check_out_related(self, repo: str, branch: str) -> RelatedCheckout:
+        return RelatedCheckout(repository=repo, commit=self.head, checkout=f"<checkout of {repo}>")
 
     def release(self, heads: Collection[str]) -> bool:
         return False

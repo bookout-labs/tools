@@ -51,6 +51,9 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         pinned = workspace.pin_base(base)
         # The run's check and verify skill come from the contract at its pinned base, whatever its branch later does.
         pinned_contract = contract(workspace, pinned)
+        # Each related repository is pinned once, here, so a resumed run reads the same commits.
+        related = [workspace.check_out_related(item.repository, forge.default_branch(item.repository))
+                   for item in pinned_contract.related_repositories]
     except NotReady as exc:
         return stopped(Halt.not_ready, exc.halt_detail(), "admit")
     except (ForgeError, WorkspaceError) as exc:
@@ -59,7 +62,8 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if target.request:
         request += f"\n\nOperator context:\n{target.request}"
     return {"run": target.model_copy(update={"repo": issue["repo"], "request": request, "base_branch": base, "base_sha": pinned}),
-            "checks": state["checks"].model_copy(update={"check": pinned_contract.check, "verify_skill": pinned_contract.verify_skill}), "plan": plan}
+            "checks": state["checks"].model_copy(update={"check": pinned_contract.check, "verify_skill": pinned_contract.verify_skill}), "plan": plan,
+            "related": related}
 
 
 def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
