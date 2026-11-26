@@ -10,7 +10,7 @@ from foreman.adapters import Outcome, Usage
 from foreman.config import ModelSpec
 from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import (
-    BOT_LOGIN, AppInstallation, PullRequest, PublishedPullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
+    BOT_LOGIN, AppInstallation, Permission, PullRequest, PublishedPullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
     marked, pull_request_command, render_slice_body, status_body,
 )
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy, Ref
@@ -203,6 +203,9 @@ class DryRun:
 
     def app_installation(self, repo: str) -> AppInstallation:
         return "installed"
+
+    def permission(self, repo: str, login: str) -> Permission | None:
+        return "write"
 
     def has_label(self, repo: str, name: str) -> bool:
         return True
