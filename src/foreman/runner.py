@@ -209,6 +209,11 @@ def saved_workspace(checkpoint: Path, thread: str) -> str | None:
     return RunState.model_validate(run).workspace if run is not None else ""
 
 
+def released_issues(checkpoint: Path, thread: str) -> list[str]:
+    """The issues the issue's saved run returned to admission as OWNER/NAME#N, so a replayed delivery names them again."""
+    return (_saved_values(checkpoint, thread) or {}).get("released", [])
+
+
 def halted_resumably(checkpoint: Path, thread: str) -> bool:
     """Whether the issue's saved run stopped on a resumable halt, which a Ready label added again resumes (intake)."""
     values = _saved_values(checkpoint, thread) or {}
